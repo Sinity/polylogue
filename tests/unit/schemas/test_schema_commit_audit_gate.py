@@ -79,3 +79,23 @@ def test_commit_keeps_a_package_that_passes_audit(tmp_path: Path, monkeypatch: p
     commit._persist_audited(output_dir, "chatgpt", object())  # type: ignore[arg-type]
 
     assert (output_dir / "chatgpt" / "versions" / "v1" / "elements" / "session_document.json").exists()
+
+
+def test_high_entropy_annotation_value_is_a_blocker(tmp_path: Path) -> None:
+    """Anti-vacuity: drop the entropy predicate for annotation values and this publishes."""
+    element = tmp_path / "versions" / "v1" / "elements" / "session_document.json"
+    element.parent.mkdir(parents=True)
+    element.write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "x-polylogue-observed-distribution": {"sample": "abc123XYZ987mnop"},
+                "x-polylogue-mutually-exclusive": [{"fields": ["content_sha256", "inline_base64"], "parent": "$"}],
+            }
+        )
+    )
+
+    report = audit_schema_artifacts(tmp_path)
+
+    assert [finding.category for finding in report.blockers] == ["unsafe_annotation_value"]
+    assert "sample" in report.blockers[0].json_path

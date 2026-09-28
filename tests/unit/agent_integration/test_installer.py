@@ -450,3 +450,50 @@ def test_reinstall_after_a_killed_install_keeps_ownership_of_written_values(
     assert fresh.install(_options(polylogue, server, clients=("claude-code",)))["ok"] is True
     assert fresh.uninstall()["ok"] is True
     assert list(home.iterdir()) == []
+
+
+def test_replace_clients_removes_a_killed_install_of_an_unselected_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: iterate only committed operations when replacing and the Claude files stay behind."""
+    manager, home, polylogue, server = _manager(tmp_path)
+    _kill_after_native_writes(monkeypatch, writes_before_kill=2)
+    with pytest.raises(_KilledMidInstall):
+        manager.install(_options(polylogue, server, clients=("claude-code",)))
+    monkeypatch.undo()
+
+    fresh = AgentIntegrationManager(home=home, environment=manager.environment)
+    receipt = fresh.install(_options(polylogue, server, clients=("codex",), replace_clients=True))
+
+    assert receipt["ok"] is True
+    assert "claude-code" in receipt["removed_clients"]  # type: ignore[operator]
+    assert not (home / ".claude.json").exists()
+
+
+def test_killed_upgrade_that_reuses_an_identity_recovers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: prefer the stale committed record and reinstall raises NativeConfigConflict."""
+    manager, home, polylogue, server = _manager(tmp_path)
+    manager.install(_options(polylogue, server, clients=("claude-code",)))
+    upgraded = _options(polylogue, server, clients=("claude-code",), capabilities=MCPCapabilities(judge=True))
+    from polylogue.agent_integration import installer
+
+    real_apply = installer._apply_operation
+    applied = {"count": 0}
+
+    def apply_then_die(*args: object, **kwargs: object) -> dict[str, object]:
+        if kwargs.get("dry_run"):
+            return real_apply(*args, **kwargs)  # type: ignore[arg-type]
+        result = real_apply(*args, **kwargs)  # type: ignore[arg-type]
+        applied["count"] += 1
+        if applied["count"] >= 1:
+            raise _KilledMidInstall()  # the new MCP value is on disk, not yet committed
+        return result
+
+    monkeypatch.setattr(installer, "_apply_operation", apply_then_die)
+    with pytest.raises(_KilledMidInstall):
+        manager.install(upgraded)
+    monkeypatch.undo()
+
+    fresh = AgentIntegrationManager(home=home, environment=manager.environment)
+    assert fresh.install(upgraded)["ok"] is True
+    assert fresh.uninstall()["ok"] is True

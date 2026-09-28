@@ -264,7 +264,15 @@ def _annotation_findings(
     elif isinstance(value, str):
         value_secrets = _secret_findings(artifact=artifact, json_path=json_path, value=value)
         findings.extend(value_secrets)
-        if not value_secrets and _observed_value_leak(value):
+        # A field name (e.g. ``content_sha256``) can read as a high-entropy
+        # token, so a string at a field-name position is held to the
+        # property-name bar; any other annotation string also gets the
+        # entropy predicate the ``x-polylogue-values`` guard applies.
+        field_name = "['fields'][" in json_path.rsplit("x-polylogue-", 1)[-1]
+        leaks = _observed_value_leak(value) or (
+            _unsafe_property_name(value) if field_name else _looks_high_entropy_token(value)
+        )
+        if not value_secrets and leaks:
             findings.append(
                 PromotionAuditFinding(
                     severity="blocker",

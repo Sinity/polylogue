@@ -49,8 +49,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/QueryErrorPayload'
-        '403':
-          description: Bootstrap origin was not the daemon's authority.
+        '401':
+          description: No daemon bearer, sign-in ticket, or valid credential was presented.
           headers:
             X-Polylogue-Web-Credential-State:
               schema:
@@ -62,6 +62,17 @@ paths:
                 - web_credential_revoked
                 - web_credential_wrong_origin
                 - web_credential_insufficient_scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebCredentialFailurePayload'
+        '403':
+          description: Bootstrap origin was not the daemon's authority.
+          headers:
+            X-Polylogue-Web-Credential-State:
+              schema:
+                type: string
+                enum: *id001
           content:
             application/json:
               schema:

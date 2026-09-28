@@ -2071,9 +2071,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         auth_header = self.headers.get("Authorization", "")
         if auth_header:
             return bool(_check_auth_logic(self._auth_token, self._client_host, auth_header))
-        if not self._web_credential_token():
+        token = self._web_credential_token()
+        if not token:
             return False
-        return self._web_credential_decision("read").allowed
+        fetch_site = self.headers.get("Sec-Fetch-Site", "")
+        # A typed URL or bookmark sends the SameSite=Strict cookie with
+        # ``Sec-Fetch-Site: none`` and no Origin/Referer; the cookie is only
+        # sent on same-site or user-initiated navigations, so that is admitted
+        # for a top-level shell GET once the Host and record have matched.
+        if fetch_site == "none" and self.headers.get("Sec-Fetch-Mode", "") in {"", "navigate"}:
+            fetch_site = "same-origin"
+        return self._web_credentials.validate(
+            token,
+            required_scope="read",
+            host_header=self.headers.get("Host", ""),
+            origin_header=self.headers.get("Origin", ""),
+            referer_header=self.headers.get("Referer", ""),
+            fetch_site=fetch_site,
+        ).allowed
 
     def _check_shell_bootstrap_access(self) -> bool:
         """Serve shell HTML only to the credentialed owner.

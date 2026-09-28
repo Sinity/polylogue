@@ -401,6 +401,9 @@ def _build_openapi_document() -> dict[str, Any]:
                             },
                         },
                         "400": _query_error_response("Credential-shaped query parameters are forbidden."),
+                        "401": _web_credential_error_response(
+                            "No daemon bearer, sign-in ticket, or valid credential was presented."
+                        ),
                         "403": _web_credential_error_response("Bootstrap origin was not the daemon's authority."),
                     },
                     "x-polylogue-recoverable-states": _WEB_CREDENTIAL_FAILURE_STATES,

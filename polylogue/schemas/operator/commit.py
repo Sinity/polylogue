@@ -115,7 +115,14 @@ def _persist_audited(output_dir: Path, provider_token: str, bundle: _ProviderBun
 def _write_audited(output_dir: Path, provider_token: str, write: Callable[[], object]) -> None:
     """Run *write*, audit the provider tree it produced, and restore the prior tree on a blocker."""
     provider_dir = output_dir / provider_token
-    with tempfile.TemporaryDirectory(prefix="polylogue-schema-commit-prior-") as prior_root:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    # Snapshot, write, audit and rollback form one critical section: without
+    # the exclusive tree lock a concurrent commit's valid publication could be
+    # replaced by this commit's stale snapshot during rollback.
+    with (
+        provider_tree_lock(output_dir, exclusive=True),
+        tempfile.TemporaryDirectory(prefix="polylogue-schema-commit-prior-") as prior_root,
+    ):
         prior = Path(prior_root) / provider_token
         if provider_dir.exists():
             shutil.copytree(provider_dir, prior)

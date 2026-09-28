@@ -873,6 +873,38 @@ def _prepared_operations(client_record: Mapping[str, object]) -> dict[str, dict[
     return _as_operation_map(client_record.get("prepared_operations"))
 
 
+def _reconciled_operations(client_record: Mapping[str, object]) -> list[tuple[dict[str, object], bool]]:
+    """Return each recorded operation once, as ``(record, prepared_only)``.
+
+    An interrupted install leaves a prepared record beside (or instead of) the
+    committed one. When the prepared effect is present it is what is on disk --
+    including an upgrade that reuses the committed identity -- so it wins;
+    otherwise the committed record stands. A prepared record with no committed
+    counterpart and no present effect is reported ``prepared_only`` so its
+    removal can treat absence as "never applied" rather than drift.
+    """
+    committed = _as_operation_map(client_record.get("operations"))
+    prepared = _prepared_operations(client_record)
+    reconciled: list[tuple[dict[str, object], bool]] = []
+    for identity in dict.fromkeys([*committed, *prepared]):
+        candidate = prepared.get(identity)
+        if candidate is not None and _observe_operation(candidate).state in _EFFECT_PRESENT_STATES:
+            reconciled.append((candidate, False))
+        elif identity in committed:
+            reconciled.append((committed[identity], False))
+        elif candidate is not None:
+            reconciled.append((candidate, True))
+    return reconciled
+
+
+def _remove_recorded_operation(
+    operation: dict[str, object], prepared_only: bool, *, transaction: _Transaction
+) -> tuple[bool, str]:
+    if prepared_only:
+        return _remove_prepared_operation(operation, transaction=transaction)
+    return _remove_operation(operation, transaction=transaction)
+
+
 def _remove_prepared_operation(operation: dict[str, object], *, transaction: _Transaction) -> tuple[bool, str]:
     """Undo one operation an interrupted install recorded but may not have applied.
 
@@ -1138,13 +1170,16 @@ class AgentIntegrationManager:
                         if not isinstance(raw_client, dict):
                             continue
                         remaining: list[dict[str, object]] = []
-                        for operation in _as_operation_map(raw_client.get("operations")).values():
-                            removed, detail = _remove_operation(operation, transaction=transaction)
+                        for operation, prepared_only in _reconciled_operations(raw_client):
+                            removed, detail = _remove_recorded_operation(
+                                operation, prepared_only, transaction=transaction
+                            )
                             if not removed:
                                 remaining.append(operation)
                                 retained_drift.append(
                                     {"client": client, "identity": cast(str, operation["identity"]), "detail": detail}
                                 )
+                        raw_client.pop("prepared_operations", None)
                         if remaining:
                             raw_client["operations"] = remaining
                         else:
@@ -1161,12 +1196,11 @@ class AgentIntegrationManager:
                 for client in selected:
                     raw_previous = clients_state.get(client)
                     previous_client = cast(dict[str, object], raw_previous) if isinstance(raw_previous, dict) else {}
-                    previous_operations = _as_operation_map(previous_client.get("operations"))
-                    for identity, prepared in _prepared_operations(previous_client).items():
-                        if identity in previous_operations:
-                            continue
-                        if _observe_operation(prepared).state in _EFFECT_PRESENT_STATES:
-                            previous_operations[identity] = prepared
+                    previous_operations = {
+                        cast(str, operation["identity"]): operation
+                        for operation, prepared_only in _reconciled_operations(previous_client)
+                        if not prepared_only
+                    }
                     desired_operations = _client_desired_operations(
                         client,
                         options,
@@ -1293,23 +1327,13 @@ class AgentIntegrationManager:
                     remaining: list[dict[str, object]] = []
                     removed_count = 0
                     drifted: list[dict[str, str]] = []
-                    committed = _as_operation_map(raw_client.get("operations"))
-                    for operation in committed.values():
-                        removed, detail = _remove_operation(operation, transaction=transaction)
-                        if removed:
-                            removed_count += 1
-                        else:
-                            remaining.append(operation)
-                            drifted.append({"identity": cast(str, operation["identity"]), "detail": detail})
-                    for identity, operation in _prepared_operations(raw_client).items():
-                        if identity in committed:
-                            continue
-                        removed, detail = _remove_prepared_operation(operation, transaction=transaction)
+                    for operation, prepared_only in _reconciled_operations(raw_client):
+                        removed, detail = _remove_recorded_operation(operation, prepared_only, transaction=transaction)
                         if removed:
                             removed_count += 1 if detail != "prepared operation was never applied" else 0
                         else:
                             remaining.append(operation)
-                            drifted.append({"identity": identity, "detail": detail})
+                            drifted.append({"identity": cast(str, operation["identity"]), "detail": detail})
                     raw_client.pop("prepared_operations", None)
                     if remaining:
                         raw_client["operations"] = remaining

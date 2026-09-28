@@ -420,3 +420,20 @@ def test_credentialed_browser_reads_the_shell() -> None:
     handler._serve_webui_archive_overview = MagicMock()  # type: ignore[method-assign]
     handler.do_GET()
     handler._serve_webui_archive_overview.assert_called_once_with()
+
+
+def test_bookmark_navigation_with_a_valid_cookie_reads_the_shell() -> None:
+    """Anti-vacuity: validate navigations like fetches and a bookmark lands on the sign-in page."""
+    server = MockDaemonServer(auth_token="secret")
+    issued = server.web_credentials.issue("http://127.0.0.1:8766")
+    handler = _make_handler(
+        "GET",
+        "/sessions",
+        host="127.0.0.1:8766",
+        cookie=f"{WEB_CREDENTIAL_COOKIE}={issued.token}",
+        fetch_site="none",
+        server=server,
+    )
+    handler._serve_webui_session_list = MagicMock()  # type: ignore[method-assign]
+    handler.do_GET()
+    handler._serve_webui_session_list.assert_called_once()
