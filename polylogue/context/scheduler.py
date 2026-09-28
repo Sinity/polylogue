@@ -346,7 +346,7 @@ def schedule_context(
                     )
                 )
                 continue
-            if source_quota is not None and used_by_source >= source_quota:
+            if source_quota is not None and used_by_source + item.token_cost > source_quota:
                 rows.append(
                     _row(
                         "dropped",
@@ -425,6 +425,7 @@ def schedule_context(
     payload = json.dumps(
         {
             "budget": token_budget,
+            "moment": moment,
             "execution_context": execution_context.context_id,
             "items": [_item_dict(item) for item in (*included_evidence, *included_policy)],
             "ledger": [row.as_dict() for row in rows],
