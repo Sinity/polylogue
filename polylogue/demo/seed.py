@@ -176,7 +176,7 @@ def _archive_root_has_real_content(root: Path) -> bool:
     Checks the durable tiers (``source.db``'s ``raw_sessions``, ``user.db``'s
     ``assertions``) directly rather than trusting the rebuildable index tier
     alone. ``index.db`` is explicitly the rebuildable tier (see this repo's
-    "Schema regimes" doc) and can legitimately be absent or unreadable on a
+    AGENTS.md "Storage tiers" section) and can legitimately be absent or unreadable on a
     real archive -- freshly initialized, mid-rebuild, or reset via
     ``polylogue ops reset --index`` -- so treating a missing/corrupt index as
     proof of "0 sessions" would authorize writing (or, worse, self-heal

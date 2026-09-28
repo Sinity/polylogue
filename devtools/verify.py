@@ -323,7 +323,7 @@ def build_verify_steps(
                 maximum=AFFECTED_MAX_WORKERS if selection == "affected" else CORPUS_MAX_WORKERS
             ),
             hypothesis_profile=hypothesis_profile,
-            contract_documents_changed=bool(changed_paths and changed_paths & _CONTRACT_READ_DOCUMENTS),
+            contract_documents_changed=_contract_documents_changed(changed_paths),
         )
     return steps
 
@@ -397,7 +397,16 @@ def _selection_for_changes(changed_paths: frozenset[str] | None) -> str:
     return "none"
 
 
-def _selection_reason(selection: str) -> str | None:
+def _contract_documents_changed(changed_paths: frozenset[str] | None) -> bool:
+    return bool(changed_paths and changed_paths & _CONTRACT_READ_DOCUMENTS)
+
+
+def _forced_tests(selection: str, changed_paths: frozenset[str] | None) -> tuple[str, ...]:
+    """Tests an affected run adds beyond the testmon selection."""
+    return CONTRACT_DOCUMENT_TESTS if selection == "affected" and _contract_documents_changed(changed_paths) else ()
+
+
+def _selection_reason(selection: str, changed_paths: frozenset[str] | None = None) -> str | None:
     if selection == "none":
         return (
             "every changed path is orchestration metadata, documentation or a hosted workflow "
@@ -406,6 +415,9 @@ def _selection_reason(selection: str) -> str | None:
             f"outside {_TEST_TREE_PREFIX}**); no test exercises them"
         )
     if selection == "descriptor":
+        if changed_paths is not None and _PROJECT_DESCRIPTOR not in changed_paths:
+            documents = ", ".join(sorted(changed_paths & _CONTRACT_READ_DOCUMENTS))
+            return f"the change stays inside documentation and includes a contract document a test reads ({documents})"
         return "the change stays inside orchestration metadata and includes the AgentCTL descriptor"
     return None
 
@@ -440,7 +452,9 @@ def _unrecorded_selection_term(root: Path) -> tuple[int | None, str | None]:
     return counted, None
 
 
-def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, float | None, str | None, int | None]:
+def _estimate_affected_selection(
+    root: Path, graph: Any, forced_tests: Sequence[str] = ()
+) -> tuple[int | None, float | None, str | None, int | None]:
     """Estimate the exact testmon selection without launching pytest.
 
     Testmon mutates its database while it determines stable tests, so this
@@ -451,6 +465,11 @@ def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, fl
     The fourth element is how much of the count is unrecorded-and-therefore-
     unknown tests, kept separate so the receipt can say where the plan's size
     came from.
+
+    ``forced_tests`` are node ids the run adds outside testmon (the contract
+    document step). Their recorded items -- every parametrization -- count
+    toward the plan; a forced node the graph never recorded makes the plan
+    unmeasured rather than silently smaller.
     """
     if getattr(graph, "status", None) is not TestmonGraphStatus.USABLE:
         return None, None, None, None
@@ -477,6 +496,11 @@ def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, fl
                     return None, None, "the testmon environment changed; affected selection is unbounded", None
                 data.determine_stable()
                 selected = set(data.unstable_test_names) | set(data.failing_tests)
+                for nodeid in forced_tests:
+                    recorded = {name for name in data.all_tests if name == nodeid or name.startswith(f"{nodeid}[")}
+                    if not recorded:
+                        return None, None, f"the forced test {nodeid} has no recorded execution", None
+                    selected |= recorded
                 durations = [data.all_tests[name].get("duration") for name in selected]
                 estimated = (
                     None if any(value is None for value in durations) else sum(float(value) for value in durations)
@@ -492,9 +516,11 @@ def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, fl
         return None, None, "the affected selection could not be measured from the graph", None
 
 
-def _affected_admission(*, root: Path, graph: Any) -> AffectedAdmission:
+def _affected_admission(*, root: Path, graph: Any, forced_tests: Sequence[str] = ()) -> AffectedAdmission:
     """Build the bounded affected admission decision and its measurement note."""
-    selected_count, estimated_seconds, measurement_error, unrecorded_tests = _estimate_affected_selection(root, graph)
+    selected_count, estimated_seconds, measurement_error, unrecorded_tests = _estimate_affected_selection(
+        root, graph, forced_tests
+    )
     decision = admit_affected_selection(
         graph_status=str(getattr(graph, "status", "unknown")),
         graph_reason=str(getattr(graph, "reason", "graph state unavailable")),
@@ -1261,7 +1287,9 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     if not args.quick:
         admission: AffectedAdmission | None = None
         if selection == "affected":
-            admission = _affected_admission(root=ROOT, graph=graph)
+            admission = _affected_admission(
+                root=ROOT, graph=graph, forced_tests=_forced_tests(selection, changed_paths)
+            )
         run.record_selection(
             selection_mode=selection,
             graph_status=str(graph.status),
@@ -1273,13 +1301,15 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             seed_source_mtime_ns=(
                 testmon_datafile(primary_worktree()).stat().st_mtime_ns if seeded_from_primary else None
             ),
-            selection_reason=(admission.reason if admission is not None else _selection_reason(selection)),
+            selection_reason=(
+                admission.reason if admission is not None else _selection_reason(selection, changed_paths)
+            ),
             selected_count=admission.selected_count if admission is not None else None,
             estimated_seconds=admission.estimated_seconds if admission is not None else None,
             admission=admission.to_payload() if admission is not None else None,
         )
         if selection == "none":
-            sys.stderr.write("verify: no pytest step: " + str(_selection_reason(selection)) + "\n")
+            sys.stderr.write("verify: no pytest step: " + str(_selection_reason(selection, changed_paths)) + "\n")
         if admission is not None and not admission.admitted:
             payload = _finish_and_record_verification(
                 run=run,
