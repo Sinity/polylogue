@@ -21,7 +21,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from polylogue.archive.topology.edge import topology_status_composes_sql
-from polylogue.sources.dispatch import lower_chatgpt_documents
+from polylogue.sources.dispatch import chatgpt_rejected_mapping_candidates, lower_chatgpt_documents
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 
 DEFAULT_SAMPLE_LIMIT = 10
@@ -491,6 +491,10 @@ def audit_chatgpt_content_conservation(
 
     # Newest revision wins: ascending acquisition order, later raws overwrite.
     newest_documents: dict[str, tuple[dict[str, str], str]] = {}
+    # Conversation records the bundle lowering rejected. They are in the
+    # denominator even though no document was lowered for them, and a later
+    # revision that lowers the same conversation supersedes the rejection.
+    rejected_documents: dict[str, str] = {}
     source_rows_selected = 0
     blobs_readable = 0
     blobs_missing = 0
@@ -525,6 +529,11 @@ def audit_chatgpt_content_conservation(
         for document in documents:
             artifact_classes[document.artifact_class] += 1
             newest_documents[document.document_id] = (_content_bearing_nodes(document.mapping), document.artifact_class)
+            rejected_documents.pop(document.document_id, None)
+        for ordinal, conversation_id in enumerate(chatgpt_rejected_mapping_candidates(payload)):
+            key = conversation_id if conversation_id is not None else f"{raw_id}#{ordinal}"
+            newest_documents.pop(key, None)
+            rejected_documents[key] = str(raw_id)
 
     dropped_by_content_type: collections.Counter[str] = collections.Counter()
     conserved_by_content_type: collections.Counter[str] = collections.Counter()
@@ -567,6 +576,11 @@ def audit_chatgpt_content_conservation(
         "blobs_missing": blobs_missing,
         "artifact_classes": dict(sorted(artifact_classes.items())),
         "unsupported_envelope_classes": dict(sorted(unsupported_envelope_classes.items())),
+        "rejected_mapping_candidates": len(rejected_documents),
+        "rejected_mapping_candidate_sample": [
+            {"conversation_key": key, "raw_id": raw_id}
+            for key, raw_id in sorted(rejected_documents.items())[:sample_limit]
+        ],
         "documents_lowered": len(newest_documents),
         "candidate_documents_matched": candidate_documents_matched,
         "candidate_documents_absent": candidate_documents_absent,
