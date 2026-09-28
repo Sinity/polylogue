@@ -222,6 +222,7 @@ class MachineErrorEnvelope(TypedDict):
     message: str
     command: NotRequired[list[str]]
     details: NotRequired[JSONDocument]
+    outcome: NotRequired[JSONDocument]
 
 
 class MachineSuccessEnvelope(TypedDict):
@@ -239,6 +240,9 @@ class MachineErrorPayload(SurfacePayloadModel):
     message: str
     command: Sequence[str] = ()
     details: Mapping[str, object] = Field(default_factory=dict)
+    # The terminal outcome envelope (surfaces/outcome.py) the CLI error path
+    # emits alongside the error; declared so the published schema admits it.
+    outcome: OutcomeEnvelope | None = None
 
     def to_dict(self) -> MachineErrorEnvelope:
         payload: MachineErrorEnvelope = {
@@ -250,6 +254,8 @@ class MachineErrorPayload(SurfacePayloadModel):
             payload["command"] = list(self.command)
         if self.details:
             payload["details"] = require_json_document(dict(self.details), context="machine error details")
+        if self.outcome is not None:
+            payload["outcome"] = require_json_document(self.outcome.to_dict(), context="machine error outcome")
         return payload
 
     def to_json(self, *, exclude_none: bool = False) -> str:
@@ -3910,7 +3916,7 @@ def build_search_envelope(
         gaps.extend(f"lane_failed:{failure.lane}" for failure in execution.failed_lanes)
         gaps.extend(f"lane_unavailable:{lane}" for lane in execution.unavailable_lanes)
     return SearchEnvelope(
-        outcome=decide_outcome(matched=total if total is not None else len(hits_tuple), degraded=gaps),
+        outcome=decide_outcome(matched=len(hits_tuple), degraded=gaps),
         hits=hits_tuple,
         total=total,
         limit=limit,
