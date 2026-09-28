@@ -335,7 +335,13 @@ def _ignored_python_sources(root: Path) -> bool:
                 "tests",
                 "polylogue",
                 "devtools",
+                # Root files pytest reads as configuration or plugins.
                 "conftest.py",
+                "pytest.ini",
+                ".pytest.ini",
+                "pyproject.toml",
+                "tox.ini",
+                "setup.cfg",
             ],
             cwd=root,
             capture_output=True,
