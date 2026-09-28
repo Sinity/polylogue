@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -725,33 +725,38 @@ def _read_json_pinned(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _read_history_pinned(path: Path) -> list[dict[str, Any]]:
+def _iter_history_pinned(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield each well-formed history row, one line at a time.
+
+    The shared history is append-only and grows with every run on the host,
+    so no caller holds it whole: materializing it was the verifier's largest
+    allocation, held for the length of the run.
+    """
     try:
         parent_fd = _open_pinned_dir(path.parent)
     except FileNotFoundError:
-        return []
+        return
     try:
         try:
             fd = os.open(path.name, os.O_RDONLY | _O_NOFOLLOW, dir_fd=parent_fd)
         except FileNotFoundError:
-            return []
+            return
     finally:
         os.close(parent_fd)
     try:
-        with os.fdopen(fd, "r", encoding="utf-8") as handle:
-            rows: list[dict[str, Any]] = []
-            for line in handle:
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(payload, dict):
-                    rows.append(payload)
-            return rows
+        handle = os.fdopen(fd, "r", encoding="utf-8")
     except OSError:
         with contextlib.suppress(OSError):
             os.close(fd)
         raise
+    with handle:
+        for line in handle:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                yield payload
 
 
 def _tree_size_without_links(root: Path, *, budget: _NodeBudget | None = None, depth: int = 0) -> tuple[int, bool]:
@@ -1069,7 +1074,7 @@ def read_verification_evidence(path: Path) -> list[dict[str, Any]]:
     """Read only valid canonical rows for a Lynchpin-style projection."""
     return [
         row
-        for row in _read_history_pinned(_absolute_path(path))
+        for row in _iter_history_pinned(_absolute_path(path))
         if row.get("kind") == "polylogue.verification-receipt" and row.get("schema_version") == 1
     ]
 
@@ -1131,8 +1136,24 @@ def prune_successful_verify_runs(
             "retention_locked": True,
         }
     try:
+        # Only the fields pruning reads are kept per run; the latest row for a
+        # run still wins.
+        durable: dict[str, dict[str, Any]] = {}
         try:
-            history_rows = _read_history_pinned(resolved_history)
+            for row in _iter_history_pinned(resolved_history):
+                run_id = row.get("run_id")
+                if isinstance(run_id, str) and row.get("status") != "running":
+                    aggregate = row.get("pytest_aggregate")
+                    durable[run_id] = {
+                        "status": row.get("status"),
+                        "diagnosis": row.get("diagnosis"),
+                        "finished_at": row.get("finished_at"),
+                        "pytest_aggregate": (
+                            {"covered_by_run": aggregate.get("covered_by_run")}
+                            if isinstance(aggregate, Mapping)
+                            else aggregate
+                        ),
+                    }
         except (OSError, ValueError):
             return {
                 "retained_run_ids": [],
@@ -1141,11 +1162,6 @@ def prune_successful_verify_runs(
                 "history_durable": False,
                 "refused": True,
             }
-        durable: dict[str, dict[str, Any]] = {}
-        for row in history_rows:
-            run_id = row.get("run_id")
-            if isinstance(run_id, str) and row.get("status") != "running":
-                durable[run_id] = row
         if not durable:
             return {
                 "retained_run_ids": [],
@@ -1534,7 +1550,9 @@ def reconcile_and_record_abandoned_verify_runs(
         if os.environ.get(VERIFY_EVIDENCE_PATH_ENV)
         else cache / VERIFY_EVIDENCE_PATH.name
     )
-    history_ids = {str(row.get("run_id")) for row in _read_history_pinned(history_path)}
+    if not reconciled:
+        return reconciled
+    history_ids = {str(row.get("run_id")) for row in _iter_history_pinned(history_path)}
     evidence_ids = {str(row.get("run_id")) for row in read_verification_evidence(evidence_target)}
     for payload in reconciled:
         with contextlib.suppress(OSError, ValueError):
