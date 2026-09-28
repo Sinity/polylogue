@@ -1294,3 +1294,24 @@ def test_reuse_is_refused_when_the_tree_changes_during_lookup(monkeypatch: pytes
 
     assert run_tests.main(["tests/unit/devtools/test_run_tests.py"]) != 0
     assert queued == [True]
+
+
+def test_a_branch_switch_during_lookup_refuses_reuse(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: drop the admission check at the point of reuse and the
+    feature branch's receipt is returned on the default branch."""
+    from devtools.checkout_identity import CheckoutIdentity
+
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
+    monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "same")
+    feature = CheckoutIdentity(root=tmp_path, branch="feature", head="h1", default_branch="master")
+    default = CheckoutIdentity(root=tmp_path, branch="master", head="h1", default_branch="master")
+    identities = iter([feature, feature, default])
+    monkeypatch.setattr(run_tests, "checkout_identity", lambda _root: next(identities, default))
+
+    def lookup(*_a: Any, **_k: Any) -> Path:
+        return tmp_path / "run.json"
+
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lookup)
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py"]) == run_tests.REFUSAL_EXIT

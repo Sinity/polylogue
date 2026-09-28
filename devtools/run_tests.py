@@ -853,6 +853,14 @@ def main(argv: list[str] | None = None) -> int:
             # this tree, so the selection runs.
             reused = None
         if reused is not None:
+            # And the branch may have moved under an unchanged tree: admission
+            # is decided on the checkout as it is at the moment of reuse.
+            identity = checkout_identity(ROOT)
+            refusal = default_branch_refusal(identity, command="devtools test", allowed=on_default_branch)
+            if refusal is not None:
+                sys.stderr.write(refusal + "\n")
+                return REFUSAL_EXIT
+        if reused is not None:
             if use_json:
                 with contextlib.suppress(OSError, ValueError):
                     print(json.dumps(json.loads(reused.read_text(encoding="utf-8")), indent=2, ensure_ascii=False))
