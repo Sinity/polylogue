@@ -194,6 +194,7 @@ ARCHIVE_BLOCK_DISPOSITIONS: Dispositions = {
     "message_id": excluded("block identity prefix; the domain block is already nested under its message"),
     "block_type": exposed("type"),
     "text": exposed("text"),
+    "content_hash": exposed("content_hash"),
     "tool_name": exposed("tool_name"),
     "tool_id": exposed("tool_id"),
     "semantic_type": exposed("semantic_type"),

@@ -611,7 +611,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     :mod:`polylogue.cli.lowering`), and renders the result.
     """
     params = dict(request.params)
-    cursor_request_identity = search_cursor_request_identity(params)
+    cursor_request_identity = search_cursor_request_identity({**params, "query": request.query_terms})
     _reject_unsupported_params(params)
     _validate_retrieval_params(params)
     config_started_at = perf_counter()

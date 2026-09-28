@@ -179,6 +179,7 @@ def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: Arc
         max_chars_per_message=payload.get("max_chars_per_message", DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE),
         include_assertions=include_assertions,
         redaction_policy="default" if redact_paths else "raw-opt-in",
+        segment_profile=str(payload.get("segment_profile", "default")),
     )
     if include_assertions:
         archive.require_user_tier()
