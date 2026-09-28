@@ -117,6 +117,63 @@ if TYPE_CHECKING:
         ) -> list[ArchiveDebtInsight]: ...
 
 
+#: Candidate sessions read per archive page while ``status``/``model`` filters
+#: are evaluated on enriched estimates. A pacing bound only: pages are read
+#: until the requested page is full or the matched scope ends.
+SESSION_COST_FILTER_PAGE = 2_000
+
+
+def _session_cost_insight_page(archive: ArchiveStore, request: SessionCostInsightQuery) -> list[SessionCostInsight]:
+    """One page of enriched session cost insights, filtered before the page cut.
+
+    ``status`` and ``model`` are decided on the *enriched* estimate, so neither
+    can be pushed into the archive query: filtering an already-cut page would
+    answer "of the newest N, the matching ones". The matched scope is scanned
+    page by page until the requested page is full.
+    """
+
+    since_ms = _archive_query_date_ms("since", request.since)
+    until_ms = _archive_query_date_ms("until", request.until)
+
+    def fetch(limit: int | None, offset: int) -> list[SessionCostInsight]:
+        return archive.list_session_cost_insights(
+            session_id=request.session_id,
+            origin=request.origin,
+            status=None,
+            model=None,
+            since_ms=since_ms,
+            until_ms=until_ms,
+            limit=limit,
+            offset=offset,
+        )
+
+    if request.status is None and request.model is None:
+        return enrich_session_cost_insights(
+            archive,
+            fetch(request.limit, request.offset),
+        )
+
+    def matches(insight: SessionCostInsight) -> bool:
+        if request.status is not None and insight.estimate.status != request.status:
+            return False
+        return request.model is None or request.model in {
+            insight.estimate.normalized_model,
+            insight.estimate.model_name,
+        }
+
+    start = max(int(request.offset), 0)
+    wanted = None if request.limit is None else start + max(int(request.limit), 0)
+    matched: list[SessionCostInsight] = []
+    page_offset = 0
+    while wanted is None or len(matched) < wanted:
+        rows = fetch(SESSION_COST_FILTER_PAGE, page_offset)
+        matched.extend(insight for insight in enrich_session_cost_insights(archive, rows) if matches(insight))
+        if len(rows) < SESSION_COST_FILTER_PAGE:
+            break
+        page_offset += len(rows)
+    return matched[start:wanted]
+
+
 class _RepositorySurface(Protocol):
     async def get_session_topology(
         self,
@@ -337,32 +394,12 @@ class PolylogueInsightsMixin:
                 "limit": request.limit,
                 "offset": request.offset,
             },
-            work=lambda archive: enrich_session_cost_insights(
-                archive,
-                archive.list_session_cost_insights(
-                    session_id=request.session_id,
-                    origin=request.origin,
-                    status=None,
-                    model=None,
-                    since_ms=_archive_query_date_ms("since", request.since),
-                    until_ms=_archive_query_date_ms("until", request.until),
-                    limit=request.limit,
-                    offset=request.offset,
-                ),
-            ),
+            work=lambda archive: _session_cost_insight_page(archive, request),
             page_size=request.limit,
             offset=request.offset,
             projection="session-cost",
             stable_order="time,session_id",
         )
-        if request.status is not None:
-            insights = [insight for insight in insights if insight.estimate.status == request.status]
-        if request.model is not None:
-            insights = [
-                insight
-                for insight in insights
-                if request.model in {insight.estimate.normalized_model, insight.estimate.model_name}
-            ]
         return insights
 
     async def get_session_latency_profile_insight(

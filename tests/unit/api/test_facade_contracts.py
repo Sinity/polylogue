@@ -1011,7 +1011,7 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
         tags=("work",),
     )
     archive = SimpleNamespace(
-        list_summaries=lambda limit: [summary, summary],
+        list_summaries=lambda limit, offset=0: [summary, summary] if offset == 0 else [],
         _conn=None,
     )
 
@@ -6921,6 +6921,50 @@ async def test_cost_insight_filters_refuse_or_precede_the_limit(tmp_path: Path) 
 
     assert [insight.session_id for insight in paged] == [priced_id]
     assert [insight.session_id for insight in single_page] == [priced_id]
+
+
+def test_public_cost_insight_route_filters_enriched_status_before_the_page_cut(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The facade route fills a ``status``/``model``-filtered page by scanning.
+
+    Both filters are decided on the enriched estimate, so the route cannot
+    push them into the store query. A newer non-matching session must not
+    empty a ``limit=1`` page whose match is older.
+
+    Anti-vacuity: fetch one store page of ``limit`` rows and filter it
+    afterwards, and ``status="priced", limit=1`` returns ``[]``; stop after the
+    first scan page and the one-row scan page never reaches the older match.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.analysis.archive import SessionCostInsightQuery
+    from polylogue.api import insights as insights_api
+
+    rows = [
+        SimpleNamespace(
+            session_id="newer", estimate=SimpleNamespace(status="unavailable", normalized_model="m", model_name="m")
+        ),
+        SimpleNamespace(
+            session_id="older", estimate=SimpleNamespace(status="priced", normalized_model="m", model_name="m")
+        ),
+    ]
+
+    class _Archive:
+        def list_session_cost_insights(self, *, limit: int | None, offset: int, **scope: object) -> list[object]:
+            assert scope["status"] is None and scope["model"] is None
+            return rows[offset:] if limit is None else rows[offset : offset + limit]
+
+    monkeypatch.setattr(insights_api, "enrich_session_cost_insights", lambda archive, insights: list(insights))
+    monkeypatch.setattr(insights_api, "SESSION_COST_FILTER_PAGE", 1)
+
+    by_status = insights_api._session_cost_insight_page(_Archive(), SessionCostInsightQuery(status="priced", limit=1))  # type: ignore[arg-type]
+    by_model = insights_api._session_cost_insight_page(
+        _Archive(), SessionCostInsightQuery(model="m", limit=1, offset=1)
+    )  # type: ignore[arg-type]
+
+    assert [insight.session_id for insight in by_status] == ["older"]
+    assert [insight.session_id for insight in by_model] == ["older"]
 
 
 def test_open_rejects_unknown_keyword_arguments(tmp_path: Path) -> None:

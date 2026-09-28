@@ -779,31 +779,31 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
 
 
-def test_cli_delete_real_daemon_route_refuses_selection_beyond_preview_work_budget(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The durable preview route must bound target work independently of request bytes.
+def test_delete_protocol_accepts_selections_of_any_size() -> None:
+    """Every delete phase accepts a selection above the retired 10,000-id cap.
 
-    The typed UDS client rejects 10,001 IDs before opening a request because
-    the protocol contract caps this list at 10,000. This must happen before
-    any archive lookup or durable preview write.
+    The preview splits a selection into bounded audit chunks and the
+    operation's ``max_body_bytes`` bounds the transport, so no phase counts
+    targets or chunk references.
+
+    Anti-vacuity: restore ``max_length=10_000`` on the preview ids or
+    ``max_length=40`` on the preview/authorization refs and model validation
+    raises here.
     """
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    _seed_delete_authority_archive(archive_root, 0)
-    selection = [f"codex-session:over-budget-{index}" for index in range(10_001)]
+    from polylogue.operations.daemon_protocol import (
+        DeleteAuthorizeRequest,
+        DeleteCancelRequest,
+        DeleteExecuteRequest,
+        DeletePreviewRequest,
+    )
 
-    with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        with patch.object(
-            client,
-            "_request_json_response",
-            side_effect=AssertionError("client-side payload validation must precede the daemon request"),
-        ):
-            with pytest.raises(ValueError, match="invalid DeletePreviewRequest payload"):
-                _delete_operation(client, "preview", {"session_ids": selection})
+    selection = [f"codex-session:large-{index}" for index in range(10_001)]
+    refs = [f"ref-{index}" for index in range(41)]
 
-    with sqlite3.connect(archive_root / "audit.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM operation_previews").fetchone() == (0,)
+    assert len(DeletePreviewRequest.model_validate({"session_ids": selection}).session_ids) == 10_001
+    assert DeleteAuthorizeRequest.model_validate({"preview_refs": refs}).preview_refs == refs
+    assert DeleteCancelRequest.model_validate({"preview_refs": refs}).preview_refs == refs
+    assert DeleteExecuteRequest.model_validate({"authorization_refs": refs}).authorization_refs == refs
 
 
 def test_cli_delete_preparation_resolves_canonical_ids_in_bounded_pages(tmp_path: Path) -> None:

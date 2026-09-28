@@ -402,3 +402,55 @@ def test_exclude_text_post_filter_pages_a_scope_of_any_size(monkeypatch: pytest.
         offset=0,
     )
     assert [summary.session_id for summary in page] == ["s9"]
+
+
+@pytest.mark.parametrize("randomizer", [{"sample": True}, {"sort": "random"}])
+def test_exclude_text_post_filter_randomizes_survivors_not_candidate_pages(
+    monkeypatch: pytest.MonkeyPatch, randomizer: dict[str, object]
+) -> None:
+    """A sampled or randomly sorted post-filter scan terminates and keeps its size.
+
+    A sampled store read ignores ``offset``; paging candidates with it would
+    fetch a fresh random page forever.
+
+    Anti-vacuity: forward ``sample``/``sort=random`` to the candidate query and
+    the fake store raises; sample before filtering and the lone survivor on
+    the last candidate page is usually missing.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.api import archive as archive_api
+
+    monkeypatch.setattr(archive_api, "POST_FILTER_CANDIDATE_PAGE", 3)
+    ids = [f"s{index}" for index in range(10)]
+
+    class _PagedArchive:
+        def list_summaries(self, *, limit: int, offset: int, **kwargs: object) -> list[SimpleNamespace]:
+            assert "sample" not in kwargs and kwargs.get("sort") != "random", kwargs
+            return [
+                SimpleNamespace(session_id=session_id, display_label=None, display_label_source=None)
+                for session_id in ids[offset : offset + limit]
+            ]
+
+        def read_session(self, session_id: str) -> str:
+            return session_id
+
+    monkeypatch.setattr(
+        archive_api,
+        "archive_envelope_to_session",
+        lambda envelope, **kwargs: SimpleNamespace(id=envelope),
+    )
+    spec = SimpleNamespace(
+        to_plan=lambda: SimpleNamespace(
+            _apply_full_filters=lambda sessions, sql_pushed: [s for s in sessions if s.id in {"s8", "s9"}]
+        )
+    )
+    page = archive_api._archive_list_summaries_with_post_filters(
+        _PagedArchive(),
+        spec,  # type: ignore[arg-type]
+        query_text=None,
+        query_kwargs={"limit": 5, **randomizer},
+        limit=None,
+        offset=0,
+    )
+    assert sorted(summary.session_id for summary in page) == ["s8", "s9"]

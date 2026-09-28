@@ -508,12 +508,14 @@ class InsightRebuildRequest(_OperationPayload):
 
 
 class DeletePreviewRequest(_OperationPayload):
-    session_ids: list[str] = Field(min_length=1, max_length=10_000)
+    # No count cap: the preview splits any selection into bounded audit
+    # chunks, and the operation's ``max_body_bytes`` bounds the transport.
+    session_ids: list[str] = Field(min_length=1)
 
 
 class DeleteAuthorizeRequest(_OperationPayload):
     preview_ref: str | None = Field(default=None, min_length=1)
-    preview_refs: list[str] | None = Field(default=None, min_length=1, max_length=40)
+    preview_refs: list[str] | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def exact_reference_shape(self) -> DeleteAuthorizeRequest:
@@ -532,7 +534,7 @@ class DeleteCancelRequest(DeleteAuthorizeRequest):
 
 class DeleteExecuteRequest(_OperationPayload):
     authorization_ref: str | None = Field(default=None, min_length=1)
-    authorization_refs: list[str] | None = Field(default=None, min_length=1, max_length=40)
+    authorization_refs: list[str] | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def exact_reference_shape(self) -> DeleteExecuteRequest:

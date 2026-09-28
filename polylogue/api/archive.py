@@ -5,6 +5,7 @@ from __future__ import annotations
 import builtins
 import itertools
 import json
+import random
 import sqlite3
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
@@ -589,8 +590,12 @@ def _post_filter_candidates(
 
     query_kwargs = dict(query_kwargs)
     query_kwargs["limit"] = POST_FILTER_CANDIDATE_PAGE
-    if query_text is not None:
-        query_kwargs.pop("sample", None)
+    # Paging needs a stable order: a sampled read ignores ``offset`` and would
+    # return a fresh random page forever, and a random sort reshuffles between
+    # pages. Randomization applies to the survivors instead.
+    query_kwargs.pop("sample", None)
+    if query_kwargs.get("sort") == "random":
+        query_kwargs.pop("sort")
     offset = 0
     while True:
         query_kwargs["offset"] = offset
@@ -653,8 +658,18 @@ def _archive_list_summaries_with_post_filters(
     limit: int | None,
     offset: int | None,
 ) -> list[ArchiveSessionSummary]:
-    """Apply content-dependent spec filters after the SQL candidate query."""
+    """Apply content-dependent spec filters after the SQL candidate query.
+
+    A random sample is drawn from the survivors, never from the candidates:
+    sampling before the filter would shrink the sample by the excluded rows.
+    """
     candidates = _post_filter_candidates(archive, query_text=query_text, query_kwargs=query_kwargs)
+    if query_kwargs.get("sample") or query_kwargs.get("sort") == "random":
+        survivors = list(_iter_post_filtered_summaries(archive, spec, candidates, needed=None))
+        random.shuffle(survivors)
+        size = limit if limit is not None else cast("int | None", query_kwargs.get("limit"))
+        start = 0 if query_kwargs.get("sample") else (offset if offset is not None else 0)
+        return survivors[start:] if size is None else survivors[start : start + max(size, 0)]
     start = offset if offset is not None else 0
     end = None if limit is None else start + limit
     filtered = list(_iter_post_filtered_summaries(archive, spec, candidates, needed=end))
@@ -828,7 +843,10 @@ def _iter_facet_scope(archive: Any, spec: SessionQuerySpec | None) -> Iterator[A
         else:
             page = _archive_list_summaries_for_spec(
                 archive,
-                replace(spec, limit=None, offset=0),
+                # Order and sampling are display choices like ``limit``; a
+                # sampled read ignores ``offset`` and a random sort reshuffles
+                # between pages, so the scope is walked in the default order.
+                replace(spec, limit=None, offset=0, sample=None, sort=None, reverse=False),
                 default_limit=FACET_SCOPE_PAGE,
                 limit=FACET_SCOPE_PAGE,
                 offset=offset,
