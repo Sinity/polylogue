@@ -550,3 +550,26 @@ def test_truncated_json_document_is_validated_from_its_partial_structure() -> No
     prefix = document[:LOCATION_VALIDATION_PREFIX_BYTES]
     with pytest.raises(ForeignOriginContentError):
         refuse_foreign_material("export.json", Provider.CLAUDE_CODE, prefix=prefix)
+
+
+def test_refused_unit_releases_every_capture_even_identical_ones(tmp_path: Path) -> None:
+    """A refusal releases each capture of its unit, keyed by receipt.
+
+    Two byte-identical captures share a blob hash; both must be released,
+    and an unrelated capture must survive.
+
+    Anti-vacuity: releasing by hash drops only the latest identical capture
+    and leaves the first queued for publication.
+    """
+    from polylogue.sources.bound_capture import release_captures_on_refusal
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+    kept, _ = publisher.write_from_bytes(b"sibling")
+    with pytest.raises(ForeignOriginContentError):
+        with release_captures_on_refusal(publisher) as captures:
+            for _ in range(2):
+                blob_hash, _size = publisher.write_from_bytes(b"split")
+                captures.append((blob_hash, publisher.receipt_id(blob_hash)))
+            raise ForeignOriginContentError(expected=Provider.CHATGPT, found=Provider.CLAUDE_AI, evidence="probe")
+    assert [receipt.blob_hash for receipt, _ in publisher._pending] == [kept]

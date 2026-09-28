@@ -10,7 +10,8 @@ a reservation.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from polylogue.core.enums import Provider
@@ -54,13 +55,36 @@ def release_refused_capture(blob_store: BlobStore, blob_hash: str, receipt_id: s
     blob or releasing a flushed reservation both hand the bytes back to
     ordinary GC; nothing references them.
     """
-    if discard_pending_blob(blob_store, blob_hash):
+    discard_receipt = getattr(blob_store, "discard_pending_receipt", None)
+    if receipt_id is not None and callable(discard_receipt):
+        if discard_receipt(receipt_id):
+            return
+    elif discard_pending_blob(blob_store, blob_hash):
         return
     source_db_path = getattr(blob_store, "source_db_path", None)
     if source_db_path is not None and receipt_id is not None:
         from polylogue.storage.blob_publication import release_refused_publication_receipt
 
         release_refused_publication_receipt(source_db_path, receipt_id, blob_hash)
+
+
+@contextmanager
+def release_captures_on_refusal(blob_store: BlobStore) -> Iterator[list[tuple[str, str | None]]]:
+    """Scope one admission unit (a file, a ZIP member): a refusal releases all its captures.
+
+    Some refusals are only decided after earlier parts of the unit were
+    captured (a later split record, a discriminator beyond the validation
+    prefix). The caller appends each ``(blob_hash, receipt_id)`` it captures;
+    on :class:`ForeignOriginContentError` every one is released before the
+    refusal propagates, so a refused unit leaves no retained bytes.
+    """
+    captures: list[tuple[str, str | None]] = []
+    try:
+        yield captures
+    except ForeignOriginContentError:
+        for blob_hash, receipt_id in captures:
+            release_refused_capture(blob_store, blob_hash, receipt_id)
+        raise
 
 
 def capture_bound_source(
@@ -75,4 +99,9 @@ def capture_bound_source(
     return blob_hash, blob_size
 
 
-__all__ = ["capture_bound_source", "release_refused_capture", "validate_captured_blob"]
+__all__ = [
+    "capture_bound_source",
+    "release_captures_on_refusal",
+    "release_refused_capture",
+    "validate_captured_blob",
+]

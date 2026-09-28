@@ -422,6 +422,9 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
             source_name=context.source.name,
             source_path=str(context.path),
         )
+        # A declared database of another origin (Codex ``state_5.sqlite`` under
+        # the broad Hermes root) is refused by declaration before snapshotting.
+        refuse_foreign_material(context.path, context.provider_hint)
         with stage_timings.stage("detect"):
             snapshot = snapshot_sqlite_to_blob(context.path, context.blob_store, heartbeat=heartbeat)
             blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size

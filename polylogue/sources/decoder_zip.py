@@ -263,6 +263,7 @@ def process_zip(
     from polylogue.paths import blob_store_root
     from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
 
+    from .bound_capture import release_captures_on_refusal
     from .cursor import _ParseContext
     from .dispatch import (
         GROUP_PROVIDERS,
@@ -356,13 +357,16 @@ def process_zip(
                         blob_size=blob_size,
                         blob_publication_receipt_id=receipt_id,
                     )
-                with open_bounded_zip_entry(zf, info) as handle:
-                    yield from emitter.emit(
-                        handle,
-                        name,
-                        precomputed_raw=precomputed_raw,
-                        session_artifact=session_artifact,
-                    )
+                with release_captures_on_refusal(store) as captures:
+                    if precomputed_raw is not None and precomputed_raw.blob_hash is not None:
+                        captures.append((precomputed_raw.blob_hash, precomputed_raw.blob_publication_receipt_id))
+                    with open_bounded_zip_entry(zf, info) as handle:
+                        yield from emitter.emit(
+                            handle,
+                            name,
+                            precomputed_raw=precomputed_raw,
+                            session_artifact=session_artifact,
+                        )
             except ZipBombError as exc:
                 logger.warning(
                     "Skipping ZIP entry %s in %s: %s",

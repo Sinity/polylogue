@@ -229,6 +229,27 @@ class ArchiveBlobPublisher(BlobStore):
         self._pending_by_hash.clear()
         return receipts
 
+    def discard_pending_receipt(self, publication_id: str) -> bool:
+        """Drop one queued publication by its receipt, before any flush.
+
+        Receipts, not hashes, identify a capture: two identical captures share
+        a hash, and dropping one must not strand or drop the other.
+        """
+        for index, (receipt, prepared) in enumerate(self._pending):
+            if receipt.publication_id != publication_id:
+                continue
+            del self._pending[index]
+            self._store.discard_prepared(prepared)
+            remaining = [(r, p) for r, p in self._pending if r.blob_hash == receipt.blob_hash]
+            if remaining:
+                self._pending_by_hash[receipt.blob_hash] = remaining[-1][1]
+                self._latest_receipt_by_hash[receipt.blob_hash] = remaining[-1][0].publication_id
+            else:
+                self._pending_by_hash.pop(receipt.blob_hash, None)
+                self._latest_receipt_by_hash.pop(receipt.blob_hash, None)
+            return True
+        return False
+
     def discard_pending_hash(self, blob_hash: str) -> bool:
         """Drop the queued publication of one refused blob before any flush.
 

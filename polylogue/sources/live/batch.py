@@ -91,7 +91,7 @@ from polylogue.pipeline.ingest_outcomes import (
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.artifact_observations import record_session_artifact_observation
-from polylogue.sources.bound_capture import validate_captured_blob
+from polylogue.sources.bound_capture import release_refused_capture, validate_captured_blob
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoder_json import PartialJsonStreamError
 from polylogue.sources.decoder_zip import (
@@ -5432,6 +5432,8 @@ class LiveBatchProcessor:
                 for entry_ordinal, info in entries:
                     if info.file_size == 0:
                         continue
+                    member_start = len(records)
+                    member_bytes_start = total_bytes
                     try:
                         entry_provider_hint = zip_provider_hint
                         if zip_provider_hint is Provider.UNKNOWN:
@@ -5497,7 +5499,16 @@ class LiveBatchProcessor:
                         )
                     except ForeignOriginContentError as exc:
                         # A refused member is named on its own; admissible
-                        # siblings in the archive are still acquired.
+                        # siblings in the archive are still acquired. Splits
+                        # it yielded before the refusal leave with it.
+                        for _raw_id, refused_record in records[member_start:]:
+                            release_refused_capture(
+                                blob_store,
+                                refused_record.blob_hash or refused_record.raw_id,
+                                refused_record.blob_publication_receipt_id,
+                            )
+                        del records[member_start:]
+                        total_bytes = member_bytes_start
                         self._record_zip_member_refusal(path, entry_ordinals[id(info)], info.filename, exc)
                     else:
                         # A member admitted now clears any refusal an earlier
