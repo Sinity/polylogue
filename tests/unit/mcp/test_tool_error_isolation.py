@@ -89,6 +89,26 @@ def test_schema_skew_surface_preserves_structured_recovery_fields() -> None:
     assert body["remedy"] == "daemon convergence"
 
 
+@pytest.mark.parametrize(
+    ("outcome", "detail", "code"),
+    [
+        ("invalid_watch_definition", "watch requires a 'sessions where' selection", "invalid_watch_definition"),
+        ("connection_backpressure", "machine connection capacity is exhausted", "connection_backpressure"),
+        # A refusal that declared no code carries its prose in the code slot.
+        ("watch requires a 'sessions where' selection", "watch requires a 'sessions where' selection", "rejected"),
+    ],
+)
+def test_daemon_rejection_relays_a_stable_code_and_its_detail(outcome: str, detail: str, code: str) -> None:
+    """Anti-vacuity: drop the rejection branch and every row reports ``internal_error``."""
+    from polylogue.mcp.server_support import _exception_to_error_json
+    from polylogue.operations.daemon_errors import DaemonOperationRejectedError
+
+    body = json.loads(_exception_to_error_json("write", DaemonOperationRejectedError(outcome, detail)))
+
+    assert body["code"] == body["error"] == code
+    assert body["message"] == f"write: {detail}"
+
+
 def test_derived_schema_skew_surface_preserves_structured_recovery_fields() -> None:
     from polylogue.mcp.server_support import _exception_to_error_json
     from polylogue.storage.sqlite.schema_bootstrap import SchemaSkewError

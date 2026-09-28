@@ -1549,4 +1549,6 @@ def test_skewed_write_refusal_is_pre_dispatch_not_an_indeterminate_mutation(
         with pytest.raises(DaemonOperationRejectedError) as rejected:
             stack.client.operation(skewed, payload, archive_root=str(stack.archive_root))
         assert rejected.value.outcome == "request_too_large"
+        # The refusal's public detail survives to the caller, not only its code.
+        assert rejected.value.detail != "request_too_large"
         assert not stack.runtime._exchanges

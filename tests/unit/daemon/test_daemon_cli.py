@@ -2291,10 +2291,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         events.append("operation-recovery")
 
     def recording_converger(
-        stages: Iterable[ConvergenceStage], *, derivations: Iterable[object] = ()
+        stages: Iterable[ConvergenceStage], *, derivations: Iterable[object] = (), **kwargs: Any
     ) -> DaemonConverger:
         events.append("converger")
-        return DaemonConverger(stages, derivations=derivations)
+        return DaemonConverger(stages, derivations=derivations, **kwargs)
 
     async def fake_loop(name: str) -> None:
         events.append(name)

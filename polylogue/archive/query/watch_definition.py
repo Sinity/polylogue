@@ -38,6 +38,10 @@ _WATCH_DEFINITION_PARAMS = frozenset({"query"})
 class WatchDefinitionError(ValueError):
     """A saved view cannot be promoted into an evaluable watched definition."""
 
+    #: Declared refusal code, so a daemon rejection carries a stable token
+    #: rather than this error's prose (operations/daemon_execution.py).
+    code = "invalid_watch_definition"
+
 
 def compile_watch_definition(expression: str) -> dict[str, JsonValue]:
     """Compile a DSL selection expression into a canonical v1 predicate AST.
