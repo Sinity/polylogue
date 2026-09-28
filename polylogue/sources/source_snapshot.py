@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import tempfile
 import zipfile
@@ -465,13 +466,18 @@ def observe_source_members(declaration: SourceDeclaration) -> tuple[CutItem, ...
     are observed at their declared logical granularity rather than being
     reduced to one root row or a filesystem byte count.
     """
-    return _observe(
-        SourceCutBinding(
-            declaration,
-            _root_identity(declaration.root),
-            _default_policy(declaration.role),
+    try:
+        return _observe(
+            SourceCutBinding(
+                declaration,
+                _root_identity(declaration.root),
+                _default_policy(declaration.role),
+            )
         )
-    )
+    except sqlite3.DatabaseError as exc:
+        # An unreadable declared SQLite root is an unavailable source, typed
+        # at this seam rather than by each caller.
+        raise SourceSnapshotError(f"source database unreadable: {exc}") from exc
 
 
 def _try_reflink(source: Path, destination: Path) -> bool:

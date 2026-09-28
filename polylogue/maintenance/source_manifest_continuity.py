@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sqlite3
 import stat
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -689,7 +688,7 @@ def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFr
     for declaration in rows:
         try:
             observed = observe_source_members(declaration)
-        except (OSError, sqlite3.DatabaseError, SourceSnapshotError, ValueError) as exc:
+        except (OSError, SourceSnapshotError, ValueError) as exc:
             states[declaration.source_id] = FrontierState.UNAVAILABLE
             blockers.append(f"unavailable:{declaration.source_id}:{declaration.root}:{exc}")
             continue
