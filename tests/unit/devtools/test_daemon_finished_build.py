@@ -138,3 +138,25 @@ def test_qualification_environment_isolates_every_discovery_root(tmp_path: Path)
     assert "POLYLOGUE_CONFIG" not in env and "POLYLOGUE_HERMES_ROOT" not in env
     assert env["POLYLOGUE_SITE_CONFIG"] == ""
     assert env["PATH"] == "/usr/bin"
+
+
+def test_qualification_home_admits_only_the_declared_input(tmp_path: Path) -> None:
+    """Any other artifact in the isolated home is refused, whatever its suffix.
+
+    Anti-vacuity: enumerate only ``.json``/``.jsonl`` siblings and the Codex
+    state database the daemon would acquire goes unreported.
+    """
+    from devtools.daemon_finished_build import undeclared_source_entries
+
+    home = tmp_path / "home"
+    sessions = home / ".codex" / "sessions" / "2026"
+    sessions.mkdir(parents=True)
+    source = sessions / "rollout.jsonl"
+    source.write_text("{}\n")
+    assert undeclared_source_entries(home, source) == []
+
+    (home / ".codex" / "goals_1.sqlite").write_bytes(b"SQLite format 3\x00")
+    (home / ".claude").mkdir()
+    (home / ".claude" / "projects").symlink_to(tmp_path)
+
+    assert undeclared_source_entries(home, source) == [".claude/projects", ".codex/goals_1.sqlite"]
