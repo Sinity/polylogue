@@ -23,6 +23,10 @@ from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
 from contextlib import closing, contextmanager, nullcontext, suppress
 from dataclasses import dataclass, fields
+from datetime import date, datetime
+from datetime import time as datetime_time
+from decimal import Decimal
+from enum import Enum
 from itertools import chain, islice
 from pathlib import Path
 from typing import Any, Literal, cast, overload
@@ -11884,6 +11888,18 @@ def _sqlite_json_value(value: object) -> object:
         return [_sqlite_json_value(item) for item in value]
     if isinstance(value, dict):
         return {str(_sqlite_text(str(key))): _sqlite_json_value(item) for key, item in value.items()}
+    if isinstance(value, (set, frozenset)):
+        lowered = [_sqlite_json_value(item) for item in value]
+        return sorted(lowered, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+    if isinstance(value, Enum):
+        return _sqlite_json_value(value.value)
+    if isinstance(value, Decimal):
+        as_float = float(value)
+        return as_float if Decimal(as_float) == value else str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).hex()
+    if isinstance(value, (datetime, date, datetime_time)):
+        return value.isoformat()
     return value
 
 
