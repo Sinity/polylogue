@@ -28,6 +28,7 @@ from polylogue.sources.acquisition_boundary import (
 )
 from polylogue.sources.dispatch import ForeignOriginContentError
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
 _SESSION_ID = "bad69218-73bd-490a-869a-2b3a30bf421b"
@@ -231,14 +232,12 @@ def _route_acquire_zip_member(tmp_path: Path, store: ArchiveBlobPublisher) -> bo
 
 def _route_retained(tmp_path: Path, store: ArchiveBlobPublisher) -> bool:
     from polylogue.sources.retained_acquisition import iter_retained_source_records
-    from polylogue.storage.blob_publication import flush_blob_publications
 
     path = _plain(tmp_path)
     # The retained route decodes a physical blob frozen before the location
     # is known; the boundary refuses it at decode.
-    raw = ArchiveBlobPublisher(tmp_path / "physical.db", tmp_path / "physical")
+    raw = BlobStore(tmp_path / "physical")
     blob_hash, blob_size = raw.write_from_bytes(path.read_bytes())
-    flush_blob_publications(raw)
     with pytest.raises(ForeignOriginContentError):
         list(
             iter_retained_source_records(

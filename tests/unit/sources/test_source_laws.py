@@ -776,10 +776,12 @@ def test_iter_source_sessions_with_raw_streams_grouped_zip_capture_to_blob_store
     write_calls = 0
     original_write_from_fileobj = BlobStore.write_from_fileobj
 
-    def tracking_write_from_fileobj(self: BlobStore, source: IO[bytes]) -> tuple[str, int]:
+    def tracking_write_from_fileobj(
+        self: BlobStore, source: IO[bytes], *, heartbeat: Heartbeat | None = None
+    ) -> tuple[str, int]:
         nonlocal write_calls
         write_calls += 1
-        return original_write_from_fileobj(self, source)
+        return original_write_from_fileobj(self, source, heartbeat=heartbeat)
 
     monkeypatch.setattr(BlobStore, "write_from_fileobj", tracking_write_from_fileobj)
 
@@ -3008,21 +3010,21 @@ def test_iter_source_raw_data_tracks_read_failures_without_stopping(
     good.write_text('{"mapping": {}, "id": "good"}', encoding="utf-8")
     bad.write_text('{"mapping": {}, "id": "bad"}', encoding="utf-8")
 
-    # Patch blob_store.write_from_path to fail for the bad file
-    original_write = BlobStore.write_from_path
+    # Fail the capture of the bad file; captures stream through the
+    # acquisition boundary, whose raw reader names the source path.
+    original_write = BlobStore.write_from_fileobj
 
     def flaky_write(
         self: BlobStore,
-        source: Path,
+        source: IO[bytes],
         *,
         heartbeat: Heartbeat | None = None,
     ) -> tuple[str, int]:
-        del heartbeat
-        if source == bad:
+        if getattr(getattr(source, "raw", None), "name", None) == str(bad):
             raise OSError("boom")
-        return original_write(self, source)
+        return original_write(self, source, heartbeat=heartbeat)
 
-    monkeypatch.setattr(BlobStore, "write_from_path", flaky_write)
+    monkeypatch.setattr(BlobStore, "write_from_fileobj", flaky_write)
 
     cursor_state: CursorStatePayload = _empty_cursor_state()
     items = list(iter_source_raw_data(Source(name="chatgpt", path=tmp_path), cursor_state=cursor_state))

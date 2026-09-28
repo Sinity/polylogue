@@ -218,7 +218,7 @@ def test_baseline_records_intake_exclusions_instead_of_requiring_retention(tmp_p
     """Each pre-acquisition exclusion intake applies is the baseline's disposition too.
 
     Anti-vacuity: without the shared ``classify_pre_acquisition`` decision
-    every one of these files is ``accepted`` and ``verify`` raises for three
+    every one of these files is ``accepted`` and ``verify`` raises for the
     unretained revisions that intake never writes.
     """
     codex = tmp_path / "codex"
@@ -251,10 +251,15 @@ def test_baseline_records_intake_exclusions_instead_of_requiring_retention(tmp_p
         "excluded",
         "intake_excluded:unsupported source class",
     )
-    assert decisions[str(logs)] == ("excluded", "intake_excluded:path rule classifies this as non-session evidence")
-    assert [row.path for row in baseline.accepted] == [str(rollout)]
+    # Gemini CLI's ``logs.json`` prompt log is declared raw-only evidence:
+    # intake retains its bytes, so the baseline demands them too.
+    assert decisions[str(logs)][0] == "accepted"
+    assert {row.path for row in baseline.accepted} == {str(rollout), str(logs)}
     baseline.verify(
-        _source_db(tmp_path / "source.db", ((str(rollout), hashlib.sha256(rollout.read_bytes()).hexdigest()),))
+        _source_db(
+            tmp_path / "source.db",
+            tuple((str(path), hashlib.sha256(path.read_bytes()).hexdigest()) for path in (rollout, logs)),
+        )
     )
 
 

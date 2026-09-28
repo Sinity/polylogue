@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast, overload
+from typing import IO, Any, cast, overload
 
 import pytest
 
@@ -4488,19 +4488,20 @@ def test_live_append_chain_survives_post_ingest_compaction(
         parser_fingerprint="test-parser",
     )
     original_publish = ArchiveBlobPublisher.write_from_bytes
-    original_path_publish = ArchiveBlobPublisher.write_from_path
+    original_stream_publish = ArchiveBlobPublisher.write_from_fileobj
     published_payloads: list[bytes] = []
 
     def counted_publish(publisher: ArchiveBlobPublisher, raw: bytes) -> tuple[str, int]:
         published_payloads.append(raw)
         return original_publish(publisher, raw)
 
-    def counted_path_publish(publisher: ArchiveBlobPublisher, source: Path, **kwargs: object) -> tuple[str, int]:
-        published_payloads.append(source.read_bytes())
-        return original_path_publish(publisher, source, **kwargs)  # type: ignore[arg-type]
+    def counted_stream_publish(publisher: ArchiveBlobPublisher, source: IO[bytes], **kwargs: object) -> tuple[str, int]:
+        # Full captures stream through the acquisition boundary.
+        published_payloads.append(Path(source.raw.name).read_bytes())  # type: ignore[attr-defined]
+        return original_stream_publish(publisher, source, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(ArchiveBlobPublisher, "write_from_bytes", counted_publish)
-    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_path", counted_path_publish)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_fileobj", counted_stream_publish)
     if not protect_chain:
         from polylogue.storage.raw_retention import RawRetentionAuthority
 
