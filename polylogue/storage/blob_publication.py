@@ -266,6 +266,14 @@ class ArchiveBlobPublisher(BlobStore):
         """Whether a flush() refused *blob_hash* because it is excised."""
         return blob_hash in self._refused_as_excised
 
+    def forget_refusals(self) -> None:
+        """Drop the refusals a caller has already reconciled.
+
+        A long-lived publisher (one accepted source's page walk) otherwise
+        keeps one hash per refused file for the whole operation.
+        """
+        self._refused_as_excised.clear()
+
     def discard_pending(self) -> None:
         for _receipt, prepared in self._pending:
             self._store.discard_prepared(prepared)

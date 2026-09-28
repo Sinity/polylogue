@@ -90,6 +90,8 @@ class _RawIngestOutcome:
 class _IngestBatchSummary:
     outcomes: dict[str, _RawIngestOutcome] = field(default_factory=dict)
     failed_raw_ids: dict[str, str] = field(default_factory=dict)
+    #: Sessions refused because they carry content the operator excised.
+    excised_skips: int = 0
     skipped_raw_ids: set[str] = field(default_factory=set)
     processed_ids: set[str] = field(default_factory=set)
     changed_session_ids: list[str] = field(default_factory=list)

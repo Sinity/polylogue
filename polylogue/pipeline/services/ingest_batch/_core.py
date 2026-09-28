@@ -25,7 +25,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from contextlib import AsyncExitStack, closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -85,6 +85,7 @@ from polylogue.storage.accepted_marker_inputs import (
 )
 from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
+    _archive_blob_publisher_slot,
     consume_blob_publication_receipt,
     publication_refused,
     refuse_excised_attachment_blobs,
@@ -1988,6 +1989,26 @@ def _write_session_entry(
             }
             summary.marker_sessions_by_raw_id.setdefault(raw_id, []).append(marker_session)
         return True
+    except ContentExcisedError as exc:
+        # A deliberate, permanent refusal (the operator excised content this
+        # session carries), never a parse failure to retry: typed so the
+        # raw's outcome is non-retryable ``content_excised``.
+        if batch_owns_transaction:
+            conn.execute(f"ROLLBACK TO {_SESSION_WRITE_SAVEPOINT}")
+            conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
+        logger.info("Session refused as excised content: %s", exc)
+        summary.excised_skips += 1
+        summary.failed_raw_ids[raw_id] = f"content_excised: {exc}"[:500]
+        outcome = summary.outcomes.get(raw_id)
+        if outcome is not None:
+            summary.outcomes[raw_id] = replace(
+                outcome,
+                outcome_code=IngestOutcome.CONTENT_EXCISED.value,
+                retryable=False,
+                parse_error=f"content_excised: {exc}"[:500],
+                diagnostic=str(exc)[:500],
+            )
+        return False
     except Exception as exc:
         # A storage fault fails every session alike; recording it as this
         # raw's parse failure would persist a durable ``parse_error`` on input
@@ -3170,6 +3191,13 @@ def _process_ingest_batch_sync(
         )
     _observe_current_rss(summary)
     transaction_started = False
+    # Blob publication's shared slot is held from before the index transaction
+    # begins until it commits or rolls back. Excision takes the same slot
+    # exclusively before it writes index.db, so both routes take the slot
+    # before the index writer (one lock order, no inversion), and an excision
+    # cannot commit between this batch's excision checks and its index commit.
+    publisher_exclusion = contextlib.ExitStack()
+    publisher_exclusion.enter_context(_archive_blob_publisher_slot(blob_publisher.source_db_path))
     try:
         if marker_acceptance_enabled:
             _ensure_ingest_index_incarnation(conn)
@@ -3359,6 +3387,7 @@ def _process_ingest_batch_sync(
         conn.close()
         if source_conn is not None:
             source_conn.close()
+        publisher_exclusion.close()
     summary.worker_progress_in_flight = len(progress.in_flight_raw_ids)
     summary.worker_progress_completed = progress.completed_raw_count
     summary.worker_progress_total = progress.total_raw_count

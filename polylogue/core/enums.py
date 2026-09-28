@@ -635,6 +635,7 @@ class IngestOutcome(PolylogueStrEnum):
     DOWNSTREAM_FAILURE = "downstream_failure"
     CANCELED = "canceled"
     INTERRUPTED = "interrupted"
+    CONTENT_EXCISED = "content_excised"
     LEGACY_UNKNOWN = "legacy_unknown"
 
     @classmethod
@@ -660,6 +661,9 @@ INGEST_OUTCOME_RETRYABLE: dict[IngestOutcome, bool | None] = {
     IngestOutcome.DOWNSTREAM_FAILURE: True,
     IngestOutcome.CANCELED: True,
     IngestOutcome.INTERRUPTED: True,
+    # The operator excised content this input carries: a deliberate,
+    # permanent refusal, never a failure to retry.
+    IngestOutcome.CONTENT_EXCISED: False,
     IngestOutcome.LEGACY_UNKNOWN: None,
 }
 

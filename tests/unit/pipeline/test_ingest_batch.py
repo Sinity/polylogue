@@ -4920,3 +4920,126 @@ async def test_persist_batch_raw_state_updates_rolls_back_typed_evidence_with_ra
             "SELECT parse_error, validation_status FROM raw_sessions WHERE raw_id = ?", (raw_id,)
         ).fetchone() == (None, None)
         assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
+
+
+def test_the_batch_index_transaction_holds_the_publisher_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An excision cannot take the publisher slot while a batch's index transaction is open.
+
+    Anti-vacuity (Codex P1, #5696): release the shared slot when a flush ends
+    and an excision can commit between the batch's excision checks and its
+    index commit -- and, taking the slot before index.db while the batch
+    takes index.db before the slot, deadlock against it.
+    """
+    import fcntl
+
+    from polylogue.storage.blob_publication import _writer_lock_path
+
+    archive_root = tmp_path / "archive"
+    bootstrap_archive_root(archive_root)
+    raw_record = RawSessionRecord(
+        raw_id="raw-slot",
+        source_name="codex",
+        source_path="/sources/slot.jsonl",
+        blob_size=16,
+        acquired_at="2026-04-02T00:00:00Z",
+    )
+    session = _session_data(
+        "codex-session:slot",
+        content_hash="slot",
+        raw_id=raw_record.raw_id,
+        message_tuples=[
+            _message_tuple(
+                "msg-slot", "codex-session:slot", role="assistant", text="held", content_hash="msg-slot", sort_key=1.0
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        ingest_batch_core,
+        "ingest_record",
+        lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[session]),
+    )
+    observed: list[bool] = []
+    original_flush = ingest_batch_core._flush_ingest_results
+
+    def probe_then_flush(conn: sqlite3.Connection, **kwargs: Any) -> Any:
+        with _writer_lock_path(archive_root / "source.db").open("a+b") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                observed.append(True)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                observed.append(False)
+        return original_flush(conn, **kwargs)
+
+    monkeypatch.setattr(ingest_batch_core, "_flush_ingest_results", probe_then_flush)
+    _process_ingest_batch_sync(
+        [raw_record],
+        db_path=archive_root / "index.db",
+        archive_root_str=str(archive_root),
+        blob_root_str=str(archive_root / "blob"),
+        validation_mode="advisory",
+        ingest_workers=1,
+        measure_ingest_result_size=False,
+    )
+
+    assert observed == [True]
+
+
+def test_a_prepared_excision_refusal_is_a_typed_permanent_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session refused for excised content is not counted as a parse failure.
+
+    Anti-vacuity (Codex P2, #5696): let the generic handler catch
+    ``ContentExcisedError`` and it becomes a retryable parse failure instead
+    of the non-retryable ``content_excised`` outcome.
+    """
+    from polylogue.core.enums import INGEST_OUTCOME_RETRYABLE, IngestOutcome
+    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+    archive_root = tmp_path / "archive"
+    bootstrap_archive_root(archive_root)
+    raw_record = RawSessionRecord(
+        raw_id="raw-excised",
+        source_name="codex",
+        source_path="/sources/excised.jsonl",
+        blob_size=16,
+        acquired_at="2026-04-02T00:00:00Z",
+    )
+    session = _session_data(
+        "codex-session:excised",
+        content_hash="excised",
+        raw_id=raw_record.raw_id,
+        message_tuples=[
+            _message_tuple(
+                "msg-x", "codex-session:excised", role="assistant", text="x", content_hash="msg-x", sort_key=1.0
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        ingest_batch_core,
+        "ingest_record",
+        lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[session]),
+    )
+
+    def refuse(*_args: object, **_kwargs: object) -> NoReturn:
+        raise ContentExcisedError(blob_hash=bytes(32), source_path="sidecar:excised")
+
+    monkeypatch.setattr(ingest_batch_core, "_write_session", refuse)
+    summary = _process_ingest_batch_sync(
+        [raw_record],
+        db_path=archive_root / "index.db",
+        archive_root_str=str(archive_root),
+        blob_root_str=str(archive_root / "blob"),
+        validation_mode="advisory",
+        ingest_workers=1,
+        measure_ingest_result_size=False,
+    )
+
+    assert summary.parse_failures == 0
+    assert summary.excised_skips == 1
+    outcome = summary.outcomes[raw_record.raw_id]
+    assert outcome.outcome_code == IngestOutcome.CONTENT_EXCISED.value
+    assert outcome.retryable is False
+    assert INGEST_OUTCOME_RETRYABLE[IngestOutcome.CONTENT_EXCISED] is False

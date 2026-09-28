@@ -501,6 +501,9 @@ class IngestExecution:
                         )
                     if first_refused is None and page_refused:
                         first_refused = page_refused[0]
+                    # This page's refusals are reconciled; the publisher need
+                    # not keep them for the rest of the walk.
+                    self.publisher.forget_refusals()
                 if ordinal == 0 and first_refused is not None:
                     raise ContentExcisedError(
                         blob_hash=bytes.fromhex(first_refused.blob_hash),
