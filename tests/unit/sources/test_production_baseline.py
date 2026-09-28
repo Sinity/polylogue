@@ -529,3 +529,94 @@ def test_intake_exclusion_retires_an_earlier_accepted_observation(tmp_path: Path
     merged = merge_pending_production_baseline(current, earlier)
     assert merged.accepted == ()
     merged.verify(_source_db(tmp_path / "source.db", ()))
+
+
+def test_a_rewritten_path_keeps_its_earlier_accepted_revision(tmp_path: Path) -> None:
+    """A session observed earlier stays demanded after its path is rewritten to a sidecar.
+
+    Anti-vacuity: retiring the earlier row by coordinate alone (dropping the
+    ``_unchanged_revision`` check) empties ``merged.accepted`` and ``verify``
+    passes without the session ever being retained.
+    """
+    root = tmp_path / "codex"
+    root.mkdir()
+    path = root / "rollout-2026-06-02T00-00-00-rewritten.jsonl"
+    session = (
+        b'{"type":"session_meta","payload":{"id":"s","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m","role":"user",'
+        b'"content":[{"type":"input_text","text":"hi"}]}}\n'
+    )
+    earlier = _seal(
+        "op",
+        "signature",
+        (
+            SourceDecision(
+                "codex",
+                str(path),
+                "accepted",
+                "file",
+                hashlib.sha256(session).hexdigest(),
+                material_bytes=len(session),
+            ),
+        ),
+    )
+    path.write_bytes(b'{"type":"session_meta","payload":{"id":"s","timestamp":"2026-06-02T00:00:00Z"}}\n')
+    current = capture_production_source_baseline((WatchSource("codex", root, suffixes=(".jsonl",)),), operation_id="op")
+    assert {row.path: row.disposition for row in current.decisions}[str(path)] == "excluded"
+
+    merged = merge_pending_production_baseline(current, earlier)
+    assert [row.revision for row in merged.accepted] == [hashlib.sha256(session).hexdigest()]
+    with pytest.raises(ProductionBaselineError, match="unretained revision"):
+        merged.verify(_source_db(tmp_path / "source.db", ()))
+
+
+def test_an_unreadable_state_database_is_a_retryable_fault_not_an_exclusion(tmp_path: Path) -> None:
+    """A read fault on a declared state database keeps the build retrying.
+
+    The structural recognizer cannot open the file and reads it as "not
+    Codex state", which would otherwise record a terminal intake exclusion.
+
+    Anti-vacuity: dropping the ``_probe_sqlite_readable`` call records
+    ``intake_excluded:...`` and the database silently leaves the demand.
+    """
+    root = tmp_path / "codex"
+    root.mkdir()
+    state = root / "state_5.sqlite"
+    with sqlite3.connect(state) as conn:
+        conn.execute("CREATE TABLE threads(id TEXT)")
+    state.chmod(0)
+    try:
+        baseline = capture_production_source_baseline(
+            (WatchSource("codex", root, suffixes=(".sqlite",)),), operation_id="unreadable"
+        )
+    finally:
+        state.chmod(0o600)
+    [row] = [row for row in baseline.decisions if row.path == str(state)]
+    assert row.disposition == "fault"
+    assert row.reason.startswith("revision_io_unavailable:")
+
+
+def test_the_admission_scan_stops_when_the_observation_is_cancelled(tmp_path: Path) -> None:
+    """Cancellation reaches the sidecar scan that reads a large JSONL to EOF.
+
+    Anti-vacuity: calling the uncheckpointed ``jsonl_session_artifact(path)``
+    in ``_jsonl_provider_and_session_artifact`` scans the whole file and the
+    capture returns instead of raising.
+    """
+    root = tmp_path / "codex"
+    root.mkdir()
+    sidecar = root / "rollout-2026-06-02T00-00-00-long.jsonl"
+    line = b'{"type":"session_meta","payload":{"id":"x","timestamp":"2026-06-02T00:00:00Z"}}\n'
+    sidecar.write_bytes(line * 5000)
+    calls = 0
+
+    def cancelled() -> bool:
+        nonlocal calls
+        calls += 1
+        # The walk itself polls a few times; cancel once the scan is running.
+        return calls > 8
+
+    with pytest.raises(ProductionBaselineObservationCancelledError):
+        capture_production_source_baseline(
+            (WatchSource("codex", root, suffixes=(".jsonl",)),), operation_id="cancel", cancelled=cancelled
+        )

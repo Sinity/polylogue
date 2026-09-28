@@ -348,9 +348,12 @@ def merge_pending_production_baseline(
     }
     for row in previous.decisions:
         if row.disposition == "accepted":
-            if (row.source, row.path) in intake_excluded:
-                # Intake never retains this file, so an earlier observation
-                # that accepted it is not a revision promotion can demand.
+            if (row.source, row.path) in intake_excluded and _unchanged_revision(row):
+                # Intake never retains these exact bytes, so an earlier
+                # observation that accepted them is not a revision promotion
+                # can demand. A revision the path no longer holds stays
+                # demanded: the file may have been rewritten after a valid
+                # session was observed.
                 continue
             key = (row.source, row.path, row.disposition, row.source_index, row.revision)
             if key not in keys:
@@ -371,6 +374,23 @@ def merge_pending_production_baseline(
 
 BaselineProgress = Callable[..., None]
 """``progress(phase, *, inspected=0, revisions=0, hashed_bytes=0)``: cheap counters, no I/O."""
+
+
+def _probe_sqlite_readable(path: Path) -> None:
+    """Raise the read fault of a database the baseline is about to exclude, if any."""
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
+    try:
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    finally:
+        conn.close()
+
+
+def _unchanged_revision(row: SourceDecision) -> bool:
+    """Whether an earlier accepted revision is still the path's current content."""
+    try:
+        return _revision(Path(row.path))[0] == row.revision
+    except (OSError, sqlite3.Error, ValueError):
+        return False
 
 
 def _revision(path: Path, *, cancelled: Callable[[], bool] | None = None) -> tuple[str, int]:
@@ -595,8 +615,15 @@ def capture_production_source_baseline(
                     ),
                     source_only=False,
                     size_bytes=path.stat().st_size,
+                    checkpoint=lambda: _check_observation_cancelled(cancelled),
                 )
                 if admission.excluded_reason is not None:
+                    if is_sqlite_path(path):
+                        # A structural recognizer reads an unreadable database
+                        # as "not ours". A read fault stays a retryable fault,
+                        # not a terminal exclusion that would drop a valid
+                        # database from the promotion demand.
+                        _probe_sqlite_readable(path)
                     decisions.append(
                         SourceDecision(
                             source_name, str(path), "excluded", f"intake_excluded:{admission.excluded_reason}"

@@ -6,10 +6,10 @@ import hashlib
 import json
 import re
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import IO, Protocol, cast
 
 import ijson
 
@@ -959,9 +959,32 @@ def _crash(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+class _CheckpointedLines:
+    """Iterate a byte stream's lines, calling ``checkpoint`` as the scan advances.
+
+    A session-evidence scan of a sidecar reads to EOF; a caller that must stop
+    cooperatively (the cold-build baseline observation) raises from its
+    checkpoint instead of waiting for the whole file.
+    """
+
+    _EVERY = 1024
+
+    def __init__(self, stream: IO[bytes], checkpoint: Callable[[], None]) -> None:
+        self._stream = stream
+        self._checkpoint = checkpoint
+
+    def __iter__(self) -> Iterator[bytes]:
+        for index, line in enumerate(self._stream):
+            if index % self._EVERY == 0:
+                self._checkpoint()
+            yield line
+
+
 def _jsonl_provider_and_session_artifact(
     path: Path,
     fallback_provider: Provider,
+    *,
+    checkpoint: Callable[[], None] | None = None,
 ) -> tuple[Provider, bool, str | None]:
     """Classify a JSONL path from one sample.
 
@@ -981,7 +1004,14 @@ def _jsonl_provider_and_session_artifact(
     # ``sessionId`` keys a transcript does -- is never session-parsed.
     if path_declaration_refuses_session(provider, path):
         return provider, False, detection_failure
-    if jsonl_session_artifact(path, provider=provider) is not None:
+    if checkpoint is None:
+        artifact = jsonl_session_artifact(path, provider=provider)
+    else:
+        with path.open("rb") as handle:
+            artifact = jsonl_session_artifact(
+                cast(IO[bytes], _CheckpointedLines(handle, checkpoint)), provider=provider
+            )
+    if artifact is not None:
         return provider, True, detection_failure
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
@@ -1054,6 +1084,7 @@ def classify_pre_acquisition(
     fallback_provider: Provider,
     source_only: bool,
     size_bytes: int,
+    checkpoint: Callable[[], None] | None = None,
 ) -> PreAcquisitionDecision:
     """Decide whether full intake excludes ``path`` before retaining any bytes.
 
@@ -1129,7 +1160,11 @@ def classify_pre_acquisition(
     if origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
         return PreAcquisitionDecision(None, fallback_provider)
     if jsonl:
-        provider, parse_as_session, crash = _jsonl_provider_and_session_artifact(path, fallback_provider)
+        provider, parse_as_session, crash = (
+            _jsonl_provider_and_session_artifact(path, fallback_provider)
+            if checkpoint is None
+            else _jsonl_provider_and_session_artifact(path, fallback_provider, checkpoint=checkpoint)
+        )
         # An unknown JSONL cannot be safely excluded from acquire: the strict
         # parse route persists typed terminal evidence for empty and
         # malformed exports. Known-provider sidecars are excluded here
