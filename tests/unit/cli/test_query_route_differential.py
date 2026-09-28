@@ -359,32 +359,46 @@ def test_exclude_text_post_filter_hydrates_in_bounded_chunks(monkeypatch: pytest
     assert len(reads) < total
 
 
-def test_exclude_text_post_filter_refuses_an_over_cap_scope() -> None:
-    """Over the declared cap the route refuses; it never returns a short page.
+def test_exclude_text_post_filter_pages_a_scope_of_any_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A large post-filter scope is paged, never refused.
 
-    Anti-vacuity: delete the ``POST_FILTER_HYDRATION_CAP`` check in
-    ``_post_filter_candidates`` and no refusal is raised, so ``pytest.raises``
-    fails.
+    Anti-vacuity: stop after the first candidate page, or refuse past a
+    candidate count, and the survivor on the last page is never returned.
     """
     from types import SimpleNamespace
 
     from polylogue.api import archive as archive_api
 
-    class _HugeArchive:
-        def count_sessions(self, **kwargs: object) -> int:
-            return archive_api.POST_FILTER_HYDRATION_CAP + 1
+    monkeypatch.setattr(archive_api, "POST_FILTER_CANDIDATE_PAGE", 3)
+    monkeypatch.setattr(archive_api, "POST_FILTER_HYDRATION_CHUNK", 2)
+    ids = [f"s{index}" for index in range(10)]
 
-        def list_summaries(self, **kwargs: object) -> list[SimpleNamespace]:
-            raise AssertionError("candidates must not be fetched above the cap")
+    class _PagedArchive:
+        def list_summaries(self, *, limit: int, offset: int, **kwargs: object) -> list[SimpleNamespace]:
+            return [
+                SimpleNamespace(session_id=session_id, display_label=None, display_label_source=None)
+                for session_id in ids[offset : offset + limit]
+            ]
 
-    spec = SimpleNamespace(to_plan=lambda: SimpleNamespace(_apply_full_filters=lambda sessions, sql_pushed: sessions))
-    with pytest.raises(archive_api.PostFilterScopeTooLargeError) as excinfo:
-        archive_api._archive_list_summaries_with_post_filters(
-            _HugeArchive(),
-            spec,  # type: ignore[arg-type]
-            query_text=None,
-            query_kwargs={},
-            limit=1,
-            offset=0,
+        def read_session(self, session_id: str) -> str:
+            return session_id
+
+    monkeypatch.setattr(
+        archive_api,
+        "archive_envelope_to_session",
+        lambda envelope, **kwargs: SimpleNamespace(id=envelope),
+    )
+    spec = SimpleNamespace(
+        to_plan=lambda: SimpleNamespace(
+            _apply_full_filters=lambda sessions, sql_pushed: [s for s in sessions if s.id == "s9"]
         )
-    assert excinfo.value.gap_reason.startswith("post_filter_scope_too_large:")
+    )
+    page = archive_api._archive_list_summaries_with_post_filters(
+        _PagedArchive(),
+        spec,  # type: ignore[arg-type]
+        query_text=None,
+        query_kwargs={},
+        limit=5,
+        offset=0,
+    )
+    assert [summary.session_id for summary in page] == ["s9"]

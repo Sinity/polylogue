@@ -2140,8 +2140,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonFallback.NEVER,
         capability="archive.delete_session",
         deadline_s=30.0,
-        # A preview carries the exact selection: up to
-        # ``DELETE_PREVIEW_MAX_SESSION_IDS`` session ids, not a parameter map.
+        # A preview carries the exact selection -- every session id, split
+        # into bounded preview chunks -- not a parameter map.
         max_body_bytes=64 * 1024 * 1024,
         request_contract="mutation.session.delete.preview.request/v1",
         result_contract="mutation.session.delete.preview.result/v1",

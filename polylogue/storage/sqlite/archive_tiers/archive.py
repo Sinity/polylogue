@@ -119,7 +119,6 @@ from polylogue.core.digest import REFERENCE, canonical_bytes
 from polylogue.core.enums import DisplayLabelSource, Origin, Provider
 from polylogue.core.errors import (
     ArchiveTierUnavailableError,
-    PostFilterAfterLimitError,
     UnsupportedInsightFilterError,
 )
 from polylogue.core.json import require_json_value
@@ -657,10 +656,10 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
         return None
 
 
-#: Declared ceiling on how many candidate sessions ``list_session_cost_insights``
-#: may scan when a ``status`` filter must be evaluated before the page is cut.
-#: Beyond it the route refuses by name instead of silently post-filtering a page.
-COST_STATUS_FILTER_CANDIDATE_CAP = 20_000
+#: Candidate sessions ``list_session_cost_insights`` reads per SQL page when a
+#: ``status`` filter must be evaluated before the page is cut. A pacing bound
+#: only: pages are read until the requested page is full or the scope ends.
+COST_STATUS_FILTER_PAGE = 2_000
 
 
 def _assert_active_cold_build_index_only(index_path: Path, *, durable_paths: tuple[Path, ...]) -> None:
@@ -3129,17 +3128,7 @@ class ArchiveStore:
             where.append("s.sort_key_ms <= ?")
             params.append(until_ms)
         clause = "WHERE " + " AND ".join(where) if where else ""
-        # A ``status`` filter is decided per row below, so the SQL page must not
-        # be cut first. Scan the matched scope (bounded by a declared cap) and
-        # paginate after filtering.
-        post_filter_status = status is not None
-        pagination = "" if limit is None or post_filter_status else " LIMIT ? OFFSET ?"
-        if post_filter_status:
-            pagination = f" LIMIT {COST_STATUS_FILTER_CANDIDATE_CAP + 1}"
-        elif limit is not None:
-            params.extend([max(int(limit), 0), max(int(offset), 0)])
-        rows = self._conn.execute(
-            f"""
+        base_sql = f"""
             SELECT s.session_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
                    s.sort_key_ms,
                    (SELECT SUM(u.cost_credits) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_credits,
@@ -3157,27 +3146,36 @@ class ArchiveStore:
             LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
             {clause}
             ORDER BY s.sort_key_ms DESC, s.session_id
-            {pagination}
-            """,
-            tuple(params),
-        ).fetchall()
-        canonical = session_usage_costs_for_connection(self._conn, [str(row["session_id"]) for row in rows])
-        insights = [
-            _session_cost_insight_from_archive_row(self._conn, row, canonical.get(str(row["session_id"])))
-            for row in rows
-        ]
-        if status is not None:
-            if len(rows) > COST_STATUS_FILTER_CANDIDATE_CAP:
-                raise PostFilterAfterLimitError(
-                    filter_name="status",
-                    route="list_session_cost_insights",
-                    candidate_count=len(rows),
-                    cap=COST_STATUS_FILTER_CANDIDATE_CAP,
-                )
-            insights = [insight for insight in insights if insight.estimate.status == status]
-            start = max(int(offset), 0)
-            insights = insights[start:] if limit is None else insights[start : start + max(int(limit), 0)]
-        return insights
+            """
+
+        def insights_for(rows: list[sqlite3.Row]) -> list[SessionCostInsight]:
+            canonical = session_usage_costs_for_connection(self._conn, [str(row["session_id"]) for row in rows])
+            return [
+                _session_cost_insight_from_archive_row(self._conn, row, canonical.get(str(row["session_id"])))
+                for row in rows
+            ]
+
+        start = max(int(offset), 0)
+        if status is None:
+            if limit is None:
+                return insights_for(self._conn.execute(base_sql, tuple(params)).fetchall())
+            rows = self._conn.execute(base_sql + " LIMIT ? OFFSET ?", (*params, max(int(limit), 0), start)).fetchall()
+            return insights_for(rows)
+        # A ``status`` filter is decided per row, so the SQL page cannot be cut
+        # first: scan the matched scope page by page and stop once the
+        # requested page is full.
+        wanted = None if limit is None else start + max(int(limit), 0)
+        matched: list[SessionCostInsight] = []
+        page_offset = 0
+        while wanted is None or len(matched) < wanted:
+            rows = self._conn.execute(
+                base_sql + " LIMIT ? OFFSET ?", (*params, COST_STATUS_FILTER_PAGE, page_offset)
+            ).fetchall()
+            matched.extend(insight for insight in insights_for(rows) if insight.estimate.status == status)
+            if len(rows) < COST_STATUS_FILTER_PAGE:
+                break
+            page_offset += len(rows)
+        return matched[start:wanted]
 
     def list_cost_rollup_insights(
         self,

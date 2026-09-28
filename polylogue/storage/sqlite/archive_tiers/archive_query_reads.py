@@ -4220,7 +4220,6 @@ def get_delegation_card(
             FROM user_tier.assertions
             WHERE target_ref = ?
             ORDER BY updated_at_ms DESC, assertion_id
-            LIMIT 20
             """,
             (delegation_ref,),
         ).fetchall()

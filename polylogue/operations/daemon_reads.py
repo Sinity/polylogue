@@ -841,8 +841,7 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
     away from it: no ``family_status``, ``availability``, ``deadline_s``,
     ``elapsed_s`` or ``stale_age_s``; hard-coded ``budget_exceeded`` and
     ``cost_class``; its own family lists (``omitted`` in both complete and
-    deferred, no ``total_counts``); and no ``PostFilterScopeTooLargeError``
-    handling, so a too-large scope raised instead of degrading. Building the
+    deferred, no ``total_counts``). Building the
     shared model and dumping it keeps the two surfaces equal by construction
     rather than by matching key lists.
 
@@ -857,7 +856,7 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
 
     import time
 
-    from polylogue.api.archive import PostFilterScopeTooLargeError, _archive_facet_buckets, build_facets_response
+    from polylogue.api.archive import _archive_facet_buckets, build_facets_response
     from polylogue.archive.query.expression import compile_expression_into
     from polylogue.archive.query.spec import SessionQuerySpec
 
@@ -876,16 +875,8 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
     started_at = time.perf_counter()
     scope_gaps: list[str] = []
     global_buckets = _archive_facet_buckets(archive, None, include_deferred=include_deferred, scope_gaps=scope_gaps)
-    post_filter_gap: str | None = None
     if scoped_to_query:
-        try:
-            scoped_buckets = _archive_facet_buckets(
-                archive, spec, include_deferred=include_deferred, scope_gaps=scope_gaps
-            )
-        except PostFilterScopeTooLargeError as exc:
-            from polylogue.archive.query.facets import FacetBuckets
-
-            scoped_buckets, post_filter_gap = FacetBuckets(), exc.gap_reason
+        scoped_buckets = _archive_facet_buckets(archive, spec, include_deferred=include_deferred, scope_gaps=scope_gaps)
     else:
         scoped_buckets = global_buckets
 
@@ -896,7 +887,6 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
         include_deferred=include_deferred,
         elapsed_s=time.perf_counter() - started_at,
         include_idf=not _truthy(params.get("no_idf")),
-        post_filter_gap=post_filter_gap,
         scope_gaps=scope_gaps,
     )
     return cast(dict[str, object], response.model_dump(by_alias=True, mode="json"))

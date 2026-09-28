@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import builtins
+import itertools
 import json
 import sqlite3
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from http import HTTPStatus
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast
 
@@ -48,7 +48,7 @@ from polylogue.context.scheduler import (
     read_context_ledger,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin
-from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, PolylogueError
+from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError
 from polylogue.core.json import JSONDocument
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
@@ -563,45 +563,15 @@ def _archive_list_summaries_for_spec(
     return cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
 
 
-#: Declared ceiling on how many candidate sessions one content-dependent
-#: post-filter pass (``exclude_text``/``-text:``) may hydrate. Beyond it the
-#: operation refuses with a named gap rather than silently returning a
-#: shortened page: a cap that quietly truncates would make "no matches" and
-#: "too many candidates to check" indistinguishable.
-POST_FILTER_HYDRATION_CAP = 20_000
-
 #: Candidate sessions hydrated per post-filter chunk. Each chunk's ``Session``
 #: objects are dropped before the next chunk is built, so peak memory is one
 #: chunk rather than the whole candidate set.
 POST_FILTER_HYDRATION_CHUNK = 200
 
-
-class PostFilterScopeTooLargeError(PolylogueError):
-    """Typed refusal: a content-dependent filter scope exceeds the hydration cap.
-
-    ``exclude_text`` has no SQL reduction, so every candidate session must be
-    hydrated into a domain object to be tested. Without a cap a non-matching
-    term over a live archive hydrates the whole corpus at once; the SQLite
-    execution deadline interrupts statements, not Python-side materialization.
-    """
-
-    code = "post_filter_scope_too_large"
-    http_status_code: int = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
-
-    def __init__(self, *, candidate_count: int, cap: int) -> None:
-        self.candidate_count = candidate_count
-        self.cap = cap
-        super().__init__(
-            f"content-dependent text exclusion would hydrate {candidate_count} candidate sessions, "
-            f"above the declared cap of {cap}; narrow the scope (origin:, after:, repo:, a positive "
-            "text term) and retry"
-        )
-
-    @property
-    def gap_reason(self) -> str:
-        """The named gap surfaces carry when they degrade instead of erroring."""
-
-        return f"{self.code}:{self.candidate_count}>{self.cap}"
+#: Candidate summaries fetched per SQL page while a content-dependent filter
+#: scans its scope. A pacing bound only: every page is read until the scope or
+#: the requested page is exhausted, so no scope size is refused.
+POST_FILTER_CANDIDATE_PAGE = 2_000
 
 
 def _post_filter_candidates(
@@ -609,49 +579,37 @@ def _post_filter_candidates(
     *,
     query_text: str | None,
     query_kwargs: dict[str, object],
-) -> list[ArchiveSessionSummary]:
-    """Fetch the SQL candidate set for a post-filtered spec, capped and counted.
+) -> Iterator[ArchiveSessionSummary]:
+    """Stream the SQL candidate set for a post-filtered spec, one page at a time.
 
-    The cap is checked against the archive's own count before any candidate row
-    is fetched where the store supports it, and again against the fetched set,
-    so a store without a counting surface is still bounded.
+    ``exclude_text`` has no SQL reduction, so every candidate may need to be
+    hydrated to be tested. Pages keep that bounded in memory without refusing a
+    large scope; the caller stops reading once its page is full.
     """
 
     query_kwargs = dict(query_kwargs)
-    query_kwargs.pop("limit", None)
-    query_kwargs["offset"] = 0
-    count_kwargs = {
-        key: value for key, value in query_kwargs.items() if key not in {"offset", "sort", "reverse", "sample"}
-    }
-    total: int | None
-    try:
-        if query_text is not None:
-            total = int(archive.count_search_sessions(query_text, **count_kwargs))
-        else:
-            total = int(archive.count_sessions(**count_kwargs))
-    except (AttributeError, TypeError):
-        total = None
-    if total is not None and total > POST_FILTER_HYDRATION_CAP:
-        raise PostFilterScopeTooLargeError(candidate_count=total, cap=POST_FILTER_HYDRATION_CAP)
-    # One row beyond the cap is fetched so an over-cap set stays detectable
-    # even when the store offers no count.
-    query_kwargs["limit"] = POST_FILTER_HYDRATION_CAP + 1
+    query_kwargs["limit"] = POST_FILTER_CANDIDATE_PAGE
     if query_text is not None:
         query_kwargs.pop("sample", None)
-        candidates = [
-            archive.read_summary(hit.session_id) for hit in archive.search_summaries(query_text, **query_kwargs)
-        ]
-    else:
-        candidates = cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
-    if len(candidates) > POST_FILTER_HYDRATION_CAP:
-        raise PostFilterScopeTooLargeError(candidate_count=len(candidates), cap=POST_FILTER_HYDRATION_CAP)
-    return candidates
+    offset = 0
+    while True:
+        query_kwargs["offset"] = offset
+        if query_text is not None:
+            page = [
+                archive.read_summary(hit.session_id) for hit in archive.search_summaries(query_text, **query_kwargs)
+            ]
+        else:
+            page = cast(list[ArchiveSessionSummary], archive.list_summaries(**query_kwargs))
+        yield from page
+        if len(page) < POST_FILTER_CANDIDATE_PAGE:
+            return
+        offset += len(page)
 
 
 def _iter_post_filtered_summaries(
     archive: Any,
     spec: SessionQuerySpec,
-    candidates: Sequence[ArchiveSessionSummary],
+    candidates: Iterable[ArchiveSessionSummary],
     *,
     needed: int | None,
 ) -> Iterator[ArchiveSessionSummary]:
@@ -665,8 +623,8 @@ def _iter_post_filtered_summaries(
 
     plan = spec.to_plan()
     produced = 0
-    for start in range(0, len(candidates), POST_FILTER_HYDRATION_CHUNK):
-        chunk = candidates[start : start + POST_FILTER_HYDRATION_CHUNK]
+    source = iter(candidates)
+    while chunk := list(itertools.islice(source, POST_FILTER_HYDRATION_CHUNK)):
         sessions = [
             archive_envelope_to_session(
                 archive.read_session(summary.session_id),
@@ -745,7 +703,6 @@ def build_facets_response(
     include_deferred: bool,
     elapsed_s: float | None,
     include_idf: bool,
-    post_filter_gap: str | None = None,
     scope_gaps: Sequence[str] = (),
 ) -> FacetsResponse:
     """Assemble the one canonical facets envelope.
@@ -805,8 +762,6 @@ def build_facets_response(
     facet_gaps: list[str] = []
     if availability.state != "ready":
         facet_gaps.append(f"facets_{availability.state}")
-    if post_filter_gap is not None:
-        facet_gaps.append(post_filter_gap)
     facet_gaps.extend(scope_gaps)
     return FacetsResponse.model_validate(
         {
@@ -4552,25 +4507,15 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         scoped_to_query = spec is not None and spec.has_filters()
         started_at = time.perf_counter()
 
-        def _facet_work(archive: Any) -> tuple[Any, Any, str | None, list[str]]:
-            # A scope too large to post-filter is a named gap, not a silently
-            # shortened bucket set: the caller must be able to tell "no rows"
-            # from "the exclusion could not be evaluated over this scope".
+        def _facet_work(archive: Any) -> tuple[Any, Any, list[str]]:
             scope_gaps: list[str] = []
             global_b = _archive_facet_buckets(archive, None, include_deferred=include_deferred, scope_gaps=scope_gaps)
             if not scoped_to_query:
-                return global_b, global_b, None, scope_gaps
-            try:
-                scoped_b = _archive_facet_buckets(
-                    archive, spec, include_deferred=include_deferred, scope_gaps=scope_gaps
-                )
-            except PostFilterScopeTooLargeError as exc:
-                from polylogue.archive.query.facets import FacetBuckets
+                return global_b, global_b, scope_gaps
+            scoped_b = _archive_facet_buckets(archive, spec, include_deferred=include_deferred, scope_gaps=scope_gaps)
+            return global_b, scoped_b, scope_gaps
 
-                return global_b, FacetBuckets(), exc.gap_reason, scope_gaps
-            return global_b, scoped_b, None, scope_gaps
-
-        global_buckets, scoped_buckets, post_filter_gap, scope_gaps = await run_archive_read(
+        global_buckets, scoped_buckets, scope_gaps = await run_archive_read(
             _active_archive_root(self.config),
             operation="archive.facets",
             arguments={"spec": spec, "include_deferred": include_deferred},
@@ -4585,7 +4530,6 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             include_deferred=include_deferred,
             elapsed_s=time.perf_counter() - started_at,
             include_idf=include_idf,
-            post_filter_gap=post_filter_gap,
             scope_gaps=scope_gaps,
         )
 

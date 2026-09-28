@@ -6909,8 +6909,19 @@ async def test_cost_insight_filters_refuse_or_precede_the_limit(tmp_path: Path) 
         )
 
         paged = store.list_session_cost_insights(status=priced_status, limit=1)
+        # A scan page smaller than the scope must still reach the match: the
+        # status filter pages through candidates instead of refusing.
+        from polylogue.storage.sqlite.archive_tiers import archive as archive_module
+
+        original_page = archive_module.COST_STATUS_FILTER_PAGE
+        archive_module.COST_STATUS_FILTER_PAGE = 1
+        try:
+            single_page = store.list_session_cost_insights(status=priced_status, limit=1)
+        finally:
+            archive_module.COST_STATUS_FILTER_PAGE = original_page
 
     assert [insight.session_id for insight in paged] == [priced_id]
+    assert [insight.session_id for insight in single_page] == [priced_id]
 
 
 def test_open_rejects_unknown_keyword_arguments(tmp_path: Path) -> None:
