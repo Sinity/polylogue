@@ -1692,10 +1692,9 @@ def _prepared_delete_selection(
 
     The daemon reports the canonical selection's size and its leading IDs; the
     whole selection lives in the durable preview chunks, so a selection of any
-    size stays within the operation result bound.
+    size stays within the operation result bound. The protocol validates that
+    the sample is the canonical leading slice; this checks what it can see.
     """
-    from polylogue.operations.daemon_protocol import DELETE_PREVIEW_SAMPLE_IDS
-
     count = daemon_preview.get("session_count")
     raw_sample = daemon_preview.get("session_ids_sample")
     if (
@@ -1706,7 +1705,7 @@ def _prepared_delete_selection(
     ):
         raise click.ClickException("daemon returned an invalid delete preview")
     sample = tuple(raw_sample)
-    if count < 1 or len(set(sample)) != len(sample) or len(sample) != min(count, DELETE_PREVIEW_SAMPLE_IDS):
+    if count < 1 or not sample or len(set(sample)) != len(sample) or len(sample) > count:
         raise click.ClickException("daemon returned a non-canonical delete preview")
     return count, sample
 

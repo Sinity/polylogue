@@ -507,13 +507,6 @@ class InsightRebuildRequest(_OperationPayload):
         return self
 
 
-#: How many canonical session IDs a delete preview result names. The selection
-#: itself has no count cap, so the result reports its size and a leading sample
-#: instead of echoing every ID past the operation result bound; the full
-#: selection stays in the durable preview chunks the result's refs name.
-DELETE_PREVIEW_SAMPLE_IDS = 20
-
-
 #: Transport bound shared by every delete phase. A selection accepted by the
 #: preview yields one preview (then authorization) reference per chunk, so the
 #: follow-up phases must accept a body sized for the same selection.
@@ -1155,6 +1148,8 @@ class MutationResult(_OperationPayload):
             if self.outcome not in DAEMON_OPERATION_OUTCOMES or self.sequence is None:
                 raise ValueError("mutation lifecycle result requires outcome and durable sequence")
         elif self.status == "prepared":
+            from polylogue.operations.mutation_transaction import DELETE_PREVIEW_SAMPLE_IDS
+
             if not self.preview_refs or self.preview_ref != self.preview_refs[0] or self.session_ids_sample is None:
                 raise ValueError("prepared result requires exact preview references and selection sample")
             if (
@@ -2829,7 +2824,6 @@ __all__ = [
     "MAX_DECLARED_OPERATION_BODY_BYTES",
     "MAX_OPERATION_BODY_BYTES",
     "MAX_OPERATION_RESULT_BYTES",
-    "DELETE_PREVIEW_SAMPLE_IDS",
     "DaemonAuthority",
     "DAEMON_OPERATION_OUTCOMES",
     "DaemonFallback",

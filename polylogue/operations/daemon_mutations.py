@@ -10,7 +10,7 @@ from typing import Any, cast
 
 from polylogue.operations.audit import AuditRepository, MachineRequestBinding
 from polylogue.operations.bindings import OperationBinding, runtime_operation_binding
-from polylogue.operations.daemon_protocol import DELETE_PREVIEW_SAMPLE_IDS, DaemonOperationRequest
+from polylogue.operations.daemon_protocol import DaemonOperationRequest
 from polylogue.operations.delete_authorization import _canonical_session_ids
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_actuators import (
@@ -22,6 +22,7 @@ from polylogue.operations.mutation_actuators import (
     SessionDeleteArgs,
 )
 from polylogue.operations.mutation_transaction import (
+    DELETE_PREVIEW_SAMPLE_IDS,
     MAX_MUTATION_PLAN_TARGETS,
     ConfirmationRequiredError,
     MutationPreview,

@@ -183,7 +183,7 @@ class TestDeleteChokePoint:
         ("count", "sample", "accepted"),
         [
             (30, [f"s{index}" for index in range(20)], True),
-            (30, [f"s{index}" for index in range(5)], False),
+            (3, [f"s{index}" for index in range(5)], False),
             (2, ["s1", "s1"], False),
             (0, [], False),
         ],
