@@ -239,3 +239,45 @@ def test_archive_store_records_an_excised_inline_attachment_unavailable(tmp_path
     assert acquired[excised_attachment.acquisition_key] == (None, len(excised), "unavailable")
     assert acquired[kept_attachment.acquisition_key][2] == "acquired"
     assert [ref.blob_hash for ref in refs] == [hashlib.sha256(kept).digest()]
+
+
+def test_attachments_refused_between_check_and_flush_are_reconciled(tmp_path: Path) -> None:
+    """An excision landing after the ledger check still ends in ``unavailable``.
+
+    Anti-vacuity: skip ``reconcile_refused_attachments`` after a replay flush
+    and the refused attachment keeps its ``acquired`` entry and blob
+    reference, which ``write_source_blob_refs`` refuses for the whole session.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.storage.blob_publication import reconcile_refused_attachments
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    excised = b"bytes excised after the caller's check"
+    kept = b"bytes that stay"
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    excised_hex, _ = publisher.write_from_bytes(excised)
+    kept_hex, _ = publisher.write_from_bytes(kept)
+    # The excision commits after the caller queued both attachments.
+    with sqlite3.connect(root / "source.db") as source:
+        record_excised_blob_hash(
+            source,
+            blob_hash=bytes.fromhex(excised_hex),
+            reason="synthetic excision",
+            actor="test",
+            excised_at_ms=1,
+        )
+    publisher.flush()
+    acquired: dict[object, tuple[bytes | None, int, str]] = {
+        "excised": (bytes.fromhex(excised_hex), len(excised), "acquired"),
+        "kept": (bytes.fromhex(kept_hex), len(kept), "acquired"),
+    }
+    refs = (SimpleNamespace(blob_hash=bytes.fromhex(excised_hex)), SimpleNamespace(blob_hash=bytes.fromhex(kept_hex)))
+
+    reconciled, kept_refs = reconcile_refused_attachments(acquired, refs, publisher)
+
+    assert reconciled["excised"] == (None, len(excised), "unavailable")
+    assert reconciled["kept"] == acquired["kept"]
+    assert [ref.blob_hash.hex() for ref in kept_refs] == [kept_hex]

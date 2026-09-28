@@ -61,7 +61,7 @@ from polylogue.operations.operation_context import OperationContext, PinnedOpera
 from polylogue.sources.origin_specs import retained_enumeration_fingerprint
 from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
-from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_publication import ArchiveBlobPublisher, publication_refused
 from polylogue.storage.ingest_governance import (
     CensusPublication,
     CohortMembershipRefusalError,
@@ -90,6 +90,7 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     retained_source_generation_header,
     seal_prepared_source_manifest,
 )
+from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection
 
 _T = TypeVar("_T")
@@ -450,6 +451,7 @@ class IngestExecution:
                     )
                 )
                 ordinal = 0
+                refused_inputs: list[FrozenSourceInput] = []
                 after_coordinate: str | None = None
                 while True:
 
@@ -470,12 +472,33 @@ class IngestExecution:
                         conn: sqlite3.Connection,
                         start: int = ordinal,
                         batch: tuple[FrozenSourceInput, ...] = page,
-                    ) -> None:
-                        append_prepared_source_inputs(conn, generation_id, start, batch)
+                    ) -> int:
+                        # ``source_write`` flushed the page's publications first.
+                        # An input whose bytes are excised was refused there and
+                        # has no reservation: it is a permanent skip, not a
+                        # manifest member.
+                        admitted = tuple(
+                            item for item in batch if not publication_refused(self.publisher, item.blob_hash)
+                        )
+                        refused_inputs.extend(item for item in batch if item not in admitted)
+                        if admitted:
+                            append_prepared_source_inputs(conn, generation_id, start, admitted)
+                        return len(admitted)
 
-                    await self.source_write(stage_page)
-                    ordinal += len(page)
+                    ordinal += await self.source_write(stage_page)
                     after_coordinate = page[-1].coordinate
+                for refused in refused_inputs:
+                    emit(
+                        "ingest.accepted_input.content_excised",
+                        outcome="skipped",
+                        reason="content_excised",
+                        blob_hash=refused.blob_hash,
+                    )
+                if ordinal == 0 and refused_inputs:
+                    raise ContentExcisedError(
+                        blob_hash=bytes.fromhex(refused_inputs[0].blob_hash),
+                        source_path=refused_inputs[0].source_path,
+                    )
                 manifest = await self.source_write(
                     lambda conn: seal_prepared_source_manifest(conn, generation_id, sealed_at_ms=int(time() * 1000))
                 )

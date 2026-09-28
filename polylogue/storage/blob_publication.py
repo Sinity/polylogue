@@ -351,6 +351,26 @@ def refuse_excised_attachment_blobs(
     return result
 
 
+def reconcile_refused_attachments(
+    acquired: dict[Any, tuple[bytes | None, int, str]],
+    refs: tuple[Any, ...],
+    publisher: BlobStore | None,
+) -> tuple[dict[Any, tuple[bytes | None, int, str]], tuple[Any, ...]]:
+    """Drop what a flush refused from queued attachments and their blob references.
+
+    An excision can commit between the caller's ledger check and its flush;
+    the flush then refuses and discards the bytes. The attachment is recorded
+    ``unavailable`` and its reference is not written, exactly as when the
+    ledger check itself saw the excision.
+    """
+    if publisher is None:
+        return acquired, refs
+    return (
+        refuse_excised_attachment_blobs(acquired, publisher=publisher),
+        tuple(ref for ref in refs if not publication_refused(publisher, bytes(ref.blob_hash).hex())),
+    )
+
+
 def require_published(blob_store: BlobStore, blob_hash: str, *, source_path: str) -> None:
     """Raise ContentExcisedError when a flush refused *blob_hash* as excised.
 
