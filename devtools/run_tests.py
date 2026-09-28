@@ -52,6 +52,7 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
+    OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
     PytestSlotUnavailableError,
     basetemp_root,
@@ -60,6 +61,7 @@ from devtools.pytest_slot import (
     run_pytest,
     run_pytest_isolated,
     sweep_stale_temp_trees,
+    termination_metadata,
 )
 from devtools.pytest_stream_report import report_file_argument, spool_paths
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
@@ -70,6 +72,7 @@ from devtools.verify_runs import (
     VerifyRun,
     append_verification_evidence,
     append_verify_history,
+    copy_current_pytest_artifacts,
     env_for_pytest_step,
     git_head,
     git_worktree_content_sha256,
@@ -147,7 +150,9 @@ def _format_duration(seconds: float) -> str:
 
 def print_outliers(limit: int = DEFAULT_OUTLIER_COUNT, *, root: Path = ROOT) -> int:
     """Print slow tests and files from the latest full-run pytest reports."""
-    report_paths = sorted((root / PYTEST_REPORT_DIR).glob(PYTEST_PARALLEL_REPORT_PATTERN))
+    report_paths = sorted(
+        path for path in (root / PYTEST_REPORT_DIR).glob("last-pytest-*.json") if path.name != PYTEST_REPORT_PATH.name
+    )
     tests: list[tuple[str, str, float]] = []
     for path in report_paths:
         try:
@@ -162,7 +167,7 @@ def print_outliers(limit: int = DEFAULT_OUTLIER_COUNT, *, root: Path = ROOT) -> 
             duration = _phase_duration(test)
             tests.append((test["nodeid"], test["nodeid"].split("::", 1)[0], duration))
     if not tests:
-        print(f"devtools test --outliers: no readable {PYTEST_PARALLEL_REPORT_PATTERN} receipts", file=sys.stderr)
+        print("devtools test --outliers: no readable full-run pytest receipts", file=sys.stderr)
         return 2
 
     serial_time = sum(duration for _nodeid, _filename, duration in tests)
@@ -412,6 +417,7 @@ def _run(
     artifacts: PytestStepArtifacts,
     report_path: Path,
     runner: str = "managed",
+    stdout: Any = None,
 ) -> tuple[int, float, dict[str, Any]]:
     """Run focused pytest through the host's pytest slot, preserving its receipt."""
     del label, run
@@ -419,7 +425,8 @@ def _run(
     try:
         executor = run_pytest if runner == "managed" else run_pytest_isolated
         env[WORKTREE_PROVENANCE_ENV] = "1"
-        outcome = executor(command, cwd=cwd, env=env, root=ROOT)
+        output_option = {"stdout": stdout} if stdout is not None else {}
+        outcome = executor(command, cwd=cwd, env=env, root=ROOT, **output_option)
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"devtools test: {exc}\n")
         runtime_evidence = getattr(exc, "runtime_evidence", None)
@@ -434,13 +441,36 @@ def _run(
             },
         )
     returncode = outcome.returncode
+    killed = termination_metadata(outcome)
+    if killed.get("diagnosis") == OOM_KILLED_DIAGNOSIS:
+        # The kill took the unit's receipt writer with it, so the provenance
+        # check below would name the missing receipt instead of the cause.
+        return (
+            returncode or 137,
+            time.monotonic() - started,
+            {
+                **killed,
+                "pytest_slot": outcome.slot,
+                **({"pytest_slot_log": str(outcome.log_path)} if outcome.log_path is not None else {}),
+                **({"pytest_slot_receipt": outcome.receipt} if outcome.receipt is not None else {}),
+                # The tree pytest ran against is whatever the slot recorded
+                # before the kill; without that record it is unknown, never
+                # the tree admitted at submission.
+                **(
+                    {"worktree_provenance": outcome.receipt["worktree_provenance"]}
+                    if isinstance(outcome.receipt, dict)
+                    and isinstance(outcome.receipt.get("worktree_provenance"), dict)
+                    else {"worktree_provenance_unknown": True}
+                ),
+            },
+        )
     if outcome.slot.startswith("agentctl job") and (
         not isinstance(outcome.receipt, dict) or not isinstance(outcome.receipt.get("worktree_provenance"), dict)
     ):
         return (
             125,
             time.monotonic() - started,
-            {"diagnosis": "worktree_provenance_unavailable", "pytest_slot": outcome.slot},
+            {"diagnosis": "worktree_provenance_unavailable", **killed, "pytest_slot": outcome.slot},
         )
     # Exit 1 is "tests failed", the only outcome a rerun can speak to. Exit 2
     # (interrupted), 3 (internal error), 4 (usage) and the signal codes
@@ -471,6 +501,8 @@ def _run(
         time.monotonic() - started,
         {
             "diagnosis": "pytest_passed" if returncode == 0 else "pytest_failed",
+            # Another recorded killer (a unit timeout) keeps its attribution.
+            **killed,
             "pytest_slot": outcome.slot,
             **({"rerun": rerun} if rerun is not None else {}),
             **({"suite_cost_receipt": str(suite_cost_receipt)} if suite_cost_receipt is not None else {}),
@@ -649,7 +681,8 @@ def main(argv: list[str] | None = None) -> int:
     # reaches the disposition below. Cancelled once that disposition is made.
     temp_guard = guard_temp_trees(run_temp)
     _prepare_nodatacow_parent(run_temp)
-    cmd = [*cmd, "--basetemp", str(run_temp)]
+    if not any(arg == "--basetemp" or arg.startswith("--basetemp=") for arg in selection):
+        cmd = [*cmd, "--basetemp", str(run_temp)]
     _clear_pytest_report(report_path)
     artifacts = run.start_step(label="pytest focused", cmd=cmd)
     started = time.monotonic()
@@ -683,7 +716,21 @@ def main(argv: list[str] | None = None) -> int:
             artifacts=artifacts,
             report_path=report_path,
             runner=runner,
+            stdout=sys.stderr if use_json else None,
         )
+        copy_current_pytest_artifacts(
+            ROOT,
+            artifacts,
+            legacy_paths={
+                "progress_path": PYTEST_PROGRESS_PATH,
+                "events_merged_path": PYTEST_EVENTS_PATH,
+                "selection_path": PYTEST_SELECTION_PATH,
+                "summary_path": PYTEST_SUMMARY_PATH,
+            },
+        )
+        slot_log = metadata.get("pytest_slot_log")
+        if isinstance(slot_log, str) and Path(slot_log).is_file():
+            shutil.copyfile(slot_log, ROOT / PYTEST_REPORT_DIR / "current-pytest-output.log")
         _publish_last_focused_pytest_report(report_path)
         metadata["testmon_preselection"] = {
             "status": graph.status.value,
@@ -717,6 +764,8 @@ def main(argv: list[str] | None = None) -> int:
         rc = int(step["exit"])
         metadata = step
     provenance = metadata.get("worktree_provenance")
+    if not isinstance(provenance, dict) and metadata.get("worktree_provenance_unknown"):
+        run.record_execution_worktree({"capture_source": "unavailable"})
     if isinstance(provenance, dict):
         run.record_execution_worktree(provenance)
         # Report what actually ran, not what was admitted at submission.

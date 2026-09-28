@@ -85,9 +85,12 @@ class MCPErrorPayload(SurfacePayloadModel):
     message: str
     code: int | str | None = None
     detail: str | None = None
+    retryable: bool | None = None
     field: str | None = None
     tool: str | None = None
     session_id: str | None = None
+    archive_root: str | None = None
+    resident_writer: str | None = None
     # Schema-mismatch surface (#1611): when an MCP tool body raises
     # ``SchemaVersionMismatchError`` the typed payload exposes both versions
     # so clients can render the actionable operator message without

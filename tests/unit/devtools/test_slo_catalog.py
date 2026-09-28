@@ -39,7 +39,6 @@ INTERACTIVE_SURFACES = (
     "daemon_cli_query",
     "daemon_live_completion",
     "cli_status_cold",
-    "ingest_to_searchable",
 )
 
 
@@ -193,6 +192,7 @@ surfaces:
     assert payload["passed"] == []
     assert payload["violations"] == []
     assert payload["unmeasured"] and payload["unmeasured"][0]["surface"] == "reader_status"
+    assert "failed; emitted measurements were retained but not scored" in payload["unmeasured"][0]["reason"]
     assert "failed with exit 125" in payload["benchmark_error"]
     assert "retained as diagnostics" in payload["benchmark_error"]
     assert len(captured_json) == 1 and captured_json[0].is_file()
@@ -204,6 +204,19 @@ surfaces:
         verify_slos.main(["--yaml", str(catalog)])
     assert "BENCHMARK RUN FAILED (exit 125):" in plain.getvalue()
     assert "BENCHMARKS DID NOT RUN:" not in plain.getvalue()
+
+
+def test_skip_benchmarks_has_no_observed_phase_and_receipt_names_build(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: skipped assignment time must not become benchmark evidence."""
+    catalog = _write_slo_catalog(tmp_path, "surfaces: {}\n")
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        assert verify_slos.main(["--yaml", str(catalog), "--json", "--skip-benchmarks"]) == 0
+    receipt = json.loads(buffer.getvalue())["workload_receipt"]
+    assert receipt["phases"] == []
+    assert receipt["build_id"].startswith("git:")
 
 
 def test_catalog_exists_and_covers_required_surfaces() -> None:
@@ -228,7 +241,7 @@ def test_catalog_exists_and_covers_required_surfaces() -> None:
 
 
 def test_catalog_names_the_interactive_budget_contract() -> None:
-    """The 20d.14 contract must retain all four end-to-end budget families."""
+    """The 20d.14 contract retains the interactive budget families with benchmarks."""
     surfaces = verify_slos._parse_slo_catalog(CATALOG_PATH.read_text())
 
     for name in INTERACTIVE_SURFACES:
@@ -241,6 +254,17 @@ def test_catalog_names_the_interactive_budget_contract() -> None:
         assert isinstance(p50, int)
         assert isinstance(p95, int)
         assert p95 >= p50
+
+
+def test_catalog_withholds_ingest_to_searchable_until_the_benchmark_covers_it() -> None:
+    """The direct-ingest benchmark cannot stand in for watcher-to-find latency.
+
+    Anti-vacuity: restoring the direct ``LiveBatchProcessor`` benchmark as an
+    ``ingest_to_searchable`` surface makes this fail; the catalog must not
+    publish an end-to-end budget until a benchmark observes the full route.
+    """
+    surfaces = verify_slos._parse_slo_catalog(CATALOG_PATH.read_text())
+    assert "ingest_to_searchable" not in surfaces
 
 
 def _stub_benchmark_stats(

@@ -19,6 +19,7 @@ from polylogue.sources.live.production_baseline import (
     ProductionBaselineReadUnavailableError,
     SourceDecision,
     _revision,
+    _seal,
     capture_production_source_baseline,
     merge_pending_production_baseline,
 )
@@ -108,7 +109,7 @@ def test_zip_member_fault_preserves_typed_retry_classification(
         raise fault
 
     with monkeypatch.context() as patcher:
-        patcher.setattr(production_baseline, "replay_zip_entry_acquisition_payloads", unreadable_member)
+        patcher.setattr(production_baseline, "replay_zip_entry_acquisition_revisions", unreadable_member)
         baseline = capture_production_source_baseline(
             (WatchSource("account", root, suffixes=(".zip",)),), operation_id="zip-fault"
         )
@@ -213,6 +214,50 @@ def test_baseline_uses_typed_acceptance_before_cursor_and_requires_retained_revi
     baseline.verify(source_db)
 
 
+def test_baseline_records_intake_exclusions_instead_of_requiring_retention(tmp_path: Path) -> None:
+    """Each pre-acquisition exclusion intake applies is the baseline's disposition too.
+
+    Anti-vacuity: without the shared ``classify_pre_acquisition`` decision
+    every one of these files is ``accepted`` and ``verify`` raises for three
+    unretained revisions that intake never writes.
+    """
+    codex = tmp_path / "codex"
+    codex.mkdir()
+    rollout = codex / "rollout.jsonl"
+    rollout.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"s","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m","role":"user",'
+        b'"content":[{"type":"input_text","text":"hi"}]}}\n'
+    )
+    meta_only = codex / "meta-only.jsonl"
+    meta_only.write_bytes(b'{"type":"session_meta","payload":{"id":"x","timestamp":"2026-06-02T00:00:00Z"}}\n')
+    unverified_state = codex / "state_5.sqlite"
+    with sqlite3.connect(unverified_state) as conn:
+        conn.execute("CREATE TABLE threads(id TEXT)")
+    gemini = tmp_path / "gemini"
+    logs = gemini / "tmp" / "project" / "logs.json"
+    logs.parent.mkdir(parents=True)
+    logs.write_text('[{"sessionId":"a","messageId":0,"type":"user","message":"hi","timestamp":"2026"}]')
+    baseline = capture_production_source_baseline(
+        (
+            WatchSource("codex", codex, suffixes=(".jsonl", ".sqlite")),
+            WatchSource("gemini-cli", gemini, suffixes=(".json",)),
+        ),
+        operation_id="intake-exclusions",
+    )
+    decisions = {row.path: (row.disposition, row.reason) for row in baseline.decisions}
+    assert decisions[str(meta_only)] == ("excluded", "intake_excluded:declared artifact rule: not parsed as a session")
+    assert decisions[str(unverified_state)] == (
+        "excluded",
+        "intake_excluded:unsupported source class",
+    )
+    assert decisions[str(logs)] == ("excluded", "intake_excluded:path rule classifies this as non-session evidence")
+    assert [row.path for row in baseline.accepted] == [str(rollout)]
+    baseline.verify(
+        _source_db(tmp_path / "source.db", ((str(rollout), hashlib.sha256(rollout.read_bytes()).hexdigest()),))
+    )
+
+
 def test_external_link_is_alias_only_with_independent_source(tmp_path: Path) -> None:
     account = tmp_path / "account"
     account.mkdir()
@@ -265,7 +310,10 @@ def test_history_rule_and_codex_sqlite_use_their_typed_revisions(tmp_path: Path)
     state = codex / "state_5.sqlite"
     conn = sqlite3.connect(state)
     try:
+        # The thread-state shape intake acquires; a bare ``threads`` table is
+        # structurally unverified and intake excludes it.
         conn.execute("CREATE TABLE threads(id TEXT)")
+        conn.execute("CREATE TABLE thread_spawn_edges(parent TEXT, child TEXT)")
         conn.execute("INSERT INTO threads VALUES ('one')")
         conn.commit()
     finally:
@@ -297,6 +345,7 @@ def test_temporarily_unopenable_sqlite_source_remains_a_retryable_baseline_fault
     state = codex / "state_5.sqlite"
     with sqlite3.connect(state) as conn:
         conn.execute("CREATE TABLE threads(id TEXT)")
+        conn.execute("CREATE TABLE thread_spawn_edges(parent TEXT, child TEXT)")
     with pytest.raises(sqlite3.OperationalError) as unavailable:
         sqlite3.connect(f"file:{tmp_path / 'temporarily-unavailable.db'}?mode=ro", uri=True)
     assert unavailable.value.sqlite_errorcode & 0xFF == sqlite3.SQLITE_CANTOPEN
@@ -429,7 +478,14 @@ def test_hash_phase_starts_before_each_accepted_revision_is_read(
 
     root = tmp_path / "source"
     root.mkdir()
-    (root / "one.jsonl").write_bytes(b"{}\n")
+    # A real session record: intake excludes a Codex JSONL with none, and an
+    # excluded file is never hashed.
+    session = (
+        b'{"type":"session_meta","payload":{"id":"s","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m","role":"user",'
+        b'"content":[{"type":"input_text","text":"hi"}]}}\n'
+    )
+    (root / "one.jsonl").write_bytes(session)
     calls: list[tuple[str, dict[str, int]]] = []
     real_revision = module._revision
 
@@ -443,4 +499,201 @@ def test_hash_phase_starts_before_each_accepted_revision_is_read(
         operation_id="phase",
         progress=lambda phase, **counts: calls.append((phase, counts)),
     )
-    assert calls[-1] == ("baseline_hash", {"revisions": 1, "hashed_bytes": 3})
+    assert calls[-1] == ("baseline_hash", {"revisions": 1, "hashed_bytes": len(session)})
+
+
+def test_intake_exclusion_retires_an_earlier_accepted_observation(tmp_path: Path) -> None:
+    """A resumed build does not carry forward a demand intake will never meet.
+
+    Anti-vacuity: removing the ``intake_excluded`` skip in
+    ``merge_pending_production_baseline`` keeps the earlier accepted row, and
+    ``verify`` raises ``unretained revision(s)``.
+    """
+    root = tmp_path / "codex"
+    root.mkdir()
+    sidecar = root / "rollout-2026-06-02T00-00-00-meta.jsonl"
+    sidecar.write_bytes(
+        b'{"timestamp":"2026-06-02T00:00:00Z","type":"session_meta","payload":{"id":"meta",'
+        b'"timestamp":"2026-06-02T00:00:00Z","cwd":"/tmp","originator":"codex_cli_rs"}}\n'
+    )
+    current = capture_production_source_baseline((WatchSource("codex", root, suffixes=(".jsonl",)),), operation_id="op")
+    [row] = [row for row in current.decisions if row.path == str(sidecar)]
+    assert row.disposition == "excluded" and row.reason.startswith("intake_excluded:")
+
+    revision, size = _revision(sidecar)
+    earlier = _seal(
+        "op",
+        current.source_signature,
+        (SourceDecision("codex", str(sidecar), "accepted", "file", revision, material_bytes=size),),
+    )
+    merged = merge_pending_production_baseline(current, earlier)
+    assert merged.accepted == ()
+    merged.verify(_source_db(tmp_path / "source.db", ()))
+
+
+def test_a_rewritten_path_keeps_its_earlier_accepted_revision(tmp_path: Path) -> None:
+    """A session observed earlier stays demanded after its path is rewritten to a sidecar.
+
+    Anti-vacuity: retiring the earlier row by coordinate alone (dropping the
+    ``_unchanged_revision`` check) empties ``merged.accepted`` and ``verify``
+    passes without the session ever being retained.
+    """
+    root = tmp_path / "codex"
+    root.mkdir()
+    path = root / "rollout-2026-06-02T00-00-00-rewritten.jsonl"
+    session = (
+        b'{"type":"session_meta","payload":{"id":"s","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m","role":"user",'
+        b'"content":[{"type":"input_text","text":"hi"}]}}\n'
+    )
+    earlier = _seal(
+        "op",
+        "signature",
+        (
+            SourceDecision(
+                "codex",
+                str(path),
+                "accepted",
+                "file",
+                hashlib.sha256(session).hexdigest(),
+                material_bytes=len(session),
+            ),
+        ),
+    )
+    path.write_bytes(b'{"type":"session_meta","payload":{"id":"s","timestamp":"2026-06-02T00:00:00Z"}}\n')
+    current = capture_production_source_baseline((WatchSource("codex", root, suffixes=(".jsonl",)),), operation_id="op")
+    assert {row.path: row.disposition for row in current.decisions}[str(path)] == "excluded"
+
+    merged = merge_pending_production_baseline(current, earlier)
+    assert [row.revision for row in merged.accepted] == [hashlib.sha256(session).hexdigest()]
+    with pytest.raises(ProductionBaselineError, match="unretained revision"):
+        merged.verify(_source_db(tmp_path / "source.db", ()))
+
+
+def test_an_unreadable_state_database_is_a_retryable_fault_not_an_exclusion(tmp_path: Path) -> None:
+    """A read fault on a declared state database keeps the build retrying.
+
+    The structural recognizer cannot open the file and reads it as "not
+    Codex state", which would otherwise record a terminal intake exclusion.
+
+    Anti-vacuity: dropping the probe in ``classify_pre_acquisition`` records
+    ``intake_excluded:...`` and the database silently leaves the demand.
+    """
+    root = tmp_path / "codex"
+    root.mkdir()
+    state = root / "state_5.sqlite"
+    with sqlite3.connect(state) as conn:
+        conn.execute("CREATE TABLE threads(id TEXT)")
+    state.chmod(0)
+    try:
+        baseline = capture_production_source_baseline(
+            (WatchSource("codex", root, suffixes=(".sqlite",)),), operation_id="unreadable"
+        )
+    finally:
+        state.chmod(0o600)
+    [row] = [row for row in baseline.decisions if row.path == str(state)]
+    assert row.disposition == "fault"
+    assert row.reason.startswith("revision_io_unavailable:")
+
+
+def test_non_database_bytes_under_a_state_name_stay_an_intake_exclusion(tmp_path: Path) -> None:
+    """Bytes that are not SQLite are excluded by intake for good, so they are not a fault.
+
+    Anti-vacuity: routing the probe's non-retryable ``SQLITE_NOTADB`` to the
+    ordinary fault branch records ``revision_unreadable`` and blocks promotion
+    on a file intake will never retain.
+    """
+    root = tmp_path / "codex"
+    root.mkdir()
+    state = root / "state_5.sqlite"
+    state.write_bytes(b"not a database, just text\n" * 64)
+    baseline = capture_production_source_baseline(
+        (WatchSource("codex", root, suffixes=(".sqlite",)),), operation_id="not-a-database"
+    )
+    [row] = [row for row in baseline.decisions if row.path == str(state)]
+    assert row.disposition == "excluded"
+    assert row.reason.startswith("intake_excluded:")
+
+
+def test_the_admission_scan_checkpoints_inside_one_long_line(tmp_path: Path) -> None:
+    """Cancellation reaches the sidecar scan even inside one unterminated record.
+
+    Anti-vacuity: checkpointing only between lines (or calling the
+    uncheckpointed ``jsonl_session_artifact(path)``) reads the whole 8 MiB
+    line first, the checkpoint runs at most once, and nothing raises.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.live.batch_support import classify_pre_acquisition
+
+    root = tmp_path / "codex"
+    root.mkdir()
+    sidecar = root / "rollout-2026-06-02T00-00-00-long.jsonl"
+    with sidecar.open("wb") as stream:
+        stream.write(b'{"type":"session_meta","payload":{"id":"x","timestamp":"2026-06-02T00:00:00Z"}}\n')
+        stream.write(b'{"type":"session_meta","payload":"' + b"x" * (8 * 1024 * 1024))
+
+    class CancelledError(Exception):
+        pass
+
+    calls = 0
+
+    def checkpoint() -> None:
+        nonlocal calls
+        calls += 1
+        if calls >= 3:
+            raise CancelledError
+
+    with pytest.raises(CancelledError):
+        classify_pre_acquisition(
+            sidecar,
+            fallback_provider=Provider.CODEX,
+            source_only=False,
+            size_bytes=sidecar.stat().st_size,
+            checkpoint=checkpoint,
+        )
+
+
+def test_whole_zip_member_revision_is_hashed_without_buffering_the_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A preserved whole member is hashed in chunks, as acquisition streams it.
+
+    Anti-vacuity: replaying the member through an unbounded ``handle.read()``
+    (the payload replay's whole-member branch) trips the guard below.
+    """
+    from polylogue.sources import decoders
+
+    root = tmp_path / "account"
+    root.mkdir()
+    member = b'{"type":"user","sessionId":"s1","uuid":"u1","message":{"role":"user","content":"hi"}}\n' * 50
+    bundle = root / "export.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("projects/p/s1.jsonl", member)
+    original_open = decoders.open_bounded_zip_entry
+
+    class ChunkOnlyReader:
+        def __init__(self, handle: Any) -> None:
+            self._handle = handle
+
+        def __enter__(self) -> ChunkOnlyReader:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            self._handle.close()
+
+        def read(self, size: int = -1) -> bytes:
+            assert size > 0, "whole ZIP member buffered in memory"
+            return bytes(self._handle.read(size))
+
+    monkeypatch.setattr(
+        decoders,
+        "open_bounded_zip_entry",
+        lambda zf, info: ChunkOnlyReader(original_open(zf, info)),
+    )
+    baseline = capture_production_source_baseline(
+        (WatchSource("claude-code", root, suffixes=(".zip",)),), operation_id="stream"
+    )
+    accepted = baseline.accepted
+    assert [(row.path, row.revision, row.material_bytes) for row in accepted] == [
+        (f"{bundle}:projects/p/s1.jsonl", hashlib.sha256(member).hexdigest(), len(member))
+    ]

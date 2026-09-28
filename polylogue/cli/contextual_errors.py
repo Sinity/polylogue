@@ -78,7 +78,7 @@ class EmptySelectionError(ContextualCliError):
     """The query matched nothing, so the verb has nothing to act on."""
 
     default_next_actions: ClassVar[tuple[NextAction, ...]] = (
-        NextAction("Show why the selection is empty", "polylogue find <QUERY> --why"),
+        NextAction("Show why the selection is empty", "polylogue --why find <QUERY>"),
         NextAction("Drop the narrowest filter and re-run", "polylogue find <QUERY>"),
     )
 

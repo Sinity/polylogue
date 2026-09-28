@@ -42,10 +42,12 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
+    OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
     PytestSlotUnavailableError,
     run_pytest,
     run_pytest_isolated,
+    termination_metadata,
 )
 from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument, spool_paths
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
@@ -85,6 +87,7 @@ from devtools.verify_runs import (
     git_worktree_content_sha256,
     prune_successful_verify_runs,
     reconcile_and_record_abandoned_verify_runs,
+    verify_history_path,
 )
 from devtools.verify_test_collection import count_collected
 from devtools.worker_memory import CORPUS_MAX_WORKERS
@@ -128,7 +131,7 @@ _GRAPH_FREE_SELECTIONS = frozenset({"descriptor", "none"})
 DESCRIPTOR_CONTRACT_TESTS = (
     "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_declared_browser_smoke_has_no_private_browser_service_lease",
     "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_declared_live_provider_proof_declares_no_port_lease",
-    "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_agentctl_parser_accepts_the_unleased_shared_chrome_operation",
+    "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_descriptor_declares_the_unleased_shared_chrome_operation_and_workspace_contract",
     "tests/unit/devtools/test_dev_loop_service.py::test_declared_operation_has_a_json_contract_and_no_retired_keys",
     "tests/unit/devtools/test_seeded_archive_cache_gc.py::test_declared_agentctl_operation_is_bounded_and_previewable",
     "tests/unit/devtools/test_agent_env.py::test_every_declared_pytest_pool_operation_classifies_its_own_worker",
@@ -560,7 +563,7 @@ def _affected_admission(*, root: Path, graph: Any, forced_tests: Sequence[str] =
     return decision
 
 
-def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
+def _normalize_managed_pytest_environment(env: dict[str, str], command: Sequence[str] = ()) -> None:
     env.pop("PYTEST_ADDOPTS", None)
     env.pop("PYTEST_PLUGINS", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
@@ -573,7 +576,10 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     # This opt-in is the BROAD verifier's alone: `devtools.run_tests` defines
     # a function of the same name that deliberately does not set it, because a
     # focused selection would pay the warm-up for archives it never opens.
-    env["POLYLOGUE_BROAD_PREWARM"] = "1"
+    if all(nodeid in command for nodeid in DESCRIPTOR_CONTRACT_TESTS):
+        env.pop("POLYLOGUE_BROAD_PREWARM", None)
+    else:
+        env["POLYLOGUE_BROAD_PREWARM"] = "1"
     env["COVERAGE_CORE"] = TESTMON_COVERAGE_CORE
     env.pop("POLYLOGUE_CI", None)
 
@@ -594,6 +600,15 @@ def _clear_pytest_report(command: Sequence[str]) -> None:
         else:
             with contextlib.suppress(FileNotFoundError):
                 path.unlink()
+
+
+def _clear_full_run_shards() -> None:
+    """Prevent stale full-corpus shards from being attributed to this run."""
+    for report in (ROOT / Path(".cache/verify")).glob("last-pytest-*.json"):
+        if report.name == "last-pytest.json":
+            continue
+        with contextlib.suppress(FileNotFoundError):
+            report.unlink()
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -809,6 +824,7 @@ def _run(
     hypothesis_profile_source: str | None = None
     completed: subprocess.CompletedProcess[Any]
     rerun: dict[str, Any] | None = None
+    termination: dict[str, Any] = {}
     executable_result = executable_gate_result(command, gate=label, env=env)
     if not executable_result.ok:
         early_metadata = {
@@ -831,7 +847,7 @@ def _run(
     if pytest_step:
         command = _bind_pytest_reports_to_step(command, artifacts)
         _clear_pytest_report(command)
-        _normalize_managed_pytest_environment(env)
+        _normalize_managed_pytest_environment(env, command)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         # The pytest slot re-checks the branch and records what it executed
         # when the run starts, as it does for focused runs: the checkout can
@@ -848,11 +864,12 @@ def _run(
                 early_metadata["pytest_slot_terminal"] = runtime_evidence
             run.finish_step(
                 step_id=artifacts.step_id,
-                result=_early_gate_failure_result(started, early_metadata),
+                result={**_early_gate_failure_result(started, early_metadata), "exit": 125},
             )
             _write_step_result(label, pytest_step, f"FAILED ({exc})")
             return 125, time.monotonic() - started, early_metadata
         slot = outcome.slot
+        termination = termination_metadata(outcome)
         completed = subprocess.CompletedProcess(command, outcome.returncode)
         metadata_receipt = outcome.receipt
         # Exit 1 is "tests failed", the only outcome a rerun can speak to.
@@ -890,6 +907,7 @@ def _run(
     }
     if pytest_step:
         metadata["pytest_slot"] = slot
+        metadata.update(termination)
         metadata["hypothesis_profile"] = hypothesis_profile
         metadata["hypothesis_profile_source"] = hypothesis_profile_source
         metadata["runner"] = runner
@@ -980,13 +998,14 @@ def _scope(*, quick: bool, selection: str) -> VerificationScope:
 
 def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) -> None:
     result = declared_verification_result(payload, operation=operation) if operation else dict(payload)
-    if operation:
+    if operation and payload.get("run_id"):
         # The operation result carries the same bounded receipt as the
         # evidence lane.  AgentCTL lifecycle fields remain outside this
         # projection and cannot turn process completion into semantic success.
         result["semantic_receipt"] = canonical_verification_receipt(payload)
     if use_json or operation:
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+        sys.stdout.flush()
     _write_verdict_line(payload, stream=sys.stderr)
 
 
@@ -1012,7 +1031,8 @@ def _write_verdict_line(payload: Mapping[str, Any], *, stream: Any) -> None:
     diagnosis = payload.get("diagnosis")
     named = f" diagnosis={diagnosis}" if diagnosis else ""
     artifact_dir = payload.get("artifact_dir")
-    receipt = f" receipt={Path(str(artifact_dir)) / 'run.json'}" if artifact_dir else ""
+    receipt_path = (ROOT / str(artifact_dir) / "run.json").resolve() if artifact_dir else None
+    receipt = f" receipt={receipt_path}" if receipt_path else ""
     # The checkout this run tested, so the line that is cited says what it proves.
     head = payload.get("git_head")
     branch = payload.get("git_branch")
@@ -1046,7 +1066,7 @@ def _verification_workload_receipt(
     exit_code: int,
 ) -> dict[str, Any]:
     """Adapt verifier step timing into the shared workload receipt contract."""
-    phases = tuple(str(result["name"]) for result in results)
+    phases = tuple(str(result["name"]) for result in results) or ("finalization",)
     spec = WorkloadEnvelopeSpec(
         workload_id=f"devtools:verify:{tier}",
         family_id="verification",
@@ -1063,6 +1083,14 @@ def _verification_workload_receipt(
         )
         for result in results
     )
+    if not observations:
+        observations = (
+            WorkloadPhaseObservation(
+                name="finalization",
+                wall_ms=0.0,
+                unavailable=_UNMEASURED_WORKLOAD_DIMENSIONS,
+            ),
+        )
     receipt = WorkloadReceipt.from_observations(
         spec=spec,
         status=WorkloadRunStatus.SUCCEEDED if exit_code == 0 else WorkloadRunStatus.FAILED,
@@ -1090,6 +1118,7 @@ def _finish_interrupted_verification(
     agentctl_operation: str | None,
     exit_code: int,
     termination_reason: str,
+    results: Sequence[Mapping[str, Any]] = (),
 ) -> int:
     """Persist the terminal state when an outer runtime ends verification."""
     run.finish_interrupted_steps(
@@ -1105,12 +1134,19 @@ def _finish_interrupted_verification(
         verification_scope=scope.value,
         final_git_head=git_head(ROOT),
         pytest_aggregate={
-            "selection_mode": "quick" if args.quick else selection,
-            "outcomes": {},
+            **_aggregate_pytest_results(
+                results, expected_step_count=3, mode="quick" if args.quick else selection, exit_code=exit_code
+            ),
             "terminal_green": False,
             "complete_corpus_covered": False,
             "termination_reason": termination_reason,
         },
+        workload_receipt=_verification_workload_receipt(
+            tier="quick" if args.quick else selection,
+            git_head=git_head(ROOT),
+            results=(),
+            exit_code=exit_code,
+        ),
     )
     _emit(payload, use_json=args.json, operation=agentctl_operation)
     return exit_code
@@ -1128,6 +1164,13 @@ def _finish_and_record_verification(
     workload_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Finish, durably append, and prune every terminal verification path."""
+    if workload_receipt is None:
+        workload_receipt = _verification_workload_receipt(
+            tier=str(run._payload["tier"]),
+            git_head=run._payload.get("git_head"),
+            results=(),
+            exit_code=exit_code,
+        )
     payload = run.finish(
         exit_code=exit_code,
         duration_s=duration_s,
@@ -1137,9 +1180,10 @@ def _finish_and_record_verification(
         pytest_aggregate=pytest_aggregate,
         workload_receipt=workload_receipt,
     )
-    append_verify_history(payload)
+    history_path = verify_history_path(root=ROOT)
+    append_verify_history(payload, path=history_path)
     append_verification_evidence(payload)
-    prune_successful_verify_runs(root=ROOT)
+    prune_successful_verify_runs(root=ROOT, history_path=history_path)
     if exit_code != 0:
         try:
             from polylogue.context.failure_seed import write_failure_seed
@@ -1155,6 +1199,7 @@ def _aggregate_pytest_results(
 ) -> dict[str, Any]:
     pytest_results = [result for result in results if str(result.get("name", "")).startswith("pytest")]
     outcomes: dict[str, int] = {}
+    flaky: list[str] = []
     selected_counts: list[int] = []
     terminal_counts: list[int] = []
     for result in pytest_results:
@@ -1168,14 +1213,18 @@ def _aggregate_pytest_results(
             terminal_counts.append(terminal)
         for outcome, count in (statistics.get("outcomes") or {}).items():
             outcomes[str(outcome)] = outcomes.get(str(outcome), 0) + int(count)
+        rerun = result.get("rerun")
+        if isinstance(rerun, Mapping):
+            flaky.extend(str(nodeid) for nodeid in rerun.get("flaky") or ())
     complete = mode == "all" and exit_code == 0 and len(pytest_results) == expected_step_count
     return {
         "selection_mode": mode,
         # Full-corpus verification partitions the collection across managed
         # pytest steps, so these are disjoint populations and must be summed.
-        "selected_union_count": sum(selected_counts),
-        "terminal_union_count": sum(terminal_counts),
+        "selected_union_count": sum(selected_counts) if selected_counts else None,
+        "terminal_union_count": sum(terminal_counts) if terminal_counts else None,
         "outcomes": outcomes,
+        "flaky": flaky,
         "terminal_green": exit_code == 0,
         "complete_corpus_covered": complete,
     }
@@ -1220,6 +1269,17 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         help="run on the default branch deliberately (a base comparison, or the hosted gate on a push)",
     )
     args = parser.parse_args(argv)
+    if sys.flags.optimize > 0:
+        message = (
+            "devtools verify refuses optimized Python; run with the standard interpreter (sys.flags.optimize must be 0)"
+        )
+        if args.json:
+            print(
+                json.dumps({"status": "refused", "diagnosis": "optimized_python", "message": message, "exit_code": 125})
+            )
+        else:
+            sys.stderr.write(message + "\n")
+        return 125
     _anchor_verification_paths()
     identity = checkout_identity(ROOT)
     branch_refusal = default_branch_refusal(identity, command="devtools verify", allowed=args.on_default_branch)
@@ -1255,6 +1315,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     validate_authority_matrix()
     started = time.monotonic()
     selection = "all" if args.all_tests else "affected"
+    if args.all_tests:
+        _clear_full_run_shards()
     changed_paths: frozenset[str] | None = None
     if not args.quick and not args.all_tests:
         changed_paths = _git_changed_paths(ROOT)
@@ -1341,8 +1403,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         hypothesis_profile=args.hypothesis_profile,
         changed_paths=changed_paths,
     )
+    results: list[dict[str, Any]] = []
     try:
-        results: list[dict[str, Any]] = []
         exit_code = 0
         for label, (rc, elapsed, metadata) in _run_steps(steps, run=run, runner=args.runner):
             results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc, **metadata})
@@ -1358,6 +1420,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             agentctl_operation=agentctl_operation,
             exit_code=128 + exc.signum,
             termination_reason=signal.Signals(exc.signum).name.lower(),
+            results=results,
         )
     except KeyboardInterrupt:
         return _finish_interrupted_verification(
@@ -1369,8 +1432,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             agentctl_operation=agentctl_operation,
             exit_code=130,
             termination_reason="operator_interrupt",
+            results=results,
         )
     executed: set[tuple[object, object, object]] = set()
+    tree_unknown = False
     for result in results:
         slot_receipt = result.get("pytest_slot_receipt")
         provenance = slot_receipt.get("worktree_provenance") if isinstance(slot_receipt, Mapping) else None
@@ -1384,6 +1449,14 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                     provenance.get("git_worktree_content_sha256"),
                 )
             )
+        elif result.get("diagnosis") == OOM_KILLED_DIAGNOSIS:
+            # The kill took the slot receipt, so nothing identified the tree
+            # pytest ran against; the admitted head is not that evidence.
+            tree_unknown = True
+    if tree_unknown:
+        # Recorded after every step, so a later step's provenance cannot
+        # stand in for the tree the killed step ran against.
+        run.record_execution_worktree({"capture_source": "unavailable"})
     # The static gates read the checkout directly, with no slot to re-check it:
     # a run whose branch, HEAD or Git-visible content changed while it ran, or
     # whose pytest step executed other content, verified no single tree.

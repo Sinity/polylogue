@@ -36,6 +36,17 @@ def test_latest_run_is_the_most_recently_written(tmp_path: Path) -> None:
     assert _latest_run(tmp_path) == newer
 
 
+def test_latest_run_uses_start_time_after_reconciliation_rewrites_old_receipt(tmp_path: Path) -> None:
+    """Anti-vacuity: mtime ordering promotes the rewritten abandoned run."""
+    import os
+
+    older = _write_run(tmp_path, "old", {"started_at": "2026-01-01T00:00:00+00:00", "status": "failed"})
+    newer = _write_run(tmp_path, "new", {"started_at": "2026-01-02T00:00:00+00:00", "status": "success"})
+    os.utime(newer, (1000, 1000))
+    os.utime(older, (3000, 3000))
+    assert _latest_run(tmp_path) == newer
+
+
 def test_unknown_diagnosis_is_reported_verbatim_without_invented_advice() -> None:
     stream = io.StringIO()
 
@@ -137,7 +148,7 @@ def test_history_mode_reports_where_the_time_went(tmp_path: Path, monkeypatch: p
         + "\n",
         encoding="utf-8",
     )
-    monkeypatch.setattr(why, "VERIFY_HISTORY_PATH", history)
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HISTORY_PATH", str(history))
     stream = io.StringIO()
 
     assert why._render_history(24.0, stream) == 0
@@ -239,6 +250,39 @@ def test_why_names_the_killer_instead_of_sending_the_reader_to_the_journal() -> 
     assert "journalctl" not in output
 
 
+def test_why_names_the_killer_of_a_queued_pytest_step() -> None:
+    """An oomd-killed ``devtools test`` step carries its ending on the step.
+
+    Anti-vacuity: read the ending from the run payload only and this renders
+    no ``ended:`` line, though the explanation points the reader at it.
+    """
+    stream = io.StringIO()
+    _render(
+        {
+            "tier": "focused-test",
+            "status": "failed",
+            "exit_code": 137,
+            "diagnosis": "oom_killed",
+            "steps": [
+                {
+                    "step_id": "01-pytest-focused",
+                    "exit": 137,
+                    "diagnosis": "oom_killed",
+                    "termination_reason": "oom_killed",
+                    "termination_killer": "oom-kill",
+                    "termination_unit": "agentctl-pytest-quick-polylogue-pytest_focused-0badf00d.service",
+                }
+            ],
+        },
+        stream,
+    )
+    output = stream.getvalue()
+    assert (
+        "ended: oom_killed; systemd recorded oom-kill "
+        "(unit agentctl-pytest-quick-polylogue-pytest_focused-0badf00d.service)"
+    ) in output
+
+
 def test_why_does_not_invent_a_killer_for_a_clean_cancel() -> None:
     """Anti-vacuity: always printing a killer would attribute a cancel to systemd."""
     stream = io.StringIO()
@@ -257,3 +301,21 @@ def test_why_says_nothing_about_an_ending_nobody_recorded() -> None:
     stream = io.StringIO()
     _render({"tier": "quick", "status": "success", "exit_code": 0}, stream)
     assert "ended:" not in stream.getvalue()
+
+
+def test_abandoned_run_without_attributed_ending_keeps_a_real_fallback() -> None:
+    """Anti-vacuity: advice must not point at an absent ended line."""
+    stream = io.StringIO()
+    _render({"tier": "all", "status": "failed", "diagnosis": "verification_abandoned"}, stream)
+    output = stream.getvalue()
+    assert "ended:" not in output
+    assert "Check the run and AgentCTL job records" in output
+
+
+def test_json_history_fails_when_history_file_is_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: missing substrate must not look like a valid empty window."""
+    from devtools import why
+
+    missing = tmp_path / "missing.jsonl"
+    monkeypatch.setattr(why, "VERIFY_HISTORY_PATH", missing)
+    assert why._render_history_json(24, io.StringIO()) == 1

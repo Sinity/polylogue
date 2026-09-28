@@ -28,6 +28,25 @@ pytestmark = pytest.mark.uses_real_clock(
 )
 
 
+def test_failed_embedding_receipt_decodes_without_fabricated_counters() -> None:
+    """Anti-vacuity: requiring integer counters turns accepted failures into indeterminate replay."""
+    from polylogue.operations.daemon_protocol import EmbeddingBackfillResult
+    from polylogue.operations.machine_lifecycle import _embedding_terminal_receipt
+
+    receipt = {
+        "operation": "maintenance.embeddings.backfill",
+        "outcome": "failed",
+        "sequence": 1,
+        "effect": "indeterminate",
+        "affected_count": None,
+        "progress": {"state": "unknown", "computed": None, "failed": None, "estimated_cost_usd": None},
+        "result": {"done": None, "pending": None, "failed": None},
+        "error": {"code": "embedding_backfill_failed", "message": "provider unavailable"},
+    }
+    EmbeddingBackfillResult.model_validate(receipt)
+    assert _embedding_terminal_receipt("embedding_receipt:" + json.dumps(receipt)) == receipt
+
+
 def test_failed_backup_operation_retains_rejected_result_details(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -325,13 +344,15 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
 
     composed = False
 
-    def compose(_index: Path, **kwargs: object) -> object:
+    def compose(_index: Path, **_kwargs: object) -> object:
         nonlocal composed
         composed = True
-        emit = kwargs["progress_callback"]
-        limited = bool(kwargs["scope_limited"])
 
-        async def converge(_scope: object) -> EmbeddingConvergenceResult:
+        # The operation passes its per-request limits to the owner call; the
+        # owner itself is composed once per process.
+        async def converge(_scope: object, **limits: object) -> EmbeddingConvergenceResult:
+            emit = limits["progress_callback"]
+            limited = bool(limits["scope_limited"])
             assert callable(emit)
             cast(Any, emit)({"state": "started", "session_id": "codex:synthetic", "estimated_cost_usd": 0.0001})
             await asyncio.sleep(0.05)
@@ -407,12 +428,12 @@ def test_embedding_backfill_cancel_is_request_scoped_and_keeps_partial_receipt(
     started = Event()
     composed = Event()
 
-    def compose(_index: Path, **kwargs: object) -> object:
+    def compose(_index: Path, **_kwargs: object) -> object:
         composed.set()
-        emit = kwargs["progress_callback"]
-        quiet = kwargs["quiet"]
 
-        async def converge(_scope: object) -> EmbeddingConvergenceResult:
+        async def converge(_scope: object, **limits: object) -> EmbeddingConvergenceResult:
+            emit = limits["progress_callback"]
+            quiet = limits["quiet"]
             assert callable(emit) and callable(quiet)
             cast(Any, emit)({"state": "started", "ordinal": 0, "estimated_cost_usd": 0.001})
             started.set()
@@ -499,8 +520,9 @@ def test_authentication_refusal_is_not_an_indeterminate_mutation(tmp_path: Path)
     """Mutation: treat the ingress 401 as a lost receipt and the typed refusal disappears."""
     with running_daemon_operations(tmp_path / "archive") as stack:
         stack.server.auth_token = "synthetic-test-credential"
-        with pytest.raises(DaemonOperationRejectedError, match="unauthorized"):
+        with pytest.raises(DaemonOperationRejectedError) as rejected:
             stack.client.operation("mutation.session.delete.preview", {"session_ids": ["codex:absent"]})
+        assert rejected.value.outcome == "unauthorized"
         assert not stack.runtime._exchanges
 
 
@@ -614,7 +636,14 @@ def test_kernel_authenticated_uid_reference_survives_client_and_daemon_restart(t
 def test_restart_recovers_indeterminate_mutation_without_replaying_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A durable unknown effect is returned after restart, never submitted again."""
+    """A durable unknown effect converges once at startup; a retry never resubmits it.
+
+    Since #5688 startup recovery resolves a dead or unknown run by convergent
+    replay, so the restarted daemon applies the plan exactly once more (a
+    no-op against the already-deleted target). Anti-vacuity: re-dispatching
+    the handler for the retried request id raises ``apply_calls`` past the
+    startup count.
+    """
     root = tmp_path / "archive"
     session_ids: tuple[str, ...] = ()
 
@@ -662,10 +691,11 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
 
     assert apply_calls == 1
     with running_daemon_operations(root) as restarted:
-        # Startup recovery conservatively adjudicates this synthetic fixture
-        # from the already-deleted target. Re-introduce the persisted unknown
-        # outcome after startup so the route is tested against a durable
-        # indeterminate record, exactly as a crashed domain writer leaves it.
+        # Startup recovery replays the unknown run once, convergently.
+        # Re-introduce the persisted unknown outcome after startup so the
+        # retry route is tested against a durable indeterminate record,
+        # exactly as a crashed domain writer leaves it.
+        assert apply_calls == 2
         with sqlite3.connect(root / "audit.db") as connection:
             connection.execute(
                 """
@@ -690,7 +720,7 @@ def test_restart_recovers_indeterminate_mutation_without_replaying_it(
         assert recovered["accepted_reference"] == accepted_reference
         assert recovered["result"]["reference"] == accepted_reference
 
-    assert apply_calls == 1
+    assert apply_calls == 2
     assert all(not restarted.session_exists(session_id) for session_id in session_ids)
 
 
@@ -1552,3 +1582,167 @@ def test_skewed_write_refusal_is_pre_dispatch_not_an_indeterminate_mutation(
         # The refusal's public detail survives to the caller, not only its code.
         assert rejected.value.detail != "request_too_large"
         assert not stack.runtime._exchanges
+
+
+def _all_capabilities_principal() -> Any:
+    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_SPECS
+    from polylogue.operations.mutation_transaction import MutationPrincipal
+
+    return MutationPrincipal(
+        actor_ref=f"daemon:unix:uid:{os.getuid()}",
+        capabilities=frozenset(spec.capability for spec in DAEMON_OPERATION_SPECS),
+        surface="cli",
+        role_label="daemon-unix-peer",
+    )
+
+
+def test_annotation_import_that_outlives_its_deadline_never_commits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A request reported ``timed-out`` before acceptance commits nothing afterwards.
+
+    Validation resolves every ref before the import writes. Holding the first
+    ref resolution past the request deadline makes the runtime answer
+    ``timed-out``; the worker then finishes validating.
+
+    Anti-vacuity: remove the ``before_durable_execution`` fence from
+    ``mutation_annotation_import_batch`` and the worker commits the batch into
+    ``user.db`` after its caller was told it timed out before acceptance.
+    """
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import Provider
+    from polylogue.operations import ref_resolution
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.infra.live_ingest import write_index_session
+
+    def seed(archive_root: Path) -> None:
+        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id="annotation-target",
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+                ),
+            )
+
+    session_id = "codex-session:annotation-target"
+    entered = threading.Event()
+    answered = threading.Event()
+    original = ref_resolution.resolve_ref_against_archive
+
+    def held_resolution(*args: Any, **kwargs: Any) -> Any:
+        entered.set()
+        assert answered.wait(timeout=30)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ref_resolution, "resolve_ref_against_archive", held_resolution)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        request = DaemonOperationRequest(
+            "mutation.annotation.import_batch",
+            {
+                "jsonl": json.dumps(
+                    {
+                        "row_key": "r1",
+                        "value": {"activity": "debugging", "confidence": 0.9},
+                        "evidence_refs": [session_id],
+                    }
+                )
+                + "\n",
+                "batch_id": "late-batch",
+                "schema_id": "seed.activity",
+                "schema_version": 1,
+                "target_ref": f"session:{session_id}",
+                "source_result_ref": "result-set:late",
+                "actor_ref": "agent:labeler",
+                "model_ref": "agent:model",
+                "prompt_ref": "block:prompt:0",
+                "metadata": {},
+            },
+            request_id="late-annotation-import",
+            archive_root=str(stack.archive_root),
+            deadline_ms=1_000,
+        )
+        try:
+            envelope = stack.runtime.call(request, _all_capabilities_principal())
+        finally:
+            answered.set()
+        assert entered.is_set(), "validation never reached ref resolution; the test is vacuous"
+        assert envelope["outcome"] == "timed-out"
+        with stack.runtime._condition:
+            assert stack.runtime._condition.wait_for(lambda: not stack.runtime._exchanges, timeout=30)
+        archive_root = stack.archive_root
+
+    with closing(sqlite3.connect(archive_root / "user.db")) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM assertions").fetchone() == (0,)
+
+
+def test_shutdown_waits_for_a_cancelled_staged_operation_to_finish_its_cleanup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Shutdown returns only after a cancelled staged task has actually finished.
+
+    The staged ingest's first compute phase is running when shutdown cancels
+    the pre-acceptance exchange. The task keeps waiting for that phase before
+    its cleanup runs, and the owner may only tear down after that.
+
+    Anti-vacuity: cancel the ``run_coroutine_threadsafe`` proxy future instead
+    of the task and shutdown returns while the compute phase is still blocked,
+    so ``returned`` is unset when it completes.
+    """
+    import asyncio
+
+    from polylogue.operations.daemon_protocol import DaemonOperationRequest
+
+    entered = threading.Event()
+    release = threading.Event()
+    returned = threading.Event()
+    request = DaemonOperationRequest(
+        "ingest",
+        {"path": str(tmp_path / "unreached.json")},
+        request_id="shutdown-staged-ingest",
+        archive_root=str(tmp_path / "archive"),
+        deadline_ms=60_000,
+    )
+
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        monkeypatch.setattr(stack.runtime, "require_session_maintenance", lambda: None)
+        original = stack.runtime.compute_phase
+
+        async def held_first_phase(work: Any) -> Any:
+            if entered.is_set():
+                return await original(work)
+
+            def held() -> Any:
+                entered.set()
+                assert release.wait(timeout=30)
+                try:
+                    return work()
+                finally:
+                    returned.set()
+
+            return await original(held)
+
+        monkeypatch.setattr(stack.runtime, "compute_phase", held_first_phase)
+        caller = threading.Thread(
+            target=lambda: stack.runtime.call(request, _all_capabilities_principal()),
+            name="shutdown-staged-ingest-caller",
+            daemon=True,
+        )
+        caller.start()
+        releaser = threading.Timer(0.5, release.set)
+        try:
+            assert entered.wait(timeout=10)
+            loop = stack._loop.loop
+            assert loop is not None
+            shutdown = asyncio.run_coroutine_threadsafe(stack.runtime.shutdown(), loop)
+            releaser.start()
+            shutdown.result(timeout=30)
+            assert returned.is_set(), "shutdown returned while the staged compute phase was still running"
+        finally:
+            release.set()
+            releaser.cancel()
+            caller.join(timeout=10)

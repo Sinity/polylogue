@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import tempfile
 import time
 import zipfile
 from collections.abc import Callable, Iterable
@@ -44,6 +46,7 @@ from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapsh
 _ZIP_SNIFF_MEMBER_LIMIT = 64
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
 _HEARTBEAT_INTERVAL_S = 5.0
+_REVISION_CHUNK_BYTES = 1024 * 1024
 AcquisitionObservation: TypeAlias = JSONDocument
 ObservationCallback: TypeAlias = Callable[[AcquisitionObservation], None]
 StatusCallback: TypeAlias = Callable[[str], None]
@@ -666,6 +669,18 @@ def _iter_zip_entry_split_payloads(
         raise split_buffer.refusals[0]
 
 
+def _whole_member_provider(context: ZipEntryReadContext) -> Provider | None:
+    """The member's provider when acquisition preserves it whole without splitting."""
+    from polylogue.sources.origin_specs import path_declaration_refuses_session
+
+    entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
+    if entry_provider_hint in GROUP_PROVIDERS or path_declaration_refuses_session(
+        entry_provider_hint, context.entry.filename
+    ):
+        return entry_provider_hint
+    return None
+
+
 def replay_zip_entry_acquisition_payloads(
     zf: zipfile.ZipFile,
     context: ZipEntryReadContext,
@@ -678,12 +693,8 @@ def replay_zip_entry_acquisition_payloads(
     bytes. Backup verification uses this read-only replay instead of inventing
     a JSON-array indexing rule.
     """
-    from polylogue.sources.origin_specs import path_declaration_refuses_session
-
-    entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
-    if entry_provider_hint in GROUP_PROVIDERS or path_declaration_refuses_session(
-        entry_provider_hint, context.entry.filename
-    ):
+    entry_provider_hint = _whole_member_provider(context)
+    if entry_provider_hint is not None:
         with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
             payload_bytes = handle.read()
             identity = payload_content_identity(payload_bytes)
@@ -723,6 +734,63 @@ def replay_zip_entry_acquisition_payloads(
             addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
             content_identity=identity,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayedZipRevision:
+    """The revision and size of one payload unit ZIP acquisition retains."""
+
+    source_index: int | None
+    revision: str
+    size_bytes: int
+
+
+def _stream_member_revision(
+    zf: zipfile.ZipFile,
+    entry: zipfile.ZipInfo,
+    checkpoint: Callable[[], None] | None,
+) -> ReplayedZipRevision:
+    digest = hashlib.sha256()
+    size = 0
+    # Acquisition refuses a member whose content identity cannot be stored,
+    # so the replay does too: the member is spooled as it is hashed and its
+    # identity streamed from the spool, raising the same refusal.
+    with tempfile.TemporaryFile() as spool:
+        with _decoders.open_bounded_zip_entry(zf, entry) as handle:
+            while chunk := handle.read(_REVISION_CHUNK_BYTES):
+                if checkpoint is not None:
+                    checkpoint()
+                digest.update(chunk)
+                spool.write(chunk)
+                size += len(chunk)
+        spool.seek(0)
+        stream_payload_content_identity(spool)
+    return ReplayedZipRevision(None, digest.hexdigest(), size)
+
+
+def replay_zip_entry_acquisition_revisions(
+    zf: zipfile.ZipFile,
+    context: ZipEntryReadContext,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> Iterable[ReplayedZipRevision]:
+    """Replay the revisions of the units ZIP acquisition would retain.
+
+    Same unit decisions as :func:`replay_zip_entry_acquisition_payloads`, but a
+    whole member is hashed in chunks, as acquisition streams it, instead of
+    being read into memory: an admitted member can be several gigabytes.
+    """
+    if _whole_member_provider(context) is not None:
+        yield _stream_member_revision(zf, context.entry, checkpoint)
+        return
+    state = _ZipEntrySplitState()
+    for payload in _iter_zip_entry_split_payloads(zf, context, state):
+        state.did_split = True
+        yield ReplayedZipRevision(
+            payload.source_index, hashlib.sha256(payload.payload_bytes).hexdigest(), len(payload.payload_bytes)
+        )
+    if not state.did_split:
+        yield _stream_member_revision(zf, context.entry, checkpoint)
 
 
 def sniff_zip_provider(
@@ -825,6 +893,8 @@ __all__ = [
     "ZipEntryReadContext",
     "iter_entry_payloads",
     "replay_zip_entry_acquisition_payloads",
+    "replay_zip_entry_acquisition_revisions",
+    "ReplayedZipRevision",
     "iter_zip_entry_raw_data",
     "sniff_zip_provider",
     "make_status_heartbeat",

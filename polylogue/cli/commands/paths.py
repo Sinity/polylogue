@@ -73,7 +73,7 @@ def paths_command(output_format: str) -> None:
     # Durable tiers stay at the configured root when the active index is a
     # promoted generation. Pass that root so readiness resolves the selected
     # index while attaching the correct source tier.
-    raw_materialization_readiness = _raw_materialization_readiness(archive)
+    raw_materialization_readiness = _raw_materialization_readiness(archive, index_db=db)
     raw_materialization_assessment = assess_raw_materialization(raw_materialization_readiness)
     archive_materialization_ready = (
         source_db.exists()
@@ -265,12 +265,14 @@ def _schema_blocker_text(tier_versions: dict[str, dict[str, object]]) -> str:
     return "blocked=" + ",".join(blockers)
 
 
-def _raw_materialization_readiness(active_archive: Path) -> dict[str, object]:
+def _raw_materialization_readiness(active_archive: Path, *, index_db: Path | None = None) -> dict[str, object]:
     readiness = raw_materialization_readiness_snapshot(active_archive)
-    return _merge_raw_materialization_debt(readiness, active_archive)
+    return _merge_raw_materialization_debt(readiness, active_archive, index_db=index_db)
 
 
-def _merge_raw_materialization_debt(readiness: dict[str, object], active_archive: Path) -> dict[str, object]:
+def _merge_raw_materialization_debt(
+    readiness: dict[str, object], active_archive: Path, *, index_db: Path | None = None
+) -> dict[str, object]:
     """Fold the unified raw-materialization debt classifier into readiness.
 
     The structural snapshot is intentionally cheap and local to raw_id joins.
@@ -286,6 +288,7 @@ def _merge_raw_materialization_debt(readiness: dict[str, object], active_archive
             archive_root=active_archive,
             kinds=("raw-materialization",),
             exact_fts=False,
+            index_db_path=index_db,
         )
     except Exception as exc:
         # The docstring contract is that paths composes the debt classifier;

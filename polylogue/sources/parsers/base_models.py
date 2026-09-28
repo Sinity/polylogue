@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import (
     AliasChoices,
     BaseModel,
+    ConfigDict,
     Field,
     FieldSerializationInfo,
     ValidationInfo,
@@ -376,6 +377,8 @@ def _require_plausible_occurred_at_ms(value: int | None) -> int | None:
 
 
 class ParsedMessage(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     provider_message_id: str
     role: Role
     text: str | None = None

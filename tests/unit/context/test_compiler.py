@@ -43,6 +43,7 @@ def test_prose_with_refs_collapses_tools_and_preserves_resolvable_markers() -> N
     assert "<ref:action:session:m2:1> Bash" in (segment.markdown or "")
     assert "<ref:action:session:m3:0> tool_result" in (segment.markdown or "")
     assert ObjectRef.parse("action:session:m2:1").format() == "action:session:m2:1"
+    assert ObjectRef(kind="action", object_id="session:m2:1") in segment.object_refs
 
 
 def test_prose_with_refs_records_budget_recaps_after_sixty_percent() -> None:
@@ -59,6 +60,15 @@ def test_prose_with_refs_records_budget_recaps_after_sixty_percent() -> None:
     assert "[recap]" in (segment.markdown or "")
     assert "old prose old prose" in (segment.markdown or "")
     assert segment.lossiness == "budget_recapped_prose"
+
+
+def test_prose_with_refs_enforces_cap_even_when_only_protected_rows_are_huge() -> None:
+    messages = [SimpleNamespace(id="m1", role="user", blocks=[], text="protected " * 500)]
+    segment, recapped = compile_prose_with_refs_context_segment(
+        session_id="s", title="large", messages=messages, max_tokens=10
+    )
+    assert recapped
+    assert segment.token_estimate <= 6
 
 
 def test_context_spec_allows_unit_query_only_recipes() -> None:

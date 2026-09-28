@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import json
 import os
@@ -30,11 +29,16 @@ from polylogue.sources.decoder_zip import (
     is_declared_artifact_path,
     provider_detection_path,
 )
+from polylogue.sources.live.batch_support import (
+    RetryableSourceReadError,
+    classify_pre_acquisition,
+    retryable_read_fault,
+)
 from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
-    replay_zip_entry_acquisition_payloads,
+    replay_zip_entry_acquisition_revisions,
     sniff_zip_provider,
 )
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_member_revision_and_size
@@ -46,35 +50,6 @@ from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 _PENDING_DIR = "production-source-baseline"
 _PENDING_FILE = "pending.json"
 MATERIAL_BYTE_DEFINITION = "retained-canonical-payload-v1"
-_RETRYABLE_READ_ERRNOS = frozenset(
-    {
-        errno.EIO,
-        errno.EACCES,
-        errno.EPERM,
-        errno.ESTALE,
-        errno.ETIMEDOUT,
-        errno.EAGAIN,
-        errno.EBUSY,
-        errno.ENOSPC,
-        errno.EDQUOT,
-    }
-)
-
-
-def _retryable_read_fault(exc: Exception) -> bool:
-    sqlite_code = getattr(exc, "sqlite_errorcode", None)
-    return (isinstance(exc, OSError) and exc.errno in _RETRYABLE_READ_ERRNOS) or (
-        isinstance(exc, sqlite3.Error)
-        and isinstance(sqlite_code, int)
-        and sqlite_code & 0xFF
-        in {
-            sqlite3.SQLITE_IOERR,
-            sqlite3.SQLITE_BUSY,
-            sqlite3.SQLITE_LOCKED,
-            sqlite3.SQLITE_CANTOPEN,
-            sqlite3.SQLITE_PERM,
-        }
-    )
 
 
 class ProductionBaselineError(RuntimeError):
@@ -341,8 +316,20 @@ def merge_pending_production_baseline(
     current_by_coordinate = {(row.source, row.path): row for row in current.decisions}
     rows = list(current.decisions)
     keys = {(row.source, row.path, row.disposition, row.source_index, row.revision) for row in rows}
+    intake_excluded = {
+        (row.source, row.path)
+        for row in current.decisions
+        if row.disposition == "excluded" and row.reason.startswith("intake_excluded:")
+    }
     for row in previous.decisions:
         if row.disposition == "accepted":
+            if (row.source, row.path) in intake_excluded and _unchanged_revision(row):
+                # Intake never retains these exact bytes, so an earlier
+                # observation that accepted them is not a revision promotion
+                # can demand. A revision the path no longer holds stays
+                # demanded: the file may have been rewritten after a valid
+                # session was observed.
+                continue
             key = (row.source, row.path, row.disposition, row.source_index, row.revision)
             if key not in keys:
                 rows.append(row)
@@ -362,6 +349,21 @@ def merge_pending_production_baseline(
 
 BaselineProgress = Callable[..., None]
 """``progress(phase, *, inspected=0, revisions=0, hashed_bytes=0)``: cheap counters, no I/O."""
+
+
+def _unchanged_revision(row: SourceDecision) -> bool:
+    """Whether an earlier accepted revision is still the path's current content.
+
+    A database's logical revision is not re-derived here: an earlier accepted
+    database revision stays demanded.
+    """
+    path = Path(row.path)
+    if is_sqlite_path(path):
+        return False
+    try:
+        return _revision(path)[0] == row.revision
+    except OSError:
+        return False
 
 
 def _revision(path: Path, *, cancelled: Callable[[], bool] | None = None) -> tuple[str, int]:
@@ -430,29 +432,31 @@ def _archive_members(
                     entry_provider,
                     None,  # type: ignore[arg-type]
                 )
-                for payload in replay_zip_entry_acquisition_payloads(archive, context):
+                for unit in replay_zip_entry_acquisition_revisions(
+                    archive, context, checkpoint=lambda: _check_observation_cancelled(cancelled)
+                ):
                     _check_observation_cancelled(cancelled)
-                    split = payload.source_index or 0
+                    split = unit.source_index or 0
                     members.append(
                         SourceDecision(
                             source_name,
                             f"{path}:{info.filename}",
                             "accepted",
                             "archive_member",
-                            hashlib.sha256(payload.payload_bytes).hexdigest(),
+                            unit.revision,
                             zip_member_source_index(entry_ordinal=ordinals[id(info)], split_index=split),
-                            len(payload.payload_bytes),
+                            unit.size_bytes,
                         )
                     )
                     if progress is not None:
-                        progress("baseline_hash", revisions=1, hashed_bytes=len(payload.payload_bytes))
+                        progress("baseline_hash", revisions=1, hashed_bytes=unit.size_bytes)
             except ContentIdentityRefusal as exc:
                 # The member holds a token no archive value can store: a typed
                 # member fault, and the rest of the baseline is still observed.
                 fault(info, f"content_identity_refused:{exc}")
                 continue
             except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile) as exc:
-                reason = "revision_io_unavailable" if _retryable_read_fault(exc) else "archive_member_unreadable"
+                reason = "revision_io_unavailable" if retryable_read_fault(exc) else "archive_member_unreadable"
                 fault(info, f"{reason}:{exc}")
                 continue
     return tuple(members)
@@ -529,7 +533,7 @@ def capture_production_source_baseline(
             cause = exc.__cause__
             reason = (
                 f"revision_io_unavailable:{exc}"
-                if isinstance(cause, Exception) and _retryable_read_fault(cause)
+                if isinstance(cause, Exception) and retryable_read_fault(cause)
                 else str(exc)
             )
             decisions.append(SourceDecision(source.name, str(source.root), "fault", reason))
@@ -579,11 +583,39 @@ def capture_production_source_baseline(
                     decisions.append(SourceDecision(source_name, str(path), "excluded", "expanded_to_members"))
                     decisions.extend(members)
                     continue
+                # Intake's own pre-acquisition decision: a file it excludes
+                # with a typed reason is never retained, so the baseline
+                # records that exclusion instead of requiring a raw row. A
+                # cold build writes derived tiers, so the ordinary route (not
+                # the source-only acquisition route) is the one it runs.
+                admission = classify_pre_acquisition(
+                    path,
+                    fallback_provider=Provider.from_string(
+                        canonical_acquisition_provider(source_name, source_name=source_name)
+                    ),
+                    source_only=False,
+                    size_bytes=path.stat().st_size,
+                    checkpoint=lambda: _check_observation_cancelled(cancelled),
+                )
+                if admission.excluded_reason is not None:
+                    # A retryable read fault of a database is raised by the
+                    # decision itself and stays a fault (handled below).
+                    decisions.append(
+                        SourceDecision(
+                            source_name, str(path), "excluded", f"intake_excluded:{admission.excluded_reason}"
+                        )
+                    )
+                    continue
                 revision, material_bytes = _revision(path, cancelled=cancelled)
                 if progress is not None:
                     progress("baseline_hash", revisions=1, hashed_bytes=material_bytes)
+            except RetryableSourceReadError as exc:
+                decisions.append(
+                    SourceDecision(source_name, str(path), "fault", f"revision_io_unavailable:{exc.cause}")
+                )
+                continue
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
-                reason = "revision_io_unavailable" if _retryable_read_fault(exc) else "revision_unreadable"
+                reason = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
                 decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))
                 continue
         else:

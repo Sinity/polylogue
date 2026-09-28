@@ -331,7 +331,7 @@ def test_missing_checkout_venv_tool_is_a_typed_failure(
     monkeypatch.setattr(
         verify, "build_verify_steps", lambda **_kwargs: [("gate lint", [str(tmp_path / ".venv/bin/ruff")])]
     )
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 127
     assert history["diagnosis"] == expected_diagnosis
@@ -377,7 +377,7 @@ def test_quick_missing_ruff_is_a_named_failed_gate(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
     monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("gate lint", ["ruff", "check"])])
     monkeypatch.setattr(required_gate.shutil, "which", lambda name, path=None: None if name == "ruff" else "/bin/true")  # type: ignore[attr-defined]
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 127
     step = history["steps"][0]
@@ -399,7 +399,7 @@ def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.Mo
         "Popen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("ruff")),
     )
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 127
     assert history["diagnosis"] == "gate_subprocess_launch_failed"
@@ -407,6 +407,7 @@ def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.Mo
 
 
 def test_actual_render_all_diagnosis_reaches_receipt_and_why(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    verify._GATES_INTERRUPTED.clear()
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
     checkout = Path(__file__).resolve().parents[3]
@@ -456,6 +457,44 @@ def test_early_gate_failure_exit_is_authoritative() -> None:
     result = verify._early_gate_failure_result(0.0, {"exit": 0, "diagnosis": "gate_missing_executable"})
 
     assert result["exit"] == 127
+
+
+def test_descriptor_selection_does_not_enable_archive_prewarm() -> None:
+    """Anti-vacuity: descriptor-only tests must not construct shared archives."""
+    env = {"POLYLOGUE_BROAD_PREWARM": "1"}
+    verify._normalize_managed_pytest_environment(env, verify.DESCRIPTOR_CONTRACT_TESTS)
+    assert "POLYLOGUE_BROAD_PREWARM" not in env
+
+
+def test_optimized_python_is_refused_before_running_verification() -> None:
+    """Anti-vacuity: a -O child must report the preflight refusal, not run gates."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-O",
+            "-c",
+            "from devtools.verify import _main; raise SystemExit(_main(['--quick', '--json']))",
+        ],
+        cwd=verify.ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 125
+    assert json.loads(result.stdout)["diagnosis"] == "optimized_python"
+
+
+def test_interrupted_aggregate_keeps_completed_lane_outcomes() -> None:
+    aggregate = verify._aggregate_pytest_results(
+        [{"name": "pytest (parallel)", "statistics": {"outcomes": {"passed": 4}}}],
+        expected_step_count=3,
+        mode="all",
+        exit_code=130,
+    )
+    assert aggregate["outcomes"] == {"passed": 4}
+    assert aggregate["terminal_green"] is False
+    assert aggregate["complete_corpus_covered"] is False
 
 
 def test_finish_step_does_not_retry_unavailable_pytest_statistics(
@@ -520,6 +559,7 @@ def test_full_corpus_aggregate_sums_disjoint_lanes() -> None:
         "selected_union_count": 30,
         "terminal_union_count": 30,
         "outcomes": {"passed": 26, "skipped": 1, "xfailed": 1},
+        "flaky": [],
         "terminal_green": True,
         "complete_corpus_covered": True,
     }
@@ -557,11 +597,14 @@ def test_focused_profile_requires_a_behavioral_pytest_selection() -> None:
     assert focused["result"] == "pytest"
     assert operation["exec"] == ["devtools", "verify", "--quick"]
     assert operation["result"] == "json"
+    assert operation["timeout_seconds"] == 2400
     assert affected["exec"] == ["devtools", "verify"]
     assert affected["pool"] == "pytest"
     assert affected["result"] == "pytest"
     assert affected["cache"] == "tree+environment"
     assert affected["timeout_seconds"] == 7200
+    # Anti-vacuity: deleting either operation's descriptor deadline makes
+    # this fail, even if AgentCTL applies a host default.
     assert complete["exec"] == ["devtools", "verify", "--all"]
     # polylogue-p2mbi AC4 (#5405): `checkout = "candidate"`. The unset default
     # does not select a tree, it REFUSES every workspace but the project root
@@ -576,6 +619,19 @@ def test_focused_profile_requires_a_behavioral_pytest_selection() -> None:
     assert complete["timeout_seconds"] == 14400
     assert projection["kind"] == "polylogue.verification-result"
     assert projection["operation"] == "verify_quick"
+
+
+def test_verification_docs_distinguish_local_receipts_and_sidecars() -> None:
+    """Anti-vacuity: docs must name real mutable DB files and local run evidence."""
+    sidecars = (verify.ROOT / "docs/sidecars.md").read_text(encoding="utf-8")
+    authority = (verify.ROOT / "docs/verification-authority.md").read_text(encoding="utf-8")
+
+    assert ".cache/testmon/testmondata` plus `-wal`, `-shm`, and `-journal" in sidecars
+    assert "`.cache/verify/graph/**`" in sidecars
+    assert "`.testmondata.bound-*`" in sidecars
+    assert "append them to the checkout-local run" in authority
+    assert "AgentCTL-managed job evidence" in authority
+    assert "no AgentCTL run record" not in authority
 
 
 def test_agentctl_parser_preserves_distinct_verification_pools() -> None:
@@ -956,7 +1012,7 @@ def test_verify_main_records_why_no_pytest_step_ran(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(verify, "build_verify_steps", capture_steps)
     monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.1, {"diagnosis": "gate_passed"}))
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
     monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
     monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
 
@@ -1005,7 +1061,7 @@ def test_verify_main_routes_descriptor_diff_to_bounded_selection(
         capture_steps,
     )
     monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.1, {"diagnosis": "gate_passed"}))
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
     monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
     monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
 
@@ -1055,7 +1111,7 @@ def test_affected_admission_refuses_without_launching_pytest(
         return 0, 0.1, {}
 
     monkeypatch.setattr(verify, "_run", capture_run)
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
     monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
     monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
 
@@ -1135,11 +1191,11 @@ def test_verify_pytest_step_uses_the_explicit_runner(
 
     def managed(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         called.append("managed")
-        return SimpleNamespace(returncode=0, slot="managed", receipt=None)
+        return SimpleNamespace(returncode=0, slot="managed", receipt=None, termination=None)
 
     def isolated(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         called.append("isolated")
-        return SimpleNamespace(returncode=0, slot="isolated", receipt=None)
+        return SimpleNamespace(returncode=0, slot="isolated", receipt=None, termination=None)
 
     monkeypatch.setattr(verify, "run_pytest", managed)
     monkeypatch.setattr(verify, "run_pytest_isolated", isolated)
@@ -1192,7 +1248,7 @@ def test_verify_persists_terminal_receipt_when_outer_deadline_sends_sigterm(
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
     monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("pytest parallel (all)", ["pytest"])])
     monkeypatch.setattr(verify, "_run", interrupt)
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 143
 
@@ -1219,7 +1275,7 @@ def test_verify_emits_shared_workload_receipt_for_step_timing(
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
     monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("gate lint", ["ruff", "check"])])
     monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.25, {"diagnosis": "gate_passed"}))
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 0
 
@@ -1678,6 +1734,22 @@ def test_rerun_selector_strips_the_xdist_group_suffix() -> None:
     assert report_nodeid_to_selector("tests/a.py::test_x") == "tests/a.py::test_x"
 
 
+def test_unavailable_pytest_counts_remain_absent_and_flakes_are_aggregated() -> None:
+    """Anti-vacuity: an empty list of executed pytest steps is not a measured zero."""
+    empty = verify._aggregate_pytest_results([], expected_step_count=0, mode="quick", exit_code=0)
+    assert empty["selected_union_count"] is None
+    assert empty["terminal_union_count"] is None
+    assert empty["flaky"] == []
+
+    aggregate = verify._aggregate_pytest_results(
+        [{"name": "pytest selected", "statistics": {}, "rerun": {"flaky": ["t::test_flaky"]}}],
+        expected_step_count=1,
+        mode="affected",
+        exit_code=0,
+    )
+    assert aggregate["flaky"] == ["t::test_flaky"]
+
+
 def test_complete_corpus_tier_traces_and_deselects_nothing() -> None:
     """The ``all`` tier must load testmon and select every collected test."""
     command = verify.build_verify_steps(quick=False, selection="all")[-1][1]
@@ -1867,7 +1939,7 @@ def test_a_failing_run_states_its_verdict_after_the_last_gate(
 
     final = capsys.readouterr().err.strip().splitlines()[-1]
     assert final == (
-        "verify: FAILED exit=1 diagnosis=gate_failed receipt=.cache/verify/runs/verify-quick-20260922/run.json"
+        f"verify: FAILED exit=1 diagnosis=gate_failed receipt={(verify.ROOT / '.cache/verify/runs/verify-quick-20260922/run.json').resolve()}"
     )
 
 
@@ -1888,7 +1960,9 @@ def test_a_passing_run_states_its_verdict_too(capsys: pytest.CaptureFixture[str]
     verify._emit(_verify_payload(0, None), use_json=False, operation=None)
 
     final = capsys.readouterr().err.strip().splitlines()[-1]
-    assert final == "verify: PASSED exit=0 receipt=.cache/verify/runs/verify-quick-20260922/run.json"
+    assert final == (
+        f"verify: PASSED exit=0 receipt={(verify.ROOT / '.cache/verify/runs/verify-quick-20260922/run.json').resolve()}"
+    )
     assert "unknown" not in final
 
 
@@ -1953,3 +2027,27 @@ def test_stopping_gates_shares_one_grace_period(monkeypatch: pytest.MonkeyPatch)
     verify._stop_gate_processes()
 
     assert waits == [10.0, 0.0]
+
+
+def test_verify_names_an_oomd_killed_pytest_step(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: drop the termination merge in ``verify._run`` and the
+    step reads ``pytest_failed`` with no killer or unit."""
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "_clear_pytest_report", lambda _command: None)
+    monkeypatch.setattr(verify, "executable_gate_result", lambda *_args, **_kwargs: SimpleNamespace(ok=True))
+    killed = SimpleNamespace(
+        returncode=137,
+        slot="agentctl job 9",
+        receipt=None,
+        termination={"killer": "oom-kill", "unit": "unit.service"},
+    )
+    monkeypatch.setattr(verify, "run_pytest", lambda *_args, **_kwargs: killed)
+    run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
+
+    exit_code, _elapsed, metadata = verify._run("pytest selected", ["pytest"], run=run)
+
+    assert exit_code == 137
+    assert metadata["diagnosis"] == "oom_killed"
+    assert metadata["termination_killer"] == "oom-kill"
+    assert metadata["termination_unit"] == "unit.service"

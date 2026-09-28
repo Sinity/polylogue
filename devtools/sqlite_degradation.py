@@ -39,6 +39,7 @@ __all__ = [
     "anchor_text",
     "census_sqlite_degradation_anchors",
     "load_sqlite_degradation_baseline",
+    "module_degradation_anchors",
     "normalized_handler_digest",
 ]
 
@@ -63,16 +64,35 @@ def _handles_sqlite(node: ast.ExceptHandler) -> bool:
     return False
 
 
-def _returns_value(node: ast.ExceptHandler) -> bool:
-    """Whether an SQLite handler fabricates a result instead of failing closed.
+def _returns_value(node: ast.ExceptHandler, parents: dict[ast.AST, ast.AST]) -> bool:
+    """Include every handler except one whose failure boundary is explicit.
 
-    A handler may contain nested ``try`` blocks, so walk its body rather than
-    only inspecting immediate statements. ``raise``-only handlers are an
-    explicit domain-error boundary and therefore do not belong in this
-    degradation census.
+    ``continue``, ``break``, ``pass`` and fallback assignments all degrade
+    even when no return appears in the handler itself. A bare re-raise or an
+    explicit exception raise preserves the boundary.
     """
-
-    return any(isinstance(child, ast.Return) for child in ast.walk(node))
+    children = list(ast.walk(node))
+    if any(isinstance(child, ast.Return | ast.Continue | ast.Break | ast.Pass) for child in children):
+        return True
+    assigned = {
+        target.id
+        for child in children
+        if isinstance(child, ast.Assign | ast.AnnAssign | ast.NamedExpr)
+        for target in (child.targets if isinstance(child, ast.Assign) else [child.target])
+        if isinstance(target, ast.Name)
+    }
+    scope = parents.get(node)
+    while scope is not None and not isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+        scope = parents.get(scope)
+    if not assigned or scope is None:
+        return False
+    return any(
+        isinstance(child, ast.Return)
+        and child.value is not None
+        and any(isinstance(value, ast.Name) and value.id in assigned for value in ast.walk(child.value))
+        for child in ast.walk(scope)
+        if child is not node
+    )
 
 
 def normalized_handler_digest(source: str, node: ast.ExceptHandler) -> str:
@@ -110,11 +130,18 @@ def census_sqlite_degradation_anchors(repo_root: Path, roots: tuple[str, ...]) -
                 source, tree = parse_source(py_file)
             except (OSError, SyntaxError, UnicodeDecodeError):
                 continue
-            file_rel = py_file.relative_to(repo_root).as_posix()
-            for node in walk_module(tree):
-                if isinstance(node, ast.ExceptHandler) and _handles_sqlite(node) and _returns_value(node):
-                    anchors[(file_rel, normalized_handler_digest(source, node))] += 1
+            anchors.update(module_degradation_anchors(source, tree, file_rel=py_file.relative_to(repo_root).as_posix()))
     return anchors
+
+
+def module_degradation_anchors(source: str, tree: ast.Module, *, file_rel: str) -> list[DegradationAnchor]:
+    """Return one module's degradation-site anchors, one per site."""
+    parents = {child: parent for parent in walk_module(tree) for child in ast.iter_child_nodes(parent)}
+    return [
+        (file_rel, normalized_handler_digest(source, node))
+        for node in walk_module(tree)
+        if isinstance(node, ast.ExceptHandler) and _handles_sqlite(node) and _returns_value(node, parents)
+    ]
 
 
 def load_sqlite_degradation_baseline(baseline_path: Path) -> Counter[DegradationAnchor]:

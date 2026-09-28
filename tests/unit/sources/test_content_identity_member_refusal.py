@@ -249,3 +249,59 @@ def test_a_refused_grouped_zip_member_leaves_no_queued_publication(
     )
     assert not publisher.has_pending
     assert not any(path.is_file() for path in (tmp_path / "blob").rglob("*"))
+
+
+def _split_member_with_a_refused_element() -> bytes:
+    first, second, after = (json.dumps({"id": name, "mapping": {}}).encode() for name in ("first", "second", "after"))
+    refused = b'{"id": "refused", "mapping": {}, "' + b"k" * 200 + b'": 1}'
+    return b"[" + b", ".join((first, second, refused, after)) + b"]"
+
+
+def test_a_refused_split_element_is_a_baseline_fault_beside_its_siblings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: swallow the split refusal on the revision replay and the
+    baseline accepts the siblings with no typed gap for the refused element."""
+    from polylogue.sources.live.production_baseline import capture_production_source_baseline
+    from polylogue.sources.live.watcher import WatchSource
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 64)
+    root = tmp_path / "chatgpt"
+    root.mkdir()
+    zip_path = root / "export.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("conversations.json", _split_member_with_a_refused_element())
+
+    baseline = capture_production_source_baseline(
+        (WatchSource("chatgpt", root, suffixes=(".zip",)),), operation_id="split-refusal"
+    )
+    member = f"{zip_path}:conversations.json"
+    faults = {row.path: row.reason for row in baseline.decisions if row.disposition == "fault"}
+    assert faults[member].startswith("content_identity_refused:")
+    assert sum(1 for row in baseline.accepted if row.path == member) == 3
+
+
+def test_the_parse_route_captures_elements_after_a_refused_one(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: let the refusal leave the payload loop and the session
+    after the refused element is never yielded."""
+    from polylogue.sources.decoder_zip import process_zip
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 64)
+    zip_path = tmp_path / "export.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("conversations.json", _split_member_with_a_refused_element())
+    yielded = list(
+        process_zip(
+            zip_path,
+            provider_hint=Provider.CHATGPT,
+            should_group=False,
+            file_mtime=None,
+            capture_raw=True,
+            cursor_state={},
+            blob_store=BlobStore(tmp_path / "blob"),
+        )
+    )
+    source_indexes = sorted(int(raw.source_index or 0) for raw, _session in yielded if raw is not None)
+    assert source_indexes == [0, 1, 3]

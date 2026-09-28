@@ -87,8 +87,9 @@ _COMMANDS: list[tuple[list[str], bool]] = [
     (["continue"], True),
     (["continue", "--candidates"], True),
     # `mark candidates list` was consolidated into the root `judge` command
-    # (#3138, db9447cf4); `judge --list` is its replacement.
-    (["judge", "--list"], False),
+    # (#3138, db9447cf4); `judge --list` is its replacement. An empty
+    # listing exits 2 like every other empty read.
+    (["judge", "--list"], True),
     # ── Insights subcommands ─────────────────────────────────────────
     (["ops", "insights", "status"], False),
     (["ops", "insights", "audit"], False),

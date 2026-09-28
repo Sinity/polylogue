@@ -136,7 +136,7 @@ def cli_archive_writer_ownership() -> Iterator[None]:
     console scripts, ``python -m polylogue`` and an embedded caller driving
     ``polylogue.cli.cli`` directly all reach it.
     """
-    from polylogue.maintenance.offline_guard import refuse_writable_tier_opens
+    from polylogue.maintenance.offline_guard import hold_daemon_start_exclusion, refuse_writable_tier_opens
 
     root = _archive_root()
     if root is None:
@@ -148,7 +148,16 @@ def cli_archive_writer_ownership() -> Iterator[None]:
         # Not armed -- there is no second writer to serialize against right
         # now. But "right now" is all entry can establish, so every writable
         # archive-tier open re-asks before it happens.
+        stack = ExitStack()
+        offline_lock_held = False
+
         def refuse_a_later_arrival(path: Path) -> None:
+            nonlocal offline_lock_held
+            if not offline_lock_held:
+                # Serialize only commands that actually open a writable tier;
+                # the shared pidfile lock then stays held through the command.
+                stack.enter_context(hold_daemon_start_exclusion(root))
+                offline_lock_held = True
             arrived = resident_archive_writer(root)
             if arrived is None:
                 return
@@ -162,7 +171,10 @@ def cli_archive_writer_ownership() -> Iterator[None]:
                 resident_writer=reason,
             )
 
-        with refuse_writable_tier_opens(refuse_a_later_arrival):
+        # Keep the daemon's exclusive pidfile lock from becoming available
+        # while this invocation owns writable connections, including time at
+        # a confirmation prompt. The per-open probe remains defense in depth.
+        with stack, refuse_writable_tier_opens(refuse_a_later_arrival):
             yield
         return
 

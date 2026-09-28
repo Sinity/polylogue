@@ -8,6 +8,7 @@ Pending rules are scanned for visibility and deliberately do not block.
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import shutil
@@ -22,7 +23,7 @@ import yaml
 from devtools import repo_root
 from devtools.required_gate import AUDIT_GROUP_SYNC_COMMAND, evidence_gate_result
 
-Anchor: TypeAlias = tuple[str, str]
+Anchor: TypeAlias = tuple[str, str, str]
 
 
 @dataclass(frozen=True)
@@ -54,9 +55,9 @@ def _rules(root: Path) -> tuple[Rule, ...]:
 
 
 def _anchor_text(anchor: Anchor, count: int = 1) -> str:
-    file_name, digest = anchor
+    file_name, digest, context = anchor
     suffix = f":{count}" if count != 1 else ""
-    return f"{file_name}:{digest}{suffix}"
+    return f"{file_name}:{digest}:{context}{suffix}"
 
 
 def _baseline(path: Path) -> Counter[Anchor]:
@@ -67,12 +68,12 @@ def _baseline(path: Path) -> Counter[Anchor]:
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
-        parts = line.rsplit(":", 2)
-        if len(parts) == 2:
-            file_name, digest = parts
+        parts = line.rsplit(":", 3)
+        if len(parts) == 3:
+            file_name, digest, context = parts
             count = 1
-        elif len(parts) == 3 and parts[2].isdigit():
-            file_name, digest, raw_count = parts
+        elif len(parts) == 4 and parts[3].isdigit():
+            file_name, digest, context, raw_count = parts
             count = int(raw_count)
         else:
             raise ValueError(f"invalid baseline entry in {path}: {raw_line!r}")
@@ -80,10 +81,12 @@ def _baseline(path: Path) -> Counter[Anchor]:
             not file_name
             or len(digest) != hashlib.sha1().digest_size * 2
             or any(character not in "0123456789abcdef" for character in digest)
+            or len(context) != hashlib.sha1().digest_size * 2
+            or any(character not in "0123456789abcdef" for character in context)
             or count < 1
         ):
             raise ValueError(f"invalid baseline entry in {path}: {raw_line!r}")
-        anchors[(file_name, digest)] += count
+        anchors[(file_name, digest, context)] += count
     return anchors
 
 
@@ -111,7 +114,29 @@ def _match_anchor(root: Path, item: dict[str, Any], file_lines: dict[str, list[s
         raise ValueError(f"ast-grep match line is outside {file_name}: {line_number}")
     normalized_line = lines[line_number - 1].strip()
     digest = hashlib.sha1(normalized_line.encode("utf-8")).hexdigest()
-    return file_name, digest
+    source = "\n".join(lines)
+    tree = ast.parse(source, filename=file_name)
+
+    def path(node: ast.AST, trail: tuple[str, ...] = ()) -> tuple[str, ...] | None:
+        line_start = node.__dict__.get("lineno")
+        line_end = node.__dict__.get("end_lineno")
+        if not isinstance(line_start, int) or not isinstance(line_end, int):
+            return None
+        if not (line_start <= line_number <= line_end):
+            return None
+        best: tuple[str, ...] = trail + (type(node).__name__,)
+        for field_name, value in ast.iter_fields(node):
+            children = value if isinstance(value, list) else [value]
+            for index, child in enumerate(children):
+                if isinstance(child, ast.AST):
+                    child_path = path(child, trail + (f"{type(node).__name__}.{field_name}[{index}]",))
+                    if child_path is not None and len(child_path) > len(best):
+                        best = child_path
+        return best
+
+    context_text = "/".join(path(tree) or ("Module",))
+    context = hashlib.sha1(context_text.encode("utf-8")).hexdigest()
+    return file_name, digest, context
 
 
 def _scan(root: Path, rule: Rule) -> Counter[Anchor]:
@@ -139,6 +164,83 @@ def _scan(root: Path, rule: Rule) -> Counter[Anchor]:
             raise ValueError("ast-grep returned a malformed match")
         matches[_match_anchor(root, item, file_lines)] += 1
     return matches
+
+
+def _trusted_baseline(root: Path, path: Path) -> Counter[tuple[str, str]] | None:
+    """Read the parent revisions' exemption set; synthetic roots have none.
+
+    A merge commit has several parents: an exemption any parent already
+    carried is trusted, at the largest count any parent carried it. Reading
+    only the first parent would count the base branch's own baseline additions,
+    brought in by merging it, as growth.
+    """
+    try:
+        repository = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+        relative = path.resolve().relative_to(Path(repository).resolve()).as_posix()
+        parents = subprocess.run(
+            ["git", "-C", repository, "rev-parse", "HEAD^@"],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.split()
+        if not parents:
+            raise ValueError("HEAD has no parent revision")
+        # A parent that predates the baseline file (a base branch merged into
+        # the feature that introduced it) contributes nothing; a file no
+        # parent carries has no trusted revision at all.
+        contents = [
+            completed.stdout
+            for parent in parents
+            if (
+                completed := subprocess.run(
+                    ["git", "-C", repository, "show", f"{parent}:{relative}"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            ).returncode
+            == 0
+        ]
+        if not contents:
+            raise ValueError(f"no parent revision carries {relative}")
+    except (OSError, ValueError, subprocess.CalledProcessError) as exc:
+        if not (root / ".git").exists():
+            return None
+        raise ValueError(f"cannot load trusted parent baseline for {path}") from exc
+    trusted: Counter[tuple[str, str]] = Counter()
+    for content in contents:
+        trusted |= _baseline_text(content)
+    return trusted
+
+
+def _baseline_text(content: str) -> Counter[tuple[str, str]]:
+    anchors: Counter[tuple[str, str]] = Counter()
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.rsplit(":", 3)
+        if len(parts) == 2:
+            file_name, digest = parts
+            count = 1
+        elif len(parts) == 3 and parts[2].isdigit():
+            file_name, digest, raw_count = parts
+            count = int(raw_count)
+        elif len(parts) == 3:
+            file_name, digest, context = parts
+            count = 1
+        elif len(parts) == 4 and parts[3].isdigit():
+            file_name, digest, context, raw_count = parts
+            count = int(raw_count)
+        else:
+            raise ValueError(f"invalid trusted baseline entry: {raw_line!r}")
+        anchors[(file_name, digest)] += count
+    return anchors
 
 
 def _payload(root: Path) -> dict[str, Any]:
@@ -173,11 +275,25 @@ def _payload(root: Path) -> dict[str, Any]:
                 continue
             matches = _scan(root, rule)
             baseline = _baseline(rule.baseline_path)
+            trusted_baseline = _trusted_baseline(root, rule.baseline_path)
         except (OSError, ValueError, KeyError, RuntimeError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
             errors.append(f"{rule.rule_id}: {exc}")
             continue
         new = matches - baseline
         stale = baseline - matches
+        if rule.status == "enforcing" and trusted_baseline is not None:
+            current_baseline_counts: Counter[tuple[str, str]] = Counter()
+            for (file_name, digest, _context), count in baseline.items():
+                current_baseline_counts[(file_name, digest)] += count
+            baseline_growth = current_baseline_counts - trusted_baseline
+            if baseline_growth:
+                errors.append(
+                    f"{rule.rule_id}: committed baseline grew: "
+                    + ", ".join(
+                        f"{file_name}:{digest}:{count}"
+                        for (file_name, digest), count in sorted(baseline_growth.items())
+                    )
+                )
         inspected += 1
         if rule.status == "pending":
             if baseline:

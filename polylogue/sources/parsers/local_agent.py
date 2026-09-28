@@ -16,7 +16,7 @@ from polylogue.sources.live.gemini_tool_output_sidecars import (
     is_masked_tool_output,
     join_gemini_tool_output_sidecars,
 )
-from polylogue.sources.live.tool_result_sidecars import SidecarJoinResult
+from polylogue.sources.live.tool_result_sidecars import SidecarDebt, SidecarJoinResult, SidecarMatch
 from polylogue.sources.parsers.hermes_tool_outcome import tool_result_outcome as hermes_tool_result_outcome
 from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.tool_result_reasons import unknown_reason
@@ -341,34 +341,34 @@ def apply_gemini_tool_output_sidecars(session: ParsedSession, join_result: Sidec
 
     events = list(session.session_events)
     for match in join_result.matched:
-        events.append(
-            ParsedSessionEvent(
-                event_type="gemini_cli_tool_output_sidecar",
-                timestamp=_sidecar_event_timestamp(match.file_mtime_ms),
-                payload={
-                    "acquisition_status": "matched",
-                    "tool_use_id": match.tool_use_id,
-                    "filename": match.filename,
-                    "byte_size": match.byte_size,
-                    "content_hash": match.content_hash,
-                    "content_replaced": match.was_truncated,
-                },
-            )
-        )
+        events.append(gemini_sidecar_event(match))
     for debt in join_result.debt:
-        events.append(
-            ParsedSessionEvent(
-                event_type="gemini_cli_tool_output_sidecar",
-                timestamp=_sidecar_event_timestamp(debt.file_mtime_ms),
-                payload={
-                    "acquisition_status": "debt",
-                    "filename": debt.filename,
-                    "byte_size": debt.byte_size,
-                    "reason": debt.reason,
-                },
-            )
-        )
+        events.append(gemini_sidecar_event(debt))
     return session.model_copy(update={"messages": messages, "session_events": events})
+
+
+def gemini_sidecar_event(outcome: SidecarMatch | SidecarDebt) -> ParsedSessionEvent:
+    if isinstance(outcome, SidecarMatch):
+        payload = {
+            "acquisition_status": "matched",
+            "tool_use_id": outcome.tool_use_id,
+            "filename": outcome.filename,
+            "byte_size": outcome.byte_size,
+            "content_hash": outcome.content_hash,
+            "content_replaced": outcome.was_truncated,
+        }
+    else:
+        payload = {
+            "acquisition_status": "debt",
+            "filename": outcome.filename,
+            "byte_size": outcome.byte_size,
+            "reason": outcome.reason,
+        }
+    return ParsedSessionEvent(
+        event_type="gemini_cli_tool_output_sidecar",
+        timestamp=_sidecar_event_timestamp(outcome.file_mtime_ms),
+        payload=payload,
+    )
 
 
 def _sidecar_event_timestamp(file_mtime_ms: int | None) -> str | None:

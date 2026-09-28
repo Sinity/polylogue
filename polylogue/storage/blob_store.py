@@ -298,7 +298,12 @@ class BlobStore:
                 self.discard_staging_path(temporary_path)
             raise
 
-    def prepare_from_writer(self, write: Callable[[IO[bytes]], None]) -> PreparedBlob:
+    def prepare_from_writer(
+        self,
+        write: Callable[[IO[bytes]], None],
+        *,
+        heartbeat: Heartbeat | None = None,
+    ) -> PreparedBlob:
         """Stage the bytes a producer writes, then hash them in place.
 
         For a producer that can only write, such as a streaming download that
@@ -324,6 +329,9 @@ class BlobStore:
                 while chunk := handle.read(_CHUNK_SIZE):
                     hasher.update(chunk)
                     size += len(chunk)
+                    if heartbeat is not None:
+                        with suppress(Exception):
+                            heartbeat()
             os.chmod(temporary_path, 0o600)
             return PreparedBlob(hasher.hexdigest(), size, temporary_path)
         except BaseException:
@@ -413,25 +421,35 @@ class BlobStore:
         hash prefix paid one directory fsync per blob for one directory's worth
         of durability (polylogue-rk0it AC5). Nothing observable is weakened: no
         caller may advance a cursor or certify retention on a partial return,
-        and a batch that raises leaves the same on-disk state the per-blob loop
-        left -- bytes in place, the directory entry not yet persisted, and the
-        retained source still the recovery authority.
+        and a batch that raises persists every directory touched before
+        propagating the failure, leaving the retained source as recovery
+        authority without relying on a future deduplicating retry.
         """
         results: list[tuple[str, int]] = []
         # Insertion-ordered distinct shards: one fsync per directory, in the
         # order the batch first touched them.
         shard_directories: dict[Path, None] = {}
         root_needs_fsync = False
-        for item in prepared:
-            outcome, shard_directory, shard_created = self._place_prepared(item)
-            results.append(outcome)
-            if shard_directory is not None:
-                shard_directories[shard_directory] = None
-            root_needs_fsync = root_needs_fsync or shard_created
-        for shard_directory in shard_directories:
-            self._fsync_directory(shard_directory)
-        if root_needs_fsync:
-            self._fsync_directory(self.root)
+        try:
+            for item in prepared:
+                outcome, shard_directory, shard_created = self._place_prepared(item)
+                results.append(outcome)
+                if shard_directory is not None:
+                    shard_directories[shard_directory] = None
+                root_needs_fsync = root_needs_fsync or shard_created
+            for shard_directory in shard_directories:
+                self._fsync_directory(shard_directory)
+            if root_needs_fsync:
+                self._fsync_directory(self.root)
+        except BaseException:
+            # Earlier renames are already visible. Persist their names before
+            # returning the error, or a retry could deduplicate them and lose
+            # the only opportunity to make those names durable.
+            for shard_directory in shard_directories:
+                self._fsync_directory(shard_directory)
+            if root_needs_fsync:
+                self._fsync_directory(self.root)
+            raise
         return tuple(results)
 
     def discard_prepared(self, prepared: PreparedBlob) -> None:
@@ -470,6 +488,23 @@ class BlobStore:
         temporary file in one pass. Returns ``(sha256_hex, byte_count)``.
         """
         prepared = self.prepare_from_fileobj(source, heartbeat=heartbeat)
+        try:
+            return self.publish_prepared(prepared)
+        finally:
+            self.discard_prepared(prepared)
+
+    def write_from_writer(
+        self,
+        write: Callable[[IO[bytes]], None],
+        *,
+        heartbeat: Heartbeat | None = None,
+    ) -> tuple[str, int]:
+        """Publish the bytes a producer writes, staged once on disk.
+
+        Unlike exporting to a work file and then ``write_from_path``, no
+        second full-size staging copy ever coexists with the first.
+        """
+        prepared = self.prepare_from_writer(write, heartbeat=heartbeat)
         try:
             return self.publish_prepared(prepared)
         finally:

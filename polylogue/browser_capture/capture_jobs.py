@@ -132,6 +132,7 @@ class CaptureJobRegistry:
                 receipt_json TEXT, retry_json TEXT NOT NULL, lease_json TEXT,
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 retention_json TEXT NOT NULL DEFAULT '{"state":"active","hold_reason":null,"timeline_authoritative":true}',
+                retention_declared INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(provider, account_scope, intent_key)
             ) STRICT"""
         )
@@ -171,6 +172,8 @@ class CaptureJobRegistry:
             connection.execute(
                 'ALTER TABLE capture_jobs ADD COLUMN retention_json TEXT NOT NULL DEFAULT \'{"state":"active","hold_reason":null,"timeline_authoritative":true}\''
             )
+        if "retention_declared" not in job_columns:
+            connection.execute("ALTER TABLE capture_jobs ADD COLUMN retention_declared INTEGER NOT NULL DEFAULT 0")
         return connection
 
     @contextmanager
@@ -711,7 +714,14 @@ class CaptureJobRegistry:
         """
         if next_retry.get("state") not in {"completed", "abandoned"}:
             return current
-        if current != {"state": "active", "hold_reason": None, "timeline_authoritative": True}:
+        declared = connection.execute(
+            "SELECT retention_declared FROM capture_jobs WHERE job_id=?", (job_id,)
+        ).fetchone()
+        if (
+            declared is None
+            or declared[0]
+            or current != {"state": "active", "hold_reason": None, "timeline_authoritative": True}
+        ):
             return current
         return {
             "state": "eligible",
@@ -819,7 +829,13 @@ class CaptureJobRegistry:
             now = _now()
             if ttl is not None:
                 next_lease["expires_at"] = _stamp(now + timedelta(seconds=ttl))
-            if next_retry == current_retry and next_retention == current_retention and next_lease == lease:
+            retention_declaration_changed = retention is not None and not bool(row["retention_declared"])
+            if (
+                next_retry == current_retry
+                and next_retention == current_retention
+                and next_lease == lease
+                and not retention_declaration_changed
+            ):
                 receipt = {
                     "receipt_id": str(uuid4()),
                     "request_id": request_id,
@@ -850,13 +866,14 @@ class CaptureJobRegistry:
                 "acknowledged_at": _stamp(now),
             }
             connection.execute(
-                "UPDATE capture_jobs SET revision=?, retry_json=?, retention_json=?, lease_json=?, updated_at=? WHERE job_id=?",
+                "UPDATE capture_jobs SET revision=?, retry_json=?, retention_json=?, lease_json=?, updated_at=?, retention_declared=MAX(retention_declared, ?) WHERE job_id=?",
                 (
                     revision,
                     canonical_json(next_retry),
                     canonical_json(next_retention),
                     canonical_json(next_lease),
                     _stamp(now),
+                    int(retention is not None),
                     job_id,
                 ),
             )

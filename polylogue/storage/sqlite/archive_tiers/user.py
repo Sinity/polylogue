@@ -27,6 +27,7 @@ USER_HAND_WRITTEN_DDL_REASONS: dict[str, str] = dict.fromkeys(
         "context_deliveries",
         "session_marker_delivery",
         "accepted_marker_delivery_cursor",
+        "retired_marker_assertions",
     ),
     "cross-table durable state DDL; no concrete schema delta requires TableColumnSpec",
 )
@@ -84,6 +85,15 @@ CREATE TABLE IF NOT EXISTS accepted_marker_delivery_cursor (
     stream_id         TEXT NOT NULL CHECK(stream_id != ''),
     applied_sequence  INTEGER NOT NULL CHECK(applied_sequence >= 0),
     applied_at_ms     INTEGER NOT NULL CHECK(applied_at_ms >= 0)
+) STRICT;
+
+-- Marker assertion ids a later accepted carrier re-owned: a child's replayed
+-- prefix that a late parent's re-extraction handed to the parent. Content-free
+-- and order-independent: a retirement delivered before the child's own
+-- carrier still prevents that candidate from being lowered live.
+CREATE TABLE IF NOT EXISTS retired_marker_assertions (
+    assertion_id   TEXT PRIMARY KEY CHECK(assertion_id != ''),
+    retired_at_ms  INTEGER NOT NULL CHECK(retired_at_ms >= 0)
 ) STRICT;
 
 CREATE INDEX IF NOT EXISTS idx_assertions_target_kind

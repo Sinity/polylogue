@@ -135,10 +135,12 @@ async def test_every_planned_path_is_accounted_for(
     try:
         admissible = chats_root / "session-2026-04-02T12-00-bbbbbbbb.json"
         _checkpoint(admissible, kind="main", turns=2, started="2026-04-02T12:00:00.000Z")
-        # Structurally valid JSON under a watched root that is no origin's
-        # session: the acquisition loop quarantines it and moves on.
-        inadmissible = chats_root / "notes.json"
-        inadmissible.write_text(json.dumps({"unrelated": "content", "n": 1}))
+        # A record stream under a watched root that is no origin's session:
+        # pre-acquisition exclusion refuses it with a typed reason. (A JSON
+        # document is retained at every shape since #5557, so it cannot be
+        # the refused file here.)
+        inadmissible = chats_root / "notes.jsonl"
+        inadmissible.write_text(json.dumps({"unrelated": "content", "n": 1}) + "\n")
 
         metrics = await processor.ingest_files([admissible, inadmissible], emit_event=False)
 
@@ -183,10 +185,12 @@ async def test_offered_bytes_split_puts_a_refused_file_in_the_refused_bucket(
     try:
         admissible = chats_root / "session-2026-04-02T12-00-cccccccc.json"
         _checkpoint(admissible, kind="main", turns=2, started="2026-04-02T12:00:00.000Z")
-        refused = chats_root / "notes.json"
-        # Padded so the refused file is unmistakably the larger of the two:
-        # a residual-derived refused bucket cannot be confused with rounding.
-        refused.write_text(json.dumps({"unrelated": "content", "padding": "x" * 4096}))
+        # A record stream no origin claims as a session; see the test above
+        # for why it is JSONL. Padded so the refused file is unmistakably the
+        # larger of the two: a residual-derived refused bucket cannot be
+        # confused with rounding.
+        refused = chats_root / "notes.jsonl"
+        refused.write_text(json.dumps({"unrelated": "content", "padding": "x" * 4096}) + "\n")
         admissible_bytes = admissible.stat().st_size
         refused_bytes = refused.stat().st_size
 
