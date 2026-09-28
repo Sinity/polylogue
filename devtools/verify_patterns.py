@@ -36,11 +36,13 @@ class Rule:
 
 def _rules(root: Path) -> tuple[Rule, ...]:
     raw = yaml.safe_load((root / "devtools/patterns/registry.yaml").read_text(encoding="utf-8"))
-    entries = raw.get("rules", []) if isinstance(raw, dict) else []
+    if not isinstance(raw, dict) or not isinstance(raw.get("rules"), list):
+        raise ValueError("pattern registry must contain a rules list")
+    entries = raw["rules"]
     result: list[Rule] = []
     for entry in entries:
         if not isinstance(entry, dict):
-            continue
+            raise ValueError(f"pattern registry rule {len(result)} must be a mapping")
         result.append(
             Rule(
                 rule_id=str(entry["id"]),

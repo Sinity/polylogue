@@ -407,6 +407,7 @@ def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.Mo
 
 
 def test_actual_render_all_diagnosis_reaches_receipt_and_why(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    verify._GATES_INTERRUPTED.clear()
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
     checkout = Path(__file__).resolve().parents[3]
@@ -520,6 +521,7 @@ def test_full_corpus_aggregate_sums_disjoint_lanes() -> None:
         "selected_union_count": 30,
         "terminal_union_count": 30,
         "outcomes": {"passed": 26, "skipped": 1, "xfailed": 1},
+        "flaky": [],
         "terminal_green": True,
         "complete_corpus_covered": True,
     }
@@ -1584,6 +1586,22 @@ def test_rerun_selector_strips_the_xdist_group_suffix() -> None:
     assert report_nodeid_to_selector("tests/a.py::test_x") == "tests/a.py::test_x"
 
 
+def test_unavailable_pytest_counts_remain_absent_and_flakes_are_aggregated() -> None:
+    """Anti-vacuity: an empty list of executed pytest steps is not a measured zero."""
+    empty = verify._aggregate_pytest_results([], expected_step_count=0, mode="quick", exit_code=0)
+    assert empty["selected_union_count"] is None
+    assert empty["terminal_union_count"] is None
+    assert empty["flaky"] == []
+
+    aggregate = verify._aggregate_pytest_results(
+        [{"name": "pytest selected", "statistics": {}, "rerun": {"flaky": ["t::test_flaky"]}}],
+        expected_step_count=1,
+        mode="affected",
+        exit_code=0,
+    )
+    assert aggregate["flaky"] == ["t::test_flaky"]
+
+
 def test_complete_corpus_tier_traces_and_deselects_nothing() -> None:
     """The ``all`` tier must load testmon and select every collected test."""
     command = verify.build_verify_steps(quick=False, selection="all")[-1][1]
@@ -1773,7 +1791,7 @@ def test_a_failing_run_states_its_verdict_after_the_last_gate(
 
     final = capsys.readouterr().err.strip().splitlines()[-1]
     assert final == (
-        "verify: FAILED exit=1 diagnosis=gate_failed receipt=.cache/verify/runs/verify-quick-20260922/run.json"
+        f"verify: FAILED exit=1 diagnosis=gate_failed receipt={(verify.ROOT / '.cache/verify/runs/verify-quick-20260922/run.json').resolve()}"
     )
 
 
@@ -1794,7 +1812,9 @@ def test_a_passing_run_states_its_verdict_too(capsys: pytest.CaptureFixture[str]
     verify._emit(_verify_payload(0, None), use_json=False, operation=None)
 
     final = capsys.readouterr().err.strip().splitlines()[-1]
-    assert final == "verify: PASSED exit=0 receipt=.cache/verify/runs/verify-quick-20260922/run.json"
+    assert final == (
+        f"verify: PASSED exit=0 receipt={(verify.ROOT / '.cache/verify/runs/verify-quick-20260922/run.json').resolve()}"
+    )
     assert "unknown" not in final
 
 

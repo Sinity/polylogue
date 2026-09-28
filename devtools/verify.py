@@ -890,13 +890,14 @@ def _scope(*, quick: bool, selection: str) -> VerificationScope:
 
 def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) -> None:
     result = declared_verification_result(payload, operation=operation) if operation else dict(payload)
-    if operation:
+    if operation and payload.get("run_id"):
         # The operation result carries the same bounded receipt as the
         # evidence lane.  AgentCTL lifecycle fields remain outside this
         # projection and cannot turn process completion into semantic success.
         result["semantic_receipt"] = canonical_verification_receipt(payload)
     if use_json or operation:
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
+        sys.stdout.flush()
     _write_verdict_line(payload, stream=sys.stderr)
 
 
@@ -922,7 +923,8 @@ def _write_verdict_line(payload: Mapping[str, Any], *, stream: Any) -> None:
     diagnosis = payload.get("diagnosis")
     named = f" diagnosis={diagnosis}" if diagnosis else ""
     artifact_dir = payload.get("artifact_dir")
-    receipt = f" receipt={Path(str(artifact_dir)) / 'run.json'}" if artifact_dir else ""
+    receipt_path = (ROOT / str(artifact_dir) / "run.json").resolve() if artifact_dir else None
+    receipt = f" receipt={receipt_path}" if receipt_path else ""
     # The checkout this run tested, so the line that is cited says what it proves.
     head = payload.get("git_head")
     branch = payload.get("git_branch")
@@ -1021,6 +1023,12 @@ def _finish_interrupted_verification(
             "complete_corpus_covered": False,
             "termination_reason": termination_reason,
         },
+        workload_receipt=_verification_workload_receipt(
+            tier="quick" if args.quick else selection,
+            git_head=git_head(ROOT),
+            results=(),
+            exit_code=exit_code,
+        ),
     )
     _emit(payload, use_json=args.json, operation=agentctl_operation)
     return exit_code
@@ -1065,6 +1073,7 @@ def _aggregate_pytest_results(
 ) -> dict[str, Any]:
     pytest_results = [result for result in results if str(result.get("name", "")).startswith("pytest")]
     outcomes: dict[str, int] = {}
+    flaky: list[str] = []
     selected_counts: list[int] = []
     terminal_counts: list[int] = []
     for result in pytest_results:
@@ -1078,14 +1087,18 @@ def _aggregate_pytest_results(
             terminal_counts.append(terminal)
         for outcome, count in (statistics.get("outcomes") or {}).items():
             outcomes[str(outcome)] = outcomes.get(str(outcome), 0) + int(count)
+        rerun = result.get("rerun")
+        if isinstance(rerun, Mapping):
+            flaky.extend(str(nodeid) for nodeid in rerun.get("flaky") or ())
     complete = mode == "all" and exit_code == 0 and len(pytest_results) == expected_step_count
     return {
         "selection_mode": mode,
         # Full-corpus verification partitions the collection across managed
         # pytest steps, so these are disjoint populations and must be summed.
-        "selected_union_count": sum(selected_counts),
-        "terminal_union_count": sum(terminal_counts),
+        "selected_union_count": sum(selected_counts) if selected_counts else None,
+        "terminal_union_count": sum(terminal_counts) if terminal_counts else None,
         "outcomes": outcomes,
+        "flaky": flaky,
         "terminal_green": exit_code == 0,
         "complete_corpus_covered": complete,
     }
