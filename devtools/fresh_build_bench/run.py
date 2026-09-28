@@ -703,6 +703,11 @@ def _measure_and_write_receipt(
                 break
             observation = observe(paths["archive"], started)
             observations.append(observation)
+            if observation.error is not None:
+                # A failed read (a busy database) says nothing about progress:
+                # its all-zero counts must not alternate with the real ones.
+                time.sleep(config.poll_s)
+                continue
             progress_key = (
                 observation.cursor_rows,
                 observation.cursor_complete,

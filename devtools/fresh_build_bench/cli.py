@@ -76,7 +76,9 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--python", default=sys.executable)
     run.add_argument("--profile", action="store_true", help="run the in-daemon stack sampler")
     run.add_argument("--profile-interval", type=_positive_seconds, default=0.01)
-    run.add_argument("--stall-timeout", type=float, default=900.0, help="stop when nothing observable moves")
+    run.add_argument(
+        "--stall-timeout", type=_positive_seconds, default=900.0, help="stop when nothing observable moves"
+    )
     run.add_argument("--no-fingerprint", action="store_true")
     run.add_argument("--max-rss-mib", type=float, default=None, help="assert a whole-process-tree peak RSS budget")
     run.add_argument("--max-promotion-s", type=float, default=None, help="assert a time-to-promotion budget")

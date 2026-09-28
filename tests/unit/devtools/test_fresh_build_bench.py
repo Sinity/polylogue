@@ -1152,3 +1152,118 @@ def test_a_raw_only_sidecar_is_not_a_corpus_transcript(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="not a session transcript"):
         corpus_from_files(tmp_path / "out", [sidecar], home=home)
+
+
+def test_a_nested_symlink_in_a_corpus_is_refused(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P1, #5678): skip symlinks in the sealing walk and a
+    linked live session directory is ingested unsealed under a valid digest."""
+    from devtools.fresh_build_bench.corpus import _hash_tree
+
+    sessions = tmp_path / "home" / ".codex" / "sessions"
+    sessions.mkdir(parents=True)
+    outside = tmp_path / "operator"
+    outside.mkdir()
+    (sessions / "live").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(ValueError, match="symbolic link"):
+        _hash_tree(tmp_path)
+
+
+def test_component_scratch_inside_the_corpus_is_refused(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5678): check only the checkout and blob output is
+    written into the sealed corpus, dirtying it for good."""
+    from devtools.fresh_build_bench.components import refuse_scratch_inside_corpus
+
+    corpus = tmp_path / "corpus"
+    corpus.mkdir()
+    with pytest.raises(SystemExit, match="outside the corpus"):
+        refuse_scratch_inside_corpus(corpus / "home" / "bench", corpus)
+    refuse_scratch_inside_corpus(tmp_path / "scratch", corpus)
+
+
+def test_configured_export_sources_are_attributed_to_their_origin() -> None:
+    """Anti-vacuity (Codex P2, #5678): map only fixed source labels and the
+    ``configured-0`` export root's timing is dropped from the projection."""
+    manifest = {
+        "by_origin": {"chatgpt": {"files": 1, "bytes": 1 << 20}},
+        "parameters": {"population": {"chatgpt": {"files": 10, "bytes": 10 << 20}}},
+    }
+    result = projection(manifest, {"configured-0": {"groups": 1, "files": 1, "seconds": 2.0}}, 2.0)
+
+    assert "chatgpt" in str(result)
+
+
+def test_a_refresh_over_changed_evidence_does_not_qualify(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5678): keep the original qualification and a
+    truncated event log re-reduces to lower timings that still compare."""
+    from devtools.fresh_build_bench.report import evidence_digests, refresh
+
+    (tmp_path / "events.jsonl").write_text(_event("09.000", "daemon.cold_build.generation_promoted") + "\n")
+    receipt = _receipt(qualified=True, started_at_unix=_ts("2026-09-27T10:00:00.000000Z"))
+    receipt["evidence_sha256"] = evidence_digests(tmp_path)
+    path = tmp_path / "receipt.json"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert refresh(path)["checks"]["evidence_unchanged"] is True
+
+    (tmp_path / "events.jsonl").write_text("")
+    refreshed = refresh(path)
+
+    assert refreshed["checks"]["evidence_unchanged"] is False
+    assert refreshed["qualified"] is False
+
+
+@pytest.mark.parametrize("value", ["nan", "-5", "0"])
+def test_the_stall_timeout_must_be_a_positive_finite_duration(value: str) -> None:
+    """Anti-vacuity (Codex P2, #5678): accept any float and ``nan`` never stalls."""
+    from devtools.fresh_build_bench.cli import _parser
+
+    with pytest.raises(SystemExit):
+        _parser().parse_args(["run", "--corpus", "c", "--work", "w", "--stall-timeout", value])
+
+
+def test_a_failed_observation_is_not_progress(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5678): count an errored all-zero observation as a
+    change and a frozen build alternating with read failures never stalls."""
+    frozen = {"cursor_complete": 0, "raw_rows": 3}
+    failed = {"error": "OperationalError: database is locked"}
+    captured = _scripted_run(tmp_path, monkeypatch, [frozen, failed] * 6, stall_timeout_s=1500.0)
+
+    assert captured["outcome"] == "stalled"
+
+
+def test_a_candidate_without_a_census_table_still_gets_a_census(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5678): count a fixed table list and an older
+    candidate's index without ``action_pairs`` aborts before the receipt."""
+    import sqlite3
+
+    from devtools.fresh_build_bench.report import archive_census
+
+    index = tmp_path / "index.db"
+    with sqlite3.connect(index) as conn:
+        for table in ("sessions", "messages", "blocks", "file_edits", "session_links"):
+            conn.execute(f"CREATE TABLE {table} (x)")
+    census = archive_census(tmp_path, str(index))
+
+    assert census["rows"]["action_pairs"] is None
+    assert census["rows"]["sessions"] == 0
+
+
+def test_a_source_rewritten_during_its_copy_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P2, #5678): check only the copied size and a
+    same-size rewrite mid-copy seals a torn transcript."""
+    import shutil
+
+    from devtools.fresh_build_bench import corpus
+
+    source = tmp_path / "t.jsonl"
+    source.write_bytes(b"original\n")
+    original_copy = shutil.copyfile
+
+    def rewrite_while_copying(src: Any, dst: Any, **kwargs: Any) -> Any:
+        result = original_copy(src, dst, **kwargs)
+        Path(src).write_bytes(b"rewrote!\n")
+        return result
+
+    monkeypatch.setattr(shutil, "copyfile", rewrite_while_copying)
+    with pytest.raises(ValueError, match="changed while it was being copied"):
+        corpus._copy_private(source, tmp_path / "out" / "t.jsonl")

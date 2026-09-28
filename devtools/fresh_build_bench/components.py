@@ -222,6 +222,13 @@ def _at_least_one(value: str) -> int:
     return count
 
 
+def refuse_scratch_inside_corpus(scratch: Path, corpus: Path) -> None:
+    """Output under the sealed input tree dirties it for good."""
+    resolved, corpus_path = scratch.resolve(), corpus.resolve()
+    if resolved == corpus_path or corpus_path in resolved.parents:
+        raise SystemExit(f"--scratch must lie outside the corpus ({corpus_path})")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("component", choices=("parse", "blob"))
@@ -236,6 +243,7 @@ def main(argv: list[str] | None = None) -> int:
     # can be staged by accident.
     refuse_inside_checkout(args.corpus, "--corpus")
     refuse_inside_checkout(args.scratch, "--scratch")
+    refuse_scratch_inside_corpus(args.scratch, args.corpus)
     if args.scratch.exists() and any(args.scratch.iterdir()):
         # A reused blob store deduplicates and skips the publication work.
         raise SystemExit(f"--scratch must be absent or empty: {args.scratch}")

@@ -290,10 +290,17 @@ def archive_census(archive: Path, promoted_index: str | None) -> dict[str, Any]:
         index = Path(promoted_index)
         result["index_bytes"] = index.stat().st_size
         with closing(sqlite3.connect(f"file:{index}?mode=ro", uri=True)) as conn:
+            present = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master")}
+            # An older ``--candidate`` may predate a table: it is counted as
+            # absent (``None``), never an error that loses the receipt.
             result["rows"] = {
-                table: int(conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0])
+                table: int(conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]) if table in present else None
                 for table in ("sessions", "messages", "blocks", "file_edits", "action_pairs", "session_links")
             }
+            if "messages_fts" not in present:
+                result["messages_fts_rows"] = None
+                result["fts_indexable_rows"] = None
+                return result
             result["messages_fts_rows"] = int(conn.execute("SELECT COUNT(*) FROM messages_fts").fetchone()[0])
             from polylogue.storage.fts.sql import FTS_INDEXABLE_MESSAGE_COUNT_SQL
 
@@ -473,8 +480,14 @@ def projection(manifest: dict[str, Any], by_source: dict[str, Any], intake_wall_
     rows: dict[str, Any] = {}
     serial_sample = 0.0
     serial_projected = 0.0
+    # Export roots are configured sources named ``configured-<n>`` in the
+    # order the run lists them (sorted export directories).
+    from devtools.fresh_build_bench.corpus import EXPORT_ORIGINS
+
+    export_origins = sorted(origin for origin in sampled if origin in EXPORT_ORIGINS)
+    configured = {f"configured-{index}": origin for index, origin in enumerate(export_origins)}
     for source, stats in (by_source or {}).items():
-        origin = _SOURCE_ORIGIN.get(source)
+        origin = _SOURCE_ORIGIN.get(source) or configured.get(source)
         if origin is None or origin not in sampled or not sampled[origin]["bytes"]:
             continue
         sample_mib = sampled[origin]["bytes"] / 2**20
@@ -613,6 +626,21 @@ def benchmark_implementation_sha256() -> str:
 _FINGERPRINT_DEPENDENCIES: Final = (
     Path(__file__).resolve().parents[2] / "tests" / "infra" / "reindex_differential.py",
 )
+
+
+def evidence_digests(work: Path) -> dict[str, str | None]:
+    """SHA-256 of the evidence a receipt is reduced from: the event log and the ops ledger."""
+
+    def digest(path: Path) -> str | None:
+        if not path.is_file():
+            return None
+        hasher = hashlib.sha256()
+        with path.open("rb") as stream:
+            while chunk := stream.read(1 << 20):
+                hasher.update(chunk)
+        return hasher.hexdigest()
+
+    return {"events": digest(work / "events.jsonl"), "ops": digest(work / "archive" / "ops.db")}
 
 
 def config_digest(config: Any) -> str:
@@ -797,6 +825,8 @@ def build_receipt(
         ),
         "process_tree": tree,
         "checks": checks,
+        # Sealed so a later ``refresh`` can tell whether it re-reads the same evidence.
+        "evidence_sha256": evidence_digests(paths["work"]),
         "budgets": {name: {"limit": limit} for name, limit in sorted(dict(config.budgets).items())},
         "final_observation": {
             key: getattr(final, key)
@@ -1071,6 +1101,10 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     receipt["stages"] = analyse_batches(work / "archive" / "ops.db")
     for key in ("writer", "chunks", "intake_pages_by_class", "by_source", "warnings_and_errors"):
         receipt[key] = events.get(key)
+    # Truncated or edited evidence re-reduces to different timings under the
+    # original qualification; the run then no longer qualifies.
+    sealed = receipt.get("evidence_sha256")
+    receipt.setdefault("checks", {})["evidence_unchanged"] = sealed is not None and evidence_digests(work) == sealed
     receipt["timing_s"].update(
         {
             "promotion": milestones.get("promoted_s"),

@@ -125,7 +125,12 @@ def _hash_tree(root: Path) -> list[CorpusFile]:
         base = root / top
         if not base.exists():
             continue
-        for directory, _dirs, names in os.walk(base):
+        for directory, dirs, names in os.walk(base):
+            # The daemon walks source roots following symlinks; a linked
+            # directory would add unsealed files this walk never hashed.
+            for name in [*dirs, *names]:
+                if (Path(directory) / name).is_symlink():
+                    raise ValueError("corpus holds a symbolic link; a sealed corpus holds only real files")
             for name in names:
                 path = Path(directory) / name
                 relative = path.relative_to(root).as_posix()
@@ -179,9 +184,21 @@ def _private_root(root: Path) -> None:
     root.chmod(0o700)
 
 
+def _file_observation(path: Path) -> tuple[int, int, int, int]:
+    status = path.stat()
+    return (status.st_ino, status.st_size, status.st_mtime_ns, status.st_ctime_ns)
+
+
 def _copy_private(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    # A source rewritten in place while it is copied (same size or not)
+    # would seal a torn mixture; the file must be the same one, unchanged,
+    # on both sides of the copy.
+    before = _file_observation(source)
     shutil.copyfile(source, destination)
+    if _file_observation(source) != before:
+        destination.unlink(missing_ok=True)
+        raise ValueError("a source file changed while it was being copied; sample a quiescent population")
     destination.chmod(0o600)
     # A sidecar's mtime is parsed into its event timestamp; a copy keeps the
     # source's, so a sample reproduces the output its source would.
