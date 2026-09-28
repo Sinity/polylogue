@@ -458,7 +458,9 @@ def parse_one_source_path(
             blob_size=blob_size,
             blob_publication_receipt_id=receipt_id,
         )
-        with path.open("rb") as handle:
+        # Parse the captured, validated blob -- never a reopened source path,
+        # which may have changed since capture.
+        with resolved_store.open(blob_hash) as handle:
             yield from emitter.emit(handle, path.name, precomputed_raw=raw_data)
     else:
         with path.open("rb") as handle:

@@ -5490,6 +5490,11 @@ class LiveBatchProcessor:
                             )
                     except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                        # An unreadable member proves nothing about a refusal
+                        # it carried; keep that gap until the member is read.
+                        self._zip_member_refusals_this_pass.setdefault(str(path), set()).add(
+                            _zip_member_debt_subject(path, entry_ordinals[id(info)], info.filename)
+                        )
                     except ForeignOriginContentError as exc:
                         # A refused member is named on its own; admissible
                         # siblings in the archive are still acquired.
@@ -5584,6 +5589,9 @@ class LiveBatchProcessor:
                         )
                     except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                        self._zip_member_refusals_this_pass.setdefault(str(path), set()).add(
+                            _zip_member_debt_subject(path, entry_ordinal, info.filename)
+                        )
                         continue
                     except ForeignOriginContentError as exc:
                         self._record_zip_member_refusal(path, entry_ordinal, info.filename, exc)

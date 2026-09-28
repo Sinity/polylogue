@@ -495,14 +495,18 @@ def refuse_foreign_material(
     if prefix is None:
         with source.open("rb") as handle:
             prefix = handle.read(LOCATION_VALIDATION_PREFIX_BYTES)
-    detect_provider_from_raw_bytes_evidence(prefix, name, bound, truncated_tail_ok=True)
-    if is_jsonl_source_path(name) and b"\n" not in prefix:
-        # The prefix ends inside one oversized first record, so the line-based
-        # detector saw nothing. The completed keys before the cut still carry
-        # the record's envelope; validate that partial structure.
+    detected, _evidence = detect_provider_from_raw_bytes_evidence(prefix, name, bound, truncated_tail_ok=True)
+    truncated_record = is_jsonl_source_path(name) and b"\n" not in prefix
+    truncated_document = not is_jsonl_source_path(name) and len(prefix) >= LOCATION_VALIDATION_PREFIX_BYTES
+    if truncated_record or (truncated_document and detected is bound):
+        # The prefix ends inside one oversized record or document, so the
+        # detector saw no complete value. The completed keys before the cut
+        # still carry its envelope; validate that partial structure.
         partial = _completed_prefix_structure(prefix)
-        if isinstance(partial, dict):
+        if truncated_record and isinstance(partial, dict):
             detect_provider_evidence([partial], expected=bound)
+        elif truncated_document and isinstance(partial, (dict, list)) and partial:
+            detect_provider_evidence(partial, expected=bound)
 
 
 def _completed_prefix_structure(prefix: bytes) -> object:

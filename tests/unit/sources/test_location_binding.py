@@ -535,3 +535,18 @@ def test_grouped_member_validation_is_byte_bounded(tmp_path: Path) -> None:
         )
         with pytest.raises(ForeignOriginContentError):
             validate_bound_grouped_zip_member(zf, context)
+
+
+def test_truncated_json_document_is_validated_from_its_partial_structure() -> None:
+    """A foreign ``.json`` document larger than the prefix is still refused.
+
+    Anti-vacuity: without the partial-structure fallback for documents, the
+    invalid truncated prefix decides nothing and the location's own origin is
+    assumed.
+    """
+    from polylogue.sources.dispatch import LOCATION_VALIDATION_PREFIX_BYTES, refuse_foreign_material
+
+    document = json.dumps(_CODEX_ROLLOUT + [{"type": "pad", "pad": "x" * 50_000}]).encode("utf-8")
+    prefix = document[:LOCATION_VALIDATION_PREFIX_BYTES]
+    with pytest.raises(ForeignOriginContentError):
+        refuse_foreign_material("export.json", Provider.CLAUDE_CODE, prefix=prefix)
