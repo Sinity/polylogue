@@ -9834,28 +9834,27 @@ def _bulk_fts_session_guard(
         )
 
 
-_REEXTRACTED_PREFIX_BLOCKS: ContextVar[list[tuple[str, int, str]] | None] = ContextVar(
-    "polylogue_reextracted_prefix_blocks", default=None
+_REEXTRACTED_PREFIX_BLOCK_SINK: ContextVar[Callable[[str, int, str], None] | None] = ContextVar(
+    "polylogue_reextracted_prefix_block_sink", default=None
 )
 
 
 @contextmanager
-def collect_reextracted_prefix_blocks() -> Iterator[list[tuple[str, int, str]]]:
-    """Collect text blocks a late parent removes from an earlier child's rows.
+def report_reextracted_prefix_blocks(sink: Callable[[str, int, str], None]) -> Iterator[None]:
+    """Stream text blocks a late parent removes from an earlier child's rows to ``sink``.
 
     A child written before its parent was stored whole, so its accepted marker
     carrier already holds candidates for the replayed prefix under the
     child's own message ids. When this write re-extracts the child to its
-    tail, those blocks' canonical owner becomes the parent. The ingest caller
-    turns the collected ``(message_id, position, text)`` rows into marker
-    retirements carried by the writing raw's carrier.
+    tail, those blocks' canonical owner becomes the parent. Each removed
+    ``(message_id, position, text)`` row is handed to ``sink`` as it is read,
+    so the caller retains only what it derives, never the prefix text.
     """
-    collected: list[tuple[str, int, str]] = []
-    previous = _REEXTRACTED_PREFIX_BLOCKS.set(collected)
+    previous = _REEXTRACTED_PREFIX_BLOCK_SINK.set(sink)
     try:
-        yield collected
+        yield
     finally:
-        _REEXTRACTED_PREFIX_BLOCKS.reset(previous)
+        _REEXTRACTED_PREFIX_BLOCK_SINK.reset(previous)
 
 
 def _reextract_prefix_tail_db(
@@ -10065,18 +10064,15 @@ def _reextract_prefix_tail_db(
         prefix_message_ids=prefix_message_ids,
     )
     record_substage("provider_usage_tail", t0)
-    retired_blocks = _REEXTRACTED_PREFIX_BLOCKS.get()
-    if retired_blocks is not None:
+    retired_block_sink = _REEXTRACTED_PREFIX_BLOCK_SINK.get()
+    if retired_block_sink is not None:
         retired_placeholders = ",".join("?" for _ in prefix_message_ids)
-        retired_blocks.extend(
-            (str(row[0]), int(row[1]), str(row[2]))
-            for row in conn.execute(
-                f"SELECT message_id, position, text FROM blocks "
-                f"WHERE message_id IN ({retired_placeholders}) AND text IS NOT NULL "
-                "ORDER BY message_id, position",
-                tuple(prefix_message_ids),
-            )
-        )
+        for row in conn.execute(
+            f"SELECT message_id, position, text FROM blocks "
+            f"WHERE message_id IN ({retired_placeholders}) AND text IS NOT NULL",
+            tuple(prefix_message_ids),
+        ):
+            retired_block_sink(str(row[0]), int(row[1]), str(row[2]))
     t0 = time.perf_counter()
     with _bulk_fts_session_guard(conn, child_session_id, enabled=bulk_fts, bulk_build=bulk_build):
         if k == len(child_composed):

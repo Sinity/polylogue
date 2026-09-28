@@ -116,9 +116,9 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _normalized_message_native_id,
     _parsed_message_signature,
     _repair_stale_session_observations,
-    collect_reextracted_prefix_blocks,
     prepare_session_write,
     replace_parser_ingest_flag_tags,
+    report_reextracted_prefix_blocks,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
 )
@@ -1774,7 +1774,12 @@ def _write_session_entry(
     try:
         t_write = time.perf_counter()
         write_stage_timings: dict[str, float] = {}
-        with collect_reextracted_prefix_blocks() as reextracted_blocks:
+        retired_assertions: set[str] = set()
+
+        def retire_prefix_block(message_id: str, position: int, text: str) -> None:
+            retired_assertions.update(retired_marker_assertion_ids(message_id, position, text))
+
+        with report_reextracted_prefix_blocks(retire_prefix_block):
             content_changed, counts = _write_session(
                 conn,
                 cdata,
@@ -1792,10 +1797,8 @@ def _write_session_entry(
                 drive_cohort_cache=drive_cohort_cache,
                 prepared_writes=prepared_writes,
             )
-        if reextracted_blocks:
-            retired = retired_marker_assertion_ids(reextracted_blocks)
-            if retired:
-                summary.marker_retired_assertions.setdefault((raw_id, cdata.session_id), set()).update(retired)
+        if retired_assertions:
+            summary.marker_retired_assertions.setdefault((raw_id, cdata.session_id), set()).update(retired_assertions)
         marker_write = prepared_writes[0] if prepared_writes else None
         for stage, elapsed_s in write_stage_timings.items():
             summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s

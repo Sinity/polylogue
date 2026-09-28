@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
-from collections.abc import Iterable
 from dataclasses import asdict
 from typing import TYPE_CHECKING
 
@@ -47,24 +46,22 @@ def marker_candidates_for_prepared_write(prepared: PreparedSessionWrite) -> list
     return candidates
 
 
-def retired_marker_assertion_ids(blocks: Iterable[tuple[str, int, str]]) -> list[str]:
-    """Name the child-owned assertions a late parent's re-extraction supersedes.
+def retired_marker_assertion_ids(message_id: str, position: int, text: str) -> list[str]:
+    """Name the child-owned assertions one re-extracted prefix block produced.
 
     A child ingested before its parent seals candidates for its whole
     transcript, including the replayed prefix, under the child's message ids.
     Once the parent arrives those prefix blocks belong to the parent's
-    accepted input, whose own candidates carry the parent's evidence. The
-    ids are recomputed from the removed ``(message_id, position, text)`` rows
-    with the same extraction the child's carrier used, so they name exactly
-    the prefix candidates that carrier delivered.
+    accepted input, whose own candidates carry the parent's evidence. The ids
+    are recomputed from the removed row with the same extraction the child's
+    carrier used, so they name exactly the prefix candidates it delivered.
     """
-    retired: set[str] = set()
-    for message_id, position, text in blocks:
-        for candidate in candidates_for_block(message_id, f"{message_id}:{position}", text):
-            assertion_id = assertion_id_for_marker(candidate)
-            if assertion_id is not None:
-                retired.add(assertion_id)
-    return sorted(retired)
+    retired: list[str] = []
+    for candidate in candidates_for_block(message_id, f"{message_id}:{position}", text):
+        assertion_id = assertion_id_for_marker(candidate)
+        if assertion_id is not None:
+            retired.append(assertion_id)
+    return retired
 
 
 def marker_recipe_fingerprint() -> str:

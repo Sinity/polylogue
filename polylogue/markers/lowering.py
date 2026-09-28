@@ -55,6 +55,9 @@ def lower_markers(
         assertion_id = assertion_id_for_marker(candidate)
         if assertion_id is None:
             continue
+        if conn.execute("SELECT 1 FROM retired_marker_assertions WHERE assertion_id = ?", (assertion_id,)).fetchone():
+            # A later carrier re-owned this evidence before this one arrived.
+            continue
         existing = conn.execute(
             "SELECT author_kind, status FROM assertions WHERE assertion_id = ?",
             (assertion_id,),
@@ -95,14 +98,22 @@ def lower_markers(
 def retire_marker_assertions(
     conn: sqlite3.Connection, assertion_ids: Iterable[str], *, now_ms: int | None = None
 ) -> tuple[str, ...]:
-    """Supersede agent marker candidates whose evidence a later carrier re-owned.
+    """Record re-owned marker ids and supersede their live agent candidates.
 
-    Only an untouched agent ``candidate`` is superseded: a human's assertion or
-    any judgment already made at that id is preserved, exactly as in
-    :func:`lower_markers`. Absent ids (never delivered, or excised) are skipped.
+    The retirement is durable, so delivery order does not matter: a carrier
+    lowered later skips a retired id in :func:`lower_markers`. Only an
+    untouched agent ``candidate`` is superseded; a human's assertion or any
+    judgment already made at that id is preserved.
     """
+    from polylogue.storage.sqlite.archive_tiers.user_write import _now_ms
+
+    timestamp = _now_ms() if now_ms is None else now_ms
     retired: list[str] = []
     for assertion_id in assertion_ids:
+        conn.execute(
+            "INSERT OR IGNORE INTO retired_marker_assertions(assertion_id, retired_at_ms) VALUES (?, ?)",
+            (assertion_id, timestamp),
+        )
         existing = conn.execute(
             "SELECT author_kind, status FROM assertions WHERE assertion_id = ?",
             (assertion_id,),
@@ -111,7 +122,7 @@ def retire_marker_assertions(
             continue
         if existing[1] is not None and str(existing[1]) != AssertionStatus.CANDIDATE.value:
             continue
-        if mark_assertion_status(conn, assertion_id, AssertionStatus.SUPERSEDED, now_ms=now_ms):
+        if mark_assertion_status(conn, assertion_id, AssertionStatus.SUPERSEDED, now_ms=timestamp):
             retired.append(assertion_id)
     return tuple(retired)
 
