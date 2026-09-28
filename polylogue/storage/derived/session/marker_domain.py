@@ -69,6 +69,8 @@ class SessionMarkerReplacement:
     sequence: int
     identity: str
     payload: tuple[MarkerCandidate, ...]
+    #: Earlier child-owned candidates this batch's re-extraction re-owned.
+    retired: tuple[str, ...] = ()
 
     @property
     def key(self) -> str:
@@ -82,7 +84,7 @@ class SessionMarkerReplacement:
     @property
     def empty(self) -> bool:
         """An accepted batch with no markers still advances the source cursor."""
-        return not self.payload
+        return not self.payload and not self.retired
 
 
 def _key(stream_id: str, sequence: int) -> str:
@@ -117,6 +119,23 @@ def marker_assertions_present(conn: sqlite3.Connection, assertion_ids: Sequence[
         unique_ids,
     ).fetchone()
     return row is not None and int(row[0]) == len(unique_ids)
+
+
+def _retired(batch: AcceptedMarkerInput) -> tuple[str, ...]:
+    """Decode the sealed retirements a late-parent re-extraction recorded."""
+    try:
+        value = json.loads(batch.batch.payload)
+        retired: list[str] = []
+        for session in value["sessions"]:
+            if not isinstance(session, dict):
+                raise TypeError("session is not an object")
+            ids = session.get("retired_assertions", [])
+            if not isinstance(ids, list) or not all(isinstance(item, str) and item for item in ids):
+                raise TypeError("retired assertions are not a list of ids")
+            retired.extend(ids)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AcceptedMarkerInputRefusedError("accepted marker carrier has an invalid retirement payload") from exc
+    return tuple(dict.fromkeys(retired))
 
 
 def _candidates(batch: AcceptedMarkerInput) -> tuple[MarkerCandidate, ...]:
@@ -334,6 +353,7 @@ class SessionMarkerDerivation:
             sequence=sequence,
             identity=batch.batch.identity,
             payload=_candidates(batch),
+            retired=_retired(batch),
         )
 
     def publish(self, frame: object, replacement: object) -> bool:
@@ -341,6 +361,7 @@ class SessionMarkerDerivation:
         del frame
         assert isinstance(replacement, SessionMarkerReplacement)
         from polylogue.markers import lower_markers
+        from polylogue.markers.lowering import retire_marker_assertions
         from polylogue.storage.sqlite.archive_tiers.user_write import _now_ms
 
         conn = self._marker_write_connection()
@@ -360,6 +381,7 @@ class SessionMarkerDerivation:
             # publishing content after the source carrier was erased.
             if self._tombstone_at(replacement.sequence, stream_id=replacement.stream_id) is None:
                 lower_markers(conn, replacement.payload)
+                retire_marker_assertions(conn, replacement.retired)
             advance_accepted_marker_delivery_cursor(
                 conn,
                 stream_id=replacement.stream_id,

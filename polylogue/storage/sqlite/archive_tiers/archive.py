@@ -613,6 +613,12 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
         del data
         self._refuse()
 
+    def prepare_from_writer(
+        self, write: Callable[[IO[bytes]], None], *, heartbeat: Heartbeat | None = None
+    ) -> NoReturn:
+        del write, heartbeat
+        self._refuse()
+
     def allocate_staging_path(self, *, prefix: str, suffix: str = "") -> NoReturn:
         del prefix, suffix
         self._refuse()
@@ -645,6 +651,12 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
 
     def write_from_fileobj(self, source: IO[bytes], *, heartbeat: Heartbeat | None = None) -> tuple[str, int]:
         del source, heartbeat
+        return self._refuse()
+
+    def write_from_writer(
+        self, write: Callable[[IO[bytes]], None], *, heartbeat: Heartbeat | None = None
+    ) -> tuple[str, int]:
+        del write, heartbeat
         return self._refuse()
 
     def write_from_bytes(self, data: bytes) -> tuple[str, int]:

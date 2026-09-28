@@ -101,6 +101,9 @@ class _IngestBatchSummary:
     marker_request_facts_by_raw_id: dict[str, dict[str, object]] = field(default_factory=dict)
     marker_request_sessions_by_raw_id: dict[str, list[dict[str, object]]] = field(default_factory=dict)
     marker_session_dispositions_by_raw_id: dict[str, list[dict[str, object]]] = field(default_factory=dict)
+    #: Child-owned marker assertions a session write re-extracted to a late
+    #: parent, keyed by the writing (raw, session); carried on that carrier.
+    marker_retired_assertions: dict[tuple[str, str], set[str]] = field(default_factory=dict)
     marker_batches_by_raw_id: dict[str, PreparedAcceptedMarkerInput] = field(default_factory=dict)
     expected_marker_session_counts: dict[str, int] = field(default_factory=dict)
     publication_payload_bytes: int = 0
