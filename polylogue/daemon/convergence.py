@@ -879,6 +879,11 @@ class DaemonConverger:
         self._session_states: dict[str, SessionState] = {}
         self._derivations = DerivationRegistry(cast("Iterable[DerivationAdapter]", derivations))
         self._derivation_cursor = PassCursor()
+        #: The demand-only sweep pages the demand keyspace, not the archive:
+        #: sharing one cursor let a demand pass resume (and finish) the
+        #: archive audit's partial position, so the audit wrapped to its
+        #: first slice on every tick and never reached the tail.
+        self._demand_cursor = PassCursor()
 
     @property
     def derivation_domains(self) -> tuple[str, ...]:
@@ -919,7 +924,7 @@ class DaemonConverger:
             budget=budget,
             deadline_s=deadline_s,
             domains=domains,
-            cursor=self._derivation_cursor if resume else None,
+            cursor=(self._demand_cursor if frame.profile_demand_only else self._derivation_cursor) if resume else None,
             publisher=publisher,
             barrier=self._derivation_barrier,
         )
@@ -928,7 +933,9 @@ class DaemonConverger:
         # the archive sweep's retained position alone: replacing it with the
         # targeted frame's terminal cursor would discard fairness for the
         # no-hint pass that follows.
-        if frame.scope is None:
+        if frame.scope is None and frame.profile_demand_only:
+            self._demand_cursor = report.cursor
+        elif frame.scope is None:
             self._derivation_cursor = report.cursor
         return report
 

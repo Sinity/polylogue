@@ -48,8 +48,12 @@ def _patch_healthy_collectors(
         archive_schema_ready=True,
         present_tiers=["source", "index", "embeddings", "user", "audit", "ops"],
     )
+    # A measured, fully materialized raw population: an empty one is not a
+    # proof that materialization is ready, so it withholds ``archive_ready``.
     healthy_raw = status_module.RawMaterializationReadiness(
         available=True,
+        raw_artifact_count=1,
+        materialized_raw_artifact_count=1,
         raw_authority_parser_census={"available": True},
     )
     # Every check proven healthy: an ``overall_status`` alone over unknown

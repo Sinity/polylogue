@@ -144,6 +144,8 @@ def test_component_snapshot_metadata_keeps_collection_state_out_of_business_read
             "fingerprint": None,
             "error": "collector exceeded deadline_s=0.1",
             "last_good_at": None,
+            "completed_at": None,
+            "collection_duration_s": None,
         }
     ]
 
@@ -346,16 +348,7 @@ def test_daemon_status_names_every_halted_unit_and_is_not_ok(tmp_path: Path, mon
     # raw-failure lifecycle), so the baseline is green for a reason other than
     # the halt under test.
     real_raw_failure_info = status_module._raw_failure_info
-    _patch_healthy_collectors(
-        monkeypatch,
-        archive_root,
-        raw_materialization=lambda **_: status_module.RawMaterializationReadiness(
-            available=True,
-            raw_artifact_count=1,
-            materialized_raw_artifact_count=1,
-            raw_authority_parser_census={"available": True},
-        ),
-    )
+    _patch_healthy_collectors(monkeypatch, archive_root)
     monkeypatch.setattr(status_module, "_raw_failure_info", real_raw_failure_info)
 
     assert daemon_status_payload(sources=(), include_archive_debt=False)["ok"] is True, (

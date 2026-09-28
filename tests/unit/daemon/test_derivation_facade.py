@@ -153,6 +153,42 @@ def test_a_required_key_that_disappears_after_discovery_is_binding_moved() -> No
 
 
 @pytest.mark.asyncio
+async def test_a_demand_sweep_leaves_the_archive_audit_cursor_alone() -> None:
+    """A demand-only pass pages its own keyspace from its own cursor.
+
+    Anti-vacuity (polylogue-6remh): with one shared cursor the demand pass
+    resumed the audit's partial position, finished it, and stored its
+    terminal cursor, so the next audit slice wrapped to its first key and a
+    large archive never reached its tail.
+    """
+    adapter = StringStatusDerivation(("a", "b"))
+    adapter.domain = "session_profile"
+    converger = DaemonConverger([], derivations=[adapter])
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    owner = SessionProfileConvergenceOwner(
+        converger,
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    try:
+        audit = DerivationFrame(archive_root="/archive", source_revision="r1", profile_full_scan=True)
+        assert (await owner.converge(audit, budget=Budget(page=1, compute=1))).done == 1
+        audit_cursor = converger._derivation_cursor
+        assert audit_cursor.position("session_profile").page_cursor == "1"
+
+        demand = DerivationFrame(archive_root="/archive", source_revision="r1", profile_demand_only=True)
+        await owner.converge(demand, budget=Budget(page=1, compute=1))
+        assert converger._derivation_cursor == audit_cursor
+
+        assert (await owner.converge(audit, budget=Budget(page=1, compute=1))).done == 1
+        assert adapter.output == {"a": "b0", "b": "b0"}
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
 async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope() -> None:
     """A targeted earlier id cannot inherit an archive sweep's page cursor.
 

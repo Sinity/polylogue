@@ -247,6 +247,7 @@ async def test_promoted_generation_starts_a_bounded_profile_pass_from_new_demand
 
 
 @pytest.mark.asyncio
+@pytest.mark.uses_real_clock("audit_pass takes an absolute time.monotonic() deadline")
 async def test_periodic_sweep_reaches_more_than_one_budget_of_profiles_without_demand(tmp_path: Path) -> None:
     """A quiet archive tail must survive bounded prerequisite passes.
 
