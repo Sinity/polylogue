@@ -94,14 +94,6 @@ def find_git_worktree_root(start: Path) -> Path | None:
 _CHECKOUT_ROOT_VARIABLES = ("POLYLOGUE_REPO_ROOT", "POLYLOGUE_ROOT")
 
 
-def _inside(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root)
-    except (OSError, ValueError):
-        return False
-    return True
-
-
 def _foreign_checkout(path_text: str, root: Path) -> bool:
     """Whether ``path_text`` lies in a Polylogue checkout other than ``root``.
 
