@@ -2109,6 +2109,26 @@ def _lower_shared_chatgpt_document(record: PayloadRecord) -> ChatGPTLoweredDocum
     )
 
 
+def _validation_error_locations(exc: Exception) -> str | None:
+    """Where an envelope failed validation, never what it contained.
+
+    A validation error's rendering quotes the offending input, which here is
+    the operator's captured conversation; only field locations and error
+    kinds may reach a log.
+    """
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        return None
+    try:
+        details = errors(include_input=False, include_url=False, include_context=False)
+    except Exception:
+        return None
+    return "; ".join(
+        f"{'.'.join(str(part) for part in detail.get('loc', ()))}: {detail.get('type', 'invalid')}"
+        for detail in details[:8]
+    )[:512]
+
+
 def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLoweredDocument]:
     """Lower direct, bundled, and browser-capture ChatGPT payloads.
 
@@ -2141,7 +2161,17 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
         if spec.mode == "browser_capture":
             try:
                 envelope = BrowserCaptureEnvelope.model_validate(record)
-            except Exception:
+            except Exception as exc:
+                # The parser refuses this envelope too, so it contributes no
+                # document; but the census must not undercount silently.
+                emit(
+                    "sources.census.browser_capture_envelope_invalid",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="envelope_invalid",
+                    error_type=type(exc).__name__,
+                    error_detail=_validation_error_locations(exc),
+                )
                 continue
             native = envelope.raw_provider_payload
             # The census must lower exactly what the parser materializes. A

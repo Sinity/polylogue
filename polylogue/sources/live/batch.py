@@ -86,6 +86,7 @@ from polylogue.pipeline.ingest_outcomes import (
     IngestAttemptDisposition,
     classify_archive_write_exception,
     downstream_failure_disposition,
+    non_session_artifact_disposition,
     success_disposition,
     transient_error_disposition,
 )
@@ -179,6 +180,7 @@ from polylogue.sources.live.dedup import handle_schema_version_mismatch, handle_
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import (
     REFUSED_DAEMON_DEGRADED,
+    REFUSED_NO_SESSIONS,
     REFUSED_UNATTEMPTED,
     REFUSED_UNATTEMPTED_TIME_BUDGET,
     LiveBatchMetrics,
@@ -683,6 +685,9 @@ class _ArchiveFullWriteResult:
     # observation. Keep them separate from accepted raw ids so deferred
     # authority failures remain retryable.
     terminal_raw_ids: dict[_FullRecordKey, str] = field(default_factory=dict)
+    # Accepted raws whose parse produced no session (a recorded terminal
+    # shape outcome). Their paths still advance the cursor as successes.
+    no_session_raw_ids: set[_FullRecordKey] = field(default_factory=set)
     # A raw whose membership census does not produce an accepted session is
     # still a durably acquired, successfully parsed source observation. The
     # decision can be pending for the materialization conveyor or already
@@ -1228,6 +1233,7 @@ class LiveBatchProcessor:
         failed_paths: list[str] = []
         excluded_by_path: dict[Path, str] = {}
         detection_fallbacks_by_path: dict[Path, str] = {}
+        no_session_paths: set[Path] = set()
         succeeded_paths: set[Path] = set()
         # polylogue-cnu3: the most severe structural disposition this batch
         # hit, if any. Set at each terminal except-clause below by
@@ -1264,7 +1270,7 @@ class LiveBatchProcessor:
             await self._record_attempt_progress_admitted(
                 attempt_id,
                 phase="append_parse",
-                succeeded_file_count=len(succeeded_paths),
+                succeeded_file_count=len(succeeded_paths - no_session_paths),
                 failed_file_count=len(failed_paths),
                 source_payload_read_bytes=source_payload_read_bytes,
                 cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1304,7 +1310,7 @@ class LiveBatchProcessor:
             await self._record_attempt_progress_admitted(
                 attempt_id,
                 phase="convergence",
-                succeeded_file_count=len(succeeded_paths),
+                succeeded_file_count=len(succeeded_paths - no_session_paths),
                 failed_file_count=len(failed_paths),
                 source_payload_read_bytes=source_payload_read_bytes,
                 cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1475,7 +1481,7 @@ class LiveBatchProcessor:
                     await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse",
-                        succeeded_file_count=len(succeeded_paths),
+                        succeeded_file_count=len(succeeded_paths - no_session_paths),
                         failed_file_count=len(failed_paths),
                         source_payload_read_bytes=source_payload_read_bytes,
                         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1494,7 +1500,7 @@ class LiveBatchProcessor:
                             attempt_id,
                             source_name=source_name,
                             current_path=current_path,
-                            succeeded_file_count=len(succeeded_paths),
+                            succeeded_file_count=len(succeeded_paths - no_session_paths),
                             failed_file_count=len(failed_paths),
                             source_payload_read_bytes=source_payload_read_bytes,
                             cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1520,7 +1526,7 @@ class LiveBatchProcessor:
                     await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse_failed",
-                        succeeded_file_count=len(succeeded_paths),
+                        succeeded_file_count=len(succeeded_paths - no_session_paths),
                         failed_file_count=len(failed_paths),
                         source_payload_read_bytes=source_payload_read_bytes,
                         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1540,7 +1546,7 @@ class LiveBatchProcessor:
                     await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse_failed",
-                        succeeded_file_count=len(succeeded_paths),
+                        succeeded_file_count=len(succeeded_paths - no_session_paths),
                         failed_file_count=len(failed_paths),
                         source_payload_read_bytes=source_payload_read_bytes,
                         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1575,7 +1581,7 @@ class LiveBatchProcessor:
                     await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse_failed",
-                        succeeded_file_count=len(succeeded_paths),
+                        succeeded_file_count=len(succeeded_paths - no_session_paths),
                         failed_file_count=len(failed_paths),
                         source_payload_read_bytes=source_payload_read_bytes,
                         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1593,7 +1599,7 @@ class LiveBatchProcessor:
                 await self._record_attempt_progress_admitted(
                     attempt_id,
                     phase="convergence",
-                    succeeded_file_count=len(succeeded_paths),
+                    succeeded_file_count=len(succeeded_paths - no_session_paths),
                     failed_file_count=len(failed_paths),
                     source_payload_read_bytes=source_payload_read_bytes,
                     cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1695,6 +1701,7 @@ class LiveBatchProcessor:
                     )
                 excluded_by_path.update(full_result.excluded)
                 detection_fallbacks_by_path.update(full_result.detection_fallbacks)
+                no_session_paths.update(full_result.no_session)
                 logger.info(
                     "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
                     source_name,
@@ -1734,7 +1741,7 @@ class LiveBatchProcessor:
             }
         summary_stage_payload = {
             **(summary_stage_payload or {}),
-            "excluded_file_count": len(excluded_by_path),
+            "excluded_file_count": len(excluded_by_path) + len(no_session_paths),
         }
         # The ingest-attempt receipt has separate units for parsed raw files
         # and materialized sessions.  Count the actual session identities
@@ -1747,7 +1754,7 @@ class LiveBatchProcessor:
         await self._record_attempt_progress_admitted(
             attempt_id,
             phase="cursor_update",
-            succeeded_file_count=len(succeeded_paths),
+            succeeded_file_count=len(succeeded_paths - no_session_paths),
             failed_file_count=len(failed_paths),
             materialized_count=materialized_session_count,
             source_payload_read_bytes=source_payload_read_bytes,
@@ -1799,14 +1806,22 @@ class LiveBatchProcessor:
                 (ConvergenceDebtBatchEntry(writes=deferred_debt_writes),),
             )
         retry_paths = failed_paths + [str(path) for path in deferred_paths]
+        # ``succeeded_paths`` stays the cursor-completed set this method
+        # advances. Public accounting moves a path that produced no session
+        # to the exclusions, matching the intake outcome for the same path.
+        admitted_paths = succeeded_paths - no_session_paths
+        reported_excluded = {
+            **excluded_by_path,
+            **dict.fromkeys(no_session_paths, REFUSED_NO_SESSIONS),
+        }
         excluded_reasons: dict[str, int] = {}
-        for reason in excluded_by_path.values():
+        for reason in reported_excluded.values():
             excluded_reasons[reason] = excluded_reasons.get(reason, 0) + 1
         ingested_bytes, failed_bytes, refused_bytes_by_reason = split_offered_bytes(
             path_sizes,
-            succeeded=succeeded_paths,
+            succeeded=admitted_paths,
             failed=(Path(path) for path in failed_paths),
-            excluded=excluded_by_path,
+            excluded=reported_excluded,
             deferred=deferred_paths,
             unattempted_reason=(
                 REFUSED_UNATTEMPTED_TIME_BUDGET if full_ingest_time_budget_exceeded else REFUSED_UNATTEMPTED
@@ -1817,11 +1832,11 @@ class LiveBatchProcessor:
             queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
             needed_file_count=len(paths),
             skipped_file_count=skipped_file_count,
-            succeeded_file_count=len(succeeded_paths),
+            succeeded_file_count=len(succeeded_paths - no_session_paths),
             failed_file_count=len(failed_paths),
             excluded_file_count=sum(excluded_reasons.values()),
             excluded_reasons=dict(excluded_reasons),
-            excluded_paths={str(path): reason for path, reason in excluded_by_path.items()},
+            excluded_paths={str(path): reason for path, reason in reported_excluded.items()},
             detection_fallback_paths={str(path): reason for path, reason in detection_fallbacks_by_path.items()},
             deferred_paths=tuple(str(path) for path in deferred_paths),
             source_group_count=len({self._source_name_for(path) for path in paths}),
@@ -1852,7 +1867,8 @@ class LiveBatchProcessor:
             raw_compaction_runs=raw_compaction_runs,
             stage_timings_s={name: round(elapsed, 6) for name, elapsed in stage_timings.items()},
             failed_paths=retry_paths,
-            succeeded_paths=tuple(sorted(succeeded_paths)),
+            succeeded_paths=tuple(sorted(admitted_paths)),
+            no_session_paths=tuple(sorted(str(path) for path in no_session_paths)),
             new_sessions=tuple(new_session_touches),
             updated_sessions=tuple(updated_session_touches),
             time_budget_exceeded=full_ingest_time_budget_exceeded,
@@ -1878,7 +1894,7 @@ class LiveBatchProcessor:
             queued_file_count=metrics.queued_file_count,
             needed_file_count=metrics.needed_file_count,
             skipped_file_count=metrics.skipped_file_count,
-            succeeded_file_count=len(succeeded_paths),
+            succeeded_file_count=len(succeeded_paths - no_session_paths),
             failed_file_count=len(failed_paths),
             input_bytes=input_bytes,
             ingested_bytes=metrics.ingested_bytes,
@@ -1897,6 +1913,13 @@ class LiveBatchProcessor:
         )
         if attempt_disposition is not None:
             final_disposition = attempt_disposition
+        elif not retry_paths and no_session_paths and not admitted_paths:
+            # Every settled source parsed to no session: the durable attempt
+            # agrees with the intake's EXCLUDED outcome instead of SUCCESS.
+            final_disposition = non_session_artifact_disposition(
+                evidence_ref="batch:no_session_sources",
+                diagnostic=f"{len(no_session_paths)} source item(s) parsed to no session",
+            )
         elif not retry_paths:
             final_disposition = success_disposition()
         else:
@@ -3800,6 +3823,16 @@ class LiveBatchProcessor:
             for path in ingested
             if path not in failed_set and path not in skipped_paths and path not in preparation_deferred_paths
         ]
+        no_session_paths: list[Path] = []
+        if archive_write is not None and archive_write.no_session_raw_ids:
+            keys_by_path: dict[Path, list[_FullRecordKey]] = {}
+            for key, path in raw_by_record.items():
+                keys_by_path.setdefault(path, []).append(key)
+            no_session_paths = [
+                path
+                for path in succeeded_paths
+                if (keys := keys_by_path.get(path)) and all(key in archive_write.no_session_raw_ids for key in keys)
+            ]
         for path in skipped_paths:
             # The archive-write checkpoint did not reach these records. They
             # have no raw row or cursor and must stay eligible on the next
@@ -3826,6 +3859,7 @@ class LiveBatchProcessor:
             detection_fallbacks={
                 path: reason for path, reason in detection_fallbacks.items() if path in succeeded_paths
             },
+            no_session=no_session_paths,
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
             raw_frontier_sizes=raw_frontier_sizes,
@@ -4470,6 +4504,7 @@ class LiveBatchProcessor:
                             preserve_existing_failure_evidence=True,
                         )
                         result.raw_ids[_full_record_key(record)] = source_raw_id
+                        result.no_session_raw_ids.add(_full_record_key(record))
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     record_session_artifact_observation(

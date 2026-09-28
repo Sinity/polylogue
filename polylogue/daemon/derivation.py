@@ -190,6 +190,12 @@ class Replacement:
     empty: bool = False
 
 
+def _is_transient_failure(exc: BaseException) -> bool:
+    from polylogue.daemon.intake import is_transient_admission_error
+
+    return is_transient_admission_error(exc)
+
+
 @dataclass(frozen=True, slots=True)
 class KeyOutcome:
     """The typed result of one key's convergence attempt."""
@@ -199,6 +205,10 @@ class KeyOutcome:
     reason: PendingReason | None = None
     error: str | None = None
     elapsed_s: float = 0.0
+    transient: bool = False
+    """For ``FAILED``: whether the failure can clear with no change to the
+    key's evidence (lock contention, a storage fault). Anything else repeats
+    identically on the unchanged key."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -832,7 +842,14 @@ class _Pass:
                 error_type=type(exc).__name__,
                 error_detail=str(exc),
             )
-            self.record(KeyOutcome(key=derivation_key, outcome=Outcome.FAILED, error=f"quiet: {exc}"))
+            self.record(
+                KeyOutcome(
+                    key=derivation_key,
+                    outcome=Outcome.FAILED,
+                    error=f"quiet: {exc}",
+                    transient=_is_transient_failure(exc),
+                )
+            )
             return
 
         started_key = time.monotonic()
@@ -855,6 +872,7 @@ class _Pass:
                     key=derivation_key,
                     outcome=Outcome.FAILED,
                     error=f"compute: {exc}",
+                    transient=_is_transient_failure(exc),
                     elapsed_s=time.monotonic() - started_key,
                 )
             )
@@ -895,6 +913,7 @@ class _Pass:
                     key=derivation_key,
                     outcome=Outcome.FAILED,
                     error=f"publish: {exc}",
+                    transient=_is_transient_failure(exc),
                     elapsed_s=time.monotonic() - started_key,
                 )
             )
@@ -936,6 +955,7 @@ class _Pass:
                     key=derivation_key,
                     outcome=Outcome.FAILED,
                     error=f"reinspect: {exc}",
+                    transient=_is_transient_failure(exc),
                     elapsed_s=elapsed,
                 )
             )
@@ -995,7 +1015,12 @@ class _Pass:
                     error_detail=str(exc),
                 )
                 self.record(
-                    KeyOutcome(key=DerivationKey(domain, "*"), outcome=Outcome.FAILED, error=f"discover: {exc}")
+                    KeyOutcome(
+                        key=DerivationKey(domain, "*"),
+                        outcome=Outcome.FAILED,
+                        error=f"discover: {exc}",
+                        transient=_is_transient_failure(exc),
+                    )
                 )
                 self.unreadable_domains.add(domain)
                 break

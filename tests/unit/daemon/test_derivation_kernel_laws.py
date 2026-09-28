@@ -1065,3 +1065,25 @@ def test_a_revision_staged_during_compute_is_refused_at_publication() -> None:
     assert adapter.computed == ["s"]
     assert adapter.published == []
     assert [(item.outcome, item.reason) for item in report.outcomes] == [(Outcome.PENDING, PendingReason.BLOCKED)]
+
+
+def test_a_failed_key_says_whether_its_failure_can_clear_unchanged() -> None:
+    """A deterministic failure is not transient; lock contention is.
+
+    Anti-vacuity (Codex): with no classification on the outcome, the raw
+    and hook intake callbacks reported every derivation failure as transient,
+    so an unchanged poison carrier was retried each cooldown forever instead
+    of being isolated.
+    """
+    import sqlite3
+
+    class LockedDerivation(RecordingDerivation):
+        def compute(self, frame: DerivationFrame, key: str) -> Replacement:
+            locked = sqlite3.OperationalError("database is locked")
+            locked.sqlite_errorcode = 5  # SQLITE_BUSY
+            raise locked
+
+    poisoned = converge(DerivationRegistry([RecordingDerivation("d", required=("a",), poison=frozenset({"a"}))]), FRAME)
+    locked = converge(DerivationRegistry([LockedDerivation("d", required=("a",))]), FRAME)
+    assert [item.transient for item in poisoned.by_outcome(Outcome.FAILED)] == [False]
+    assert [item.transient for item in locked.by_outcome(Outcome.FAILED)] == [True]

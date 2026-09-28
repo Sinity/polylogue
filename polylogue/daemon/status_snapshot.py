@@ -29,7 +29,7 @@ from polylogue.readiness.capability import (
     normalize_raw_frontier_status_payload,
     unknown_raw_frontier_integrity_projection,
 )
-from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.archive_identity import ArchiveLocation, resolve_active_index_path
 
 _SNAPSHOT_LOCK = threading.Lock()
 _REFRESH_LOCK = threading.Lock()
@@ -127,6 +127,10 @@ def _snapshot_freshness(
     return "fresh", frame_changed, frame_error, None
 
 
+#: Frame identity of an archive root that has no active index generation yet.
+NO_ACTIVE_GENERATION_FRAME = "no-active-generation"
+
+
 def _status_frame() -> str | None:
     """Return a cheap identity for the active index generation.
 
@@ -138,6 +142,18 @@ def _status_frame() -> str | None:
     try:
         path = resolve_active_index_path(archive_root())
         stat = path.stat()
+    except FileNotFoundError:
+        # A first cold build has no active generation until promotion, and
+        # that absence is a definite frame, not an unreadable one: without
+        # it the snapshot read "unavailable" for the entire first build.
+        # But a *present* pointer naming a generation that no longer exists
+        # (deleted or otherwise missing) is a broken archive, not a fresh
+        # one, and must not collapse into the same first-build sentinel.
+        try:
+            has_pointer = ArchiveLocation.resolve(archive_root()).active_pointer is not None
+        except Exception:
+            return None
+        return None if has_pointer else NO_ACTIVE_GENERATION_FRAME
     except Exception:
         return None
     return f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}"

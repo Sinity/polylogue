@@ -16,6 +16,9 @@ REFUSED_DAEMON_DEGRADED = "daemon_degraded"
 REFUSED_DEFERRED_PENDING_AUTHORITY = "deferred_pending_authority"
 REFUSED_UNATTEMPTED_TIME_BUDGET = "unattempted_time_budget"
 REFUSED_UNATTEMPTED = "unattempted"
+#: Acquired and parsed, but the source yielded no session. Terminal and
+#: settled: the raw carries the typed outcome and the cursor advances.
+REFUSED_NO_SESSIONS = "no_sessions"
 
 #: Declared cap on the identity lists embedded in one ``ingestion_batch``
 #: payload. The batching controls bound file count and aggregate bytes, not
@@ -157,6 +160,9 @@ class LiveBatchMetrics:
     # operator telemetry, but the watcher needs the exact durable subset so a
     # deferred pass never widens to failed or refused input.
     succeeded_paths: tuple[Path, ...] = ()
+    #: Cursor-completed paths that produced no session. They are counted and
+    #: listed as excluded under ``REFUSED_NO_SESSIONS``, never as succeeded.
+    no_session_paths: tuple[str, ...] = ()
     # Identity-scoped session touches for this batch (polylogue-20d.13):
     # ``new_sessions`` are session ids materialized for the first time via
     # the full-ingest route; ``updated_sessions`` are session ids that grew

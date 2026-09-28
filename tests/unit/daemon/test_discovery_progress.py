@@ -68,8 +68,8 @@ async def test_status_shows_first_discovery_while_sibling_sort_is_held(
         assert catchup["discovery_rejected_count"] == 0
         assert catchup["discovery_age_s"] >= 0
         assert catchup["discovery_last_advanced_age_s"] >= 0
-        assert catchup["planned_file_count"] is None
-        assert catchup["eta_s"] is None
+        assert catchup.get("planned_file_count") is None
+        assert catchup.get("eta_s") is None
         snapshot = cast(dict[str, Any], status["status_snapshot"])
         assert snapshot["age_s"] >= 0
     finally:
@@ -438,3 +438,54 @@ async def test_unadmitted_cancelled_preparation_ends_at_the_caller() -> None:
         holder_release.set()
         await holder
         reset_discovery_progress()
+
+
+def test_discovery_paging_during_a_cold_build_keeps_the_build_eta_and_mode() -> None:
+    """A paged walk inside a cold build adds counters; it never hides the ETA.
+
+    Anti-vacuity: the previous overlay replaced ``mode``/``eta_s`` with
+    ``discovery_pending``/``None`` for the whole paged walk.
+    """
+    walk = begin_discovery("synthetic")
+    try:
+        base: dict[str, object] = {"catchup": {"mode": "catching_up", "planned_raw_revision_count": 40, "eta_s": 12.5}}
+        catchup = overlay_active_discovery(base)["catchup"]
+        assert isinstance(catchup, dict)
+        assert catchup["mode"] == "catching_up"
+        assert catchup["eta_s"] == 12.5
+        assert catchup["discovery_pending"] is True
+    finally:
+        end_discovery(walk)
+        reset_discovery_progress()
+
+
+def test_status_frame_names_a_root_without_an_active_generation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A first cold build has a definite frame, so its snapshot can be fresh.
+
+    Anti-vacuity: returning ``None`` for a missing active index made every
+    status snapshot ``unavailable`` for the whole first build.
+    """
+    from polylogue.daemon import status_snapshot
+
+    monkeypatch.setattr(status_snapshot, "archive_root", lambda: tmp_path)
+    assert status_snapshot._status_frame() == status_snapshot.NO_ACTIVE_GENERATION_FRAME
+
+
+def test_status_frame_distinguishes_a_broken_pointer_from_a_fresh_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A present pointer naming a deleted generation is unavailable, not fresh.
+
+    Anti-vacuity: collapsing every ``FileNotFoundError`` into the first-build
+    sentinel makes a status snapshot report fresh while the archive's
+    declared active generation is broken.
+    """
+    from polylogue.daemon import status_snapshot
+    from polylogue.storage.archive_identity import ACTIVE_POINTER_FILENAME
+
+    monkeypatch.setattr(status_snapshot, "archive_root", lambda: tmp_path)
+    missing_generation = tmp_path / ".index-generations" / "gen-deleted" / "index.db"
+    (tmp_path / ACTIVE_POINTER_FILENAME).write_text(str(missing_generation), encoding="utf-8")
+    assert status_snapshot._status_frame() is None

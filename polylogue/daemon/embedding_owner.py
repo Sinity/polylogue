@@ -470,6 +470,10 @@ def compose_embedding_convergence(
                 from polylogue.daemon.embedding_backlog import _archive_embedding_catchup_estimated_cost_this_month
 
                 spent = _archive_embedding_catchup_estimated_cost_this_month(archive_root / "ops.db")
+                if spent is None:
+                    # Fail closed: an unmeasured spend cannot be checked
+                    # against the monthly cap, so this pass calls no provider.
+                    return EmbeddingConvergenceResult(None, "spend_unmeasured")
                 remaining = monthly_cap - spent
                 compute_budget = min(compute_budget, max(0, int(remaining / estimated_cost_per_message)))
                 if compute_budget <= 0:

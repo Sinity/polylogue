@@ -210,6 +210,11 @@ class PreparedJsonl:
     resolved_provider: Provider | None = None
     positive_evidence_filtered: bool = False
     attempt_directory: Path | None = None
+    #: For a terminal failure that never read bytes into a blob (a worker
+    #: lost on this file), the source's (size, mtime_ns, inode) when the
+    #: failing preparation began. Publication must not apply the failure to a
+    #: capture of any other revision.
+    failed_observation: tuple[int, int, int] | None = None
 
     @classmethod
     def seal(

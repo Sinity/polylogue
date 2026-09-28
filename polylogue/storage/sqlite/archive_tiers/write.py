@@ -1954,10 +1954,28 @@ def write_parsed_session_to_archive(
                         (active_leaf_message_id, session_id),
                     )
             else:
+                # The preparer sealed a cross-acquisition union from its own
+                # read, but this writer's precedence decision (force replace,
+                # same acquisition, or no prior membership) is authoritative.
+                # When it says the incoming rows replace wholesale, the union
+                # is dropped here, before the attachment bookkeeping, so the
+                # replaced messages' attachments are refreshed like any other
+                # replacement. Refusing instead deferred the path and the next
+                # pass re-prepared the same union: a livelock that left an
+                # interrupted append's tail unmaterialized (b8of0).
+                applicable_union = (
+                    prepared_write.cross_acquisition_union
+                    if prepared_write is not None
+                    and _cross_acquisition_union_applies(
+                        session_membership_existed=session_membership_existed,
+                        force_replace=force_replace,
+                        raw_id=raw_id,
+                        existing_raw_id=existing_session_raw_id,
+                    )
+                    else None
+                )
                 stale_attachment_ids = (
-                    set()
-                    if prepared_write is not None and prepared_write.cross_acquisition_union is not None
-                    else session_attachment_ids(conn, session_id)
+                    set() if applicable_union is not None else session_attachment_ids(conn, session_id)
                 )
                 projection_carry_forward = _replace_full_session_messages_and_blocks(
                     conn,
@@ -1973,7 +1991,7 @@ def write_parsed_session_to_archive(
                     bulk_build=bulk_build,
                     defer_fts_rebuild=defer_fts_rebuild,
                     prepared=prepared_rows_to_use,
-                    prepared_union=(prepared_write.cross_acquisition_union if prepared_write is not None else None),
+                    prepared_union=applicable_union,
                     content_identities=content_identities,
                 )
                 _refresh_stable_branch_point_witnesses(conn, session_id)
@@ -5512,6 +5530,23 @@ def _prepare_cross_acquisition_union(
         raise
 
 
+def _cross_acquisition_union_applies(
+    *,
+    session_membership_existed: bool,
+    force_replace: bool,
+    raw_id: str | None,
+    existing_raw_id: str | None,
+) -> bool:
+    """Whether a full replacement must union with another acquisition's rows."""
+    return (
+        session_membership_existed
+        and not force_replace
+        and raw_id is not None
+        and existing_raw_id is not None
+        and raw_id != existing_raw_id
+    )
+
+
 def _replace_full_session_messages_and_blocks(
     conn: sqlite3.Connection,
     session: ParsedSession,
@@ -5602,12 +5637,11 @@ def _replace_full_session_messages_and_blocks(
     # An input shard contains only the incoming acquisition. Across
     # acquisitions the read-only preparer must seal reconciled rows before
     # this writer reaches its replacement transaction.
-    needs_union = (
-        session_membership_existed
-        and not force_replace
-        and raw_id is not None
-        and existing_raw_id is not None
-        and raw_id != existing_raw_id
+    needs_union = _cross_acquisition_union_applies(
+        session_membership_existed=session_membership_existed,
+        force_replace=force_replace,
+        raw_id=raw_id,
+        existing_raw_id=existing_raw_id,
     )
     shard_rows = prepared if isinstance(prepared, PreparedSessionShardRows) else None
     if shard_rows is not None and needs_union:
@@ -5634,6 +5668,7 @@ def _replace_full_session_messages_and_blocks(
     unioned_block_rows: Iterable[tuple[object, ...]]
     if prepared_union is not None:
         if not needs_union:
+            # The caller passes only a union its own precedence applies.
             raise PreparedSessionWriteRefusedError("prepared field union no longer applies")
         unioned_message_rows = prepared_union.rows.message_rows
         unioned_block_rows = prepared_union.rows.block_rows

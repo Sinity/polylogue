@@ -545,7 +545,7 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     db = tmp_path / "index.db"
     db.touch()
 
-    def fake_drain(_db: Path) -> int:
+    def fake_drain(_db: Path, **_kwargs: object) -> tuple[int, int]:
         raise sqlite3.OperationalError("database is locked")
 
     with (
@@ -680,9 +680,9 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
     raw_retention_calls: list[None] = []
     drained = asyncio.Event()
 
-    def fake_drain(drain_db: Path) -> int:
+    def fake_drain(drain_db: Path, **_kwargs: object) -> tuple[int, int]:
         drains.append(drain_db)
-        return 0
+        return 0, 0
 
     async def fake_session_profiles(scope: tuple[str, ...] | None) -> object:
         profile_scopes.append(scope)
@@ -743,7 +743,7 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
     db = tmp_path / "index.db"
     db.touch()
 
-    def fake_drain(_db: Path) -> int:
+    def fake_drain(_db: Path, **_kwargs: object) -> tuple[int, int]:
         raise RuntimeError("unexpected convergence retry failure")
 
     # The drain itself runs off the writer lease (polylogue-ssplv); the
@@ -757,10 +757,14 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
         ),
         capture() as records,
     ):
-        asyncio.run(daemon_cli._retry_convergence_debt_once(db))
+        failure = asyncio.run(daemon_cli._retry_convergence_debt_once(db))
 
-    # The span's terminal event is emitted from ``__exit__``, so the swallowed
-    # failure is still on the record at ERROR rather than silently dropped.
+    # The failure is handed back so the periodic loop re-raises it after its
+    # other stages and records it as ``last_error`` (polylogue-hu24g); before,
+    # it was suppressed and only the span's event remained.
+    assert isinstance(failure, RuntimeError)
+    # The span's terminal event is emitted from ``__exit__``, so the
+    # failure is also on the record at ERROR.
     errors = [r for r in records if r["event"] == "daemon.convergence_debt.pass.error"]
     assert len(errors) == 1
     assert errors[0]["level"] == "error"
@@ -768,6 +772,50 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
     assert errors[0]["error_type"] == "RuntimeError"
     assert "unexpected convergence retry failure" in str(errors[0]["error_detail"])
     assert [r for r in records if r["event"] == "daemon.convergence_debt.pass.ok"] == []
+
+
+def test_an_unreadable_config_is_reported_not_read_as_no_drive_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity (polylogue-hu24g): ``suppress(Exception)`` left the Drive
+    intake class unregistered for the daemon's life with no event at all."""
+    import polylogue.config as config_module
+    from polylogue.daemon import cli as daemon_cli
+
+    def unreadable() -> Config:
+        raise OSError("config unreadable")
+
+    monkeypatch.setattr(config_module, "get_config", unreadable)
+    with capture() as records:
+        assert daemon_cli._drive_sources_configured() is False
+    events = [record for record in records if record["event"] == "daemon.intake.drive_config_unreadable"]
+    assert len(events) == 1
+    assert events[0]["error_type"] == "OSError"
+
+
+def test_an_alert_probe_that_raises_is_itself_an_alert(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (polylogue-hu24g): both heartbeat probes ran under
+    ``suppress(Exception)``, so a probe that raised could never alert."""
+    import polylogue.hooks as hooks
+    from polylogue.daemon import cli as daemon_cli
+
+    def broken_drift(_harness: str) -> list[Path]:
+        raise PermissionError("hook directory unreadable")
+
+    def broken_depth(*, cap: int) -> int:
+        raise OSError("spool unreadable")
+
+    monkeypatch.setattr(hooks, "hook_install_sidecar_drift", broken_drift)
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_pending_file_count", broken_depth)
+    with capture() as records:
+        daemon_cli._log_spool_depth_if_notable()
+
+    failed = [record for record in records if record["event"] == "daemon.alert_probe.failed"]
+    assert sorted((record["operation"], record["component"]) for record in failed) == [
+        ("browser_capture_spool_depth", "browser-capture"),
+        ("hook_install_sidecar_drift", "claude-code"),
+        ("hook_install_sidecar_drift", "codex"),
+    ]
 
 
 def test_polylogued_browser_capture_help_lists_service_commands() -> None:

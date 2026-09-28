@@ -7140,6 +7140,8 @@ class ArchiveStore:
         session_filters: Mapping[str, object] | None = None,
         sort: None = None,
         sort_direction: Literal["asc", "desc"] = "asc",
+        after: _archive_query_reads.DelegationPageKey | None = None,
+        max_text_bytes: int | None = None,
     ) -> list[ArchiveDelegationQueryRow]:
         return _archive_query_reads.query_delegations(
             self,
@@ -7149,6 +7151,8 @@ class ArchiveStore:
             session_filters=session_filters,
             sort=sort,
             sort_direction=sort_direction,
+            after=after,
+            max_text_bytes=max_text_bytes,
         )
 
     def get_delegation_ancestry(self, session_id: str) -> list[ArchiveDelegationAncestryRow]:

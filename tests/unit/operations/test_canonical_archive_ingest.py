@@ -393,3 +393,31 @@ async def test_one_shot_ingest_refuses_non_retryable_exclusions() -> None:
 
     with pytest.raises(RuntimeError, match="non-retryable reason"):
         await _ingest_selected_paths([path], ingest_pass)
+
+
+@pytest.mark.asyncio
+async def test_one_shot_ingest_settles_a_source_that_produced_no_sessions() -> None:
+    """A no-session exclusion is settled, not a refusal to retry or raise on.
+
+    Anti-vacuity: once batch metrics report no-session files as excluded
+    instead of succeeded, treating that reason like any other exclusion made
+    a one-shot import of a valid but empty transcript raise.
+    """
+    paths = [Path("/synthetic/empty.jsonl"), Path("/synthetic/full.jsonl")]
+    passes: list[list[Path]] = []
+
+    async def ingest_pass(offered: list[Path]) -> SimpleNamespace:
+        passes.append(offered)
+        return SimpleNamespace(
+            failed_file_count=0,
+            deferred_file_count=0,
+            succeeded_file_count=1,
+            succeeded_paths=(offered[1],),
+            excluded_file_count=1,
+            excluded_paths={str(offered[0]): "no_sessions"},
+        )
+
+    receipts = await _ingest_selected_paths(paths, ingest_pass)
+
+    assert len(receipts) == 1
+    assert passes == [paths]

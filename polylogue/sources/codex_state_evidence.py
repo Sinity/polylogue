@@ -343,7 +343,9 @@ def _thread_state_projection_is_current(archive_root: Path) -> bool:
     try:
         index_db = resolve_active_index_path(archive_root)
     except Exception:
-        return True
+        # An unresolvable index cannot prove the projection current; let the
+        # projection run and fail visibly instead of skipping it as done.
+        return False
     if not index_db.is_file():
         return True
     try:
