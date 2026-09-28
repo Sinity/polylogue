@@ -4,7 +4,7 @@
 
 This is a dated evidence record from the 2026-08-24 backlog review. Future rate estimates and backlog-reduction proposals must reference this record and preserve its distinction between assertion-level staleness and record-level invalidity.
 
-## Measured rates
+## Reported rates (measurement frame incomplete)
 
 The review found that about 46% of individual checkable assertions in open records were stale. The denominator was the full set of checkable assertions reviewed in open records; the review record does not preserve its count or the sampling and classification procedure, so this percentage cannot be independently reproduced. Fifteen of the sixteen stale assertions examined overstated work that had already been fixed. A stale assertion can still belong to a record describing real remaining work, so this is an assertion-level rate.
 

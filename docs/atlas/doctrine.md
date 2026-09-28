@@ -239,13 +239,12 @@ to retire this non-goal, not to leave both.
 
 ## Doctrine: injected-context trust
 
-**Invariant**: trust is derived from authenticated provenance *and* the
-source's own authority; content can never raise its own trust class. Assertion
-prose is not eligible for `system` trust at all. A context source supplies
-candidates and cannot allocate budget. Current policy-item authorization checks
-source-supplied fields without authenticating them independently, so a source
-can currently supply the fields that qualify an item for executable policy; do
-not treat those fields alone as structural proof of trust.
+**Intended invariant**: trust should derive from authenticated provenance
+*and* the source's own authority; content must not raise its own trust class.
+Assertion prose is not eligible for `system` trust. The current policy-item
+authorization path does not authenticate provenance independently: a context
+source can supply the fields that qualify an item for executable policy. Those
+fields alone are not structural proof of trust.
 
 **Owner**: `polylogue/core/assertions.py:72-101` derives the trust class and
 treats an assertion-controlled context policy as a capability cap rather than
@@ -296,7 +295,7 @@ two refusals are `devtools/scaffold.py:36-48` and
 up in one family, so a read that is safe for one becomes a claim the other
 cannot support. Worked examples, all anchored in current source:
 
-- **Required separation**: the status and query-units declarations differ in identity, lifecycle, authority, result shape, and durability. `_STATUS_DECLARATION` uses `daemon.read-status` with `status-envelope`; `_QUERY_UNITS_DECLARATION` uses `daemon.read-query-units` with `query-unit-envelope` (`polylogue/daemon/route_contracts.py`). Keep them in separate families.
+- **Required separation**: status and query-units have distinct identities and access result shapes. `_STATUS_DECLARATION` uses `daemon.read-status` with `status-envelope`; `_QUERY_UNITS_DECLARATION` uses `daemon.read-query-units` with `query-unit-envelope` (`polylogue/daemon/route_contracts.py`). Because result shape is one of the five compatibility dimensions, keep them in separate families.
 - **Rejected: query run into context delivery.** A query object is durable,
   content-addressed, and re-resolvable
   (`polylogue/storage/sqlite/query_objects.py:1`); a context delivery decision
