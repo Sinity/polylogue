@@ -239,7 +239,7 @@ def test_convergence_stage_reports_probe_and_materialization_failures_as_pending
 
     PRs #5072/#5073 retired prose logging: ``polylogue.logging.emit`` writes
     structured events to its own sinks and never touches stdlib logging, so
-    ``caplog.text`` is empty by construction. Per CLAUDE.md this asserts the
+    ``caplog.text`` is empty by construction. Per AGENTS.md this asserts the
     stable event token and its declared fields, not a sentence.
 
     Anti-vacuity: make ``check``'s ``except`` return False (or drop the
