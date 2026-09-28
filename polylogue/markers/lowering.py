@@ -9,7 +9,7 @@ from collections.abc import Iterable
 from polylogue.core.enums import AssertionStatus, AssertionVisibility
 from polylogue.markers.models import MarkerCandidate, marker_provenance
 from polylogue.markers.registry import MARKER_REGISTRY, MarkerRegistry
-from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+from polylogue.storage.sqlite.archive_tiers.user_write import mark_assertion_status, upsert_assertion
 
 
 def candidates_for_block(
@@ -92,4 +92,28 @@ def lower_markers(
     return tuple(ids)
 
 
-__all__ = ["assertion_id_for_marker", "candidates_for_block", "lower_markers"]
+def retire_marker_assertions(
+    conn: sqlite3.Connection, assertion_ids: Iterable[str], *, now_ms: int | None = None
+) -> tuple[str, ...]:
+    """Supersede agent marker candidates whose evidence a later carrier re-owned.
+
+    Only an untouched agent ``candidate`` is superseded: a human's assertion or
+    any judgment already made at that id is preserved, exactly as in
+    :func:`lower_markers`. Absent ids (never delivered, or excised) are skipped.
+    """
+    retired: list[str] = []
+    for assertion_id in assertion_ids:
+        existing = conn.execute(
+            "SELECT author_kind, status FROM assertions WHERE assertion_id = ?",
+            (assertion_id,),
+        ).fetchone()
+        if existing is None or str(existing[0]) != "agent":
+            continue
+        if existing[1] is not None and str(existing[1]) != AssertionStatus.CANDIDATE.value:
+            continue
+        if mark_assertion_status(conn, assertion_id, AssertionStatus.SUPERSEDED, now_ms=now_ms):
+            retired.append(assertion_id)
+    return tuple(retired)
+
+
+__all__ = ["assertion_id_for_marker", "candidates_for_block", "lower_markers", "retire_marker_assertions"]

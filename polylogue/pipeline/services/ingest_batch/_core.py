@@ -47,7 +47,11 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.core.storage_faults import raise_if_storage_fault, storage_fault_kind
 from polylogue.core.timestamp_authority import session_evidence_timestamps
 from polylogue.logging import emit, get_logger
-from polylogue.markers.preparation import marker_candidates_for_prepared_write, marker_recipe_fingerprint
+from polylogue.markers.preparation import (
+    marker_candidates_for_prepared_write,
+    marker_recipe_fingerprint,
+    retired_marker_assertion_ids,
+)
 from polylogue.pipeline.ids import bound_session_content_hash, session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.ingest_outcomes import (
@@ -112,6 +116,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _normalized_message_native_id,
     _parsed_message_signature,
     _repair_stale_session_observations,
+    collect_reextracted_prefix_blocks,
     prepare_session_write,
     replace_parser_ingest_flag_tags,
     upsert_parser_ingest_flag_tags,
@@ -1665,16 +1670,14 @@ def _reuse_current_accepted_marker_carrier(
 ) -> bool:
     """Reuse an accepted carrier before the ordinary session writer runs.
 
-    A matching current-incarnation witness proves this exact accepted request
-    already crossed the index commit boundary. A pending carrier without its
-    own witness can make the same proof when every requested session is
-    already materialized with the retained input hash in that incarnation.
-    That occurs if a rollback lost the first raw's index transaction and a
-    different raw then published the identical normalized session. In either
-    case replay must keep the carrier and skip session preparation, whose
-    no-op disposition could otherwise look like a different marker
-    interpretation. Other missing witnesses (including a replacement index)
-    still fall through to the normal writer and exact-byte re-witness checks.
+    Only a matching current-incarnation witness proves this exact request
+    already crossed the index commit boundary, so only then may replay keep
+    the carrier and skip session preparation. A pending carrier without a
+    witness never committed in this incarnation; it is not evidence that the
+    index holds its writes (another raw's identical session proves nothing
+    about this raw's provenance, stale siblings, flags, accounting, FTS state
+    or candidate coordinates). Such a request runs the ordinary writer, and
+    witness publication replaces the uncommitted pending bytes.
     """
     if source_conn is None or not ir.sessions:
         return False
@@ -1726,29 +1729,7 @@ def _reuse_current_accepted_marker_carrier(
             return False
         summary.marker_batches_by_raw_id[ir.raw_id] = batch
         return True
-
-    # A pending carrier is bound to this physical index incarnation. If an
-    # intervening raw has already materialized every exact request input, it
-    # supplies the missing successful index publication without permitting a
-    # new carrier to replace the retained bytes. Do not infer this from mere
-    # session IDs: a stale or different interpretation can name the same ID.
-    if state != "pending":
-        return False
-    for binding in request_sessions:
-        session_id = binding.get("session_id")
-        input_content_hash = binding.get("input_content_hash")
-        if not isinstance(session_id, str) or not session_id:
-            return False
-        if not isinstance(input_content_hash, str) or len(input_content_hash) != 64:
-            return False
-        row = index_conn.execute(
-            "SELECT lower(hex(content_hash)) FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        if row is None or str(row[0]) != input_content_hash.lower():
-            return False
-    summary.marker_batches_by_raw_id[ir.raw_id] = batch
-    return True
+    return False
 
 
 class FtsTriggerRestorationError(RuntimeError):
@@ -1793,23 +1774,28 @@ def _write_session_entry(
     try:
         t_write = time.perf_counter()
         write_stage_timings: dict[str, float] = {}
-        content_changed, counts = _write_session(
-            conn,
-            cdata,
-            manage_transaction=not batch_owns_transaction,
-            force_write=force_write,
-            signature_cache=signature_cache,
-            stage_timings_s=write_stage_timings,
-            blob_publisher=blob_publisher,
-            pending_attachment_receipts=pending_attachment_receipts,
-            source_conn=source_conn,
-            fresh_build=fresh_build,
-            fresh_build_batch=fresh_build_batch,
-            attachment_owner_resolutions=summary.attachment_owner_resolutions,
-            drive_plans=drive_plans,
-            drive_cohort_cache=drive_cohort_cache,
-            prepared_writes=prepared_writes,
-        )
+        with collect_reextracted_prefix_blocks() as reextracted_blocks:
+            content_changed, counts = _write_session(
+                conn,
+                cdata,
+                manage_transaction=not batch_owns_transaction,
+                force_write=force_write,
+                signature_cache=signature_cache,
+                stage_timings_s=write_stage_timings,
+                blob_publisher=blob_publisher,
+                pending_attachment_receipts=pending_attachment_receipts,
+                source_conn=source_conn,
+                fresh_build=fresh_build,
+                fresh_build_batch=fresh_build_batch,
+                attachment_owner_resolutions=summary.attachment_owner_resolutions,
+                drive_plans=drive_plans,
+                drive_cohort_cache=drive_cohort_cache,
+                prepared_writes=prepared_writes,
+            )
+        if reextracted_blocks:
+            retired = retired_marker_assertion_ids(reextracted_blocks)
+            if retired:
+                summary.marker_retired_assertions.setdefault((raw_id, cdata.session_id), set()).update(retired)
         marker_write = prepared_writes[0] if prepared_writes else None
         for stage, elapsed_s in write_stage_timings.items():
             summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s
@@ -2581,6 +2567,7 @@ def _publish_marker_witnesses_before_index_commit(
     from polylogue.storage.accepted_marker_inputs import (
         persist_pending_marker_input_sync,
         prepare_accepted_marker_input,
+        replace_uncommitted_pending_marker_input_sync,
         retained_marker_input_sync,
     )
 
@@ -2605,6 +2592,9 @@ def _publish_marker_witnesses_before_index_commit(
             session = dict(selected_by_id.get(session_id, binding))
             session["disposition"] = dispositions.get(session_id, "no-op")
             session.setdefault("candidates", [])
+            retired = summary.marker_retired_assertions.get((raw_id, session_id))
+            if retired:
+                session["retired_assertions"] = sorted(retired)
             carrier_sessions.append(session)
         # Defensive fallback for adapters that produced a write entry without
         # its outcome frame. Preserve every prepared carrier in that case.
@@ -2647,7 +2637,30 @@ def _publish_marker_witnesses_before_index_commit(
         source_conn.execute("BEGIN IMMEDIATE")
         for batch in requests.values():
             retained = retained_marker_input_sync(source_conn, batch.identity)
-            if retained is None:
+            if (
+                retained is not None
+                and retained[0] == "pending"
+                and (retained[1].payload != batch.payload or retained[2] != incarnation_id)
+                and index_conn.execute(
+                    "SELECT 1 FROM ingest_marker_witnesses WHERE request_key = ?", (batch.identity,)
+                ).fetchone()
+                is None
+            ):
+                # No witness in this open index transaction's incarnation: the
+                # retained pending bytes belong to an attempt whose index
+                # commit never happened here. They were never accepted or
+                # delivered, so the ordinary writer's current interpretation
+                # replaces them rather than stranding the raw.
+                replace_uncommitted_pending_marker_input_sync(
+                    source_conn,
+                    batch,
+                    retained_digest=retained[1].payload_sha256,
+                    expected_incarnation_id=incarnation_id,
+                )
+                source_states[batch.identity] = "pending-new"
+                retained_batches[batch.identity] = batch
+                retained_incarnations[batch.identity] = incarnation_id
+            elif retained is None:
                 source_states[batch.identity] = persist_pending_marker_input_sync(
                     source_conn, batch, expected_incarnation_id=incarnation_id
                 )

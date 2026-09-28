@@ -22,6 +22,7 @@ import uuid
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
 from contextlib import closing, contextmanager, nullcontext, suppress
+from contextvars import ContextVar
 from dataclasses import dataclass, fields
 from itertools import chain, islice
 from pathlib import Path
@@ -9833,6 +9834,30 @@ def _bulk_fts_session_guard(
         )
 
 
+_REEXTRACTED_PREFIX_BLOCKS: ContextVar[list[tuple[str, int, str]] | None] = ContextVar(
+    "polylogue_reextracted_prefix_blocks", default=None
+)
+
+
+@contextmanager
+def collect_reextracted_prefix_blocks() -> Iterator[list[tuple[str, int, str]]]:
+    """Collect text blocks a late parent removes from an earlier child's rows.
+
+    A child written before its parent was stored whole, so its accepted marker
+    carrier already holds candidates for the replayed prefix under the
+    child's own message ids. When this write re-extracts the child to its
+    tail, those blocks' canonical owner becomes the parent. The ingest caller
+    turns the collected ``(message_id, position, text)`` rows into marker
+    retirements carried by the writing raw's carrier.
+    """
+    collected: list[tuple[str, int, str]] = []
+    previous = _REEXTRACTED_PREFIX_BLOCKS.set(collected)
+    try:
+        yield collected
+    finally:
+        _REEXTRACTED_PREFIX_BLOCKS.reset(previous)
+
+
 def _reextract_prefix_tail_db(
     conn: sqlite3.Connection,
     child_session_id: str,
@@ -10040,6 +10065,18 @@ def _reextract_prefix_tail_db(
         prefix_message_ids=prefix_message_ids,
     )
     record_substage("provider_usage_tail", t0)
+    retired_blocks = _REEXTRACTED_PREFIX_BLOCKS.get()
+    if retired_blocks is not None:
+        retired_placeholders = ",".join("?" for _ in prefix_message_ids)
+        retired_blocks.extend(
+            (str(row[0]), int(row[1]), str(row[2]))
+            for row in conn.execute(
+                f"SELECT message_id, position, text FROM blocks "
+                f"WHERE message_id IN ({retired_placeholders}) AND text IS NOT NULL "
+                "ORDER BY message_id, position",
+                tuple(prefix_message_ids),
+            )
+        )
     t0 = time.perf_counter()
     with _bulk_fts_session_guard(conn, child_session_id, enabled=bulk_fts, bulk_build=bulk_build):
         if k == len(child_composed):
