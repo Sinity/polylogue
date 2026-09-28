@@ -222,3 +222,9 @@ def test_missing_root_is_unresolved_not_empty_authority_loop() -> None:
     verdict = evaluate_evidence("absent", [], [])
     assert verdict.status is EvidenceIntegrityStatus.UNRESOLVED
     assert "missing_ref" in verdict.reason_codes
+
+
+def test_blind_spots_are_derived_from_unwitnessed_grounding() -> None:
+    """Anti-vacuity: subtracting witnesses from their own code set always returns empty."""
+    verdict = evaluate_evidence("root", [EvidenceGraphNode("root", "claim")], [])
+    assert verdict.blind_spots == ("no_grounding_evidence",)

@@ -36,6 +36,24 @@ def test_durable_file_operations_sync_the_parent_directory(
     assert any(fsynced)
 
 
+def test_write_once_syncs_each_new_directory_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: syncing only the leaf omits tmp_path from the barriers."""
+    synced: list[Path] = []
+    real_fsync = os.fsync
+
+    def observe(fd: int) -> None:
+        info = os.fstat(fd)
+        if stat.S_ISDIR(info.st_mode):
+            synced.append(Path(os.readlink(f"/proc/self/fd/{fd}")))
+        real_fsync(fd)
+
+    monkeypatch.setattr("polylogue.core.durable_fs.os.fsync", observe)
+    write_once(tmp_path / "one" / "two" / "receipt", b"durable")
+    assert tmp_path in synced
+    assert tmp_path / "one" in synced
+    assert tmp_path / "one" / "two" in synced
+
+
 def test_write_once_refuses_existing_path(tmp_path: Path) -> None:
     path = tmp_path / "receipt"
     path.write_bytes(b"original")

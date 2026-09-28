@@ -452,3 +452,13 @@ def test_fact_family_projects_through_shared_declaration_kernel() -> None:
     assert declaration.declaration_id == "evidence.test.quantitative"
     assert declaration.owner_path == "tests/unit/core/test_evidence_value.py"
     assert normalized_derivation_bytes(registry)
+
+
+def test_known_value_missing_required_axes_emits_each_diagnostic_once() -> None:
+    """Anti-vacuity: duplicate known-value checks inflate the two missing-axis count."""
+    value = replace(
+        _value("missing-axes", 1), evidence_refs=(), measurement_authority=(), weakest_measurement_authority=None
+    )
+    diagnostics = _SPEC.validate(value)
+    assert diagnostics.count("known value is missing evidence_refs") == 1
+    assert diagnostics.count("known value is missing measurement_authority") == 1
