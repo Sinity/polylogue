@@ -53,7 +53,6 @@ from devtools.pytest_invocation import (
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
     WORKTREE_PROVENANCE_ENV,
-    PytestSlotObservationUnavailableError,
     PytestSlotUnavailableError,
     basetemp_root,
     guard_temp_trees,
@@ -423,18 +422,6 @@ def _run(
         outcome = executor(command, cwd=cwd, env=env, root=ROOT)
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"devtools test: {exc}\n")
-        observation = (
-            {
-                "job_id": exc.job_id,
-                "errors": exc.observation_errors,
-                "cancellation_attempted": exc.cancellation_attempted,
-                "cancellation_succeeded": exc.cancellation_succeeded,
-                "pytest_slot_receipt": exc.receipt,
-                "pytest_slot_log": str(exc.log_path),
-            }
-            if isinstance(exc, PytestSlotObservationUnavailableError)
-            else None
-        )
         runtime_evidence = getattr(exc, "runtime_evidence", None)
         return (
             125,
@@ -443,7 +430,6 @@ def _run(
                 "diagnosis": "pytest_slot_unavailable",
                 "error": str(exc),
                 "termination_reason": "pytest_slot_unavailable",
-                **({"pytest_slot_observation": observation} if observation is not None else {}),
                 **({"pytest_slot_terminal": runtime_evidence} if runtime_evidence is not None else {}),
             },
         )
