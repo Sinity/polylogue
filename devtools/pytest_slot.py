@@ -945,18 +945,36 @@ def _slot_receipt(
     return receipt
 
 
+#: Asks the slot to identify, at the moment pytest starts, the worktree content
+#: and branch it is about to run.
+WORKTREE_PROVENANCE_ENV = "POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE"
+
+
 def _focused_worktree_provenance(cwd: str, environment: Mapping[str, str]) -> dict[str, Any] | None:
-    if environment.get("POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE") != "1":
+    if environment.get(WORKTREE_PROVENANCE_ENV) != "1":
         return None
-    from devtools.verify_runs import git_dirty, git_head, git_worktree_content_sha256
+    from devtools.checkout_identity import ALLOW_DEFAULT_BRANCH_ENV, checkout_identity, default_branch_refusal
+    from devtools.verify_runs import git_dirty, git_worktree_content_sha256
 
     root = Path(cwd)
-    head = git_head(root)
+    # Identity, content, identity again: the three describe one checkout state
+    # only if nothing moved between them.
+    identity = checkout_identity(root)
     digest = git_worktree_content_sha256(root)
-    if head is None or digest is None:
+    if identity.head is None or digest is None:
         raise PytestSlotUnavailableError("focused worktree content could not be identified")
+    if checkout_identity(root) != identity or git_worktree_content_sha256(root) != digest:
+        raise PytestSlotUnavailableError("the checkout changed while its content was being identified")
+    head = identity.head
+    # The branch admitted at submission may have changed while the run queued.
+    refusal = default_branch_refusal(
+        identity, command="devtools test", allowed=environment.get(ALLOW_DEFAULT_BRANCH_ENV) == "1"
+    )
+    if refusal is not None:
+        raise PytestSlotUnavailableError(f"the checkout is on the default branch at slot start: {refusal}")
     return {
         "git_head": head,
+        "git_branch": identity.branch,
         "git_dirty": git_dirty(root),
         "git_worktree_content_sha256": digest,
         "capture_source": "pytest_slot_start",
@@ -1104,6 +1122,21 @@ def _run_held(
     )
 
 
+def _in_slot_rerun_cleared(env: Mapping[str, str]) -> bool:
+    """Whether this launch's in-slot rerun passed every failure it reran."""
+    from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, RERUN_IN_SLOT_RESULT
+
+    raw = env.get(RERUN_IN_SLOT_ENV)
+    if not raw:
+        return False
+    try:
+        spec = json.loads(raw)
+        record = json.loads((Path(spec["step_dir"]) / RERUN_IN_SLOT_RESULT).read_text(encoding="utf-8"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return isinstance(record, dict) and record.get("rerun_exit") == 0
+
+
 def run_pytest(
     command: Sequence[str],
     *,
@@ -1154,7 +1187,10 @@ def run_pytest(
             outcome = SlotOutcome(returncode=returncode, slot=SLOT_HELD, receipt=receipt)
         else:
             outcome = _submit(argv, cwd=cwd, env=contained, root=root, on_exit=dispose)
-        keep = outcome.returncode != 0
+        # A queued job keeps its first attempt's exit code even when its
+        # in-slot rerun cleared every failure; that run is green, so its
+        # scratch goes like any green run's.
+        keep = outcome.returncode != 0 and not _in_slot_rerun_cleared(env)
         return outcome
     finally:
         dispose()
@@ -1215,7 +1251,13 @@ def _read_launch(path: Path) -> dict[str, Any]:
     return document
 
 
-def _rerun_failures_in_slot(environment: Mapping[str, str], *, cwd: str, log_path: Path) -> None:
+def _rerun_failures_in_slot(
+    environment: Mapping[str, str],
+    *,
+    cwd: str,
+    log: IO[bytes],
+    on_start: Callable[[subprocess.Popen[Any]], None],
+) -> None:
     """Rerun a failed run's failures once, alone, while this job holds the slot.
 
     A focused client used to adjudicate its failures by queueing a second
@@ -1240,25 +1282,34 @@ def _rerun_failures_in_slot(environment: Mapping[str, str], *, cwd: str, log_pat
     if plan is None:
         return
     failed, command, _rerun_report = plan
-    with open(log_path, "ab") as log:
-        log.write(f"\n  rerun {len(failed)} failed test(s) alone, in this slot ...\n".encode())
-        log.flush()
-        try:
-            rerun_exit = subprocess.run(
-                command,
-                cwd=cwd,
-                env=rerun_environment(environment),
-                stdout=log,
-                stderr=log,
-                start_new_session=True,
-                check=False,
-            ).returncode
-        except OSError as exc:
-            log.write(f"devtools.pytest_slot: could not start the rerun: {exc}\n".encode())
-            return
+    # Taken as the rerun starts, like the first run's: the client compares
+    # the two and refuses to clear a failure of content the rerun never ran.
+    provenance = None
+    with contextlib.suppress(Exception):
+        provenance = _focused_worktree_provenance(cwd, environment)
+    log.write(f"\n  rerun {len(failed)} failed test(s) alone, in this slot ...\n".encode())
+    log.flush()
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=rerun_environment(environment),
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        log.write(f"devtools.pytest_slot: could not start the rerun: {exc}\n".encode())
+        return
+    # The launch's signal handlers stop whichever child is registered, so a
+    # cancelled or deadline-killed job reaps the rerun and still writes its
+    # interrupted receipt.
+    on_start(process)
+    rerun_exit = process.wait()
     with contextlib.suppress(OSError):
         (step_dir / RERUN_IN_SLOT_RESULT).write_text(
-            json.dumps({"attempted": failed, "rerun_exit": rerun_exit}), encoding="utf-8"
+            json.dumps({"attempted": failed, "rerun_exit": rerun_exit, "worktree_provenance": provenance}),
+            encoding="utf-8",
         )
 
 
@@ -1333,19 +1384,29 @@ def _run_launch(launch_path: Path) -> int:
                 stderr=log,
                 start_new_session=True,
             )
+            first_run = child
             sampler = ProcessGroupMemorySampler(
-                child.pid,
+                first_run.pid,
                 snapshot_path=telemetry_path,
                 snapshot_context=lambda: {
                     "status": "running",
-                    "pid": child.pid,
-                    "process_group": child.pid,
+                    "pid": first_run.pid,
+                    "process_group": first_run.pid,
                     "sizing": sizing,
                     "progress": progress(),
                 },
             )
             sampler.start()
             returncode = child.wait()
+            if returncode == 1:
+
+                def register(process: subprocess.Popen[Any]) -> None:
+                    nonlocal child
+                    child = process
+                    if sampler is not None:
+                        sampler.follow(process.pid)
+
+                _rerun_failures_in_slot(environment, cwd=launch["working_directory"], log=log, on_start=register)
         except OSError as exc:
             log.write(f"devtools.pytest_slot: could not start pytest: {exc}\n".encode())
             return 125
@@ -1354,8 +1415,6 @@ def _run_launch(launch_path: Path) -> int:
             for number, handler in previous.items():
                 with contextlib.suppress(ValueError, OSError):
                     signal.signal(number, handler)
-    if returncode == 1:
-        _rerun_failures_in_slot(environment, cwd=launch["working_directory"], log_path=log_path)
     receipt = _slot_receipt(
         status="success" if returncode == 0 else "failed",
         profile=profile,

@@ -359,6 +359,7 @@ def test_queued_focused_receipt_identifies_execution_content(monkeypatch: pytest
     assert receipt["git_dirty"] is True
     assert receipt["git_worktree_content_sha256"] == executed["digest"]
     assert receipt["worktree_capture_source"] == "pytest_slot_start"
+    assert receipt["git_branch"] == "test/feature"
     assert json.loads((tmp_path / receipt["artifact_dir"] / "run.json").read_text(encoding="utf-8")) == receipt
 
     source.write_text("value = 1\n", encoding="utf-8")
@@ -872,7 +873,9 @@ def test_every_run_names_the_receipt_it_wrote(
 
     final = capsys.readouterr().err.strip().splitlines()[-1]
     assert final.startswith("devtools test: PASSED exit=0 diagnosis=pytest_passed receipt=")
-    receipt = tmp_path / final.split("receipt=", 1)[1].strip()
+    receipt = tmp_path / final.split("receipt=", 1)[1].split()[0]
+    # The line names the checkout it tested, so a cited receipt is self-identifying.
+    assert " checkout=" in final and " branch=" in final and " head=" in final
     assert receipt.is_file()
     recorded = json.loads(receipt.read_text(encoding="utf-8"))
     assert recorded["exit_code"] == 0
@@ -903,8 +906,12 @@ def test_a_run_that_never_acquired_the_slot_keeps_its_reason(
     assert history["diagnosis"] == "pytest_slot_unavailable"
     assert history["steps"][0]["diagnosis"] == "pytest_slot_unavailable"
 
-    final = capsys.readouterr().err.strip().splitlines()[-1]
-    assert final.startswith("devtools test: artifacts=")
+    lines = capsys.readouterr().err.strip().splitlines()
+    # The artifact pointer precedes the verdict, which stays the last line and
+    # names the checkout it tested.
+    assert lines[-2].startswith("devtools test: artifacts=")
+    assert lines[-1].startswith("devtools test: FAILED exit=125 diagnosis=pytest_slot_unavailable receipt=")
+    assert " branch=" in lines[-1]
     receipt = tmp_path / run_tests.PYTEST_REPORT_DIR / "runs" / history["run_id"] / "run.json"
     recorded = json.loads(receipt.read_text(encoding="utf-8"))
     assert recorded["exit_code"] == 125
@@ -1073,6 +1080,11 @@ def _green_receipt(runs: Path, name: str, *, argv: list[str], digest: str, **ove
     import platform
     import sys
 
+    # Reuse consults Git for ignored paths, so the checkout is a repository.
+    checkout = runs.parents[2]
+    if not (checkout / ".git").exists():
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+
     run_dir = runs / name
     run_dir.mkdir(parents=True)
     payload: dict[str, Any] = {
@@ -1125,6 +1137,9 @@ def test_main_reuses_a_green_receipt_without_queueing(
 ) -> None:
     """Anti-vacuity: without the reuse branch ``main`` reaches the fake slot and fails."""
     monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    # The outer ``devtools test`` running this file holds the real checkout's
+    # lock for this very selection; the lock has its own law below.
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
     receipt = tmp_path / "run.json"
     monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: receipt)
     monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "d1")
@@ -1172,6 +1187,159 @@ def test_identical_selections_in_one_checkout_share_one_run(tmp_path: Path, monk
     finally:
         os.close(held)
         thread.join(timeout=10)
-        for handle in run_tests._SELECTION_LOCKS:
+        for handle in run_tests._SELECTION_LOCKS.values():
             os.close(handle)
         run_tests._SELECTION_LOCKS.clear()
+
+
+def test_reuse_is_keyed_on_the_execution_environment(tmp_path: Path) -> None:
+    """A run under a different Hypothesis profile never answers from another's receipt.
+
+    Anti-vacuity: drop the ``execution_environment_key`` comparison and the
+    ``default``-profile lookup returns the ``verify``-profile receipt.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/property/test_a.py"]
+    verify_key = run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "verify", "HOME": "/h"})
+    default_key = run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "default", "HOME": "/h"})
+    receipt = _green_receipt(
+        runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1", execution_environment_key=verify_key
+    )
+
+    assert verify_key != default_key
+    assert run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "verify", "HOME": "/other"}) == verify_key
+    assert (
+        run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1", environment_key=verify_key)
+        == receipt
+    )
+    assert (
+        run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1", environment_key=default_key)
+        is None
+    )
+
+
+def test_a_reused_receipt_is_emitted_as_json_when_asked(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Anti-vacuity: drop the ``use_json`` branch on reuse and stdout is empty."""
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
+    receipt = tmp_path / "run.json"
+    receipt.write_text(json.dumps({"status": "success", "run_id": "r1"}), encoding="utf-8")
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: receipt)
+    monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "d1")
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["run_id"] == "r1"
+
+
+@pytest.mark.parametrize("flag", ["--lf", "--last-failed", "--ff", "--sw", "--lfnf=all"])
+def test_stateful_selectors_are_never_answered_from_a_receipt(tmp_path: Path, flag: str) -> None:
+    """``--lf`` selects from pytest's mutable cache, so identical argv is not identical work.
+
+    Anti-vacuity: drop the stateful-selector refusal and the matching receipt
+    below is returned.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", flag]
+    _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+@pytest.mark.parametrize(
+    ("selection", "eligible"),
+    [
+        (["tests/unit/test_a.py", "-k", "fast", "-x", "--tb=short"], True),
+        (["tests/unit/test_a.py", "--junitxml=/tmp/report.xml"], False),
+        (["tests/unit/test_a.py", "--cache-clear"], False),
+        (["/tmp/test_external.py"], False),
+        (["tests/unit/test_a.py", "-c", "/tmp/pytest.ini"], False),
+    ],
+)
+def test_only_checkout_local_selections_with_inert_options_are_reused(
+    tmp_path: Path, selection: list[str], eligible: bool
+) -> None:
+    """A receipt answers only for what its tree digest covers and what a rerun would redo.
+
+    Anti-vacuity: accept any option, or any path, in ``_reuse_eligible`` and
+    one of the refused selections is answered from a receipt without running.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    assert run_tests._reuse_eligible(selection, root=tmp_path) is eligible
+
+
+def test_a_new_hypothesis_counterexample_or_golden_switch_changes_the_key(tmp_path: Path) -> None:
+    """Inputs outside the tree digest still decide whether a receipt answers.
+
+    Anti-vacuity: drop the database revision or ``UPDATE_GOLDEN`` from the key
+    and the corresponding pair below compares equal.
+    """
+    before = run_tests.hypothesis_database_revision(tmp_path)
+    example = tmp_path / ".cache" / "hypothesis" / "examples" / "abc" / "def"
+    example.parent.mkdir(parents=True)
+    example.write_bytes(b"counterexample")
+    assert run_tests.hypothesis_database_revision(tmp_path) != before
+
+    assert run_tests.execution_environment_key({}) != run_tests.execution_environment_key({"UPDATE_GOLDEN": "1"})
+
+
+def test_a_git_ignored_selection_is_never_reused(tmp_path: Path) -> None:
+    """The tree digest omits ignored files, so an ignored test is always run.
+
+    Anti-vacuity: drop the ``_git_ignored`` check and ``.cache/test_x.py`` is
+    eligible for reuse.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text(".cache/\n", encoding="utf-8")
+    (tmp_path / ".cache").mkdir()
+    (tmp_path / ".cache" / "test_x.py").write_text("", encoding="utf-8")
+    (tmp_path / "test_y.py").write_text("", encoding="utf-8")
+
+    assert run_tests._reuse_eligible([".cache/test_x.py"], root=tmp_path) is False
+    assert run_tests._reuse_eligible(["test_y.py"], root=tmp_path) is True
+
+
+def test_reuse_is_refused_when_the_tree_changes_during_lookup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A save between digest and return means the receipt describes another tree.
+
+    Anti-vacuity: drop the second digest comparison and ``main`` returns the
+    reused receipt instead of reaching the (fake) slot.
+    """
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
+    digests = iter(["before", "after", "after", "after", "after"])
+    monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: next(digests, "after"))
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: tmp_path / "run.json")
+
+    queued: list[bool] = []
+
+    def reached_the_slot(*_args: Any, **_kwargs: Any) -> Any:
+        queued.append(True)
+        raise RuntimeError("stop after admission")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest", reached_the_slot)
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py"]) != 0
+    assert queued == [True]
+
+
+def test_a_branch_switch_during_lookup_refuses_reuse(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: drop the admission check at the point of reuse and the
+    feature branch's receipt is returned on the default branch."""
+    from devtools.checkout_identity import CheckoutIdentity
+
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
+    monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "same")
+    feature = CheckoutIdentity(root=tmp_path, branch="feature", head="h1", default_branch="master")
+    default = CheckoutIdentity(root=tmp_path, branch="master", head="h1", default_branch="master")
+    identities = iter([feature, feature, default])
+    monkeypatch.setattr(run_tests, "checkout_identity", lambda _root: next(identities, default))
+
+    def lookup(*_a: Any, **_k: Any) -> Path:
+        return tmp_path / "run.json"
+
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lookup)
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py"]) == run_tests.REFUSAL_EXIT

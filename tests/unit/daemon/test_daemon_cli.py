@@ -4624,7 +4624,7 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
     costs one identical refusal per commit and reports nothing: measured at
     head, 25 ingest wakes produced 25 refusals. The capability moves that to
     selection, where the supervisor resolves one ``skipped`` state that
-    ``supervised_service_states`` publishes.
+    ``supervised_service_snapshot`` publishes.
 
     ``embedding_orphan_reconcile`` is selected in both rows: stale embedding
     rows are debt to drain regardless, so this is a gate on one loop rather
@@ -4637,7 +4637,7 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
     """
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.services import ServiceState
-    from polylogue.daemon.status import supervised_service_states
+    from polylogue.daemon.status import supervised_service_snapshot
     from polylogue.daemon.supervisor import TASK_NAME_PREFIX
     from tests.infra.embedding_config import embedding_config
 
@@ -4676,7 +4676,8 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
         else:
             # The last moment the process still has a composed supervisor, so
             # the status projection is read the way a live daemon reads it.
-            projections.append(supervised_service_states())
+            snapshot = supervised_service_snapshot()
+            projections.append(None if snapshot is None else snapshot[0])
         real_setter(supervisor)
 
     with contextlib.ExitStack() as stack:

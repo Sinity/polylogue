@@ -26,7 +26,6 @@ from polylogue.sources.parsers.drive import (
     parse_chunked_prompt,
 )
 from polylogue.sources.parsers.drive_support import extract_text_from_chunk
-from polylogue.sources.parsers.drive_support_attachments import DRIVE_LIVE_FETCH_DATA_KEY
 from polylogue.storage.sqlite.connection import open_connection
 from tests.infra.live_ingest import write_session_sync
 from tests.infra.pipeline_roundtrip import PipelineRoundtrip, write_and_hydrate
@@ -776,53 +775,6 @@ def test_thinking_block_reasoning_continuity_evidence_routes_to_session_events()
         "thinkingBudget": 32,
         "thoughtSignatures": ["sig-1"],
     }
-
-
-def test_live_fetched_drive_attachment_bytes_reach_inline_bytes_not_block_metadata() -> None:
-    """polylogue-83u.2 CodeRabbit/Codex P1: the live-fetch sidecar
-    (`polylogue.sources.drive.attachment_fetch`) injects fetched bytes as
-    base64 directly into the same driveDocument dict this parser reads.
-    `attachment_from_doc` must decode it into `ParsedAttachment.inline_bytes`
-    -- but the sidecar must NEVER also reach `ContentBlock.raw`/block
-    metadata, which (unlike attachments) is not content-addressed and would
-    duplicate the full attachment bytes into the index for every acquired
-    Drive attachment.
-    """
-    import base64
-
-    fetched_bytes = b"live-fetched drive attachment bytes"
-    payload: JSONDocument = {
-        "id": "gemini-live-fetch",
-        "chunkedPrompt": {
-            "chunks": [
-                {
-                    "id": "msg-user",
-                    "role": "user",
-                    "text": "question",
-                    "driveDocument": {
-                        "id": "doc-1",
-                        "name": "spec.pdf",
-                        "mimeType": "application/pdf",
-                        DRIVE_LIVE_FETCH_DATA_KEY: base64.b64encode(fetched_bytes).decode("ascii"),
-                    },
-                },
-            ]
-        },
-    }
-
-    result = parse_chunked_prompt("gemini", payload, "fallback-id")
-
-    user_msg = result.messages[0]
-    document_block = user_msg.blocks[1]
-    assert document_block.metadata is not None
-    assert DRIVE_LIVE_FETCH_DATA_KEY not in document_block.metadata
-    drive_document_metadata = document_block.metadata.get("driveDocument")
-    assert isinstance(drive_document_metadata, dict)
-    assert DRIVE_LIVE_FETCH_DATA_KEY not in drive_document_metadata
-    assert drive_document_metadata["id"] == "doc-1"
-
-    assert len(result.attachments) == 1
-    assert result.attachments[0].inline_bytes == fetched_bytes
 
 
 def test_parse_chunked_prompt_preserves_token_count_usage_events() -> None:

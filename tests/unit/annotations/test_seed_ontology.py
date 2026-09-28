@@ -146,7 +146,13 @@ def test_seed_catalog_is_registered_and_replayed_without_user_schema_bump(tmp_pa
         "ops",
         "procurement",
     )
-    assert SEED_ACTIVITY_SCHEMA.target_ref_kinds == ("session", "phase", "message", "block")
+    # The declared grains must be ones a target ref can actually carry: a kind
+    # the ref vocabulary retired (``phase``, #5314) would be declared yet never
+    # admit a label. Anti-vacuity: re-add a retired kind to the declaration and
+    # the admission check below refuses its own sample ref.
+    for kind in SEED_ACTIVITY_SCHEMA.target_ref_kinds:
+        assert SEED_ACTIVITY_SCHEMA.accepts_target_kind(f"{kind}:seed-probe"), kind
+    assert not SEED_ACTIVITY_SCHEMA.accepts_target_kind("phase:seed-probe")
 
     artifact_type = next(field for field in SEED_KNOWLEDGE_ARTIFACT_SCHEMA.fields if field.name == "artifact_type")
     artifact_authority = next(field for field in SEED_KNOWLEDGE_ARTIFACT_SCHEMA.fields if field.name == "authority")
@@ -200,6 +206,13 @@ def test_seed_catalog_is_registered_and_replayed_without_user_schema_bump(tmp_pa
     # Same user_version: data-only bootstrap replays the missing immutable row.
     initialize_archive_database(user_db, ArchiveTier.USER)
     with sqlite3.connect(user_db) as conn:
+        replayed = json.loads(
+            conn.execute(
+                "SELECT definition_json FROM annotation_schemas WHERE schema_id = ? AND schema_version = ?",
+                (SEED_ACTIVITY_SCHEMA.schema_id, SEED_ACTIVITY_SCHEMA.version),
+            ).fetchone()[0]
+        )
+        assert tuple(replayed["target_ref_kinds"]) == SEED_ACTIVITY_SCHEMA.target_ref_kinds
         assert int(conn.execute("PRAGMA user_version").fetchone()[0]) == ARCHIVE_VERSION_BY_TIER[ArchiveTier.USER]
         assert (
             conn.execute(

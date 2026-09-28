@@ -21,6 +21,7 @@ loop, not a substitute for it.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import platform
@@ -28,12 +29,21 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
+)
+from devtools.checkout_identity import (
+    ALLOW_DEFAULT_BRANCH_ENV,
+    ON_DEFAULT_BRANCH_FLAG,
+    REFUSAL_EXIT,
+    checkout_identity,
+    default_branch_refusal,
 )
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
@@ -45,6 +55,7 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, rerun_failed_once
 from devtools.pytest_slot import (
+    WORKTREE_PROVENANCE_ENV,
     PytestSlotObservationUnavailableError,
     PytestSlotUnavailableError,
     basetemp_root,
@@ -203,7 +214,9 @@ REUSE_ENV = "POLYLOGUE_TEST_REUSE"
 
 
 #: Held for the rest of the process once taken; the kernel releases it on exit.
-_SELECTION_LOCKS: list[int] = []
+#: Keyed by selection digest: a second ``flock`` from this same process on a
+#: new descriptor would wait on its own lock forever.
+_SELECTION_LOCKS: dict[str, int] = {}
 
 
 def _hold_selection_lock(selection: list[str]) -> None:
@@ -215,6 +228,8 @@ def _hold_selection_lock(selection: list[str]) -> None:
     try:
         lock_dir.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256(json.dumps(selection).encode("utf-8")).hexdigest()[:24]
+        if digest in _SELECTION_LOCKS:
+            return
         handle = os.open(lock_dir / f"{digest}.lock", os.O_RDWR | os.O_CREAT, 0o600)
     except OSError:
         return
@@ -224,7 +239,7 @@ def _hold_selection_lock(selection: list[str]) -> None:
         sys.stderr.write("devtools test: the same selection is already running in this checkout; waiting for it.\n")
         sys.stderr.flush()
         fcntl.flock(handle, fcntl.LOCK_EX)
-    _SELECTION_LOCKS.append(handle)
+    _SELECTION_LOCKS[digest] = handle
 
 
 def _parse_rerun(selection: list[str]) -> tuple[bool, list[str]]:
@@ -232,7 +247,111 @@ def _parse_rerun(selection: list[str]) -> tuple[bool, list[str]]:
     return "--rerun" in selection, [argument for argument in selection if argument != "--rerun"]
 
 
-def reusable_green_receipt(selection: list[str], *, root: Path, content_sha256: str | None) -> Path | None:
+#: Caller environment that can change what a selection executes or how
+#: (Hypothesis profiles, pytest options, Polylogue test switches). Its values
+#: are part of the reuse key, so a run under a different profile never answers
+#: from a weaker one's receipt.
+_EXECUTION_ENV_PREFIXES = ("HYPOTHESIS_", "PYTEST_", "POLYLOGUE_")
+#: Individual switches the suite reads outside those prefixes: golden-file
+#: regeneration, fuzz depth, colour, time zone and the XDG roots.
+_EXECUTION_ENV_NAMES = frozenset(
+    {
+        "UPDATE_GOLDEN",
+        "FUZZ_ITERATIONS",
+        "NO_COLOR",
+        "TZ",
+        "TZDIR",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+    }
+)
+#: The Hypothesis example database ``tests/conftest.py`` declares. A run can
+#: save a new counterexample there, which the next run of the same selection
+#: replays; its contents are therefore an input of every property test.
+_HYPOTHESIS_DATABASE = Path(".cache/hypothesis/examples")
+
+
+#: The only options a reusable selection may carry: ones that change neither
+#: which tests run nor what the run leaves behind. Anything else -- report
+#: files, cache-dependent selection (``--lf``), cache clearing, external
+#: configuration -- has an effect a receipt cannot supply, so it always runs.
+_REUSABLE_FLAGS = frozenset({"-x", "--exitfirst", "-q", "--quiet", "-v", "--verbose", "-vv", "-s", "--no-header"})
+_REUSABLE_VALUE_OPTIONS = frozenset({"-k", "-m"})
+_REUSABLE_PREFIXES = ("--tb=", "--maxfail=", "-k=", "-m=")
+
+
+def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
+    """Whether every argument is a checkout-local selection or an inert option.
+
+    The digest a receipt is keyed on covers the checkout's Git-visible tree,
+    so a path outside it (``/tmp/test_x.py``) could change without changing
+    the key; it is never reused.
+    """
+    resolved_root = root.resolve()
+    index = 0
+    while index < len(selection):
+        argument = selection[index]
+        if argument in _REUSABLE_VALUE_OPTIONS:
+            index += 2
+            continue
+        if argument in _REUSABLE_FLAGS or argument.startswith(_REUSABLE_PREFIXES):
+            index += 1
+            continue
+        if argument.startswith("-"):
+            return False
+        target = Path(argument.split("::", 1)[0])
+        target = (target if target.is_absolute() else root / target).resolve()
+        if not target.is_relative_to(resolved_root) or _git_ignored(target, root=resolved_root):
+            return False
+        index += 1
+    return True
+
+
+def _git_ignored(path: Path, *, root: Path) -> bool:
+    """Whether Git ignores ``path``, so the tree digest does not cover it."""
+    try:
+        result = subprocess.run(
+            ["git", "check-ignore", "--quiet", str(path)], cwd=root, capture_output=True, timeout=10, check=False
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    # 0: ignored; 1: not ignored; anything else: cannot tell, so do not reuse.
+    return result.returncode != 1
+
+
+def execution_environment_key(environ: Mapping[str, str]) -> str:
+    """A digest of the caller's execution-affecting environment."""
+    import hashlib
+
+    relevant = sorted(
+        (key, value)
+        for key, value in environ.items()
+        if key.startswith(_EXECUTION_ENV_PREFIXES) or key in _EXECUTION_ENV_NAMES
+    )
+    return hashlib.sha256(json.dumps(relevant).encode("utf-8")).hexdigest()
+
+
+def _reuse_environment_key() -> str:
+    """The caller environment plus the example database this run starts from."""
+    return f"{execution_environment_key(os.environ)}:{hypothesis_database_revision(ROOT)}"
+
+
+def hypothesis_database_revision(root: Path) -> str:
+    """A digest of the example database's entry names (each names its content)."""
+    import hashlib
+
+    database = root / _HYPOTHESIS_DATABASE
+    names: list[str] = []
+    with contextlib.suppress(OSError):
+        names = sorted(str(path.relative_to(database)) for path in database.rglob("*") if path.is_file())
+    return hashlib.sha256("\n".join(names).encode("utf-8")).hexdigest()
+
+
+def reusable_green_receipt(
+    selection: list[str], *, root: Path, content_sha256: str | None, environment_key: str | None = None
+) -> Path | None:
     """A green focused run of exactly this selection over exactly this tree.
 
     Keyed on the declared inputs only: the normalized selection, the
@@ -241,7 +360,7 @@ def reusable_green_receipt(selection: list[str], *, root: Path, content_sha256: 
     tests over the same bytes with the same interpreter, so its receipt
     answers the question and the pool admission is skipped.
     """
-    if content_sha256 is None:
+    if content_sha256 is None or not _reuse_eligible(selection, root=root):
         return None
     runs_root = root / ".cache" / "verify" / "runs"
     try:
@@ -263,6 +382,7 @@ def reusable_green_receipt(selection: list[str], *, root: Path, content_sha256: 
             payload.get("status") == "success"
             and payload.get("exit_code") == 0
             and payload.get("argv") == selection
+            and payload.get("execution_environment_key") == environment_key
             and payload.get("git_worktree_content_sha256") == content_sha256
             and (payload.get("pytest_aggregate") or {}).get("terminal_green") is True
             and (str(Path(fingerprint.get("python_executable", "")).resolve()), fingerprint.get("python_version"))
@@ -518,7 +638,7 @@ def _run(
     started = time.monotonic()
     try:
         executor = run_pytest if runner == "managed" else run_pytest_isolated
-        env["POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE"] = "1"
+        env[WORKTREE_PROVENANCE_ENV] = "1"
         # A queued job reruns its own failures before releasing the slot, so a
         # red run is adjudicated without a second queue wait.
         env[RERUN_IN_SLOT_ENV] = json.dumps(
@@ -572,6 +692,9 @@ def _run(
             env=env,
             root=ROOT,
             runner=runner,
+            first_provenance=(
+                outcome.receipt.get("worktree_provenance") if isinstance(outcome.receipt, dict) else None
+            ),
         )
         if returncode == 1
         else None
@@ -686,12 +809,22 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if outlier_count is not None:
         return print_outliers(outlier_count)
+    on_default_branch = ON_DEFAULT_BRANCH_FLAG in selection
+    selection = [arg for arg in selection if arg != ON_DEFAULT_BRANCH_FLAG]
     selection = _normalize_selection_paths(selection, invocation_directory=invocation_directory)
     _anchor_test_paths()
+    identity = checkout_identity(ROOT)
+    refusal = default_branch_refusal(identity, command="devtools test", allowed=on_default_branch)
+    if refusal is not None:
+        sys.stderr.write(refusal + "\n")
+        return REFUSAL_EXIT
+    sys.stderr.write(f"devtools test: {identity.describe()}\n")
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools test")
     except CheckoutImportMismatchError as exc:
+        # The detail first: the verdict, naming the checkout, is the last line.
         sys.stderr.write(f"{exc}\n")
+        sys.stderr.write(f"devtools test: FAILED exit=125 diagnosis=checkout_import_mismatch {identity.describe()}\n")
         return 125
     use_json = "--json" in selection
     # The control-plane dispatch may append a bare ``--json`` machine-readable
@@ -731,12 +864,40 @@ def main(argv: list[str] | None = None) -> int:
         # Two callers in one checkout asking for the same selection share one
         # run: the second waits here, then finds the first's receipt below.
         _hold_selection_lock(selection)
-        reused = reusable_green_receipt(selection, root=ROOT, content_sha256=git_worktree_content_sha256(ROOT))
+        # The wait for the lock can be long: the checkout may have changed
+        # branch meanwhile, so admission is decided again before any reuse.
+        identity = checkout_identity(ROOT)
+        refusal = default_branch_refusal(identity, command="devtools test", allowed=on_default_branch)
+        if refusal is not None:
+            sys.stderr.write(refusal + "\n")
+            return REFUSAL_EXIT
+        digest = git_worktree_content_sha256(ROOT)
+        reused = reusable_green_receipt(
+            selection,
+            root=ROOT,
+            content_sha256=digest,
+            environment_key=_reuse_environment_key(),
+        )
+        if reused is not None and git_worktree_content_sha256(ROOT) != digest:
+            # A save landed during the lookup: the receipt no longer describes
+            # this tree, so the selection runs.
+            reused = None
         if reused is not None:
+            # And the branch may have moved under an unchanged tree: admission
+            # is decided on the checkout as it is at the moment of reuse.
+            identity = checkout_identity(ROOT)
+            refusal = default_branch_refusal(identity, command="devtools test", allowed=on_default_branch)
+            if refusal is not None:
+                sys.stderr.write(refusal + "\n")
+                return REFUSAL_EXIT
+        if reused is not None:
+            if use_json:
+                with contextlib.suppress(OSError, ValueError):
+                    print(json.dumps(json.loads(reused.read_text(encoding="utf-8")), indent=2, ensure_ascii=False))
             sys.stderr.write(
                 "devtools test: this selection already passed on this exact tree; not queueing again "
                 "(--rerun to force).\n"
-                f"\ndevtools test: PASSED exit=0 diagnosis=pytest_passed_reused receipt={reused}\n"
+                f"\ndevtools test: PASSED exit=0 diagnosis=pytest_passed_reused receipt={reused} {identity.describe()}\n"
             )
             return 0
 
@@ -746,6 +907,7 @@ def main(argv: list[str] | None = None) -> int:
         git_head=git_head(ROOT),
         root=ROOT,
     )
+    run.record_execution_environment_key(_reuse_environment_key())
     # The report and its PID-named spool must live with this receipt.  A
     # checkout-global spool lets a later focused run delete an earlier run's
     # completed tests between teardown and controller-side assembly.
@@ -784,6 +946,11 @@ def main(argv: list[str] | None = None) -> int:
         # body SETS this variable. The call below must stay this module's.
         pytest_env.pop("POLYLOGUE_BROAD_PREWARM", None)
         _normalize_managed_pytest_environment(pytest_env)
+        # Only this invocation's flag authorizes the default branch; an
+        # inherited value must not reach the slot's start-time re-check.
+        pytest_env.pop(ALLOW_DEFAULT_BRANCH_ENV, None)
+        if on_default_branch:
+            pytest_env[ALLOW_DEFAULT_BRANCH_ENV] = "1"
         hypothesis_profile, hypothesis_profile_source = effective_hypothesis_profile(
             selection, pytest_env, default="verify"
         )
@@ -833,6 +1000,20 @@ def main(argv: list[str] | None = None) -> int:
     provenance = metadata.get("worktree_provenance")
     if isinstance(provenance, dict):
         run.record_execution_worktree(provenance)
+        # Report what actually ran, not what was admitted at submission.
+        identity = replace(identity, branch=provenance.get("git_branch"), head=provenance.get("git_head"))
+        # pytest may import files at any point of its run: content that moved
+        # after the slot identified it means no single tree was tested.
+        finished = checkout_identity(ROOT)
+        if (finished.branch, finished.head) != (identity.branch, identity.head) or git_worktree_content_sha256(
+            ROOT
+        ) != provenance.get("git_worktree_content_sha256"):
+            sys.stderr.write(
+                f"devtools test: the checkout moved during the run (tested {identity.describe()}, "
+                f"finished {finished.describe()}); the result is void\n"
+            )
+            rc = rc or 1
+            metadata = {**metadata, "diagnosis": "checkout_moved_during_run"}
     statistics: dict[str, Any] = cast(
         dict[str, Any], metadata.get("statistics") if isinstance(metadata.get("statistics"), dict) else {}
     )
@@ -879,17 +1060,17 @@ def main(argv: list[str] | None = None) -> int:
     # whatever the run found; carrying the outcome in the stream keeps it out of
     # reach of that mistake. The receipt is this run's own file, never a
     # `current-*` name a concurrent run in the same checkout would overwrite.
-    # Absolute, so the line names the checkout that ran: a run started from the
-    # main checkout instead of the intended worktree is visible at a glance.
+    # Absolute, so the line names the checkout that ran.
     receipt = ROOT / run.relative_run_dir / "run.json"
-    sys.stderr.write(
-        f"\ndevtools test: {'PASSED' if rc == 0 else 'FAILED'} exit={rc} "
-        f"diagnosis={metadata.get('diagnosis') or 'unknown'} receipt={receipt}\n"
-    )
     # The rest of the artifacts are reference material, not a result. Printing
     # them after every green run trains the reader to skip the tail of the
     # output, which is exactly where a failure summary appears. `devtools why`
-    # reaches them on demand.
+    # reaches them on demand. When they are printed, it is before the verdict,
+    # so the verdict and the checkout it tested stay the last line.
     if _verbose_output() or rc != 0:
-        sys.stderr.write(f"devtools test: artifacts={run.relative_run_dir}/steps/{artifacts.step_id}\n")
+        sys.stderr.write(f"\ndevtools test: artifacts={run.relative_run_dir}/steps/{artifacts.step_id}")
+    sys.stderr.write(
+        f"\ndevtools test: {'PASSED' if rc == 0 else 'FAILED'} exit={rc} "
+        f"diagnosis={metadata.get('diagnosis') or 'unknown'} receipt={receipt} {identity.describe()}\n"
+    )
     return rc

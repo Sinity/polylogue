@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -179,6 +180,38 @@ def test_sinex_stage_uses_configured_source_tier_not_active_index_parent(
     make_default_convergence_stages(tmp_path / "external-generation" / "index.db")
 
     assert captured["source_db_path"] == configured_root / "source.db"
+
+
+@pytest.mark.parametrize("mode", ["off", "mirror", "primary"])
+def test_derivation_barrier_exists_only_in_primary_mode_and_reads_configured_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """Derivation owners get the primary barrier exactly when the staged routes honor it.
+
+    Anti-vacuity (polylogue-wtfyv): returning ``None`` in primary mode leaves
+    every derivation owner unbarriered.
+    """
+    import polylogue.sinex.service as sinex_service
+
+    configured_root = tmp_path / "configured"
+    read: list[tuple[Path, tuple[str, ...]]] = []
+
+    def blocking(source_db_path: Path, object_ids: Sequence[str]) -> set[str]:
+        ids = tuple(object_ids)
+        read.append((source_db_path, ids))
+        return {"held"} & set(ids)
+
+    monkeypatch.setattr(stages, "load_polylogue_config", lambda: SimpleNamespace(sinex_mode=mode))
+    monkeypatch.setattr(sinex_service, "primary_blocking_object_ids", blocking)
+
+    barrier = stages.configured_derivation_barrier(configured_root)
+
+    if mode != "primary":
+        assert barrier is None
+        return
+    assert barrier is not None
+    assert barrier(("held", "free")) == {"held"}
+    assert read == [(configured_root / "source.db", ("held", "free"))]
 
 
 def test_claude_workflow_stage_event_replaces_its_snapshot_rather_than_appending(tmp_path: Path) -> None:

@@ -433,8 +433,14 @@ def compose_embedding_convergence(
             return EmbeddingConvergenceResult(None, "provider_unavailable")
 
         return ComposedEmbeddingConvergence(unavailable)
+    from polylogue.daemon.convergence_stages import configured_derivation_barrier
+
     owner = DerivationConvergenceOwner(
-        DaemonConverger(stages=(), derivations=(adapter,)),
+        DaemonConverger(
+            stages=(),
+            derivations=(adapter,),
+            derivation_barrier=configured_derivation_barrier(archive_root),
+        ),
         compute_adapter=compute_adapter,
         write_bridge=write_bridge,
     )

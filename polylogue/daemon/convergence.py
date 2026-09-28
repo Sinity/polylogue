@@ -32,6 +32,7 @@ from polylogue.daemon.derivation import (
     DerivationRegistry,
     DerivationReport,
     PassCursor,
+    PublicationBarrier,
     ReplacementLike,
     converge,
 )
@@ -280,6 +281,7 @@ class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
                     adapter_recipe=recipe_version,
                     stop_requested=stop_requested,
                     admission=admission,
+                    barrier=self._converger._derivation_barrier,
                 )
             ),
             admission_class="incremental-background",
@@ -399,6 +401,7 @@ def _converge_selected_session_parts_sync(
     adapter_recipe: str,
     stop_requested: Callable[[], str | None],
     admission: _DerivationAdmission,
+    barrier: PublicationBarrier | None = None,
 ) -> tuple[SelectedSessionOutcome, ...]:
     """Compute and certify only sealed session targets on the shared worker.
 
@@ -452,6 +455,20 @@ def _converge_selected_session_parts_sync(
         if _selected_satisfied(target, before):
             outcomes.append(_selected_outcome(target, "already_satisfied", before))
             continue
+        # A required target derives from the session's content, so it waits
+        # for the primary publication barrier exactly as a recurring pass
+        # does; an excess target only retires output and is never held.
+        if barrier is not None and target.expected == "required":
+            try:
+                waiting = target.session_id in barrier((target.session_id,))
+            except Exception as exc:
+                outcomes.append(
+                    _selected_outcome(target, "pending", before, reason=f"publication barrier unreadable: {exc}")
+                )
+                continue
+            if waiting:
+                outcomes.append(_selected_outcome(target, "pending", before, reason="awaits primary publication"))
+                continue
         try:
             if adapter.quiet(frame, target.session_id):
                 outcomes.append(_selected_outcome(target, "pending", before, reason="quiet"))
@@ -557,8 +574,29 @@ def _converge_selected_session_parts_sync(
                     )
                 )
                 break
+            held_at_admission: list[str] = []
+
+            def publish_unless_held(
+                replacement: ReplacementLike = replacement,
+                target: SelectedSessionTarget = target,
+                held_at_admission: list[str] = held_at_admission,
+            ) -> bool:
+                # Re-decide the barrier inside the writer admission: compute
+                # ran outside it, so a newer unpublished revision may have been
+                # staged since the pre-compute check.
+                if barrier is not None and target.expected == "required":
+                    try:
+                        waiting = target.session_id in barrier((target.session_id,))
+                    except Exception as exc:
+                        held_at_admission.append(f"publication barrier unreadable: {exc}")
+                        return False
+                    if waiting:
+                        held_at_admission.append("awaits primary publication")
+                        return False
+                return adapter.publish(frame, replacement)
+
             try:
-                accepted = admission("session_profile", partial(adapter.publish, frame, replacement))
+                accepted = admission("session_profile", publish_unless_held)
             except Exception as exc:
                 # polylogue-ylh7v: session-profile publication is one index
                 # transaction with one outcome. The partial-commit branch this
@@ -570,6 +608,13 @@ def _converge_selected_session_parts_sync(
                 outcomes.append(
                     _selected_outcome(
                         target, "failed", before, input_binding=prepared_binding, reason=f"publish: {exc}"
+                    )
+                )
+                break
+            if held_at_admission:
+                outcomes.append(
+                    _selected_outcome(
+                        target, "pending", before, input_binding=prepared_binding, reason=held_at_admission[0]
                     )
                 )
                 break
@@ -816,8 +861,13 @@ class DaemonConverger:
         stages: Iterable[ConvergenceStage],
         *,
         derivations: Iterable[object] = (),
+        derivation_barrier: PublicationBarrier | None = None,
     ) -> None:
+        """``derivation_barrier`` is the primary-publication barrier the staged
+        routes honor through ``blocks_following_stages``; derivation owners run
+        their own convergers without those stages, so they receive it here."""
         self._stages: dict[str, ConvergenceStage] = {s.name: s for s in stages}
+        self._derivation_barrier = derivation_barrier
         self._file_states: dict[Path, FileState] = {}
         self._session_states: dict[str, SessionState] = {}
         self._derivations = DerivationRegistry(cast("Iterable[DerivationAdapter]", derivations))
@@ -864,6 +914,7 @@ class DaemonConverger:
             domains=domains,
             cursor=self._derivation_cursor if resume else None,
             publisher=publisher,
+            barrier=self._derivation_barrier,
         )
         # A targeted ingest frame always starts fresh so an archive keyset
         # position cannot skip an earlier changed key.  It must likewise leave
@@ -1449,10 +1500,17 @@ class DaemonConverger:
         return results, batch_stage_times
 
     def summary(self) -> dict[str, int]:
-        """Return counts of files by convergence state."""
+        """Return counts of files by convergence state.
+
+        Each file lands in exactly one bucket, decided by its current stage
+        states. ``error_count`` is history: a file that failed once and later
+        converged is converged, and one now retrying is in progress.
+        """
         total = len(self._file_states)
         converged = sum(1 for s in self._file_states.values() if s.converged)
-        failed = sum(1 for s in self._file_states.values() if s.error_count > 0)
+        failed = sum(
+            1 for s in self._file_states.values() if not s.converged and StageState.FAILED in s.stages.values()
+        )
         return {
             "total": total,
             "converged": converged,

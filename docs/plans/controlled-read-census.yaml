@@ -143,13 +143,6 @@ sites:
     reason: >-
       The declared `mutation.user.setting.set` handler's writer hold.
 
-  - site: polylogue/operations/session_mutations.py::_execute
-    classification: writer
-    role: daemon_write
-    reason: >-
-      The shared session-mutation executor's writer hold for the declared
-      session write operations.
-
   - site: polylogue/operations/mutation_actuators.py::IdentityResetActuator.apply
     classification: writer
     role: daemon_write

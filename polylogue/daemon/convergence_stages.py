@@ -13,6 +13,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,6 +30,7 @@ from polylogue.operations.raw_authority_verdict_cache import (
     find_raw_authority_verdict_cache_work,
     warm_raw_authority_verdict_cache,
 )
+from polylogue.operations.raw_existence_journal import make_raw_existence_journal_prune_stage
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.connection_profile import (
@@ -37,6 +39,7 @@ from polylogue.storage.sqlite.connection_profile import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.daemon.derivation import PublicationBarrier
     from polylogue.sinex.service import PublicationService
     from polylogue.sinex.transport import SinexTransport
 
@@ -154,6 +157,7 @@ def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> 
     }
     status = "gaps" if gaps else "clean"
     try:
+        from polylogue.core.stage_admission import admit_stage_write
         from polylogue.storage.archive_readiness import CLAUDE_WORKFLOW_STAGE_NAME
         from polylogue.storage.sqlite.archive_tiers.bootstrap import open_initialized_tier_connection
         from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event
@@ -161,20 +165,27 @@ def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> 
 
         ops_db = archive_root / "ops.db"
         ops_db.parent.mkdir(parents=True, exist_ok=True)
-        with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
-            record_daemon_stage_event(
-                conn,
-                stage=CLAUDE_WORKFLOW_STAGE_NAME,
-                status=status,
-                observed_at_ms=int(time.time() * 1000),
-                payload=payload,
-                # A stable id makes this the current snapshot rather than an
-                # append: every reader selects only the newest row for this
-                # stage, and ``daemon_stage_events`` has no retention, so
-                # letting the writer mint a fresh UUID each pass grew ops.db
-                # without bound for a row nothing ever read again.
-                event_id=f"{CLAUDE_WORKFLOW_STAGE_NAME}:current",
-            )
+
+        def record() -> None:
+            with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
+                record_daemon_stage_event(
+                    conn,
+                    stage=CLAUDE_WORKFLOW_STAGE_NAME,
+                    status=status,
+                    observed_at_ms=int(time.time() * 1000),
+                    payload=payload,
+                    # A stable id makes this the current snapshot rather than
+                    # an append: every reader selects only the newest row for
+                    # this stage, and ``daemon_stage_events`` has no retention,
+                    # so letting the writer mint a fresh UUID each pass grew
+                    # ops.db without bound for a row nothing ever read again.
+                    event_id=f"{CLAUDE_WORKFLOW_STAGE_NAME}:current",
+                )
+
+        # The stage is ``bridged``: its engine runs off the writer lease (the
+        # convergence-debt retry calls it directly), so this ops write must be
+        # admitted like the materializer's own publication.
+        admit_stage_write("stage.claude_workflow.record", record)
     except Exception as exc:
         emit(
             "daemon.stage.event_record_failed",
@@ -624,6 +635,23 @@ def make_hook_paste_enrichment_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
+def configured_derivation_barrier(archive_root: Path) -> PublicationBarrier | None:
+    """The primary-publication barrier derivation owners honor, when configured.
+
+    The staged routes read it through the Sinex stage's
+    ``blocks_following_stages``; derivation owners run their own convergers
+    without that stage, so composition hands them the same read directly.
+    Outside primary mode nothing is held.
+    """
+    from polylogue.sinex.models import PublicationMode
+    from polylogue.sinex.service import primary_blocking_object_ids
+
+    if PublicationMode.from_string(load_polylogue_config().sinex_mode) is not PublicationMode.PRIMARY:
+        return None
+    source_db = ArchiveLocation.resolve(archive_root).configured_tier("source").configured_path
+    return partial(primary_blocking_object_ids, source_db)
+
+
 def make_default_convergence_stages(
     db_path: Path,
     *,
@@ -664,6 +692,7 @@ def make_default_convergence_stages(
             # polylogue-crwl6 AC6: the only production writer of the message-FTS
             # readiness binding the five status request paths compare against.
             make_fts_readiness_binding_stage(db_path),
+            make_raw_existence_journal_prune_stage(db_path),
             # Session-profile publication is no longer a generic stage.  The
             # daemon's typed session owner runs it through the derivation
             # kernel after ingest and from its no-hint periodic sweep.

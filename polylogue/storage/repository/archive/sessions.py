@@ -145,12 +145,6 @@ class RepositoryArchiveSessionMixin:
         """
         return await self.queries.get_file_edits_for_session(session_id)
 
-    async def get_file_edits_batch(
-        self,
-        session_ids: list[str],
-    ) -> dict[str, list[FileEditRecord]]:
-        return await self.queries.get_file_edits_for_session_batch(session_ids)
-
     async def get_session_refs(self, session_id: str) -> list[SessionRefRecord]:
         """Read tracker-agnostic external references (pr-link, ...) for a session."""
         return await self.queries.get_session_refs(session_id)

@@ -133,8 +133,7 @@ _RULES: dict[str, str] = {
     ),
     _TERM_ATTACHMENT_UNOWNED: (
         "attachment has no ref and ref_count 0: written unreferenced because its owning message "
-        "was ambiguous, or orphaned before the ref-count sweep covered its write path; identity "
-        "and bytes are retained as evidence, and plan_orphaned_attachment_relink types which"
+        "was ambiguous; identity and bytes are retained as evidence"
     ),
     _TERM_FRONTIER_UNAVAILABLE: "configured source root could not be observed; the denominator is incomplete",
     _TERM_FRONTIER_UNACQUIRED: "configured source member has no acquired raw membership",
@@ -748,12 +747,6 @@ def audit_source_conservation(
         # so ref_count 0 is explained and non-blocking. A non-zero ref_count is
         # the witness that refs existed and went away without the sweep
         # running, leaving the row unreachable from every read path.
-        #
-        # That witness holds only where every write path that drops a ref runs
-        # the sweep. A row orphaned by a path that predates the sweep also
-        # settles at ref_count 0, so on an archive with such history the split
-        # under-reports and ``storage/attachment_relink.py`` is what types an
-        # individual row, by re-parsing the durable raw that produced it.
         unreferenced_predicate = """
             NOT EXISTS (SELECT 1 FROM idx_tier.attachment_refs ar WHERE ar.attachment_id = a.attachment_id)
         """

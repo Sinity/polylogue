@@ -120,7 +120,8 @@ def test_session_search_continues_across_chunk_and_unicode_boundaries(
     assert second["next_cursor"] is None
 
 
-def test_session_search_continuation_rejects_a_changed_source(tmp_path: Path) -> None:
+def test_session_search_continuation_reports_a_changed_partial_file_as_a_gap(tmp_path: Path) -> None:
+    """A partially searched file that changes cannot resume at its old offset; it is a named gap."""
     service, root = session_service(tmp_path)
     session = root / "large.jsonl"
     session.write_text("x" * (64 * 1_024) + "needle\n")
@@ -128,8 +129,9 @@ def test_session_search_continuation_rejects_a_changed_source(tmp_path: Path) ->
     first = service.search("claude-code", "needle", scan_bytes=64 * 1_024, cursor_key=key)
     session.write_text(session.read_text() + "changed\n")
 
-    with pytest.raises(SessionError, match="source changed"):
-        service.search("claude-code", "needle", cursor=first["next_cursor"], cursor_key=key)
+    second = service.search("claude-code", "needle", cursor=first["next_cursor"], cursor_key=key)
+    assert second["matches"] == []
+    assert second["gaps"] and "changed after it was partially searched" in second["gaps"][0]
 
 
 def test_newest_sessions_are_selected_across_the_entire_tree(tmp_path: Path) -> None:

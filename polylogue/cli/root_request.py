@@ -103,9 +103,6 @@ class RootModeRequest:
     def with_query_terms(self, query_terms: Sequence[str]) -> RootModeRequest:
         return replace(self, query_terms=tuple(str(term) for term in query_terms))
 
-    def append_query_terms(self, extra_terms: Sequence[str]) -> RootModeRequest:
-        return self.with_query_terms(self.query_terms + tuple(str(term) for term in extra_terms))
-
     def config(self) -> object:
         """The configuration this request runs against.
 

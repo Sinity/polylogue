@@ -542,10 +542,6 @@
       "digest": "eddada77b684cf677bf8dc84a6a67295504d8422"
     },
     {
-      "file": "polylogue/maintenance/beads_origin_census.py",
-      "digest": "ebdf710d5379afbd20deb75e8cef436e908c7632"
-    },
-    {
       "file": "polylogue/mcp/server_prompts.py",
       "digest": "6819064ff85349d02c767bdfb0ee80c794a87544"
     },
@@ -605,10 +601,6 @@
     {
       "file": "polylogue/operations/user_state_resolution.py",
       "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
-    },
-    {
-      "file": "polylogue/pipeline/services/indexing.py",
-      "digest": "34b399e79d3a99e8391311b940a64b203604fa15"
     },
     {
       "file": "polylogue/pipeline/services/indexing.py",
@@ -880,8 +872,7 @@
     },
     {
       "file": "polylogue/storage/search_providers/sqlite_vec_runtime.py",
-      "digest": "59587c74ed7fbadd083e40c83fc0a7381be43f44",
-      "count": 2
+      "digest": "59587c74ed7fbadd083e40c83fc0a7381be43f44"
     },
     {
       "file": "polylogue/storage/sqlite/agent_thread_state.py",
@@ -898,10 +889,6 @@
     {
       "file": "polylogue/storage/sqlite/agent_thread_state.py",
       "digest": "a49c0a49b54461538ac63dafb21e94f1e16ed1ea"
-    },
-    {
-      "file": "polylogue/storage/sqlite/archive_tiers/archive.py",
-      "digest": "9302f41b496a543b3afe87e9337f1889fe82e1ed"
     },
     {
       "file": "polylogue/storage/sqlite/archive_tiers/archive.py",

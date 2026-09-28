@@ -47,10 +47,20 @@ def test_slot_job_reruns_failures_and_records_the_exit(tmp_path: Path, monkeypat
         "PATH": "/usr/bin:/bin",
     }
 
-    pytest_slot._rerun_failures_in_slot(environment, cwd=str(tmp_path), log_path=tmp_path / "slot.log")
+    started: list[object] = []
+    with (tmp_path / "slot.log").open("wb") as log:
+        pytest_slot._rerun_failures_in_slot(environment, cwd=str(tmp_path), log=log, on_start=started.append)
+
+    # The rerun is registered with the launch before it is waited on, so the
+    # launch's signal handling can stop it.
+    assert len(started) == 1
 
     record = json.loads((step / RERUN_IN_SLOT_RESULT).read_text(encoding="utf-8"))
-    assert record == {"attempted": ["tests/test_x.py::test_flaky"], "rerun_exit": 0}
+    assert record["attempted"] == ["tests/test_x.py::test_flaky"]
+    assert record["rerun_exit"] == 0
+    # Provenance is recorded only when the launch asked for it; the client
+    # compares it with the first run's before clearing anything.
+    assert "worktree_provenance" in record
 
 
 def test_client_adjudicates_from_the_slot_record_without_requeueing(
@@ -101,3 +111,21 @@ def test_a_rerun_that_fails_again_stays_red(tmp_path: Path) -> None:
 
     assert verdict is not None
     assert verdict["still_failed"] == ["tests/test_x.py::test_real"]
+
+
+@pytest.mark.parametrize(("rerun_exit", "cleared"), [(0, True), (1, False)])
+def test_scratch_follows_the_adjudicated_outcome(tmp_path: Path, rerun_exit: int, cleared: bool) -> None:
+    """A queued run whose in-slot rerun cleared every failure disposes of its scratch.
+
+    Anti-vacuity: ignore the rerun record in ``run_pytest`` and a cleared run
+    keeps its scratch tree, which only a later sweep would remove.
+    """
+    step = tmp_path / "step"
+    step.mkdir()
+    (step / RERUN_IN_SLOT_RESULT).write_text(
+        json.dumps({"attempted": ["t"], "rerun_exit": rerun_exit}), encoding="utf-8"
+    )
+    env = {RERUN_IN_SLOT_ENV: json.dumps({"report_path": "r", "step_dir": str(step), "root": str(tmp_path)})}
+
+    assert pytest_slot._in_slot_rerun_cleared(env) is cleared
+    assert pytest_slot._in_slot_rerun_cleared({}) is False

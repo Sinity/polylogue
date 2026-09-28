@@ -1014,23 +1014,6 @@ class ObservationJournal:
         )
         return int(self._connection.execute(query, [*parameters, ""]).fetchone()[0])
 
-    def iter_distinct_membership_scope_keys(
-        self,
-        *,
-        profile_family_id: str | None = None,
-        package_family_id: str | None = None,
-        artifact_kind: str | None = None,
-    ) -> Iterator[str]:
-        """Stream the exact package scope identity used by package assembly."""
-        where, parameters = self._membership_where(
-            profile_family_id=profile_family_id,
-            package_family_id=package_family_id,
-            artifact_kind=artifact_kind,
-        )
-        query = f"SELECT DISTINCT {_SCOPE_KEY_SQL} AS scope_key FROM units WHERE {where} ORDER BY scope_key"
-        for row in self._connection.execute(query, parameters):
-            yield str(row[0])
-
     def distinct_membership_scope_count(
         self,
         *,
@@ -1225,13 +1208,6 @@ class JournalMemberships(Sequence[_UnitMembership]):
     def distinct_count(self, column: DistinctUnitColumn) -> int:
         return self._journal.distinct_membership_count(
             column,
-            profile_family_id=self._profile_family_id,
-            package_family_id=self._package_family_id,
-            artifact_kind=self._artifact_kind,
-        )
-
-    def iter_scope_keys(self) -> Iterator[str]:
-        return self._journal.iter_distinct_membership_scope_keys(
             profile_family_id=self._profile_family_id,
             package_family_id=self._package_family_id,
             artifact_kind=self._artifact_kind,

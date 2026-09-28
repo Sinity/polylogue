@@ -473,18 +473,24 @@ class DaemonOperationRuntime:
                     result=durable.get("result", durable),
                     error=cast("dict[str, object] | None", durable.get("error")),
                 ).to_dict()
-            # A durable non-terminal record is the recovery authority after a
-            # daemon restart.  Re-enqueuing the request here would create a
-            # second exchange and could replay a mutation whose first effect
-            # is merely not yet observable.  Preview-page records are only
-            # staging authority; _durable deliberately excludes them from
-            # this recovery boundary so their normal sealing exchange may
-            # continue.
+            # A durable record with a started attempt is the recovery authority
+            # after a daemon restart.  Re-enqueuing it would create a second
+            # exchange and could replay a mutation whose first effect is merely
+            # not yet observable.  ``accepted`` is different: every remaining
+            # part is unattempted, so no effect can be in flight.  It falls
+            # through, joining this daemon's live exchange when one exists and
+            # otherwise re-dispatching the handler, which resumes the durable
+            # record's unstarted parts and never replays a consumed one.
+            # Returning it here instead left an accepted request whose daemon
+            # died before its first part stranded at ``accepted`` for good.
+            # Preview-page records are only staging authority; _durable
+            # deliberately excludes them from this recovery boundary so their
+            # normal sealing exchange may continue.
             if (
                 record is not None
                 and record["artifact_kind"] != "insight-preview-pages"
                 and durable is not None
-                and durable["outcome"] in {"accepted", "running", "indeterminate"}
+                and durable["outcome"] in {"running", "indeterminate"}
             ):
                 return operation_envelope(
                     request,

@@ -81,6 +81,10 @@ class PeriodicLoopState:
     runs: int = 0
     failures: int = 0
     skips: int = 0
+    #: Whether the most recent pass raised. Recorded at the pass, not
+    #: inferred by ordering wall-clock timestamps, which a clock step can
+    #: reorder.
+    last_run_failed: bool | None = None
     #: Passes this loop started because an event woke it rather than because
     #: its cadence elapsed. Zero here on a loop wired to the bus means the
     #: producer is not reaching it, which polling alone could never show.
@@ -113,6 +117,7 @@ class PeriodicLoopState:
             "last_error_at": self.last_error_at,
             "runs": self.runs,
             "failures": self.failures,
+            "last_run_failed": self.last_run_failed,
             "skips": self.skips,
             "wakeups": self.wakeups,
             "blocked_on": self.blocked_on,
@@ -254,6 +259,7 @@ class PeriodicRunner:
                 raise
             except Exception as exc:
                 state.failures += 1
+                state.last_run_failed = True
                 state.last_error = str(exc)
                 state.last_error_type = type(exc).__name__
                 state.last_error_at = self._clock()
@@ -269,6 +275,7 @@ class PeriodicRunner:
                     raise
             else:
                 state.runs += 1
+                state.last_run_failed = False
                 state.last_run_completed_at = self._clock()
                 if isinstance(outcome, PassOutcome):
                     self._record_pass_outcome(state, outcome)

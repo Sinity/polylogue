@@ -222,19 +222,7 @@
     ]
   },
   {
-    "file": "polylogue/storage/attachment_relink.py",
-    "tiers": [
-      "index"
-    ]
-  },
-  {
     "file": "polylogue/storage/blob_gc.py",
-    "tiers": [
-      "source"
-    ]
-  },
-  {
-    "file": "polylogue/storage/blob_integrity.py",
     "tiers": [
       "source"
     ]
@@ -307,6 +295,13 @@
     "file": "polylogue/storage/embeddings/tuple_generation.py",
     "tiers": [
       "embeddings"
+    ]
+  },
+  {
+    "file": "polylogue/storage/frontier_existence.py",
+    "tiers": [
+      "index",
+      "source"
     ]
   },
   {

@@ -28,7 +28,7 @@ def test_fresh_archive_has_current_ddl_at_version_one(tmp_path: Path) -> None:
     initialize_active_archive_root(tmp_path)
 
     marker = json.loads((tmp_path / ".polylogue-format.json").read_text(encoding="utf-8"))
-    assert ARCHIVE_FORMAT_LINEAGE == "polylogue.archive-format.v3"
+    assert ARCHIVE_FORMAT_LINEAGE == "polylogue.archive-format.v4"
     assert marker["format"] == ARCHIVE_FORMAT_LINEAGE
     assert marker["floor_version"] == 1
     assert marker["tier_versions"] == dict.fromkeys((tier.value for tier in ArchiveTier), 1)
@@ -54,7 +54,7 @@ def test_old_marker_with_valid_digest_is_refused_before_tier_writes(tmp_path: Pa
     marker_path.write_text(json.dumps(marker, sort_keys=True) + "\n", encoding="utf-8")
     before = {tier: (tmp_path / spec.filename).read_bytes() for tier, spec in ARCHIVE_TIER_SPECS.items()}
 
-    with pytest.raises(RuntimeError, match="does not identify polylogue.archive-format.v3"):
+    with pytest.raises(RuntimeError, match="does not identify polylogue.archive-format.v4"):
         initialize_active_archive_root(tmp_path)
 
     assert {tier: (tmp_path / spec.filename).read_bytes() for tier, spec in ARCHIVE_TIER_SPECS.items()} == before

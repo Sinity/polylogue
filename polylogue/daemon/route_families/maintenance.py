@@ -116,9 +116,9 @@ ROUTES: tuple[RouteSpec, ...] = (
         handler="_handle_demo_augment",
         request_contract="DemoAugmentRequest",
         response_contract="DemoAugmentResult",
-        discovery_text="Apply deterministic demo augmentation through the daemon write bridge.",
+        discovery_text="Submit deterministic demo augmentation to the declared daemon operation.",
         example=ExampleSpec("default", "Apply demo augmentation", ()),
-        migration_reason="This compatibility route still applies demo writes through the bridge; the declared maintenance.demo.augment operation is not its executor.",
+        domain_operation="maintenance.demo.augment",
         stability="operational",
     ),
 )

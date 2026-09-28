@@ -15,18 +15,11 @@ from polylogue.archive.query.fields import (
 )
 from polylogue.archive.query.plan_description import describe_plan, effective_fetch_limit, plan_has_filters
 from polylogue.archive.query.predicate import QueryPredicate
-from polylogue.archive.query.retrieval import (
-    can_use_action_stats_with,
-    candidate_record_query,
-    fetch_record_query_for,
-    should_batch_post_filter_fetch,
-    uses_actions,
-)
+from polylogue.archive.query.retrieval import candidate_record_query
 from polylogue.archive.query.runtime import (
     apply_common_filters,
     apply_full_filters,
     plan_can_count_in_sql,
-    plan_can_use_action_stats,
     plan_has_post_filters,
     plan_needs_content_loading,
 )
@@ -42,7 +35,7 @@ if TYPE_CHECKING:
     from polylogue.archive.models import Session, SessionSummary
     from polylogue.archive.query.runtime_filters import FilterableSessionLike
     from polylogue.config import Config
-    from polylogue.core.protocols import SessionQueryRuntimeStore, VectorProvider
+    from polylogue.core.protocols import VectorProvider
 
 _T = TypeVar("_T")
 _FilterableT = TypeVar("_FilterableT", bound="FilterableSessionLike")
@@ -176,9 +169,6 @@ class SessionQueryPlan:
     def can_count_in_sql(self) -> bool:
         return plan_can_count_in_sql(self)
 
-    def can_use_action_stats(self) -> bool:
-        return plan_can_use_action_stats(self)
-
     def _apply_common_filters(
         self,
         items: builtins.list[_FilterableT],
@@ -207,18 +197,6 @@ class SessionQueryPlan:
     def fetch_record_query(self) -> SessionRecordQuery:
         record_query, _ = self._candidate_record_query()
         return record_query.with_limit(self.effective_fetch_limit())
-
-    def _uses_action_read_model(self) -> bool:
-        return uses_actions(self)
-
-    async def can_use_action_stats_with(self, repository: SessionQueryRuntimeStore) -> bool:
-        return await can_use_action_stats_with(self, repository)
-
-    async def fetch_record_query_for(self, repository: SessionQueryRuntimeStore) -> SessionRecordQuery:
-        return await fetch_record_query_for(self, repository)
-
-    def _should_batch_post_filter_fetch(self) -> bool:
-        return should_batch_post_filter_fetch(self)
 
     async def list(self, config: Config) -> list[Session]:
         from polylogue.archive.query.archive_execution import list_archive

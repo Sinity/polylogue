@@ -9,7 +9,6 @@ from pathlib import Path
 import ijson
 
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONValue
 from polylogue.logging import get_logger
 from polylogue.storage.blob_publication import publication_receipt_id
 from polylogue.storage.blob_store import BlobStore
@@ -24,7 +23,6 @@ from ..source_acquisition_components import (
     make_status_heartbeat,
     observe_acquisition,
 )
-from .attachment_fetch import fetch_live_drive_attachment_bytes
 from .source import DriveSourceAPI, _parse_modified_time, build_drive_source_client
 from .types import DriveConfigLike, DriveFile, DriveUILike
 
@@ -92,9 +90,23 @@ def drive_cache_file_path(dest_dir: Path, name: str) -> Path:
     return dest_dir / safe_name
 
 
-def _read_valid_cache(path: Path) -> bytes | None:
-    """Return cached bytes only when the complete JSON document is readable."""
+def _cache_revision_path(path: Path) -> Path:
+    return path.with_name(f"{path.name}.revision")
+
+
+def _read_valid_cache(path: Path, revision: str | None) -> bytes | None:
+    """Return cached bytes only when they are the provider's complete, readable document at ``revision``.
+
+    A cache is keyed by file name, so without its revision a document that
+    changed on Drive would be served from the stale copy forever. A revision
+    that cannot be proven (no provider ``modifiedTime``, or no record of the
+    cached one) is a miss.
+    """
+    if revision is None:
+        return None
     try:
+        if _cache_revision_path(path).read_text(encoding="utf-8") != revision:
+            return None
         raw = path.read_bytes()
         if not raw.strip():
             return None
@@ -143,7 +155,7 @@ def _cache_document_is_readable(path: Path) -> bool:
         return False
 
 
-def _write_cache_atomically(path: Path, raw: bytes) -> None:
+def _replace_atomically(path: Path, raw: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
         temporary = Path(handle.name)
@@ -153,6 +165,29 @@ def _write_cache_atomically(path: Path, raw: bytes) -> None:
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
+
+
+def _cache_holds_readable_revision(path: Path, revision: str) -> bool:
+    """Whether the cache is ``revision``'s document and still decodes, without materializing it."""
+    try:
+        if _cache_revision_path(path).read_text(encoding="utf-8") != revision:
+            return False
+    except OSError:
+        return False
+    return _cache_document_is_readable(path)
+
+
+def _write_cache_atomically(path: Path, raw: bytes, revision: str | None) -> None:
+    """Replace the cache, then record the revision it holds.
+
+    The document is written first: a crash between the two writes leaves the
+    previous revision recorded against new bytes, which reads as a miss and
+    re-downloads, never as a stale hit.
+    """
+    _cache_revision_path(path).unlink(missing_ok=True)
+    _replace_atomically(path, raw)
+    if revision is not None:
+        _replace_atomically(_cache_revision_path(path), revision.encode("utf-8"))
 
 
 def download_drive_files(
@@ -197,46 +232,6 @@ def download_drive_files(
         failed_files=failed,
         total_files=len(downloaded) + len(failed),
     )
-
-
-def _inject_live_drive_attachment_bytes(
-    raw_bytes: bytes,
-    drive_client: DriveSourceAPI,
-    file_meta: DriveFile,
-) -> tuple[bytes, bool]:
-    """Fetch live Drive-hosted attachment bytes into the raw session payload.
-
-    Must run here, before this function's caller's live-client scope closes:
-    googleapiclient/httplib2 are not thread-safe, and acquire (this generator,
-    with a live client) and parse (a separate subprocess, no client) are
-    deliberately decoupled for memory-bounded streaming. This is the one place
-    both the live client and the raw JSON are available together. Runs on
-    every read regardless of whether the session document came from a fresh
-    download or an existing local cache file, so a cache written before this
-    feature existed (or from any run where Drive-hosted attachments were not
-    yet resolvable) still gets backfilled, not silently skipped forever.
-
-    Returns ``(raw_bytes, False)`` unchanged when nothing was fetched (no
-    Drive-hosted references found, all already resolved, or all
-    fetches failed/were oversize) so an ordinary session's raw bytes are
-    never needlessly re-serialized or re-cached.
-    """
-    try:
-        payload: JSONValue = json.loads(raw_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return raw_bytes, False
-    resolved, stats = fetch_live_drive_attachment_bytes(payload, drive_client.download_bytes)
-    if stats.fetched_count == 0:
-        return raw_bytes, False
-    logger.info(
-        "Resolved %d live Drive attachment(s) for %s (%d bytes fetched, %d failed, %d oversize)",
-        stats.fetched_count,
-        file_meta.name,
-        stats.fetched_bytes,
-        stats.failed_count,
-        stats.skipped_too_large_count,
-    )
-    return json.dumps(resolved, ensure_ascii=False).encode("utf-8"), True
 
 
 def iter_drive_raw_data(
@@ -291,13 +286,13 @@ def iter_drive_raw_data(
             known_mtimes is not None
             and file_meta.modified_time is not None
             and known_mtimes.get(source_path) == file_meta.modified_time
-            and (not cache_exists or _cache_document_is_readable(cache_path))
+            and (not cache_exists or _cache_holds_readable_revision(cache_path, file_meta.modified_time))
         ):
             # Unchanged revision with a still-decodable cache: nothing here
             # needs the payload, so nothing here reads it.
             continue
 
-        raw_bytes = _read_valid_cache(cache_path) if cache_exists else None
+        raw_bytes = _read_valid_cache(cache_path, file_meta.modified_time) if cache_exists else None
         if raw_bytes is None:
             try:
                 raw_bytes = drive_client.download_bytes(file_meta.file_id)
@@ -310,16 +305,8 @@ def iter_drive_raw_data(
                     exc,
                 )
                 continue
-            _write_cache_atomically(cache_path, raw_bytes)
+            _write_cache_atomically(cache_path, raw_bytes, file_meta.modified_time)
 
-        # Run the live-attachment injector on EVERY read, cache hit or not:
-        # a cache file written before this feature existed (or by a run where
-        # a Drive-hosted attachment failed/was oversize at the time) must
-        # still get backfilled on the next pass, not silently skipped
-        # forever just because the top-level document didn't need re-download.
-        raw_bytes, mutated = _inject_live_drive_attachment_bytes(raw_bytes, drive_client, file_meta)
-        if mutated:
-            _write_cache_atomically(cache_path, raw_bytes)
         blob_hash, blob_size = blob_store.write_from_bytes(raw_bytes)
         del raw_bytes
 

@@ -298,32 +298,6 @@ def _route_segments(pattern: str) -> tuple[str, ...]:
     return tuple(part for part in pattern.strip("/").split("/") if part)
 
 
-def _static_get_route(pattern: str, handler_name: str, *, passes_params: bool = False) -> _StaticGetRoute:
-    contract = route_contract_for_pattern("GET", pattern)
-    return _StaticGetRoute(
-        contract=contract,
-        segments=_route_segments(contract.pattern),
-        handler_name=handler_name,
-        passes_params=passes_params,
-    )
-
-
-def _parameterized_get_route(pattern: str, handler_name: str, *, passes_params: bool = False) -> _ParameterizedGetRoute:
-    contract = route_contract_for_pattern("GET", pattern)
-    parts = _route_segments(contract.pattern)
-    try:
-        parameter_index = next(index for index, part in enumerate(parts) if part.startswith(":"))
-    except StopIteration as exc:
-        raise ValueError(f"parameterized route pattern has no parameter: {contract.pattern}") from exc
-    return _ParameterizedGetRoute(
-        contract=contract,
-        prefix=parts[:parameter_index],
-        suffix=parts[parameter_index + 1 :],
-        handler_name=handler_name,
-        passes_params=passes_params,
-    )
-
-
 def _read_view_payload_field_values(payload: object, field_name: str, *, max_depth: int = 4) -> tuple[str, ...]:
     """Collect common read-view metadata fields from a profile-specific payload."""
 
@@ -958,12 +932,6 @@ def _provenance_dict(prov: Any) -> dict[str, object]:
     }
 
 
-def _optional_model_dump(value: Any) -> dict[str, object] | None:
-    if value is None:
-        return None
-    return cast(dict[str, object], value.model_dump(mode="json"))
-
-
 def _profile_staleness(record: Any, session_updated_at: str | None) -> dict[str, object] | None:
     """Compare a session-profile record's provenance against its session.
 
@@ -1559,19 +1527,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if extra_headers:
             for name, value in extra_headers.items():
                 self.send_header(name, value)
-        self.end_headers()
-        self.wfile.write(raw)
-
-    def _send_html(self, status: HTTPStatus, html: str) -> None:
-        raw = html.encode("utf-8")
-        self.send_response(status.value)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(raw)))
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("X-Content-Type-Options", "nosniff")
-        self.send_header("X-Frame-Options", "DENY")
-        self._send_request_id_header()
         self.end_headers()
         self.wfile.write(raw)
 
@@ -5407,7 +5362,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
 
     @daemon_safe_handler
     def _handle_demo_augment(self) -> None:
-        """POST /api/demo/augment — apply deterministic demo writes as daemon owner."""
+        """POST /api/demo/augment — submit the declared ``maintenance.demo.augment`` operation.
+
+        The operation handler is the one executor for demo augmentation; this
+        route only validates the body, submits it, and keeps the route's
+        historical success shape.
+        """
         content_length = int(self.headers.get("Content-Length", 0))
         body_raw = self.rfile.read(content_length) if content_length > 0 else b"{}"
         try:
@@ -5419,28 +5379,23 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request")
             return
 
-        bridge = getattr(self.server, "write_bridge", None)
-        if bridge is None:
-            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "write_coordinator_unavailable")
-            return
+        from uuid import uuid4
 
-        from polylogue.demo import apply_demo_post_ingest_augmentation
-        from polylogue.paths import archive_root
+        from polylogue.operations.daemon_protocol import DaemonOperationRequest
 
         with_overlays = bool(body.get("with_overlays", False))
-
-        def augment() -> None:
-            apply_demo_post_ingest_augmentation(archive_root())
-            if with_overlays:
-                from polylogue.scenarios import seed_demo_user_overlays
-
-                seed_demo_user_overlays(archive_root())
-
-        cast(DaemonWriteThreadBridge, bridge).run_sync_with_timeout(
-            "http.demo.augment",
-            120.0,
-            augment,
+        operation = DaemonOperationRequest.from_dict(
+            DaemonOperationRequest(
+                operation="maintenance.demo.augment",
+                request_id=uuid4().hex,
+                archive_root=str(self.server.archive_root),
+                payload={"with_overlays": with_overlays},
+            ).to_dict()
         )
+        response = self._execute_daemon_operation(operation)
+        if response.get("outcome") != "completed":
+            self._send_daemon_operation(response)
+            return
         self._send_json(HTTPStatus.OK, {"ok": True, "augmented": True, "overlays": with_overlays})
 
 

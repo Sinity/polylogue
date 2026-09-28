@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
-from polylogue.storage.query_models import SessionProfileListQuery
 from polylogue.storage.runtime import SessionLatencyProfileRecord, SessionProfileRecord
 from polylogue.storage.sqlite.queries import (
     session_insight_profile_reads as session_insight_profiles_q,
@@ -66,13 +65,6 @@ class SQLiteQueryStoreInsightProfilesMixin:
                 conn,
                 session_ids,
             )
-
-    async def _list_session_profiles_query(
-        self,
-        query: SessionProfileListQuery,
-    ) -> list[SessionProfileRecord]:
-        async with self._connection_factory() as conn:
-            return await session_insight_profiles_q.list_session_profiles(conn, query)
 
 
 __all__ = ["SQLiteQueryStoreInsightProfilesMixin"]

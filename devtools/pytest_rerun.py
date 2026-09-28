@@ -216,6 +216,17 @@ def adjudicate_rerun(
     }
 
 
+def _content_moved(first: object, rerun: object) -> dict[str, Any] | None:
+    """The refusal when a rerun executed different worktree content, else ``None``."""
+    if not isinstance(first, Mapping) or not isinstance(rerun, Mapping):
+        return None
+    identity_keys = ("git_head", "git_branch", "git_worktree_content_sha256")
+    if all(first.get(key) == rerun.get(key) for key in identity_keys):
+        return None
+    sys.stderr.write("\n  rerun ran different worktree content; the failures stand\n")
+    return {"flaky": [], "rerun_report": None, "content_moved": True}
+
+
 def rerun_failed_once(
     *,
     report_path: Path,
@@ -223,8 +234,13 @@ def rerun_failed_once(
     env: Mapping[str, str],
     root: Path,
     runner: str = "managed",
+    first_provenance: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Rerun exactly the failed tests once, alone and unselected.
+
+    ``first_provenance`` is the worktree identity the failing run executed.
+    A rerun that executed different content or another branch adjudicates
+    nothing: its pass would clear a failure of content it never ran.
 
     ``report_path`` is the just-finished run's JSON report; it is patched in
     place when a failure clears, so the caller's downstream statistics read
@@ -235,6 +251,10 @@ def rerun_failed_once(
     """
     in_slot = read_json(step_dir / RERUN_IN_SLOT_RESULT)
     if isinstance(in_slot, Mapping) and isinstance(in_slot.get("attempted"), list):
+        attempted = [str(nodeid) for nodeid in in_slot["attempted"]]
+        moved = _content_moved(first_provenance, in_slot.get("worktree_provenance"))
+        if moved is not None:
+            return {**moved, "attempted": attempted, "still_failed": attempted, "rerun_exit": in_slot.get("rerun_exit")}
         return adjudicate_rerun(
             report_path=report_path,
             step_dir=step_dir,
@@ -259,6 +279,13 @@ def rerun_failed_once(
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"\n  rerun could not acquire the pytest slot: {exc}\n")
         return {"attempted": failed, "still_failed": failed, "flaky": [], "rerun_report": None, "rerun_exit": 125}
+    rerun_receipt = getattr(rerun_completed, "receipt", None)
+    moved = _content_moved(
+        first_provenance,
+        rerun_receipt.get("worktree_provenance") if isinstance(rerun_receipt, Mapping) else None,
+    )
+    if moved is not None:
+        return {**moved, "attempted": failed, "still_failed": failed, "rerun_exit": rerun_completed.returncode}
     return adjudicate_rerun(
         report_path=report_path,
         step_dir=step_dir,

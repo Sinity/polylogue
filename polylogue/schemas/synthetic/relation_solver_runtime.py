@@ -52,13 +52,6 @@ class _StringLengthAnnotation:
     stddev: float
 
 
-def _annotation_records(schema: SchemaRecord, key: str) -> tuple[SchemaRecord, ...]:
-    value = schema.get(key)
-    if not isinstance(value, list | tuple):
-        return ()
-    return tuple(item for item in value if isinstance(item, dict))
-
-
 # Retain four annotation kinds for the ordinary and coverage schemas.
 # Strong references prevent object-id reuse until an entry is evicted.
 _PARSED_ANNOTATIONS: OrderedDict[tuple[int, str], tuple[object, tuple[Any, ...]]] = OrderedDict()

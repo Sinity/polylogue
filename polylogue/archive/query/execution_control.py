@@ -235,15 +235,6 @@ class QueryExecutionContext:
                     raise RuntimeError("query execution reported contradictory exact selection counts")
                 self.receipt.selected_rows_exact = normalized
 
-    def record_scope_fingerprints(self, *, request: str, result: str) -> None:
-        """Record and compare independently derived request/result scopes."""
-        from polylogue.archive.query.scope import assert_scope_match
-
-        assert_scope_match(request, result)
-        with self._receipt_lock:
-            self.receipt.request_scope_fingerprint = request
-            self.receipt.result_scope_fingerprint = result
-
     def mark_cleanup_complete(self) -> None:
         with self._receipt_lock:
             self.receipt.cleanup_complete = True

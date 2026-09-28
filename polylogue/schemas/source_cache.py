@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -165,13 +165,6 @@ class SourceContributionCache:
             "SELECT cache_key, evidence_json, input_bytes, record_count, metadata_json FROM source_evidence_contributions"
         ):
             yield self._decode(key, tuple(row))
-
-    def index_contributions(self, entries: Iterable[tuple[str, str, str, str, str, str]]) -> None:
-        """Index verified existing evidence without changing its recipe or payload."""
-        with self._connection:
-            self._connection.executemany(
-                "INSERT OR REPLACE INTO source_evidence_lookup VALUES (?, ?, ?, ?, ?, ?)", entries
-            )
 
     def find_contributions(
         self, provider: str, source_context: str, revision_sha256: str, phase: str

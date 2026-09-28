@@ -72,7 +72,6 @@ def test_ops_tier_reads_need_no_write_lease(tmp_path: Path) -> None:
         assert store.list_failed_with_retry() == []
         assert store.list_convergence_debt(limit=5) == []
         assert store.recent_ingest_attempts(limit=5) == []
-        assert store.open_whole_archive_convergence_pledges() == ()
 
 
 def test_ops_tier_writes_still_require_the_write_lease(tmp_path: Path) -> None:
@@ -166,6 +165,36 @@ def test_convergence_debt_drain_runs_under_its_stage_admission(tmp_path: Path) -
         assert _drain_convergence_debt_once(root / "index.db") == 0
 
     assert "maintenance.convergence_debt.initialize" in admitted
+
+
+def test_claude_workflow_stage_event_is_recorded_under_its_stage_admission(tmp_path: Path) -> None:
+    """The bridged workflow stage records its readiness snapshot when armed.
+
+    The convergence-debt retry runs the stage off the writer lease. Anti-
+    vacuity: open the ops connection outside ``admit_stage_write`` and the
+    armed boundary refuses it; the failure is swallowed into a warning, so no
+    ``claude_workflow`` row is written and the assertion below is red.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.core.stage_admission import stage_write_admission
+    from polylogue.daemon.convergence_stages import _record_claude_workflow_stage_event
+
+    root = _bootstrapped_root(tmp_path)
+    admitted: list[str] = []
+
+    def admission(actor: str, work: Any) -> Any:
+        admitted.append(actor)
+        with write_lease(actor, archive_root=root):
+            return work()
+
+    with arm_write_lease_enforcement(), stage_write_admission(admission):
+        _record_claude_workflow_stage_event(root, SimpleNamespace(gaps=("gap",)))
+
+    assert admitted == ["stage.claude_workflow.record"]
+    with sqlite3.connect(root / "ops.db") as conn:
+        rows = conn.execute("SELECT status FROM daemon_stage_events WHERE stage = 'claude_workflow'").fetchall()
+    assert rows == [("gaps",)]
 
 
 def test_cold_build_generation_binds_source_writes_to_the_declared_root(

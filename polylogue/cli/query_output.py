@@ -147,13 +147,6 @@ def _title_budget(width: int) -> int:
     return max(12, width - 2)
 
 
-def _session_list_line(conv: Session, frame: IdentityFrame) -> str:
-    date = _display_date(conv.display_date) or "unknown"
-    identity = frame.display(conv.id)
-    title = _display_title(_explicit_title(conv), identity, max_width=50)
-    return f"{identity:{frame.column_width}s}  {date:10s}  {str(conv.origin):20s}  {title} ({len(conv.messages)} msgs)"
-
-
 def _summary_list_line(summary: SessionSummary, message_count: int, frame: IdentityFrame) -> str:
     row = session_row(summary, message_count=message_count)
     date = _display_date(summary.display_date) or "unknown"

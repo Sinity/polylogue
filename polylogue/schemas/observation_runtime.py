@@ -89,19 +89,6 @@ def _to_schema_unit(observed: _ObservedSchemaUnit, context: _ObservationContext)
     )
 
 
-def _eligible_artifact_kind(
-    payload: SchemaClusterPayload,
-    *,
-    context: _ObservationContext,
-) -> str | None:
-    artifact = classify_artifact(
-        payload,
-        provider=context.source_name,
-        source_path=context.source_path,
-    )
-    return artifact.cohort if artifact.schema_eligible else None
-
-
 def _observable_artifact_kind(
     payload: SchemaClusterPayload,
     *,

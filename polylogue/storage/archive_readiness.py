@@ -178,13 +178,6 @@ def claude_workflow_materialization_status(ops_db: Path) -> dict[str, object] | 
     return payload
 
 
-def _read_int(readiness: Mapping[str, Any], key: str) -> int:
-    try:
-        return int(readiness.get(key) or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
 class RawMaterializationAssessmentState(str, Enum):
     """Whether the raw-materialization denominator supports a verdict."""
 
@@ -1617,10 +1610,6 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value) if value is not None else default
     except (TypeError, ValueError):
         return default
-
-
-def _safe_list(value: Any) -> list[Any]:
-    return value if isinstance(value, list) else []
 
 
 def _action_readiness_counts(conn: sqlite3.Connection) -> dict[str, Any]:

@@ -102,15 +102,6 @@ class ClaudeSemanticFrontier:
     body_bytes: int
 
 
-def encode_claude_semantic_frontier(*, header: bytes, body: bytes) -> str:
-    """Encode the evidence needed to resume after a mutable-header rewrite."""
-    return encode_claude_semantic_frontier_digests(
-        header_sha256=hashlib.sha256(header).hexdigest(),
-        body_sha256=hashlib.sha256(body).hexdigest(),
-        body_bytes=len(body),
-    )
-
-
 def encode_claude_semantic_frontier_digests(*, header_sha256: str, body_sha256: str, body_bytes: int) -> str:
     """Encode a Claude frontier from already-streamed semantic evidence."""
     if not (_sha256_hex(header_sha256) and _sha256_hex(body_sha256) and body_bytes >= 0):
@@ -127,27 +118,6 @@ def decode_claude_semantic_frontier(value: str | None) -> ClaudeSemanticFrontier
     if not (_sha256_hex(parts[1]) and _sha256_hex(parts[2]) and parts[3].isdigit()):
         return None
     return ClaudeSemanticFrontier(parts[1], parts[2], int(parts[3]))
-
-
-def claude_semantic_frontier_from_path(path: Path) -> tuple[str, int, int] | None:
-    """Return frontier authority, body start, and complete body end.
-
-    A first record and every body record must be complete. A partial first
-    record is therefore deferred instead of being interpreted as an empty body.
-    """
-    try:
-        end_offset = path.stat().st_size
-    except OSError:
-        return None
-    frontier = claude_semantic_frontier_for_prefix(path, end_offset)
-    if frontier is None:
-        return None
-    try:
-        with path.open("rb") as handle:
-            header = handle.readline()
-    except OSError:
-        return None
-    return frontier, len(header), end_offset
 
 
 def claude_semantic_frontier_for_prefix(

@@ -300,10 +300,6 @@ def _msgspec_enc_hook(encoder: JSONEncoder) -> Callable[[object], object]:
 _MSGSPEC_EXPONENT_TOKEN_RE = re.compile(rb"-?(?:0|[1-9]\d*)(?:\.\d+)?e(-?\d+)")
 
 
-def _msgspec_exponent_plus_sign(exponent: bytes) -> bytes:
-    return exponent if exponent.startswith(b"-") else b"+" + exponent
-
-
 def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
     """Make msgspec's exponent-notation floats byte-identical to orjson's.
 

@@ -659,18 +659,6 @@ class DaemonWriteCoordinator:
 
         task.add_done_callback(completed)
 
-    def create_managed_task(self, operation: Awaitable[object], *, actor: str) -> asyncio.Task[object]:
-        """Track post-write lifecycle work so shutdown drains it before loop close."""
-
-        async def managed_operation() -> object:
-            return await operation
-
-        task: asyncio.Task[object] = asyncio.create_task(managed_operation(), name=f"polylogue-managed:{actor}")
-        self._managed.add(task)
-        task.add_done_callback(self._managed.discard)
-        self._track_execution(task, actor=actor)
-        return task
-
     def _remove_queued(self, sequence: int) -> None:
         self._queued = [item for item in self._queued if item[0] != sequence]
         self._publish_telemetry()

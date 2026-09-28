@@ -320,17 +320,6 @@ class FtsDerivationAdapter:
         versions = getattr(frame, "recipe_versions", {})
         return isinstance(versions, Mapping) and versions.get(self.domain) == self.recipe_id
 
-    def required_partitions(self, conn: sqlite3.Connection) -> tuple[str, ...]:
-        """Return all session keys, including sessions with valid empty output."""
-        if not table_exists(conn, "blocks"):
-            return ()
-        keys: set[str] = {
-            str(row[0]) for row in conn.execute("SELECT DISTINCT session_id FROM blocks WHERE session_id IS NOT NULL")
-        }
-        if table_exists(conn, "sessions"):
-            keys.update(str(row[0]) for row in conn.execute("SELECT session_id FROM sessions"))
-        return tuple(sorted(keys))
-
     def input_for(self, conn: sqlite3.Connection, key: str) -> FtsPartitionInput:
         """Bind every canonical input value without retaining searchable text."""
         if key == GLOBAL_PARTITION:
@@ -530,17 +519,6 @@ class FtsDerivationAdapter:
             detail,
         )
 
-    def inspect_all(
-        self, conn: sqlite3.Connection, *, keys: Iterable[str] | None = None
-    ) -> tuple[FtsPartitionInspection, ...]:
-        selected = tuple(sorted(dict.fromkeys(keys))) if keys is not None else self.required_partitions(conn)
-        inspections = [self.inspect_partition(conn, key) for key in selected]
-        if keys is None:
-            global_state = self.inspect_partition(conn, GLOBAL_PARTITION)
-            if global_state.excess_rows or not global_state.triggers_compatible:
-                inspections.append(global_state)
-        return tuple(inspections)
-
     def publish_partition(self, conn: sqlite3.Connection, computed: FtsPartitionInput) -> bool:
         """Atomically replace one partition, returning false on revalidation drift."""
         owns_transaction = not conn.in_transaction
@@ -707,6 +685,11 @@ class FtsDerivationAdapter:
     def prerequisite_keys(self, frame: object, key: str) -> tuple[()]:
         del frame, key
         return ()
+
+    def barrier_sessions(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
+        """Each key is a session id, so the publication barrier holds it by itself."""
+        del frame
+        return {str(key): str(key) for key in keys}
 
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         """Classify keys against the bound generation and each partition's output."""

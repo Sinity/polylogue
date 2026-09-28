@@ -20,6 +20,14 @@ from typing import Any
 
 from devtools.agent_env import refuse_verify_tier, runtime_env
 from devtools.checkout_guard import CheckoutImportMismatchError, assert_polylogue_matches_checkout
+from devtools.checkout_identity import (
+    ALLOW_DEFAULT_BRANCH_ENV,
+    ON_DEFAULT_BRANCH_FLAG,
+    REFUSAL_DIAGNOSIS,
+    REFUSAL_EXIT,
+    checkout_identity,
+    default_branch_refusal,
+)
 from devtools.cloud_sentinels import cloud_sentinel_declined
 from devtools.gate import quick_gates
 from devtools.pytest_invocation import (
@@ -32,6 +40,7 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
+    WORKTREE_PROVENANCE_ENV,
     PytestSlotObservationUnavailableError,
     PytestSlotUnavailableError,
     run_pytest,
@@ -72,6 +81,7 @@ from devtools.verify_runs import (
     copy_current_pytest_artifacts,
     env_for_pytest_step,
     git_head,
+    git_worktree_content_sha256,
     prune_successful_verify_runs,
     reconcile_and_record_abandoned_verify_runs,
 )
@@ -592,6 +602,10 @@ def _run(
         _clear_pytest_report(command)
         _normalize_managed_pytest_environment(env)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
+        # The pytest slot re-checks the branch and records what it executed
+        # when the run starts, as it does for focused runs: the checkout can
+        # switch branch while the run waits for the slot.
+        env[WORKTREE_PROVENANCE_ENV] = "1"
         hypothesis_profile, hypothesis_profile_source = effective_hypothesis_profile(command, env, default="default")
         try:
             executor = run_pytest if runner == "managed" else run_pytest_isolated
@@ -630,6 +644,9 @@ def _run(
                 env=env,
                 root=ROOT,
                 runner=runner,
+                first_provenance=(
+                    metadata_receipt.get("worktree_provenance") if isinstance(metadata_receipt, dict) else None
+                ),
             )
             if completed.returncode == 1
             else None
@@ -774,7 +791,15 @@ def _write_verdict_line(payload: Mapping[str, Any], *, stream: Any) -> None:
     artifact_dir = payload.get("artifact_dir")
     # Absolute, so the verdict line names the checkout that was verified.
     receipt = f" receipt={ROOT / Path(str(artifact_dir)) / 'run.json'}" if artifact_dir else ""
-    stream.write(f"\nverify: {verdict} exit={exit_code}{named}{receipt}\n")
+    # The checkout this run tested, so the line that is cited says what it proves.
+    head = payload.get("git_head")
+    branch = payload.get("git_branch")
+    tested = (
+        f" checkout={ROOT.resolve()} branch={branch or '(detached)'} head={str(head)[:12] if head else 'unknown'}"
+        if head or branch
+        else ""
+    )
+    stream.write(f"\nverify: {verdict} exit={exit_code}{named}{receipt}{tested}\n")
 
 
 def _emit_affected_admission_refusal(*, graph: Any, decision: AffectedAdmission, stream: Any | None = None) -> None:
@@ -966,8 +991,40 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--hypothesis-profile", help="profile passed to pytest; overrides HYPOTHESIS_PROFILE")
     parser.add_argument("--runner", choices=("managed", "isolated"), default="managed")
+    parser.add_argument(
+        ON_DEFAULT_BRANCH_FLAG,
+        dest="on_default_branch",
+        action="store_true",
+        help="run on the default branch deliberately (a base comparison, or the hosted gate on a push)",
+    )
     args = parser.parse_args(argv)
     _anchor_verification_paths()
+    identity = checkout_identity(ROOT)
+    branch_refusal = default_branch_refusal(identity, command="devtools verify", allowed=args.on_default_branch)
+    if branch_refusal is not None:
+        if args.json:
+            json.dump(
+                {
+                    "kind": "polylogue.verification-refusal",
+                    "status": "refused",
+                    "diagnosis": REFUSAL_DIAGNOSIS,
+                    "message": branch_refusal,
+                    "exit_code": REFUSAL_EXIT,
+                },
+                sys.stdout,
+            )
+            sys.stdout.write("\n")
+        else:
+            sys.stderr.write(branch_refusal + "\n")
+        return REFUSAL_EXIT
+    # Carried to the pytest slot, which re-checks the branch at start; only
+    # this invocation's flag may authorize it, never an inherited value.
+    os.environ.pop(ALLOW_DEFAULT_BRANCH_ENV, None)
+    if args.on_default_branch:
+        os.environ[ALLOW_DEFAULT_BRANCH_ENV] = "1"
+    sys.stderr.write(f"verify: {identity.describe()}\n")
+    # Every step must see one tree: its Git-visible content is compared at the end.
+    started_content = git_worktree_content_sha256(ROOT)
     # Before this run writes its own ``running`` receipt, give a terminal state
     # to any earlier one whose process is gone. A verification killed outright
     # runs no handler of its own, so the next reader is the only thing that can
@@ -990,9 +1047,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             "diagnosis": "checkout_import_mismatch",
             "verification_scope": scope.value,
             "final_git_head": git_head(ROOT),
+            "git_head": identity.head,
+            "git_branch": identity.branch,
         }
-        _emit(payload, use_json=args.json, operation=agentctl_operation)
+        # The detail first: the verdict, naming the checkout, is the last line.
         sys.stderr.write(f"verify: {exc}\n")
+        _emit(payload, use_json=args.json, operation=agentctl_operation)
         return 125
     head = git_head(ROOT)
     tier = "quick" if args.quick else selection
@@ -1083,6 +1143,36 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             exit_code=130,
             termination_reason="operator_interrupt",
         )
+    executed: set[tuple[object, object, object]] = set()
+    for result in results:
+        slot_receipt = result.get("pytest_slot_receipt")
+        provenance = slot_receipt.get("worktree_provenance") if isinstance(slot_receipt, Mapping) else None
+        if isinstance(provenance, Mapping):
+            # The receipt and verdict name what pytest executed, not what was admitted.
+            run.record_execution_worktree(provenance)
+            executed.add(
+                (
+                    provenance.get("git_branch"),
+                    provenance.get("git_head"),
+                    provenance.get("git_worktree_content_sha256"),
+                )
+            )
+    # The static gates read the checkout directly, with no slot to re-check it:
+    # a run whose branch, HEAD or Git-visible content changed while it ran, or
+    # whose pytest step executed other content, verified no single tree.
+    finished_identity = checkout_identity(ROOT)
+    finished_content = git_worktree_content_sha256(ROOT)
+    checkout_moved = (
+        (finished_identity.branch, finished_identity.head) != (identity.branch, identity.head)
+        or finished_content != started_content
+        or bool(executed - {(identity.branch, identity.head, started_content)})
+    )
+    if checkout_moved:
+        sys.stderr.write(
+            f"verify: the checkout moved during the run (started {identity.describe()}, "
+            f"finished {finished_identity.describe()}); the result is void\n"
+        )
+        exit_code = exit_code or 1
     aggregate = _aggregate_pytest_results(
         results,
         expected_step_count=sum(label.startswith("pytest") for label, _command in steps),
@@ -1094,6 +1184,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         (str(result["diagnosis"]) for result in results if result["exit"] != 0 and result.get("blocking", True)),
         None,
     )
+    if checkout_moved:
+        diagnosis = "checkout_moved_during_run"
     payload = _finish_and_record_verification(
         run=run,
         exit_code=exit_code,
