@@ -16,6 +16,7 @@ def _seeded_connection(version: int = 1) -> sqlite3.Connection:
     conn.execute("CREATE TABLE records (value TEXT NOT NULL)")
     conn.execute("INSERT INTO records VALUES ('kept')")
     conn.execute(f"PRAGMA user_version = {version}")
+    conn.commit()
     return conn
 
 
@@ -90,6 +91,36 @@ def test_already_current_is_an_idempotent_noop() -> None:
     assert result.applied_versions == ()
     assert result.changed is False
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+
+
+def test_engine_rejects_caller_owned_transaction_without_committing_it() -> None:
+    conn = _seeded_connection()
+    conn.execute("BEGIN")
+    conn.execute("INSERT INTO records VALUES ('pending')")
+    engine = SchemaFastForwardEngine((SchemaFastForwardStep(2, "ALTER TABLE records ADD COLUMN source TEXT"),))
+    with pytest.raises(SchemaFastForwardError, match="no active transaction"):
+        engine.execute(conn)
+    assert conn.in_transaction
+    assert conn.execute("SELECT count(*) FROM records").fetchone()[0] == 2
+    conn.rollback()
+
+
+def test_begin_lock_failure_uses_engine_error_type(tmp_path) -> None:
+    path = tmp_path / "locked.sqlite"
+    writer = sqlite3.connect(path, timeout=0)
+    reader = sqlite3.connect(path, timeout=0)
+    writer.execute("CREATE TABLE records (value TEXT)")
+    writer.commit()
+    writer.execute("BEGIN IMMEDIATE")
+    engine = SchemaFastForwardEngine((SchemaFastForwardStep(1, "CREATE TABLE added (value TEXT)"),))
+    try:
+        with pytest.raises(SchemaFastForwardError, match="could not acquire transaction"):
+            engine.execute(reader)
+        assert reader.execute("SELECT name FROM sqlite_master WHERE name='added'").fetchone() is None
+    finally:
+        writer.rollback()
+        reader.close()
+        writer.close()
 
 
 def test_two_statements_on_one_line_both_apply() -> None:

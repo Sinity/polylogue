@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from collections import Counter
 from pathlib import Path
@@ -91,6 +92,20 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     output: TextIO = stdout if stdout is not None else sys.stdout
     root = (args.cache_root or default_cache_root()).expanduser()
     receipt = (args.receipt or root / ".seeded-archive-gc-receipt.json").expanduser()
+
+    try:
+        if not math.isfinite(args.grace_period_s) or args.grace_period_s < 0:
+            raise ValueError("grace period must be finite and non-negative")
+        artifacts_root = (root / "artifacts").resolve()
+        receipt_resolved = receipt.resolve(strict=False)
+        if receipt_resolved == artifacts_root or artifacts_root in receipt_resolved.parents:
+            raise ValueError("receipt path must be outside the managed artifacts directory")
+    except (OSError, ValueError) as exc:
+        if args.json:
+            print(json.dumps({"refused": str(exc)}, indent=2, sort_keys=True), file=output)
+        else:
+            print(f"refused: {exc}", file=output)
+        return 1
 
     try:
         inventory = current_seeded_archive_reachability()

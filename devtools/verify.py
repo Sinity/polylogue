@@ -506,6 +506,15 @@ def _clear_pytest_report(command: Sequence[str]) -> None:
                 path.unlink()
 
 
+def _clear_full_run_shards() -> None:
+    """Prevent stale full-corpus shards from being attributed to this run."""
+    for report in (ROOT / Path(".cache/verify")).glob("last-pytest-*.json"):
+        if report.name == "last-pytest.json":
+            continue
+        with contextlib.suppress(FileNotFoundError):
+            report.unlink()
+
+
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -1165,6 +1174,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     validate_authority_matrix()
     started = time.monotonic()
     selection = "all" if args.all_tests else "affected"
+    if args.all_tests:
+        _clear_full_run_shards()
     if not args.quick and not args.all_tests:
         selection = _selection_for_changes(_git_changed_paths(ROOT))
     seeded_from_primary = sync_testmon_graph(ROOT)
