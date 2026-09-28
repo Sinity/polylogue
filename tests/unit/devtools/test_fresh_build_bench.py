@@ -629,3 +629,244 @@ def test_refresh_voids_cpu_to_promotion_when_promotion_moves(tmp_path: Path) -> 
     assert refreshed["process_tree"]["cpu_seconds_to_promotion"] is None
     assert refreshed["process_tree"]["mean_cores_to_promotion"] is None
     assert json.loads(path.read_text(encoding="utf-8")) == refreshed
+
+
+def test_a_progressing_build_runs_past_any_elapsed_time(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5678): an absolute run deadline ends a build
+    that keeps making progress past six hours with an unqualified outcome."""
+
+    from devtools.fresh_build_bench import report, run
+
+    clock = {"now": 0.0}
+
+    def monotonic() -> float:
+        return clock["now"]
+
+    polls = {"count": 0}
+    ready = dict.fromkeys(REQUIRED_READINESS_DOMAINS, True)
+
+    def observe(_archive: Path, started: float) -> Observation:
+        clock["now"] += 3600.0  # every poll is an hour later
+        polls["count"] += 1
+        done = polls["count"] >= 9
+        return Observation(
+            clock["now"] - started,
+            cursor_rows=20,
+            cursor_complete=20 if done else polls["count"],
+            promoted_index="/archive/.index-generations/gen/index.db" if done else None,
+            readiness=ready if done else {},
+        )
+
+    class Process:
+        pid = 1
+
+        def poll(self) -> None:
+            return None
+
+    class Sampler:
+        samples: list[object] = []
+        daemon_rss_hwm_bytes = 0
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None: ...
+
+        def start(self) -> None: ...
+
+        def finish(self) -> None: ...
+
+    monkeypatch.setattr(run.time, "monotonic", monotonic)
+    monkeypatch.setattr(run.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(run.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(run, "TreeSampler", Sampler)
+    monkeypatch.setattr(run, "observe", observe)
+    monkeypatch.setattr(run, "_stop", lambda _process, _timeout: (0, 0.0))
+    monkeypatch.setattr(run, "verify_manifest", lambda *_args: None)
+    monkeypatch.setattr(run, "candidate_identity", lambda _candidate: {})
+    monkeypatch.setattr(report, "build_receipt", lambda **kwargs: {"outcome": kwargs["outcome"]})
+    config = RunConfig(
+        corpus=tmp_path,
+        work=tmp_path,
+        candidate=tmp_path,
+        python="python",
+        label="l",
+        stall_timeout_s=7200.0,
+        settle_timeout_s=7200.0,
+    )
+    paths = {"daemon_log": tmp_path / "daemon.log", "archive": tmp_path, "receipt": tmp_path / "receipt.json"}
+
+    receipt = run._measure_and_write_receipt(
+        config,
+        manifest={},
+        paths=paths,
+        identity={"git_sha": None, "dirty": None, "tracked_diff_sha256": None},
+        env_summary={},
+        command=[],
+        daemon_env={},
+        interrupted=[],
+        progress=lambda _line: None,
+    )
+
+    assert receipt["outcome"] == "terminal"
+    assert clock["now"] > 6 * 3600.0
+
+
+def test_component_commands_refuse_a_corpus_inside_the_checkout(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P1, #5678): validate only ``--scratch`` and a sealed
+    private corpus under the checkout is accepted."""
+    from devtools.fresh_build_bench import components
+    from devtools.fresh_build_bench.corpus import _CHECKOUT
+
+    with pytest.raises(ValueError, match="--corpus must be outside the checkout"):
+        components.main(["blob", "--corpus", str(_CHECKOUT / "tests"), "--scratch", str(tmp_path / "scratch")])
+
+
+def _sidecar_corpus(tmp_path: Path) -> Path:
+    corpus = tmp_path / "corpus"
+    project = corpus / "home" / ".claude" / "projects" / "proj"
+    (project / "s1" / "tool-results").mkdir(parents=True)
+    (project / "s1.jsonl").write_text("{}\n", encoding="utf-8")
+    (project / "s1" / "tool-results" / "toolu_1.txt").write_text("full output", encoding="utf-8")
+    seal(corpus, kind="sample", parameters={})
+    return corpus
+
+
+def test_blob_component_stores_sidecars_and_parse_skips_them(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5678): share the parse filter with the blob
+    component and the sidecar the acquisition route stores is never timed."""
+    from devtools.fresh_build_bench import components
+
+    corpus = _sidecar_corpus(tmp_path)
+    manifest = load_manifest(corpus)
+    blob_files = components._corpus_files(corpus, manifest, None, None, sessions_only=False)
+    parse_files = components._corpus_files(corpus, manifest, None, None, sessions_only=True)
+    assert sorted(path.name for path, _origin, _size in blob_files) == ["s1.jsonl", "toolu_1.txt"]
+    assert [path.name for path, _origin, _size in parse_files] == ["s1.jsonl"]
+
+
+def test_an_empty_component_selection_fails(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5678): an origin absent from the corpus prints
+    a zero-file timing and exits successfully."""
+    from devtools.fresh_build_bench import components
+
+    corpus = _sidecar_corpus(tmp_path)
+    with pytest.raises(SystemExit, match="no corpus files match"):
+        components.bench_blob(corpus, tmp_path / "scratch", workers=1, origins=["codex"], limit=None)
+
+
+def test_seal_covers_sidecar_mtimes_and_a_sample_keeps_them(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P1, #5678): hash only path, size and bytes and a
+    touched sidecar still verifies, though its mtime is the parsed event time."""
+    import os
+
+    from devtools.fresh_build_bench.corpus import default_sample_sources
+
+    corpus = _sidecar_corpus(tmp_path)
+    sidecar = corpus / "home" / ".claude" / "projects" / "proj" / "s1" / "tool-results" / "toolu_1.txt"
+    verify_manifest(corpus, load_manifest(corpus))
+    os.utime(sidecar, ns=(sidecar.stat().st_atime_ns, sidecar.stat().st_mtime_ns + 10**9))
+    with pytest.raises(ValueError, match="changed mtime"):
+        verify_manifest(corpus, load_manifest(corpus))
+
+    home = tmp_path / "home"
+    source = home / ".claude" / "projects" / "proj" / "s1" / "tool-results" / "toolu_1.txt"
+    source.parent.mkdir(parents=True)
+    (home / ".claude" / "projects" / "proj" / "s1.jsonl").write_text("{}\n", encoding="utf-8")
+    source.write_text("full output", encoding="utf-8")
+    os.utime(source, ns=(1_700_000_000_000_000_000, 1_700_000_000_000_000_000))
+    manifest = sample_real(tmp_path / "sampled", seed=1, fraction=1.0, sources=default_sample_sources(home))
+    assert manifest["sidecar_mtimes_ns"] == {
+        "home/.claude/projects/proj/s1/tool-results/toolu_1.txt": 1_700_000_000_000_000_000
+    }
+
+
+def test_receipts_from_different_benchmark_code_or_limits_do_not_compare() -> None:
+    """Anti-vacuity (Codex P1, #5678): compare only host fields and identical
+    configs under different benchmark code or cgroup quotas read as controlled."""
+    base = _receipt(qualified=True, benchmark_implementation_sha256="a")
+    ok, text = compare(base, _receipt(qualified=True, benchmark_implementation_sha256="b"))
+    assert not ok and "benchmark implementation" in text
+    quota_two = {"python": "3.14.4", "gil_enabled": False, "effective_cpus": 2}
+    quota_sixteen = {**quota_two, "effective_cpus": 16}
+    ok, text = compare(
+        _receipt(qualified=True, environment=quota_two), _receipt(qualified=True, environment=quota_sixteen)
+    )
+    assert not ok and "effective_cpus" in text
+
+
+def test_an_unpromoted_run_has_no_cpu_to_promotion() -> None:
+    """Anti-vacuity (Codex P2, #5678): cut at no milestone and the whole run's
+    CPU is stored as ``cpu_seconds_to_promotion``."""
+    from devtools.fresh_build_bench.report import _tree_summary
+
+    tree = _tree_summary([(1.0, 1 << 20, 0.5, 4, 0, 0), (2.0, 1 << 20, 1.5, 4, 0, 0)], None)
+    assert tree["cpu_seconds_total"] == 1.5
+    assert tree["cpu_seconds_to_promotion"] is None
+    assert tree["mean_cores_to_promotion"] is None
+
+
+def test_refresh_recomputes_the_projection_without_the_corpus(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5678): recompute only when the corpus directory
+    exists and a refreshed receipt keeps a projection its new ``by_source``
+    contradicts."""
+    from devtools.fresh_build_bench.report import refresh
+
+    (tmp_path / "events.jsonl").write_text(
+        "\n".join(
+            [
+                _event("01.000", "daemon.cold_build.preparation"),
+                _event("05.000", "live.ingest.source_group", source_name="codex", files=2, duration_ms=2000),
+                _event("06.000", "live.ingest.chunk", files=2, bytes=2 << 20, duration_ms=1000),
+                _event("09.000", "daemon.cold_build.generation_promoted"),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    receipt = _receipt(started_at_unix=_ts("2026-09-27T10:00:00.000000Z"), projection={"stale": True})
+    receipt["corpus"].update(
+        path=str(tmp_path / "absent-corpus"),
+        by_origin={"codex": {"files": 2, "bytes": 2 << 20}},
+        population={"codex": {"files": 20, "bytes": 20 << 20}},
+    )
+    path = tmp_path / "receipt.json"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    refreshed = refresh(path)
+
+    expected = projection(
+        {"by_origin": receipt["corpus"]["by_origin"], "parameters": {"population": receipt["corpus"]["population"]}},
+        refreshed["by_source"],
+        5.0,
+    )
+    assert refreshed["projection"] == expected
+    assert "stale" not in refreshed["projection"]
+
+
+def test_event_reduction_memory_does_not_grow_with_the_log(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5678): collect every decoded event before
+    reducing and 100k writer events hold tens of MiB of dicts at once."""
+    import tracemalloc
+
+    line = json.dumps(
+        {
+            "ts": "2026-09-27T10:00:01.000000Z",
+            "event": "daemon.writer.released",
+            "actor": "a",
+            "hold_ms": 1,
+            "queued": 2,
+        }
+    )
+    with (tmp_path / "events.jsonl").open("w", encoding="utf-8") as stream:
+        stream.write(_event("00.500", "daemon.run.start") + "\n")
+        for _ in range(100_000):
+            stream.write(line + "\n")
+
+    tracemalloc.start()
+    try:
+        reduced = analyse_events(tmp_path / "events.jsonl")
+        _current, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert reduced["event_count"] == 100_001
+    assert reduced["writer"]["queue_depth_max"] == 2
+    assert peak < 8 << 20

@@ -63,12 +63,29 @@ def origin_for(relative: str) -> str:
     return "other"
 
 
+#: Directories of parser sidecars whose filesystem mtime production parsing
+#: persists (as the sidecar event's timestamp), so it is part of the input.
+_MTIME_SEMANTIC_DIRS: Final = frozenset({"tool-results", "tool-outputs"})
+
+
 @dataclass(frozen=True, slots=True)
 class CorpusFile:
     path: str
     bytes: int
     sha256: str
     origin: str
+    #: Sealed only for sidecars, whose mtime reaches the indexed output.
+    mtime_ns: int | None = None
+
+
+def _semantic_mtime_ns(relative: str, path: Path) -> int | None:
+    if not _MTIME_SEMANTIC_DIRS.intersection(relative.split("/")[:-1]):
+        return None
+    return path.stat().st_mtime_ns
+
+
+def _sidecar_mtimes(files: Iterable[CorpusFile]) -> dict[str, int]:
+    return {item.path: item.mtime_ns for item in files if item.mtime_ns is not None}
 
 
 def _sha256(path: Path) -> str:
@@ -93,7 +110,8 @@ def corpus_digest(files: Iterable[CorpusFile], parameters: dict[str, Any] | None
     """
     digest = hashlib.sha256()
     for item in sorted(files, key=lambda entry: entry.path):
-        digest.update(f"{item.path}\0{item.bytes}\0{item.sha256}\n".encode())
+        mtime = "" if item.mtime_ns is None else f"\0{item.mtime_ns}"
+        digest.update(f"{item.path}\0{item.bytes}\0{item.sha256}{mtime}\n".encode())
     if parameters is not None:
         digest.update(b"\0parameters\0")
         digest.update(json.dumps(parameters, sort_keys=True, default=str).encode())
@@ -111,7 +129,15 @@ def _hash_tree(root: Path) -> list[CorpusFile]:
             for name in names:
                 path = Path(directory) / name
                 relative = path.relative_to(root).as_posix()
-                files.append(CorpusFile(relative, path.stat().st_size, _sha256(path), origin_for(relative)))
+                files.append(
+                    CorpusFile(
+                        relative,
+                        path.stat().st_size,
+                        _sha256(path),
+                        origin_for(relative),
+                        _semantic_mtime_ns(relative, path),
+                    )
+                )
     files.sort(key=lambda entry: entry.path)
     return files
 
@@ -135,6 +161,7 @@ def seal(root: Path, *, kind: str, parameters: dict[str, Any]) -> dict[str, Any]
         "total_bytes": sum(item.bytes for item in files),
         "by_origin": dict(sorted(by_origin.items())),
         "files": [[item.path, item.bytes, item.sha256, item.origin] for item in files],
+        "sidecar_mtimes_ns": _sidecar_mtimes(files),
     }
     (root / MANIFEST_NAME).write_text(json.dumps(manifest, indent=1) + "\n", encoding="utf-8")
     (root / MANIFEST_NAME).chmod(0o600)
@@ -156,6 +183,10 @@ def _copy_private(source: Path, destination: Path) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
     destination.chmod(0o600)
+    # A sidecar's mtime is parsed into its event timestamp; a copy keeps the
+    # source's, so a sample reproduces the output its source would.
+    stat = source.stat()
+    os.utime(destination, ns=(stat.st_atime_ns, stat.st_mtime_ns))
 
 
 def load_manifest(root: Path) -> dict[str, Any]:
@@ -187,6 +218,10 @@ def verify_manifest(root: Path, manifest: dict[str, Any]) -> None:
     edited = sum(present[relative][1] != sha256 for relative, (_size, sha256) in sealed.items())
     if edited:
         raise ValueError(f"{edited} corpus file(s) changed content since sealing")
+    sealed_mtimes = manifest.get("sidecar_mtimes_ns", {})
+    current_mtimes = _sidecar_mtimes(current)
+    if retimed := sum(sealed_mtimes.get(path) != mtime for path, mtime in current_mtimes.items()):
+        raise ValueError(f"{retimed} corpus sidecar(s) changed mtime since sealing")
     if corpus_digest(current, manifest.get("parameters")) != manifest["digest"]:
         raise ValueError("corpus manifest digest does not match its file list")
     # The digest covers the file rows only; the aggregates a receipt reads
@@ -200,6 +235,7 @@ def verify_manifest(root: Path, manifest: dict[str, Any]) -> None:
         "total_bytes": sum(item.bytes for item in current),
         "by_origin": dict(sorted(by_origin.items())),
         "files": [[item.path, item.bytes, item.sha256, item.origin] for item in current],
+        "sidecar_mtimes_ns": current_mtimes,
     }
     for key, value in expected.items():
         if manifest.get(key) != value:

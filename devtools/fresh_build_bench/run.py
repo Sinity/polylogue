@@ -62,7 +62,6 @@ class RunConfig:
     label: str
     profile: bool = False
     profile_interval_s: float = 0.01
-    timeout_s: float = 6 * 3600.0
     settle_timeout_s: float = 1800.0
     stall_timeout_s: float = 900.0
     poll_s: float = 2.0
@@ -384,9 +383,16 @@ def environment(config: RunConfig) -> dict[str, Any]:
             check=True,
         ).stdout
     )
+    from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes
+    from polylogue.runtime import available_cpus
+
     return {
         "host_cpu_count": os.cpu_count(),
         "host_mem_total_kib": _meminfo_kib("MemTotal"),
+        # What the daemon (a child in this process's cgroup) sizes its worker
+        # pools and memory budgets from: affinity and cgroup quotas included.
+        "effective_cpus": available_cpus(),
+        "effective_memory_bytes": effective_physical_memory_bytes(),
         "host_mem_available_kib_at_start": _meminfo_kib("MemAvailable"),
         "load_average_at_start": os.getloadavg(),
         "kernel": platform.release(),
@@ -411,7 +417,10 @@ def candidate_identity(candidate: Path) -> dict[str, Any]:
     for name in (name for name in untracked if name):
         digest.update(b"\0untracked\0" + name.encode())
         try:
-            digest.update((candidate / name).read_bytes())
+            # Streamed: an untracked artifact may be larger than memory.
+            with (candidate / name).open("rb") as stream:
+                while chunk := stream.read(1 << 20):
+                    digest.update(chunk)
         except OSError:
             digest.update(b"\0unreadable")
     dirty = bool(diff) or any(untracked)
@@ -593,7 +602,10 @@ def _measure_and_write_receipt(
     sampler = TreeSampler(process.pid, origin=started)
     sampler.start()
     observations: list[Observation] = []
-    outcome = "timeout"
+    # Every exit from the observation loop names its own outcome; a build
+    # that keeps making observable progress runs until it settles, and one
+    # that stops moving is ``stalled`` by the progress check.
+    outcome = "interrupted"
     terminal_at: float | None = None
     promoted_at: float | None = None
     stable = 0
@@ -601,8 +613,7 @@ def _measure_and_write_receipt(
     last_progress_key: tuple[object, ...] | None = None
     last_progress_at = 0.0
     try:
-        deadline = started + config.timeout_s
-        while time.monotonic() < deadline:
+        while True:
             if interrupted:
                 outcome = "interrupted"
                 break

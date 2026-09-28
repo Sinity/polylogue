@@ -15,6 +15,7 @@ import json
 import re
 import sqlite3
 from collections import Counter, defaultdict
+from collections.abc import Iterator
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -63,46 +64,66 @@ def _percentile(values: list[float], fraction: float) -> float:
 # event log
 
 
+def _iter_events(path: Path) -> Iterator[dict[str, Any]]:
+    # A daemon that dies before configuring logging leaves no event file.
+    if not path.exists():
+        return
+    with path.open(encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(event, dict):
+                yield event
+
+
 def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str, Any]:
-    """Reduce the daemon's event log.
+    """Reduce the daemon's event log in one streaming pass.
 
     Times are seconds from ``origin_unix`` -- the driver's launch, so event
     milestones share a clock with the driver's own observations and process
-    samples -- or from ``daemon.run.start`` when no origin is given.
+    samples -- or from ``daemon.run.start`` when no origin is given. Only
+    aggregates and per-chunk timings are retained, never the events: a long
+    build logs millions of writer events.
     """
-    events: list[dict[str, Any]] = []
-    # A daemon that dies before configuring logging leaves no event file.
-    if path.exists():
-        with path.open(encoding="utf-8") as stream:
-            for line in stream:
-                try:
-                    events.append(json.loads(line))
-                except json.JSONDecodeError:
-                    continue
-    if not events:
+    start = origin_unix
+    if start is None:
+        first: float | None = None
+        for event in _iter_events(path):
+            if first is None:
+                first = _ts(event["ts"])
+            if event.get("event") == "daemon.run.start":
+                start = _ts(event["ts"])
+                break
+        start = start if start is not None else first
+    if start is None:
         return {"event_count": 0}
-    start = (
-        origin_unix
-        if origin_unix is not None
-        else next((_ts(e["ts"]) for e in events if e.get("event") == "daemon.run.start"), _ts(events[0]["ts"]))
-    )
+    origin = start
 
     def rel(event: dict[str, Any]) -> float:
-        return round(_ts(event["ts"]) - start, 3)
+        return round(_ts(event["ts"]) - origin, 3)
 
     writer: dict[str, dict[str, float]] = defaultdict(
         lambda: {"count": 0, "hold_s": 0.0, "wait_s": 0.0, "max_hold_s": 0.0}
     )
-    holds: list[tuple[float, float]] = []
-    queued: list[int] = []
-    chunks: list[dict[str, Any]] = []
+    busy_total = 0.0
+    busy_build = 0.0
+    queued_max = 0
+    queued_sum = 0
+    queued_count = 0
+    chunks: list[tuple[float, int, int, float]] = []
     pages: dict[str, dict[str, float]] = defaultdict(lambda: {"pages": 0, "files": 0, "bytes": 0, "seconds": 0.0})
     by_source: dict[str, dict[str, float]] = defaultdict(lambda: {"groups": 0, "files": 0, "seconds": 0.0})
-    source_groups: list[tuple[float, str, int, float]] = []
     problems: Counter[str] = Counter()
     milestones: dict[str, float] = {}
-    preparation: list[float] = []
-    for event in events:
+    preparation_done: float | None = None
+    event_count = 0
+    last = 0.0
+    for event in _iter_events(path):
+        event_count += 1
+        last = rel(event)
+        promoted = milestones.get("promoted_s")
         name = event.get("event", "")
         if name == "daemon.writer.released":
             actor = str(event.get("actor"))
@@ -112,19 +133,28 @@ def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str,
             entry["hold_s"] += hold
             entry["wait_s"] += float(event.get("wait_ms") or 0) / 1000
             entry["max_hold_s"] = max(entry["max_hold_s"], hold)
-            released = rel(event)
-            holds.append((released - hold, released))
-            queued.append(int(event.get("queued") or 0))
+            released = last
+            begin = released - hold
+            busy_total += hold
+            # Busy time to promotion: holds are logged in release order, so
+            # every hold before the promotion event ends by it, and one after
+            # it counts only its part before promotion.
+            end = released if promoted is None else min(released, promoted)
+            busy_build += max(0.0, end - max(begin, 0.0))
+            queued = int(event.get("queued") or 0)
+            queued_max = max(queued_max, queued)
+            queued_sum += queued
+            queued_count += 1
         elif name == "live.ingest.chunk":
             chunks.append(
-                {
-                    "t": rel(event),
-                    "files": int(event.get("files") or 0),
-                    "bytes": int(event.get("bytes") or 0),
-                    "seconds": float(event.get("duration_ms") or 0) / 1000,
-                }
+                (
+                    last,
+                    int(event.get("files") or 0),
+                    int(event.get("bytes") or 0),
+                    float(event.get("duration_ms") or 0) / 1000,
+                )
             )
-            milestones.setdefault("first_chunk_done_s", rel(event))
+            milestones.setdefault("first_chunk_done_s", last)
         elif name == "daemon.intake.page":
             entry = pages[str(event.get("component"))]
             entry["pages"] += 1
@@ -132,56 +162,46 @@ def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str,
             entry["bytes"] += int(event.get("bytes") or 0)
             entry["seconds"] += float(event.get("duration_ms") or 0) / 1000
         elif name == "live.ingest.source_group":
-            source_groups.append(
-                (
-                    rel(event),
-                    str(event.get("source_name")),
-                    int(event.get("files") or 0),
-                    float(event.get("duration_ms") or 0) / 1000,
-                )
-            )
+            # Per-origin intake rates cover the same window as the intake
+            # wall they are scaled against: groups re-offered after promotion
+            # are derived-phase passes.
+            if promoted is None or last <= promoted:
+                entry = by_source[str(event.get("source_name"))]
+                entry["groups"] += 1
+                entry["files"] += int(event.get("files") or 0)
+                entry["seconds"] += float(event.get("duration_ms") or 0) / 1000
         elif name == "daemon.cold_build.preparation":
-            preparation.append(rel(event))
+            preparation_done = last if preparation_done is None else max(preparation_done, last)
         elif name == "daemon.cold_build.generation_created":
-            milestones["generation_created_s"] = rel(event)
+            milestones["generation_created_s"] = last
         elif name == "daemon.cold_build.generation_promoted":
-            milestones["promoted_s"] = rel(event)
+            milestones["promoted_s"] = last
         if event.get("level") in {"warning", "error"}:
             problems[f"{name}:{event.get('reason')}"] += 1
-    if preparation:
-        milestones["preparation_done_s"] = max(preparation)
+    if event_count == 0:
+        return {"event_count": 0}
+    if preparation_done is not None:
+        milestones["preparation_done_s"] = preparation_done
     # Intake ends at the last chunk before promotion. Chunks after it are the
     # promoted generation's own live passes (raw retention, re-offered
     # files), which belong to the derived phase, not to intake throughput.
     intake_chunks = [
-        chunk["t"] for chunk in chunks if "promoted_s" not in milestones or chunk["t"] <= milestones["promoted_s"]
+        chunk[0] for chunk in chunks if "promoted_s" not in milestones or chunk[0] <= milestones["promoted_s"]
     ]
     if intake_chunks:
         milestones["last_chunk_done_s"] = max(intake_chunks)
     milestones["post_promotion_chunks"] = len(chunks) - len(intake_chunks)
-    # Per-origin intake rates cover the same window as the intake wall they
-    # are scaled against: groups re-offered after promotion are derived-phase
-    # passes, like the chunks above.
-    for t, source, files, seconds in source_groups:
-        if "promoted_s" in milestones and t > milestones["promoted_s"]:
-            continue
-        entry = by_source[source]
-        entry["groups"] += 1
-        entry["files"] += files
-        entry["seconds"] += seconds
-    last = rel(events[-1])
     build_end = milestones.get("promoted_s", last)
-    busy_build = sum(max(0.0, min(end, build_end) - max(begin, 0.0)) for begin, end in holds if begin < build_end)
-    busy_total = sum(end - begin for begin, end in holds)
+    chunk_seconds = [chunk[3] for chunk in chunks]
     return {
-        "event_count": len(events),
+        "event_count": event_count,
         "milestones_s": milestones,
         "writer": {
             "busy_s_to_promotion": round(busy_build, 3),
             "busy_share_to_promotion": round(busy_build / build_end, 4) if build_end > 0 else None,
             "busy_s_total": round(busy_total, 3),
-            "queue_depth_max": max(queued, default=0),
-            "queue_depth_mean": round(sum(queued) / len(queued), 3) if queued else 0.0,
+            "queue_depth_max": queued_max,
+            "queue_depth_mean": round(queued_sum / queued_count, 3) if queued_count else 0.0,
             # Lists, not objects: receipts are written with sorted keys, and
             # the order here is the ranking.
             "by_actor": [
@@ -191,11 +211,11 @@ def analyse_events(path: Path, *, origin_unix: float | None = None) -> dict[str,
         },
         "chunks": {
             "count": len(chunks),
-            "files": sum(chunk["files"] for chunk in chunks),
-            "bytes": sum(chunk["bytes"] for chunk in chunks),
-            "seconds": round(sum(chunk["seconds"] for chunk in chunks), 3),
-            "seconds_p50": round(_percentile([chunk["seconds"] for chunk in chunks], 0.5), 3),
-            "seconds_max": round(max((chunk["seconds"] for chunk in chunks), default=0.0), 3),
+            "files": sum(chunk[1] for chunk in chunks),
+            "bytes": sum(chunk[2] for chunk in chunks),
+            "seconds": round(sum(chunk_seconds), 3),
+            "seconds_p50": round(_percentile(chunk_seconds, 0.5), 3),
+            "seconds_max": round(max(chunk_seconds, default=0.0), 3),
         },
         "intake_pages_by_class": {key: {k: round(v, 3) for k, v in value.items()} for key, value in pages.items()},
         "by_source": {key: {k: round(v, 3) for k, v in value.items()} for key, value in sorted(by_source.items())},
@@ -385,15 +405,19 @@ def _tree_summary(samples: list[tuple[float, int, float, int, int, int]], build_
         return {}
     rss = [sample[1] for sample in samples]
     last = samples[-1]
-    to_end = [sample for sample in samples if build_end_s is None or sample[0] <= build_end_s]
-    cpu_to_end = to_end[-1][2] if to_end else 0.0
+    # A run that never promoted has no promotion-scoped CPU: the whole run's
+    # CPU is ``cpu_seconds_total``, never a milestone measurement.
+    to_end = [sample for sample in samples if build_end_s is not None and sample[0] <= build_end_s]
+    cpu_to_end = (to_end[-1][2] if to_end else 0.0) if build_end_s is not None else None
     return {
         "rss_peak_bytes": max(rss),
         "rss_p95_bytes": int(_percentile([float(value) for value in rss], 0.95)),
         "rss_final_bytes": rss[-1],
         "cpu_seconds_total": round(last[2], 2),
-        "cpu_seconds_to_promotion": round(cpu_to_end, 2),
-        "mean_cores_to_promotion": round(cpu_to_end / to_end[-1][0], 3) if to_end and to_end[-1][0] > 0 else None,
+        "cpu_seconds_to_promotion": round(cpu_to_end, 2) if cpu_to_end is not None else None,
+        "mean_cores_to_promotion": round(cpu_to_end / to_end[-1][0], 3)
+        if cpu_to_end is not None and to_end and to_end[-1][0] > 0
+        else None,
         "threads_max": max(sample[3] for sample in samples),
         "io_read_bytes": last[4],
         "io_write_bytes": last[5],
@@ -545,6 +569,22 @@ def thread_cpu_summary(document: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def benchmark_implementation_sha256() -> str:
+    """Identity of the driver and report code that produced a receipt.
+
+    ``--candidate`` lets the measured checkout differ from the one supplying
+    this instrumentation, so the sampler, reducer, observer and fingerprint
+    implementation are an input of their own.
+    """
+    digest = hashlib.sha256()
+    package = Path(__file__).resolve().parent
+    for path in sorted(package.glob("*.py")):
+        digest.update(path.name.encode() + b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
 def config_digest(config: Any) -> str:
     """What must match, besides the corpus, for two receipts to compare."""
     payload = {
@@ -672,6 +712,7 @@ def build_receipt(
         "outcome": outcome,
         "candidate": identity,
         "environment": environment,
+        "benchmark_implementation_sha256": benchmark_implementation_sha256(),
         "config": {
             "digest": config_digest(config),
             "argv": command[3:],
@@ -856,6 +897,8 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
         problems.append("different corpora")
     if before["config"]["digest"] != after["config"]["digest"]:
         problems.append("different run configurations (profile, overrides or budgets)")
+    if before.get("benchmark_implementation_sha256") != after.get("benchmark_implementation_sha256"):
+        problems.append("different benchmark implementation")
     # Version and GIL mode alone equate two builds of one version (PGO or
     # not); the build string and the resolved executable tell them apart.
     for key in ("python", "gil_enabled", "python_build", "python_executable"):
@@ -863,7 +906,16 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
             problems.append(f"different interpreter ({key})")
     # Host capacity and storage explain wall, CPU and throughput deltas on
     # their own; a comparison is a controlled one only on the same kind of host.
-    for key in ("machine", "host_cpu_count", "host_mem_total_kib", "work_filesystem"):
+    # The effective limits are what the daemon sizes its pools and budgets
+    # from: two runs on one host under different cgroup quotas differ.
+    for key in (
+        "machine",
+        "host_cpu_count",
+        "host_mem_total_kib",
+        "effective_cpus",
+        "effective_memory_bytes",
+        "work_filesystem",
+    ):
         if before["environment"].get(key) != after["environment"].get(key):
             problems.append(f"different host ({key})")
     for side, receipt in (("before", before), ("after", after)):
@@ -949,8 +1001,6 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     output fingerprint are kept as recorded; everything derived from the
     re-read milestones is recomputed.
     """
-    from devtools.fresh_build_bench.corpus import load_manifest
-
     receipt: dict[str, Any] = json.loads(receipt_path.read_text(encoding="utf-8"))
     work = receipt_path.parent
     events = analyse_events(work / "events.jsonl", origin_unix=receipt["started_at_unix"])
@@ -974,14 +1024,15 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
         }
     )
     _derive_dependents(receipt)
-    corpus_path = receipt["corpus"].get("path")
-    if corpus_path and Path(corpus_path, "manifest.json").exists():
-        manifest = load_manifest(Path(corpus_path))
-        receipt["projection"] = projection(
-            manifest,
-            events.get("by_source") or {},
-            (milestones.get("last_chunk_done_s") or 0) - (milestones.get("preparation_done_s") or 0) or None,
-        )
+    # The projection's inputs are sealed into the receipt itself; the
+    # corpus directory may be gone by the time a newer report refreshes it.
+    corpus = receipt["corpus"]
+    manifest = {"by_origin": corpus.get("by_origin"), "parameters": {"population": corpus.get("population")}}
+    receipt["projection"] = projection(
+        manifest,
+        events.get("by_source") or {},
+        (milestones.get("last_chunk_done_s") or 0) - (milestones.get("preparation_done_s") or 0) or None,
+    )
     # Atomic: the receipt is replaced only by a complete document.
     staging = receipt_path.with_name(receipt_path.name + ".tmp")
     staging.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")

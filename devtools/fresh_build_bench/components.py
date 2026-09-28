@@ -44,7 +44,12 @@ _PROVIDER_BY_ORIGIN = {
 
 
 def _corpus_files(
-    corpus: Path, manifest: dict[str, Any], origins: Iterable[str] | None, limit: int | None
+    corpus: Path,
+    manifest: dict[str, Any],
+    origins: Iterable[str] | None,
+    limit: int | None,
+    *,
+    sessions_only: bool,
 ) -> list[tuple[Path, str, int]]:
     verify_manifest(corpus, manifest)
     wanted = set(origins) if origins else None
@@ -61,13 +66,20 @@ def _corpus_files(
         # discover_sidecars), never parsed as its own transcript. Sending
         # one here either errors the worker or measures work production
         # never performs.
-        provider = Provider.from_string(origin)
-        recognition = recognize_source_class(provider, path)
-        if recognition is not None and recognition.source_class != "session":
-            continue
+        # The blob component keeps them: acquisition stores every retained
+        # sidecar's bytes, so dropping them would omit real blob work.
+        if sessions_only:
+            provider = Provider.from_string(origin)
+            recognition = recognize_source_class(provider, path)
+            if recognition is not None and recognition.source_class != "session":
+                continue
         files.append((path, origin, size))
     files.sort(key=lambda item: str(item[0]))
-    return files[:limit] if limit else files
+    selected = files[:limit] if limit else files
+    if not selected:
+        # A timing over no files measured no production work.
+        raise SystemExit(f"no corpus files match the requested selection (origins={sorted(wanted or ())})")
+    return selected
 
 
 def _summarise(rows: list[tuple[str, int, float]], wall: float, extra: dict[str, Any]) -> dict[str, Any]:
@@ -142,7 +154,7 @@ def bench_parse(
     from polylogue.sources.live.parse_prefetch import live_parse_path_worker
 
     manifest = load_manifest(corpus)
-    files = _corpus_files(corpus, manifest, origins, limit)
+    files = _corpus_files(corpus, manifest, origins, limit, sessions_only=True)
     shard_root = scratch / "parse-shards"
     shard_root.mkdir(parents=True, exist_ok=True)
 
@@ -191,7 +203,7 @@ def bench_blob(
     from polylogue.storage.blob_store import BlobStore
 
     manifest = load_manifest(corpus)
-    files = _corpus_files(corpus, manifest, origins, limit)
+    files = _corpus_files(corpus, manifest, origins, limit, sessions_only=False)
     store = BlobStore(scratch / "blob")
 
     def work(item: tuple[Path, str, int]) -> Callable[[], dict[str, int]]:
@@ -220,6 +232,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args(argv)
     # Blob and parse output are byte copies of (possibly private) corpus files.
+    # A sealed corpus is private transcript content; one under the checkout
+    # can be staged by accident.
+    refuse_inside_checkout(args.corpus, "--corpus")
     refuse_inside_checkout(args.scratch, "--scratch")
     if args.scratch.exists() and any(args.scratch.iterdir()):
         # A reused blob store deduplicates and skips the publication work.

@@ -76,7 +76,6 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--python", default=sys.executable)
     run.add_argument("--profile", action="store_true", help="run the in-daemon stack sampler")
     run.add_argument("--profile-interval", type=_positive_seconds, default=0.01)
-    run.add_argument("--timeout", type=float, default=6 * 3600.0)
     run.add_argument("--settle-timeout", type=float, default=1800.0)
     run.add_argument("--stall-timeout", type=float, default=900.0, help="stop when nothing observable moves")
     run.add_argument("--no-fingerprint", action="store_true")
@@ -188,7 +187,6 @@ def main(argv: list[str] | None = None) -> int:
             label=args.label,
             profile=args.profile,
             profile_interval_s=args.profile_interval,
-            timeout_s=args.timeout,
             settle_timeout_s=args.settle_timeout,
             stall_timeout_s=args.stall_timeout,
             fingerprint=not args.no_fingerprint,
