@@ -16,6 +16,7 @@ import sqlite3
 import stat
 import threading
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -1292,6 +1293,16 @@ class RawMaterializationDiscovery:
         self._held_page: tuple[str | None, tuple[str, ...]] | None = None
         self._frontier: int = 0
         self._arrivals_first = False
+        #: Sessions whose enrichment evidence just arrived: a project's
+        #: ``sessions-index.json`` names the transcripts beside it. Inspected
+        #: on the next call, after the evidence itself was admitted, so a
+        #: title curated after its transcript was written converges promptly.
+        #: A scheduling hint only: the sweep re-inspects every raw anyway, and
+        #: inspection compares each output's evidence binding with the
+        #: evidence the archive holds (install-wide history and thread state
+        #: converge through that sweep).
+        self._evidence_dependents: deque[str] = deque()
+        self._queued_dependents: set[str] = set()
 
     def _raw_frontier(self) -> int:
         """Return the durable high-water mark for admitted raw observations."""
@@ -1374,7 +1385,7 @@ class RawMaterializationDiscovery:
             if self._arrivals_first
             else (self._sweep_selected, self._arrival_selected)
         )
-        for lane in lanes:
+        for lane in (self._dependents_selected, *lanes):
             selected = lane(frame, adapter, inspected_limit)
             if selected:
                 return self._with_costs(selected)
@@ -1385,8 +1396,43 @@ class RawMaterializationDiscovery:
         self._frontier = frontier
         if not page:
             return ()
+        self._queue_evidence_dependents(page)
         statuses = adapter.inspect(frame, page)
         return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+
+    def _dependents_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
+        page: list[str] = []
+        while self._evidence_dependents and len(page) < limit:
+            raw_id = self._evidence_dependents.popleft()
+            self._queued_dependents.discard(raw_id)
+            page.append(raw_id)
+        if not page:
+            return ()
+        statuses = adapter.inspect(frame, tuple(page))
+        return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+
+    def _queue_evidence_dependents(self, arrived: Sequence[str]) -> None:
+        """Queue the transcripts a newly admitted project session index describes."""
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        source_db = self._archive_root / "source.db"
+        with open_readonly_connection(source_db, timeout=5.0) as conn:
+            placeholders = ",".join("?" for _ in arrived)
+            indexes = conn.execute(
+                f"SELECT source_path FROM raw_sessions WHERE raw_id IN ({placeholders}) "
+                "AND source_path LIKE '%/sessions-index.json'",
+                tuple(arrived),
+            ).fetchall()
+            for (index_path,) in indexes:
+                project = str(index_path).rsplit("/", 1)[0]
+                for (raw_id,) in conn.execute(
+                    "SELECT raw_id FROM raw_sessions WHERE source_path >= ? AND source_path < ? "
+                    "AND source_path LIKE '%.jsonl' ORDER BY source_path, rowid",
+                    (project + "/", project + "0"),
+                ):
+                    if raw_id not in self._queued_dependents:
+                        self._queued_dependents.add(str(raw_id))
+                        self._evidence_dependents.append(str(raw_id))
 
     def _sweep_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
         # At most one released page is skipped per call, so a stalled head

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import contextvars
+import dataclasses
 import hashlib
+import json
 import os
 import pickle
 import shutil
@@ -1007,6 +1009,110 @@ def enrichment_dependency_digest(
         else ""
     )
     return _retained_dependency_digest(assembly_digest, parser_digest)
+
+
+#: Providers whose enrichment reads session-scoped retained evidence that can
+#: arrive after the session it describes: a Claude Code project's
+#: ``sessions-index.json`` and the install's prompt history, and Codex's
+#: session index, history and projected thread-state titles. Export bundles
+#: (ChatGPT asset maps) arrive with the export they describe.
+_SESSION_EVIDENCE_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX})
+
+
+def _evidence_json(value: object) -> object:
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    raise TypeError(f"unencodable enrichment evidence: {type(value).__name__}")
+
+
+def enrichment_evidence_key(provider: Provider, sidecar_data: SidecarData, native_id: str) -> str | None:
+    """Digest the evidence ``enrich_session`` reads for exactly one session.
+
+    The projection is this session's own index entry and prompt-history rows
+    (Claude Code), or its thread name, history title and state titles (Codex),
+    so an unrelated session's evidence moving never marks this one. Canonical
+    JSON, not pickle, so a worker process and the writer compute equal keys
+    for equal evidence. ``None``: the provider has no late-arriving evidence.
+    """
+    if provider not in _SESSION_EVIDENCE_PROVIDERS or not native_id:
+        return None
+    projection: tuple[object, ...]
+    if provider is Provider.CLAUDE_CODE:
+        projection = (
+            provider.value,
+            sidecar_data.get("session_index", {}).get(native_id),
+            sidecar_data.get("history_paste_index", {}).get(native_id),
+        )
+    else:
+        projection = (
+            provider.value,
+            *(
+                cast("Mapping[str, str]", sidecar_data.get(name) or {}).get(native_id)
+                for name in ("thread_names", "history_titles", "state_titles", "retained_state_titles")
+            ),
+        )
+    encoded = json.dumps(projection, default=_evidence_json, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def stamp_enrichment_evidence(provider: Provider, sidecar_data: SidecarData, session: ParsedSession) -> ParsedSession:
+    """Carry the key of the evidence ``session`` was just enriched from."""
+    key = enrichment_evidence_key(provider, sidecar_data, session.provider_session_id.strip())
+    if key is None:
+        return session
+    return session.model_copy(update={"enrichment_evidence_key": key})
+
+
+def session_enrichment_evidence_key(
+    *,
+    provider: Provider,
+    source_path: str | None,
+    native_id: str,
+    index_conn: sqlite3.Connection | None,
+    source_conn: sqlite3.Connection | None,
+    blob_root: Path | None,
+) -> str | None:
+    """The key of the evidence the archive holds now for one stored session.
+
+    Resolved exactly as retained replay resolves its enrichment evidence, so
+    it equals the key a session enriched from that evidence carries.
+    """
+    if provider not in _SESSION_EVIDENCE_PROVIDERS or not source_path or not native_id:
+        return None
+    data = _retained_enrichment_sidecar_data(
+        provider=provider,
+        sessions=(),
+        provider_session_ids=[native_id],
+        index_conn=index_conn,
+        source_conn=source_conn,
+        blob_root=blob_root,
+        source_path=source_path,
+    )
+    return enrichment_evidence_key(provider, data, native_id)
+
+
+def record_session_enrichment_binding(
+    index_conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    carried_key: str | None,
+    current_key: str | None,
+) -> None:
+    """Bind a just-published session to the evidence it was enriched from.
+
+    Called by the writer after the session row is written, in the same
+    transaction. The session carries the key of the evidence its enrichment
+    read; it is bound only when that is still the archive's evidence. A
+    session enriched before its evidence arrived (or moved) stays unbound, so
+    inspection re-derives it on the retained route instead of certifying it.
+    """
+    if current_key is None or carried_key != current_key:
+        return
+    index_conn.execute(
+        """INSERT INTO session_enrichment_bindings (session_id, evidence_key) VALUES (?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET evidence_key = excluded.evidence_key""",
+        (session_id, current_key),
+    )
 
 
 def prepared_enrichment_dependency_state(
@@ -5232,7 +5338,7 @@ class RetainedSessionEnricher:
                 blob_root=self._blob_root,
                 source_path=self._source_path,
             )
-        return spec.enrich_session(session, self._cached)
+        return stamp_enrichment_evidence(self._provider, self._cached, spec.enrich_session(session, self._cached))
 
     def enrich_all(self, sessions: Sequence[ParsedSession]) -> list[ParsedSession]:
         return [self(session) for session in sessions]
@@ -5331,7 +5437,10 @@ def _replay_safe_enrich_sessions(
     )
     if evidence_observer is not None:
         evidence_observer(sidecar_data)
-    return [spec.enrich_session(session, sidecar_data) for session in sessions]
+    return [
+        stamp_enrichment_evidence(provider, sidecar_data, spec.enrich_session(session, sidecar_data))
+        for session in sessions
+    ]
 
 
 def _retained_enrichment_sidecar_data(

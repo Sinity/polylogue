@@ -847,3 +847,54 @@ def test_codex_state_source_scope_is_lexical_not_process_dependent(
     link = tmp_path / "linked-install"
     link.symlink_to(real, target_is_directory=True)
     assert codex_state_source_scope(str(link / "sessions" / "rollout.jsonl")) == str(link)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state_first", [True, False], ids=["state-first", "rollout-first"])
+async def test_codex_state_title_does_not_depend_on_admission_order(tmp_path: Path, state_first: bool) -> None:
+    """A thread-state export admitted after its rollout still titles it.
+
+    A rollout written before ``state_5.sqlite`` is enriched without the
+    projected thread title. Its evidence binding then differs from the
+    evidence the archive holds once the state export is projected, so the
+    canonical raw-observation convergence re-derives it on the retained route
+    and both orders store the same row.
+
+    Anti-vacuity: make ``RawObservationDerivation._enrichment_evidence_moved``
+    return ``False`` and the rollout-first order keeps the first-prompt title.
+    """
+    from polylogue.operations.raw_observation_derivation import converge_raw_observations
+
+    install = tmp_path / "codex-home"
+    sessions = install / "sessions"
+    sessions.mkdir(parents=True)
+    rollout_path = sessions / f"rollout-2026-07-20T10-00-00-{_THREAD_ID}.jsonl"
+    _write_codex_rollout(rollout_path)
+    state_path = install / "state_5.sqlite"
+    _write_state_5_sqlite(state_path)
+
+    archive_root = tmp_path / "archive"
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    processor = LiveBatchProcessor(
+        archive,
+        (
+            WatchSource(name="codex", root=sessions),
+            WatchSource(name="codex-state", root=install, suffixes=(".sqlite", ".db")),
+        ),
+        cursor=CursorStore(archive_root / "index.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    try:
+        for path in (state_path, rollout_path) if state_first else (rollout_path, state_path):
+            metrics = await processor.ingest_files([path], emit_event=False)
+            assert metrics.failed_file_count == 0
+    finally:
+        await archive.close()
+    for _attempt in range(3):
+        converge_raw_observations(archive_root, source_roots=(install,), limit=64)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        rows = conn.execute("SELECT session_id, title FROM sessions").fetchall()
+        bound = conn.execute("SELECT session_id FROM session_enrichment_bindings").fetchall()
+    assert rows == [(_CODEX_SESSION_ID, "Synthetic curated title")]
+    assert bound == [(_CODEX_SESSION_ID,)]

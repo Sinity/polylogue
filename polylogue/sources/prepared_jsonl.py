@@ -555,6 +555,7 @@ def _append_artifact_session(store: SqliteMessageStore, ordinal: int, session: P
         attachments.extend(session.attachments)
     metadata = session.model_dump(mode="json", exclude={"messages", "session_events", "attachments"})
     metadata["content_hash"] = session.content_hash
+    metadata["enrichment_evidence_key"] = session.enrichment_evidence_key
     metadata["unit_accounting"] = (
         session.unit_accounting.model_dump(mode="json") if session.unit_accounting is not None else None
     )

@@ -504,3 +504,91 @@ def test_unpublishable_retained_carrier_falls_back_to_the_writer_parse(
         retained_preparations_by_raw_id={"older": stale},  # type: ignore[dict-item]
     )
     assert parsed == {"older": replayed}
+
+
+def _converge_to_fixpoint(archive_root: Path, root: Path) -> None:
+    """Run the canonical raw-observation convergence until nothing is pending."""
+    from polylogue.daemon.derivation import Outcome
+    from polylogue.operations.raw_observation_derivation import converge_raw_observations
+
+    report = None
+    for _attempt in range(3):
+        report = converge_raw_observations(archive_root, source_roots=(root,), limit=64)
+    assert report is not None
+    unsettled = [outcome for outcome in report.outcomes if outcome.outcome is not Outcome.DONE]
+    assert not unsettled, unsettled
+
+
+def _enrichment_bindings(archive_root: Path) -> dict[str, str]:
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        return {str(row[0]): str(row[1]) for row in conn.execute("SELECT * FROM session_enrichment_bindings")}
+
+
+@pytest.mark.parametrize(
+    "groups",
+    [
+        pytest.param((("index", "transcript"),), id="index-first-one-batch"),
+        pytest.param((("transcript", "index"),), id="transcript-first-one-batch"),
+        pytest.param((("transcript",), ("index",)), id="transcript-batch-then-index-batch"),
+        pytest.param((("index",), ("transcript",)), id="index-batch-then-transcript-batch"),
+    ],
+)
+def test_claude_code_rows_do_not_depend_on_evidence_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, groups: tuple[tuple[str, ...], ...]
+) -> None:
+    """The same bytes, in any admission order, converge to the same session row.
+
+    The reference ingests the index before the transcript. The ordering hint
+    (``_enrichment_evidence_first``) is disabled here, so a transcript written
+    before its index is enriched without it; only the evidence binding makes
+    the retained route re-derive it once the index is admitted.
+
+    Anti-vacuity: make ``RawObservationDerivation._enrichment_evidence_moved``
+    return ``False`` and the transcript-before-index orders keep the heuristic
+    ``"prompt 0"`` title and a different content hash.
+    """
+    project, transcript, index_path = _claude_project(tmp_path / "live")
+    by_name = {"index": index_path, "transcript": transcript}
+
+    reference_root = tmp_path / "reference"
+    _claude_ingest(reference_root, project, [index_path, transcript])
+    _converge_to_fixpoint(reference_root, project.parent)
+    reference = _session_rows(reference_root)
+    assert [row[1] for row in reference] == ["Curated 0"]
+
+    monkeypatch.setattr("polylogue.sources.live.batch._enrichment_evidence_first", lambda paths, _provider: paths)
+    archive_root = tmp_path / "permuted"
+    for group in groups:
+        _claude_ingest(archive_root, project, [by_name[name] for name in group])
+    _converge_to_fixpoint(archive_root, project.parent)
+    assert _session_rows(archive_root) == reference
+    assert set(_enrichment_bindings(archive_root)) == {str(row[0]) for row in reference}
+
+
+def test_a_later_index_revision_re_derives_the_titled_session(tmp_path: Path) -> None:
+    """An index rewritten after its transcript re-derives that session.
+
+    The binding recorded with the first index no longer matches the retained
+    evidence once the renamed index is admitted, so inspection re-derives the
+    session through the retained route.
+
+    Anti-vacuity: make ``_enrichment_evidence_moved`` return ``False`` and the
+    stored title stays ``"Curated 0"`` after the rename.
+    """
+    project, transcript, index_path = _claude_project(tmp_path / "live")
+    archive_root = tmp_path / "archive"
+    _claude_ingest(archive_root, project, [index_path, transcript])
+    _converge_to_fixpoint(archive_root, project.parent)
+    before = _enrichment_bindings(archive_root)
+    assert [row[1] for row in _session_rows(archive_root)] == ["Curated 0"]
+
+    document = json.loads(index_path.read_text(encoding="utf-8"))
+    document["entries"][0]["summary"] = "Renamed later"
+    index_path.write_text(json.dumps(document), encoding="utf-8")
+    _claude_ingest(archive_root, project, [index_path])
+    _converge_to_fixpoint(archive_root, project.parent)
+
+    assert [row[1] for row in _session_rows(archive_root)] == ["Renamed later"]
+    after = _enrichment_bindings(archive_root)
+    assert set(after) == set(before)
+    assert after != before

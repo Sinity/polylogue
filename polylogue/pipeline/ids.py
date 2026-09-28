@@ -136,6 +136,7 @@ _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
     },
     "ParsedSession": {
         "content_hash": "parse-side validated identity carrier, not semantic session content",
+        "enrichment_evidence_key": "binding to the retained evidence enrichment read, not session content",
         "provider_session_aliases": "parser-derived alternate session identifiers are retained as lookup metadata",
         "created_at_provenance": "timestamp authority provenance is independent metadata",
         "updated_at_provenance": "timestamp authority provenance is independent metadata",

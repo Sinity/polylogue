@@ -391,6 +391,39 @@ def _reissue_accepted_head_reparse_receipt(
     )
 
 
+def _bind_retained_enrichment(
+    store: RawRevisionGovernanceHost,
+    session: ParsedSession,
+    *,
+    session_id: str,
+    raw_id: str,
+) -> None:
+    """Bind a retained write to its enrichment evidence, if still current."""
+    from polylogue.sources.revision_backfill import (
+        record_session_enrichment_binding,
+        session_enrichment_evidence_key,
+    )
+
+    source_conn = store._ensure_source_conn()
+    row = source_conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+    native = store._conn.execute("SELECT native_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    if row is None or native is None:
+        return
+    record_session_enrichment_binding(
+        store._conn,
+        session_id=session_id,
+        carried_key=session.enrichment_evidence_key,
+        current_key=session_enrichment_evidence_key(
+            provider=session.source_name,
+            source_path=str(row[0]) if row[0] is not None else None,
+            native_id=str(native[0]),
+            index_conn=store._conn,
+            source_conn=source_conn,
+            blob_root=Path(store.archive_root) / "blob",
+        ),
+    )
+
+
 def _write_parsed_precedence_result(
     store: RawRevisionGovernanceHost,
     session: ParsedSession,
@@ -484,6 +517,8 @@ def _write_parsed_precedence_result(
                 prepared_write=prepared_write,
                 write_outcome=writer_outcomes,
             )
+            if not (writer_outcomes and writer_outcomes[-1].suppression_skipped):
+                _bind_retained_enrichment(store, session, session_id=session_id, raw_id=raw_id)
         except BaseException:
             if commits_transaction:
                 store._conn.rollback()
@@ -607,6 +642,10 @@ def _write_parsed_precedence_result(
             )
             raw_link_changed = bool(cursor.rowcount)
         fts_repaired = converge_fts_partition_sync(store._conn, session_id)
+        # Unchanged content enriched against current evidence is still an
+        # accepted derivation from that evidence; bind it, or an evidence
+        # move that happens not to change the output re-derives forever.
+        _bind_retained_enrichment(store, session, session_id=session_id, raw_id=raw_id)
         if manage_transaction:
             store._conn.commit()
         counts = store._skipped_counts(session)
@@ -3623,6 +3662,20 @@ def apply_raw_revision_replay(
             "UPDATE sessions SET content_hash = ? WHERE session_id = ?",
             (aggregate_content_hash, session_id),
         )
+        # The chain's chunks were each enriched; the composed aggregate is
+        # bound only when every chunk read the same evidence.
+        chain_keys = {
+            parsed_by_raw_id[raw_id].enrichment_evidence_key
+            for raw_id in plan.accepted_raw_ids
+            if raw_id in parsed_by_raw_id
+        }
+        if len(chain_keys) == 1:
+            _bind_retained_enrichment(
+                store,
+                aggregate_sessions[0].model_copy(update={"enrichment_evidence_key": next(iter(chain_keys))}),
+                session_id=session_id,
+                raw_id=plan.accepted_raw_ids[-1],
+            )
         if not bulk_build and not defer_fts:
             repair_message_fts_index_sync(store._conn, [session_id], record_exact_snapshot=False)
         assert_session_fts_exact_sync(
