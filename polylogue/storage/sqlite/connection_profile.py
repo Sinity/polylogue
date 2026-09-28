@@ -919,7 +919,7 @@ def _attach_sibling_tiers(conn: sqlite3.Connection) -> None:
                     _assert_schema_supported(sibling_conn, sibling, tier)
                 finally:
                     sibling_conn.close()
-            conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (str(sibling),))
+            attach_database(conn, sibling, alias=schema_name)
 
 
 def _archive_tier_for_path(path: str | Path) -> ArchiveTier | None:
@@ -1307,6 +1307,22 @@ def attach_readonly_database(
         conn.execute(f"ATTACH DATABASE ? AS {alias}", (uri,))
     finally:
         conn.set_authorizer(_authorize_read_operation)
+
+
+def attach_database(conn: sqlite3.Connection, path: str | Path, *, alias: str) -> None:
+    """Attach ``path`` as ``alias`` with the connection's own access mode.
+
+    A query-only reader carries the read authorizer, which denies a plain
+    parameterized ATTACH, so its attachment goes through
+    :func:`attach_readonly_database` and is opened read-only. Any other
+    connection attaches the file directly.
+    """
+    if conn.execute("PRAGMA query_only").fetchone()[0] == 1:
+        attach_readonly_database(conn, path, alias=alias)
+        return
+    if re.fullmatch(r"[A-Za-z_][A-Za-z_0-9]*", alias) is None:
+        raise ValueError(f"invalid SQLite attachment alias: {alias!r}")
+    conn.execute(f"ATTACH DATABASE ? AS {alias}", (str(path),))
 
 
 def _authorize_read_temp_operation(
@@ -1945,6 +1961,7 @@ def connection_context(path: str | Path, *, timeout: float = DB_TIMEOUT) -> Iter
 
 
 __all__ = [
+    "attach_database",
     "DB_TIMEOUT",
     "DEFAULT_MEMORY_BUDGET_BYTES",
     "BOUNDED_REPAIR_CACHE_SIZE_KIB",

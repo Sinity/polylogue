@@ -160,19 +160,27 @@ async function evaluateJson(client, expression) {
   return result.result?.value;
 }
 
-async function waitForExtensionWorker(expectedName, timeoutMs) {
+// Chrome derives an unpacked extension's id from its absolute path (or from the
+// manifest `key` when one is declared): the first 16 bytes of the SHA-256,
+// hex digits mapped onto a-p. Matching on that id, not on the manifest name,
+// binds the proof to the extension just loaded rather than to a same-named
+// extension loaded earlier from another checkout.
+function unpackedExtensionId(extensionRoot, manifest) {
+  const material = manifest.key ? Buffer.from(manifest.key, "base64") : Buffer.from(path.resolve(extensionRoot), "utf8");
+  const digest = createHash("sha256").update(material).digest("hex").slice(0, 32);
+  return [...digest].map((digit) => String.fromCharCode("a".charCodeAt(0) + Number.parseInt(digit, 16))).join("");
+}
+
+async function waitForExtensionWorker(extensionId, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
+  const prefix = `chrome-extension://${extensionId}/`;
   while (Date.now() < deadline) {
     const targets = await waitJson(`http://127.0.0.1:${_CDP_PORT}/json/list`, Math.min(timeoutMs, 2000));
-    for (const target of targets.filter((item) => item.type === "service_worker" && item.url?.startsWith("chrome-extension://"))) {
-      const client = await connectCdp(target.webSocketDebuggerUrl);
-      const name = await evaluateJson(client, "chrome.runtime.getManifest().name").catch(() => null);
-      if (name === expectedName) return client;
-      client.close();
-    }
+    const target = targets.find((item) => item.type === "service_worker" && item.url?.startsWith(prefix));
+    if (target) return connectCdp(target.webSocketDebuggerUrl);
     await sleep(250);
   }
-  throw new Error("Polylogue extension service worker was not found in shared Chrome");
+  throw new Error(`the extension just loaded (${extensionId}) has no service worker in shared Chrome`);
 }
 
 async function receiverConfiguration(workerClient) {
@@ -265,13 +273,19 @@ async function closeProofTargets(browserClient, targetIds) {
 let activeBrowserClient = null;
 let createdTargetIds = [];
 let shutdownRequested = false;
+// Set while the operator's receiver settings are replaced by the proof's, so a
+// signal restores them before exiting instead of leaving the shared extension
+// pointed at a receiver that is about to shut down.
+let pendingReceiverRestore = null;
 
 function installShutdownCleanup() {
   for (const signal of ["SIGINT", "SIGTERM"]) {
     process.once(signal, () => {
       if (shutdownRequested) return;
       shutdownRequested = true;
-      Promise.resolve(activeBrowserClient && closeProofTargets(activeBrowserClient, createdTargetIds))
+      Promise.resolve(pendingReceiverRestore && pendingReceiverRestore())
+        .catch(() => undefined)
+        .then(() => activeBrowserClient && closeProofTargets(activeBrowserClient, createdTargetIds))
         .catch(() => undefined)
         .finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
     });
@@ -301,8 +315,11 @@ async function runLiveProviderProof() {
     await runChromeControl(["load-extension", "--path", extensionRoot], Math.min(_CONTROL_TIMEOUT_MS, remaining("extension load")));
     const version = await waitJson(`http://127.0.0.1:${_CDP_PORT}/json/version`, Math.min(startupTimeoutMs, remaining("shared Chrome CDP")));
     activeBrowserClient = await connectCdp(version.webSocketDebuggerUrl);
-    workerClient = await waitForExtensionWorker(manifest.name, Math.min(startupTimeoutMs, remaining("extension startup")));
+    workerClient = await waitForExtensionWorker(unpackedExtensionId(extensionRoot, manifest), Math.min(startupTimeoutMs, remaining("extension startup")));
     previousReceiverConfiguration = await receiverConfiguration(workerClient);
+    const restoreClient = workerClient;
+    const saved = previousReceiverConfiguration;
+    pendingReceiverRestore = () => restoreReceiverConfiguration(restoreClient, saved);
     await configureReceiver(workerClient, receiverBaseUrl.replace(/\/+$/, ""), receiverToken);
     const proofTargets = [];
     for (const provider of selected) {
@@ -315,6 +332,7 @@ async function runLiveProviderProof() {
     return { ok: Object.values(summary).every((item) => item.ok === true), providers: summary, privacy_posture: "shared-Chrome output redacts URLs and session ids and omits transcript text" };
   } finally {
     if (workerClient && previousReceiverConfiguration) await restoreReceiverConfiguration(workerClient, previousReceiverConfiguration).catch(() => undefined);
+    pendingReceiverRestore = null;
     if (activeBrowserClient) await closeProofTargets(activeBrowserClient, createdTargetIds);
     if (workerClient) workerClient.close();
     if (activeBrowserClient) activeBrowserClient.close();

@@ -2,7 +2,7 @@
 
 Ports the claim discipline that used to live only in the archived devloop
 status script (``.agent/archive/devloop-2026-07/scripts/devloop-status`` —
-frozen evidence, never resurrected or executed live; see repo ``CLAUDE.md``)
+frozen evidence, never resurrected or executed live)
 into the product's own ``polylogue ops status`` surface (polylogue-avg). That
 script gated four distinct claims behind four distinct signals:
 

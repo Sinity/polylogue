@@ -48,8 +48,12 @@ def _patch_healthy_collectors(
         archive_schema_ready=True,
         present_tiers=["source", "index", "embeddings", "user", "audit", "ops"],
     )
+    # Measured and converged: an empty archive (zero raw artifacts) is
+    # ``unmeasured``, never ready (#5491), so "healthy" needs a denominator.
     healthy_raw = status_module.RawMaterializationReadiness(
         available=True,
+        raw_artifact_count=1,
+        materialized_raw_artifact_count=1,
         raw_authority_parser_census={"available": True},
     )
     frontier = status_module.RawFrontierIntegrity(available=True, overall_status="healthy")

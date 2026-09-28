@@ -2428,6 +2428,7 @@ def _codex_spec() -> OriginSpec:
                         "threads",
                         "thread_spawn_edges",
                         "thread_artifacts",
+                        "thread_attachments",
                         "thread_dynamic_tools",
                         "thread_sections",
                         "projects",
@@ -2449,6 +2450,11 @@ def _codex_spec() -> OriginSpec:
                             "thread_artifacts",
                             "retained-for-later-consumption",
                             "Artifact identity and payload are thread evidence with no typed projection yet.",
+                        ),
+                        DatabaseTableRule(
+                            "thread_attachments",
+                            "retained-for-later-consumption",
+                            "Attachment identity and payload are thread evidence with no typed projection yet.",
                         ),
                         DatabaseTableRule(
                             "thread_dynamic_tools",

@@ -279,3 +279,28 @@ def test_fast_walk_still_names_the_path_of_a_refused_value() -> None:
     with pytest.raises(UnhashablePayloadValueError) as caught:
         _normalize_nested_for_hash({"outer": {"inner": [1, {"leaf": object()}]}})
     assert "payload.outer.inner[].leaf" in str(caught.value)
+
+
+def test_decimals_beyond_float_precision_keep_distinct_identities() -> None:
+    """Two decimals a float cannot tell apart must not hash alike.
+
+    Anti-vacuity: lower every ``Decimal`` through ``float`` again and both
+    values become ``9007199254740992.0``, so the payloads compare equal.
+    """
+    low = _normalize_nested_for_hash({"k": Decimal("9007199254740992")})
+    high = _normalize_nested_for_hash({"k": Decimal("9007199254740993")})
+    assert low != high
+    assert hash_payload(low) != hash_payload(high)
+    # Nor may the exact decimal hash like the equal string.
+    assert hash_payload(high) != hash_payload(_normalize_nested_for_hash({"k": "9007199254740993"}))
+
+
+@pytest.mark.parametrize("key", ["$decimal", "$$decimal"])
+def test_a_mapping_cannot_construct_the_exact_decimal_tag(key: str) -> None:
+    """Anti-vacuity: stop escaping the reserved key and ``{"$decimal": ...}`` hashes like the Decimal."""
+    exact = hash_payload(_normalize_nested_for_hash({"k": Decimal("9007199254740993")}))
+    mapping = hash_payload(_normalize_nested_for_hash({"k": {key: "9007199254740993"}}))
+    assert exact != mapping
+    assert hash_payload(_normalize_nested_for_hash({key: 1})) != hash_payload(
+        _normalize_nested_for_hash({"$" + key: 1})
+    )

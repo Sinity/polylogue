@@ -102,6 +102,11 @@ def parsed_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
         language = block.get("language")
         metadata_out: dict[str, object] = {}
         for key, value in metadata.items():
+            # Thought signatures are provider attestations re-issued on every
+            # replay; like Claude's thinking `signature` they stay out of the
+            # hashed block payload (they travel as session-event evidence).
+            if key in _THOUGHT_SIGNATURE_KEYS:
+                continue
             metadata_out[key] = value
         if isinstance(language, str) and language:
             metadata_out.setdefault("language", language)
@@ -150,7 +155,8 @@ def parsed_blocks_from_meta(blocks: object) -> list[ParsedContentBlock]:
 # messages separately emit) -- are DELIBERATELY DROPPED here: no field in
 # them is not already available in typed form elsewhere. Re-audit if a
 # future corpus pass finds a divergent value in one of those wrapper dicts.
-_GEMINI_THINKING_EVIDENCE_KEYS = frozenset({"thinkingBudget", "thoughtSignatures"})
+_GEMINI_THINKING_EVIDENCE_KEYS = frozenset({"thinkingBudget", "thoughtSignatures", "thoughtSignature"})
+_THOUGHT_SIGNATURE_KEYS = frozenset({"thoughtSignatures", "thoughtSignature"})
 
 
 def session_events_from_meta_blocks(
@@ -162,17 +168,18 @@ def session_events_from_meta_blocks(
     """Project Gemini reasoning-continuity evidence dropped by ``parsed_blocks_from_meta``.
 
     One event per THINKING block whose metadata carries thinking-budget or
-    thought-signature evidence; everything else stays block-scoped-only (see
-    the disposition note above ``parsed_blocks_from_meta``).
+    thought-signature evidence, and one per other block carrying a thought
+    signature: ``parsed_blocks_from_meta`` strips signatures from every block
+    type, so every stripped signature must land here. Everything else stays
+    block-scoped-only (see the disposition note above
+    ``parsed_blocks_from_meta``).
     """
 
     events: list[ParsedSessionEvent] = []
     for block_index, block in enumerate(json_document_list(blocks)):
-        block_type = block.get("type")
-        if block_type != "thinking":
-            continue
+        evidence_keys = _GEMINI_THINKING_EVIDENCE_KEYS if block.get("type") == "thinking" else _THOUGHT_SIGNATURE_KEYS
         metadata = json_document(block.get("metadata"))
-        evidence = {key: value for key, value in metadata.items() if key in _GEMINI_THINKING_EVIDENCE_KEYS}
+        evidence = {key: value for key, value in metadata.items() if key in evidence_keys}
         if not evidence:
             continue
         events.append(

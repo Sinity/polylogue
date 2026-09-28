@@ -13,7 +13,7 @@ import errno
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -525,3 +525,207 @@ async def test_a_raw_fault_from_the_publication_flush_discards_staged_blobs(
     finally:
         watcher.stop()
         await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_degraded_daemon_admits_nothing_and_reads_no_authority(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production intake route short-circuits a structurally degraded daemon.
+
+    Anti-vacuity: drop the degraded check from ``FileIntakeAdapter.discover``
+    and degraded discovery returns a page; drop it from ``admit_page`` and the
+    page reaches ``require_cursor_authority`` (which reads the archive's
+    existence journals) and cursor initialization.
+    """
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    _archive, watcher, _source_path = storage_env
+
+    def authority_must_not_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("a degraded daemon must not run the source-selection gate")
+
+    monkeypatch.setattr(watcher._batch_processor, "require_cursor_authority", authority_must_not_run)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=Path(watcher._polylogue.archive_root),
+            watcher=watcher,
+            sources=watcher._sources,
+        ),
+        watcher._sources[0],
+    )
+    # A page discovered while healthy, then admitted after degradation.
+    page = await adapter.discover(limit=8)
+    assert page
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="v12 vs v9"))
+    try:
+        # Discovery reads the cursor tier; degraded, it returns no page at all.
+        assert list(await adapter.discover(limit=8)) == []
+        outcomes = dict(await adapter.admit_page(page))
+        # The page stays unattempted: no failed-attempt cooldown after recovery.
+        assert not adapter._fresh_attempted_paths
+    finally:
+        clear_degraded()
+
+    assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
+    assert all("degraded" in (result.reason or "") for result in outcomes.values())
+    # No admission work happened, so none is charged to the class deficit.
+    assert {result.actual_cost for result in outcomes.values()} == {0}
+
+
+@pytest.mark.asyncio
+async def test_degraded_admission_keeps_a_due_retry_page_for_re_offer(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+) -> None:
+    """Anti-vacuity: leave ``_retry_page_pending`` set on the degraded return and
+    the next discovery rotates ``_retry_skip_after`` past the whole page, so its
+    unplanned tail waits for the durable retry sweep to wrap."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    _archive, watcher, source_path = storage_env
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=Path(watcher._polylogue.archive_root),
+            watcher=watcher,
+            sources=watcher._sources,
+        ),
+        watcher._sources[0],
+    )
+    tail = source_path.with_name("tail.jsonl")
+    adapter._retry_page = True
+    adapter._retry_page_pending = True
+    adapter._retry_page_paths = (source_path, tail)
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="v12 vs v9"))
+    try:
+        await adapter.admit_page(())
+    finally:
+        clear_degraded()
+
+    assert adapter._retry_page_pending is False
+    assert not adapter._retry_page_paths
+    assert adapter._retry_skip_after is None
+
+
+@pytest.mark.asyncio
+async def test_degraded_admission_restores_due_local_retries(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+) -> None:
+    """Anti-vacuity: keep the offer's pushed-forward deadline and the carrier
+    reports a cooldown after recovery although nothing was attempted."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    _archive, watcher, source_path = storage_env
+    clock = {"now": 100.0}
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=Path(watcher._polylogue.archive_root),
+            watcher=watcher,
+            sources=watcher._sources,
+        ),
+        watcher._sources[0],
+        clock=lambda: clock["now"],
+    )
+    adapter._fresh_retry_debt[source_path] = 105.0  # pushed forward by the offer
+    adapter._retry_page = True
+    adapter._retry_page_pending = True
+    adapter._local_retry_page = True
+    adapter._retry_page_paths = (source_path,)
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="v12 vs v9"))
+    try:
+        await adapter.admit_page(())
+    finally:
+        clear_degraded()
+
+    assert adapter._fresh_retry_debt[source_path] == 100.0
+
+
+@pytest.mark.asyncio
+async def test_degradation_during_admission_marks_items_unattempted(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Degradation after the entry check still reports the page unattempted.
+
+    Anti-vacuity: drop ``unattempted=True`` from the batch-metrics branches of
+    ``admit_page`` and the dispatcher counts these items as failed attempts.
+    """
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    _archive, watcher, _source_path = storage_env
+    real_ingest = watcher._ingest_files
+
+    async def degrade_then_ingest(*args: Any, **kwargs: Any) -> Any:
+        set_degraded(DegradedReason(code="database_layout_mismatch", message="structural error"))
+        return await real_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(watcher, "_ingest_files", degrade_then_ingest)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=Path(watcher._polylogue.archive_root),
+            watcher=watcher,
+            sources=watcher._sources,
+        ),
+        watcher._sources[0],
+    )
+    page = await adapter.discover(limit=8)
+    # Offer the page as a durable retry page so the retry position would move.
+    adapter._retry_page = True
+    adapter._retry_page_paths = tuple(Path(cast(Any, item.payload)) for item in page)
+    retry_after_before = adapter._retry_after
+    try:
+        outcomes = dict(await adapter.admit_page(page))
+    finally:
+        clear_degraded()
+    # Nothing was attempted, so the retry position does not advance.
+    assert adapter._retry_after == retry_after_before
+
+    assert outcomes
+    assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
+    assert all(result.unattempted and result.actual_cost == 0 for result in outcomes.values())
+
+
+@pytest.mark.asyncio
+async def test_degradation_before_an_all_empty_page_still_marks_it_unattempted(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A degraded skip of zero-byte files refuses no bytes but attempted nothing.
+
+    Anti-vacuity: derive the degraded skip from ``refused_bytes_by_reason``
+    again and this page, whose offered bytes total zero, is reported attempted:
+    ``unattempted`` is false and the retry position advances.
+    """
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    _archive, watcher, source_path = storage_env
+    source_path.write_bytes(b"")
+    real_ingest = watcher._ingest_files
+
+    async def degrade_then_ingest(*args: Any, **kwargs: Any) -> Any:
+        set_degraded(DegradedReason(code="database_layout_mismatch", message="structural error"))
+        return await real_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(watcher, "_ingest_files", degrade_then_ingest)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=Path(watcher._polylogue.archive_root),
+            watcher=watcher,
+            sources=watcher._sources,
+        ),
+        watcher._sources[0],
+    )
+    page = await adapter.discover(limit=8)
+    assert page
+    assert all(Path(cast(Any, item.payload)).stat().st_size == 0 for item in page)
+    adapter._retry_page = True
+    adapter._retry_page_paths = tuple(Path(cast(Any, item.payload)) for item in page)
+    retry_after_before = adapter._retry_after
+    try:
+        outcomes = dict(await adapter.admit_page(page))
+    finally:
+        clear_degraded()
+
+    assert adapter._retry_after == retry_after_before
+    assert outcomes
+    assert all(result.unattempted and result.actual_cost == 0 for result in outcomes.values())
