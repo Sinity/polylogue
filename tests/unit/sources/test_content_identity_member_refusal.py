@@ -221,3 +221,31 @@ def test_a_refused_preserved_member_leaves_no_queued_publication(
         )
     assert not publisher.has_pending
     assert not any(path.is_file() for path in (tmp_path / "blob").rglob("*"))
+
+
+def test_a_refused_grouped_zip_member_leaves_no_queued_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: skip the refused grouped member without discarding its
+    queued blob and the next flush publishes bytes nothing references."""
+    from polylogue.sources.decoder_zip import process_zip
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
+
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 64)
+    zip_path = tmp_path / "codex.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("rollout.jsonl", b'{"n": 1.' + b"2" * 200 + b"}\n")
+    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
+    list(
+        process_zip(
+            zip_path,
+            provider_hint=Provider.CODEX,
+            should_group=True,
+            file_mtime=None,
+            capture_raw=True,
+            cursor_state={},
+            blob_store=publisher,
+        )
+    )
+    assert not publisher.has_pending
+    assert not any(path.is_file() for path in (tmp_path / "blob").rglob("*"))

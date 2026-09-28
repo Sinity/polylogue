@@ -276,16 +276,17 @@ class _SpilledStrings:
         #: and a non-JSON member takes its byte identity instead. A refused
         #: key refuses the document; a refused value refuses it only if it
         #: survives (a later duplicate key can replace it), which
-        #: ``surviving_refusal`` records.
-        self.key_refusal: ContentIdentityRefusal | None = None
-        self.value_refusal: ContentIdentityRefusal | None = None
+        #: ``surviving_refusal`` records. Each refusal travels with the value
+        #: it refused, so the one raised is the one that survived.
         self.value_refusals = 0
-        self.surviving_refusal = False
+        self.last_value_refusal: ContentIdentityRefusal | None = None
+        self.surviving_refusal: ContentIdentityRefusal | None = None
+        self._refused_keys: dict[str, ContentIdentityRefusal] = {}
         #: Complete number tokens seen by the token reader, and the ordinals
         #: (counted from 1) of those past the limit: each is one ``number``
         #: event, so the identity stream can tell which value was refused.
         self.number_tokens = 0
-        self.refused_numbers: set[int] = set()
+        self.refused_numbers: dict[int, ContentIdentityRefusal] = {}
 
     def add(self, handle: IO[bytes]) -> bytes:
         marker = f"polylogue-spilled-string-{self._nonce}-{len(self._files)}"
@@ -298,25 +299,23 @@ class _SpilledStrings:
         self._keys[marker] = key
         return marker.encode("ascii")
 
-    def is_refused_key(self, key: str) -> bool:
-        return key.startswith(f"polylogue-refused-key-{self._nonce}-")
-
     def take_key(self, marker: str) -> str:
         return self._keys.pop(marker, marker) if self._keys else marker
 
-    def refuse_key(self, size: int) -> None:
-        if self.key_refusal is None:
-            self.key_refusal = ContentIdentityRefusal("object key", size)
-
-    def refuse_value(self, token: str, size: int) -> None:
-        self.value_refusals += 1
-        if self.value_refusal is None:
-            self.value_refusal = ContentIdentityRefusal(token, size)
-
-    def placeholder_key(self) -> bytes:
-        """A unique stand-in for a refused key, keeping the document parseable."""
+    def refuse_key(self, size: int) -> bytes:
+        """A placeholder key standing in for a refused key, carrying its refusal."""
         self._placeholders += 1
-        return f"polylogue-refused-key-{self._nonce}-{self._placeholders}".encode("ascii")
+        marker = f"polylogue-refused-key-{self._nonce}-{self._placeholders}"
+        self._refused_keys[marker] = ContentIdentityRefusal("object key", size)
+        return marker.encode("ascii")
+
+    def refused_key(self, key: str) -> ContentIdentityRefusal | None:
+        return self._refused_keys.get(key) if self._refused_keys else None
+
+    def refuse_value(self, token: str, size: int) -> ContentIdentityRefusal:
+        self.value_refusals += 1
+        self.last_value_refusal = ContentIdentityRefusal(token, size)
+        return self.last_value_refusal
 
     def take(self, marker: object) -> IO[bytes] | None:
         if not isinstance(marker, str) or not self._files:
@@ -328,10 +327,10 @@ class _SpilledStrings:
             handle.close()
         self._files.clear()
         self._keys.clear()
-        self.key_refusal = None
-        self.value_refusal = None
+        self._refused_keys.clear()
         self.value_refusals = 0
-        self.surviving_refusal = False
+        self.last_value_refusal = None
+        self.surviving_refusal = None
         self.number_tokens = 0
         self.refused_numbers.clear()
 
@@ -501,8 +500,9 @@ class _TokenReader:
             self._spills.number_tokens += 1
         if self._bare_suppressed:
             if self._bare_state in _NUM_COMPLETE:
-                self._spills.refused_numbers.add(self._spills.number_tokens)
-                self._spills.refuse_value("number token", self._bare_len)
+                self._spills.refused_numbers[self._spills.number_tokens] = self._spills.refuse_value(
+                    "number token", self._bare_len
+                )
             else:
                 out += b"x"
         self._bare_open = False
@@ -565,8 +565,7 @@ class _TokenReader:
                     pieces.append(piece)
             spill.close()
             if size > physical_value_limit():
-                self._spills.refuse_key(size)
-                out += self._spills.placeholder_key()
+                out += self._spills.refuse_key(size)
             else:
                 # Held decoded and handed on as a marker: re-escaping it for
                 # the tokenizer could multiply its size (a control character
@@ -825,8 +824,13 @@ class _Entries:
         self._memory: dict[str, bytes | None] = {}
         self._retained = 0
         self._id: int | None = None
+        #: Refused members by key; a later duplicate key removes its entry.
+        #: Each refused token is past the value limit, so these are few.
+        self._refusals: dict[str, ContentIdentityRefusal] = {}
 
     def __setitem__(self, key: str, digest: bytes | None) -> None:
+        if self._refusals:
+            self._refusals.pop(key, None)
         if self._id is not None:
             self._put(key, digest)
             return
@@ -867,17 +871,13 @@ class _Entries:
             "INSERT OR REPLACE INTO entries VALUES (?, ?, ?, ?)", (self._id, key_hash, normalized, digest)
         )
 
-    def refused(self) -> bool:
-        if any(digest == _REFUSED_DIGEST for digest in self._memory.values()):
-            return True
-        if self._id is None:
-            return False
-        return (
-            self._budget.connection()
-            .execute("SELECT 1 FROM entries WHERE obj = ? AND digest = x'' LIMIT 1", (self._id,))
-            .fetchone()
-            is not None
-        )
+    def refuse(self, key: str, refusal: ContentIdentityRefusal) -> None:
+        self[key] = _REFUSED_DIGEST
+        self._refusals[key] = refusal
+
+    def refused(self) -> ContentIdentityRefusal | None:
+        """The first refusal still held by a member, after duplicate keys settled."""
+        return next(iter(self._refusals.values()), None)
 
     def poisoned(self) -> bool:
         if any(digest is None for digest in self._memory.values()):
@@ -925,6 +925,7 @@ class _Entries:
             self._budget.retained -= self._retained
         self._retained = 0
         self._memory.clear()
+        self._refusals.clear()
 
 
 class _Frame:
@@ -952,11 +953,11 @@ class _Frame:
         self.value: _Digester | None = None
         #: An element had no identity (arrays only).
         self.poisoned = False
-        #: An element was refused (arrays only).
-        self.refused = False
+        #: The first refused element (arrays only).
+        self.refused: ContentIdentityRefusal | None = None
         #: A key past the limit (objects only): the object is refused if it
         #: survives, as a refused value is.
-        self.refused_key = False
+        self.refused_key: ContentIdentityRefusal | None = None
         #: Arrays in this run (arrays only).
         self.depth = 1
 
@@ -974,7 +975,7 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
     stack: list[_Frame] = []
     documents = 0
     root_poisoned = False
-    root_refused = False
+    root_refused: ContentIdentityRefusal | None = None
     number_ordinal = 0
 
     def current() -> _Sink:
@@ -990,7 +991,7 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
             top.value = sha256()
         return top.value
 
-    def finished_value(*, poisoned: bool = False, refused: bool = False) -> None:
+    def finished_value(*, poisoned: bool = False, refused: ContentIdentityRefusal | None = None) -> None:
         nonlocal documents, root_poisoned, root_refused
         if not stack:
             documents += 1
@@ -1006,8 +1007,8 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
                 top.entries = _Entries(store)
             if poisoned:
                 top.entries[top.key] = None
-            elif refused:
-                top.entries[top.key] = _REFUSED_DIGEST
+            elif refused is not None:
+                top.entries.refuse(top.key, refused)
             else:
                 assert top.value is not None
                 top.entries[top.key] = top.value.digest()
@@ -1022,8 +1023,8 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
             top = stack[-1]
             top.key = spills.take_key(str(value))
             top.value = None
-            if spills.is_refused_key(top.key):
-                top.refused_key = True
+            if top.refused_key is None:
+                top.refused_key = spills.refused_key(top.key)
         elif event == "start_map":
             if stack and stack[-1].is_map and stack[-1].key is None:
                 raise _NotJsonError
@@ -1046,8 +1047,9 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
                 if entries is not None and entries.poisoned():
                     finished_value(poisoned=True)
                     continue
-                if frame.refused_key or (entries is not None and entries.refused()):
-                    finished_value(refused=True)
+                refusal = frame.refused_key or (entries.refused() if entries is not None else None)
+                if refusal is not None:
+                    finished_value(refused=refusal)
                     continue
                 sink = current()
                 if entries is None:
@@ -1094,8 +1096,11 @@ def _stream_identity_into(events: Iterator[tuple[str, object]], spills: _Spilled
             # A value past the physical limit is refused where it stands, so
             # a later duplicate key can still replace it.
             finished_value(
-                refused=spills.value_refusals > refusals_before
-                or (event == "number" and number_ordinal in spills.refused_numbers)
+                refused=spills.last_value_refusal
+                if spills.value_refusals > refusals_before and event == "string"
+                else spills.refused_numbers.pop(number_ordinal, None)
+                if event == "number"
+                else None
             )
     if stack or documents != 1 or root_poisoned:
         raise _NotJsonError
@@ -1181,10 +1186,8 @@ def _identity_as(handle: IO[bytes], start: int, encoding: str, errors: str) -> s
             raise
         # The document is JSON, so an overlong key or value that no later
         # duplicate key replaced is a real refusal.
-        if spills.surviving_refusal:
-            refusal = spills.value_refusal or spills.key_refusal
-            assert refusal is not None
-            raise refusal
+        if spills.surviving_refusal is not None:
+            raise spills.surviving_refusal
         return digest
     finally:
         spills.close()

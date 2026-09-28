@@ -510,3 +510,18 @@ def test_a_duplicate_key_drops_an_object_holding_a_refused_key(monkeypatch: pyte
         with pytest.raises(content_identity.ContentIdentityRefusal) as refusal:
             payload_content_identity(survivor)
         assert refusal.value.token == "object key"
+
+
+def test_the_refusal_raised_is_the_one_that_survived(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: raise the first-seen value refusal and a document whose
+    discarded value was refused reports that token instead of the surviving key."""
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
+    marks = b'"x' + "́".encode() * 40 + b'"'
+    document = b'{"a":' + marks + b',"a":1,"' + b"k" * 64 + b'":0}'
+    with pytest.raises(content_identity.ContentIdentityRefusal) as refusal:
+        payload_content_identity(document)
+    assert refusal.value.token == "object key"
