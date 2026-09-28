@@ -12,11 +12,18 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
-from polylogue.operations.daemon_protocol import DAEMON_OPERATION_SPECS, DaemonOperationRequest
+import pytest
+
+from polylogue.operations.daemon_protocol import (
+    DAEMON_OPERATION_SPECS,
+    DaemonOperationEnvelope,
+    DaemonOperationRequest,
+)
 from polylogue.operations.mutation_transaction import MutationPrincipal
-from tests.infra.daemon_operations import running_daemon_operations
+from tests.infra.daemon_operations import DaemonOperationStack, running_daemon_operations
 
 
 def _principal() -> MutationPrincipal:
@@ -116,7 +123,9 @@ def test_cancel_of_an_unknown_reference_is_refused(tmp_path: Path) -> None:
     assert error["code"] == "operation_reference_unknown"
 
 
-def test_cancel_fences_a_live_redrive_despite_a_resent_exchange(tmp_path: Path, monkeypatch: object) -> None:
+def test_cancel_fences_a_live_redrive_despite_a_resent_exchange(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A resent request's own live exchange must not skip the durable fence.
 
     Anti-vacuity (#5717): a client resending the original ingest request
@@ -139,7 +148,14 @@ def test_cancel_fences_a_live_redrive_despite_a_resent_exchange(tmp_path: Path, 
     fenced_actors: list[str] = []
     original_run_sync = DaemonWriteThreadBridge.run_sync_with_timeout
 
-    def recording_run_sync(self, actor, timeout, function, *args, **kwargs):
+    def recording_run_sync(
+        self: DaemonWriteThreadBridge,
+        actor: str,
+        timeout: float,
+        function: Callable[..., object],
+        *args: object,
+        **kwargs: object,
+    ) -> object:
         if actor == "operation.cancel":
             fenced_actors.append(actor)
             return None
@@ -147,7 +163,7 @@ def test_cancel_fences_a_live_redrive_despite_a_resent_exchange(tmp_path: Path, 
 
     monkeypatch.setattr(DaemonWriteThreadBridge, "run_sync_with_timeout", recording_run_sync)
 
-    def _cancel_with_resent_exchange(stack, *, acceptance_started: bool, request_id: str) -> None:
+    def _cancel_with_resent_exchange(stack: DaemonOperationStack, *, acceptance_started: bool, request_id: str) -> None:
         principal = _principal()
         request = DaemonOperationRequest(
             "mutation.session.delete.preview",
@@ -156,12 +172,13 @@ def test_cancel_fences_a_live_redrive_despite_a_resent_exchange(tmp_path: Path, 
             archive_root=str(stack.archive_root),
         )
         context = OperationContext(archive_root=stack.archive_root, principal=principal, serving_identity="daemon")
+        future: Future[DaemonOperationEnvelope] = Future()
         exchange = _Exchange(
             request=request,
             context=context,
             deadline=1e18,
             deadline_unix_ms=0,
-            future=Future(),
+            future=future,
             acceptance_started=acceptance_started,
         )
         with stack.runtime._condition:
@@ -177,7 +194,7 @@ def test_cancel_fences_a_live_redrive_despite_a_resent_exchange(tmp_path: Path, 
 
         with stack.runtime._condition:
             stack.runtime._exchanges.pop(request_id, None)
-        exchange.future.set_result({})
+        future.cancel()
 
     with running_daemon_operations(tmp_path / "archive") as stack:
         # Opposite-direction pin first: a genuinely pre-acceptance resend
