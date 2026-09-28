@@ -57,11 +57,52 @@ def sort_generic(
     return sorted(items, key=key_fn, reverse=not plan.reverse)
 
 
+def _session_measured_tokens(session: Session) -> tuple[bool, int]:
+    """Mirrors SQL's ``tokens`` order key: ``(unmeasured, summed_tokens)``.
+
+    A session none of whose messages carries any token counter has an
+    UNKNOWN total, not a measured zero (``_summary_order_by`` in
+    ``storage/sqlite/archive_tiers/archive.py``, polylogue-qgyuj); ranking it
+    by an estimated text-length proxy instead can put it ahead of a
+    genuinely-measured session on ``sort=tokens``. ``unmeasured`` sorts last
+    in both directions, exactly as SQL's leading ``NOT EXISTS`` key does.
+    """
+    measured = any(
+        message.input_tokens is not None
+        or message.output_tokens is not None
+        or message.cache_read_tokens is not None
+        or message.cache_write_tokens is not None
+        for message in session.messages
+    )
+    total = sum(
+        (message.input_tokens or 0)
+        + (message.output_tokens or 0)
+        + (message.cache_read_tokens or 0)
+        + (message.cache_write_tokens or 0)
+        for message in session.messages
+    )
+    return not measured, total
+
+
 def sort_sessions(
     plan: QuerySortPlan,
     sessions: list[Session],
 ) -> list[Session]:
     dt_min = datetime.min.replace(tzinfo=timezone.utc)
+
+    if plan.sort == "tokens":
+        # A composite key alone (unmeasured, total) can't share sort_generic's
+        # single reversal: reversing would also flip "unmeasured" to sort
+        # first. Sort unmeasured-last unconditionally, then by measured total
+        # in the requested direction, exactly as the SQL ORDER BY does.
+        scored = [(session, *_session_measured_tokens(session)) for session in sessions]
+        measured = sorted(
+            ((session, total) for session, unmeasured, total in scored if not unmeasured),
+            key=lambda pair: pair[1],
+            reverse=not plan.reverse,
+        )
+        unmeasured = [session for session, is_unmeasured, _total in scored if is_unmeasured]
+        return [session for session, _total in measured] + unmeasured
 
     def _key(session: Session) -> SortKey:
         if plan.sort == "date":
@@ -72,8 +113,6 @@ def sort_sessions(
             return sum(message.word_count for message in session.messages)
         if plan.sort == "longest":
             return max((message.word_count for message in session.messages), default=0)
-        if plan.sort == "tokens":
-            return sum(len(message.text or "") for message in session.messages) // 4
         return session.updated_at or dt_min
 
     return sort_generic(plan, sessions, _key)

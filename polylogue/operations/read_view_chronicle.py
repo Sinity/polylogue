@@ -140,8 +140,14 @@ def _select_summaries(
 ) -> list[SessionSummary]:
     """Run query candidates through the plan's filters, order and page cut."""
 
+    from dataclasses import replace
+
     from polylogue.archive.hydration import archive_envelope_to_session
-    from polylogue.archive.query.archive_execution import _archive_summaries, order_query_summaries
+    from polylogue.archive.query.archive_execution import (
+        _COMPOSED_COUNT_SORTS,
+        _archive_summaries,
+        order_query_summaries,
+    )
 
     params_raw = payload.get("params", {})
     if not isinstance(params_raw, Mapping):
@@ -157,13 +163,24 @@ def _select_summaries(
         params["conv_id"] = str(session_id)
 
     plan = cli_read_request(params).selection.to_plan(vector_provider=vector_provider)
+    # A composed-count sort (messages/words/longest/tokens) ranks a lineage
+    # child by its full inherited-prefix-plus-tail total, but the index only
+    # stores that child's own tail count; windowing the SQL fetch by the
+    # stored count first can exclude the child a composed rank would have
+    # kept. Fetch every candidate uncut and rank the hydrated, composed
+    # sessions instead, exactly as the generic session-list route does
+    # (``archive_execution.read``'s ``composed_order``/``complete`` path).
+    composed_order = plan.sort in _COMPOSED_COUNT_SORTS
+    fetch_plan = replace(plan, limit=None, offset=0) if composed_order else plan
     rows = _archive_summaries(
-        plan,
+        fetch_plan,
         archive,
         config=None,
         archive_root=archive.archive_root,
         default_limit=5,
+        complete=composed_order,
     )
+    row_by_id = {row.session_id: row for row in rows}
     summaries: list[SessionSummary] = [archive_summary_to_domain(row) for row in rows]
     if plan.needs_content_loading():
         matched_ids: set[str] = set()
@@ -182,9 +199,22 @@ def _select_summaries(
     else:
         candidates = plan._apply_common_filters(summaries, sql_pushed=True)
 
-    ordered = order_query_summaries(plan, candidates)
+    if composed_order:
+        hydrated = [
+            archive_envelope_to_session(
+                archive.read_session(str(candidate.id)),
+                display_label=row_by_id[str(candidate.id)].display_label,
+                display_label_source=row_by_id[str(candidate.id)].display_label_source,
+            )
+            for candidate in candidates
+        ]
+        ordered_sessions = plan._sort_sessions(hydrated)
+        summary_by_id = {str(candidate.id): candidate for candidate in candidates}
+        ordered = [summary_by_id[str(session.id)] for session in ordered_sessions]
+    else:
+        ordered = order_query_summaries(plan, candidates)
     ranked = bool(plan.similar_text or plan.similar_session_id or plan.retrieval_lane in {"semantic", "hybrid"})
-    if (plan.has_post_filters() or ranked) and plan.offset:
+    if (plan.has_post_filters() or ranked or composed_order) and plan.offset:
         ordered = ordered[plan.offset :]
     return plan._finalize(ordered)
 
