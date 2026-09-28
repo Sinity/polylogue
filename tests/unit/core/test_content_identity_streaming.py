@@ -311,13 +311,14 @@ def test_a_value_is_measured_by_its_decoded_utf8_size(payload: bytes, monkeypatc
     assert payload_content_identity(payload) == _decoded_identity(payload)
 
 
-@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be"])
-def test_a_bom_bearing_utf16_member_shares_its_utf8_identity(encoding: str) -> None:
-    """The source decoder reads a UTF-16 member with a byte-order mark as the
+@pytest.mark.parametrize("encoding", ["utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"])
+def test_a_bom_bearing_wide_member_shares_its_utf8_identity(encoding: str) -> None:
+    """The source decoder reads a UTF-16/32 member with a byte-order mark as the
     same JSON a UTF-8 serialization of it is, so the identity must match.
 
-    Anti-vacuity: feed the UTF-16 bytes to the tokenizer untranscoded and the
-    member falls back to its byte digest, which differs from the UTF-8 one.
+    Anti-vacuity: feed the wide bytes to the tokenizer untranscoded (or read a
+    UTF-32-LE mark as UTF-16's) and the member falls back to its byte digest,
+    which differs from the UTF-8 one.
     """
     value = {"title": "café \U0001f600", "n": [1, 2.5, None, True]}
     text = json.dumps(value, ensure_ascii=False)
@@ -360,3 +361,22 @@ def test_mixed_nesting_matches_the_decoded_identity() -> None:
     hash exactly as the decoded value does."""
     payload = b'[[1,[2]],[[{"a":[[3]],"b":{"c":{"d":[]}},"e":{}}]],[[[]]]]'
     assert stream_payload_content_identity(io.BytesIO(payload)) == structural_content_identity(loads(payload))
+
+
+def test_a_key_too_long_for_a_scratch_row_keeps_its_place(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A spilled object's key that fits one value but not a row beside the
+    key hash and digest stays in memory and is merged in order.
+
+    Anti-vacuity: store every spilled key in the scratch table and the row
+    for the long key exceeds the (pinned) SQLite length limit, raising
+    ``sqlite3.DataError`` instead of returning the identity.
+    """
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 300)
+    monkeypatch.setattr(content_identity, "_SPILL_OBJECT_ENTRIES", 4)
+    value: dict[str, object] = {f"k{index}": index for index in range(12)}
+    value["m" + "x" * 279] = "long"
+    payload = json.dumps(value).encode()
+
+    assert payload_content_identity(payload) == structural_content_identity(value)

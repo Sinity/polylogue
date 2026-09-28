@@ -12,6 +12,7 @@ while it still separates values JSON itself distinguishes -- ``true`` from
 from __future__ import annotations
 
 import codecs
+import heapq
 import io
 import json
 import re
@@ -33,9 +34,16 @@ _CONTENT_IDENTITY_DOMAIN = b"polylogue:member-content:v2\0"
 
 _UTF8_BOM = b"\xef\xbb\xbf"
 
-#: Byte-order marks of the UTF-16 encodings the source decoder accepts
-#: (``decoder_json.ENCODING_GUESSES``).
-_UTF16_BOMS = (codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE)
+#: Byte-order marks of the UTF-16 and UTF-32 encodings the source decoder
+#: accepts (``decoder_json.ENCODING_GUESSES``), each with the codec that
+#: consumes it. UTF-32 comes first: its little-endian mark begins with
+#: UTF-16's.
+_WIDE_BOMS = (
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+)
 
 #: Bytes read per step of the streaming identity. A pacing window only: the
 #: digest is the same for every window size.
@@ -692,8 +700,11 @@ def _encode_spilled_text(raw: IO[bytes], sink: _Sink, spills: _SpilledStrings) -
 _SPILL_OBJECT_ENTRIES = 100_000
 
 
-def _entry_row(key: str, digest: bytes | None) -> tuple[bytes, bytes, bytes | None]:
-    return (key.encode("utf-8", "surrogatepass"), nfc(key).encode("utf-8", "surrogatepass"), digest)
+#: Bytes reserved in a scratch row beyond its normalized key: the raw-key
+#: hash, the value digest, and SQLite's record header. SQLite bounds a whole
+#: row by the same length limit as one value, so a key within this margin of
+#: the limit cannot share a row with them.
+_SCRATCH_ROW_OVERHEAD = 256
 
 
 class _Entries:
@@ -701,7 +712,10 @@ class _Entries:
 
     A repeated key replaces the earlier member, as the in-memory decoder does.
     Past :data:`_SPILL_OBJECT_ENTRIES` members they move to a scratch SQLite
-    table that also orders them, so an object's size costs no memory.
+    table that also orders them, so an object's size costs no memory. A row
+    holds the raw key's hash (for replacement), the normalized key (for
+    order) and the digest; a key too long to fit a row beside them stays in
+    memory, where it already was whole, and is merged in order on encode.
     """
 
     def __init__(self) -> None:
@@ -713,34 +727,56 @@ class _Entries:
             self._memory[key] = digest
             if len(self._memory) > _SPILL_OBJECT_ENTRIES:
                 self._table = sqlite3.connect("")
+                # Pin the row bound this class plans against.
+                self._table.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, physical_value_limit())
                 self._table.execute("PRAGMA journal_mode = OFF")
                 self._table.execute(
-                    "CREATE TABLE entries (key BLOB PRIMARY KEY, normalized BLOB NOT NULL, digest BLOB)"
+                    "CREATE TABLE entries (key_hash BLOB PRIMARY KEY, normalized BLOB NOT NULL, digest BLOB)"
                 )
-                self._table.executemany(
-                    "INSERT INTO entries VALUES (?, ?, ?)", (_entry_row(k, d) for k, d in self._memory.items())
-                )
-                self._memory.clear()
+                held = self._memory
+                self._memory = {}
+                for held_key, held_digest in held.items():
+                    self._store(held_key, held_digest)
             return
-        self._table.execute("INSERT OR REPLACE INTO entries VALUES (?, ?, ?)", _entry_row(key, digest))
+        self._store(key, digest)
+
+    def _store(self, key: str, digest: bytes | None) -> None:
+        assert self._table is not None
+        normalized = nfc(key).encode("utf-8", "surrogatepass")
+        if len(normalized) + _SCRATCH_ROW_OVERHEAD > physical_value_limit():
+            # A raw key always normalizes to the same text, so its repeats
+            # land here too and last-key-wins still holds.
+            self._memory[key] = digest
+            return
+        key_hash = sha256(key.encode("utf-8", "surrogatepass")).digest()
+        self._table.execute("INSERT OR REPLACE INTO entries VALUES (?, ?, ?)", (key_hash, normalized, digest))
 
     def poisoned(self) -> bool:
+        if any(digest is None for digest in self._memory.values()):
+            return True
         if self._table is None:
-            return any(digest is None for digest in self._memory.values())
+            return False
         return self._table.execute("SELECT 1 FROM entries WHERE digest IS NULL LIMIT 1").fetchone() is not None
 
     def encode(self, sink: _Sink) -> None:
         if self._table is None:
             _encode_object_entries([(nfc(key), digest) for key, digest in self._memory.items() if digest], sink)
             return
-        count = self._table.execute("SELECT COUNT(*) FROM entries").fetchone()[0]
+        count = self._table.execute("SELECT COUNT(*) FROM entries").fetchone()[0] + len(self._memory)
         sink.update(b"o%d;" % count)
-        # Keys are stored as UTF-8 (surrogates passed through), whose byte
+        # Keys are compared as UTF-8 (surrogates passed through), whose byte
         # order is code-point order, so this matches the in-memory sort.
-        for normalized, digest in self._table.execute(
-            "SELECT normalized, digest FROM entries ORDER BY normalized, digest"
-        ):
-            _encode_text(b"k", bytes(normalized).decode("utf-8", "surrogatepass"), sink)
+        held = sorted(
+            (nfc(key).encode("utf-8", "surrogatepass"), digest) for key, digest in self._memory.items() if digest
+        )
+        rows = (
+            (bytes(normalized), bytes(digest))
+            for normalized, digest in self._table.execute(
+                "SELECT normalized, digest FROM entries ORDER BY normalized, digest"
+            )
+        )
+        for normalized, digest in heapq.merge(rows, held):
+            _encode_text(b"k", normalized.decode("utf-8", "surrogatepass"), sink)
             sink.update(digest)
 
     def close(self) -> None:
@@ -887,17 +923,17 @@ def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrin
     return root.hexdigest()
 
 
-class _Utf16Transcoder:
-    """Present a BOM-bearing UTF-16 handle as UTF-8 bytes, one window at a time.
+class _WideTranscoder:
+    """Present a BOM-bearing UTF-16/32 handle as UTF-8 bytes, one window at a time.
 
     The source decoder reads such a member as the same JSON text a UTF-8
     serialization of it would be, so the identity must too. The codec consumes
     the byte-order mark; a malformed sequence raises ``UnicodeDecodeError``.
     """
 
-    def __init__(self, handle: IO[bytes]) -> None:
+    def __init__(self, handle: IO[bytes], codec: str) -> None:
         self._handle = handle
-        self._decoder = codecs.getincrementaldecoder("utf-16")("strict")
+        self._decoder = codecs.getincrementaldecoder(codec)("strict")
 
     def read(self, size: int = -1) -> bytes:
         while True:
@@ -908,12 +944,13 @@ class _Utf16Transcoder:
 
 
 def _text_handle(handle: IO[bytes], start: int) -> IO[bytes]:
-    """``handle`` from ``start`` as UTF-8 bytes, transcoding a UTF-16 member."""
+    """``handle`` from ``start`` as UTF-8 bytes, transcoding a UTF-16/32 member."""
     handle.seek(start)
-    bom = handle.read(2)
+    head = handle.read(4)
     handle.seek(start)
-    if bom in _UTF16_BOMS:
-        return _Utf16Transcoder(handle)  # type: ignore[return-value]
+    for bom, codec in _WIDE_BOMS:
+        if head.startswith(bom):
+            return _WideTranscoder(handle, codec)  # type: ignore[return-value]
     return handle
 
 
