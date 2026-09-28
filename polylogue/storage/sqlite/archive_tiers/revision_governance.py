@@ -2751,6 +2751,64 @@ def convertible_full_revision_raw_ids(store: RawRevisionGovernanceHost, logical_
     return tuple(str(row[0]) for row in rows)
 
 
+def pending_raw_envelope_has_membership_authority(conn: sqlite3.Connection, logical_source_key: str) -> bool:
+    """Whether ``logical_source_key`` is a pending-raw envelope governed per session.
+
+    A ``pending-raw:`` key names bytes, not a session. The parser census
+    rebinds it to the session's own key when the raw parses to exactly one
+    session; a raw that parses to several keeps the envelope and records one
+    ``raw_session_memberships`` row per session instead. Such an envelope is
+    not a revision chain of one session, so byte-chain replay must skip it and
+    let membership governance settle each session under its own key.
+    """
+    if not logical_source_key.startswith(PENDING_RAW_LOGICAL_SOURCE_PREFIX):
+        return False
+    return (
+        conn.execute(
+            """
+            SELECT 1 FROM raw_sessions AS r
+            JOIN raw_session_memberships AS m ON m.raw_id = r.raw_id
+            WHERE r.logical_source_key = ?
+            LIMIT 1
+            """,
+            (logical_source_key,),
+        ).fetchone()
+        is not None
+    )
+
+
+def raw_has_membership_governed_pending_envelope(conn: sqlite3.Connection, raw_id: str) -> bool:
+    """Whether ``raw_id`` keeps a pending-raw envelope beside its memberships."""
+    row = conn.execute(
+        """
+        SELECT 1 FROM raw_sessions AS r
+        WHERE r.raw_id = ? AND substr(r.logical_source_key, 1, ?) = ?
+          AND EXISTS (SELECT 1 FROM raw_session_memberships AS m WHERE m.raw_id = r.raw_id)
+        """,
+        (raw_id, len(PENDING_RAW_LOGICAL_SOURCE_PREFIX), PENDING_RAW_LOGICAL_SOURCE_PREFIX),
+    ).fetchone()
+    return row is not None
+
+
+def membership_key_has_pending_envelope_member(conn: sqlite3.Connection, logical_source_key: str) -> bool:
+    """Whether a pending-raw envelope's raw is a member of ``logical_source_key``.
+
+    Such a member is settled only by membership replay, even when the same key
+    also has a byte chain from another raw: that replay records the member's
+    decision (yielding to a chain-governed head) instead of leaving it undecided.
+    """
+    row = conn.execute(
+        """
+        SELECT 1 FROM raw_session_memberships AS m
+        JOIN raw_sessions AS r ON r.raw_id = m.raw_id
+        WHERE m.logical_source_key = ? AND substr(r.logical_source_key, 1, ?) = ?
+        LIMIT 1
+        """,
+        (logical_source_key, len(PENDING_RAW_LOGICAL_SOURCE_PREFIX), PENDING_RAW_LOGICAL_SOURCE_PREFIX),
+    ).fetchone()
+    return row is not None
+
+
 def expand_raw_membership_selection(
     store: RawRevisionGovernanceHost, raw_ids: list[str] | None
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:

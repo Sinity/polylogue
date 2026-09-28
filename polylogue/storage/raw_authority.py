@@ -24,6 +24,7 @@ from polylogue.archive.revision_replay import ApplicationDecision
 from polylogue.archive.session_revision_membership import MembershipDecision
 from polylogue.core.json import JSONDocument, json_document
 from polylogue.logging import get_logger
+from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
 from polylogue.storage.sqlite.connection_profile import (
     attach_readonly_database,
     open_isolated_write_connection,
@@ -182,12 +183,20 @@ def build_raw_replay_plan(conn: sqlite3.Connection, input_raw_ids: Sequence[str]
         """,
         raw_ids,
     )
+    # A multi-session raw keeps its pending-raw byte envelope while each of its
+    # sessions is governed by its own membership key. The envelope names no
+    # session, so it has no accepted head to prove; only its members do.
+    membership_raw_ids = {str(row["raw_id"]) for row in membership_rows}
     logical_keys = tuple(
         sorted(
             {
                 str(value)
                 for row in (*source_rows, *membership_rows)
                 if (value := row.get("logical_source_key")) is not None
+                and not (
+                    str(value).startswith(PENDING_RAW_LOGICAL_SOURCE_PREFIX)
+                    and str(row["raw_id"]) in membership_raw_ids
+                )
             }
         )
     )
@@ -477,7 +486,41 @@ def validate_raw_replay_application_receipt(
         str(row.get("accepted_content_hash")) != session_content.get(str(row.get("session_id"))) for row in head_rows
     ):
         problems.append("accepted head content hashes do not match materialized sessions")
-    if any(str(row.get("accepted_raw_id")) not in input_raw_ids for row in head_rows):
+    membership_decisions = {
+        (str(row.get("raw_id")), str(row.get("logical_source_key"))): row.get("decision") for row in membership_rows
+    }
+
+    def membership_yield(application: Mapping[str, object]) -> bool:
+        # A membership cohort that yields to a chain-governed head outside it
+        # records SUPERSEDED with no accepted authority of its own; the head
+        # it yielded to is certified by that head's own component.
+        return (
+            application.get("decision") == ApplicationDecision.SUPERSEDED.value
+            and all(
+                application.get(field) in (None, "")
+                for field in (
+                    "accepted_raw_id",
+                    "accepted_source_revision",
+                    "accepted_content_hash",
+                    "accepted_frontier_kind",
+                    "accepted_frontier",
+                )
+            )
+            and membership_decisions.get((str(application.get("raw_id")), str(application.get("logical_source_key"))))
+            == MembershipDecision.SUPERSEDED_EQUIVALENT
+        )
+
+    applications_by_key: dict[str, list[Mapping[str, object]]] = {}
+    for application in application_rows:
+        applications_by_key.setdefault(str(application.get("logical_source_key")), []).append(application)
+    yielded_keys = {
+        key for key, applications in applications_by_key.items() if all(membership_yield(row) for row in applications)
+    }
+    if any(
+        str(row.get("accepted_raw_id")) not in input_raw_ids
+        for row in head_rows
+        if str(row.get("logical_source_key")) not in yielded_keys
+    ):
         problems.append("accepted heads do not point into the immutable input component")
     heads_by_key = {str(row.get("logical_source_key")): row for row in head_rows}
     if len(heads_by_key) != len(head_rows):
@@ -504,9 +547,16 @@ def validate_raw_replay_application_receipt(
             problems.append(f"application has no source revision evidence for {raw_id}/{key}")
         elif str(application.get("source_revision")) not in source_revisions:
             problems.append(f"application source revision does not match membership evidence for {raw_id}/{key}")
+        yielded = membership_yield(application)
+        if yielded:
+            yield_head = heads_by_key.get(key)
+            if yield_head is None or yield_head.get("session_id") != application.get("session_id"):
+                problems.append(f"membership yield does not name the current head for {raw_id}/{key}")
         accepted_raw_id = str(application.get("accepted_raw_id"))
         accepted_source = source_by_raw_id.get(accepted_raw_id)
-        if accepted_source is None:
+        if yielded:
+            pass
+        elif accepted_source is None:
             problems.append(f"application accepted raw is outside the immutable component for {raw_id}/{key}")
         else:
             accepted_revisions = set(membership_revisions_by_raw_and_key.get((accepted_raw_id, key), set()))
@@ -517,15 +567,23 @@ def validate_raw_replay_application_receipt(
                 problems.append(f"application accepted source revision has no source evidence for {raw_id}/{key}")
         frontier_kind = application.get("accepted_frontier_kind")
         frontier = application.get("accepted_frontier")
-        if frontier_kind not in {"byte", "semantic"} or type(frontier) is not int or frontier < 0:
+        if not yielded and (frontier_kind not in {"byte", "semantic"} or type(frontier) is not int or frontier < 0):
             problems.append(f"application accepted frontier is malformed for {raw_id}/{key}")
-        for field in ("baseline_raw_id", "predecessor_raw_id"):
+        # A semantic membership application is evidenced by its membership
+        # row, not by the raw's byte-chain columns: a multi-session raw keeps a
+        # pending-raw byte envelope whose chain fields describe no member.
+        membership_evidenced = (frontier_kind == "semantic" or yielded) and (
+            raw_id,
+            key,
+        ) in membership_revisions_by_raw_and_key
+        for field in () if membership_evidenced else ("baseline_raw_id", "predecessor_raw_id"):
             if application.get(field) != source.get(field):
                 problems.append(f"application {field} does not match source evidence for {raw_id}")
         try:
             decision = ApplicationDecision(str(application.get("decision")))
             content_hash = application.get("accepted_content_hash")
-            content_hash_hex = None if content_hash is None else bytes.fromhex(str(content_hash)).hex()
+            # SQLite renders ``hex(NULL)`` as an empty string, not NULL.
+            content_hash_hex = None if content_hash in (None, "") else bytes.fromhex(str(content_hash)).hex()
             decision_payload = {
                 "accepted_raw_id": application.get("accepted_raw_id"),
                 "accepted_source_revision": application.get("accepted_source_revision"),
@@ -585,7 +643,7 @@ def validate_raw_replay_application_receipt(
             materialized_session.get("content_hash")
         ) != str(head.get("accepted_content_hash")):
             problems.append(f"materialized session authority does not match the head for {key}")
-    for key in sorted(expected_keys - applications_matching_current_head):
+    for key in sorted(expected_keys - applications_matching_current_head - yielded_keys):
         problems.append(f"no application accepted authority matches the current head for {key}")
     return not problems, tuple(problems)
 
