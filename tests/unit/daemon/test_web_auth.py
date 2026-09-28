@@ -513,9 +513,10 @@ def test_peer_ownership_is_decided_without_procfs_on_non_linux_hosts(monkeypatch
         assert "-iTCP@127.0.0.1:52345" in command
         return SimpleNamespace(returncode=0, stdout=listings[listing], stderr="")
 
-    monkeypatch.setattr(daemon_http.sys, "platform", "darwin")
-    monkeypatch.setattr(daemon_http.shutil, "which", lambda _name: "/usr/sbin/lsof")
-    monkeypatch.setattr(daemon_http.subprocess, "run", fake_run)
+    monkeypatch.setattr(daemon_http, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(daemon_http, "shutil", SimpleNamespace(which=lambda _name: "/usr/sbin/lsof"))
+    fake_subprocess = SimpleNamespace(run=fake_run, SubprocessError=subprocess.SubprocessError)
+    monkeypatch.setattr(daemon_http, "subprocess", fake_subprocess)
     monkeypatch.setattr(
         daemon_http, "_tcp_socket_owner_uid", lambda *_args: pytest.fail("procfs is not consulted off Linux")
     )
@@ -527,5 +528,5 @@ def test_peer_ownership_is_decided_without_procfs_on_non_linux_hosts(monkeypatch
     def missing(*_args: object, **_kwargs: object) -> SimpleNamespace:
         raise subprocess.TimeoutExpired("lsof", 5)
 
-    monkeypatch.setattr(daemon_http.subprocess, "run", missing)
+    monkeypatch.setattr(fake_subprocess, "run", missing)
     assert daemon_http._peer_socket_owned_by_current_uid(8765, "127.0.0.1", 52345) is False
