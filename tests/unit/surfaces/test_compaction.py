@@ -55,8 +55,8 @@ def test_compaction_manifest_filters_spam_and_keeps_structured_failure_fix() -> 
     )
 
     refs = {item.anchor.ref.format() for item in pack.items}
-    assert "codex:a::m2::1" in refs
-    assert "codex:a::m3::2" in refs
+    assert "codex:a::m2" in refs
+    assert "codex:a::m3" in refs
     assert "codex:a::m1::0" not in refs
     assert pack.manifest.drop_counts_by_material_origin["runtime_protocol"] == 1
     assert pack.manifest.drop_counts["successful_tool_spam"] == 1
@@ -151,3 +151,14 @@ def test_compaction_budget_counts_serialized_omissions() -> None:
     pack = compact_sessions(sessions, spec=CompactProjectionSpec(max_tokens=60))
     assert pack.token_estimate <= 60
     assert len(pack.omissions) < 100
+
+
+def test_compaction_uses_repository_words_to_tokens_ratio() -> None:
+    """The production compaction budget uses the repository's calibrated ratio.
+
+    Anti-vacuity: changing the estimator back to ``words * 0.72`` reports 7
+    tokens for this ten-word input instead of the expected 13.
+    """
+    from polylogue.surfaces.compaction import estimate_tokens
+
+    assert estimate_tokens("one two three four five six seven eight nine ten") == 13
