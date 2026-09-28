@@ -111,7 +111,7 @@ from polylogue.archive.semantic.pricing import (
     model_cohort_key,
 )
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, credits_to_usd
-from polylogue.archive.session_revision_membership import MembershipClassification
+from polylogue.archive.session_revision_membership import MembershipClassification, MembershipDecision
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
@@ -2167,12 +2167,13 @@ class ArchiveStore:
         self,
         logical_source_key: str,
         classification: MembershipClassification,
+        decisions: dict[str, MembershipDecision] | None = None,
     ) -> None:
         require_frozen_membership_authority(
             self,
             logical_source_key,
             classification,
-            membership_decisions_for_classification(classification),
+            decisions if decisions is not None else membership_decisions_for_classification(classification),
         )
 
     def classify_raw_revision_cohort_for_live_watch(

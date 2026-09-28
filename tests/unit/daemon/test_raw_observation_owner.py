@@ -18,6 +18,7 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteThreadBridge,
     daemon_write_lease_active,
 )
+from polylogue.sources.revision_backfill import validate_frozen_source_authority
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -357,5 +358,8 @@ async def test_multi_session_raw_overlapping_a_byte_chain_decides_every_member(
                 "claude-code-session:overlap-alpha",
                 "claude-code-session:overlap-beta",
             }
+        # A frozen rebuild re-derives the same membership authority, including
+        # the member that yielded to the chain-governed head.
+        validate_frozen_source_authority(tmp_path)
     finally:
         await _shutdown(compute, coordinator)

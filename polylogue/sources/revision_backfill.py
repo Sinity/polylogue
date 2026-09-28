@@ -45,7 +45,11 @@ from polylogue.archive.revision_authority import (
     durable_authority_logical_keys,
     parser_census_is_complete,
 )
-from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
+from polylogue.archive.session_revision_membership import (
+    MembershipDecision,
+    MembershipRevision,
+    classify_membership_revisions,
+)
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
 from polylogue.core.json import JSONValue
@@ -2944,6 +2948,10 @@ def validate_frozen_source_authority(
         byte_replayed_keys: set[str] = set()
 
         source_conn = archive._ensure_source_conn()
+        # The candidate installs each byte chain's head before membership
+        # replay runs; frozen validation has no index, so it predicts that
+        # head from the same frozen classification.
+        byte_chain_heads: dict[str, str] = {}
         for logical_key in sorted(set(logical_keys) - transient_non_session_keys):
             if pending_raw_envelope_has_membership_authority(source_conn, logical_key):
                 continue
@@ -2957,6 +2965,7 @@ def validate_frozen_source_authority(
                     )
                 continue
             byte_replayed_keys.add(logical_key)
+            byte_chain_heads[logical_key] = plan.accepted_raw_ids[-1]
 
         for logical_key in sorted(
             key
@@ -2991,8 +3000,27 @@ def validate_frozen_source_authority(
                             ),
                         )
                     )
-            classification = classify_membership_revisions(revisions, existing_accepted_raw_id=None)
-            archive.require_frozen_membership_authority(logical_key, classification)
+            # Re-derive exactly what membership replay persists: it classifies
+            # against the byte chain head installed before it and, when that
+            # chain-governed head lies outside the cohort, records every member
+            # as yielding to it.
+            head_raw_id = byte_chain_heads.get(logical_key)
+            classification = classify_membership_revisions(revisions, existing_accepted_raw_id=head_raw_id)
+            yield_decisions: dict[str, MembershipDecision] | None = None
+            if (
+                classification.accepted_raw_ids
+                and head_raw_id is not None
+                and head_raw_id not in {*classification.accepted_raw_ids, *classification.equivalent_raw_ids}
+            ):
+                yield_decisions = dict.fromkeys(
+                    (
+                        *classification.accepted_raw_ids,
+                        *classification.equivalent_raw_ids,
+                        *classification.ambiguous_raw_ids,
+                    ),
+                    MembershipDecision.SUPERSEDED_EQUIVALENT,
+                )
+            archive.require_frozen_membership_authority(logical_key, classification, yield_decisions)
 
 
 def census_historical_revision_evidence(
