@@ -63,9 +63,37 @@ def _sql_text_projection(column: str, key: str) -> str:
     quoted = f"({column} -> {path})"
     return (
         f"CASE WHEN json_type({column}, {path}) = 'text' AND {quoted} GLOB '*\\u[dD][89a-fA-F]*' "
-        f"THEN substr({quoted}, 2, length({quoted}) - 2) "
+        f"THEN {_sql_decode_json_string_keeping_surrogates(f'substr({quoted}, 2, length({quoted}) - 2)')} "
         f"ELSE json_extract({column}, {path}) END"
     )
+
+
+#: Placeholder for an escaped backslash while the other escapes are decoded:
+#: U+FFFF is a noncharacter, so no provider text carries it.
+_ESCAPED_BACKSLASH_PLACEHOLDER = "char(65535)"
+
+
+def _sql_decode_json_string_keeping_surrogates(raw: str) -> str:
+    """Decode a JSON string body in SQL while keeping ``\\uD8xx`` escapes escaped.
+
+    Escaped backslashes are set aside first, so a ``\\\\`` followed by ``u``
+    is literal text rather than the start of an escape; the short escapes are
+    then decoded and the backslashes restored. Surrogate escapes stay in
+    their escaped spelling, since decoding them yields text that is not
+    valid UTF-8.
+    """
+    decoded = f"replace({raw}, '\\\\', {_ESCAPED_BACKSLASH_PLACEHOLDER})"
+    for escape, replacement in (
+        ('\\"', "'\"'"),
+        ("\\/", "'/'"),
+        ("\\n", "char(10)"),
+        ("\\t", "char(9)"),
+        ("\\r", "char(13)"),
+        ("\\b", "char(8)"),
+        ("\\f", "char(12)"),
+    ):
+        decoded = f"replace({decoded}, '{escape}', {replacement})"
+    return f"replace({decoded}, {_ESCAPED_BACKSLASH_PLACEHOLDER}, '\\')"
 
 
 @dataclass(frozen=True, slots=True)

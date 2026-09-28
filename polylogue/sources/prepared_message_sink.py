@@ -60,7 +60,14 @@ def _from_text_json(model: type[_ModelT], encoded: str) -> _ModelT:
         lambda match: match.group()[:-6] + f"<surrogate-{nonce}-{match.group()[-4:].lower()}>", encoded
     )
     restore = re.compile(f"<surrogate-{nonce}-([0-9a-f]{{4}})>")
-    validated = model.model_validate_json(marked).model_dump(mode="python")
+    validated_model = model.model_validate_json(marked)
+    validated = validated_model.model_dump(mode="python")
+    # model_dump omits parser-only coordinates declared ``exclude=True``
+    # (parent/boundary message positions, owner coordinates) even though the
+    # sink stored them; carry them over so the writer can still resolve them.
+    for name, field in model.model_fields.items():
+        if field.exclude:
+            validated[name] = getattr(validated_model, name)
     return model.model_validate(_restore_surrogates(validated, restore))
 
 

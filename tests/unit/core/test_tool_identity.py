@@ -38,3 +38,22 @@ def test_a_lone_surrogate_projection_stays_readable() -> None:
         "ls \\ud800 x",
         "ls é",
     ]
+
+
+def test_a_lone_surrogate_projection_decodes_ordinary_escapes() -> None:
+    """Only the surrogate stays escaped; quotes, newlines and backslashes decode.
+
+    Anti-vacuity: project the raw JSON spelling again and the command keeps
+    ``\\"``, ``\\n`` and doubled backslashes.
+    """
+    import sqlite3
+
+    from polylogue.core.tool_identity import sql_coalesced_json_extract
+
+    projection = sql_coalesced_json_extract("tool_input", ("command",))
+    connection = sqlite3.connect(":memory:")
+    connection.execute(f"CREATE TABLE t (tool_input TEXT, tool_command TEXT GENERATED ALWAYS AS ({projection}))")
+    stored = '{"command":"echo \\"a\\"\\n\\\\path \\\\ud800 \\ud800"}'
+    connection.execute("INSERT INTO t (tool_input) VALUES (?)", (stored,))
+    (command,) = connection.execute("SELECT tool_command FROM t").fetchone()
+    assert command == 'echo "a"\n\\path \\ud800 \\ud800'

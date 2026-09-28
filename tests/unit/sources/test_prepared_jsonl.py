@@ -2515,3 +2515,19 @@ def test_sink_json_keeps_literal_escape_text_and_json_mode_fields(tmp_path: Path
     for text in ("literal \\ud800 text", "real \ud800 surrogate"):
         evidence = ParsedPasteEvidence(content_hash=b"\x01" * 32, source_marker=text)
         assert _from_text_json(ParsedPasteEvidence, _text_json(evidence.model_dump(mode="json"))) == evidence
+
+
+def test_sink_surrogate_decode_keeps_excluded_parser_coordinates() -> None:
+    """A surrogate-bearing message keeps its parser-only coordinates.
+
+    Anti-vacuity: drop the excluded-field carry-over in ``_from_text_json`` and
+    ``parent_message_position`` comes back ``None``.
+    """
+    from polylogue.sources.prepared_message_sink import _from_text_json, _message_json
+
+    message = ParsedMessage(provider_message_id="m2", role=Role.USER, text="real \ud800 surrogate")
+    message = message.model_copy(update={"parent_message_position": 1})
+    decoded = _from_text_json(ParsedMessage, _message_json(message))
+
+    assert decoded.text == "real \ud800 surrogate"
+    assert decoded.parent_message_position == 1
