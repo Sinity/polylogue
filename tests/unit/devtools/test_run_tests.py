@@ -1081,10 +1081,16 @@ def _green_receipt(runs: Path, name: str, *, argv: list[str], digest: str, **ove
     import platform
     import sys
 
-    # Reuse consults Git for ignored paths, so the checkout is a repository.
+    # Reuse consults Git for ignored paths, so the checkout is a repository,
+    # and only named files that exist are reusable.
     checkout = runs.parents[2]
     if not (checkout / ".git").exists():
         subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    for argument in argv:
+        if not argument.startswith("-"):
+            module = checkout / argument.split("::", 1)[0]
+            module.parent.mkdir(parents=True, exist_ok=True)
+            module.touch()
 
     run_dir = runs / name
     run_dir.mkdir(parents=True)
@@ -1258,6 +1264,10 @@ def test_stateful_selectors_are_never_answered_from_a_receipt(tmp_path: Path, fl
         (["tests/unit/test_a.py", "--cache-clear"], False),
         (["/tmp/test_external.py"], False),
         (["tests/unit/test_a.py", "-c", "/tmp/pytest.ini"], False),
+        # A directory may hold ignored, collectable modules the digest omits.
+        (["tests/unit"], False),
+        # -s is asked for to see live output, which a receipt cannot replay.
+        (["tests/unit/test_a.py", "-s"], False),
     ],
 )
 def test_only_checkout_local_selections_with_inert_options_are_reused(
@@ -1269,6 +1279,8 @@ def test_only_checkout_local_selections_with_inert_options_are_reused(
     one of the refused selections is answered from a receipt without running.
     """
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "tests" / "unit").mkdir(parents=True)
+    (tmp_path / "tests" / "unit" / "test_a.py").touch()
     assert run_tests._reuse_eligible(selection, root=tmp_path) is eligible
 
 
@@ -1432,3 +1444,23 @@ def test_a_receipt_pruned_during_lookup_sends_the_selection_to_run(
 
     run_tests.main(["tests/unit/devtools/test_run_tests.py", "--json"])
     assert queued == [True]
+
+
+def test_a_broad_selection_is_sized_by_the_corpus_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: keep the focused profile for any selection and ``tests``
+    is admitted at four focused workers the corpus model says cannot fit."""
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
+    seen: dict[str, str | None] = {}
+
+    def capture(_cmd: list[str], **kwargs: Any) -> Any:
+        seen["profile"] = kwargs["env"].get(CHARGE_PROFILE_ENV)
+        raise RuntimeError("stop after admission")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest", capture)
+    monkeypatch.setattr(run_tests, "_selected_test_modules", lambda _selection: run_tests.BROAD_SELECTION_MODULES)
+    run_tests.main(["tests/unit/devtools/test_run_tests.py"])
+    assert seen["profile"] is None
+
+    monkeypatch.setattr(run_tests, "_selected_test_modules", lambda _selection: 1)
+    run_tests.main(["tests/unit/devtools/test_run_tests.py"])
+    assert seen["profile"] == "focused"

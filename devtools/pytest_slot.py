@@ -1317,9 +1317,19 @@ def _rerun_failures_in_slot(
     rerun_env = rerun_environment(environment)
     first_scratch = environment.get("TMPDIR")
     if first_scratch:
-        with contextlib.suppress(OSError):
+        try:
             fresh = tempfile.mkdtemp(prefix="in-slot-rerun-", dir=first_scratch)
-            rerun_env.update({"TMPDIR": fresh, "TMP": fresh, "TEMP": fresh})
+        except OSError as exc:
+            # A rerun on the first attempt's scratch could pass on that
+            # attempt's leftovers, so none happens and the failures stand.
+            log.write(f"\n  rerun skipped: fresh scratch unavailable ({exc})\n".encode())
+            with contextlib.suppress(OSError):
+                (step_dir / RERUN_IN_SLOT_RESULT).write_text(
+                    json.dumps({"attempted": failed, "rerun_exit": 125, "scratch_error": str(exc)[:500]}),
+                    encoding="utf-8",
+                )
+            return
+        rerun_env.update({"TMPDIR": fresh, "TMP": fresh, "TEMP": fresh})
     try:
         process = subprocess.Popen(
             command,

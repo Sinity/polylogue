@@ -281,7 +281,7 @@ _HYPOTHESIS_DATABASE = Path(".cache/hypothesis/examples")
 #: which tests run nor what the run leaves behind. Anything else -- report
 #: files, cache-dependent selection (``--lf``), cache clearing, external
 #: configuration -- has an effect a receipt cannot supply, so it always runs.
-_REUSABLE_FLAGS = frozenset({"-x", "--exitfirst", "-q", "--quiet", "-v", "--verbose", "-vv", "-s", "--no-header"})
+_REUSABLE_FLAGS = frozenset({"-x", "--exitfirst", "-q", "--quiet", "-v", "--verbose", "-vv", "--no-header"})
 _REUSABLE_VALUE_OPTIONS = frozenset({"-k", "-m"})
 _REUSABLE_PREFIXES = ("--tb=", "--maxfail=", "-k=", "-m=")
 
@@ -307,7 +307,9 @@ def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
             return False
         target = Path(argument.split("::", 1)[0])
         target = (target if target.is_absolute() else root / target).resolve()
-        if not target.is_relative_to(resolved_root) or _git_ignored(target, root=resolved_root):
+        # A directory can hold ignored, collectable modules the tree digest
+        # omits; only named files are reusable.
+        if not target.is_relative_to(resolved_root) or not target.is_file() or _git_ignored(target, root=resolved_root):
             return False
         index += 1
     return True
@@ -530,6 +532,9 @@ def _has_worker_flag(selection: list[str]) -> bool:
 #: 13% of runs and 60% of pool time; their median selection named 16 modules.
 #: A handful of modules runs faster in one process than xdist can start.
 LARGE_SELECTION_MODULES = 8
+#: From this many modules a selection is sized as corpus work: the focused
+#: profile's per-worker bound was measured on selections far below it.
+BROAD_SELECTION_MODULES = 100
 
 
 def _selected_test_modules(selection: list[str]) -> int:
@@ -970,6 +975,10 @@ def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     try:
         pytest_env = focused_pytest_env(run=run, artifacts=artifacts)
+        if _selected_test_modules(selection) >= BROAD_SELECTION_MODULES:
+            # A selection this broad accumulates like the corpus does, so it
+            # is sized by the corpus model, not the focused profile.
+            pytest_env.pop(CHARGE_PROFILE_ENV, None)
         pytest_env.pop("POLYLOGUE_PYTEST_CONTAINMENT_PATH", None)
         # A named selection builds only what it asked for: the shared-archive
         # warm-up in tests/conftest.py's pytest_sessionstart is the broad

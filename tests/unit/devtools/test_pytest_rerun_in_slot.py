@@ -238,3 +238,36 @@ def test_the_in_slot_rerun_gets_fresh_temporary_scratch(tmp_path: Path, monkeypa
     assert rerun_tmp != first_scratch
     assert rerun_tmp.parent == first_scratch
     assert list(rerun_tmp.iterdir()) == []
+
+
+def test_no_rerun_without_fresh_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: fall back to the first attempt's TMPDIR and the rerun starts on contaminated scratch."""
+    step = tmp_path / "step"
+    step.mkdir()
+    report = step / "pytest-report.json"
+    _failed_report(report, "tests/test_x.py::test_sentinel")
+    monkeypatch.setattr(
+        pytest_rerun,
+        "build_rerun",
+        lambda **_kwargs: (
+            ["tests/test_x.py::test_sentinel"],
+            [sys.executable, "-c", "pass"],
+            step / "pytest-rerun.json",
+        ),
+    )
+    monkeypatch.setattr(pytest_slot, "_focused_worktree_provenance", lambda *_a, **_k: None)
+
+    def no_space(*_args: Any, **_kwargs: Any) -> str:
+        raise OSError("read-only scratch")
+
+    monkeypatch.setattr(pytest_slot.tempfile, "mkdtemp", no_space)
+    environment = {
+        RERUN_IN_SLOT_ENV: json.dumps({"report_path": str(report), "step_dir": str(step), "root": str(tmp_path)}),
+        "TMPDIR": str(tmp_path),
+    }
+    started: list[object] = []
+    with (tmp_path / "slot.log").open("wb") as log:
+        pytest_slot._rerun_failures_in_slot(environment, cwd=str(tmp_path), log=log, on_start=started.append)
+
+    assert started == []
+    assert json.loads((step / RERUN_IN_SLOT_RESULT).read_text(encoding="utf-8"))["rerun_exit"] == 125
