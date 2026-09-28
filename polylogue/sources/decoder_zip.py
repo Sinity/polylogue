@@ -261,7 +261,8 @@ def process_zip(
     del should_group
 
     from polylogue.paths import blob_store_root
-    from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
+    from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id, require_published
+    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 
     from .cursor import _ParseContext
     from .dispatch import GROUP_PROVIDERS
@@ -322,6 +323,7 @@ def process_zip(
                         )
                     receipt_id = publication_receipt_id(store, blob_hash)
                     flush_blob_publications(store)
+                    require_published(store, blob_hash, source_path=f"{zip_path}:{name}")
                     precomputed_raw = RawSessionData(
                         raw_bytes=b"",
                         source_path=f"{zip_path}:{name}",
@@ -342,6 +344,17 @@ def process_zip(
                         precomputed_raw=precomputed_raw,
                         session_artifact=session_artifact,
                     )
+            except ContentExcisedError as exc:
+                # An excised member is skipped; the archive's other members
+                # still ingest. Not a cursor failure: nothing to retry.
+                emit(
+                    "sources.zip.member_content_excised",
+                    outcome="skipped",
+                    reason="content_excised",
+                    entry=name,
+                    blob_hash=exc.blob_hash.hex(),
+                )
+                continue
             except ZipBombError as exc:
                 logger.warning(
                     "Skipping ZIP entry %s in %s: %s",

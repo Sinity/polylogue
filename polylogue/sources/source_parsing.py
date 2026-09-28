@@ -153,13 +153,25 @@ def iter_antigravity_language_server_sessions(
                 continue
             assert outcome.session is not None
             session = outcome.session
-            raw_data = _antigravity_raw_snapshot(
-                outcome.source_path,
-                session,
-                capture_raw=capture_raw,
-                blob_root=blob_root,
-                blob_store=blob_store,
-            )
+            try:
+                raw_data = _antigravity_raw_snapshot(
+                    outcome.source_path,
+                    session,
+                    capture_raw=capture_raw,
+                    blob_root=blob_root,
+                    blob_store=blob_store,
+                )
+            except ContentExcisedError as exc:
+                # One excised conversation is skipped; the rest of the cohort
+                # still converts.
+                emit(
+                    "sources.parse.content_excised",
+                    outcome="skipped",
+                    reason="content_excised",
+                    path=str(outcome.source_path),
+                    blob_hash=exc.blob_hash.hex(),
+                )
+                continue
             yield (raw_data, session)
     except antigravity.AntigravityBinaryUnavailableError as exc:
         logger.warning(
@@ -218,10 +230,15 @@ def _antigravity_raw_snapshot(
         resolved_blob_root = blob_store_root()
     resolved_store = blob_store or BlobStore(resolved_blob_root)
     blob_hash, blob_size = resolved_store.write_from_path(pb_path)
-    from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
+    from polylogue.storage.blob_publication import (
+        flush_blob_publications,
+        publication_receipt_id,
+        require_published,
+    )
 
     receipt_id = publication_receipt_id(resolved_store, blob_hash)
     flush_blob_publications(resolved_store)
+    require_published(resolved_store, blob_hash, source_path=str(pb_path))
     return RawSessionData(
         raw_bytes=b"",
         source_path=str(pb_path),
@@ -435,10 +452,15 @@ def parse_one_source_path(
             blob_root = blob_store_root()
         resolved_store = blob_store or BlobStore(blob_root)
         blob_hash, blob_size = resolved_store.write_from_path(path)
-        from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
+        from polylogue.storage.blob_publication import (
+            flush_blob_publications,
+            publication_receipt_id,
+            require_published,
+        )
 
         receipt_id = publication_receipt_id(resolved_store, blob_hash)
         flush_blob_publications(resolved_store)
+        require_published(resolved_store, blob_hash, source_path=str(path))
         raw_data = RawSessionData(
             raw_bytes=b"",
             source_path=str(path),

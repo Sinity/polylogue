@@ -124,3 +124,78 @@ def test_reading_a_refused_hash_is_a_typed_excision(tmp_path: Path) -> None:
     assert publisher.exists(excised_hex) is False
     with pytest.raises(ContentExcisedError):
         publisher.read_all(excised_hex)
+
+
+def _claude_code_line(session_id: str, text: str) -> bytes:
+    import json
+
+    record = {
+        "type": "user",
+        "uuid": f"{session_id}-message-1",
+        "parentUuid": None,
+        "sessionId": session_id,
+        "timestamp": "2026-07-10T00:00:00Z",
+        "message": {"role": "user", "content": text},
+    }
+    return (json.dumps(record) + "\n").encode("utf-8")
+
+
+def test_an_excised_grouped_raw_capture_is_refused_and_a_zip_keeps_its_other_members(tmp_path: Path) -> None:
+    """Raw capture of refused bytes stops typed, per file and per ZIP member.
+
+    Anti-vacuity: drop ``require_published`` after the grouped flush and the
+    plain file yields a ``RawSessionData`` naming discarded bytes; drop it in
+    the ZIP member route and the excised member is still emitted.
+    """
+    import zipfile
+
+    import pytest
+
+    from polylogue.sources.source_parsing import parse_one_source_path
+    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    excised = _claude_code_line("excised-session", "bytes the operator excised")
+    kept = _claude_code_line("kept-session", "bytes that stay")
+    with sqlite3.connect(root / "source.db") as source:
+        record_excised_blob_hash(
+            source,
+            blob_hash=hashlib.sha256(excised).digest(),
+            reason="synthetic excision",
+            actor="test",
+            excised_at_ms=1,
+        )
+    plain = tmp_path / "excised.jsonl"
+    plain.write_bytes(excised)
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    with pytest.raises(ContentExcisedError):
+        list(
+            parse_one_source_path(
+                str(plain),
+                file_mtime=None,
+                source_name="claude-code",
+                sidecar_data={},
+                capture_raw=True,
+                blob_store=publisher,
+            )
+        )
+
+    bundle = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(bundle, "w") as zf:
+        zf.writestr("projects/p/excised.jsonl", excised)
+        zf.writestr("projects/p/kept.jsonl", kept)
+    pairs = list(
+        parse_one_source_path(
+            str(bundle),
+            file_mtime=None,
+            source_name="claude-code",
+            sidecar_data={},
+            capture_raw=True,
+            blob_store=publisher,
+        )
+    )
+    captured = {raw.blob_hash for raw, _session in pairs if raw is not None}
+    assert hashlib.sha256(kept).hexdigest() in captured
+    assert hashlib.sha256(excised).hexdigest() not in captured

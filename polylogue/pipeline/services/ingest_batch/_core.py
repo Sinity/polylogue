@@ -691,7 +691,7 @@ def _preacquire_sidecar_blobs(
     session_to_write: ParsedSession,
     blob_publisher: ArchiveBlobPublisher,
     publication_receipts: list[tuple[str, bytes]],
-) -> tuple[ParsedSession, dict[str, int]]:
+) -> tuple[ParsedSession, list[tuple[str, int, bool]]]:
     """Content-address + dedup acquired tool-result sidecar text (polylogue-rujy AC4).
 
     ``apply_tool_result_sidecars`` / ``apply_gemini_tool_output_sidecars``
@@ -717,6 +717,9 @@ def _preacquire_sidecar_blobs(
     A no-op (returns ``session_to_write`` unchanged) unless the session
     actually carries a matched+replaced sidecar event, so a session from an
     origin without sidecars never pays this cost.
+
+    Returns the queued ``(blob_hash, size, already_present)`` entries; the
+    caller counts them only after the flush, which may refuse excised bytes.
     """
     matched_tool_use_ids = {
         tool_use_id
@@ -727,7 +730,7 @@ def _preacquire_sidecar_blobs(
         and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
     }
     if not matched_tool_use_ids:
-        return session_to_write, {}
+        return session_to_write, []
 
     text_by_tool_use_id: dict[str, str] = {
         block.tool_id: block.text
@@ -739,21 +742,17 @@ def _preacquire_sidecar_blobs(
         and block.text is not None
     }
     if not text_by_tool_use_id:
-        return session_to_write, {}
+        return session_to_write, []
 
     blob_hash_by_tool_use_id: dict[str, str] = {}
-    bytes_new = 0
-    bytes_dedup = 0
+    queued: list[tuple[str, int, bool]] = []
     for tool_use_id, text in text_by_tool_use_id.items():
         encoded = unicodedata.normalize("NFC", text).encode("utf-8")
         precomputed_hash = hashlib.sha256(encoded).hexdigest()
         already_present = blob_publisher.exists(precomputed_hash)
         hash_hex, size = blob_publisher.write_from_bytes(encoded)
         blob_hash_by_tool_use_id[tool_use_id] = hash_hex
-        if already_present:
-            bytes_dedup += size
-        else:
-            bytes_new += size
+        queued.append((hash_hex, size, already_present))
         receipt_id = blob_publisher.receipt_id(hash_hex)
         if receipt_id is not None:
             publication_receipts.append((receipt_id, bytes.fromhex(hash_hex)))
@@ -766,12 +765,19 @@ def _preacquire_sidecar_blobs(
         else event
         for event in session_to_write.session_events
     ]
-    counts = {
-        "sidecar_blob_bytes_new": bytes_new,
-        "sidecar_blob_bytes_dedup": bytes_dedup,
-        "sidecar_blobs_written": len(blob_hash_by_tool_use_id),
+    return session_to_write.model_copy(update={"session_events": updated_events}), queued
+
+
+def _sidecar_blob_counts(queued: list[tuple[str, int, bool]], blob_publisher: ArchiveBlobPublisher) -> dict[str, int]:
+    """Count the sidecar blobs a flush actually published (refused excised bytes excluded)."""
+    if not queued:
+        return {}
+    published = [entry for entry in queued if not publication_refused(blob_publisher, entry[0])]
+    return {
+        "sidecar_blob_bytes_new": sum(size for _hash, size, present in published if not present),
+        "sidecar_blob_bytes_dedup": sum(size for _hash, size, present in published if present),
+        "sidecar_blobs_written": len(published),
     }
-    return session_to_write.model_copy(update={"session_events": updated_events}), counts
 
 
 # polylogue-ojjet: the Drive revision-cohort classifier
@@ -1436,11 +1442,11 @@ def _write_session(
             preacquired_attachment_blobs[attachment.acquisition_key] = (blob_hash, size, "acquired")
             if receipt_id is not None:
                 publication_receipts.append((receipt_id, blob_hash))
-        session_to_write, sidecar_blob_counts = _preacquire_sidecar_blobs(
+        session_to_write, queued_sidecar_blobs = _preacquire_sidecar_blobs(
             session_to_write, blob_publisher, publication_receipts
         )
-        counts.update(sidecar_blob_counts)
         blob_publisher.flush()
+        counts.update(_sidecar_blob_counts(queued_sidecar_blobs, blob_publisher))
         session_to_write = _drop_refused_sidecar_blob_hashes(session_to_write, blob_publisher)
     for attachment in session_to_write.attachments:
         # bd polylogue-8ac0: bytes for this attachment were already streamed

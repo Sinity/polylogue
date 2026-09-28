@@ -1894,6 +1894,57 @@ def test_write_session_publishes_sidecar_blob_content_addressed(tmp_path: Path) 
         assert block_row["text"] == full_text, "blob publication must not disturb the FTS-indexed block text (AC2)"
 
 
+def test_write_session_counts_and_references_no_refused_sidecar_blob(tmp_path: Path) -> None:
+    """Sidecar text whose bytes are excised is neither counted nor referenced.
+
+    Anti-vacuity: count sidecar blobs before the flush again, or keep the
+    event's ``blob_hash`` after a refusal, and the batch reports a published
+    blob, or an event names a blob, that the flush discarded.
+    """
+    full_text = "excised sidecar output " * 200
+    source_db = _excise_in_fresh_source_tier(tmp_path / "archive", full_text.encode("utf-8"))
+    publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
+    with open_connection(tmp_path / "index.db") as conn:
+        session = _session_data(
+            "claude-code-session:sidecar-excised",
+            content_hash="sidecar-hash-excised",
+            provider=Provider.CLAUDE_CODE,
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "claude-code-session:sidecar-excised",
+                    role="assistant",
+                    text="ran a command",
+                    content_hash="msg-hash-sidecar-excised",
+                    sort_key=1777636900.0,
+                )
+            ],
+            block_tuples=[
+                (
+                    "msg-1",
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_RESULT,
+                        outcome_unknown_reason="not_reported",
+                        tool_id="toolu_1",
+                        text=full_text,
+                    ),
+                )
+            ],
+            action_tuples=[_sidecar_matched_event("toolu_1")],
+        )
+        changed, counts = _write_session(conn, session, blob_publisher=publisher)
+        conn.commit()
+
+        assert changed is True
+        assert counts["sidecar_blobs_written"] == 0
+        assert counts["sidecar_blob_bytes_new"] == 0
+        event_row = conn.execute(
+            "SELECT payload_json FROM session_events WHERE session_id = ? AND event_type = 'claude_tool_result_sidecar'",
+            ("claude-code-session:sidecar-excised",),
+        ).fetchone()
+        assert '"blob_hash"' not in event_row["payload_json"]
+
+
 def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: Path) -> None:
     """Two sessions with byte-identical acquired sidecar text share one blob (AC4 dedup).
 
