@@ -138,6 +138,18 @@ def load_or_mint_receiver_token(path: Path | None = None, *, rotate: bool = Fals
     absent and a fresh token is minted in its place.
     """
     target = path if path is not None else browser_capture_receiver_token_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target.with_name(target.name + ".lock")
+    lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        return _load_or_mint_receiver_token_locked(target, rotate=rotate)
+    finally:
+        os.close(lock_fd)
+
+
+def _load_or_mint_receiver_token_locked(target: Path, *, rotate: bool) -> str:
     if not rotate and target.exists():
         if _is_trusted_token_file(target):
             existing = target.read_text(encoding="utf-8").strip()
@@ -163,6 +175,31 @@ def load_or_mint_receiver_token(path: Path | None = None, *, rotate: bool = Fals
         with suppress(FileNotFoundError):
             tmp_path.unlink()
         raise
+    return token
+
+
+def persist_receiver_token(token: str, path: Path | None = None) -> str:
+    """Publish an explicitly configured receiver token for native pairing."""
+    if not token:
+        raise ValueError("receiver token must not be empty")
+    target = path if path is not None else browser_capture_receiver_token_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(target.with_name(target.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(token)
+            os.replace(tmp_name, target)
+        except BaseException:
+            with suppress(FileNotFoundError):
+                Path(tmp_name).unlink()
+            raise
+    finally:
+        os.close(lock_fd)
     return token
 
 
@@ -216,7 +253,7 @@ def resolve_receiver_auth_token(
     pre-gnie fully-open posture.
     """
     if explicit_token:
-        return explicit_token
+        return persist_receiver_token(explicit_token, token_path)
     if allow_no_auth:
         logger.warning(
             "browser_capture.auth_disabled",
@@ -381,6 +418,15 @@ def _capture_attachments(envelope: BrowserCaptureEnvelope) -> list[BrowserCaptur
     ]
 
 
+def _scoped_attachments(envelope: BrowserCaptureEnvelope) -> dict[tuple[str, str], BrowserCaptureAttachment]:
+    """Index attachments by their session/turn scope and provider identity."""
+    result = {("session", attachment.provider_attachment_id): attachment for attachment in envelope.session.attachments}
+    for turn in envelope.session.turns:
+        for attachment in turn.attachments:
+            result[(f"turn:{turn.provider_turn_id}", attachment.provider_attachment_id)] = attachment
+    return result
+
+
 def _capture_has_content_carrier(envelope: BrowserCaptureEnvelope) -> bool:
     return any(attachment.content_base64 is not None for attachment in _capture_attachments(envelope))
 
@@ -412,22 +458,18 @@ def _attachment_identity(attachment: BrowserCaptureAttachment) -> tuple[object, 
 
 def _capture_carrier_conflicts(incoming: BrowserCaptureEnvelope, existing: BrowserCaptureEnvelope) -> bool:
     """Reject carrier bytes that contradict an existing attachment identity."""
-    incoming_attachments = _capture_attachments(incoming)
-    existing_attachments = _capture_attachments(existing)
-    if len(incoming_attachments) < len(existing_attachments):
-        return True
-    if any(
-        _attachment_identity(current) != _attachment_identity(previous)
-        for current, previous in zip(
-            incoming_attachments[: len(existing_attachments)], existing_attachments, strict=True
-        )
-    ):
-        return True
-    for current, previous in zip(incoming_attachments, existing_attachments, strict=False):
-        if current.content_base64 is None or previous.content_base64 is None:
+    incoming_attachments = _scoped_attachments(incoming)
+    existing_attachments = _scoped_attachments(existing)
+    for identity, previous in existing_attachments.items():
+        current = incoming_attachments.get(identity)
+        if current is None or _attachment_identity(current) != _attachment_identity(previous):
+            return True
+        current_carrier = current.content_base64 or current.inline_base64 or current.data
+        previous_carrier = previous.content_base64 or previous.inline_base64 or previous.data
+        if current_carrier is None or previous_carrier is None:
             continue
-        current_bytes = _decode_capture_content_base64(current.content_base64)
-        previous_bytes = _decode_capture_content_base64(previous.content_base64)
+        current_bytes = _decode_capture_content_base64(current_carrier)
+        previous_bytes = _decode_capture_content_base64(previous_carrier)
         if (
             current_bytes is _INVALID_ATTACHMENT_CARRIER
             or previous_bytes is _INVALID_ATTACHMENT_CARRIER
@@ -468,10 +510,11 @@ def _attachment_content_enrichment(
         incoming_bytes = _decode_capture_content_base64(incoming_value)
         if incoming_bytes is _INVALID_ATTACHMENT_CARRIER:
             return False
-        if existing_value is None:
+        existing_carrier = existing_value or existing_attachment.inline_base64 or existing_attachment.data
+        if existing_carrier is None:
             added_carrier = True
             continue
-        existing_bytes = _decode_capture_content_base64(existing_value)
+        existing_bytes = _decode_capture_content_base64(existing_carrier)
         if existing_bytes is _INVALID_ATTACHMENT_CARRIER or incoming_bytes != existing_bytes:
             return False
     return added_carrier
@@ -888,12 +931,23 @@ def _accepted_identities(
     """Project the message identities one retained capture artifact carries."""
     session_ref = f"{_capture_origin(envelope.provider.value)}:{envelope.provider_session_id}"
     artifact_ref = capture_artifact_ref(envelope, root)
+    from polylogue.browser_capture.identity import canonical_origin
+
+    expected_origin = canonical_origin(envelope.provider)
     return tuple(
         BrowserCaptureAcceptedIdentity(
             session_ref=session_ref,
             message_ref=f"{session_ref}:n:{turn.provider_turn_id}",
             evidence_ref=f"{artifact_ref}#message:{turn.provider_turn_id}",
-            fidelity="native" if turn.identity_observation.fidelity == "native" else "unknown",
+            fidelity=(
+                "native"
+                if turn.identity_observation.fidelity == "native"
+                and turn.identity_observation.origin == expected_origin
+                and turn.identity_observation.provider_conversation_id == envelope.provider_session_id
+                and turn.identity_observation.provider_message_id == turn.provider_turn_id
+                and turn.identity_observation.adapter_version == envelope.provenance.adapter_version
+                else "unknown"
+            ),
             adapter_version=envelope.provenance.adapter_version,
         )
         for turn in envelope.session.turns

@@ -124,6 +124,9 @@ class CaptureJobRegistry:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=FULL")
         connection.execute("PRAGMA foreign_keys=ON")
+        # Serialize schema inspection and upgrades across ThreadingHTTPServer
+        # requests. The lock is held through the version-independent upgrades.
+        connection.execute("BEGIN IMMEDIATE")
         connection.execute(
             """CREATE TABLE IF NOT EXISTS capture_jobs (
                 job_id TEXT PRIMARY KEY, provider TEXT NOT NULL, account_scope TEXT NOT NULL,
@@ -171,6 +174,29 @@ class CaptureJobRegistry:
             connection.execute(
                 'ALTER TABLE capture_jobs ADD COLUMN retention_json TEXT NOT NULL DEFAULT \'{"state":"active","hold_reason":null,"timeline_authoritative":true}\''
             )
+        # Databases predating the event stream still have durable jobs. Seed
+        # their deterministic baseline once so later revisions have a start.
+        rows = connection.execute(
+            "SELECT job_id, revision, provider, intent_key, created_at FROM capture_jobs "
+            "WHERE NOT EXISTS (SELECT 1 FROM capture_job_events e WHERE e.job_id=capture_jobs.job_id)"
+        ).fetchall()
+        for row in rows:
+            payload = {"provider": row["provider"], "intent_key": row["intent_key"]}
+            digest = canonical_digest({"kind": "created", "refs": {}, "payload": payload})
+            connection.execute(
+                "INSERT INTO capture_job_events "
+                "(event_id, job_id, event_revision, job_revision, kind, refs_json, payload_json, request_id, occurred_at) "
+                "VALUES (?, ?, 0, ?, 'created', '{}', ?, ?, ?)",
+                (
+                    "legacy-created:" + row["job_id"],
+                    row["job_id"],
+                    row["revision"],
+                    canonical_json({"digest": digest, "value": payload}),
+                    "migration:create:" + row["job_id"],
+                    row["created_at"],
+                ),
+            )
+        connection.commit()
         return connection
 
     @contextmanager
@@ -313,7 +339,10 @@ class CaptureJobRegistry:
                     unreadable.append(
                         {
                             "orphan_kind": "unreadable_legacy_checkpoint",
-                            "path": str(path),
+                            "source_digest": "path-sha256:"
+                            + hashlib.sha256(str(path).encode("utf-8", errors="surrogatepass")).hexdigest(),
+                            "diagnostic": "checkpoint bytes could not be read",
+                            "created_at": _stamp(),
                             "errno_class": type(exc).__name__,
                         }
                     )
@@ -542,7 +571,9 @@ class CaptureJobRegistry:
         event_id = str(uuid4())
         stored_payload = {"digest": digest, "value": payload}
         connection.execute(
-            "INSERT INTO capture_job_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO capture_job_events "
+            "(event_id, job_id, event_revision, job_revision, kind, refs_json, payload_json, request_id, occurred_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 event_id,
                 job_id,
@@ -722,12 +753,12 @@ class CaptureJobRegistry:
     @staticmethod
     def _holds_conversation_timeline(connection: sqlite3.Connection, job_id: str) -> bool:
         """Whether this job still holds conversation-bearing timeline evidence."""
-        return bool(
-            connection.execute(
-                "SELECT COUNT(*) FROM capture_job_events "
-                "WHERE job_id=? AND json_extract(refs_json, '$.conversation_ref') IS NOT NULL",
-                (job_id,),
-            ).fetchone()[0]
+        return any(
+            isinstance(ref, str) and bool(ref)
+            for (refs_json,) in connection.execute("SELECT refs_json FROM capture_job_events WHERE job_id=?", (job_id,))
+            for refs in (json.loads(refs_json),)
+            for ref in (refs.get("conversation_ref"),)
+            if isinstance(refs, dict)
         )
 
     @staticmethod
