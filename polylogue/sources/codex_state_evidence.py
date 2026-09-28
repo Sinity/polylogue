@@ -441,10 +441,11 @@ def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
             if state_kind not in codex_state.IN_SCOPE_KINDS:
                 continue
             observed_at_ms = archive.raw_revision_observed_at_ms(raw_id)
-            # Isolate each candidate: a finalize that fails after writing some
-            # material rows must not leave them for the next commit to publish.
-            source_conn = archive.source_connection
-            source_conn.execute("SAVEPOINT codex_state_candidate")
+            # Materialization commits in bounded pages by design, so a
+            # candidate cannot be one transaction. Rows it committed are
+            # idempotent content-addressed observations; the failed raw gets no
+            # terminal receipt, so it is retried and re-materialization
+            # supersedes the same coordinates.
             try:
                 _record_snapshot_candidate(
                     archive,
@@ -457,8 +458,6 @@ def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
                     blob_hash=blob_hash,
                 )
             except (CodexStateFinalizeError, OSError, ValueError) as exc:
-                source_conn.execute("ROLLBACK TO SAVEPOINT codex_state_candidate")
-                source_conn.execute("RELEASE SAVEPOINT codex_state_candidate")
                 emit(
                     "sources.codex_state.snapshot_finalize_refused",
                     outcome="degraded",
@@ -467,7 +466,6 @@ def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
                     error_type=type(exc).__name__,
                 )
                 continue
-            source_conn.execute("RELEASE SAVEPOINT codex_state_candidate")
             resolved += 1
         index_conn = archive.index_connection
         if index_conn is not None:

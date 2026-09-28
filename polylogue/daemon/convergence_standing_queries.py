@@ -240,6 +240,7 @@ def make_standing_query_stage(
                 if evaluation.cache_only:
                     continue
                 _materialize_watch_evaluation(conn, query.query_hash, evaluation, now_ms=now_ms)
+            staged_boundaries: dict[tuple[str, str], int] = {}
             if promoted_due:
                 unevaluated = _materialize_promoted_finding_drifts(
                     conn, evaluator, now_ms=now_ms, query_hashes=frozenset(promoted_due)
@@ -249,8 +250,10 @@ def make_standing_query_stage(
                     # A cache-only evaluation produced no answer; leave it due so
                     # the next check retries instead of waiting a clock boundary.
                     if query_hash not in unevaluated:
-                        _PROMOTED_CLOCK_BOUNDARIES[(str(db_path), query_hash)] = boundary
+                        staged_boundaries[(str(db_path), query_hash)] = boundary
             conn.commit()
+            # Publish the receipts only once the drifts they vouch for are durable.
+            _PROMOTED_CLOCK_BOUNDARIES.update(staged_boundaries)
         finally:
             conn.close()
         emit(

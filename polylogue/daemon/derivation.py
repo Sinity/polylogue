@@ -773,9 +773,15 @@ class _Pass:
                 # later pass resumes the check instead of trusting a partial one.
                 if self.out_of_time():
                     return f"prerequisite domain {name!r} inspection deadline exhausted"
-                page = _as_page(upstream.required_page(self.frame, cursor=cursor, limit=DEFAULT_PAGE))
+                limit = DEFAULT_PAGE
+                if self.budget.inspection is not None:
+                    allowance = self.budget.inspection - self.inspected - self.prerequisites_inspected
+                    if allowance <= 0:
+                        return f"prerequisite domain {name!r} inspection budget exhausted"
+                    limit = min(limit, allowance)
+                page = _as_page(upstream.required_page(self.frame, cursor=cursor, limit=limit))
                 self.pages += 1
-                if len(page.keys) > DEFAULT_PAGE:
+                if len(page.keys) > limit:
                     raise ValueError(f"prerequisite domain {name!r} exceeded page limit")
                 statuses = _coerce_statuses(dict(upstream.inspect(self.frame, page.keys)))
                 self.prerequisites_inspected += len(page.keys)
@@ -853,7 +859,9 @@ class _Pass:
         derivation_key = DerivationKey(adapter.domain, key)
         expected = KeyStatus.MISSING if retiring else KeyStatus.VALID
 
-        blocked = self.prerequisite_block(adapter, key)
+        # Retiring an excess key removes an output nothing requires; it reads no
+        # upstream inputs, so it is never gated on (or scans for) prerequisites.
+        blocked = None if retiring else self.prerequisite_block(adapter, key)
         if blocked is not None:
             self.record(
                 KeyOutcome(key=derivation_key, outcome=Outcome.PENDING, reason=PendingReason.BLOCKED, error=blocked)

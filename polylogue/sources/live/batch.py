@@ -4782,8 +4782,13 @@ class LiveBatchProcessor:
                     # A ZIP member record is offered by its container path;
                     # normalize the durable ``container:member`` coordinate
                     # back to that offered path for caller-side accounting.
-                    offered_path, separator, _member = record.source_path.partition(":")
-                    result.excised_paths.add(Path(offered_path if separator else record.source_path))
+                    # A loose file may itself contain a colon: the literal path
+                    # wins, and only a missing one is read as a coordinate.
+                    literal = Path(record.source_path)
+                    offered_path, separator, member = record.source_path.partition(":")
+                    result.excised_paths.add(
+                        literal if literal.exists() or not (separator and member) else Path(offered_path)
+                    )
                     # The bytes were published (staged and reserved) before the
                     # write refused them. Nothing will ever reference them, so
                     # the success path's receipt consumption never runs and the

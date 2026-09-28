@@ -185,6 +185,15 @@ def archive_provider_title(title: str | None, title_source: str | None) -> str |
     return title if title_source == TitleSource.ORIGIN.value else None
 
 
+def _hex_content_hash(value: object) -> str | None:
+    """A stored 32-byte block hash as its 64-character hex form (JSON-safe)."""
+    if value is None:
+        return None
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).hex()
+    return str(value)
+
+
 # ---------------------------------------------------------------------------
 # Declarations
 # ---------------------------------------------------------------------------
@@ -194,7 +203,7 @@ ARCHIVE_BLOCK_DISPOSITIONS: Dispositions = {
     "message_id": excluded("block identity prefix; the domain block is already nested under its message"),
     "block_type": exposed("type"),
     "text": exposed("text"),
-    "content_hash": exposed("content_hash"),
+    "content_hash": exposed("content_hash", _hex_content_hash),
     "tool_name": exposed("tool_name"),
     "tool_id": exposed("tool_id"),
     "semantic_type": exposed("semantic_type"),

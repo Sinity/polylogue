@@ -37,6 +37,19 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 
 
+def _with_profile(summary: SessionSummary, profile: SessionProfile | None) -> SessionSummary:
+    """Overlay materialized profile facts, identically on single and list reads."""
+    if profile is None:
+        return summary
+    return summary.model_copy(
+        update={
+            "terminal_state": profile.terminal_state,
+            "total_cost_usd": profile.total_cost_usd,
+            "cost_provenance": profile.cost_provenance,
+        }
+    )
+
+
 class RepositoryArchiveSessionMixin:
     if TYPE_CHECKING:
         _backend: RepositoryBackendProtocol
@@ -306,10 +319,14 @@ class RepositoryArchiveSessionMixin:
         tags_by_id = await self._fetch_tags_by_session([session_id])
         # Hydrate message_count from the current sessions aggregate.
         counts_by_id = await self.queries.get_message_counts_batch([session_id])
-        return session_summary_from_record(
-            conv_record,
-            tags=tags_by_id.get(session_id, ()),
-            message_count=counts_by_id.get(session_id),
+        profiles_by_id = await self.get_session_profiles_batch([session_id])
+        return _with_profile(
+            session_summary_from_record(
+                conv_record,
+                tags=tags_by_id.get(session_id, ()),
+                message_count=counts_by_id.get(session_id),
+            ),
+            profiles_by_id.get(session_id),
         )
 
     async def list_summaries_by_query(
@@ -330,16 +347,7 @@ class RepositoryArchiveSessionMixin:
                 tags=tags_by_id.get(session_id, ()),
                 message_count=counts_by_id.get(session_id),
             )
-            profile = profiles_by_id.get(session_id)
-            if profile is not None:
-                summary = summary.model_copy(
-                    update={
-                        "terminal_state": profile.terminal_state,
-                        "total_cost_usd": profile.total_cost_usd,
-                        "cost_provenance": profile.cost_provenance,
-                    }
-                )
-            summaries.append(summary)
+            summaries.append(_with_profile(summary, profiles_by_id.get(session_id)))
         return summaries
 
     async def list_by_query(
