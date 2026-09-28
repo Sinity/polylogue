@@ -377,3 +377,29 @@ def test_unreadable_ops_ledger_with_no_index_fallback_is_unmeasured(tmp_path: Pa
 
     assert summary.available is False
     assert summary.unavailable_reason is not None
+
+
+def test_unreadable_ops_ledger_is_unmeasured_even_with_a_legacy_index_fallback(tmp_path: Path) -> None:
+    """A failed ops read is not replaced by the legacy index projection.
+
+    Anti-vacuity: drop the early ``ops_error`` return in
+    ``cursor_lag_summary_info`` and the readable index ``live_cursor`` rows are
+    published as an available measurement although the authoritative ledger
+    failed.
+    """
+    db = tmp_path / "index.db"
+    _seed_cursor(db, rows=[])
+    ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
+    conn = sqlite3.connect(str(ops_db))
+    try:
+        conn.execute("DROP TABLE ingest_cursor")
+        conn.execute("CREATE TABLE ingest_cursor (source_path TEXT)")
+        conn.commit()
+    finally:
+        conn.close()
+
+    summary = cursor_lag_summary_info(db, ops_db=ops_db)
+
+    assert summary.available is False
+    assert summary.unavailable_reason is not None

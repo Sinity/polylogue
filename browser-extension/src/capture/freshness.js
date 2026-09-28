@@ -200,7 +200,9 @@ export function runningPollDelayMs(pollCount) {
 }
 
 export function failureRetryDelayMs(attemptCount, outcome, retryAfterSeconds = null) {
-  if (retryAfterSeconds) return Math.max(1_000, retryAfterSeconds * 1_000);
+  if (Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0) {
+    return Math.max(1_000, retryAfterSeconds * 1_000);
+  }
   if (["rate_limited", "provider_warning", "safety_locked"].includes(outcome)) return 15 * 60_000;
   if (outcome === "auth_challenge") return 60 * 60_000;
   return Math.min(15 * 60_000, 15_000 * 2 ** Math.min(6, Math.max(0, attemptCount)));
