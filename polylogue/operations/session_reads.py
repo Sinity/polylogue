@@ -18,6 +18,7 @@ from polylogue.archive.query.transaction import (
     archive_snapshot_epoch,
     validate_continuation_epoch,
 )
+from polylogue.core.tool_identity import sql_coalesced_json_extract
 from polylogue.operations.session_contracts import (
     Coverage,
     RawContent,
@@ -40,6 +41,8 @@ from polylogue.operations.session_contracts import (
     SessionTimeline,
     TimelineEvent,
 )
+
+_EVENT_TEXT_SQL = sql_coalesced_json_extract("e.payload_json", ("summary", "text"))
 
 PagedRequest = TypeVar("PagedRequest", SessionList, SessionSearch, SessionRead, SessionTimeline)
 
@@ -240,7 +243,8 @@ async def session_timeline(archive_root: Path, request: SessionTimeline) -> Sess
 
     def read(archive: Any) -> SessionPage[TimelineEvent]:
         framed = _frame(archive, tx)
-        scope = """WITH events AS (
+        scope = (
+            """WITH events AS (
             SELECT 'message:' || m.message_id AS reference, m.session_id, s.origin,
                    'message' AS kind, m.role AS event_type, m.occurred_at_ms AS timestamp_ms,
                    NULL AS event_id, m.message_id,
@@ -253,10 +257,14 @@ async def session_timeline(archive_root: Path, request: SessionTimeline) -> Sess
                    -- write-time render of the payload. This is that render,
                    -- moved to the read path: same COALESCE order, same '' floor,
                    -- so the timeline text for a session-event is unchanged.
-                   COALESCE(json_extract(e.payload_json, '$.summary'),
-                            json_extract(e.payload_json, '$.text'), '')
+                   -- The projection keeps a stored lone-surrogate escape
+                   -- spelled out; bare json_extract would yield invalid UTF-8.
+                   COALESCE("""
+            + _EVENT_TEXT_SQL
+            + """, '')
             FROM session_events e JOIN sessions s ON s.session_id=e.session_id
         ) """
+        )
         where = "WHERE (? IS NULL OR origin=?) AND (? IS NULL OR instr(lower(text), lower(?))>0)"
         origin = request.origin.value if request.origin is not None else None
         params: tuple[object, ...] = (origin, origin, request.expression, request.expression)
