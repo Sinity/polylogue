@@ -63,37 +63,30 @@ def _sql_text_projection(column: str, key: str) -> str:
     quoted = f"({column} -> {path})"
     return (
         f"CASE WHEN json_type({column}, {path}) = 'text' AND {quoted} GLOB '*\\u[dD][89a-fA-F]*' "
-        f"THEN {_sql_decode_json_string_keeping_surrogates(f'substr({quoted}, 2, length({quoted}) - 2)')} "
+        f"THEN json_extract({_sql_escape_surrogate_escapes(quoted)}, '$') "
         f"ELSE json_extract({column}, {path}) END"
     )
 
 
-#: Placeholder for an escaped backslash while the other escapes are decoded:
-#: U+FFFF is a noncharacter, so no provider text carries it.
-_ESCAPED_BACKSLASH_PLACEHOLDER = "char(65535)"
+#: The spelling of every lone-surrogate escape prefix, ``\uD800``-``\uDFFF``
+#: in either hex case.
+_SURROGATE_ESCAPE_PREFIXES = tuple(f"\\u{d}{h}" for d in "dD" for h in "89abcdefABCDEF")
 
 
-def _sql_decode_json_string_keeping_surrogates(raw: str) -> str:
-    """Decode a JSON string body in SQL while keeping ``\\uD8xx`` escapes escaped.
+def _sql_escape_surrogate_escapes(json_string: str) -> str:
+    """Rewrite a JSON string literal so decoding it keeps surrogates spelled out.
 
-    Escaped backslashes are set aside first, so a ``\\\\`` followed by ``u``
-    is literal text rather than the start of an escape; the short escapes are
-    then decoded and the backslashes restored. Surrogate escapes stay in
-    their escaped spelling, since decoding them yields text that is not
-    valid UTF-8.
+    SQLite's own JSON decoder then handles every other escape (short forms,
+    ``\\u00XX`` controls, any other ``\\uXXXX``) and leaves every literal
+    character, U+FFFF included, untouched. Escaped backslashes are first
+    respelled as ``\\u005c`` so each remaining backslash starts a real escape;
+    each surrogate escape then gains an escaped backslash, which decodes to
+    the literal text ``\\uD8xx`` instead of text that is not valid UTF-8.
     """
-    decoded = f"replace({raw}, '\\\\', {_ESCAPED_BACKSLASH_PLACEHOLDER})"
-    for escape, replacement in (
-        ('\\"', "'\"'"),
-        ("\\/", "'/'"),
-        ("\\n", "char(10)"),
-        ("\\t", "char(9)"),
-        ("\\r", "char(13)"),
-        ("\\b", "char(8)"),
-        ("\\f", "char(12)"),
-    ):
-        decoded = f"replace({decoded}, '{escape}', {replacement})"
-    return f"replace({decoded}, {_ESCAPED_BACKSLASH_PLACEHOLDER}, '\\')"
+    rewritten = f"replace({json_string}, '\\\\', '\\u005c')"
+    for prefix in _SURROGATE_ESCAPE_PREFIXES:
+        rewritten = f"replace({rewritten}, '{prefix}', '\\\\{prefix[1:]}')"
+    return rewritten
 
 
 @dataclass(frozen=True, slots=True)

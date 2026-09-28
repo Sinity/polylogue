@@ -57,3 +57,23 @@ def test_a_lone_surrogate_projection_decodes_ordinary_escapes() -> None:
     connection.execute("INSERT INTO t (tool_input) VALUES (?)", (stored,))
     (command,) = connection.execute("SELECT tool_command FROM t").fetchone()
     assert command == 'echo "a"\n\\path \\ud800 \\ud800'
+
+
+def test_a_lone_surrogate_projection_keeps_noncharacters_and_decodes_controls() -> None:
+    """A real U+FFFF survives and ``\\u00XX`` control escapes decode.
+
+    Anti-vacuity: restore the U+FFFF backslash placeholder and the provider's
+    U+FFFF comes back as a backslash; decode only the short escapes and the
+    NUL stays spelled ``\\u0000``.
+    """
+    import sqlite3
+
+    from polylogue.core.tool_identity import sql_coalesced_json_extract
+
+    projection = sql_coalesced_json_extract("tool_input", ("command",))
+    connection = sqlite3.connect(":memory:")
+    connection.execute(f"CREATE TABLE t (tool_input TEXT, tool_command TEXT GENERATED ALWAYS AS ({projection}))")
+    stored = '{"command":"a￿b \\u0000 \\u001f \\\\ \\uDFFF"}'
+    connection.execute("INSERT INTO t (tool_input) VALUES (?)", (stored,))
+    (command,) = connection.execute("SELECT tool_command FROM t").fetchone()
+    assert command == "a￿b \x00 \x1f \\ \\uDFFF"

@@ -1611,9 +1611,11 @@ class _CodexTextConservation:
             JOIN codex_replacement_texts AS text ON text.key = context.key
             WHERE text.retained = 0 AND text.stored = 0
         """
+        # Iterated, never fetched whole: a rollout with one distinct value per
+        # compaction yields one row per compaction here.
         for insert_at, count in connection.execute(
             f"SELECT context.insert_at, COUNT(*) {stored} GROUP BY context.insert_at"
-        ).fetchall():
+        ):
             compaction = events[insert_at - 1]
             previous = compaction.payload.get("replacement_history_context_count")
             compaction.payload["replacement_history_context_count"] = (

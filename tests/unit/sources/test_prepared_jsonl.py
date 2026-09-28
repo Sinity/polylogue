@@ -2510,11 +2510,12 @@ def test_sink_json_keeps_literal_escape_text_and_json_mode_fields(tmp_path: Path
     mode, and the paste evidence digest comes back as its hex text.
     """
     from polylogue.sources.parsers.base_models import ParsedPasteEvidence
-    from polylogue.sources.prepared_message_sink import _from_text_json, _text_json
+    from polylogue.sources.prepared_message_sink import _from_text_json, _message_json
 
     for text in ("literal \\ud800 text", "real \ud800 surrogate"):
         evidence = ParsedPasteEvidence(content_hash=b"\x01" * 32, source_marker=text)
-        assert _from_text_json(ParsedPasteEvidence, _text_json(evidence.model_dump(mode="json"))) == evidence
+        message = ParsedMessage(provider_message_id="m1", role=Role.USER, text=text, paste_spans=[evidence])
+        assert _from_text_json(ParsedMessage, _message_json(message)).paste_spans == [evidence]
 
 
 def test_sink_surrogate_decode_keeps_excluded_parser_coordinates() -> None:
