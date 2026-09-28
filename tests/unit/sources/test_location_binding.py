@@ -394,3 +394,55 @@ def test_refused_unit_releases_every_capture_even_identical_ones(tmp_path: Path)
                 captures.append((blob_hash, publisher.receipt_id(blob_hash)))
             raise ForeignOriginContentError(expected=Provider.CHATGPT, found=Provider.CLAUDE_AI, evidence="probe")
     assert [receipt.blob_hash for receipt, _ in publisher._pending] == [kept]
+
+
+def test_clearing_one_archives_member_debt_spares_a_case_sibling(tmp_path: Path) -> None:
+    """A scan of ``a.zip`` clears only ``a.zip``'s member refusals.
+
+    Anti-vacuity: selecting subjects with SQLite's default ``LIKE`` folds
+    ASCII case, so ``A.zip``'s still-active refusal gap is deleted too.
+    """
+    from polylogue.sources.live.cursor import CursorStore
+
+    cursor = CursorStore(tmp_path / "cursor.sqlite")
+    for subject in ("/sessions/a.zip:m1", "/sessions/A.zip:m1"):
+        cursor.record_convergence_debt(
+            stage="live_ingest_admission", subject_type="source_path", subject_id=subject, error="refused"
+        )
+    cursor.clear_convergence_debt_under_prefix(
+        stage="live_ingest_admission", subject_type="source_path", prefix="/sessions/a.zip:"
+    )
+    remaining = {debt.subject_id for debt in cursor.list_convergence_debt(stage="live_ingest_admission")}
+    assert remaining == {"/sessions/A.zip:m1"}
+
+
+def test_a_bound_parse_stream_releases_no_session_before_it_validates() -> None:
+    """At a bound location a stream is one admission unit.
+
+    A Codex record after admissible Claude Code records is refused when its
+    bytes are read; no session parsed from the earlier records may escape
+    first. Anti-vacuity: streaming sessions out of ``emit`` as they parse
+    yields the Claude Code session before the refusal.
+    """
+    from io import BytesIO
+
+    from polylogue.sources.cursor import _ParseContext
+    from polylogue.sources.emitter import _SessionEmitter
+
+    emitter = _SessionEmitter(
+        _ParseContext(
+            provider_hint=Provider.CLAUDE_CODE,
+            should_group=False,
+            source_path_str="member.jsonl",
+            fallback_id="member",
+            file_mtime=None,
+            capture_raw=False,
+            sidecar_data={},
+            bound_provider=Provider.CLAUDE_CODE,
+        )
+    )
+    released = []
+    with pytest.raises(ForeignOriginContentError):
+        for item in emitter.emit(BytesIO(_jsonl([*_CLAUDE_CODE_TRANSCRIPT, *_CODEX_ROLLOUT])), "member.jsonl"):
+            released.append(item)
+    assert released == []
