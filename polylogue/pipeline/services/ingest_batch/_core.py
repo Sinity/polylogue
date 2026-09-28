@@ -106,7 +106,11 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     classify_raw_revision_cohort_for_live_watch,
     raw_membership_raw_ids,
 )
-from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceBlobRef,
+    ContentExcisedError,
+    is_blob_hash_excised,
+)
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
     LineageSignatureCache,
@@ -673,7 +677,11 @@ _EXCISED_SIDECAR_TEXT = "[sidecar content excised; publication refused]"
 
 
 def _drop_refused_sidecar_blob_hashes(
-    session_to_write: ParsedSession, blob_publisher: ArchiveBlobPublisher
+    session_to_write: ParsedSession,
+    blob_publisher: ArchiveBlobPublisher,
+    *,
+    source_conn: sqlite3.Connection | None = None,
+    redactable: bool = True,
 ) -> ParsedSession:
     """Remove refused sidecar ``blob_hash`` references and redact their block text.
 
@@ -686,17 +694,46 @@ def _drop_refused_sidecar_blob_hashes(
     content under a fresh ingest despite this reporting a permanent
     publication refusal. Both the event reference and the block text are
     excised together.
+
+    Refusal is read from both authorities: this flush's refusals, and the
+    durable excision ledger at this write boundary, so an excision that
+    committed after the flush released its lock still redacts the block.
+
+    ``redactable=False`` names a session whose rows were lowered before
+    admission (a sealed prepared write, possibly disk-backed): its stored text
+    cannot be rewritten here without loading the transcript, so a refused
+    sidecar is the typed excision refusal instead.
     """
-    refused_tool_use_ids = {
-        tool_use_id
-        for event in session_to_write.session_events
-        if event.event_type in _SIDECAR_EVENT_TYPES
-        and isinstance(blob_hash := event.payload.get("blob_hash"), str)
-        and publication_refused(blob_publisher, blob_hash)
-        and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
-    }
+
+    def refused(blob_hash: str) -> bool:
+        if publication_refused(blob_publisher, blob_hash):
+            return True
+        if source_conn is None:
+            return False
+        try:
+            return is_blob_hash_excised(source_conn, bytes.fromhex(blob_hash))
+        except ValueError:
+            return False
+
+    refused_hashes: dict[str, str] = {}
+    for event in session_to_write.session_events:
+        blob_hash = event.payload.get("blob_hash")
+        tool_use_id = event.payload.get("tool_use_id")
+        if (
+            event.event_type in _SIDECAR_EVENT_TYPES
+            and isinstance(blob_hash, str)
+            and isinstance(tool_use_id, str)
+            and refused(blob_hash)
+        ):
+            refused_hashes[tool_use_id] = blob_hash
+    refused_tool_use_ids = set(refused_hashes)
     if not refused_tool_use_ids:
         return session_to_write
+    if not redactable:
+        first = refused_hashes[min(refused_hashes)]
+        raise ContentExcisedError(
+            blob_hash=bytes.fromhex(first), source_path=f"sidecar:{session_to_write.provider_session_id}"
+        )
     updated_events = [
         event.model_copy(update={"payload": {key: value for key, value in event.payload.items() if key != "blob_hash"}})
         if event.event_type in _SIDECAR_EVENT_TYPES and event.payload.get("tool_use_id") in refused_tool_use_ids
@@ -1485,7 +1522,12 @@ def _write_session(
         )
         blob_publisher.flush()
         counts.update(_sidecar_blob_counts(queued_sidecar_blobs, blob_publisher))
-        session_to_write = _drop_refused_sidecar_blob_hashes(session_to_write, blob_publisher)
+        session_to_write = _drop_refused_sidecar_blob_hashes(
+            session_to_write,
+            blob_publisher,
+            source_conn=source_conn,
+            redactable=payload.prepared_write is None and not isinstance(session_to_write.messages, SqliteMessageSink),
+        )
     for attachment in session_to_write.attachments:
         # bd polylogue-8ac0: bytes for this attachment were already streamed
         # into the blob store during sidecar discovery (e.g. ChatGPT ``.dat``

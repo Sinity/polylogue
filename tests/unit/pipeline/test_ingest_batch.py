@@ -11,7 +11,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NoReturn, TypeAlias, cast
+from typing import Any, NoReturn, TypeAlias, cast
 from unittest.mock import AsyncMock
 
 import aiosqlite
@@ -1954,6 +1954,109 @@ def test_write_session_counts_and_references_no_refused_sidecar_blob(tmp_path: P
         ).fetchone()
         assert block_row["text"] != full_text
         assert full_text not in block_row["text"]
+
+
+def _excised_sidecar_session(session_id: str, full_text: str) -> Any:
+    return _session_data(
+        session_id,
+        content_hash=f"{session_id}-hash",
+        provider=Provider.CLAUDE_CODE,
+        message_tuples=[
+            _message_tuple(
+                "msg-1",
+                session_id,
+                role="assistant",
+                text="ran a command",
+                content_hash=f"{session_id}-msg-hash",
+                sort_key=1777636900.0,
+            )
+        ],
+        block_tuples=[
+            (
+                "msg-1",
+                ParsedContentBlock(
+                    type=BlockType.TOOL_RESULT, outcome_unknown_reason="not_reported", tool_id="toolu_1", text=full_text
+                ),
+            )
+        ],
+        action_tuples=[_sidecar_matched_event("toolu_1")],
+    )
+
+
+def test_write_session_redacts_a_sidecar_excised_after_the_flush(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An excision committed after the publisher lock is released still redacts.
+
+    Anti-vacuity (Codex P1, #5696): consult only the flush's in-memory refusal
+    and the publication succeeded before the ledger entry, so the block keeps
+    the excised text and the event keeps its blob hash.
+    """
+    from polylogue.storage.sqlite.archive_tiers.source_write import record_excised_blob_hash
+
+    full_text = "sidecar output excised mid-ingest " * 200
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    original_flush = ArchiveBlobPublisher.flush
+
+    def flush_then_excise(self: ArchiveBlobPublisher) -> Any:
+        receipts = original_flush(self)
+        with sqlite3.connect(root / "source.db") as excision:
+            record_excised_blob_hash(
+                excision,
+                blob_hash=sha256(full_text.encode("utf-8")).digest(),
+                reason="synthetic excision",
+                actor="test",
+                excised_at_ms=1,
+            )
+        return receipts
+
+    monkeypatch.setattr(ArchiveBlobPublisher, "flush", flush_then_excise)
+    session_id = "claude-code-session:sidecar-raced"
+    with open_connection(tmp_path / "index.db") as conn, sqlite3.connect(root / "source.db") as source_conn:
+        _write_session(
+            conn, _excised_sidecar_session(session_id, full_text), blob_publisher=publisher, source_conn=source_conn
+        )
+        conn.commit()
+        block_text = conn.execute(
+            "SELECT text FROM blocks WHERE session_id = ? AND block_type = 'tool_result'", (session_id,)
+        ).fetchone()["text"]
+        event_payload = conn.execute(
+            "SELECT payload_json FROM session_events WHERE session_id = ? AND event_type = 'claude_tool_result_sidecar'",
+            (session_id,),
+        ).fetchone()["payload_json"]
+    assert full_text not in block_text
+    assert '"blob_hash"' not in event_payload
+
+
+def test_a_prepared_session_with_an_excised_sidecar_is_a_typed_refusal(tmp_path: Path) -> None:
+    """A sealed prepared write cannot be redacted in place, so it is refused.
+
+    Anti-vacuity (Codex P2, #5696): redact the parsed messages of a session
+    whose rows were lowered before admission and either the whole transcript
+    is loaded into memory or the prepared rows still publish the excised text.
+    """
+    from polylogue.pipeline.services.ingest_batch._core import _drop_refused_sidecar_blob_hashes
+    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+    full_text = "excised sidecar output " * 200
+    source_db = _excise_in_fresh_source_tier(tmp_path / "archive", full_text.encode("utf-8"))
+    publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
+    session = _excised_sidecar_session("claude-code-session:sidecar-prepared", full_text).parsed_session
+    session_with_hash = session.model_copy(
+        update={
+            "session_events": [
+                event.model_copy(
+                    update={"payload": {**event.payload, "blob_hash": sha256(full_text.encode("utf-8")).hexdigest()}}
+                )
+                for event in session.session_events
+            ]
+        }
+    )
+    with sqlite3.connect(source_db) as source_conn, pytest.raises(ContentExcisedError):
+        _drop_refused_sidecar_blob_hashes(session_with_hash, publisher, source_conn=source_conn, redactable=False)
 
 
 def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: Path) -> None:

@@ -221,6 +221,7 @@ class TestApplySessionExcision:
         receipt = apply_session_excision(tmp_path, "codex-session:nope", reason="r", actor="user:local")
         assert receipt.found is False
 
+    @pytest.mark.uses_real_clock("waits on real OS-thread scheduling to show the excision blocks behind the slot")
     def test_apply_waits_for_an_in_flight_blob_publication(self, tmp_path: Path) -> None:
         """Excision and a publisher's reserve-then-publish are mutually exclusive.
 

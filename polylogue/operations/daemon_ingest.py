@@ -451,7 +451,9 @@ class IngestExecution:
                     )
                 )
                 ordinal = 0
-                refused_inputs: list[FrozenSourceInput] = []
+                # Refusals are reported page by page; only the first is kept,
+                # so a source of many excised files stays page-bounded.
+                first_refused: FrozenSourceInput | None = None
                 after_coordinate: str | None = None
                 while True:
 
@@ -468,10 +470,13 @@ class IngestExecution:
                     if not page:
                         break
 
+                    page_refused: list[FrozenSourceInput] = []
+
                     def stage_page(
                         conn: sqlite3.Connection,
                         start: int = ordinal,
                         batch: tuple[FrozenSourceInput, ...] = page,
+                        refused: list[FrozenSourceInput] = page_refused,
                     ) -> int:
                         # ``source_write`` flushed the page's publications first.
                         # An input whose bytes are excised was refused there and
@@ -480,24 +485,26 @@ class IngestExecution:
                         admitted = tuple(
                             item for item in batch if not publication_refused(self.publisher, item.blob_hash)
                         )
-                        refused_inputs.extend(item for item in batch if item not in admitted)
+                        refused[:] = [item for item in batch if item not in admitted]
                         if admitted:
                             append_prepared_source_inputs(conn, generation_id, start, admitted)
                         return len(admitted)
 
                     ordinal += await self.source_write(stage_page)
                     after_coordinate = page[-1].coordinate
-                for refused in refused_inputs:
-                    emit(
-                        "ingest.accepted_input.content_excised",
-                        outcome="skipped",
-                        reason="content_excised",
-                        blob_hash=refused.blob_hash,
-                    )
-                if ordinal == 0 and refused_inputs:
+                    for refused_input in page_refused:
+                        emit(
+                            "ingest.accepted_input.content_excised",
+                            outcome="skipped",
+                            reason="content_excised",
+                            blob_hash=refused_input.blob_hash,
+                        )
+                    if first_refused is None and page_refused:
+                        first_refused = page_refused[0]
+                if ordinal == 0 and first_refused is not None:
                     raise ContentExcisedError(
-                        blob_hash=bytes.fromhex(refused_inputs[0].blob_hash),
-                        source_path=refused_inputs[0].source_path,
+                        blob_hash=bytes.fromhex(first_refused.blob_hash),
+                        source_path=first_refused.source_path,
                     )
                 manifest = await self.source_write(
                     lambda conn: seal_prepared_source_manifest(conn, generation_id, sealed_at_ms=int(time() * 1000))
