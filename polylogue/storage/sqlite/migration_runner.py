@@ -675,8 +675,13 @@ def _canonical_json_sha256(payload: object) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _sqlite_user_version(path: Path) -> int:
-    with closing(open_readonly_connection(path, immutable=True, validate_schema=False)) as conn:
+def _sqlite_user_version(path: Path, *, live: bool = False) -> int:
+    """Read ``user_version`` from a sealed artifact or a live tier's WAL."""
+    if live:
+        conn = open_readonly_connection(path, validate_schema=False, timeout_class="offline-bulk")
+    else:
+        conn = open_readonly_connection(path, immutable=True, validate_schema=False)
+    with closing(conn):
         return int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
 
 
