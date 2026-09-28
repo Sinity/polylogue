@@ -764,7 +764,7 @@ def test_polylogued_run_uses_default_sources() -> None:
     sources = (WatchSource(name="codex", root=Path("/tmp/codex")),)
 
     with (
-        patch("polylogue.daemon.cli.default_sources", return_value=sources) as default_sources,
+        patch("polylogue.sources.live.watcher.default_sources", return_value=sources) as default_sources,
         patch("polylogue.daemon.cli.asyncio.run") as run,
     ):
         result = CliRunner().invoke(main, ["run", "--no-browser-capture", "--no-api"])
@@ -800,7 +800,7 @@ def test_spool_override_replaces_default_browser_capture_source() -> None:
         WatchSource(name="browser-capture", root=default_spool, suffixes=(".json",)),
     )
 
-    with patch("polylogue.daemon.cli.default_sources", return_value=sources):
+    with patch("polylogue.sources.live.watcher.default_sources", return_value=sources):
         resolved = daemon_cli._watch_sources(browser_capture_spool_path=override_spool)
 
     assert resolved == (
@@ -864,7 +864,7 @@ def test_polylogued_watch_uses_default_sources(workspace_env: dict[str, Path]) -
         assert kwargs["enable_watch"] is True
 
     with (
-        patch("polylogue.daemon.cli.default_sources", return_value=sources) as default_sources,
+        patch("polylogue.sources.live.watcher.default_sources", return_value=sources) as default_sources,
         patch("polylogue.daemon.cli.run_daemon_services", side_effect=fake_run_daemon_services) as run_services,
     ):
         result = runner.invoke(main, ["watch"])
