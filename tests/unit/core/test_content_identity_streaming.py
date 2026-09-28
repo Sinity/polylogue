@@ -574,3 +574,18 @@ def test_values_are_measured_by_their_nfc_form(monkeypatch: pytest.MonkeyPatch) 
     assert len(followers.encode()) > 32 >= len(unicodedata.normalize("NFC", followers).encode())
     payload = json.dumps([followers], ensure_ascii=False).encode()
     assert payload_content_identity(payload) == structural_content_identity([followers])
+
+
+def test_spooled_equivalent_keys_order_by_value_digest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: order spooled keys by key alone and swapping the values of
+    two canonically equivalent spooled keys changes the identity."""
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 300)
+    monkeypatch.setattr(content_identity, "_ENTRY_MEMORY_BYTES", 4 * (content_identity._ENTRY_OVERHEAD_BYTES + 4))
+    stem = "x" * 150
+    composed, decomposed = stem + "é", stem + "é"
+    filler = {f"k{index}": index for index in range(12)}
+    first = json.dumps({**filler, composed: "one", decomposed: "two"}, ensure_ascii=False).encode()
+    second = json.dumps({**filler, composed: "two", decomposed: "one"}, ensure_ascii=False).encode()
+    assert payload_content_identity(first) == payload_content_identity(second)

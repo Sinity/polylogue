@@ -981,14 +981,16 @@ class _Entries:
         held: list[tuple[bytes | _SpooledKey, bytes]] = sorted(
             (nfc(key).encode("utf-8", "surrogatepass"), digest) for key, digest in self._memory.items() if digest
         )
-        spooled = sorted(((key, digest) for key, digest in self._spooled.values() if digest), key=lambda item: item[0])
+        spooled = sorted(
+            ((key, digest) for key, digest in self._spooled.values() if digest), key=lambda item: (item[0], item[1])
+        )
         rows = (
             (bytes(normalized), bytes(digest))
             for normalized, digest in connection.execute(
                 "SELECT normalized, digest FROM entries WHERE obj = ? ORDER BY normalized, digest", (self._id,)
             )
         )
-        for normalized, digest in heapq.merge(rows, held, spooled, key=lambda item: item[0]):
+        for normalized, digest in heapq.merge(rows, held, spooled, key=lambda item: (item[0], item[1])):
             if isinstance(normalized, _SpooledKey):
                 sink.update(b"k%d:" % normalized.length)
                 for chunk in normalized.chunks():
