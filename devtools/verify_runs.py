@@ -940,12 +940,15 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                     step["flaky"] = flaky
                     step["flaky_count"] = len(flaky)
             steps.append({key: value for key, value in step.items() if value is not None})
+    tree_unknown = entry.get("worktree_capture_source") == "unavailable"
     result: dict[str, Any] = {
         "schema_version": 1,
         "kind": "polylogue.verification-receipt",
         "run_id": entry.get("run_id"),
+        # An execution tree nobody captured is unknown: the checkout at
+        # finalization is not evidence of what ran.
         "source_revision": None
-        if entry.get("git_dirty") or entry.get("final_git_dirty")
+        if tree_unknown or entry.get("git_dirty") or entry.get("final_git_dirty")
         else entry.get("final_git_head") or entry.get("git_head"),
         "status": _terminal_status(entry),
         "started_at": entry.get("started_at"),
@@ -954,7 +957,7 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
         "steps": steps,
         "artifact_ref": f"polylogue://verification/{entry.get('run_id')}",
         "semantic_status": entry.get("status"),
-        "git_dirty": bool(entry.get("git_dirty") or entry.get("final_git_dirty")),
+        "git_dirty": None if tree_unknown else bool(entry.get("git_dirty") or entry.get("final_git_dirty")),
         "tier": entry.get("tier"),
         "verification_scope": entry.get("verification_scope"),
     }

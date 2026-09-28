@@ -1121,9 +1121,14 @@ def test_an_oom_killed_step_keeps_its_diagnosis_over_the_missing_evidence(
     # pytest may never have run against.
     assert history["git_head"] is None
     assert history["worktree_capture_source"] == "unavailable"
-    # The durable projections keep who ended the step, not only that it failed.
     from devtools import verify_runs
 
+    # The checkout at finalization must not stand in for the unknown tree.
+    history["final_git_head"] = "moved-after-the-kill"
+    canonical = verify_runs.canonical_verification_receipt(history)
+    assert canonical["source_revision"] is None
+    assert canonical["git_dirty"] is None
+    # The durable projections keep who ended the step, not only that it failed.
     for durable in (
         verify_runs.canonical_verification_receipt(history)["steps"][0],
         verify_runs._semantic_history_row(history)["steps"][0],
