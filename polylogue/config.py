@@ -1764,7 +1764,8 @@ def _apply_toml_layer(
     if undeclared := _undeclared_toml_keys(toml_data):
         raise ConfigError(
             f"{layer_name} config {path} sets keys Polylogue does not read: {', '.join(undeclared)}; "
-            "remove them (see `polylogue config` for the supported keys)"
+            f"delete those keys from {path}, or move the file aside and run `polylogue init` to write a new one "
+            "(every command loads this file, so none runs until it is fixed)"
         )
     before = deepcopy(cfg)
     _merge_toml(cfg, toml_data)

@@ -90,8 +90,13 @@ from polylogue.pipeline.ingest_outcomes import (
     transient_error_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
+from polylogue.sources.acquisition_boundary import (
+    admit_bound_bytes,
+    capture_bound_path,
+    refuse_foreign_path,
+    release_refused_capture,
+)
 from polylogue.sources.artifact_observations import record_session_artifact_observation
-from polylogue.sources.bound_capture import release_refused_capture, validate_captured_blob
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoder_json import PartialJsonStreamError
 from polylogue.sources.decoder_zip import (
@@ -103,14 +108,12 @@ from polylogue.sources.decoder_zip import (
 from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
-    BoundRecordValidator,
     ForeignOriginContentError,
     bound_location_provider,
     is_jsonl_source_path,
     is_stream_record_provider,
     parse_payload,
     parse_stream_payload,
-    refuse_foreign_material,
     require_positive_conversational_evidence,
 )
 from polylogue.sources.live.append_ingest import (
@@ -213,7 +216,6 @@ from polylogue.sources.source_acquisition_components import (
     iter_zip_entry_raw_data,
     sniff_zip_provider,
     stream_preserved_zip_entry_raw_data,
-    validate_bound_grouped_zip_member,
 )
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
@@ -584,10 +586,7 @@ def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provid
     for path in paths:
         if not is_jsonl_source_path(str(path)):
             continue
-        try:
-            provider, parse_as_session, _detection_crash = _jsonl_provider_and_session_artifact(path, fallback_provider)
-        except ForeignOriginContentError:
-            continue  # the acquisition pass records the typed refusal
+        provider, parse_as_session, _detection_crash = _jsonl_provider_and_session_artifact(path, fallback_provider)
         if not parse_as_session:
             continue
         try:
@@ -615,12 +614,7 @@ def _live_parse_stage_path_candidates(
     candidates: list[tuple[str, Provider, bool]] = []
     for path in paths:
         if is_jsonl_source_path(str(path)):
-            try:
-                provider, parse_as_session, _detection_crash = _jsonl_provider_and_session_artifact(
-                    path, fallback_provider
-                )
-            except ForeignOriginContentError:
-                continue  # the acquisition pass records the typed refusal
+            provider, parse_as_session, _detection_crash = _jsonl_provider_and_session_artifact(path, fallback_provider)
             if parse_as_session or provider is Provider.UNKNOWN:
                 candidates.append((str(path), provider, is_stream_record_provider(str(path), str(provider))))
         elif path.suffix.lower() == ".json":
@@ -3194,7 +3188,7 @@ class LiveBatchProcessor:
                 # material is a typed non-session observation instead --
                 # unless it carries another origin's shape, which is refused.
                 try:
-                    refuse_foreign_material(path, fallback_provider)
+                    refuse_foreign_path(path, fallback_provider)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
                         path,
@@ -3496,17 +3490,16 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    raw_id, blob_size = blob_store.write_from_path(
+                    raw_id, blob_size = capture_bound_path(
+                        blob_store,
                         path,
+                        fallback_provider,
                         heartbeat=_blob_copy_heartbeat(
                             heartbeat,
                             path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         ),
                     )
-                    # The retained replay trusts a bound raw's stored provider,
-                    # so the captured bytes (not the path) are validated here.
-                    validate_captured_blob(blob_store, raw_id, path, fallback_provider)
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
@@ -3552,17 +3545,16 @@ class LiveBatchProcessor:
                 provider = fallback_provider
                 source_name = provider.value
                 try:
-                    raw_id, blob_size = blob_store.write_from_path(
+                    raw_id, blob_size = capture_bound_path(
+                        blob_store,
                         path,
+                        fallback_provider,
                         heartbeat=_blob_copy_heartbeat(
                             heartbeat,
                             path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         ),
                     )
-                    # The retained replay trusts a bound raw's stored provider,
-                    # so the captured bytes (not the path) are validated here.
-                    validate_captured_blob(blob_store, raw_id, path, fallback_provider)
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
@@ -3588,19 +3580,9 @@ class LiveBatchProcessor:
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
             elif is_jsonl_source_path(str(path)):
-                try:
-                    provider, parse_as_session, detection_crash = _jsonl_provider_and_session_artifact(
-                        path, fallback_provider
-                    )
-                except ForeignOriginContentError as exc:
-                    self._mark_refused_cursor(
-                        path,
-                        stat,
-                        source_name=fallback_provider.value,
-                        reason=f"{exc.code}: {exc}",
-                        excluded=excluded_paths,
-                    )
-                    continue
+                provider, parse_as_session, detection_crash = _jsonl_provider_and_session_artifact(
+                    path, fallback_provider
+                )
                 if detection_crash is not None:
                     detection_fallbacks[path] = detection_crash
                 source_name = provider.value
@@ -3625,17 +3607,16 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    raw_id, blob_size = blob_store.write_from_path(
+                    raw_id, blob_size = capture_bound_path(
+                        blob_store,
                         path,
+                        fallback_provider,
                         heartbeat=_blob_copy_heartbeat(
                             heartbeat,
                             path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         ),
                     )
-                    # The retained replay trusts a bound raw's stored provider,
-                    # so the captured bytes (not the path) are validated here.
-                    validate_captured_blob(blob_store, raw_id, path, fallback_provider)
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
@@ -3666,28 +3647,12 @@ class LiveBatchProcessor:
                     )
             else:
                 json_document = path.suffix.lower() == ".json"
-                try:
-                    if json_document:
-                        # Validate before the blob is copied: a refused document
-                        # must never enter the pending publication batch.
-                        if bound_location_provider(fallback_provider) is not None and not (
-                            path_declaration_refuses_session(fallback_provider, path)
-                        ):
-                            detect_provider_from_path_sample_evidence(path, fallback_provider, json_document=True)
-                        provider = fallback_provider
-                    else:
-                        provider, detection_crash = detect_provider_from_path_sample_evidence(path, fallback_provider)
-                        if detection_crash is not None:
-                            detection_fallbacks[path] = detection_crash
-                except ForeignOriginContentError as exc:
-                    self._mark_refused_cursor(
-                        path,
-                        stat,
-                        source_name=fallback_provider.value,
-                        reason=f"{exc.code}: {exc}",
-                        excluded=excluded_paths,
-                    )
-                    continue
+                if json_document:
+                    provider = fallback_provider
+                else:
+                    provider, detection_crash = detect_provider_from_path_sample_evidence(path, fallback_provider)
+                    if detection_crash is not None:
+                        detection_fallbacks[path] = detection_crash
                 source_name = provider.value
                 if path.suffix.lower() != ".json" and not _parse_path_as_session_artifact(path, provider=provider):
                     self._mark_excluded_cursor(
@@ -3705,17 +3670,16 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    raw_id, blob_size = blob_store.write_from_path(
+                    raw_id, blob_size = capture_bound_path(
+                        blob_store,
                         path,
+                        fallback_provider,
                         heartbeat=_blob_copy_heartbeat(
                             heartbeat,
                             path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         ),
                     )
-                    # The retained replay trusts a bound raw's stored provider,
-                    # so the captured bytes (not the path) are validated here.
-                    validate_captured_blob(blob_store, raw_id, path, fallback_provider)
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
                 except ForeignOriginContentError as exc:
                     self._mark_refused_cursor(
@@ -3742,37 +3706,24 @@ class LiveBatchProcessor:
                 if json_document:
                     # The captured blob, rather than the pre-copy path, owns
                     # provider identity when the source changes after prewarm.
-                    try:
-                        # A declared raw-only document (a prompt log, a sidecar)
-                        # is retained evidence by location; its shape is never
-                        # consulted, so it cannot be refused as foreign.
-                        prepared_provider = (
-                            preparation.resolved_provider
-                            if preparation is not None and not preparation.deferred and preparation.error is None
-                            else None
+                    # A declared raw-only document (a prompt log, a sidecar)
+                    # is retained evidence by location; its shape is never
+                    # consulted.
+                    prepared_provider = (
+                        preparation.resolved_provider
+                        if preparation is not None and not preparation.deferred and preparation.error is None
+                        else None
+                    )
+                    if path_declaration_refuses_session(fallback_provider, path):
+                        provider = fallback_provider
+                    elif prepared_provider is not None:
+                        provider = prepared_provider
+                    else:
+                        provider, detection_crash = detect_provider_from_path_sample_evidence(
+                            blob_store.blob_path(raw_id), fallback_provider, json_document=True
                         )
-                        if path_declaration_refuses_session(fallback_provider, path):
-                            provider = fallback_provider
-                        elif prepared_provider is not None:
-                            provider = prepared_provider
-                        else:
-                            provider, detection_crash = detect_provider_from_path_sample_evidence(
-                                blob_store.blob_path(raw_id), fallback_provider, json_document=True
-                            )
-                            if detection_crash is not None:
-                                detection_fallbacks[path] = detection_crash
-                    except ForeignOriginContentError as exc:
-                        from polylogue.storage.blob_publication import discard_pending_blob
-
-                        discard_pending_blob(blob_store, raw_id)
-                        self._mark_refused_cursor(
-                            path,
-                            stat,
-                            source_name=fallback_provider.value,
-                            reason=f"{exc.code}: {exc}",
-                            excluded=excluded_paths,
-                        )
-                        continue
+                        if detection_crash is not None:
+                            detection_fallbacks[path] = detection_crash
                     source_name = provider.value
                 if heartbeat is not None:
                     heartbeat(
@@ -5634,12 +5585,8 @@ class LiveBatchProcessor:
                         bound_provider=bound_location_provider(fallback_provider),
                     )
                     try:
-                        if info.filename.lower().endswith(ZIP_JSON_SUFFIXES) and not path_declaration_refuses_session(
-                            fallback_provider, info.filename
-                        ):
-                            # Retained replay trusts a bound member's stored
-                            # provider, so validate before preserving it.
-                            validate_bound_grouped_zip_member(zf, member_context)
+                        # The member is preserved through the boundary, which
+                        # refuses a foreign record before it is retained.
                         raw_data = stream_preserved_zip_entry_raw_data(
                             zf,
                             member_context,
@@ -6548,12 +6495,12 @@ class LiveBatchProcessor:
         # record falls back to the full route, whose captured-blob validation
         # records the typed refusal.
         append_source = self._source_name_for(path)
-        appended = BoundRecordValidator(
-            path, Provider.from_string(canonical_acquisition_provider(append_source, source_name=append_source))
-        )
         try:
-            appended.feed(complete_payload)
-            appended.finish()
+            admit_bound_bytes(
+                complete_payload,
+                str(path),
+                Provider.from_string(canonical_acquisition_provider(append_source, source_name=append_source)),
+            )
         except ForeignOriginContentError:
             return None
         append_result = self._append_payload_for_provider(path, self._source_name_for(path), complete_payload)

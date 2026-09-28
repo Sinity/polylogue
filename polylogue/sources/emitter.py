@@ -15,6 +15,7 @@ from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.logging import get_logger
 
+from .acquisition_boundary import admit_bound_bytes, bind_stream
 from .assembly import get_assembly_spec
 from .cursor import _ParseContext
 from .decoder_json import JsonValue
@@ -95,6 +96,12 @@ class _SessionEmitter:
                 Used when the caller pre-read the whole file for grouped
                 providers with ``capture_raw=True``.
         """
+        # Every route into parsing reads through the acquisition boundary: a
+        # record of another origin at a bound location is refused as its
+        # bytes are read, before any record is decoded or parsed.
+        handle = bind_stream(handle, stream_name, self._ctx.bound_provider)
+        if pre_read_bytes is not None:
+            admit_bound_bytes(pre_read_bytes, stream_name, self._ctx.bound_provider)
         is_jsonl = is_jsonl_source_path(stream_name)
 
         if is_jsonl and self._ctx.should_group:
@@ -246,7 +253,7 @@ class _SessionEmitter:
         buffered_payloads: list[JsonValue] = []
         for payload in payload_iter:
             buffered_payloads.append(payload)
-            detected_provider = detect_provider(payload, expected=self._ctx.bound_provider)
+            detected_provider = detect_provider(payload)
             if detected_provider is None:
                 continue
             if detected_provider in GROUP_PROVIDERS:
@@ -258,9 +265,7 @@ class _SessionEmitter:
                 )
             return _SniffResult(provider=detected_provider, payloads=chain(buffered_payloads, payload_iter))
 
-        detected_provider = (
-            detect_provider(buffered_payloads, expected=self._ctx.bound_provider) or self._ctx.provider_hint
-        )
+        detected_provider = detect_provider(buffered_payloads) or self._ctx.provider_hint
         if detected_provider in GROUP_PROVIDERS:
             return _SniffResult(
                 provider=detected_provider,
@@ -406,7 +411,7 @@ class _SessionEmitter:
             return None
 
     def _resolve_payload(self, payload: JsonValue) -> _ResolvedPayload:
-        provider = detect_provider(payload, expected=self._ctx.bound_provider) or self._ctx.provider_hint
+        provider = detect_provider(payload) or self._ctx.provider_hint
         artifact = classify_artifact(payload, provider=provider)
         if not artifact.parse_as_session:
             artifact = classify_artifact(

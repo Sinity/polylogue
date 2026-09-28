@@ -19,15 +19,16 @@ from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import cursor as _cursor
 from . import decoders as _decoders
+from .acquisition_boundary import (
+    capture_bound_path,
+    open_admitted_blob,
+    open_bound_path,
+    refuse_foreign_path,
+)
 from .cursor import _log_source_iteration_summary, _ParseContext, _record_cursor_failure
 from .decoders import _process_zip
 from .dispatch import GROUP_PROVIDERS as _GROUP_PROVIDERS
-from .dispatch import (
-    ForeignOriginContentError,
-    bound_location_provider,
-    is_jsonl_source_path,
-    refuse_foreign_material,
-)
+from .dispatch import ForeignOriginContentError, bound_location_provider, is_jsonl_source_path
 from .emitter import _SessionEmitter
 from .origin_specs import SourceClassRecognition, artifact_rule_for_path, recognize_source_class
 from .parsers import antigravity, hermes_identity, hermes_state, hermes_verification
@@ -221,7 +222,7 @@ def _antigravity_raw_snapshot(
 
         resolved_blob_root = blob_store_root()
     resolved_store = blob_store or BlobStore(resolved_blob_root)
-    blob_hash, blob_size = resolved_store.write_from_path(pb_path)
+    blob_hash, blob_size = capture_bound_path(resolved_store, pb_path, Provider.ANTIGRAVITY)
     from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
 
     receipt_id = publication_receipt_id(resolved_store, blob_hash)
@@ -318,7 +319,7 @@ def parse_one_source_path(
         and source_class.source_class != "session"
         and not _decoded_session_admits_path_rule(path, provider=provider_hint, recognition=source_class)
     ):
-        refuse_foreign_material(path, provider_hint)
+        refuse_foreign_path(path, provider_hint)
         logger.info(
             "source_candidate_not_admitted",
             source_path=str(path),
@@ -437,13 +438,10 @@ def parse_one_source_path(
 
             blob_root = blob_store_root()
         resolved_store = blob_store or BlobStore(blob_root)
-        from polylogue.sources.bound_capture import capture_bound_source
-
         # Grouped files are published whole before the emitter sees their
-        # records; validate the captured bytes before the flush reserves them.
-        blob_hash, blob_size = capture_bound_source(
-            resolved_store, path, provider_hint, lambda: resolved_store.write_from_path(path)
-        )
+        # records; the boundary capture refuses a foreign record before the
+        # flush reserves them.
+        blob_hash, blob_size = capture_bound_path(resolved_store, path, provider_hint)
         from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
 
         receipt_id = publication_receipt_id(resolved_store, blob_hash)
@@ -460,16 +458,10 @@ def parse_one_source_path(
         )
         # Parse the captured, validated blob -- never a reopened source path,
         # which may have changed since capture.
-        from polylogue.sources.bound_capture import release_captures_on_refusal
-
-        # A refusal found while parsing (a discriminator beyond the validation
-        # prefix) releases the reservation the flush made.
-        with release_captures_on_refusal(resolved_store) as captures:
-            captures.append((blob_hash, receipt_id))
-            with resolved_store.open(blob_hash) as handle:
-                yield from emitter.emit(handle, path.name, precomputed_raw=raw_data)
+        with open_admitted_blob(resolved_store, blob_hash, path.name) as handle:
+            yield from emitter.emit(handle, path.name, precomputed_raw=raw_data)
     else:
-        with path.open("rb") as handle:
+        with open_bound_path(path, provider_hint) as handle:
             yield from emitter.emit(handle, path.name)
 
 

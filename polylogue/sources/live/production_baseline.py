@@ -23,19 +23,14 @@ from polylogue.maintenance.receipt_fs import (
     maintenance_receipt_directory,
     read_optional_receipt,
 )
+from polylogue.sources.acquisition_boundary import open_bound_path, refuse_declared_foreign
 from polylogue.sources.decoder_zip import (
     ZipEntryValidator,
     declared_artifact_provider,
     is_declared_artifact_path,
     provider_detection_path,
 )
-from polylogue.sources.dispatch import (
-    LOCATION_VALIDATION_PREFIX_BYTES,
-    BoundRecordValidator,
-    ForeignOriginContentError,
-    bound_location_provider,
-    refuse_foreign_material,
-)
+from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider
 from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
@@ -386,18 +381,14 @@ def _revision(
         return sqlite_member_revision_and_size(path)
     digest = hashlib.sha256()
     size = 0
-    # Every record is validated, as live capture validates it, or the
-    # baseline would accept a file whose raw revision live intake refuses.
-    records = BoundRecordValidator(path, location)
-    with path.open("rb") as stream:
+    # The bytes hashed are read through the acquisition boundary, as live
+    # capture reads them, or the baseline would accept a file whose raw
+    # revision live intake refuses.
+    with open_bound_path(path, location) as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             _check_observation_cancelled(cancelled)
-            if size == 0 and location is not None:
-                refuse_foreign_material(path, location, prefix=chunk[:LOCATION_VALIDATION_PREFIX_BYTES])
-            records.feed(chunk)
             digest.update(chunk)
             size += len(chunk)
-    records.finish()
     return digest.hexdigest(), size
 
 
@@ -612,7 +603,7 @@ def capture_production_source_baseline(
                 )
                 try:
                     if is_sqlite_path(path):
-                        refuse_foreign_material(path, location)
+                        refuse_declared_foreign(path.name, location)
                     revision, material_bytes = _revision(path, cancelled=cancelled, location=location)
                 except ForeignOriginContentError as exc:
                     decisions.append(

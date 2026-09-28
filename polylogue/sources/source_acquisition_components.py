@@ -38,14 +38,16 @@ from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
 from . import decoders as _decoders
-from .decoders import _zip_entry_provider_hint
-from .dispatch import (
-    GROUP_PROVIDERS,
-    LOCATION_VALIDATION_PREFIX_BYTES,
-    detect_provider,
-    detect_provider_from_raw_bytes_evidence,
-    refuse_foreign_material,
+from .acquisition_boundary import (
+    bind_stream,
+    capture_bound_path,
+    capture_bound_stream,
+    drain_bound,
+    open_bound_member,
+    refuse_declared_foreign,
 )
+from .decoders import _zip_entry_provider_hint
+from .dispatch import GROUP_PROVIDERS, detect_provider, detect_provider_from_raw_bytes_evidence
 from .parsers.base import RawSessionData
 from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapshot_sqlite_to_blob
 
@@ -259,41 +261,6 @@ def observe_acquisition(
     observation_callback(payload)
 
 
-def stream_fileobj_to_blob(
-    blob_store: BlobStore,
-    handle: IO[bytes],
-    *,
-    status_callback: StatusCallback | None,
-    source_name: str,
-    source_path: str,
-) -> tuple[str, int]:
-    heartbeat = make_status_heartbeat(
-        status_callback,
-        source_name=source_name,
-        source_path=source_path,
-    )
-    if heartbeat is not None:
-        heartbeat()
-    return blob_store.write_from_fileobj(handle, heartbeat=heartbeat)
-
-
-def stream_path_to_blob(
-    blob_store: BlobStore,
-    path: Path,
-    *,
-    status_callback: StatusCallback | None,
-    source_name: str,
-) -> tuple[str, int]:
-    heartbeat = make_status_heartbeat(
-        status_callback,
-        source_name=source_name,
-        source_path=str(path),
-    )
-    if heartbeat is not None:
-        heartbeat()
-    return blob_store.write_from_path(path, heartbeat=heartbeat)
-
-
 def raw_data_record(
     *,
     source_path: str,
@@ -331,22 +298,22 @@ def iter_entry_payloads(
 ) -> Iterable[DetectedEntryPayload]:
     """Yield payloads from a streamed JSON/JSONL document with provider hints.
 
-    ``bound_provider`` names the origin the document's location binds; a
-    payload of another origin then raises ``ForeignOriginContentError``.
+    ``bound_provider`` names the origin the document's location binds; the
+    handle reads through the acquisition boundary, which refuses a record of
+    another origin before it is decoded here.
     """
+    handle = bind_stream(handle, stream_name, bound_provider)
     current_provider = provider_hint
     last_detected_provider: Provider | None = None
     provider_locked = False
     for payload in _decoders._iter_json_stream(handle, stream_name):
         normalized_payload = _artifact_payload(payload)
-        if provider_locked and bound_provider is None:
-            # A bound document validates every record: a later record of
-            # another origin must still be refused, not ride the lock.
+        if provider_locked:
             yield DetectedEntryPayload(current_provider, normalized_payload, 0.0)
             continue
 
         detect_start = time.perf_counter()
-        detected_provider = detect_provider(normalized_payload, expected=bound_provider)
+        detected_provider = detect_provider(normalized_payload)
         detect_provider_ms = (time.perf_counter() - detect_start) * 1000.0
         provider = detected_provider or current_provider
         if detected_provider is not None and detected_provider is not Provider.UNKNOWN:
@@ -424,7 +391,7 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
         )
         # A declared database of another origin (Codex ``state_5.sqlite`` under
         # the broad Hermes root) is refused by declaration before snapshotting.
-        refuse_foreign_material(context.path, context.provider_hint)
+        refuse_declared_foreign(context.path.name, context.provider_hint)
         with stage_timings.stage("detect"):
             snapshot = snapshot_sqlite_to_blob(context.path, context.blob_store, heartbeat=heartbeat)
             blob_hash, blob_size = snapshot.blob_hash, snapshot.blob_size
@@ -433,25 +400,23 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
             detection_evidence = "sqlite_snapshot.snapshot_sqlite_to_blob (Hermes sqlite state/sidecar)"
     else:
         if context.retained_blob is None:
-            from polylogue.sources.bound_capture import capture_bound_source
-
-            # Capture, then validate the captured bytes (never the path, which
-            # can change between a check and the copy).
-            blob_hash, blob_size = capture_bound_source(
+            blob_hash, blob_size = capture_bound_path(
                 context.blob_store,
                 context.path,
                 context.provider_hint,
-                lambda: stream_path_to_blob(
-                    context.blob_store,
-                    context.path,
-                    status_callback=context.status_callback,
+                heartbeat=make_status_heartbeat(
+                    context.status_callback,
                     source_name=context.source.name,
+                    source_path=str(context.path),
                 ),
             )
         else:
             # The path is acquisition identity only after acceptance. Every
-            # byte read below comes from the retained content-addressed input.
+            # byte read below comes from the retained content-addressed input,
+            # which was retained unbound and so passes the boundary here.
             blob_hash, blob_size = context.retained_blob.sha256, context.retained_blob.size_bytes
+            with bind_stream(context.blob_store.open(blob_hash), str(context.path), context.provider_hint) as stream:
+                drain_bound(stream)
         prefix = context.blob_store.read_prefix(blob_hash, _DETECTION_PREFIX_SIZE)
         with stage_timings.stage("detect"):
             if path_declaration_refuses_session(context.provider_hint, context.path):
@@ -598,13 +563,15 @@ def stream_preserved_zip_entry_raw_data(
     acquisition while deliberately avoiding provider detection, JSON decoding,
     and artifact classification.
     """
-    with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
-        blob_hash, blob_size = stream_fileobj_to_blob(
+    with open_bound_member(zf, context.entry, context.bound_provider) as handle:
+        blob_hash, blob_size = capture_bound_stream(
             context.blob_store,
             handle,
-            status_callback=context.status_callback,
-            source_name=context.source.name,
-            source_path=context.source_path,
+            heartbeat=make_status_heartbeat(
+                context.status_callback,
+                source_name=context.source.name,
+                source_path=context.source_path,
+            ),
         )
     # Read the already-published bytes to derive structural identity without
     # weakening the bounded streaming publication route. The re-read is
@@ -664,7 +631,7 @@ def _iter_zip_entry_split_payloads(
     entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
     state.detected_provider = entry_provider_hint
     split_buffer = SplitPayloadBuffer()
-    with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
+    with open_bound_member(zf, context.entry, context.bound_provider) as handle:
         for detected in iter_entry_payloads(
             handle,
             stream_name=context.entry.filename,
@@ -739,11 +706,10 @@ def replay_zip_entry_acquisition_payloads(
     from polylogue.sources.origin_specs import path_declaration_refuses_session
 
     entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
-    raw_only = path_declaration_refuses_session(entry_provider_hint, context.entry.filename)
-    if entry_provider_hint in GROUP_PROVIDERS or raw_only:
-        if not raw_only:
-            validate_bound_grouped_zip_member(zf, context)
-        with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
+    if entry_provider_hint in GROUP_PROVIDERS or path_declaration_refuses_session(
+        entry_provider_hint, context.entry.filename
+    ):
+        with open_bound_member(zf, context.entry, context.bound_provider) as handle:
             payload_bytes = handle.read()
             identity, skipped_reason = _bounded_payload_identity_info(payload_bytes)
             yield SerializedSplitPayload(
@@ -766,7 +732,7 @@ def replay_zip_entry_acquisition_payloads(
 
     # Preserve original ZIP entry bytes when it is metadata or a single
     # session document, matching the ordinary acquisition fallback.
-    with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
+    with open_bound_member(zf, context.entry, context.bound_provider) as handle:
         payload_bytes = handle.read()
         identity, skipped_reason = _bounded_payload_identity_info(payload_bytes)
         yield SerializedSplitPayload(
@@ -831,23 +797,6 @@ def sniff_zip_provider(
     return ranked[0][0]
 
 
-def validate_bound_grouped_zip_member(zf: zipfile.ZipFile, context: ZipEntryReadContext) -> None:
-    """Refuse a grouped member whose records belong to another origin.
-
-    Grouped members are preserved whole and skip the splitter, so a bounded
-    byte prefix is validated against the archive's location binding before
-    any byte is published. Acquisition, replay and one-shot parsing share this
-    check so they agree on which members are admitted.
-    """
-    if context.bound_provider is None:
-        return
-    # Byte-bounded: a single oversized record must not be materialized to
-    # decide the member's origin.
-    with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
-        prefix = handle.read(LOCATION_VALIDATION_PREFIX_BYTES)
-    refuse_foreign_material(context.entry.filename, context.bound_provider, prefix=prefix)
-
-
 def iter_zip_entry_raw_data(
     zf: zipfile.ZipFile,
     context: ZipEntryReadContext,
@@ -864,7 +813,6 @@ def iter_zip_entry_raw_data(
         yield _stream_preserved_zip_entry(zf, context, provider_hint=entry_provider_hint)
         return
     if entry_provider_hint in GROUP_PROVIDERS:
-        validate_bound_grouped_zip_member(zf, context)
         yield _stream_preserved_zip_entry(zf, context, provider_hint=entry_provider_hint)
         return
 
@@ -904,8 +852,5 @@ __all__ = [
     "observe_acquisition",
     "raw_data_record",
     "read_plain_source_file",
-    "validate_bound_grouped_zip_member",
     "stream_preserved_zip_entry_raw_data",
-    "stream_fileobj_to_blob",
-    "stream_path_to_blob",
 ]

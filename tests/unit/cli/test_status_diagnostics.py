@@ -241,6 +241,36 @@ class TestDiagnoseNoSources:
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "no_daemon"
 
+    def test_an_inbox_entry_the_watcher_ignores_is_not_a_source(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Anti-vacuity: count any inbox entry and a ``.DS_Store`` alone
+        reports ``no_daemon``, although the inbox watcher admits nothing."""
+        from polylogue.config import resolve_runtime_config
+
+        data_home, _ = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        inbox = resolve_runtime_config().source_paths.inbox
+        (inbox / "empty-dir").mkdir(parents=True)
+        (inbox / ".DS_Store").write_bytes(b"\x00")
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_sources"
+
+    def test_a_secondary_canonical_root_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """The daemon watches Codex's state database beside its sessions root.
+
+        Anti-vacuity: probe only the primary provider directories and a
+        machine whose only source is ``~/.codex/state_5.sqlite`` reports
+        ``no_sources``.
+        """
+        data_home, _ = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        codex = tmp_path / "home" / ".codex"
+        codex.mkdir(parents=True)
+        (codex / "state_5.sqlite").write_bytes(b"")
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_daemon"
+
     def test_a_present_chat_tool_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
         _create_index_db(data_home)

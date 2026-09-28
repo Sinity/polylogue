@@ -21,14 +21,14 @@ from polylogue.core.enums import Provider
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_raw_id, zip_member_source_index
 from polylogue.logging import WARNING, emit
-from polylogue.sources.bound_capture import release_captures_on_refusal
+from polylogue.sources.acquisition_boundary import refuse_declared_foreign, release_captures_on_refusal
 from polylogue.sources.decoder_zip import (
     ZipEntryValidator,
     declared_artifact_provider,
     is_declared_artifact_path,
     provider_detection_path,
 )
-from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider, same_origin
+from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider
 from polylogue.sources.live.admission import ArtifactIdentity
 from polylogue.sources.origin_specs import database_member_for_filename
 from polylogue.sources.parsers.base import RawSessionData
@@ -80,12 +80,9 @@ def iter_retained_source_records(
     # an operator-imported archive stays unbound and classifies its members.
     location_binding = bound_location_provider(declared_provider)
     if logical_path.suffix.lower() != ".zip":
-        if location_binding is not None and binding is not None and not same_origin(binding.provider, location_binding):
-            # A declared database member of another origin is not this
-            # location's material.
-            raise ForeignOriginContentError(
-                expected=location_binding, found=binding.provider, evidence="declared database member"
-            )
+        # A declared database member of another origin is not this
+        # location's material; the decode below reads through the boundary.
+        refuse_declared_foreign(logical_path.name, declared_provider)
         data = read_plain_source_file(
             SourceReadContext(
                 source=source,

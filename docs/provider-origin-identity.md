@@ -129,8 +129,11 @@ enrichment hook that polylogue-2qx.2/j2zz/ih67 extend).
 
 ### OpenTelemetry GenAI file source
 
-`otel-genai` is a configured local-file origin for OTLP JSON
-`ExportTraceServiceRequest` documents. It is not a receiver. The detector
+`otel-genai` is a local-file origin for OTLP JSON
+`ExportTraceServiceRequest` documents. It is not a receiver, and no tool writes
+these files to a canonical location, so they arrive through
+`polylogue import <file>`: the daemon's import-inbox watch source classifies
+them by shape. The detector
 requires an OTLP resource/span document with at least one `gen_ai.*` attribute
 under the supported GenAI schema URL, or under no schema URL. A schema URL the
 adapter does not support stays in span evidence when the document also has a

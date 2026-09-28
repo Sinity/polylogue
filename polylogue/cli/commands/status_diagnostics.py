@@ -11,7 +11,6 @@ operator should see — never a traceback. (#1263)
 from __future__ import annotations
 
 import importlib.util
-import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -251,47 +250,33 @@ def _probe_stale_pidfile(daemon_alive: bool) -> StatusDiagnostic | None:
 
 
 def _probe_no_sources() -> StatusDiagnostic | None:
-    """Return a ``no_sources`` diagnostic when no chat tool directory exists.
+    """Return a ``no_sources`` diagnostic when the daemon would acquire nothing.
 
-    Sources are read from their canonical locations, so "no sources" means
-    none of those provider directories is present on this machine and the
-    archive inbox holds no staged import either: the daemon would ingest
-    either one once started.
+    Sources are read from their canonical locations, so the probe asks the
+    daemon's own watch set, not a separate list of directories.
     """
-    from polylogue.cli.commands.init import detect_chat_sources
     from polylogue.config import resolve_runtime_config
+    from polylogue.operations.source_presence import watched_source_presence
 
-    detected = [source for source in detect_chat_sources() if source.family != "hooks"]
-    if any(source.present for source in detected):
-        return None
     runtime_config = resolve_runtime_config()
-    if _has_staged_import(runtime_config.source_paths.inbox):
-        return None
-    # detect_chat_sources() only walks local provider directories; Drive is
-    # configured through credential/token files, not a watched directory,
-    # so a Drive-only setup is a source resolve_runtime_config() already
-    # recognizes (it appends "aistudio" to .sources when those files exist).
+    # Drive is configured through credential/token files, not a watched
+    # directory, so a Drive-only setup is a source resolve_runtime_config()
+    # already recognizes (it appends "aistudio" to .sources).
     if any(source.name == "aistudio" for source in runtime_config.sources):
+        return None
+    presence = watched_source_presence(hermes_root=runtime_config.source_paths.hermes)
+    if presence.present:
         return None
     return StatusDiagnostic(
         kind="no_sources",
         headline="No chat tool directories found.",
         detail=(
-            "None of the canonical chat source directories exists ("
-            + ", ".join(str(source.path) for source in detected)
+            "None of the canonical chat source locations exists ("
+            + ", ".join(str(root) for root in presence.tool_roots)
             + "). Install a supported tool, or import an export with `polylogue import <path>`."
         ),
         next_action="polylogue import <path>",
     )
-
-
-def _has_staged_import(inbox: Path) -> bool:
-    """Whether the archive inbox holds any entry for the daemon to ingest."""
-    try:
-        with os.scandir(inbox) as entries:
-            return any(True for _entry in entries)
-    except OSError:
-        return False
 
 
 def _probe_missing_optional_dep() -> StatusDiagnostic | None:

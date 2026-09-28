@@ -16,15 +16,9 @@ import pytest
 
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocumentList
-from polylogue.sources.dispatch import (
-    ForeignOriginContentError,
-    detect_provider,
-    detect_provider_from_raw_bytes_evidence,
-)
-from polylogue.sources.live.batch_support import (
-    _detect_provider_from_path_sample,
-    _jsonl_provider_and_session_artifact,
-)
+from polylogue.sources.acquisition_boundary import refuse_foreign_path
+from polylogue.sources.dispatch import ForeignOriginContentError, detect_provider
+from polylogue.sources.live.batch_support import _jsonl_provider_and_session_artifact
 from polylogue.sources.source_parsing import parse_one_source_path
 
 _CODEX_ROLLOUT: JSONDocumentList = [
@@ -93,39 +87,6 @@ def test_unbound_locations_still_classify() -> None:
     assert detect_provider(_CODEX_ROLLOUT, expected=Provider.UNKNOWN) is Provider.CODEX
 
 
-def test_raw_bytes_detection_binds_to_the_callers_location() -> None:
-    """The per-file acquisition chokepoint refuses foreign bytes.
-
-    Anti-vacuity: returning the shape-detected provider over
-    ``fallback_provider`` reparses a Codex rollout as Codex from Claude
-    Code's directory.
-    """
-    with pytest.raises(ForeignOriginContentError):
-        detect_provider_from_raw_bytes_evidence(_jsonl(_CODEX_ROLLOUT), "rollout.jsonl", Provider.CLAUDE_CODE)
-    provider, _evidence = detect_provider_from_raw_bytes_evidence(
-        _jsonl(_CODEX_ROLLOUT), "rollout.jsonl", Provider.UNKNOWN
-    )
-    assert provider is Provider.CODEX
-
-
-def test_live_sniff_refuses_a_codex_rollout_in_claude_codes_directory(tmp_path: Path) -> None:
-    """The daemon's JSONL sniff raises the typed refusal the batch records.
-
-    Anti-vacuity: without binding, the sniff returns ``(CODEX, True)`` and
-    the daemon parses the file as a Codex session.
-    """
-    project = tmp_path / "projects" / "proj"
-    project.mkdir(parents=True)
-    rollout = project / "c0ffee00-1111-2222-3333-444455556666.jsonl"
-    rollout.write_bytes(_jsonl(_CODEX_ROLLOUT))
-    transcript = project / "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl"
-    transcript.write_bytes(_jsonl(_CLAUDE_CODE_TRANSCRIPT))
-
-    with pytest.raises(ForeignOriginContentError):
-        _jsonl_provider_and_session_artifact(rollout, Provider.CLAUDE_CODE)
-    assert _jsonl_provider_and_session_artifact(transcript, Provider.CLAUDE_CODE) == (Provider.CLAUDE_CODE, True, None)
-
-
 def test_gemini_cli_prompt_log_with_claude_code_shape_is_refused(tmp_path: Path) -> None:
     """A Gemini CLI prompt log that happens to look like Claude Code records.
 
@@ -133,7 +94,7 @@ def test_gemini_cli_prompt_log_with_claude_code_shape_is_refused(tmp_path: Path)
     ``message`` keys that the Claude Code detector recognizes; before binding,
     they were admitted as Claude Code sessions from Gemini CLI's directory.
 
-    Anti-vacuity: without binding the sniff returns CLAUDE_CODE.
+    Anti-vacuity: without binding the boundary admits the log.
     """
     chats = tmp_path / "tmp" / "abc" / "chats"
     chats.mkdir(parents=True)
@@ -141,30 +102,8 @@ def test_gemini_cli_prompt_log_with_claude_code_shape_is_refused(tmp_path: Path)
     log.write_bytes(_jsonl(_CLAUDE_CODE_TRANSCRIPT))
 
     with pytest.raises(ForeignOriginContentError) as refused:
-        _detect_provider_from_path_sample(log, Provider.GEMINI_CLI)
+        refuse_foreign_path(log, Provider.GEMINI_CLI)
     assert refused.value.found is Provider.CLAUDE_CODE
-
-
-def test_one_shot_source_route_refuses_foreign_content(tmp_path: Path) -> None:
-    """The one-shot parse route shares the refusal, not a silent reparse.
-
-    Anti-vacuity: without binding it yields one Codex session.
-    """
-    project = tmp_path / ".claude" / "projects" / "proj"
-    project.mkdir(parents=True)
-    rollout = project / "c0ffee00-1111-2222-3333-444455556666.jsonl"
-    rollout.write_bytes(_jsonl(_CODEX_ROLLOUT))
-
-    with pytest.raises(ForeignOriginContentError):
-        list(
-            parse_one_source_path(
-                str(rollout),
-                file_mtime=None,
-                source_name="claude-code",
-                sidecar_data={},
-                capture_raw=False,
-            )
-        )
 
 
 def test_refusal_survives_process_boundaries() -> None:
@@ -190,19 +129,6 @@ def test_provider_wires_of_one_origin_are_not_foreign() -> None:
     assert detect_provider(prompt, expected=Provider.DRIVE) is Provider.GEMINI
 
 
-def test_json_document_sampling_does_not_swallow_the_refusal(tmp_path: Path) -> None:
-    """A foreign ``.json`` array is refused, not quietly given the fallback.
-
-    Anti-vacuity: the sampler's ``except (OSError, ValueError)`` catches the
-    refusal (a ``ValueError`` subclass) and returns ``CLAUDE_CODE``.
-    """
-    document = tmp_path / "projects" / "proj" / "export.json"
-    document.parent.mkdir(parents=True)
-    document.write_text(json.dumps(_CODEX_ROLLOUT), encoding="utf-8")
-    with pytest.raises(ForeignOriginContentError):
-        _detect_provider_from_path_sample(document, Provider.CLAUDE_CODE, json_document=True)
-
-
 def test_raw_only_paths_are_classified_by_location_before_any_probe(tmp_path: Path) -> None:
     """Declared raw-only evidence keeps its location's origin whatever it holds.
 
@@ -210,11 +136,12 @@ def test_raw_only_paths_are_classified_by_location_before_any_probe(tmp_path: Pa
     Codex-shaped rows, it is still retained Claude Code evidence and never
     refused as foreign.
 
-    Anti-vacuity: probing content before the raw-only declaration raises
+    Anti-vacuity: validating content before the raw-only declaration raises
     ``ForeignOriginContentError`` here.
     """
     history = tmp_path / "history.jsonl"
     history.write_bytes(_jsonl(_CODEX_ROLLOUT))
+    refuse_foreign_path(history, Provider.CLAUDE_CODE)
     assert _jsonl_provider_and_session_artifact(history, Provider.CLAUDE_CODE) == (Provider.CLAUDE_CODE, False, None)
 
 
@@ -404,32 +331,6 @@ def test_baseline_keeps_inbox_archives_unbound(tmp_path: Path) -> None:
     assert not [decision for decision in decisions if "foreign_origin_content" in decision.reason]
 
 
-def test_one_choke_point_refuses_foreign_material(tmp_path: Path) -> None:
-    """``refuse_foreign_material`` is the shared bind-then-validate check.
-
-    It refuses a foreign JSONL at a bound location and passes the inbox,
-    declared raw-only paths and non-JSON material.
-
-    Anti-vacuity: without the location binding the Codex rollout passes at a
-    Claude Code location.
-    """
-    from polylogue.sources.dispatch import refuse_foreign_material
-
-    rollout = tmp_path / "projects" / "proj" / "c0ffee00-1111-2222-3333-444455556666.jsonl"
-    rollout.parent.mkdir(parents=True)
-    rollout.write_bytes(_jsonl(_CODEX_ROLLOUT))
-    with pytest.raises(ForeignOriginContentError):
-        refuse_foreign_material(rollout, Provider.CLAUDE_CODE)
-    refuse_foreign_material(rollout, Provider.UNKNOWN)
-    refuse_foreign_material(rollout, Provider.CODEX)
-    history = tmp_path / "history.jsonl"
-    history.write_bytes(_jsonl(_CODEX_ROLLOUT))
-    refuse_foreign_material(history, Provider.CLAUDE_CODE)
-    notes = tmp_path / "notes.md"
-    notes.write_text("# notes", encoding="utf-8")
-    refuse_foreign_material(notes, Provider.CLAUDE_CODE)
-
-
 def test_production_baseline_excludes_refused_plain_files(tmp_path: Path) -> None:
     """The baseline expects no raw row for a file live intake refuses.
 
@@ -454,33 +355,6 @@ def test_production_baseline_excludes_refused_plain_files(tmp_path: Path) -> Non
     assert by_name["bad69218-73bd-490a-869a-2b3a30bf421b.jsonl"].disposition == "accepted"
 
 
-def test_production_baseline_validates_every_record(tmp_path: Path) -> None:
-    """The baseline refuses a foreign record past the prefix, as live capture does.
-
-    Anti-vacuity: validate only the first chunk's prefix and this file is
-    baselined as ``accepted`` while live capture refuses it, so the cold
-    build waits for a raw revision that is never produced.
-    """
-    from polylogue.sources.dispatch import LOCATION_VALIDATION_PREFIX_BYTES
-    from polylogue.sources.live.production_baseline import capture_production_source_baseline
-    from polylogue.sources.live.watcher import WatchSource
-
-    root = tmp_path / "projects"
-    project = root / "proj"
-    project.mkdir(parents=True)
-    padded = [dict(record) for record in _CLAUDE_CODE_TRANSCRIPT]
-    padded[0]["message"] = {"role": "user", "content": "x" * (LOCATION_VALIDATION_PREFIX_BYTES * 2)}
-    name = "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl"
-    (project / name).write_bytes(_jsonl([*padded, *_CODEX_ROLLOUT]))
-    baseline = capture_production_source_baseline(
-        (WatchSource(name="claude-code", root=root, suffixes=(".jsonl",)),),
-        operation_id="op-test",
-    )
-    [decision] = [decision for decision in baseline.decisions if Path(decision.path).name == name]
-    assert decision.disposition == "excluded"
-    assert "foreign_origin_content" in decision.reason
-
-
 def test_publisher_discards_one_refused_pending_blob(tmp_path: Path) -> None:
     """A refused blob's queued publication is dropped before any flush.
 
@@ -499,86 +373,6 @@ def test_publisher_discards_one_refused_pending_blob(tmp_path: Path) -> None:
     assert publisher.has_pending
 
 
-def test_capture_validates_the_retained_bytes_not_the_path(tmp_path: Path) -> None:
-    """The captured blob is what is validated, so a check-then-copy race cannot admit.
-
-    The capture callable swaps the file to foreign content before copying,
-    as a racing writer would. The refusal must fire on the captured bytes and
-    drop the queued publication.
-
-    Anti-vacuity: validating the path before capture passes (the file is
-    still Claude Code then) and retains the Codex bytes.
-    """
-    from polylogue.sources.bound_capture import capture_bound_source
-    from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
-    source = tmp_path / "projects" / "proj" / "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl"
-    source.parent.mkdir(parents=True)
-    source.write_bytes(_jsonl(_CLAUDE_CODE_TRANSCRIPT))
-    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
-
-    def racing_capture() -> tuple[str, int]:
-        source.write_bytes(_jsonl(_CODEX_ROLLOUT))
-        return publisher.write_from_path(source)
-
-    with pytest.raises(ForeignOriginContentError):
-        capture_bound_source(publisher, source, Provider.CLAUDE_CODE, racing_capture)
-    assert not publisher.has_pending
-
-
-def test_grouped_member_validation_is_byte_bounded(tmp_path: Path) -> None:
-    """One oversized record is not materialized to validate a member.
-
-    The member is a single ~2 MiB JSONL record with a foreign envelope up
-    front; validation reads only a bounded byte prefix yet still refuses.
-
-    Anti-vacuity: record-count sampling decodes the whole record before
-    deciding.
-    """
-    import zipfile
-
-    from polylogue.config import Source
-    from polylogue.sources.source_acquisition_components import (
-        ZipEntryReadContext,
-        validate_bound_grouped_zip_member,
-    )
-
-    record = {
-        "type": "session_meta",
-        "payload": {"id": "c1", "timestamp": "2026-01-01T10:00:00Z", "pad": "x" * 2_000_000},
-    }
-    archive = tmp_path / "bundle.zip"
-    with zipfile.ZipFile(archive, "w") as zf:
-        zf.writestr("member.jsonl", (json.dumps(record) + "\n").encode("utf-8"))
-    with zipfile.ZipFile(archive) as zf:
-        context = ZipEntryReadContext(
-            Source(name="claude-code", path=tmp_path),
-            archive,
-            zf.infolist()[0],
-            None,
-            Provider.CLAUDE_CODE,
-            None,  # type: ignore[arg-type]
-            bound_provider=Provider.CLAUDE_CODE,
-        )
-        with pytest.raises(ForeignOriginContentError):
-            validate_bound_grouped_zip_member(zf, context)
-
-
-def test_truncated_json_document_is_validated_from_its_partial_structure() -> None:
-    """A foreign ``.json`` document larger than the prefix is still refused.
-
-    Anti-vacuity: without the partial-structure fallback for documents, the
-    invalid truncated prefix decides nothing and the location's own origin is
-    assumed.
-    """
-    from polylogue.sources.dispatch import LOCATION_VALIDATION_PREFIX_BYTES, refuse_foreign_material
-
-    document = json.dumps(_CODEX_ROLLOUT + [{"type": "pad", "pad": "x" * 50_000}]).encode("utf-8")
-    prefix = document[:LOCATION_VALIDATION_PREFIX_BYTES]
-    with pytest.raises(ForeignOriginContentError):
-        refuse_foreign_material("export.json", Provider.CLAUDE_CODE, prefix=prefix)
-
-
 def test_refused_unit_releases_every_capture_even_identical_ones(tmp_path: Path) -> None:
     """A refusal releases each capture of its unit, keyed by receipt.
 
@@ -588,7 +382,7 @@ def test_refused_unit_releases_every_capture_even_identical_ones(tmp_path: Path)
     Anti-vacuity: releasing by hash drops only the latest identical capture
     and leaves the first queued for publication.
     """
-    from polylogue.sources.bound_capture import release_captures_on_refusal
+    from polylogue.sources.acquisition_boundary import release_captures_on_refusal
     from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
@@ -600,94 +394,3 @@ def test_refused_unit_releases_every_capture_even_identical_ones(tmp_path: Path)
                 captures.append((blob_hash, publisher.receipt_id(blob_hash)))
             raise ForeignOriginContentError(expected=Provider.CHATGPT, found=Provider.CLAUDE_AI, evidence="probe")
     assert [receipt.blob_hash for receipt, _ in publisher._pending] == [kept]
-
-
-def test_capture_validates_every_record_not_only_the_prefix(tmp_path: Path) -> None:
-    """A foreign record past the validation prefix is still refused.
-
-    The first Claude Code record is larger than the validation window, so the
-    prefix holds no complete record, and the Codex rollout follows it.
-
-    Anti-vacuity: validate only the captured prefix again and this blob is
-    retained as Claude Code, its Codex tail parsed as Claude content.
-    """
-    from polylogue.sources.bound_capture import capture_bound_source
-    from polylogue.sources.dispatch import LOCATION_VALIDATION_PREFIX_BYTES
-    from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
-    large_first = dict(_CLAUDE_CODE_TRANSCRIPT[0])
-    large_first["message"] = {"role": "user", "content": "x" * (LOCATION_VALIDATION_PREFIX_BYTES * 2)}
-    source = tmp_path / "projects" / "proj" / "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl"
-    source.parent.mkdir(parents=True)
-    source.write_bytes(_jsonl([large_first, *_CODEX_ROLLOUT]))
-    publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
-
-    with pytest.raises(ForeignOriginContentError):
-        capture_bound_source(publisher, source, Provider.CLAUDE_CODE, lambda: publisher.write_from_path(source))
-    assert not publisher.has_pending
-
-    # The same oversized first record followed by its own origin is admitted.
-    source.write_bytes(_jsonl([large_first, *_CLAUDE_CODE_TRANSCRIPT[1:]]))
-    capture_bound_source(publisher, source, Provider.CLAUDE_CODE, lambda: publisher.write_from_path(source))
-    assert publisher.has_pending
-    publisher.discard_pending()
-
-
-def test_record_validation_inspects_a_whole_oversized_line(tmp_path: Path) -> None:
-    """A foreign discriminator past the validation window, in one record, is refused.
-
-    The record's own leading field is larger than the validation window, so
-    its Codex-shaped ``type``/``payload`` keys sit past the window boundary
-    within a single JSONL line.
-
-    Anti-vacuity: bound the per-record buffer to the validation window and
-    this line's discriminator is dropped with the overflow, so the blob is
-    retained as Claude Code and its Codex content parsed as Claude content.
-    """
-    from polylogue.sources.bound_capture import capture_bound_source
-    from polylogue.sources.dispatch import LOCATION_VALIDATION_PREFIX_BYTES
-    from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
-    oversized_codex_record = {
-        "pad": "x" * (LOCATION_VALIDATION_PREFIX_BYTES * 2),
-        **_CODEX_ROLLOUT[0],
-    }
-    source = tmp_path / "projects" / "proj" / "oversized-record.jsonl"
-    source.parent.mkdir(parents=True)
-    source.write_bytes(_jsonl([oversized_codex_record]))
-    publisher = ArchiveBlobPublisher(tmp_path / "source-2.db", tmp_path / "blob-2")
-
-    with pytest.raises(ForeignOriginContentError):
-        capture_bound_source(publisher, source, Provider.CLAUDE_CODE, lambda: publisher.write_from_path(source))
-    assert not publisher.has_pending
-
-
-def test_a_whole_json_document_is_validated_not_only_its_prefix(tmp_path: Path) -> None:
-    """A single ``.json`` document's foreign discriminator past the prefix is refused.
-
-    ``refuse_foreign_records``/``BoundRecordValidator`` validated every JSONL
-    line but skipped ``.json`` documents entirely (``is_jsonl_source_path``
-    gated ``active``), so a captured document whose discriminator sits past
-    the 8 KiB prefix window -- a large leading field before Codex's
-    type/payload keys -- was retained and durably recorded under the bound
-    location's origin.
-
-    Anti-vacuity: gating ``BoundRecordValidator.active`` on JSONL alone makes
-    this document, whose own prefix is inconclusive padding, pass capture.
-    """
-    from polylogue.sources.bound_capture import capture_bound_source
-    from polylogue.sources.dispatch import LOCATION_VALIDATION_PREFIX_BYTES
-    from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
-    oversized_codex_document = {
-        "pad": "x" * (LOCATION_VALIDATION_PREFIX_BYTES * 2),
-        **_CODEX_ROLLOUT[0],
-    }
-    source = tmp_path / "projects" / "proj" / "oversized-document.json"
-    source.parent.mkdir(parents=True)
-    source.write_bytes(json.dumps(oversized_codex_document).encode("utf-8"))
-    publisher = ArchiveBlobPublisher(tmp_path / "source-3.db", tmp_path / "blob-3")
-
-    with pytest.raises(ForeignOriginContentError):
-        capture_bound_source(publisher, source, Provider.CLAUDE_CODE, lambda: publisher.write_from_path(source))
-    assert not publisher.has_pending

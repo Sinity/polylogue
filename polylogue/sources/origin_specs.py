@@ -3076,14 +3076,17 @@ def _aistudio_drive_spec() -> OriginSpec:
 
 
 def _otel_genai_spec() -> OriginSpec:
-    """Declare configured local OTLP JSON as an explicit source origin."""
+    """Declare OTLP JSON trace exports, imported through the archive inbox."""
     from polylogue.sources.parsers.otel_genai import OTLP_JSON_DIALECT, SEMCONV_SCHEMA_URL
 
     return _executable_spec(
         Origin.OTEL_GENAI,
         provider=Provider.OTEL_GENAI,
         tightness=95,
-        discovery="Explicitly configured OTLP-JSON file with GenAI span attributes.",
+        discovery=(
+            "OTLP-JSON trace export with GenAI span attributes, imported with `polylogue import`; no tool writes "
+            "these to a canonical location, so the import inbox, which classifies by shape, is its live route."
+        ),
         acquisition_modes=("otlp-json-file",),
         parser_paths=("polylogue/sources/parsers/otel_genai.py",),
         fixture_paths=("tests/unit/sources/parsers/test_otel_genai.py", "tests/fixtures/otel-genai/trace.json"),
@@ -3096,8 +3099,8 @@ def _otel_genai_spec() -> OriginSpec:
                 parser_path="polylogue/sources/parsers/otel_genai.py",
                 coverage_role="otlp_json_export",
                 fidelity_note=(
-                    "An explicitly configured root supplies the source scope; parser admission still requires an "
-                    "OTLP JSON document with a normalizable GenAI span."
+                    "The import inbox supplies the source scope; parser admission still requires an OTLP JSON "
+                    "document with a normalizable GenAI span."
                 ),
                 path_suffixes=(".json",),
                 watch_suffixes=(".json",),

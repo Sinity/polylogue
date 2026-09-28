@@ -263,15 +263,9 @@ def process_zip(
     from polylogue.paths import blob_store_root
     from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
 
-    from .bound_capture import release_captures_on_refusal
+    from .acquisition_boundary import capture_bound_stream, open_bound_member, release_captures_on_refusal
     from .cursor import _ParseContext
-    from .dispatch import (
-        GROUP_PROVIDERS,
-        LOCATION_VALIDATION_PREFIX_BYTES,
-        ForeignOriginContentError,
-        bound_location_provider,
-        refuse_foreign_material,
-    )
+    from .dispatch import GROUP_PROVIDERS, ForeignOriginContentError, bound_location_provider
     from .emitter import _SessionEmitter
     from .origin_specs import path_declaration_refuses_session
 
@@ -314,20 +308,13 @@ def process_zip(
             emitter = _SessionEmitter(ctx)
             precomputed_raw: RawSessionData | None = None
             try:
-                if entry_should_group and ctx.bound_provider is not None:
-                    # A grouped member is published whole before the emitter
-                    # sees its records, so validate it against the archive's
-                    # location first; a refused member never reaches the blob
-                    # store.
-                    with open_bounded_zip_entry(zf, info) as handle:
-                        prefix = handle.read(LOCATION_VALIDATION_PREFIX_BYTES)
-                    refuse_foreign_material(name, ctx.bound_provider, prefix=prefix)
                 if capture_raw and entry_should_group:
-                    # ``open_bounded_zip_entry`` enforces a hard real-byte
+                    # The bounded member reader enforces a hard real-byte
                     # ceiling during decompression, independent of the
-                    # entry's (forgeable) declared header sizes.
-                    with open_bounded_zip_entry(zf, info) as handle:
-                        blob_hash, blob_size = store.write_from_fileobj(handle)
+                    # entry's (forgeable) declared header sizes; the boundary
+                    # refuses a foreign record before the member is retained.
+                    with open_bound_member(zf, info, ctx.bound_provider) as handle:
+                        blob_hash, blob_size = capture_bound_stream(store, handle)
                     with store.open(blob_hash) as stored_handle:
                         content_identity, identity_skipped = bounded_payload_content_identity(
                             stored_handle, size=blob_size, byte_digest=blob_hash
@@ -360,7 +347,7 @@ def process_zip(
                 with release_captures_on_refusal(store) as captures:
                     if precomputed_raw is not None and precomputed_raw.blob_hash is not None:
                         captures.append((precomputed_raw.blob_hash, precomputed_raw.blob_publication_receipt_id))
-                    with open_bounded_zip_entry(zf, info) as handle:
+                    with open_bound_member(zf, info, ctx.bound_provider) as handle:
                         yield from emitter.emit(
                             handle,
                             name,

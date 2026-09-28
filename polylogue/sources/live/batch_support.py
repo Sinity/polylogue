@@ -30,12 +30,9 @@ from polylogue.core.json import loads as json_loads
 from polylogue.core.write_hold import check_write_hold_budget
 from polylogue.pipeline.services.process_pool import select_ingest_worker_count
 from polylogue.sources.dispatch import (
-    ForeignOriginContentError,
-    bound_location_provider,
     detect_provider,
     detect_provider_from_raw_bytes_evidence,
     is_jsonl_source_path,
-    same_origin,
 )
 from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
 from polylogue.storage.runtime import RawSessionRecord
@@ -919,27 +916,17 @@ def detect_provider_from_path_sample_evidence(
     if is_jsonl_source_path(str(path)):
         records, failure = _jsonl_sample_with_failure(path)
         if records:
-            return detect_provider(records, expected=fallback_provider) or fallback_provider, None
+            return detect_provider(records) or fallback_provider, None
         return fallback_provider, failure
     if json_document or path.suffix.lower() == ".json":
         browser_capture, capture_provider = _browser_capture_prefix_probe(path)
         if browser_capture and capture_provider is not None:
-            bound = bound_location_provider(fallback_provider)
-            if bound is not None and not same_origin(capture_provider, bound):
-                raise ForeignOriginContentError(
-                    expected=bound, found=capture_provider, evidence="browser-capture envelope provider"
-                )
             return capture_provider, None
         from polylogue.sources.decoder_json import grok_export_item_count
 
         try:
             with path.open("rb") as handle:
                 if grok_export_item_count(handle) is not None:
-                    bound = bound_location_provider(fallback_provider)
-                    if bound is not None and not same_origin(Provider.GROK, bound):
-                        raise ForeignOriginContentError(
-                            expected=bound, found=Provider.GROK, evidence="grok export envelope"
-                        )
                     return Provider.GROK, None
         except OSError as exc:
             return fallback_provider, _crash(exc)
@@ -949,17 +936,15 @@ def detect_provider_from_path_sample_evidence(
         try:
             with path.open("rb") as handle:
                 for record in _iter_json_stream(handle, path.name):
-                    detected = detect_provider(record, expected=fallback_provider)
+                    detected = detect_provider(record)
                     if detected is not None:
                         return detected, None
                     sample.append(record)
                     if len(sample) >= 32:
                         break
-        except ForeignOriginContentError:
-            raise
         except (OSError, ValueError) as exc:
             return fallback_provider, _crash(exc)
-        return detect_provider(sample, expected=fallback_provider) or fallback_provider, None
+        return detect_provider(sample) or fallback_provider, None
     try:
         with path.open("rb") as handle:
             payload = handle.read(_NON_JSON_PROBE_BYTES + 1)
@@ -990,12 +975,11 @@ def _jsonl_provider_and_session_artifact(
     # A ``raw-only`` declaration is terminal: its bytes are evidence and the
     # record shape cannot decide otherwise (polylogue-ximhz). Checked before
     # any content probe, so a prompt-history log -- whose rows carry the same
-    # ``sessionId`` keys a transcript does -- is never session-parsed, and a
-    # sidecar holding another tool's output is never refused as foreign.
+    # ``sessionId`` keys a transcript does -- is never session-parsed.
     if path_declaration_refuses_session(fallback_provider, path):
         return fallback_provider, False, None
     records, failure = _jsonl_sample_with_failure(path)
-    detected = detect_provider(records, expected=fallback_provider) if records else None
+    detected = detect_provider(records) if records else None
     provider = detected or fallback_provider
     detection_failure = failure if detected is None else None
     if path_declaration_refuses_session(provider, path):
