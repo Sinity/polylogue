@@ -427,3 +427,53 @@ async def test_units_of_a_default_composed_page_get_the_default_page_allowance(
     )
 
     assert widths and set(widths) == {3}
+
+
+@pytest.mark.asyncio
+async def test_a_sampled_page_with_an_offset_samples_past_the_head(tmp_path: Path) -> None:
+    """``offset`` drops the sort's head, then the sample draws from the rest.
+
+    Anti-vacuity (Codex P2, #5695): hold only a sample-sized reservoir and the
+    offset slice removes its only item, so every such page is empty.
+    """
+    import random
+
+    for index in range(5):
+        _seed(tmp_path, f"o{index}", updated_at="2026-01-01T00:00:00Z", messages=1 + index)
+    drawn: set[int] = set()
+    for seed in range(30):
+        random.seed(seed)
+        sessions = await list_archive(
+            SessionQueryPlan(sort="messages", sample=1, offset=1, limit=1), archive_root=tmp_path, config=None
+        )
+        assert len(sessions) == 1
+        drawn.add(len(sessions[0].messages))
+
+    assert 5 not in drawn
+    assert len(drawn) > 1
+
+
+@pytest.mark.asyncio
+async def test_units_of_a_sampled_page_get_the_sampled_width(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P2, #5695): size unit allowances by the pre-sample
+    limit and one sampled session gets a fiftieth of its allowance."""
+    from polylogue.archive.query import archive_execution
+
+    for index in range(3):
+        _seed(tmp_path, f"w{index}", updated_at="2026-01-01T00:00:00Z", messages=1 + index)
+    widths: list[int | None] = []
+    original = archive_execution._attach_units_to_domain
+
+    def attach(*args: Any, **kwargs: Any) -> Any:
+        widths.append(kwargs.get("page_width"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(archive_execution, "_attach_units_to_domain", attach)
+    await list_archive(
+        SessionQueryPlan(sort="messages", limit=50, sample=1),
+        archive_root=tmp_path,
+        config=None,
+        with_units=("messages",),
+    )
+
+    assert widths and set(widths) == {1}

@@ -21,7 +21,7 @@ from polylogue.archive.hydration import archive_envelope_to_session, archive_sum
 from polylogue.archive.query.filter_kwargs import (
     plan_filter_kwargs,
 )
-from polylogue.archive.query.sorting import SessionReservoir
+from polylogue.archive.query.sorting import OffsetSampledPage
 from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
 from polylogue.archive.query.transaction import archive_read_context, run_archive_read
 from polylogue.archive.session.domain_models import Session, SessionSummary
@@ -469,13 +469,15 @@ async def list_archive(
     # budget), and always with the allowance of a full requested page. A
     # predicate therefore sees exactly the rows the served session carries,
     # however its candidate chunk or served page happens to be filled.
-    unit_page = (
+    served = (
         plan.limit
         if plan.limit is not None and plan.limit > 0
         # A complete composed sort serves the default page; its units get
         # that page's allowance, not a candidate chunk's.
         else (default_limit if complete else None)
     )
+    # A sampled page serves at most the sample, whatever the limit.
+    unit_page = min(served, plan.sample) if served is not None and plan.sample else served
 
     def attach(archive: ArchiveStore, sessions: list[Session]) -> list[Session]:
         width = unit_page or max(len(sessions), 1)
@@ -517,7 +519,11 @@ async def list_archive(
         page_width = plan.limit if plan.limit is not None else default_limit
         bound = (plan.offset or 0) + page_width
         best: list[Session] = []
-        reservoir: SessionReservoir[Session] | None = SessionReservoir(plan.sample) if plan.sample else None
+        reservoir: OffsetSampledPage[Session] | None = (
+            OffsetSampledPage(offset=plan.offset or 0, sample=plan.sample, sort=plan._sort_sessions)
+            if plan.sample
+            else None
+        )
 
         def retain(sessions: list[Session]) -> None:
             nonlocal best

@@ -165,6 +165,34 @@ class SessionReservoir(Generic[_T]):
         return sampled
 
 
+class OffsetSampledPage(Generic[_T]):
+    """The ``offset`` best items by sort, then a uniform sample of the rest.
+
+    The shape a sampled page with an offset takes when every candidate is
+    held: the offset drops the sort's head, and the sample draws from what
+    remains. Holds ``offset + sample`` items however many are offered.
+    """
+
+    def __init__(self, *, offset: int, sample: int, sort: Callable[[list[_T]], list[_T]]) -> None:
+        self._offset = offset
+        self._sort = sort
+        self._head: list[_T] = []
+        self._rest: SessionReservoir[_T] = SessionReservoir(sample)
+
+    def offer(self, items: Iterable[_T]) -> None:
+        if not self._offset:
+            self._rest.offer(items)
+            return
+        ranked = self._sort([*self._head, *items])
+        # Each item enters the reservoir exactly once: when it is first seen
+        # outside the head, or when a better item displaces it from the head.
+        self._head, displaced = ranked[: self._offset], ranked[self._offset :]
+        self._rest.offer(displaced)
+
+    def items(self) -> list[_T]:
+        return [*self._head, *self._rest.items()]
+
+
 def finalize_results(
     plan: QuerySortPlan,
     items: list[_T],
@@ -189,6 +217,7 @@ __all__ = [
     "finalize_results",
     "finalize_window",
     "QuerySortPlan",
+    "OffsetSampledPage",
     "SessionReservoir",
     "ResultWindow",
     "sort_sessions",

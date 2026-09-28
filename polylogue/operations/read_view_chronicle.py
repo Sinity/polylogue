@@ -13,7 +13,7 @@ from polylogue.archive.hydration import (
     archive_summary_to_domain,
 )
 from polylogue.archive.message.models import Message
-from polylogue.archive.query.sorting import SessionReservoir
+from polylogue.archive.query.sorting import OffsetSampledPage
 from polylogue.core.enums import MaterialOrigin, Origin
 from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
 from polylogue.operations.query_lowering import cli_read_request
@@ -217,7 +217,11 @@ def _select_summaries(
         # through a reservoir of the sample's size.
         bound = None if plan.limit is None else (plan.offset or 0) + plan.limit
         best: list[Session] = []
-        reservoir: SessionReservoir[Session] | None = SessionReservoir(plan.sample) if plan.sample else None
+        reservoir: OffsetSampledPage[Session] | None = (
+            OffsetSampledPage(offset=plan.offset or 0, sample=plan.sample, sort=plan._sort_sessions)
+            if plan.sample
+            else None
+        )
         matched_ids: set[str] = set()
         for start in range(0, len(rows), _POST_FILTER_CHUNK):
             chunk = rows[start : start + _POST_FILTER_CHUNK]
