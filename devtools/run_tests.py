@@ -533,7 +533,16 @@ LARGE_SELECTION_MODULES = 8
 def _selected_test_modules(selection: list[str]) -> int:
     """How many test modules the selection names, directories expanded."""
     count = 0
-    for argument in _certain_selections(selection):
+    # A standalone flag (``-x``, ``-q``) takes no operand, so the path after it
+    # is still a selection; only a possible option value is skipped.
+    standalone = _REUSABLE_FLAGS
+    certain = [
+        argument
+        for index, argument in enumerate(selection)
+        if not (index and selection[index - 1].startswith("-") and "=" not in selection[index - 1])
+        or selection[index - 1] in standalone
+    ]
+    for argument in certain:
         if argument.startswith("-"):
             continue
         target = Path(argument.split("::", 1)[0])
@@ -554,7 +563,8 @@ def _worker_args(selection: list[str]) -> list[str]:
     profile, so a busy pool runs a large selection narrower, never over its
     ceiling.
     """
-    if _has_worker_flag(selection):
+    if _has_worker_flag(selection) or _selection_targets_benchmarks(selection):
+        # Benchmarks run in one process by contract (``-p no:xdist``).
         return []
     if _selected_test_modules(selection) >= LARGE_SELECTION_MODULES:
         return ["-n", str(FOCUSED_MAX_WORKERS)]

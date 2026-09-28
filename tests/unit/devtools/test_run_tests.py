@@ -1345,3 +1345,15 @@ def test_a_branch_switch_during_lookup_refuses_reuse(monkeypatch: pytest.MonkeyP
     from devtools.checkout_identity import REFUSAL_EXIT
 
     assert run_tests.main(["tests/unit/devtools/test_run_tests.py"]) == REFUSAL_EXIT
+
+
+def test_a_standalone_flag_before_a_large_directory_keeps_xdist() -> None:
+    """Anti-vacuity: treat ``-x`` as taking an operand and ``tests/unit/devtools`` counts nothing."""
+    cmd = run_tests.build_pytest_cmd(["-x", "tests/unit/devtools"])
+    assert cmd[cmd.index("-n") + 1] == str(run_tests.FOCUSED_MAX_WORKERS)
+
+
+def test_benchmark_selections_never_get_automatic_workers() -> None:
+    """Anti-vacuity: drop the benchmark exclusion and ``-n`` is appended beside ``-p no:xdist``."""
+    cmd = run_tests.build_pytest_cmd(["tests/benchmarks", "--benchmark-enable", "-p", "no:xdist"])
+    assert "-n" not in cmd

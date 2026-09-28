@@ -1107,3 +1107,21 @@ def test_a_focused_selection_is_sized_by_its_own_charge_not_the_corpus_model(tmp
     _corpus_argv, corpus_basis = resize_worker_argument(["pytest", "-n", "4"], meminfo=meminfo, **paths)
     assert corpus_basis is not None
     assert corpus_basis["workers"] < 4
+
+
+def test_sizing_telemetry_names_the_profile_that_admitted_the_run(tmp_path: Path) -> None:
+    """Anti-vacuity: report the corpus controller constant and a focused
+    receipt says 1,075 MiB beside a prediction computed with 300."""
+    from devtools.worker_memory import FOCUSED_CHARGE, FOCUSED_MAX_WORKERS
+
+    paths = _pytest_slice(tmp_path, current_mib=PYTEST_SLICE_HIGH_MIB - 4608)
+    _argv, basis = resize_worker_argument(
+        ["pytest", "-n", "4"],
+        meminfo=_meminfo(tmp_path, available_mib=12000),
+        **paths,
+        profile=FOCUSED_CHARGE,
+        max_workers=FOCUSED_MAX_WORKERS,
+    )
+    assert basis is not None
+    assert basis["controller_peak_mib"] == FOCUSED_CHARGE.controller_mib
+    assert basis["worker_peak_cache_mib"] == FOCUSED_CHARGE.worker_cache_mib
