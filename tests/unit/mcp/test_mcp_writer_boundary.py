@@ -79,6 +79,7 @@ def test_judge_only_mcp_route_requires_the_daemon_and_leaves_user_db_untouched(
 
     assert refused["code"] == "daemon_required", refused
     assert refused["detail"] == "FacadeDaemonRequiredError"
+    assert str(root) not in refused["message"], "the public message must not name the archive path"
     assert user_db.read_bytes() == before
     with open_readonly_connection(user_db) as conn:
         row = conn.execute("SELECT status FROM assertions WHERE assertion_id = ?", (candidate_id,)).fetchone()

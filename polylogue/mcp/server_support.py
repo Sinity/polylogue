@@ -535,8 +535,9 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
         # A public mutation needs the resident writer and none is running.
         # The typed code tells the client to start the daemon rather than
         # retry, which the generic ``polylogue_error`` did not.
+        # The exception text names the archive root, so it is not relayed.
         payload = MCPErrorPayload(
-            message=str(exc),
+            message=f"{fn_name}: start `polylogued run` for this archive to apply this mutation",
             code=exc.code,
             error=exc.code,
             detail=type(exc).__name__,
