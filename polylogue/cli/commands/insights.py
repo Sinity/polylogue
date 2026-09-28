@@ -460,7 +460,7 @@ def insights_fable_packet_command(
         fail("insights fable-packet", str(exc))
     payload = _packet_json_document(packet)
     if output_format == "json" or ctx.find_root().params.get("output_format") == "json":
-        emit_success(cast(dict[str, object], payload))
+        emit_success(payload)
         return
     click.echo(f"Fable packet: {packet.status}")
     click.echo(

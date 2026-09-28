@@ -292,6 +292,7 @@ def _read_session_windows(
             if remaining <= 0:
                 break
             window_limit = min(remaining, _SESSION_READ_WINDOW)
+        payload: Mapping[str, object]
         while True:
             try:
                 payload, _ = dispatch_read(

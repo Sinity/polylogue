@@ -1664,7 +1664,7 @@ def continue_verb(
     if execute:
         result = subprocess.run(route.argv, cwd=route.cwd, check=False)
         if result.returncode:
-            raise click.exceptions.Exit(_shell_exit_status(result.returncode))
+            raise SystemExit(_shell_exit_status(result.returncode))
         return
     if destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT) or out_path is not None:
         raise click.UsageError("continue prints its command to terminal/stdout; omit --to/--out.")
@@ -1730,8 +1730,9 @@ def delete_verb(
     output_format = normalize_output_dialect(output_format)
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    inherited_output_format = request.params.get("output_format")
     effective_output_format = output_format or (
-        request.params.get("output_format") if isinstance(request.params.get("output_format"), str) else None
+        inherited_output_format if isinstance(inherited_output_format, str) else None
     )
     # Named projection callbacks enter through the same renderer, so use the
     # root query's inherited dialect in every branch below.

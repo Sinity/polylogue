@@ -3620,7 +3620,8 @@ def test_status_composition_preserves_runtime_collection_metadata() -> None:
             runtime_status=runtime,
         )
 
-    assert payload["component_readiness"]["search"]["collection"] == collection
+    component_readiness = cast(dict[str, Any], payload["component_readiness"])
+    assert component_readiness["search"]["collection"] == collection
 
 
 def test_pinned_only_refutations_still_reach_the_composed_verdict() -> None:

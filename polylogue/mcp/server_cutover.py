@@ -102,9 +102,10 @@ async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dic
         detail = (error.get("detail") or error.get("message")) if isinstance(error, dict) else None
         code = error.get("code") if isinstance(error, dict) else None
         retryable = error.get("retryable") if isinstance(error, dict) else None
-        return hooks.error_json(
-            str(detail or "daemon operation refused"), code=str(code or "daemon_rejected"), retryable=retryable
-        )
+        extra: dict[str, str] = {"code": str(code or "daemon_rejected")}
+        if retryable is not None:
+            extra["retryable"] = str(retryable)
+        return hooks.error_json(str(detail or "daemon operation refused"), **extra)
     result = response.get("result")
     return json.dumps(result if isinstance(result, dict) else response, indent=2, ensure_ascii=False, default=str)
 

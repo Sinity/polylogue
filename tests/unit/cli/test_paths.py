@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from click.testing import CliRunner
@@ -189,7 +190,7 @@ def test_paths_readiness_resolves_active_generation_with_root_source_tier(
 
     def capture_debt_list(**kwargs: object) -> object:
         selected_indexes.append(kwargs.get("index_db_path"))
-        return original_debt_list(**kwargs)
+        return original_debt_list(**cast(Any, kwargs))
 
     monkeypatch.setattr(archive_debt, "archive_debt_list", capture_debt_list)
 

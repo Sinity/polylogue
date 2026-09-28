@@ -150,6 +150,7 @@ def test_observation_unknowns_and_artifact_kind_affect_context_identity() -> Non
     unknown = resolve_context(ConfigurationObservation((instruction,), ("mcp_profile",)), at_ms=1)
     other_kind = resolve_context((hook,), at_ms=1)
     assert exact.context != unknown.context
+    assert unknown.context is not None
     assert unknown.status == "partial" and not unknown.context.is_complete
     assert exact.context != other_kind.context
 

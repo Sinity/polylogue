@@ -27,7 +27,7 @@ from polylogue.archive.session.domain_models import Session
 from polylogue.archive.session.events import SessionEvent
 from polylogue.core.enums import Origin
 from polylogue.core.refs import EvidenceRef, ObjectRef
-from polylogue.core.types import SessionId
+from polylogue.core.types import SessionEventId, SessionId
 
 
 class _ProjectedDigestEvent:
@@ -788,8 +788,8 @@ def test_stored_work_events_feed_digest_and_run_projection() -> None:
         update={
             "session_events": tuple(
                 SessionEvent(
-                    id=f"work-{index}",
-                    session_id="codex-session:demo",
+                    id=SessionEventId(f"work-{index}"),
+                    session_id=SessionId("codex-session:demo"),
                     origin=Origin.CODEX_SESSION,
                     event_index=index,
                     event_type=event_type,

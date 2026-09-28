@@ -140,6 +140,7 @@ async def test_spec_builder_authority_reports_full_matches_and_processed_page(
 
     assert envelope.total == 100
     assert len(envelope.hits) == 10
+    assert envelope.authority is not None
     assert envelope.authority.matched == 100
     assert envelope.authority.analyzed == 10
 

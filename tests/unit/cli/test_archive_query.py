@@ -1382,7 +1382,12 @@ class TestSessionSummaryText:
             return {"session": {"session_id": "fixture", "messages": []}, "complete": True}, None
 
         monkeypatch.setattr(archive_query, "dispatch_read", dispatch)
-        assert archive_query._read_session_windows(object(), "session:fixture", daemon_disabled=True)["messages"] == []
+        assert (
+            archive_query._read_session_windows(cast(Config, object()), "session:fixture", daemon_disabled=True)[
+                "messages"
+            ]
+            == []
+        )
         assert limits == [200, 100]
 
     """``read --view summary`` must render a condensed synopsis, not the full

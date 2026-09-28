@@ -57,6 +57,7 @@ from polylogue.archive.query.metadata import (
 from polylogue.archive.query.spec import QUERY_ACTION_TYPES, QUERY_RETRIEVAL_LANES, QUERY_SEQUENCE_ACTION_TYPES
 from polylogue.cli.shell_completion_classes import MESSAGE_COMPLETION_TYPE, completion_message
 from polylogue.cli.shell_words import completion_words
+from polylogue.core.durable_fs import sync_directory as _fsync_directory
 from polylogue.core.enums import MaterialOrigin
 from polylogue.sources.origin_specs import public_origin_descriptions
 from polylogue.surfaces.action_affordances import InputUnit
@@ -209,6 +210,7 @@ def _remember_completion_values(source: str, value: object, *, archive_root: str
                 stream.write(encoded)
             os.replace(temporary, path)
             temporary = None
+            _fsync_directory(path.parent)
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
     except (OSError, ValueError, TypeError):
         if temporary is not None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -137,9 +138,7 @@ async def test_context_preamble_ledger_submits_daemon_mutation_for_active_root(
             self.config = config
 
         async def record_context_ledger(self, assembly: ContextAssembly, *, observed_at_ms: int) -> None:
-            from polylogue.api.archive import Polylogue
-
-            await Polylogue.record_context_ledger(self, assembly, observed_at_ms=observed_at_ms)
+            await Polylogue.record_context_ledger(cast(Polylogue, self), assembly, observed_at_ms=observed_at_ms)
 
     await _record_preamble_ledger(Owner(), _assembly())
     assert calls and calls[0][0] is config

@@ -116,7 +116,7 @@ from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.digest import REFERENCE, canonical_bytes
-from polylogue.core.enums import DisplayLabelSource, Origin, Provider
+from polylogue.core.enums import BranchType, DisplayLabelSource, Origin, Provider, SessionKind
 from polylogue.core.errors import (
     ArchiveTierUnavailableError,
     PostFilterAfterLimitError,
@@ -1611,7 +1611,7 @@ class ArchiveStore:
             source_name=provider,
             provider_session_id=existing.native_id,
             title=existing.title,
-            session_kind=existing.session_kind,
+            session_kind=SessionKind(existing.session_kind),
             created_at=existing.created_at,
             updated_at=existing.updated_at,
             messages=[],
@@ -1623,7 +1623,7 @@ class ArchiveStore:
             git_branch=existing.git_branch,
             git_repository_url=existing.git_repository_url,
             git_commit_hash=existing_row["commit_hash"],
-            branch_type=existing.branch_type,
+            branch_type=BranchType(existing.branch_type) if existing.branch_type else None,
             working_directories=list(existing.working_directories),
             provider_project_ref=existing.provider_project_ref,
             display_name=existing.display_name,

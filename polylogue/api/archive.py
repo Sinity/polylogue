@@ -700,9 +700,10 @@ def _archive_list_summaries_with_post_filters(
     # The spec's own page is authoritative unless an adapter explicitly
     # supplies a replacement. Candidate widening above removes SQL paging;
     # restore the effective page after content filtering.
-    effective_offset = offset if offset is not None else int(query_kwargs.get("offset", 0) or 0)
+    raw_offset = query_kwargs.get("offset", 0)
+    effective_offset = offset if offset is not None else int(raw_offset) if isinstance(raw_offset, (int, str)) else 0
     raw_limit = limit if limit is not None else query_kwargs.get("limit")
-    effective_limit = None if raw_limit is None else int(raw_limit)
+    effective_limit = None if raw_limit is None else int(raw_limit) if isinstance(raw_limit, (int, str)) else None
     start = effective_offset
     end = None if effective_limit is None else start + effective_limit
     filtered = list(_iter_post_filtered_summaries(archive, spec, candidates, needed=end))
@@ -1235,12 +1236,12 @@ def _archive_list_assertion_claims(
 ) -> list[Any]:
     """Return assertion-backed lifecycle claims from ``user.db``."""
 
-    from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_claims
+    from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CLAIM_KINDS, list_assertion_claims
 
     with _readable_user_tier(config) as conn:
         return list_assertion_claims(
             conn,
-            **({} if kinds is None else {"kinds": kinds}),
+            kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
             target_ref=target_ref,
             scope_ref=scope_ref,
             statuses=statuses,

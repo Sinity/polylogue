@@ -5395,14 +5395,24 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
         # without decoding them.  Recovery is the first lawful point to
         # inspect the durable bytes and resolve their parser, before deciding
         # whether their filename is a stream route.
-        with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, _stream_path, _stream_kind):
-            provider, _evidence = _detect_unknown_retained_provider(payload, source_path)
+        with archive.open_raw_revision_material(raw_id) as (
+            _stream_provider,
+            stream_payload,
+            _stream_path,
+            _stream_kind,
+        ):
+            provider, _evidence = _detect_unknown_retained_provider(stream_payload, source_path)
         if is_stream_record_provider(source_path, str(provider)):
-            with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, stream_path, _stream_kind):
+            with archive.open_raw_revision_material(raw_id) as (
+                _stream_provider,
+                stream_payload,
+                stream_path,
+                _stream_kind,
+            ):
                 return normalize_replay(
                     _parse_stream(
                         provider,
-                        payload,
+                        stream_payload,
                         stream_path,
                         fallback_id_override=fallback_id_override,
                         archive_root=archive.archive_root,
@@ -5422,11 +5432,11 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
             )
         )
     if is_stream_record_provider(source_path, str(provider)):
-        with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, _stream_kind):
+        with archive.open_raw_revision_material(raw_id) as (stream_provider, stream_payload, stream_path, _stream_kind):
             return normalize_replay(
                 _parse_stream(
                     stream_provider,
-                    payload,
+                    stream_payload,
                     stream_path,
                     fallback_id_override=fallback_id_override,
                     archive_root=archive.archive_root,

@@ -85,6 +85,7 @@ class QueryOutputSpec:
     @classmethod
     def from_params(cls, params: Mapping[str, object]) -> QueryOutputSpec:
         typed_target = params.get("_output_target")
+        destinations: tuple[QueryDeliveryTarget, ...]
         if isinstance(typed_target, QueryDeliveryTarget):
             destinations = (typed_target,)
         elif params.get("output_destination") == "file" and params.get("out_path") is not None:

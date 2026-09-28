@@ -15,7 +15,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
-from typing import Literal, TypeVar, get_args
+from typing import Literal, TypeVar, cast, get_args
 
 from pydantic import Field, field_validator, model_validator
 
@@ -1888,15 +1888,18 @@ def _extract_events(session: Session, messages: Sequence[Message]) -> Iterable[S
     result carries no structured outcome yields no event (NULL = unknown,
     never a fabricated positive).
     """
-    for event in sorted(session.session_events, key=lambda item: item.event_index):
-        if event.event_type not in {"tool_run", "subagent_spawn", "decision", "artifact_change"}:
+    for session_event in sorted(session.session_events, key=lambda item: item.event_index):
+        if session_event.event_type not in {"tool_run", "subagent_spawn", "decision", "artifact_change"}:
             continue
-        payload = event.payload
+        event_kind = cast(
+            Literal["tool_run", "subagent_spawn", "decision", "artifact_change"], session_event.event_type
+        )
+        payload = session_event.payload
         summary = payload.get("summary")
         if not isinstance(summary, str) or not summary.strip():
-            summary = event.event_type.replace("_", " ")
+            summary = session_event.event_type.replace("_", " ")
         yield SessionDigestEvent(
-            kind=event.event_type,
+            kind=event_kind,
             summary=summary,
             raw_refs=(TransformRawRef(session_id=str(session.id), ref_kind="session", preview=summary),),
             tool_name=_optional_text(payload.get("tool_name")),

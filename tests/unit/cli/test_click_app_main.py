@@ -214,4 +214,4 @@ def test_runtime_refusal_uses_machine_error_envelope(
     assert excinfo.value.code == 1
     payload = parse_json_object(capsys.readouterr().out)
     assert payload["code"] == "runtime_error"
-    assert "unsupported interpreter" in payload["message"]
+    assert "unsupported interpreter" in str(payload["message"])

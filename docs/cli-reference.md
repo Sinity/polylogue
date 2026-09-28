@@ -211,6 +211,7 @@ Commands:
     annotations  Import typed annotation batches.
     compare      Blind pairwise comparative judgment and calibration.
     context      Compile a context seed for the next session.
+    insights
     setting      Get, set, and list durable user settings.
 ```
 

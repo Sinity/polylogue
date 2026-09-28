@@ -112,17 +112,21 @@ def _status_operation_result(
     """Use the configured machine endpoint or the same pinned direct reader."""
     from polylogue.cli.operation_kernel import configured_read_operation
     from polylogue.cli.shared.helpers import load_effective_config
+    from polylogue.config import load_polylogue_config
 
     config = load_effective_config(env)
+    polylogue_config = load_polylogue_config()
     # The status command's public endpoint is HTTP. Other operation reads use
     # the archive-scoped UDS, but bare status must honor its configured URL.
-    url = daemon_url or getattr(env, "daemon_url", None) or config.daemon_url or _BUILTIN_DAEMON_URL
+    url = daemon_url or getattr(env, "daemon_url", None) or polylogue_config.daemon_url or _BUILTIN_DAEMON_URL
     if url.rstrip("/") != _BUILTIN_DAEMON_URL:
         import urllib.request
 
         from polylogue.daemon.api_auth import resolve_api_auth_token
 
-        token = resolve_api_auth_token(config.api_auth_token, allow_no_auth=config.api_allow_no_auth)
+        token = resolve_api_auth_token(
+            polylogue_config.api_auth_token, allow_no_auth=polylogue_config.api_allow_no_auth
+        )
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         request = urllib.request.Request(url.rstrip("/") + "/api/status", headers=headers)
         try:

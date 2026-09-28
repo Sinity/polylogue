@@ -294,6 +294,7 @@ def test_topology_truncation_keeps_every_edge_endpoint() -> None:
     """
     from polylogue.analysis.orchestration_evidence import build_session_orchestration
     from polylogue.analysis.topology import SessionTopology, TopologyEdge, TopologyEdgeKind, TopologyNode
+    from polylogue.archive.message.messages import MessageCollection
     from polylogue.archive.session.domain_models import Session
     from polylogue.core.enums import Origin
     from polylogue.core.types import SessionId
@@ -306,15 +307,17 @@ def test_topology_truncation_keeps_every_edge_endpoint() -> None:
         nodes=(TopologyNode(session_id=root), *(TopologyNode(session_id=child) for child in children)),
         edges=tuple(TopologyEdge(parent_id=root, child_id=child, kind=TopologyEdgeKind.SUBAGENT) for child in children),
     )
-    session = Session(id=root, origin=Origin.CODEX_SESSION)
+    session = Session(id=root, origin=Origin.CODEX_SESSION, messages=MessageCollection(messages=[]))
 
     evidence = build_session_orchestration(session, topology)
     payload = evidence.topology
     assert payload is not None
-    retained = {node["session_id"] for node in payload["nodes"]}
+    nodes = cast(list[dict[str, object]], payload["nodes"])
+    edges = cast(list[dict[str, object]], payload["edges"])
+    retained = {node["session_id"] for node in nodes}
     assert len(retained) == 1000
-    assert len(payload["edges"]) == 999
-    assert all(edge["parent_id"] in retained and edge["child_id"] in retained for edge in payload["edges"])
+    assert len(edges) == 999
+    assert all(edge["parent_id"] in retained and edge["child_id"] in retained for edge in edges)
 
 
 def test_unmeasured_token_lanes_are_a_distinct_bucket_from_measured_zero() -> None:
