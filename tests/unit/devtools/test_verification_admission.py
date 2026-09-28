@@ -146,3 +146,16 @@ def test_an_unasked_unrecorded_term_stays_unknown() -> None:
     budget = decision.to_payload()["budget"]
     assert isinstance(budget, dict)
     assert budget["max_unrecorded_files"] == AFFECTED_MAX_UNRECORDED_FILES
+
+
+def test_unknown_runtime_refuses_a_small_selection() -> None:
+    """Anti-vacuity: a count under the cap must not admit an unpriced run."""
+    decision = admit_affected_selection(
+        graph_status="usable",
+        graph_reason="present",
+        full_rerun_cause=None,
+        selected_count=2,
+        estimated_seconds=None,
+    )
+    assert decision.status == "unknown"
+    assert "runtime estimate is unknown" in decision.reason

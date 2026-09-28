@@ -25,7 +25,9 @@ import re
 import stat
 import tempfile
 import threading
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import Future
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
@@ -35,6 +37,8 @@ from typing import IO, BinaryIO
 from polylogue.storage.io_phase_metrics import timed_io_phase
 
 _CHUNK_SIZE = 1024 * 1024  # 1 MiB
+#: Remembered read verifications; a pacing bound (eviction only re-hashes).
+_READ_VERIFICATION_MEMO_ENTRIES = 65_536
 
 # Valid blob hash: exactly 64 lowercase hex chars (a SHA-256 digest). Matched
 # with fullmatch (not the former match() + trailing-`$`, which also accepts a
@@ -118,6 +122,9 @@ class BlobStore:
 
     def __init__(self, root: Path) -> None:
         self.root = root
+        self._read_verification_lock = threading.Lock()
+        self._read_verified: OrderedDict[tuple[str, int, int, int, int, int], None] = OrderedDict()
+        self._read_verifying: dict[tuple[str, int, int, int, int, int], Future[bool]] = {}
 
     @property
     def staging_root(self) -> Path:
@@ -406,25 +413,35 @@ class BlobStore:
         hash prefix paid one directory fsync per blob for one directory's worth
         of durability (polylogue-rk0it AC5). Nothing observable is weakened: no
         caller may advance a cursor or certify retention on a partial return,
-        and a batch that raises leaves the same on-disk state the per-blob loop
-        left -- bytes in place, the directory entry not yet persisted, and the
-        retained source still the recovery authority.
+        and a batch that raises persists every directory touched before
+        propagating the failure, leaving the retained source as recovery
+        authority without relying on a future deduplicating retry.
         """
         results: list[tuple[str, int]] = []
         # Insertion-ordered distinct shards: one fsync per directory, in the
         # order the batch first touched them.
         shard_directories: dict[Path, None] = {}
         root_needs_fsync = False
-        for item in prepared:
-            outcome, shard_directory, shard_created = self._place_prepared(item)
-            results.append(outcome)
-            if shard_directory is not None:
-                shard_directories[shard_directory] = None
-            root_needs_fsync = root_needs_fsync or shard_created
-        for shard_directory in shard_directories:
-            self._fsync_directory(shard_directory)
-        if root_needs_fsync:
-            self._fsync_directory(self.root)
+        try:
+            for item in prepared:
+                outcome, shard_directory, shard_created = self._place_prepared(item)
+                results.append(outcome)
+                if shard_directory is not None:
+                    shard_directories[shard_directory] = None
+                root_needs_fsync = root_needs_fsync or shard_created
+            for shard_directory in shard_directories:
+                self._fsync_directory(shard_directory)
+            if root_needs_fsync:
+                self._fsync_directory(self.root)
+        except BaseException:
+            # Earlier renames are already visible. Persist their names before
+            # returning the error, or a retry could deduplicate them and lose
+            # the only opportunity to make those names durable.
+            for shard_directory in shard_directories:
+                self._fsync_directory(shard_directory)
+            if root_needs_fsync:
+                self._fsync_directory(self.root)
+            raise
         return tuple(results)
 
     def discard_prepared(self, prepared: PreparedBlob) -> None:
@@ -515,6 +532,59 @@ class BlobStore:
                     break
                 hasher.update(chunk)
         return hasher.hexdigest() == hash_hex
+
+    def verify_for_read(self, hash_hex: str) -> bool:
+        """Hash-verify a blob for a read path, re-hashing only when its file changed.
+
+        Session reads resolve attachment availability per read; re-hashing
+        every blob on every read made a session with many or large
+        attachments cost their full size each time (polylogue-1gxyu). A blob
+        is content-addressed and published atomically, so a successful
+        verification stays valid while the file keeps the same device, inode,
+        size, and nanosecond mtime and ctime; any of those changing (including
+        a permission change) forces a full re-hash. The memo is a recomputation cache only -- evicting an entry
+        re-hashes, it never changes an answer -- so its size is a pacing
+        bound. ``verify`` and ``verify_all`` stay uncached integrity checks.
+        """
+        path = self.blob_path(hash_hex)
+        try:
+            info = path.stat()
+        except OSError:
+            return False
+        # ctime covers what mtime does not: a mode, owner or content change
+        # always moves it, and it cannot be set back from userspace.
+        identity = (hash_hex, info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        with self._read_verification_lock:
+            if identity in self._read_verified:
+                self._read_verified.move_to_end(identity)
+                return True
+            # Single flight: concurrent cold reads of one identity wait for
+            # the first caller's hash instead of each streaming the blob.
+            inflight = self._read_verifying.get(identity)
+            owner = inflight is None
+            if inflight is None:
+                inflight = Future()
+                self._read_verifying[identity] = inflight
+        if not owner:
+            return inflight.result()
+        try:
+            try:
+                verified = self.verify(hash_hex)
+            except OSError:
+                verified = False
+            with self._read_verification_lock:
+                if verified:
+                    self._read_verified[identity] = None
+                    while len(self._read_verified) > _READ_VERIFICATION_MEMO_ENTRIES:
+                        self._read_verified.popitem(last=False)
+                self._read_verifying.pop(identity, None)
+            inflight.set_result(verified)
+            return verified
+        except BaseException as exc:
+            with self._read_verification_lock:
+                self._read_verifying.pop(identity, None)
+            inflight.set_exception(exc)
+            raise
 
     def iter_all(self) -> Iterator[str]:
         """Yield hashes for canonical regular blob files only."""

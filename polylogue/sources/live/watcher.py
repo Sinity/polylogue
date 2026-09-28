@@ -1197,7 +1197,11 @@ class LiveWatcher:
         The lock is process-local ordering on top of that: one live ingest at
         a time in this process.
         """
-        self._batch_processor.require_cursor_authority(paths)
+        from polylogue.core.degraded import is_fully_degraded
+
+        if not is_fully_degraded():
+            # A degraded batch returns its skip metrics without the gate.
+            self._batch_processor.require_cursor_authority(paths)
         async with self._ingest_lock:
             return await self._batch_processor.ingest_files(
                 paths,

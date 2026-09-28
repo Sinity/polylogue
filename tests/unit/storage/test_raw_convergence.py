@@ -853,7 +853,10 @@ def test_canonical_deadline_bounds_a_pass_without_substituting_a_count_limit(
 
     adapter = RawObservationDerivation(tmp_path)
     clock = [0.0]
-    monkeypatch.setattr("polylogue.daemon.derivation.time.monotonic", lambda: clock[0])
+    # Patch only the pass deadline clock: freezing ``time.monotonic`` itself
+    # also froze the retained-preparation worker pool's waits, so the pass
+    # hung instead of expiring.
+    monkeypatch.setattr("polylogue.daemon.derivation._pass_clock", lambda: clock[0])
     original_compute = adapter.compute
 
     def compute_then_expire(frame: object, key: str) -> object:

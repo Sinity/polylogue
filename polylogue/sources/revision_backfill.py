@@ -1325,9 +1325,24 @@ def prepare_retained_jsonl_artifact(
                 classify_claude_design_object=classify_claude_design_object,
                 classify_chatgpt_object=classify_chatgpt_object,
                 classify_gemini_object=classify_gemini_object,
+                # The publisher recomputes this digest from the retained
+                # evidence for every artifact, so a pass that enriched nothing
+                # (no assembly spec, or no admitted session) must bind the
+                # same evidence value rather than an absent one.
                 preparation_dependency=lambda: (
                     _retained_dependency_digest(
-                        evidence_digest,
+                        evidence_digest
+                        if evidence_digest is not None
+                        else _enrichment_evidence_digest(
+                            _retained_enrichment_sidecar_data(
+                                provider=provider,
+                                sessions=(),
+                                index_conn=index_conn,
+                                source_conn=source_conn,
+                                blob_root=Path(blob_root),
+                                source_path=source_path,
+                            )
+                        ),
                         _retained_parser_sidecar_digest(source_conn, provider=provider, source_path=source_path),
                     ),
                     str(Path(index_db_path).resolve()),
@@ -5738,6 +5753,41 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     provider, blob_hash, source_path, kind, _payload_size = archive.raw_revision_descriptor(raw_id)
     fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
 
+    # Work events have their own durable envelope.  They are not provider
+    # transcript records, so replay them before dispatching to provider parsers.
+    if source_path.startswith("agent-work-event:"):
+        _provider, payload, _path, _kind = archive.raw_revision_material(raw_id)
+        try:
+            envelope = json.loads(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"invalid retained work-event envelope for {raw_id}") from exc
+        if not isinstance(envelope, dict) or envelope.get("_polylogue_work_event") != 1:
+            raise ValueError(f"unrecognized retained work-event envelope for {raw_id}")
+        from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
+
+        try:
+            event_provider = Provider(str(envelope["provider"]))
+            native_id = str(envelope["native_session_id"])
+            event_type = str(envelope["event_type"])
+            event_payload = envelope["payload"]
+            if not isinstance(event_payload, dict):
+                raise TypeError("payload must be an object")
+            event = ParsedSessionEvent(
+                event_type=event_type,
+                timestamp=envelope.get("timestamp"),
+                payload=event_payload,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"malformed retained work-event envelope for {raw_id}") from exc
+        return [
+            ParsedSession(
+                source_name=event_provider,
+                provider_session_id=native_id,
+                messages=[],
+                session_events=[event],
+            )
+        ]
+
     def normalize_replay(sessions: list[ParsedSession]) -> list[ParsedSession]:
         return [normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp) for session in sessions]
 
@@ -5756,14 +5806,24 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
         # without decoding them.  Recovery is the first lawful point to
         # inspect the durable bytes and resolve their parser, before deciding
         # whether their filename is a stream route.
-        with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, _stream_path, _stream_kind):
-            provider, _evidence = _detect_unknown_retained_provider(payload, source_path)
+        with archive.open_raw_revision_material(raw_id) as (
+            _stream_provider,
+            stream_payload,
+            _stream_path,
+            _stream_kind,
+        ):
+            provider, _evidence = _detect_unknown_retained_provider(stream_payload, source_path)
         if is_stream_record_provider(source_path, str(provider)):
-            with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, stream_path, _stream_kind):
+            with archive.open_raw_revision_material(raw_id) as (
+                _stream_provider,
+                stream_payload,
+                stream_path,
+                _stream_kind,
+            ):
                 return normalize_replay(
                     _parse_stream(
                         provider,
-                        payload,
+                        stream_payload,
                         stream_path,
                         fallback_id_override=fallback_id_override,
                         archive_root=archive.archive_root,
@@ -5783,11 +5843,11 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
             )
         )
     if is_stream_record_provider(source_path, str(provider)):
-        with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, _stream_kind):
+        with archive.open_raw_revision_material(raw_id) as (stream_provider, stream_payload, stream_path, _stream_kind):
             return normalize_replay(
                 _parse_stream(
                     stream_provider,
-                    payload,
+                    stream_payload,
                     stream_path,
                     fallback_id_override=fallback_id_override,
                     archive_root=archive.archive_root,

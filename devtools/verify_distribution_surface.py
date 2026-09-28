@@ -23,6 +23,7 @@ RUNTIME_IMPORT_PROBES = (
     "polylogue.daemon.cli",
     "polylogue.mcp.cli",
     "polylogue.archive.query.expression",
+    "devtools.storage_correctness_scenario",
 )
 # The one-shot historical continuity recovery operation and its packaged
 # resource were deleted; the runtime ships no data-file resources today.

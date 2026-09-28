@@ -84,7 +84,8 @@ async def _ingest_selected_paths(
         if not excluded:
             return tuple(receipts)
 
-        non_retryable = {path: reason for path, reason in excluded.items() if reason != REFUSED_UNATTEMPTED_TIME_BUDGET}
+        settled_exclusions = {REFUSED_UNATTEMPTED_TIME_BUDGET, "durably_excised"}
+        non_retryable = {path: reason for path, reason in excluded.items() if reason not in settled_exclusions}
         if non_retryable:
             reasons = ", ".join(sorted(set(non_retryable.values())))
             raise RuntimeError(
@@ -93,6 +94,8 @@ async def _ingest_selected_paths(
             )
 
         if not succeeded:
+            if all(reason == "durably_excised" for reason in excluded.values()):
+                return tuple(receipts)
             raise RuntimeError(
                 f"canonical ingestion made no progress on selected source files: unattempted={len(excluded)}"
             )

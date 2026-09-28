@@ -10,6 +10,7 @@ def apply_ingest_batch_summary(result: ParseResult, batch_summary: _IngestBatchS
     result.parse_failures += batch_summary.parse_failures
     result.processed_ids.update(batch_summary.processed_ids)
     result._changed_session_ids.extend(batch_summary.changed_session_ids)
+    result._fts_repair_session_ids.extend(batch_summary.fts_repair_session_ids)
     for key, value in batch_summary.counts.items():
         if key in result.counts:
             result.counts[key] += value

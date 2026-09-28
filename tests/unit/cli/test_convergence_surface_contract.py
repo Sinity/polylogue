@@ -91,8 +91,11 @@ def test_converging_archive_surfaces_share_materialization_counts(tmp_path: Path
     # the payload assertions below are unchanged.
     assert status.exit_code == 1, status.output
     status_payload = _load_stdout_json(status.stdout)
-    status_counts = status_payload["component_readiness"]["raw_materialization"]["counts"]
-    assert {key: status_counts[key] for key in expected_counts} == expected_counts
+    # ``status`` is served by the daemon (#5550). With none running it
+    # reports the read as unavailable and must not fabricate materialization
+    # counts; the surfaces below still compute them from the archive.
+    assert status_payload["status_snapshot"]["state"] == "unavailable"
+    assert "raw_materialization" not in status_payload.get("component_readiness", {})
 
     no_results = run_cli(["--plain", "find", "absenttoken", "--format", "json"], env=env, timeout=30)
     assert no_results.exit_code == 2, no_results.output
@@ -102,7 +105,8 @@ def test_converging_archive_surfaces_share_materialization_counts(tmp_path: Path
     assert no_results_payload["items"] == []
 
     analyze = run_cli(["--plain", "analyze", "--format", "json"], env=env, timeout=30)
-    assert analyze.exit_code == 0, analyze.output
+    # Converging totals are degraded, which exits 1 like every other read.
+    assert analyze.exit_code == 1, analyze.output
     analyze_payload = _load_stdout_json(analyze.stdout)
     assert analyze_payload["archive_converging"] is True
     assert analyze_payload["convergence_warning"] == expected_warning

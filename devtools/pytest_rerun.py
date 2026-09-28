@@ -26,9 +26,11 @@ from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
     MANAGED_PLUGIN_ARGS,
     REPORT_PLUGIN_ARGS,
+    SUITE_COST_PLUGIN_NAME,
 )
 from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest, run_pytest_isolated
 from devtools.pytest_stream_report import report_file_argument
+from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
 from devtools.toolchain import venv_python
 
 __all__ = [
@@ -118,6 +120,8 @@ def rerun_failed_once(
         *REPORT_PLUGIN_ARGS,
         *MANAGED_PLUGIN_ARGS,
         "-p",
+        SUITE_COST_PLUGIN_NAME,
+        "-p",
         "no:testmon",
         "-p",
         "no:randomly",
@@ -127,6 +131,8 @@ def rerun_failed_once(
     sys.stderr.write(f"\n  rerun {len(failed)} failed test(s) alone ... ")
     sys.stderr.flush()
     rerun_env = {key: value for key, value in env.items() if not key.startswith("PYTEST_XDIST")}
+    rerun_cost_dir = step_dir / "suite-cost-rerun"
+    rerun_env[SUITE_COST_DIR_ENV] = str(rerun_cost_dir)
     # The rerun is pytest too, so it holds the host's pytest slot like the run
     # it is adjudicating.
     try:
@@ -136,6 +142,7 @@ def rerun_failed_once(
         sys.stderr.write(f"\n  rerun could not acquire the pytest slot: {exc}\n")
         return {"attempted": failed, "still_failed": failed, "flaky": [], "rerun_report": None, "rerun_exit": 125}
     rerun_receipt = getattr(rerun_completed, "receipt", None)
+    write_run_receipt(rerun_cost_dir)
     rerun_provenance = rerun_receipt.get("worktree_provenance") if isinstance(rerun_receipt, Mapping) else None
     if isinstance(first_provenance, Mapping) and isinstance(rerun_provenance, Mapping):
         identity_keys = ("git_head", "git_branch", "git_worktree_content_sha256")

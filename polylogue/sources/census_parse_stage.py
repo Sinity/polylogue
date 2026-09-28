@@ -41,6 +41,7 @@ import asyncio
 import contextlib
 import threading
 import time
+import weakref
 from collections.abc import Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, wait
 from concurrent.futures import thread as _thread_impl
@@ -160,6 +161,36 @@ class _ProcessBoundedThreadPoolExecutor(ThreadPoolExecutor):
     explicitly daemon threads. The coordinator and durable outbox remain the
     authority for all SQLite work and are unaffected by this containment.
     """
+
+    def _adjust_thread_count(self) -> None:
+        """Start workers as daemon threads.
+
+        ``ThreadPoolExecutor.submit`` calls this hook, so no caller in this
+        repository names it; it is the one place the stdlib creates workers.
+        """
+        if self._idle_semaphore.acquire(timeout=0):
+            return
+
+        def weakref_cb(_worker_reference: object, queue: Any = self._work_queue) -> None:
+            queue.put(None)
+
+        num_threads = len(self._threads)
+        if num_threads >= self._max_workers:
+            return
+        thread_name = f"{self._thread_name_prefix or self}_{num_threads}"
+        worker = threading.Thread(
+            name=thread_name,
+            target=_thread_impl._worker,
+            args=(
+                weakref.ref(self, weakref_cb),
+                self._create_worker_context(),  # type: ignore[attr-defined]
+                self._work_queue,
+            ),
+            daemon=True,
+        )
+        worker.start()
+        self._threads.add(worker)  # type: ignore[attr-defined]
+        _thread_impl._threads_queues[worker] = self._work_queue  # type: ignore[index]
 
     def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
         """Stop admission without registering running daemon workers for join."""

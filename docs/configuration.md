@@ -330,8 +330,8 @@ A few keys not shown in the full example above, with their TOML path:
 
 | Key | TOML path | Meaning |
 | --- | --- | --- |
-| `daemon_client_mode` | `daemon.client_mode` | How the CLI/MCP client reaches the daemon: `auto` (default), or an explicit forced mode. |
-| `no_daemon` | `client.no_daemon` | Force direct in-process archive access, bypassing the daemon client even when one is reachable. |
+| `daemon_client_mode` | `daemon.client_mode` | How the CLI/MCP client reaches the daemon: `auto` (default), or `off` to refuse daemon-served operations. |
+| `no_daemon` | `client.no_daemon` | Refuse daemon-served operations for one invocation; reads that require the daemon then fail. |
 | `debug_timing` | `ui.debug_timing` | Emit per-stage timing diagnostics in CLI output. |
 | `hermes_root` | `sources.hermes.root` | Runtime root watched for Hermes state, snapshots, NeMo Relay ATIF/ATOF artifacts, and verification evidence. Defaults to `~/.hermes`. |
 | `hook_sidecar_dir` | `sources.hook_sidecar_dir` | Directory for hook-event sidecar files consumed by the Claude Code/Codex hook harness. Defaults to `<archive_root>/hooks`, so a scratch/test `POLYLOGUE_ARCHIVE_ROOT` genuinely isolates its hook carriers from the real ones; set explicitly only if you need them somewhere other than the archive they belong to. |

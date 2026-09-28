@@ -45,17 +45,25 @@ def _render_query_workflow_help(ctx: click.Context) -> None:
     ctx.exit()
 
 
-def _asks_for_query_workflow_help(args: list[str]) -> bool:
+def _asks_for_query_workflow_help(group: click.Group, args: list[str]) -> bool:
     """Report whether the invocation is a bare help request for the query marker.
 
     Root filters precede ``find``, so the marker is not always the first token:
     ``polylogue --origin chatgpt-export find --help`` is the documented shape
     and asks for the same help as ``polylogue find --help``.
     """
-    if "find" not in args:
+    option_arity = _option_arity(group)
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg.startswith("-"):
+            index += 1 if "=" in arg else 1 + option_arity.get(arg, 0)
+            continue
+        if arg == "find":
+            return args[index + 1 :] in (["--help"], ["-h"])
+        # The first positional token alone can be the query marker.
         return False
-    marker = args.index("find")
-    return args[marker + 1 :] in (["--help"], ["-h"])
+    return False
 
 
 def _split_query_mode_args(group: click.Group, args: list[str]) -> tuple[list[str], tuple[str, ...], bool, bool]:
@@ -307,7 +315,7 @@ class QueryFirstGroupBase(click.Group):
         original_args = list(args)
         ctx.meta["polylogue_raw_args"] = original_args
 
-        if _asks_for_query_workflow_help(original_args):
+        if _asks_for_query_workflow_help(self, original_args):
             _render_query_workflow_help(ctx)
 
         parse_args, query_terms, has_subcommand, explicit_query = _split_query_mode_args(self, args)

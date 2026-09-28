@@ -21,7 +21,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from polylogue.context.preamble import _git_project_state, build_context_preamble_payload
-from polylogue.context.scheduler import read_context_ledger
 from polylogue.core.refs import ExecutionContextRef
 from polylogue.markers import parse_markers
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -98,6 +97,8 @@ class TestGitProjectStateRealRepo:
         poly.compact_lineage = AsyncMock(return_value=None)
         poly.find_resume_candidates = AsyncMock(return_value=[])
         poly.list_assertion_claim_payloads = AsyncMock(return_value=[])
+        poly.record_context_ledger = AsyncMock()
+        poly.record_context_ledger = AsyncMock()
 
         preamble = await build_context_preamble_payload(
             poly,
@@ -220,10 +221,9 @@ class TestBuildContextPreambleGitEnrichment:
         )
 
         assert preamble is not None
-        with sqlite3.connect(tmp_path / "archive" / "ops.db") as conn:
-            records = read_context_ledger(conn, target_session="seed")
-        assert len(records) == 1
-        assert records[0].row.source == "context-precompact"
+        poly.record_context_ledger.assert_awaited_once()
+        assembly = poly.record_context_ledger.await_args.args[0]
+        assert assembly.ledger[0].source == "context-precompact"
         execution_context = cast(ExecutionContextRef, captured["execution_context"])
         assert execution_context.known_fields == (
             "boundary",
@@ -240,6 +240,8 @@ class TestBuildContextPreambleGitEnrichment:
 @pytest.mark.asyncio
 async def test_declared_claim_survives_judgment_preamble_and_reboot_ref(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
 ) -> None:
     """Exercise the judged-memory loop through the real archive facade.
 
@@ -251,13 +253,17 @@ async def test_declared_claim_survives_judgment_preamble_and_reboot_ref(
     """
     from polylogue.api import Polylogue
     from polylogue.core.enums import AssertionKind
+    from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+    from tests.infra.daemon_operations import running_daemon_operations
 
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    initialize_archive_database(archive_root / "user.db", ArchiveTier.USER)
-    initialize_archive_database(archive_root / "index.db", ArchiveTier.INDEX)
-    initialize_archive_database(archive_root / "ops.db", ArchiveTier.OPS)
+    # Judging a candidate is a durable user-tier mutation, which only the
+    # resident daemon writes; the loop runs against the real operation stack.
+    archive_root = (tmp_path / "archive").resolve()
+    monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_args, **_kwargs: None)
+    daemon = running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root))
+    daemon.__enter__()
+    request.addfinalizer(lambda: daemon.__exit__(None, None, None))
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     session_ref = "session:codex:judged-memory-loop"
     repo_ref = "repo:polylogue"

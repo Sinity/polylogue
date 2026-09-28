@@ -169,6 +169,63 @@ def test_recent_failure_is_not_erased_before_age_or_count_policy(tmp_path: Path)
     assert (tmp_path / str(older["artifact_dir"])).exists()
 
 
+def test_failure_retention_allows_newest_plus_configured_additional_failures(tmp_path: Path) -> None:
+    """Anti-vacuity: the newest exception must not consume the 12-run allowance."""
+    history = tmp_path / ".cache" / "verify" / "history.jsonl"
+    failures = [_finished_run(tmp_path, index=index, exit_code=1) for index in range(20)]
+    for payload in failures:
+        append_verify_history(payload, path=history)
+    result = prune_successful_verify_runs(
+        root=tmp_path, history_path=history, max_failed=12, max_failed_bytes=10**9, now=_TEST_NOW
+    )
+    assert len(cast(list[str], result["retained_failure_run_ids"])) == 13
+
+
+def test_history_path_preserves_environment_and_xdg_cross_worktree_defaults(tmp_path: Path) -> None:
+    configured = tmp_path / "shared" / "history.jsonl"
+    assert verify_runs.verify_history_path(env={"POLYLOGUE_VERIFY_HISTORY_PATH": str(configured)}) == configured
+    assert (
+        verify_runs.verify_history_path(env={"XDG_STATE_HOME": str(tmp_path / "state")})
+        == tmp_path / "state/polylogue/verify/history.jsonl"
+    )
+    assert (
+        verify_runs.verify_history_path(env={"XDG_STATE_HOME": "relative", "HOME": str(tmp_path / "home")})
+        == tmp_path / "home/.local/state/polylogue/verify/history.jsonl"
+    )
+
+
+def test_canonical_receipt_marks_dirty_tree_and_quick_tier() -> None:
+    receipt = verify_runs.canonical_verification_receipt(
+        {
+            "run_id": "r",
+            "status": "success",
+            "exit_code": 0,
+            "tier": "quick",
+            "verification_scope": "static-gates",
+            "git_head": "a",
+            "git_dirty": True,
+        }
+    )
+    assert receipt["source_revision"] is None
+    assert receipt["git_dirty"] is True
+    assert receipt["tier"] == "quick"
+    assert receipt["verification_scope"] == "static-gates"
+
+
+def test_agentctl_failed_termination_is_not_misreported_as_interruption() -> None:
+    assert (
+        verify_runs._terminal_status({"status": "failed", "exit_code": 1, "termination_reason": "failed"}) == "failed"
+    )
+
+
+def test_history_row_retains_failure_classifier_inputs() -> None:
+    row = verify_runs._semantic_history_row(
+        {"run_id": "r", "git_head": "head", "steps": [{"name": "gate", "exit": 1}], "status": "failed"}
+    )
+    assert row["git_head"] == "head"
+    assert row["steps"][0]["exit"] == 1
+
+
 def test_pruning_retains_corrupt_detail_and_skips_active_retention_lock(tmp_path: Path) -> None:
     history = tmp_path / ".cache" / "verify" / "history.jsonl"
     payload = _finished_run(tmp_path, index=0, exit_code=1)
@@ -351,7 +408,27 @@ def test_a_running_run_with_a_live_owner_is_left_alone(tmp_path: Path) -> None:
     assert not (tmp_path / verify_runs.VERIFY_HISTORY_PATH).exists()
 
 
-def test_an_abandoned_run_adopts_the_agentctl_outcome_when_one_exists(tmp_path: Path) -> None:
+def test_reused_pid_started_after_receipt_is_not_treated_as_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: PID existence alone must not keep an old receipt running."""
+    real_read = Path.read_text
+
+    def fake_read(path: Path, encoding: str | None = None, errors: str | None = None) -> str:
+        if str(path) == "/proc/4242/stat":
+            fields = ["0"] * 19
+            fields[18] = "2000"
+            return "4242 (unrelated) S " + " ".join(fields)
+        if str(path) == "/proc/stat":
+            return "btime 1000\n"
+        return real_read(path, encoding=encoding, errors=errors)
+
+    monkeypatch.setattr(Path, "read_text", fake_read)
+    monkeypatch.setattr(verify_runs.os, "sysconf", lambda _name: 100)
+    assert not verify_runs._process_owns_receipt(4242, "1970-01-01T00:16:50+00:00", is_live=lambda _pid: True)
+
+
+def test_an_abandoned_run_adopts_the_agentctl_outcome_when_one_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The authoritative ending was recorded next door the whole time.
 
     Anti-vacuity: drop the adoption and the run reports only that it stopped,
@@ -361,6 +438,8 @@ def test_an_abandoned_run_adopts_the_agentctl_outcome_when_one_exists(tmp_path: 
     runs_root = tmp_path / verify_runs.VERIFY_RUNS_DIR
     state_root = tmp_path / "agentctl-jobs"
     state_root.mkdir()
+    configured_evidence = tmp_path / "configured-evidence.jsonl"
+    monkeypatch.setenv(verify_runs.VERIFY_EVIDENCE_PATH_ENV, str(configured_evidence))
     (state_root / "polylogue-verify_all-6e84077f.outcome").write_text(
         '{"exit_code": 130, "outcome": "cancelled", "pool": "pytest-heavy"}', encoding="utf-8"
     )
@@ -373,6 +452,43 @@ def test_an_abandoned_run_adopts_the_agentctl_outcome_when_one_exists(tmp_path: 
     assert payload["diagnosis"] == verify_runs.ABANDONED_DIAGNOSIS
     assert payload["agentctl_outcome_adopted"] is True
     assert verify_runs._terminal_status(payload) == "cancelled"
+    assert [row["run_id"] for row in verify_runs.read_verification_evidence(configured_evidence)] == [path.parent.name]
+
+
+def test_abandoned_agentctl_run_waits_for_late_outcome_then_reconciles_mirror_and_publications(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: a first read before AgentCTL's outcome must remain retryable."""
+    state_root = tmp_path / "agentctl-jobs"
+    state_root.mkdir()
+    history = tmp_path / "shared-history.jsonl"
+    monkeypatch.setenv(verify_runs.VERIFY_HISTORY_PATH_ENV, str(history))
+    configured_evidence = tmp_path / "configured-evidence.jsonl"
+    override_evidence = tmp_path / "relocated" / "evidence.jsonl"
+    monkeypatch.setenv(verify_runs.VERIFY_EVIDENCE_PATH_ENV, str(configured_evidence))
+    run_path = _running_run(tmp_path, pid=_dead_pid(), job_id="late-job")
+    current = tmp_path / verify_runs.CURRENT_RUN_PATH
+    verify_runs._write_json(current, {"run_id": run_path.parent.name, "status": "running"})
+    runs_root = tmp_path / verify_runs.VERIFY_RUNS_DIR
+    assert (
+        verify_runs.reconcile_and_record_abandoned_verify_runs(
+            runs_root=runs_root, state_root=state_root, evidence_path=override_evidence
+        )
+        == []
+    )
+    assert cast(dict[str, object], verify_runs._read_json(run_path))["status"] == "running"
+    (state_root / "late-job.outcome").write_text('{"exit_code": 1, "outcome": "failed"}', encoding="utf-8")
+    first = verify_runs.reconcile_and_record_abandoned_verify_runs(
+        runs_root=runs_root, state_root=state_root, evidence_path=override_evidence
+    )
+    assert first and cast(dict[str, object], verify_runs._read_json(current))["status"] == "failed"
+    assert verify_runs._read_history_pinned(history)[0]["run_id"] == run_path.parent.name
+    assert len(verify_runs.read_verification_evidence(override_evidence)) == 1
+    assert not configured_evidence.exists()
+    second = verify_runs.reconcile_and_record_abandoned_verify_runs(
+        runs_root=runs_root, state_root=state_root, evidence_path=override_evidence
+    )
+    assert second and len(verify_runs._read_history_pinned(history)) == 1
 
 
 def test_a_run_id_without_an_owning_pid_is_not_reconciled(tmp_path: Path) -> None:

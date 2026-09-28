@@ -25,7 +25,7 @@ from polylogue.core.json import JSONDocument, dumps, require_json_document
 from polylogue.version import VERSION_INFO
 
 InsightExportFormat = Literal["jsonl"]
-INSIGHT_EXPORT_BUNDLE_VERSION = 1
+INSIGHT_EXPORT_BUNDLE_VERSION = 2
 DEFAULT_EXPORT_INSIGHTS: tuple[str, ...] = (
     "session_profiles",
     "threads",

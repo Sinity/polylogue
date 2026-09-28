@@ -2971,14 +2971,18 @@ def session_usage_costs_for_connection(
     rows = conn.execute(
         f"""
         SELECT s.session_id, s.reported_cost_usd,
-               COUNT(u.model_name) AS model_count,
+               COUNT(CASE WHEN COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0) +
+                                COALESCE(u.cache_read_tokens, 0) + COALESCE(u.cache_write_tokens, 0) > 0
+                          THEN u.model_name END) AS model_count,
                COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
                COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
                COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens,
                COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
                SUM(u.provider_cost_usd) AS provider_cost_usd,
                SUM(u.catalog_cost_usd) AS catalog_cost_usd,
-               COUNT(u.catalog_cost_usd) AS priced_model_count,
+               COUNT(CASE WHEN COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0) +
+                                COALESCE(u.cache_read_tokens, 0) + COALESCE(u.cache_write_tokens, 0) > 0
+                          THEN u.catalog_cost_usd END) AS priced_model_count,
                SUM(u.cost_credits) AS stored_credits,
                GROUP_CONCAT(DISTINCT u.model_name) AS model_names,
                MAX(CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'

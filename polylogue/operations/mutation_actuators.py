@@ -1545,7 +1545,7 @@ class CaptureAssertionCandidateActuator(ConvergentReplay):
         assertion_id = str(context["assertion_id"])
         user_db = args.archive.user_db_path
         try:
-            conn = open_connection(user_db)
+            conn = open_connection(user_db, archive_root=args.archive._write_lease_archive_root)
             conn.row_factory = sqlite3.Row
             try:
                 conn.execute("BEGIN IMMEDIATE")
@@ -1697,7 +1697,7 @@ class SetUserSettingActuator(ConvergentReplay):
         if not user_db.exists():
             raise ValueError("user settings tier is not initialized")
         try:
-            conn = open_connection(user_db)
+            conn = open_connection(user_db, archive_root=args.archive._write_lease_archive_root)
             conn.row_factory = sqlite3.Row
             try:
                 conn.execute("BEGIN IMMEDIATE")
@@ -2876,7 +2876,12 @@ class InsightsRebuildActuator(ConvergentReplay):
         from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
 
         if args.session_ids is None:
-            resolved = tuple(summary.session_id for summary in args.archive.list_summaries(limit=1_000_000))
+            # A full rebuild is identified by its scope, not by enumerating
+            # every session (polylogue-buuxr): apply() rebuilds the whole index
+            # from ``scope_kind`` alone, and a per-session target list both
+            # cost four archive-sized collections per prepare and exceeded the
+            # plan's target ceiling on a large archive.
+            resolved: tuple[str, ...] = ()
         else:
             # An explicitly named session that does not resolve is a caller
             # error, not a smaller sweep: every single-target actuator lets
@@ -2884,12 +2889,12 @@ class InsightsRebuildActuator(ConvergentReplay):
             # rebuild a narrower scope than the caller authorized.
             resolved = tuple(dict.fromkeys(args.archive.resolve_session_id(sid) for sid in args.session_ids))
         scope_kind: Literal["explicit", "full"] = "full" if args.session_ids is None else "explicit"
-        manifest_digest = hashlib.sha256(
-            json.dumps(
-                [(f"session:{session_id}", "required") for session_id in resolved],
-                separators=(",", ":"),
-            ).encode()
-        ).hexdigest()
+        manifest_entries: list[object] = (
+            [("scope", "full", str(args.archive.index_db_path), str(SESSION_INSIGHT_MATERIALIZER_VERSION))]
+            if scope_kind == "full"
+            else [(f"session:{session_id}", "required") for session_id in resolved]
+        )
+        manifest_digest = hashlib.sha256(json.dumps(manifest_entries, separators=(",", ":")).encode()).hexdigest()
         context = build_insight_page_context(
             scope_kind=scope_kind,
             index_generation=f"index-generation:{args.archive.index_db_path}",
