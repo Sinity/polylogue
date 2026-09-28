@@ -2632,12 +2632,16 @@ async def _run_daemon_services_under_active_writer_lease(
             from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
             from polylogue.operations.embedding_derivation import embedding_session_ids_for_paths
 
-            embedding_convergence = compose_embedding_convergence(
-                archive_root_path / "index.db",
-                compute_adapter=daemon_compute,
-                write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+            embedding_convergence = (
+                api_server.operation_runtime.embedding_convergence
+                if api_server is not None and api_server.operation_runtime.embedding_convergence is not None
+                else compose_embedding_convergence(
+                    archive_root_path / "index.db",
+                    compute_adapter=daemon_compute,
+                    write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                )
             )
-            if api_server is not None and api_server.operation_runtime.embedding_convergence is None:
+            if api_server is not None:
                 api_server.operation_runtime.embedding_convergence = embedding_convergence
 
             async def converge_ingest_embeddings(index_db: Path, paths: Sequence[Path]) -> bool:

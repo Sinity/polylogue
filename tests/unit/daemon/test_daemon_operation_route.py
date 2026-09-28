@@ -347,11 +347,15 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
     def compose(_index: Path, **kwargs: object) -> object:
         nonlocal composed
         composed = True
-        emit = kwargs["progress_callback"]
-        limited = bool(kwargs["scope_limited"])
 
-        async def converge(_scope: object) -> EmbeddingConvergenceResult:
+        async def converge(_scope: object, **limits: object) -> EmbeddingConvergenceResult:
+            emit = limits["progress_callback"]
+            limited = bool(limits["scope_limited"])
             assert callable(emit)
+            assert limits["max_messages"] == 17
+            assert limits["max_cost_usd"] == 0.25
+            assert limits["stop_after_seconds"] == 9
+            assert limits["max_errors"] == 2
             cast(Any, emit)({"state": "started", "session_id": "codex:synthetic", "estimated_cost_usd": 0.0001})
             await asyncio.sleep(0.05)
             report = SimpleNamespace(
@@ -371,7 +375,13 @@ def test_embedding_backfill_is_accepted_streams_progress_and_recovers_audit_rece
 
     monkeypatch.setattr(embedding_owner_module, "compose_embedding_convergence", compose)
     request_id = "embedding-accepted-progress"
-    payload: dict[str, object] = {"max_sessions": 1}
+    payload: dict[str, object] = {
+        "max_sessions": 1,
+        "max_messages": 17,
+        "max_cost_usd": 0.25,
+        "stop_after_seconds": 9,
+        "max_errors": 2,
+    }
     with running_daemon_operations(tmp_path / "archive") as stack:
         progress: list[dict[str, object]] = []
 
@@ -428,10 +438,10 @@ def test_embedding_backfill_cancel_is_request_scoped_and_keeps_partial_receipt(
 
     def compose(_index: Path, **kwargs: object) -> object:
         composed.set()
-        emit = kwargs["progress_callback"]
-        quiet = kwargs["quiet"]
 
-        async def converge(_scope: object) -> EmbeddingConvergenceResult:
+        async def converge(_scope: object, **limits: object) -> EmbeddingConvergenceResult:
+            emit = limits["progress_callback"]
+            quiet = limits["quiet"]
             assert callable(emit) and callable(quiet)
             cast(Any, emit)({"state": "started", "ordinal": 0, "estimated_cost_usd": 0.001})
             started.set()

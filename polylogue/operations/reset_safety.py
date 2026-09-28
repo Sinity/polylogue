@@ -20,7 +20,15 @@ def unresolvable_raw_source_count(archive_root: Path) -> int:
         ).fetchall()
     finally:
         conn.close()
-    return sum(int(count) for source_path, count in rows if not Path(str(source_path)).exists())
+
+    def reacquirable(source_path: object) -> bool:
+        # ZIP rows address members as ``<container>:<member>``. The member
+        # suffix is not a filesystem path; check the retained container.
+        text = str(source_path)
+        container, separator, member = text.partition(":")
+        return (Path(container) if separator and member else Path(text)).exists()
+
+    return sum(int(count) for source_path, count in rows if not reacquirable(source_path))
 
 
 __all__ = ["unresolvable_raw_source_count"]

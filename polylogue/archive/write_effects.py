@@ -229,6 +229,9 @@ def _invalidate_insights_should_run(ctx: WriteEffectContext) -> bool:
 
 def _invalidate_insights_effect(ctx: WriteEffectContext) -> None:
     """Invalidate derived inputs on the admitted archive transaction."""
+    from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import TABLE_SPECS
+
+    ctx.conn.execute(f"CREATE TABLE IF NOT EXISTS session_profiles ({TABLE_SPECS['session_profiles'].ddl_body})")
     session_ids = ctx.changed_session_ids
     # Keep each statement below SQLite's variable limit while preserving the
     # caller-owned transaction and its single-writer admission.

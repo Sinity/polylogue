@@ -30,6 +30,17 @@ def test_current_pattern_gate_is_seeded_and_reports_pending_rules() -> None:
     assert any("connection-lifecycle: pending" in item for item in details)
 
 
+def test_malformed_pattern_registry_fails_closed(tmp_path: Path) -> None:
+    registry = tmp_path / "devtools/patterns/registry.yaml"
+    registry.parent.mkdir(parents=True)
+    registry.write_text("rules:\n  - id: incomplete\n", encoding="utf-8")
+
+    payload = verify_patterns._payload(tmp_path)
+
+    assert payload["blocking"] is True
+    assert any("malformed pattern registry" in detail for detail in payload["required_gate"]["details"])
+
+
 def test_synthetic_new_match_makes_the_ratchet_red(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     rule = _rule(tmp_path)
     monkeypatch.setattr(verify_patterns, "_rules", lambda _root: (rule,))
