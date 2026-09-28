@@ -234,6 +234,7 @@ def open_operation_read(
                 cleanup.callback(end_snapshot)
             if execution_context is not None:
                 cleanup.enter_context(InterruptibleSQLiteRead(execution_context).control_store(archive))
+                archive.operation_should_abort = execution_context.should_abort
             pin_snapshot = getattr(archive, "pin_operation_snapshot", None)
             # The read-result cache epoch is the announced index-content
             # revision, and it must describe the snapshot this read actually

@@ -42,6 +42,12 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.live_ingest import write_index_session
 
 
+def test_session_list_defaults_to_the_shared_surface_page_size() -> None:
+    from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
+
+    assert SessionList().limit == DEFAULT_SESSION_LIST_LIMIT
+
+
 def _seed(root: Path, count: int = 5) -> list[str]:
     """Seed sessions that differ in date and message count, so order and filters bite."""
 

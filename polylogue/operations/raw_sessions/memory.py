@@ -48,6 +48,8 @@ class MemoryService:
         ):
             raise MemoryError("source_cursors must map raw providers to continuation tokens")
         source_cursors = source_cursors or {}
+        if providers is None:
+            requested = list(dict.fromkeys((*requested, *source_cursors.keys())))
         sources: list[dict[str, Any]] = []
         matches: list[dict[str, Any]] = []
         next_cursors: dict[str, str | None] = {}

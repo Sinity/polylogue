@@ -738,6 +738,7 @@ class BlobPublicationAbandonActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "confirm_flag"
 
     def prepare(self, args: BlobPublicationAbandonArgs) -> MutationPlan:
+        from polylogue.storage.blob_liveness import LivenessState
         from polylogue.storage.blob_publication import inspect_blob_publication_receipts
 
         requested = set(args.publication_ids)
@@ -747,8 +748,9 @@ class BlobPublicationAbandonActuator(ConvergentReplay):
             index_db_path=_index_db_path(args.archive_root),
         )
         present = {item.publication_id: item for item in receipts if item.publication_id in requested}
-        unreferenced = sorted(pid for pid, item in present.items() if not item.referenced)
+        unreferenced = sorted(pid for pid, item in present.items() if item.liveness.state is LivenessState.UNREFERENCED)
         referenced = sorted(pid for pid, item in present.items() if item.referenced)
+        blocked = sorted(pid for pid, item in present.items() if item.liveness.state is LivenessState.BLOCKED)
         return build_plan(
             operation=self.operation,
             destructive_class=self.destructive_class,
@@ -759,6 +761,7 @@ class BlobPublicationAbandonActuator(ConvergentReplay):
                 "requested": list(args.publication_ids),
                 "unreferenced": unreferenced,
                 "referenced": referenced,
+                "blocked": blocked,
                 "missing": sorted(requested - set(present)),
             },
         )
@@ -766,6 +769,9 @@ class BlobPublicationAbandonActuator(ConvergentReplay):
     def apply(self, plan: MutationPlan, args: BlobPublicationAbandonArgs) -> MutationReceipt:
         from polylogue.storage.blob_publication import abandon_blob_publication_receipts
 
+        blocked = cast("list[str]", plan.context.get("blocked", []))
+        if blocked:
+            raise RecoveryDeferredError(f"blob publication liveness is blocked for receipts: {blocked}")
         abandonment = abandon_blob_publication_receipts(
             args.archive_root / "source.db",
             args.archive_root / "blob",
