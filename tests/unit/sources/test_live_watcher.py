@@ -4191,3 +4191,54 @@ def test_stale_deferral_escalates_when_recorded_byte_size_lags_the_file(
     record = watcher._cursor.get_record(f)
     assert record is not None
     assert record.failure_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_budgeted_pass_with_a_no_session_file_stays_a_retryable_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pass that settles one no-session file and leaves the rest unattempted
+    is not a whole-attempt UNSUPPORTED_SHAPE refusal.
+
+    Anti-vacuity (Codex): the no-session disposition required only an empty
+    retry list, and a time-budget omission is not in it, so ordinary backlog
+    left by the budget was recorded as a non-retryable attempt.
+    """
+    from polylogue.core.enums import IngestOutcome
+    from polylogue.sources.live.batch import LiveBatchProcessor
+
+    root = tmp_path / "claude-projects"
+    root.mkdir()
+    paths = [root / f"silent-{index}.jsonl" for index in range(3)]
+    for index, path in enumerate(paths):
+        path.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"role": "user", "content": ""},
+                    "uuid": f"u{index}",
+                    "sessionId": f"silent-{index}",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    elapsed = iter(float(step) * 1000.0 for step in range(1000))
+    monkeypatch.setattr(time, "monotonic", lambda: next(elapsed))
+
+    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=1.0)
+
+    assert bounded.time_budget_exceeded is True
+    assert bounded.no_session_paths
+    with sqlite3.connect(cursor._ops_db_path) as ops:
+        (outcome_code,) = ops.execute("SELECT outcome_code FROM ingest_attempts ORDER BY rowid DESC LIMIT 1").fetchone()
+    assert outcome_code != IngestOutcome.UNSUPPORTED_SHAPE.value

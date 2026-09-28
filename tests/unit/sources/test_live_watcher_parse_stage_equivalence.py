@@ -1931,6 +1931,34 @@ def test_a_success_preserved_by_a_pool_restart_ends_its_loss_streak(
 
 
 @pytest.mark.uses_real_clock("drives a real ProcessPoolExecutor's attempt-directory bookkeeping")
+def test_a_worker_that_returns_an_error_ends_the_loss_streak(tmp_path: Path) -> None:
+    """A preparation that raises, without losing its worker, resets the streak.
+
+    Anti-vacuity (Codex): only an error-free result reset the count, so two
+    losses, a transient ``OSError`` and one more loss escalated a file whose
+    losses were never consecutive.
+    """
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    source_path = str(tmp_path / "flaky.json")
+    try:
+        future: Future[Any] = Future()
+        future.set_exception(OSError("transient read"))
+        stage._path_futures[source_path] = future
+        stage._path_started[source_path] = time.monotonic()
+        stage._path_sizes[source_path] = 0
+        stage._path_attempt_dirs[source_path] = stage._new_attempt_directory()
+        stage._path_observations[source_path] = (0, 0, 0)
+        stage._path_worker_deaths[source_path] = ((0, 0, 0), 2)
+
+        stage._collect_path_future(source_path, future)
+
+        assert stage._path_results[source_path].deferred
+        assert source_path not in stage._path_worker_deaths
+    finally:
+        stage.shutdown()
+
+
+@pytest.mark.uses_real_clock("drives a real ProcessPoolExecutor's attempt-directory bookkeeping")
 def test_a_break_with_two_held_tasks_charges_neither(tmp_path: Path) -> None:
     """Two tasks held at one break are both deferred uncharged, as suspects.
 

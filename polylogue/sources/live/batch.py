@@ -1913,7 +1913,13 @@ class LiveBatchProcessor:
         )
         if attempt_disposition is not None:
             final_disposition = attempt_disposition
-        elif not retry_paths and no_session_paths and not admitted_paths:
+        elif (
+            not retry_paths
+            and not full_ingest_time_budget_exceeded
+            and no_session_paths
+            and set(reported_excluded) == set(paths)
+            and set(reported_excluded.values()) == {REFUSED_NO_SESSIONS}
+        ):
             # Every settled source parsed to no session: the durable attempt
             # agrees with the intake's EXCLUDED outcome instead of SUCCESS.
             final_disposition = non_session_artifact_disposition(

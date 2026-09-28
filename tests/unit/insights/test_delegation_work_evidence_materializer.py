@@ -531,3 +531,29 @@ def test_delegation_pages_are_bounded_by_text_bytes_and_still_complete(
     monkeypatch.setattr(ArchiveStore, "query_delegations", spy)
     assert materialize_delegation_work_evidence_archive(tmp_path) == 3
     assert page_sizes == [1, 1, 1, 0]
+
+
+def test_a_keyset_delegation_page_seeks_by_index_instead_of_sorting(tmp_path: Path) -> None:
+    """The keyset page's ORDER BY is served by an index, with no sort step.
+
+    Anti-vacuity (Codex): with no index over the query order, SQLite used a
+    temporary B-tree for the order, so every page re-sorted the rest of a
+    parent's cohort and the read stayed quadratic.
+    """
+    from polylogue.archive.query.predicate import QueryBoolPredicate
+    from polylogue.operations.operation_context import open_operation_read
+    from polylogue.storage.sqlite.archive_tiers.archive_query_reads import DelegationPageKey
+
+    _seed_delegation(tmp_path, count=3)
+    statements: list[str] = []
+    with open_operation_read(tmp_path) as pinned:
+        archive = pinned.archive
+        (first,) = archive.query_delegations(QueryBoolPredicate("and", ()), limit=1)
+        archive._conn.set_trace_callback(statements.append)
+        try:
+            archive.query_delegations(QueryBoolPredicate("and", ()), limit=1, after=DelegationPageKey.after_row(first))
+        finally:
+            archive._conn.set_trace_callback(None)
+        (statement,) = [text for text in statements if "FROM delegation_facts" in text]
+        plan = [str(row[-1]) for row in archive._conn.execute(f"EXPLAIN QUERY PLAN {statement}")]
+    assert not any("TEMP B-TREE" in detail for detail in plan), plan

@@ -1070,7 +1070,8 @@ class _Pass:
                                 KeyOutcome(
                                     key=DerivationKey(domain, key),
                                     outcome=Outcome.FAILED,
-                                    error=f"inspect: {key_exc}",
+                                    error=f"inspect {type(key_exc).__name__}: {key_exc}",
+                                    transient=_is_transient_failure(key_exc),
                                 )
                             )
                             # A recorded FAILED verdict already stops the main

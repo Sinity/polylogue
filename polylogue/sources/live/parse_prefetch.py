@@ -785,9 +785,13 @@ class LiveParseStage:
         except BrokenProcessPool:
             result = self._attribute_pool_death(source_path, attempt_directory, observation)
         except Exception as exc:
+            # The worker came back alive, whatever it raised: the loss
+            # streak and the suspicion both end here.
+            self._path_worker_deaths.pop(source_path, None)
             self._path_solo_suspects.discard(source_path)
             result = LivePathPreparation(None, None, None, f"worker failed: {type(exc).__name__}"[:500], deferred=True)
         else:
+            self._path_worker_deaths.pop(source_path, None)
             self._path_solo_suspects.discard(source_path)
         if attempt_directory is not None:
             if result.error is None:

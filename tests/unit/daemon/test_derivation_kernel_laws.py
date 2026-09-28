@@ -1108,3 +1108,27 @@ def test_a_failure_signature_names_its_exception_type() -> None:
     (type_failure,) = typed.by_outcome(Outcome.FAILED)
     assert _failure_signature(runtime_failure.error) == "compute RuntimeError"
     assert _failure_signature(type_failure.error) == "compute TypeError"
+
+
+def test_a_per_key_inspection_failure_is_classified_and_typed() -> None:
+    """The per-key inspection fallback classifies and names its exception.
+
+    Anti-vacuity (Codex): the fallback outcome inherited ``transient=False``
+    and an ``inspect: ...`` reason, so lock contention during inspection
+    counted as a deterministic defect and shared one signature with every
+    other inspection error.
+    """
+    import sqlite3
+
+    from polylogue.daemon.intake import _failure_signature
+
+    class LockedInspection(RecordingDerivation):
+        def inspect(self, frame: DerivationFrame, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
+            locked = sqlite3.OperationalError("database is locked")
+            locked.sqlite_errorcode = 5  # SQLITE_BUSY
+            raise locked
+
+    report = converge(DerivationRegistry([LockedInspection("d", required=("a",))]), FRAME)
+    (failed,) = report.by_outcome(Outcome.FAILED)
+    assert failed.transient is True
+    assert _failure_signature(failed.error) == "inspect OperationalError"

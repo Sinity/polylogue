@@ -1944,6 +1944,14 @@ CREATE TABLE IF NOT EXISTS delegation_facts (
 
 CREATE INDEX IF NOT EXISTS idx_delegation_facts_parent_order
 ON delegation_facts(parent_session_id, instruction_message_id, delegation_id);
+-- The query_delegations order and keyset, expression for expression, so a
+-- keyset page seeks to its position instead of sorting a parent's cohort.
+CREATE INDEX IF NOT EXISTS idx_delegation_facts_query_order
+ON delegation_facts(
+    parent_session_id,
+    COALESCE(instruction_tool_use_block_id, child_session_id, ''),
+    (instruction_tool_use_block_id IS NULL)
+);
 CREATE INDEX IF NOT EXISTS idx_delegation_facts_state
 ON delegation_facts(mapping_state, parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_delegation_facts_model
