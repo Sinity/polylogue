@@ -456,6 +456,21 @@ def _observe(
 _CANONICAL_INPUT_DIRECTORIES = (Path(".codex") / "sessions", Path(".claude") / "projects")
 
 
+def undeclared_source_entries(source_root: Path, source: Path) -> list[str]:
+    """Entries under the qualification home other than the declared input.
+
+    The source root becomes the daemon's ``HOME`` and every canonical source
+    under it is acquired, so any other entry (a Codex state database, a hook
+    carrier, a symlink) would enter the build without being named by the
+    receipt.
+    """
+    return sorted(
+        str(path.relative_to(source_root))
+        for path in source_root.rglob("*")
+        if path != source and (path.is_symlink() or not path.is_dir())
+    )
+
+
 def _verify_args(args: argparse.Namespace) -> tuple[Path, Path, str]:
     if args.receipt.exists():
         raise FileExistsError(f"refusing to overwrite existing qualification receipt: {args.receipt}")
@@ -493,11 +508,8 @@ def _verify_args(args: argparse.Namespace) -> tuple[Path, Path, str]:
     archive = args.archive_root.absolute()
     if archive.exists() and any(archive.iterdir()):
         raise ValueError("archive root must be absent or empty")
-    siblings = sorted(
-        path for path in source_root.rglob("*") if path.is_file() and path.suffix.lower() in {".jsonl", ".json"}
-    )
-    if siblings != [source]:
-        raise ValueError(f"source root must contain exactly the declared input; found {siblings!r}")
+    if others := undeclared_source_entries(source_root, source):
+        raise ValueError(f"source root must contain exactly the declared input; also found {others!r}")
     return candidate, source, digest
 
 
