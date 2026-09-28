@@ -1940,7 +1940,7 @@ def test_delete_dry_run_marks_a_truncated_candidate_prefix_bounded() -> None:
     assert callable(wrapped)
     with patch(
         "polylogue.cli.verb_cardinality.probe_session_ids_for_verb",
-        return_value=["one", "two", "three"],
+        return_value=[f"session-{index}" for index in range(query_verbs.AMBIGUITY_CANDIDATE_LIMIT + 1)],
     ):
         with pytest.raises(AmbiguousSelectionError) as exc_info:
             wrapped(child, True, False, False, "json")
