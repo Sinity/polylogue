@@ -316,3 +316,44 @@ async def test_a_complete_composed_sort_holds_only_its_page(
     assert len(sessions) == 1
     assert len(sessions[0].messages) == 7
     assert max(widest) <= archive_execution._COMPOSED_SORT_CHUNK + 1
+
+
+@pytest.mark.asyncio
+async def test_a_composed_sort_without_a_limit_serves_the_default_page(tmp_path: Path) -> None:
+    """An omitted limit on a complete composed sort is the default page, not the archive.
+
+    Anti-vacuity (Codex P1, #5695): leave the retained window unbounded when
+    ``limit`` is None and all five sessions come back for a default of three.
+    """
+    for index in range(5):
+        _seed(tmp_path, f"d{index}", updated_at="2026-01-01T00:00:00Z", messages=1 + index)
+
+    sessions = await list_archive(
+        SessionQueryPlan(sort="messages"), archive_root=tmp_path, config=None, default_limit=3
+    )
+
+    assert [len(session.messages) for session in sessions] == [5, 4, 3]
+
+
+@pytest.mark.asyncio
+async def test_a_sampled_composed_sort_samples_every_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sampled composed page draws from every qualified candidate.
+
+    Anti-vacuity (Codex P2, #5695): keep the top ``limit`` before sampling and
+    only the largest session can ever be sampled.
+    """
+    from polylogue.archive.query import plan as plan_module
+
+    for index in range(5):
+        _seed(tmp_path, f"p{index}", updated_at="2026-01-01T00:00:00Z", messages=1 + index)
+    offered: list[int] = []
+    original = plan_module.SessionQueryPlan._finalize
+
+    def finalize(self: SessionQueryPlan, items: list[Session]) -> list[Session]:
+        offered.append(len(items))
+        return original(self, items)
+
+    monkeypatch.setattr(plan_module.SessionQueryPlan, "_finalize", finalize)
+    await list_archive(SessionQueryPlan(sort="messages", limit=1, sample=1), archive_root=tmp_path, config=None)
+
+    assert offered == [5]

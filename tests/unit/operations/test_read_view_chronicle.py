@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -217,6 +217,56 @@ def test_a_chronicle_count_sort_hydrates_each_candidate_once(monkeypatch: pytest
     assert isinstance(sessions, list)
     assert sessions[0]["session_id"] == "codex-session:4"
     assert archive.read_session.call_count == len(rows)
+
+
+def test_a_sampled_chronicle_count_sort_samples_every_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sampled count-sorted chronicle draws from every qualified session.
+
+    Anti-vacuity (Codex P2, #5695): keep only the top ``offset + limit`` before
+    sampling and the sample can only ever return the single largest session.
+    """
+    import polylogue.archive.query.archive_execution as archive_execution
+    import polylogue.operations.read_view_chronicle as read_view_chronicle
+    from polylogue.archive.query.plan import SessionQueryPlan
+
+    rows = [
+        SimpleNamespace(session_id=f"codex-session:{index}", display_label=None, display_label_source=None)
+        for index in range(5)
+    ]
+    summaries = {
+        row.session_id: SessionSummary(
+            id=row.session_id,
+            origin=Origin.from_string("codex-session"),
+            updated_at=datetime(2026, 1, index + 1, tzinfo=timezone.utc),
+        )
+        for index, row in enumerate(rows)
+    }
+    archive = Mock(archive_root="/tmp/archive")
+    monkeypatch.setattr(archive_execution, "_archive_summaries", lambda *args, **kwargs: rows)
+    monkeypatch.setattr(read_view_chronicle, "archive_summary_to_domain", lambda row: summaries[row.session_id])
+    monkeypatch.setattr(
+        "polylogue.archive.hydration.archive_envelope_to_session",
+        lambda envelope, **kwargs: make_conv(
+            id=envelope.session_id,
+            messages=[make_msg(id=f"m{i}", text="x") for i in range(int(envelope.session_id.rsplit(":", 1)[1]) + 1)],
+        ),
+    )
+    monkeypatch.setattr(read_view_chronicle, "_chronicle_edges", lambda *args, **kwargs: ([], [], 0))
+    archive.read_session.side_effect = lambda session_id: SimpleNamespace(session_id=session_id)
+    offered: list[int] = []
+    original = SessionQueryPlan._finalize
+
+    def finalize(self: SessionQueryPlan, items: list[Any]) -> list[Any]:
+        offered.append(len(items))
+        return original(self, items)
+
+    monkeypatch.setattr(SessionQueryPlan, "_finalize", finalize)
+
+    execute_chronicle_read(
+        {"params": {"sort": "messages", "limit": 1, "sample": 1}}, archive=archive, vector_provider=None
+    )
+
+    assert offered == [len(rows)]
 
 
 def test_clients_send_the_scan_deadline_for_a_scan_shaped_chronicle() -> None:

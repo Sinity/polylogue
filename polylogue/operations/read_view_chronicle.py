@@ -210,7 +210,8 @@ def _select_summaries(
         # One hydration per candidate, chunk by chunk. A composed-count order
         # keeps only the best ``offset + limit`` sessions seen so far, so a
         # one-row page over a large archive never holds every transcript.
-        bound = (plan.offset or 0) + plan.limit if plan.limit is not None else None
+        # A sampled request draws from every qualified candidate.
+        bound = None if plan.sample or plan.limit is None else (plan.offset or 0) + plan.limit
         best: list[Session] = []
         matched_ids: set[str] = set()
         for start in range(0, len(rows), _POST_FILTER_CHUNK):

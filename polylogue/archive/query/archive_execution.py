@@ -503,7 +503,10 @@ async def list_archive(
         # A complete composed sort keeps only the best ``offset + limit``
         # hydrated sessions seen so far: a one-row page over a large archive
         # must not hold every recomposed transcript at once.
-        bound = (plan.offset or 0) + plan.limit if plan.limit is not None else None
+        # A sampled page draws from every qualified candidate, so nothing is
+        # cut before ``_finalize`` samples; an omitted limit is the default page.
+        page_width = plan.limit if plan.limit is not None else default_limit
+        bound = None if plan.sample else (plan.offset or 0) + page_width
         best: list[Session] = []
 
         def retain(sessions: list[Session]) -> None:
@@ -559,6 +562,8 @@ async def list_archive(
         # Filtered survivors already carry the page-width projection their
         # predicate saw; unfiltered sessions are projected over the served
         # page only.
+        if complete and plan.limit is None and not plan.sample:
+            ordered = ordered[:default_limit]
         page = plan._finalize(ordered)
         return page if filtering else attach(archive, page)
 
