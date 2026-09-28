@@ -199,3 +199,95 @@ async def test_lexical_search_selects_the_same_sessions_on_both_read_routes(tmp_
     assert set(owner_ids) == set(generic_ids) == set(seeded)
     assert owner_page.total == envelope["total"]
     assert owner_page.next_offset == envelope["next_offset"]
+
+
+def _seed_exclusion(root: Path) -> dict[str, str]:
+    """Seed sessions whose text makes a ``-secret`` exclusion observable."""
+
+    texts = {"plain": "needle alpha", "secret": "needle secret", "other": "unrelated beta"}
+    ids: dict[str, str] = {}
+    with ArchiveStore(root) as archive:
+        for name, text in texts.items():
+            ids[name] = write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id=f"exclusion-{name}",
+                    title=f"Session {name}",
+                    messages=[
+                        ParsedMessage(
+                            provider_message_id="m0",
+                            role=Role.USER,
+                            timestamp="2026-02-01T12:00:00Z",
+                            blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+                        )
+                    ],
+                ),
+            )
+    return ids
+
+
+async def _mcp_sessions(root: Path, expression: str) -> dict[str, object]:
+    import json
+    from typing import cast
+
+    from polylogue.mcp.server import build_server
+    from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
+
+    server = cast(MCPServerUnderTest, build_server())
+    query_fn = server._tool_manager._tools["query"].fn
+    with installed_runtime_services(root):
+        result = json.loads(
+            await invoke_surface_async(query_fn, expression=expression, projection="sessions", limit=50)
+        )
+    assert isinstance(result, dict)
+    return result
+
+
+@pytest.mark.asyncio
+async def test_ranked_search_with_text_exclusion_is_refused_on_mcp_and_generic_routes(tmp_path: Path) -> None:
+    """``needle -secret`` is refused by MCP's post-filter fallback, as by the generic read.
+
+    The post-filter fallback (``server_cutover._query_advanced_sessions``) is
+    the third executor. Mutation: drop its exclusion refusal and MCP answers
+    a ranked page that ignores ``-secret`` while the generic read refuses.
+    """
+
+    root = tmp_path / "archive"
+    _seed_exclusion(root)
+
+    with open_operation_read(root) as pinned, pytest.raises(ValueError, match="text exclusions"):
+        execute_read_operation(
+            "cli.query",
+            # The CLI hands its root query over as the words it was given.
+            {"params": {"query": ("needle", "-secret"), "limit": 50}},
+            archive=pinned.archive,
+            serving_identity="direct",
+        )
+
+    result = await _mcp_sessions(root, "needle -secret")
+    assert result.get("is_error") is True, result
+    assert result.get("code") == "invalid_argument"
+
+
+@pytest.mark.asyncio
+async def test_text_exclusion_listing_agrees_between_mcp_and_generic_routes(tmp_path: Path) -> None:
+    """A bare ``-secret`` listing drops the same sessions on MCP and the generic read.
+
+    Mutation: send the raw expression to FTS again, or list without the
+    content post-filter, and MCP's selection stops matching the generic one.
+    """
+
+    root = tmp_path / "archive"
+    ids = _seed_exclusion(root)
+
+    generic = _generic_list(root, query="-secret", limit=50)
+    result = await _mcp_sessions(root, "-secret")
+    assert result.get("is_error") is not True, result
+    items = result["items"]
+    assert isinstance(items, list)
+    mcp_ids = [str(item["id"]) for item in items]
+
+    assert set(generic[0]) == {ids["plain"], ids["other"]}
+    assert mcp_ids == generic[0]
+    assert result["total"] == generic[1] == 2

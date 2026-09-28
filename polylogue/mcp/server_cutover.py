@@ -467,7 +467,28 @@ async def _query_advanced_sessions(
     config = hooks.get_config()
     archive_root = mcp_archive_root(config)
 
-    if request.query:
+    # Select the lane from the compiled spec, as the generic ``cli.query``
+    # read does: ``request.query`` is the raw expression, so ``needle -secret``
+    # or ``tag:x`` alone would otherwise reach FTS as literal text.
+    searching = bool(
+        spec.query_terms
+        or spec.contains_terms
+        or spec.similar_text
+        or spec.similar_session_id
+        or spec.retrieval_lane == "hybrid"
+    )
+    if searching and spec.exclude_text_terms:
+        # The generic ranked read refuses the same selection
+        # (``daemon_reads._search_payload``); ranking cannot honour an
+        # exclusion applied after it.
+        return hooks.error_json(
+            "ranked search cannot apply text exclusions before ranking; remove the -term exclusion "
+            "or use a structural listing and retry",
+            code="invalid_argument",
+            tool="query",
+        )
+
+    if searching:
         from polylogue.surfaces.cursor_identity import search_cursor_request_identity
 
         transaction = QueryTransaction(
@@ -1436,6 +1457,10 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         queries/results, canvas documents, content references, image
         results, async tasks, selected sources, token budgets, and voice
         notes (polylogue-kktg).
+
+        ``projection="materials"`` returns the source-tier materials retained
+        for the session with their content -- Codex goals (objective, status,
+        budget) and memories, which are stored nowhere else.
 
         ``ref="cost-outlook:<plan_name>"`` projects the current billing cycle
         for a configured subscription plan (the standalone ``cost_outlook``

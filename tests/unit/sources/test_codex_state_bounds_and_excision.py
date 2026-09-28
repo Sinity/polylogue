@@ -290,3 +290,95 @@ def test_excising_a_thread_removes_its_codex_state_materials(tmp_path: Path) -> 
         # The bytes are durably refused on re-acquisition, not merely unlinked.
         excised = {bytes(row[0]) for row in conn.execute("SELECT removed_hash FROM excised_content")}
         assert hash_a in excised
+
+
+@pytest.mark.asyncio
+async def test_retained_codex_goals_are_readable_through_every_public_session_route(tmp_path: Path) -> None:
+    """A goal's objective and status are read back through CLI, API and MCP.
+
+    The ``read --view materials`` CLI view lowers to ``session.read`` with
+    ``kind="materials"``, executed here on the pinned archive; the facade and
+    MCP ``get(projection="materials")`` must answer with the same rows.
+    Anti-vacuity: drop ``"materials"`` from ``_WINDOWED_EVIDENCE_READERS`` and
+    ``session.read`` refuses the kind; drop the ``referrer_ref`` filter from
+    ``_session_material_rows`` and thread B's objective leaks into thread A;
+    stop decoding the retained bytes and the objective text is absent.
+    """
+    from types import SimpleNamespace
+    from typing import cast
+    from unittest.mock import patch
+
+    from polylogue import Polylogue
+    from polylogue.core.enums import Provider, Role
+    from polylogue.mcp.server import build_server
+    from polylogue.operations.daemon_reads import execute_read_operation
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+    from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    with ArchiveStore(root) as archive:
+        archive.write_raw_and_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=_THREAD_A,
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="start")],
+            ),
+            payload=b"{}",
+            source_path="/synthetic/codex/rollout.jsonl",
+            acquired_at_ms=1_000,
+        )
+    goals_path = tmp_path / "goals_1.sqlite"
+    _write_goals_db(
+        goals_path,
+        [
+            (_THREAD_A, "goal-a", "synthetic objective for thread a"),
+            (_THREAD_B, "goal-b", "synthetic objective for thread b"),
+        ],
+    )
+    _materialize(root, goals_path)
+
+    walked: list[dict[str, Any]] = []
+    with ArchiveStore.open_existing(root) as archive:
+        page = execute_read_operation(
+            "session.read",
+            {"ref": f"session:{_SESSION_A}", "kind": "materials", "limit": 1, "offset": 0},
+            archive=archive,
+            serving_identity="test",
+        )
+        while True:
+            window = cast("dict[str, Any]", page["evidence_window"])
+            walked.extend(window["rows"])
+            if window["continuation"] is None:
+                assert window["complete"] is True
+                assert window["total"] == len(walked)
+                break
+            page = execute_read_operation(
+                "session.read",
+                {"ref": f"session:{_SESSION_A}", "kind": "materials", "continuation": window["continuation"]},
+                archive=archive,
+                serving_identity="test",
+            )
+
+    goals = [row["content"] for row in walked if "goal_id" in row["content"]]
+    assert [(goal["goal_id"], goal["objective"], goal["status"]) for goal in goals] == [
+        ("goal-a", "synthetic objective for thread a", "active")
+    ]
+    assert "thread b" not in json.dumps(walked)
+
+    owner = Polylogue(archive_root=root)
+    assert await owner.get_session_materials(_SESSION_A) == walked
+    assert await owner.get_session_materials("codex-session:missing") is None
+
+    server = cast(MCPServerUnderTest, build_server())
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=owner),
+    ):
+        result = json.loads(
+            await invoke_surface_async(
+                server._tool_manager._tools["get"].fn, ref=f"session:{_SESSION_A}", projection="materials"
+            )
+        )
+    assert result["materials"] == walked
+    assert result["total"] == len(walked)

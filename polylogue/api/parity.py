@@ -347,6 +347,7 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
             "get_raw_artifacts_for_session",
             "get_session",
             "get_session_events",
+            "get_session_materials",
             "get_session_page",
             "get_session_stats",
             "get_session_summary",

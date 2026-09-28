@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 
@@ -10,9 +12,9 @@ from polylogue.analysis.archive_models import ObjectivePosturePayload
 from polylogue.analysis.objective_posture import (
     ASSERTION_TIER_KINDS,
     derive_objective_posture,
-    resolve_session_objective_posture,
     structural_objective_posture,
 )
+from polylogue.analysis.resume import resolve_session_objective_posture
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility
 from polylogue.storage.sqlite.archive_tiers.user_write import ArchiveAssertionEnvelope
 
@@ -204,12 +206,12 @@ class _FakeOperations:
         statuses: Sequence[str | AssertionStatus] | None = None,
     ) -> list[ArchiveAssertionEnvelope]:
         self.calls.append({"kinds": kinds, "target_ref": target_ref, "statuses": statuses})
-        return [assertion for assertion in self._assertions if assertion.target_ref == target_ref]
+        return [assertion for assertion in self._assertions if target_ref is None or assertion.target_ref == target_ref]
 
 
 class TestResolveSessionObjectivePosture:
     @pytest.mark.asyncio
-    async def test_queries_the_session_target_ref_with_assertion_tier_kinds(self) -> None:
+    async def test_reads_active_assertion_tier_kinds_once(self) -> None:
         assertions = [_assertion("blocker-1", AssertionKind.BLOCKER, target_ref="session:target-session")]
         operations = _FakeOperations(assertions)
         structural = structural_objective_posture(terminal_state="unknown", terminal_state_confidence=0.2)
@@ -223,7 +225,7 @@ class TestResolveSessionObjectivePosture:
         assert operations.calls == [
             {
                 "kinds": ASSERTION_TIER_KINDS,
-                "target_ref": "session:target-session",
+                "target_ref": None,
                 "statuses": (AssertionStatus.ACTIVE,),
             }
         ]
@@ -242,6 +244,57 @@ class TestResolveSessionObjectivePosture:
         )
 
         assert result == structural
+
+
+@pytest.mark.asyncio
+async def test_accepted_blocker_marker_on_a_session_message_blocks_the_session(tmp_path: Path) -> None:
+    """An accepted ``::blocker:`` marker reaches session posture.
+
+    Marker lowering targets ``message:<id>`` and acceptance preserves that
+    target. Anti-vacuity: restrict ``resolve_session_objective_posture`` to
+    the ``session:`` ref again and the posture stays structural.
+    """
+
+    from polylogue.markers import candidates_for_block, lower_markers
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidate, list_assertion_claims
+
+    user_db = tmp_path / "user.db"
+    initialize_archive_database(user_db, ArchiveTier.USER)
+    conn = sqlite3.connect(user_db)
+    conn.row_factory = sqlite3.Row
+    try:
+        candidates = candidates_for_block("message-9", "block-9", "::blocker: waiting on a credential\n")
+        (candidate_id,) = lower_markers(conn, candidates, now_ms=456)
+        conn.commit()
+        judge_assertion_candidate(conn, candidate_ref=f"assertion:{candidate_id}", decision="accept", now_ms=789)
+
+        class _StorageOperations:
+            async def list_assertion_claims(
+                self,
+                *,
+                kinds: Sequence[str | AssertionKind] | None = None,
+                target_ref: str | None = None,
+                statuses: Sequence[str | AssertionStatus] | None = None,
+            ) -> list[ArchiveAssertionEnvelope]:
+                return list_assertion_claims(
+                    conn, kinds=kinds or ASSERTION_TIER_KINDS, target_ref=target_ref, statuses=statuses, as_of_ms=1_000
+                )
+
+        structural = structural_objective_posture(terminal_state="unknown", terminal_state_confidence=0.2)
+        blocked = await resolve_session_objective_posture(
+            _StorageOperations(), session_id="session-9", structural=structural, message_ids=("message-9",)
+        )
+        other_session = await resolve_session_objective_posture(
+            _StorageOperations(), session_id="session-8", structural=structural, message_ids=("message-8",)
+        )
+    finally:
+        conn.close()
+
+    assert blocked.posture == "blocked"
+    assert blocked.authority == "assertion"
+    assert other_session == structural
 
 
 def test_objective_posture_payload_defaults_are_unknown_none() -> None:
