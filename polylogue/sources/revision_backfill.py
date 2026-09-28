@@ -1122,6 +1122,9 @@ def prepare_retained_jsonl_artifact(
                 }
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
 
+            def classify_drive_chunked_object(witness: dict[str, JSONValue]) -> bool:
+                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
+
             def classify_chatgpt_object(envelope: dict[str, object]) -> bool:
                 mapping = envelope["mapping"]
                 assert isinstance(mapping, Mapping)
@@ -1153,6 +1156,7 @@ def prepare_retained_jsonl_artifact(
                 classify_hermes_object=classify_hermes_object,
                 classify_claude_design_object=classify_claude_design_object,
                 classify_claude_ai_object=classify_claude_ai_object,
+                classify_drive_chunked_object=classify_drive_chunked_object,
                 classify_chatgpt_object=classify_chatgpt_object,
                 classify_gemini_object=classify_gemini_object,
                 # The publisher recomputes this digest from the retained

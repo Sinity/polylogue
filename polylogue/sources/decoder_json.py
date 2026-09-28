@@ -602,66 +602,104 @@ class _FirstFutureType:
             frame.own_types[frame.key or ""] = _future_wire_type(value) if event == "string" else None
 
 
-def claude_ai_object_envelope(handle: JsonReadable) -> dict[str, JsonValue] | None:
-    """Prove one claude.ai conversation and keep every root field but its messages.
+def _root_envelope_without(
+    handle: JsonReadable,
+    streamed: frozenset[str],
+    rerouted_root_keys: frozenset[str],
+) -> tuple[dict[str, JsonValue], dict[str, int]] | None:
+    """Build a root object without the arrays that a caller streams separately.
 
-    Shapes the object parser routes elsewhere (account memories, projects,
-    browser captures, ``sessions`` wrappers) and future wire types anywhere
-    in the document stay on that route, so its admission accounting remains
-    authoritative. The event pass also validates the complete JSON.
+    Returns the remaining document, how many arrays each ``streamed`` path
+    held, and, under ``__admission_future_type``, the first future wire type
+    parser admission would report. A root key in ``rerouted_root_keys``, a
+    streamed path holding a non-array, or invalid JSON refuses the document.
+    The pass reads the complete input, so a truncated suffix refuses it too.
     """
-    rerouted_root_keys = {"sessions", "account_uuid", "docs", "polylogue_capture_kind"}
-    envelope: dict[str, JsonValue] = {}
-    chat_messages_arrays = 0
-    pending_key: str | None = None
-    builder: ijson.common.ObjectBuilder | None = None
-    builder_key = ""
-    depth = 0
+    builder = ijson.common.ObjectBuilder()
     future_type = _FirstFutureType()
+    arrays = dict.fromkeys(streamed, 0)
+    skipped: str | None = None
+    expect_array: str | None = None
     try:
         events = ijson.parse(handle)
-        if next(events, None) != ("", "start_map", None):
+        first = next(events, None)
+        if first != ("", "start_map", None):
             return None
+        builder.event("start_map", None)
         for prefix, event, value in events:
             future_type.observe(event, value)
-            if builder is not None:
-                builder.event(event, value)
-                if event in {"start_map", "start_array"}:
-                    depth += 1
-                elif event in {"end_map", "end_array"}:
-                    depth -= 1
-                if depth == 0:
-                    envelope[builder_key] = cast(JsonValue, normalize_ijson_stdlib_numbers(builder.value))
-                    builder = None
-                continue
-            if pending_key is not None:
-                key, pending_key = pending_key, None
-                if key == "chat_messages":
-                    if event != "start_array":
-                        return None
-                elif event in {"start_map", "start_array"}:
-                    builder = ijson.common.ObjectBuilder()
-                    builder.event(event, value)
-                    builder_key = key
-                    depth = 1
-                else:
-                    envelope[key] = cast(JsonValue, normalize_ijson_stdlib_numbers(value))
-                continue
-            if prefix == "" and event == "map_key":
-                pending_key = str(value)
-                if pending_key in rerouted_root_keys:
+            if expect_array is not None:
+                if event != "start_array":
                     return None
-                if pending_key == "chat_messages":
-                    chat_messages_arrays += 1
+                skipped, expect_array = expect_array, None
+                continue
+            if skipped is not None:
+                if prefix == skipped and event == "end_array":
+                    skipped = None
+                continue
+            if event == "map_key":
+                path = f"{prefix}.{value}" if prefix else str(value)
+                if not prefix and path in rerouted_root_keys:
+                    return None
+                if path in arrays:
+                    arrays[path] += 1
+                    expect_array = path
+                    continue
+            builder.event(event, value)
     except ijson.common.JSONError:
         return None
     finally:
         handle.seek(0)
-    if chat_messages_arrays != 1:
+    envelope = normalize_ijson_stdlib_numbers(builder.value)
+    if not isinstance(envelope, dict):
         return None
     if future_type.value is not None:
         envelope["__admission_future_type"] = future_type.value
-    return envelope
+    return cast(dict[str, JsonValue], envelope), arrays
+
+
+def claude_ai_object_envelope(handle: JsonReadable) -> dict[str, JsonValue] | None:
+    """Prove one claude.ai conversation and keep every root field but its messages.
+
+    Shapes the object parser routes elsewhere (account memories, projects,
+    browser captures, ``sessions`` wrappers) stay on that route.
+    """
+    result = _root_envelope_without(
+        handle,
+        frozenset({"chat_messages"}),
+        frozenset({"sessions", "account_uuid", "docs", "polylogue_capture_kind"}),
+    )
+    if result is None or result[1]["chat_messages"] != 1:
+        return None
+    return result[0]
+
+
+def drive_chunked_prompt_envelope(handle: JsonReadable) -> tuple[dict[str, JsonValue], str] | None:
+    """Prove one AI Studio chunked prompt and name the chunk array it streams.
+
+    Returns every document field except that array, and its ijson prefix.
+    The parser reads ``chunkedPrompt.chunks`` whenever ``chunkedPrompt`` is a
+    non-empty object, and the root ``chunks`` otherwise. Records the Drive
+    lowering sends to another parser (Gemini CLI checkpoints, message
+    objects, ChatGPT fragments, lone chunks, session wrappers, browser
+    captures) stay on that route, as does a document holding both arrays.
+    """
+    result = _root_envelope_without(
+        handle,
+        frozenset({"chunkedPrompt.chunks", "chunks"}),
+        frozenset({"sessions", "messages", "mapping", "sessionId", "role", "author", "polylogue_capture_kind"}),
+    )
+    if result is None:
+        return None
+    envelope, arrays = result
+    prompt = envelope.get("chunkedPrompt")
+    if isinstance(prompt, dict) and (prompt or arrays["chunkedPrompt.chunks"]):
+        if arrays["chunkedPrompt.chunks"] != 1 or arrays["chunks"]:
+            return None
+        return envelope, "chunkedPrompt.chunks"
+    if arrays["chunks"] != 1 or arrays["chunkedPrompt.chunks"]:
+        return None
+    return envelope, "chunks"
 
 
 def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | None:

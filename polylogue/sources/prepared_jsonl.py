@@ -29,6 +29,7 @@ from polylogue.sources.decoder_json import (
     _skip_json_subtree,
     claude_ai_object_envelope,
     claude_design_object_envelope,
+    drive_chunked_prompt_envelope,
     generic_message_object_envelope,
     grok_export_item_count,
     hermes_snapshot_envelope,
@@ -49,6 +50,7 @@ from polylogue.sources.dispatch import (
 from polylogue.sources.parsers import (
     browser_capture,
     chatgpt,
+    drive,
     grok,
     hermes_spans,
     hermes_state,
@@ -614,6 +616,7 @@ def prepare_jsonl_blob(
     classify_chatgpt_object: Callable[[dict[str, object]], bool] | None = None,
     classify_claude_design_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_claude_ai_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
+    classify_drive_chunked_object: Callable[[dict[str, JSONValue]], bool] | None = None,
     classify_gemini_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
@@ -641,6 +644,7 @@ def prepare_jsonl_blob(
         hermes_envelope: dict[str, JSONValue] | None = None
         design_envelope: dict[str, JSONValue] | None = None
         claude_ai_envelope: dict[str, JSONValue] | None = None
+        drive_chunked: tuple[dict[str, JSONValue], str] | None = None
         chatgpt_envelope: dict[str, object] | None = None
         chatgpt_mapping: ChatGPTNodeMapping | None = None
         gemini_envelope: dict[str, JSONValue] | None = None
@@ -771,6 +775,16 @@ def prepare_jsonl_blob(
         ):
             with source.open("rb") as handle:
                 claude_ai_envelope = claude_ai_object_envelope(handle)
+        if (
+            not is_stream
+            and provider in {Provider.DRIVE, Provider.GEMINI}
+            and (prepare_sessions is None or classify_drive_chunked_object is not None)
+            and (prepare_records is None or classify_drive_chunked_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+            and generic_envelope is None
+        ):
+            with source.open("rb") as handle:
+                drive_chunked = drive_chunked_prompt_envelope(handle)
         if gemini_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
@@ -1169,6 +1183,73 @@ def prepare_jsonl_blob(
             store.conn.commit()
             shard_path = shard_builder.seal().path
             shard_builder = None
+        elif drive_chunked is not None:
+            drive_envelope, chunk_prefix = drive_chunked
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+
+            def drive_chunks() -> Iterator[object]:
+                with source.open("rb") as handle:
+                    for item in ijson.items(handle, f"{chunk_prefix}.item"):
+                        yield normalize_ijson_stdlib_numbers(item)
+
+            drive_admitted = True
+            if classify_drive_chunked_object is not None:
+                chunk_sample: list[JSONValue] = [cast(JSONValue, item) for item in islice(drive_chunks(), 64)]
+                witness = {key: value for key, value in drive_envelope.items() if not key.startswith("__")}
+                if chunk_prefix == "chunks":
+                    witness["chunks"] = chunk_sample
+                else:
+                    prompt = witness.get("chunkedPrompt")
+                    witness["chunkedPrompt"] = {**(prompt if isinstance(prompt, dict) else {}), "chunks": chunk_sample}
+                drive_admitted = classify_drive_chunked_object(witness)
+            session = None
+            if drive_admitted:
+                session = drive.parse_chunked_prompt_stream(
+                    provider,
+                    drive_envelope,
+                    drive_chunks,
+                    fallback_id,
+                    messages=store.new_sink(),
+                    session_events=store.new_event_sink(),
+                    attachments=store.new_attachment_sink(),
+                )
+            session_count = 0
+            if session is not None and require_positive_conversational_evidence(
+                [session], provider=provider, source_path=source_path
+            ):
+                if prepare_sessions is not None:
+                    selected = prepare_sessions([session])
+                    if len(selected) > 1:
+                        raise ValueError("chunked prompt finalizer expanded one session")
+                    session = selected[0] if selected else None
+                elif prepare_session is not None:
+                    session = prepare_session(session)
+            else:
+                session = None
+            if session is not None:
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            for table, column in (
+                ("prepared_message", "message_ordinal"),
+                ("prepared_event", "event_ordinal"),
+                ("prepared_attachment", "attachment_ordinal"),
+            ):
+                store.conn.execute(
+                    f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
+                )
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
         elif grok_count is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
@@ -1366,6 +1447,7 @@ def prepare_jsonl_blob(
             or hermes_envelope is not None
             or design_envelope is not None
             or claude_ai_envelope is not None
+            or drive_chunked is not None
             or (grok_count is not None and classify_grok_export is not None)
             or (prepare_sessions is None and prepare_session is not None),
             attempt_directory=attempt_directory,
