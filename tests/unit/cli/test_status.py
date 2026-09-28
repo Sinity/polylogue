@@ -741,16 +741,15 @@ class TestCanonicalStatusOperation:
         Anti-vacuity: resolving source.db from archive_root instead of the
         active db_path reports another archive's publication state.
         """
-        from polylogue.config import Config
+        from types import SimpleNamespace
+
         from polylogue.daemon.status import _sinex_publication_status_info
 
         configured_root = tmp_path / "configured"
         active_root = tmp_path / "active"
-        config = Config(
+        config = SimpleNamespace(
             archive_root=configured_root,
             db_path=active_root / "index.db",
-            render_root=configured_root / "render",
-            sources=[],
             sinex_mode="off",
         )
         with (
