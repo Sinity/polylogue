@@ -2216,6 +2216,40 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
     return documents
 
 
+def chatgpt_rejected_mapping_candidates(payload: object) -> list[str | None]:
+    """Conversation-shaped bundle records the ChatGPT bundle lowering rejects.
+
+    :func:`lower_chatgpt_documents` returns only admitted conversations, so a
+    census built from it alone cannot see a rejected sibling of a valid one.
+    This applies the bundle lowering's own near-miss test and returns each
+    rejected record's conversation id, or ``None`` when it names none.
+    """
+    records = _payload_sequence(payload)
+    if records is None:
+        record = _payload_record(payload)
+        conversations = record.get("conversations") if record is not None else None
+        if not isinstance(conversations, list):
+            return []
+        records = conversations
+    rejected: list[str | None] = []
+    for item in records:
+        record = _payload_record(item)
+        if record is None or chatgpt_codex_sidecar.looks_like(record):
+            continue
+        if _looks_like_chatgpt_mapping_candidate(record) and not chatgpt.looks_like_fragment(record):
+            rejected.append(
+                next(
+                    (
+                        str(record[key])
+                        for key in ("id", "uuid", "conversation_id")
+                        if isinstance(record.get(key), str) and record[key]
+                    ),
+                    None,
+                )
+            )
+    return rejected
+
+
 def parse_stream_payload(
     provider: str | Provider,
     payloads: Iterable[object],
@@ -2264,6 +2298,7 @@ def parse_stream_payload(
 
 __all__ = [
     "GROUP_PROVIDERS",
+    "chatgpt_rejected_mapping_candidates",
     "STREAM_RECORD_PROVIDERS",
     "LoweredPayloadSpec",
     "ChatGPTLoweredDocument",

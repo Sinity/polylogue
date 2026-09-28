@@ -116,6 +116,18 @@ from, not the basename and not a global "newest". Two roots are two scopes. A
 value observed in scope X never supersedes the same-named object in scope Y,
 in either acquisition order.
 
+Scope keys observed state, not the public session. A Codex thread ID is a
+global identifier, so the same ID under two roots is one thread seen through
+two installs, and the archive keeps one session for it (`origin:native_id`).
+Each root's state export stays its own scoped object: the thread-state graph
+keys every thread as `agent-thread:<scope>::<thread_id>`
+(`storage/sqlite/agent_thread_state.py`). A session reads scoped state through
+the scope of the rollout that produced it: ingest passes that rollout's
+retained `source_path` to `resolve_retained_codex_state_titles`, and
+`codex_state_source_scope` maps the rollout and `state_5.sqlite` of one
+install to one scope. Two roots with different titles for one thread
+therefore keep both titles, and neither overwrites the other.
+
 ### R4 — Supersession replaces a value, never an object
 
 A newer observation of scope X's member establishes the current value of
@@ -157,13 +169,14 @@ outcome. Where they differ, §6 names the defect and its owner.
 | # | Scenario | Decided retained result | Storage disposition | Today |
 | --- | --- | --- | --- | --- |
 | S1 | Strict-prefix log continuation | Baseline plus one delta per window; the chain replays to exactly the source bytes | 1.00× — one copy of each content byte | **Holds** when the cursor is live: measured 1.00×, 40/40 appends accepted |
-| S2 | Divergent log (history rewrite) | The divergent observation becomes a new full baseline; the prior chain stays archived and readable as its own evidence | Both retained; the prior chain's bytes are **not** retirable — no retained successor contains them | Holds: `_classify_deduped_nodes` quarantines only the divergent suffix (`revision_authority.py:287`) |
-| S3 | Truncated log | Truncation is not a prefix, so continuity is refused and a new baseline is captured | Both retained; prior bytes not retirable | Holds: `_record_append_cursor` refuses with "source replaced or truncated" (`batch.py:5249`) |
+| S2 | Divergent log (history rewrite) | The divergent observation becomes a new full baseline; the prior chain stays archived and readable as its own evidence | Both retained; the prior chain's bytes are **not** retirable — no retained successor contains them | **Defect D7** — both divergent children are quarantined, so the old root stays the accepted baseline |
+| S3 | Truncated log | Truncation is not a prefix, so continuity is refused and a new baseline is captured | Both retained; prior bytes not retirable | **Defect D7** — continuity is refused (`_record_append_cursor`, "source replaced or truncated"), but the cohort then has two roots and no observation is accepted |
 | S4 | A-B-A database values | A's second observation re-mints A's content hash and adds no blob; currency follows receipt order (R5) | Two blobs for three observations | Holds (`codex_state_projection.py:56`) |
 | S5 | Row missing from a newer export | The object stays archived and readable; its presence in that scope becomes absent-as-of-R | No byte change | **Defect D2** — `write_thread_state_projection` deletes every projected row |
 | S6 | Incomplete observation | Never an assertion of absence. A declared table the source lacked is carried in the export header's `missing` list; an item that could not be completed keeps a `pending`/`unknown_blocking` disposition and supersedes nothing | Retained, non-superseding | Partly: the export header records `missing` (`sqlite_export.py:228`); the projection does not consult it |
 | S7 | Two source roots with disjoint objects | Two scopes, two current values; neither supersedes the other, in either acquisition order | Both retained | **Defect D2** — `latest_retained_state_export` picks one global newest across every `source_path` |
 | S8 | Late or orphan sidecar | Joins by durable coordinate and reconverges; no duplicate message, and a still-missing sidecar stays an explicit outcome | One copy of the sidecar bytes | **Defect D3** — sidecar text is resolved from the original filesystem at parse time |
+| S10 | One thread ID under two source roots, with different titles | One archived session; each scope's state stays its own object, and the session reads the scope of the rollout that produced it (R3) | Both exports retained | Holds: scope-keyed thread-state graph; `test_one_thread_id_in_two_scopes_keeps_each_scopes_title` |
 | S9 | Original source disappears after acquisition | Absence observation only; archived bytes and every derived read are unchanged | Nothing retired | Holds for acquired raw payloads; **fails** for anything only resolvable through a live sibling file (D3) |
 
 ## 5. When retained bytes may be retired
@@ -314,6 +327,31 @@ Owners to name at implementation time:
 `sources/live/watcher.py::LiveSourceWatcher._watch_changes` for the
 observation and whichever durable table is chosen to retain it.
 
+### D7 — A rewritten or truncated log never establishes a new baseline (no current owner)
+
+S2 and S3 require the divergent or truncated observation to become a new
+full baseline. Refusing continuity is only the first half:
+`_record_append_cursor` detects the discontinuity, and the watcher captures a
+full snapshot, but nothing segments that snapshot into a new cohort.
+`archive/revision_authority.py::_classify_deduped_nodes` sees the new
+snapshot beside the old chain in one cohort. For retained `root`,
+`root-left`, then a rewrite to `root-right`, both children fork from `root`,
+so both are quarantined and `plan_revision_replay` keeps `root` as the
+accepted baseline. A truncation that shares no prefix leaves the cohort with
+two roots, so every observation is ambiguous and none is accepted. Ordinary
+convergence therefore keeps the old prefix and never materializes the
+rewritten or truncated source.
+
+The fix has to decide when a divergent full observation supersedes the prior
+chain. Byte containment cannot decide it, because no prefix relation exists;
+R5 makes durable receipt order the authority, which requires the receipt
+ordering R5 describes. The change moves revision classification, so it is a
+derived-identity change. Owners to name at implementation time:
+`archive/revision_authority.py::_classify_deduped_nodes`,
+`archive/revision_replay.py::plan_revision_replay`, and the live capture in
+`sources/live/batch.py` that follows the continuity refusal. V7 pins the
+refusal half; V9 pins the new baseline.
+
 ### D5 — Receipt volume (named, not decided here)
 
 The live source tier holds 550,458 receipt rows against 43,124 raw rows —
@@ -393,6 +431,7 @@ convergence — not through a mocked join helper.
 | V6 | An incomplete observation supersedes nothing | Treating a `missing` declared table as an empty table makes a retained object disappear | polylogue-2fr8s / polylogue-d5202 |
 | V7 | Widening continuity recovery does not weaken rewrite detection: a divergent or truncated observation still refuses continuity and starts a new baseline (S2, S3) | Accepting a non-prefix observation as a continuation makes it green | Extend `tests/unit/storage/test_raw_revision_authority.py` alongside whatever fixes D1 |
 | V8 | A watched source that disappears records a durable absence observation, and a latest-value projection reads it rather than the prior value (R6) | Restoring the watcher's `Change.deleted` skip, or recomputing absence from the live filesystem, leaves the projection presenting a stale current value | Owner unassigned; lands with D6 |
+| V9 | A rewritten log (`root`, `root-left`, then `root-right`) accepts `root-right` as its new baseline, and a truncation that shares no prefix accepts the truncated observation (S2, S3) | Quarantining both divergent children, or refusing a two-root cohort, leaves the old root accepted or accepts nothing | Owner unassigned; lands with D7 |
 
 ## 9. Anti-goals
 

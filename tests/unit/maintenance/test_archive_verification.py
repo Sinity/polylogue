@@ -2593,6 +2593,43 @@ def test_dropped_raw_node_trips_chatgpt_content_conservation(tmp_path: Path) -> 
     assert check.evidence["documents_with_dropped_content"] == 1
 
 
+def test_rejected_bundle_record_keeps_chatgpt_conservation_red(tmp_path: Path) -> None:
+    """A bundle mixing a valid conversation with a drifted mapping record.
+
+    The lowering admits only the valid conversation, so a census built from
+    lowered documents alone measures it, finds it conserved and reports OK.
+
+    Anti-vacuity: drop the ``chatgpt_rejected_mapping_candidates`` census in
+    ``audit_chatgpt_content_conservation`` and the check turns OK.
+    """
+    _seed_coherent_archive(tmp_path)
+    _seed_chatgpt_conversation(tmp_path, nodes=_CONSERVED_NODES, materialized_native_ids=("m1", "m2"))
+    bundle = [
+        {"id": "conv-1", "title": "Conversation", "mapping": _CONSERVED_NODES},
+        {"id": "conv-drifted", "title": "Drifted", "mapping": {"n1": "drifted-node"}},
+    ]
+    blob_hash, size = BlobStore(tmp_path / "blob").write_from_bytes(json.dumps(bundle).encode())
+    with _connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions(raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms)
+            VALUES ('raw-chatgpt-bundle', 'chatgpt-export', 'conv-1', '/conversations.json', ?, ?, 2000)
+            """,
+            (bytes.fromhex(blob_hash), size),
+        )
+
+    report = verify_archive(tmp_path, checks=("chatgpt-content-conservation",))
+
+    check = _check(report, "chatgpt-content-conservation")
+    assert check.status is OutcomeStatus.ERROR
+    assert check.evidence["outcome_reason"] == "rejected_mapping_candidates"
+    assert check.evidence["rejected_mapping_candidates"] == 1
+    assert check.evidence["rejected_mapping_candidate_sample"] == [
+        {"conversation_key": "conv-drifted", "raw_id": "raw-chatgpt-bundle"}
+    ]
+    assert check.evidence["content_units_dropped"] == 0
+
+
 def test_chatgpt_conservation_ignores_nodes_with_no_content_payload(tmp_path: Path) -> None:
     """A node whose ``content`` carries only descriptors conserves nothing, so
     the parser dropping it is not a finding. Without this the census would be
