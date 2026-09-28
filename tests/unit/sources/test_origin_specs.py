@@ -1463,7 +1463,31 @@ def test_a_malformed_long_number_stays_malformed() -> None:
         list(top_level_envelopes(io.BytesIO(malformed), expand_arrays=False, fields=fields))
     valid = b'{"atof_version": "0.1", "padding": -0.' + b"1" * 10_000 + b"e+12}"
     (envelope,) = top_level_envelopes(io.BytesIO(valid), expand_arrays=False, fields=fields)
-    assert envelope["atof_version"] == "0.1"
+    assert isinstance(envelope, dict) and envelope["atof_version"] == "0.1"
+
+
+def test_decoder_valid_exponent_beyond_decimal_range_keeps_the_document_readable() -> None:
+    """The JSON decoder reads ``1e99999999999999999999`` as an overflowing
+    float; ``Decimal`` refuses that exponent.
+
+    Anti-vacuity: pass the token exactly and ijson raises
+    ``decimal.InvalidOperation``, so no envelope is produced.
+    """
+    import io
+
+    import ijson
+    import pytest
+
+    from polylogue.core.json_envelope import top_level_envelopes
+
+    fields = frozenset({"atof_version"})
+    for token in (b"1e99999999999999999999", b"-2.5E-000123456789012345678901"):
+        document = b'{"atof_version": "0.1", "n": ' + token + b"}"
+        json.loads(document)
+        (envelope,) = top_level_envelopes(io.BytesIO(document), expand_arrays=False, fields=fields)
+        assert isinstance(envelope, dict) and envelope["atof_version"] == "0.1"
+    with pytest.raises(ijson.JSONError):
+        list(top_level_envelopes(io.BytesIO(b'{"n": 1e+99999999999999999999.}'), expand_arrays=False, fields=fields))
 
 
 def test_array_document_recognition_reads_a_bounded_sample(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1472,12 +1496,12 @@ def test_array_document_recognition_reads_a_bounded_sample(tmp_path: Path, monke
     Anti-vacuity: collect the expanded envelopes with a bare ``list(...)`` and
     the generator is drained past the sample, tripping the guard below.
     """
+    from polylogue.core.json_envelope import top_level_envelopes as real
     from polylogue.sources import origin_specs
 
     record = '{"atof_version": "0.1", "kind": "mark", "uuid": "u", "timestamp": "t", "name": "n"}'
     document = tmp_path / "spans.json"
     document.write_text("[" + ",".join([record] * 200) + "]", encoding="utf-8")
-    real = origin_specs.top_level_envelopes
     drawn: list[int] = []
 
     def guarded(handle: object, *, expand_arrays: bool, fields: frozenset[str]):  # type: ignore[no-untyped-def]
@@ -1534,7 +1558,7 @@ def test_invalid_escape_in_a_skipped_string_suffix_rejects_the_record() -> None:
     assert envelope == {"atof_version": "0.1", UNDECLARED_FIELDS: True}
 
 
-def test_declared_identity_field_is_read_whole_or_refused() -> None:
+def test_declared_identity_field_is_read_whole_or_refused(monkeypatch: pytest.MonkeyPatch) -> None:
     """Anti-vacuity: drop ``whole_fields`` and the long id comes back cut to the prefix."""
     import io
 
@@ -1550,18 +1574,13 @@ def test_declared_identity_field_is_read_whole_or_refused() -> None:
     )
     assert envelope == {"toolUseId": tool_id, json_envelope.UNDECLARED_FIELDS: True}
 
-    json_envelope._sqlite_value_limit.cache_clear()
-    original = json_envelope._sqlite_value_limit
-    try:
-        json_envelope._sqlite_value_limit = lambda: 1024  # type: ignore[assignment]
-        with pytest.raises(json_envelope.EnvelopeValueTooLargeError):
-            list(
-                json_envelope.top_level_envelopes(
-                    io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields
-                )
+    monkeypatch.setattr(json_envelope, "_sqlite_value_limit", lambda: 1024)
+    with pytest.raises(json_envelope.EnvelopeValueTooLargeError):
+        list(
+            json_envelope.top_level_envelopes(
+                io.BytesIO(document), expand_arrays=False, fields=fields, whole_fields=fields
             )
-    finally:
-        json_envelope._sqlite_value_limit = original  # type: ignore[assignment]
+        )
 
 
 def test_an_oversized_integer_skips_only_its_own_jsonl_record() -> None:

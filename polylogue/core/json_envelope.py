@@ -56,6 +56,14 @@ _NUMBER_NON_INTEGER = re.compile(rb"[.eE]")
 #: integer conversion limit, so every integer the decoder accepts is exact.
 _NUMBER_VIEW_BYTES = 8192
 
+#: Significant exponent digits of a number token the tokenizer sees exactly.
+#: ``Decimal`` refuses an exponent beyond about 10**18 that the JSON decoder
+#: accepts as an overflowing float; a token whose exponent has more
+#: significant digits than this is passed as a placeholder, so the exponent
+#: of any token passed exactly (at most :data:`_NUMBER_VIEW_BYTES` digits of
+#: significand) stays inside ``Decimal``'s range.
+_NUMBER_EXPONENT_DIGITS = 17
+
 #: RFC 8259 number grammar as a byte-driven automaton, so a token too long to
 #: pass exactly is still checked in full before it is replaced by a
 #: placeholder. States: 0 start, 1 sign, 2 leading zero, 3 integer digits,
@@ -210,10 +218,11 @@ class _PrefixStringReader:
         limit, which the JSON decoder refuses with ``ValueError``, reaches it
         as a malformed token, so the record is rejected as the decoder rejects
         it and the C tokenizer never converts the value. Any other token
-        longer than :data:`_NUMBER_VIEW_BYTES` reaches it as a placeholder of
-        the same JSON type: an envelope is a view of presence and type, and a
-        signature never reads a number's value, so a number of any length
-        costs bounded memory.
+        longer than :data:`_NUMBER_VIEW_BYTES`, or with an exponent beyond
+        ``Decimal``'s range, reaches it as a placeholder of the same JSON
+        type: an envelope is a view of presence and type, and a signature
+        never reads a number's value, so a number of any length costs bounded
+        memory.
         """
         position = 0
         for run in _NUMBER_RUN.finditer(segment):
@@ -238,6 +247,7 @@ class _PrefixStringReader:
         self._number_is_integer = True
         self._number_in_integer_part = True
         self._number_digits = 0
+        self._number_exponent_digits = 0
         self._number_state = 0
 
     def _extend_number(self, token: bytes) -> None:
@@ -247,6 +257,8 @@ class _PrefixStringReader:
                 state = _number_step(state, byte)
                 if state == -1:
                     break
+                if state == 8 and (byte != 0x30 or self._number_exponent_digits):
+                    self._number_exponent_digits += 1
             self._number_state = state
         if self._number_in_integer_part:
             mark = _NUMBER_NON_INTEGER.search(token)
@@ -264,13 +276,14 @@ class _PrefixStringReader:
     def _end_number(self, out: bytearray) -> None:
         self._number_open = False
         limit = sys.get_int_max_str_digits()
+        oversized = self._number_long or self._number_exponent_digits > _NUMBER_EXPONENT_DIGITS
         if self._number_is_integer and limit and self._number_digits > limit:
             out += _INVALID_NUMBER_END
-        elif self._number_long and self._number_state not in _NUMBER_ACCEPTING:
+        elif oversized and self._number_state not in _NUMBER_ACCEPTING:
             # A malformed long token stays malformed: the placeholder must not
             # turn a document the decoder rejects into one it would accept.
             out += _INVALID_NUMBER_END
-        elif self._number_long:
+        elif oversized:
             out += b"0" if self._number_is_integer else b"0.0"
         else:
             out += self._number_view
