@@ -592,3 +592,39 @@ def test_a_later_index_revision_re_derives_the_titled_session(tmp_path: Path) ->
     after = _enrichment_bindings(archive_root)
     assert set(after) == set(before)
     assert after != before
+
+
+def test_session_index_dependents_are_paged_not_listed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An arrived session index queues a paged scan of its project.
+
+    Anti-vacuity: listing the project's transcripts when the index arrives
+    (the eager scan) never serves a transcript retained after that moment,
+    and serves the whole history in one list regardless of the page bound.
+    """
+    from polylogue.operations import intake_adapters
+
+    source_db = tmp_path / "source.db"
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("CREATE TABLE raw_sessions (raw_id TEXT, source_path TEXT)")
+        conn.execute("INSERT INTO raw_sessions VALUES ('index', '/p/proj/sessions-index.json')")
+        conn.executemany(
+            "INSERT INTO raw_sessions VALUES (?, ?)",
+            [(f"t{n}", f"/p/proj/s{n}.jsonl") for n in range(3)] + [("other", "/p/proj2/s0.jsonl")],
+        )
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.connection_profile.open_readonly_connection",
+        lambda path, **_kwargs: sqlite3.connect(path),
+    )
+    discovery = intake_adapters.RawMaterializationDiscovery(tmp_path)
+    discovery._queue_evidence_dependents(["index"])
+    with sqlite3.connect(source_db) as conn:
+        conn.execute("INSERT INTO raw_sessions VALUES ('t3', '/p/proj/s3.jsonl')")
+
+    class _Adapter:
+        def inspect(self, _frame: object, keys: tuple[str, ...]) -> dict[str, str]:
+            return dict.fromkeys(keys, "stale")
+
+    pages = []
+    while page := discovery._dependents_selected(None, _Adapter(), 2):
+        pages.append(page)
+    assert pages == [("t0", "t1"), ("t2", "t3")]

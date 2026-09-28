@@ -492,14 +492,26 @@ class RawObservationDerivation:
         provider = _EVIDENCE_PROVIDER_BY_ORIGIN.get(str(output["origin"]))
         if provider is None or not isinstance(source_path, str):
             return False
-        current = session_enrichment_evidence_key(
-            provider=provider,
-            source_path=source_path,
-            native_id=str(output["native_id"]),
-            index_conn=conn,
-            source_conn=conn,
-            blob_root=self.archive_root / "blob",
-        )
+        # ``session_enrichment_evidence_key`` (and ``read_thread_titles``
+        # beneath it) queries ``work_evidence_*`` unqualified, expecting
+        # ``index_conn``'s own ``main`` schema to be index.db. ``conn`` here
+        # has source.db as ``main`` and the index attached only as
+        # ``index_tier``, so passing it as ``index_conn`` resolved those
+        # tables against the wrong schema (silently empty, not an error the
+        # caller sees), and Codex evidence never registered as moved. Open a
+        # real index connection for this specific read.
+        index_path = ArchiveLocation.resolve(self.archive_root).active_index_path
+        with closing(
+            open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False)
+        ) as index_conn:
+            current = session_enrichment_evidence_key(
+                provider=provider,
+                source_path=source_path,
+                native_id=str(output["native_id"]),
+                index_conn=index_conn,
+                source_conn=conn,
+                blob_root=self.archive_root / "blob",
+            )
         return current is not None and output["evidence_key"] != current
 
     def _binding(self, raw_ids: tuple[str, ...]) -> str:

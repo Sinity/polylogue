@@ -18,6 +18,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Iterator, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
@@ -1295,14 +1296,15 @@ class RawMaterializationDiscovery:
         self._arrivals_first = False
         #: Sessions whose enrichment evidence just arrived: a project's
         #: ``sessions-index.json`` names the transcripts beside it. Inspected
-        #: on the next call, after the evidence itself was admitted, so a
+        #: on later calls, after the evidence itself was admitted, so a
         #: title curated after its transcript was written converges promptly.
         #: A scheduling hint only: the sweep re-inspects every raw anyway, and
         #: inspection compares each output's evidence binding with the
         #: evidence the archive holds (install-wide history and thread state
         #: converge through that sweep).
-        self._evidence_dependents: deque[str] = deque()
-        self._queued_dependents: set[str] = set()
+        #: Pending project scans: (project directory, last served path,
+        #: last served rowid). Paged by ``_dependents_selected``.
+        self._evidence_projects: deque[tuple[str, str, int]] = deque()
 
     def _raw_frontier(self) -> int:
         """Return the durable high-water mark for admitted raw observations."""
@@ -1401,38 +1403,52 @@ class RawMaterializationDiscovery:
         return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
 
     def _dependents_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
+        """Serve at most ``limit`` transcripts of the queued project scans.
+
+        Each queued scan is a continuation over one project's transcripts, so
+        a project with a long retained history is paged like the sweep rather
+        than listed whole when its index arrives.
+        """
+        if not self._evidence_projects:
+            return ()
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
         page: list[str] = []
-        while self._evidence_dependents and len(page) < limit:
-            raw_id = self._evidence_dependents.popleft()
-            self._queued_dependents.discard(raw_id)
-            page.append(raw_id)
+        with closing(open_readonly_connection(self._archive_root / "source.db", timeout=5.0)) as conn:
+            while self._evidence_projects and len(page) < limit:
+                project, after_path, after_rowid = self._evidence_projects[0]
+                wanted = limit - len(page)
+                rows = conn.execute(
+                    "SELECT raw_id, source_path, rowid FROM raw_sessions "
+                    "WHERE source_path >= ? AND source_path < ? AND source_path LIKE '%.jsonl' "
+                    "AND (source_path > ? OR (source_path = ? AND rowid > ?)) "
+                    "ORDER BY source_path, rowid LIMIT ?",
+                    (project + "/", project + "0", after_path, after_path, after_rowid, wanted),
+                ).fetchall()
+                page.extend(str(row[0]) for row in rows)
+                if len(rows) < wanted:
+                    self._evidence_projects.popleft()
+                else:
+                    self._evidence_projects[0] = (project, str(rows[-1][1]), int(rows[-1][2]))
         if not page:
             return ()
         statuses = adapter.inspect(frame, tuple(page))
         return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
 
     def _queue_evidence_dependents(self, arrived: Sequence[str]) -> None:
-        """Queue the transcripts a newly admitted project session index describes."""
+        """Queue a scan of the project each newly admitted session index describes."""
         from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
         source_db = self._archive_root / "source.db"
-        with open_readonly_connection(source_db, timeout=5.0) as conn:
+        with closing(open_readonly_connection(source_db, timeout=5.0)) as conn:
             placeholders = ",".join("?" for _ in arrived)
             indexes = conn.execute(
                 f"SELECT source_path FROM raw_sessions WHERE raw_id IN ({placeholders}) "
                 "AND source_path LIKE '%/sessions-index.json'",
                 tuple(arrived),
             ).fetchall()
-            for (index_path,) in indexes:
-                project = str(index_path).rsplit("/", 1)[0]
-                for (raw_id,) in conn.execute(
-                    "SELECT raw_id FROM raw_sessions WHERE source_path >= ? AND source_path < ? "
-                    "AND source_path LIKE '%.jsonl' ORDER BY source_path, rowid",
-                    (project + "/", project + "0"),
-                ):
-                    if raw_id not in self._queued_dependents:
-                        self._queued_dependents.add(str(raw_id))
-                        self._evidence_dependents.append(str(raw_id))
+        for project in dict.fromkeys(str(index_path).rsplit("/", 1)[0] for (index_path,) in indexes):
+            self._evidence_projects.append((project, "", -1))
 
     def _sweep_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
         # At most one released page is skipped per call, so a stalled head

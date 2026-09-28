@@ -898,3 +898,85 @@ async def test_codex_state_title_does_not_depend_on_admission_order(tmp_path: Pa
         bound = conn.execute("SELECT session_id FROM session_enrichment_bindings").fetchall()
     assert rows == [(_CODEX_SESSION_ID, "Synthetic curated title")]
     assert bound == [(_CODEX_SESSION_ID,)]
+
+    # Anti-vacuity for inspection reading thread state: resolving it through
+    # the source-tier connection (index only attached as ``index_tier``)
+    # yields no state title, so the curated binding never matches and the
+    # rollout is re-derived on every sweep.
+    from polylogue.operations.raw_observation_derivation import (
+        make_raw_observation_derivation,
+        raw_observation_frame,
+    )
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        rollout_raws = [
+            str(row[0])
+            for row in conn.execute("SELECT raw_id FROM raw_sessions WHERE source_path LIKE '%rollout-%.jsonl'")
+        ]
+    assert rollout_raws
+    statuses = make_raw_observation_derivation(archive_root).inspect(
+        raw_observation_frame(archive_root, source_roots=(install,)), rollout_raws
+    )
+    assert set(statuses.values()) == {"valid"}
+
+
+def test_enrichment_evidence_moved_reads_titles_through_a_real_index_connection(tmp_path: Path) -> None:
+    """``session_enrichment_evidence_key`` must resolve titles against index.db.
+
+    Anti-vacuity (Codex P1, #5643): ``_enrichment_evidence_moved`` passed the
+    source-tier connection (index.db only attached under the ``index_tier``
+    alias) as ``index_conn``. ``read_thread_titles`` queries unqualified
+    ``work_evidence_*`` tables, which resolve against that connection's own
+    ``main`` schema -- source.db, which has no such tables -- so the query
+    raised ``sqlite3.OperationalError``, caught and degraded to an empty
+    mapping every time. The recomputed evidence key then always looked like
+    "no title evidence", identical to the pre-state key, so a transcript
+    already carrying a curated title from state evidence could never be
+    detected as stale when that evidence later changed.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.revision_backfill import session_enrichment_evidence_key
+    from polylogue.storage.sqlite.agent_thread_state import ThreadRecord, write_thread_state_graph
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+
+    index_path = tmp_path / "index.db"
+    with sqlite3.connect(index_path) as conn:
+        conn.executescript(INDEX_DDL)
+        assert write_thread_state_graph(
+            conn,
+            source_scope="/codex-home",
+            threads=[ThreadRecord(_THREAD_ID, "Curated title", 2_000)],
+            spawn_edges=[],
+            raw_id="raw-state-1",
+            blob_hash="blob-state-1",
+            observed_at_ms=1_000,
+        )
+        conn.commit()
+
+    source_path = "/codex-home/sessions/rollout-2026-07-20T10-00-00-" + _THREAD_ID + ".jsonl"
+    key_kwargs = {
+        "provider": Provider.CODEX,
+        "source_path": source_path,
+        "native_id": _THREAD_ID,
+        "source_conn": None,
+        "blob_root": None,
+    }
+
+    # No index evidence at all -- the "nothing has a title" baseline.
+    no_evidence = session_enrichment_evidence_key(index_conn=None, **key_kwargs)
+
+    # The exact defect: passing a connection whose *own* main schema is not
+    # index.db (source.db here, standing in for the source-tier connection
+    # with the index only attached as an alias) must not silently resolve to
+    # the same "no title" identity as having no index evidence at all --
+    # that identity match is what made a curated-title session's binding
+    # look perpetually current even after the title moved.
+    with sqlite3.connect(":memory:") as wrong_conn:
+        degraded = session_enrichment_evidence_key(index_conn=wrong_conn, **key_kwargs)
+    assert degraded == no_evidence
+
+    with sqlite3.connect(index_path) as real_conn:
+        current = session_enrichment_evidence_key(index_conn=real_conn, **key_kwargs)
+    assert current is not None
+    assert current != no_evidence
+    assert current != degraded
