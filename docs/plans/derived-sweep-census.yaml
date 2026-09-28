@@ -65,13 +65,13 @@ sites:
     scope: "read_only_module"
     classification: presentation_projection
     reason: "the compact envelope is built with model_copy over a payload this same call composed in memory -- it reads no stored field and touches no database. The substituted members are the caps the compact form declares (changed_paths[:8], peers[:4], resource_episodes[:4]), and the session-tree branch carries its own trim into nodes_complete/edges_complete/truncated_*_count rather than handing back a partial tree that claims to be whole"
-  - file: "polylogue/daemon/embedding_owner.py"
-    function: "_EmbeddingBackfillExecution.accept"
-    subject: "archive_identity"
+  - file: "polylogue/daemon/derivation.py"
+    function: "Budget.coerce"
+    subject: "deadline_s"
     kind: "read_path_substitution"
     scope: "read_only_module"
-    classification: operator_mutation
-    reason: "This explicit embedding-backfill machine-request route rebinds only the in-memory operation binding to the archive identity already stored on that request's durable audit row, so a request accepted before an index rebuild still resolves its own parts. It does not rewrite or mask any archive-derived producer value."
+    classification: presentation_projection
+    reason: "Budget.coerce composes an in-memory pass budget from the caller's Budget and an outer deadline: it keeps the tighter of the two deadlines via dataclasses.replace. The substituted member is a value this call computed, not a stored producer output, and the function touches no database."
   - file: "polylogue/daemon/status_snapshot.py"
     function: "refresh_status_snapshot"
     subject: "refresh_error"
