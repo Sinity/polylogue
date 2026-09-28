@@ -154,6 +154,7 @@ class ArchiveCapacityInventory:
     generations: tuple[GenerationMeasurement, ...]
     available_bytes: int
     destinations: tuple[CapacityDestination, ...] = ()
+    source_evidence_allocated_bytes: int = 0
 
     @property
     def total_allocated_bytes(self) -> int:
@@ -164,6 +165,8 @@ class ArchiveCapacityInventory:
         return sum(population.logical_bytes for population in self.populations)
 
     def population(self, name: str) -> PopulationMeasurement:
+        if name == "source_evidence":
+            return PopulationMeasurement(name, self.source_evidence_allocated_bytes, 0, 0, 0)
         for population in self.populations:
             if population.name == name:
                 return population
@@ -178,6 +181,7 @@ class ArchiveCapacityInventory:
             "generations": [generation.as_dict() for generation in self.generations],
             "available_bytes": self.available_bytes,
             "destinations": [destination.as_dict() for destination in self.destinations],
+            "source_evidence_allocated_bytes": self.source_evidence_allocated_bytes,
             "total_allocated_bytes": self.total_allocated_bytes,
             "total_logical_bytes": self.total_logical_bytes,
         }
@@ -239,6 +243,7 @@ class CapacityReceipt:
     prospective_material_bytes: int = 0
     prospective_retained_allocation_bytes: int = 0
     prospective_source_db_allocation_bytes: int = 0
+    prospective_generation_baseline_bytes: int = 0
     baseline_digest: str | None = None
     material_byte_definition: str | None = None
     status: str = "admitted"
@@ -264,6 +269,7 @@ class CapacityReceipt:
             "prospective_material_bytes": self.prospective_material_bytes,
             "prospective_retained_allocation_bytes": self.prospective_retained_allocation_bytes,
             "prospective_source_db_allocation_bytes": self.prospective_source_db_allocation_bytes,
+            "prospective_generation_baseline_bytes": self.prospective_generation_baseline_bytes,
             "baseline_digest": self.baseline_digest,
             "material_byte_definition": self.material_byte_definition,
             "status": self.status,
@@ -295,6 +301,7 @@ class CapacityReceipt:
             prospective_material_bytes=_int_field(payload, "prospective_material_bytes"),
             prospective_retained_allocation_bytes=_int_field(payload, "prospective_retained_allocation_bytes"),
             prospective_source_db_allocation_bytes=_int_field(payload, "prospective_source_db_allocation_bytes"),
+            prospective_generation_baseline_bytes=_int_field(payload, "prospective_generation_baseline_bytes"),
             baseline_digest=_str_field(payload, "baseline_digest") or None,
             material_byte_definition=_str_field(payload, "material_byte_definition") or None,
             status=_str_field(payload, "status"),
@@ -325,6 +332,7 @@ class CandidateCapacityProjection:
     prospective_material_bytes: int = 0
     prospective_retained_allocation_bytes: int = 0
     prospective_source_db_allocation_bytes: int = 0
+    prospective_generation_baseline_bytes: int = 0
     baseline_digest: str | None = None
     material_byte_definition: str | None = None
     filesystem_requirements: tuple[FilesystemRequirement, ...] = ()
@@ -343,6 +351,7 @@ class CandidateCapacityProjection:
             + self.wal_amplification_bytes
             + self.temporary_amplification_bytes
             + self.receipt_growth_bytes
+            + self.prospective_generation_baseline_bytes
         )
 
     @property
@@ -693,7 +702,11 @@ def measure_archive_capacity(archive_root: Path) -> ArchiveCapacityInventory:
             raise ArchiveCapacityError(f"active pointer target is not a regular file: {location.active_index_path}")
 
     seen: set[tuple[int, int]] = set()
-    accumulators = {name: _Accumulator(name, seen) for name in POPULATION_NAMES}
+    accumulators = {name: _Accumulator(name, seen) for name in (*POPULATION_NAMES, "source_evidence")}
+    # This is a calibration view that intentionally overlaps durable_tiers;
+    # it must count source.db independently without changing the inventory's
+    # deduplicated retained-allocation total.
+    accumulators["source_evidence"] = _Accumulator("source_evidence", set())
 
     generations = _measure_generations(accumulators["index_generations"], generation_roots, location)
 
@@ -721,6 +734,11 @@ def measure_archive_capacity(archive_root: Path) -> ArchiveCapacityInventory:
             label=f"durable tier {filename}",
             allowed_link_root=physical_root,
         )
+    # Calibration is against the rebuild inputs (source rows and blobs), not
+    # the unrelated, irreplaceable user and audit histories.
+    _measure_database(
+        accumulators["source_evidence"], root / "source.db", label="source evidence", allowed_link_root=physical_root
+    )
     for filename in _DERIVED_TIER_FILENAMES:
         _measure_database(
             accumulators["derived_tiers"],
@@ -784,6 +802,7 @@ def measure_archive_capacity(archive_root: Path) -> ArchiveCapacityInventory:
         generations=generations,
         available_bytes=destinations[0].available_bytes,
         destinations=destinations,
+        source_evidence_allocated_bytes=accumulators["source_evidence"].measurement().allocated_bytes,
     )
 
 
@@ -841,6 +860,7 @@ def project_candidate_capacity(
     prospective_material_bytes: int = 0,
     prospective_retained_allocation_bytes: int | None = None,
     prospective_source_db_allocation_bytes: int = 0,
+    prospective_generation_baseline_bytes: int = 0,
     baseline_digest: str | None = None,
     material_byte_definition: str | None = None,
 ) -> CandidateCapacityProjection:
@@ -853,6 +873,8 @@ def project_candidate_capacity(
         raise ArchiveCapacityError("prospective retained allocation cannot be smaller than material bytes")
     if prospective_source_db_allocation_bytes < 0:
         raise ArchiveCapacityError("prospective source database allocation cannot be negative")
+    if prospective_generation_baseline_bytes < 0:
+        raise ArchiveCapacityError("prospective generation baseline bytes cannot be negative")
     inventory = measure_archive_capacity(archive_root)
     existing_candidate_index_allocated_bytes = 0
     if existing_candidate_generation_id is not None:
@@ -865,7 +887,7 @@ def project_candidate_capacity(
             raise ArchiveCapacityError("existing candidate is missing or active in capacity inventory")
         existing_candidate_index_allocated_bytes = candidates[0].index_allocated_bytes
     evidence_bytes = (
-        inventory.population("durable_tiers").allocated_bytes + inventory.population("blob").allocated_bytes
+        inventory.population("source_evidence").allocated_bytes + inventory.population("blob").allocated_bytes
     )
     observed_index_bytes = max(
         (generation.allocated_bytes for generation in inventory.generations),
@@ -876,7 +898,10 @@ def project_candidate_capacity(
     # no smaller than the largest generation on disk, and no smaller than what
     # the evidence has been observed to expand into.
     projected_index_bytes = max(
-        observed_index_bytes, math.ceil((evidence_bytes + prospective_retained_allocation_bytes) * ratio)
+        observed_index_bytes,
+        math.ceil(
+            (evidence_bytes + prospective_retained_allocation_bytes + prospective_source_db_allocation_bytes) * ratio
+        ),
     )
     wal_amplification_bytes = math.ceil(projected_index_bytes * WAL_AMPLIFICATION_FRACTION)
     temporary_amplification_bytes = math.ceil(projected_index_bytes * TEMPORARY_AMPLIFICATION_FRACTION)
@@ -890,7 +915,8 @@ def project_candidate_capacity(
         {
             "candidate": max(0, projected_index_bytes - existing_candidate_index_allocated_bytes)
             + wal_amplification_bytes
-            + temporary_amplification_bytes,
+            + temporary_amplification_bytes
+            + prospective_generation_baseline_bytes,
             "blob": prospective_retained_allocation_bytes,
             "source_db": prospective_source_db_allocation_bytes,
             "receipt": receipt_growth_bytes,
@@ -912,6 +938,7 @@ def project_candidate_capacity(
         prospective_material_bytes=prospective_material_bytes,
         prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
         prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
+        prospective_generation_baseline_bytes=prospective_generation_baseline_bytes,
         baseline_digest=baseline_digest,
         material_byte_definition=material_byte_definition,
         filesystem_requirements=requirements,
@@ -926,6 +953,7 @@ def require_candidate_capacity(
     prospective_material_bytes: int = 0,
     prospective_retained_allocation_bytes: int | None = None,
     prospective_source_db_allocation_bytes: int = 0,
+    prospective_generation_baseline_bytes: int = 0,
     baseline_digest: str | None = None,
     material_byte_definition: str | None = None,
 ) -> CandidateCapacityProjection:
@@ -936,6 +964,7 @@ def require_candidate_capacity(
         prospective_material_bytes=prospective_material_bytes,
         prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
         prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
+        prospective_generation_baseline_bytes=prospective_generation_baseline_bytes,
         baseline_digest=baseline_digest,
         material_byte_definition=material_byte_definition,
     )
@@ -987,6 +1016,7 @@ def record_capacity_prediction(
         prospective_material_bytes=projection.prospective_material_bytes,
         prospective_retained_allocation_bytes=projection.prospective_retained_allocation_bytes,
         prospective_source_db_allocation_bytes=projection.prospective_source_db_allocation_bytes,
+        prospective_generation_baseline_bytes=projection.prospective_generation_baseline_bytes,
         baseline_digest=projection.baseline_digest,
         material_byte_definition=projection.material_byte_definition,
         status=status,
@@ -1020,7 +1050,7 @@ def record_capacity_observation(
             return None
         inventory = measure_archive_capacity(Path(archive_root))
         actual_evidence_bytes = (
-            inventory.population("durable_tiers").allocated_bytes + inventory.population("blob").allocated_bytes
+            inventory.population("source_evidence").allocated_bytes + inventory.population("blob").allocated_bytes
         )
         observed = replace(
             recorded,
