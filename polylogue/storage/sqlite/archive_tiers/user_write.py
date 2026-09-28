@@ -2618,6 +2618,7 @@ ASSERTION_CLAIM_KINDS: tuple[AssertionKind, ...] = (
 def list_assertion_claims(
     conn: sqlite3.Connection,
     *,
+    schema: str | None = None,
     kinds: Sequence[str | AssertionKind] = ASSERTION_CLAIM_KINDS,
     target_ref: str | None = None,
     scope_ref: str | None = None,
@@ -2649,7 +2650,9 @@ def list_assertion_claims(
     must still see expired rows.
     """
 
-    if not _table_exists(conn, "assertions"):
+    if schema is not None and not schema.replace("_", "").isalnum():
+        raise ValueError(f"invalid SQLite schema name: {schema!r}")
+    if not _table_exists(conn, "assertions", schema=schema):
         return []
 
     where: list[str] = []
@@ -2699,7 +2702,8 @@ def list_assertion_claims(
         )
         params.append(effective_as_of_ms)
 
-    sql = f"SELECT {_ASSERTION_COLUMNS} FROM assertions"
+    table = f"{schema}.assertions" if schema is not None else "assertions"
+    sql = f"SELECT {_ASSERTION_COLUMNS} FROM {table}"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY updated_at_ms DESC, assertion_id"
