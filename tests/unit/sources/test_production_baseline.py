@@ -596,27 +596,58 @@ def test_an_unreadable_state_database_is_a_retryable_fault_not_an_exclusion(tmp_
     assert row.reason.startswith("revision_io_unavailable:")
 
 
-def test_the_admission_scan_stops_when_the_observation_is_cancelled(tmp_path: Path) -> None:
-    """Cancellation reaches the sidecar scan that reads a large JSONL to EOF.
+def test_non_database_bytes_under_a_state_name_stay_an_intake_exclusion(tmp_path: Path) -> None:
+    """Bytes that are not SQLite are excluded by intake for good, so they are not a fault.
 
-    Anti-vacuity: calling the uncheckpointed ``jsonl_session_artifact(path)``
-    in ``_jsonl_provider_and_session_artifact`` scans the whole file and the
-    capture returns instead of raising.
+    Anti-vacuity: routing the probe's non-retryable ``SQLITE_NOTADB`` to the
+    ordinary fault branch records ``revision_unreadable`` and blocks promotion
+    on a file intake will never retain.
     """
     root = tmp_path / "codex"
     root.mkdir()
+    state = root / "state_5.sqlite"
+    state.write_bytes(b"not a database, just text\n" * 64)
+    baseline = capture_production_source_baseline(
+        (WatchSource("codex", root, suffixes=(".sqlite",)),), operation_id="not-a-database"
+    )
+    [row] = [row for row in baseline.decisions if row.path == str(state)]
+    assert row.disposition == "excluded"
+    assert row.reason.startswith("intake_excluded:")
+
+
+def test_the_admission_scan_checkpoints_inside_one_long_line(tmp_path: Path) -> None:
+    """Cancellation reaches the sidecar scan even inside one unterminated record.
+
+    Anti-vacuity: checkpointing only between lines (or calling the
+    uncheckpointed ``jsonl_session_artifact(path)``) reads the whole 8 MiB
+    line first, the checkpoint runs at most once, and nothing raises.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.live.batch_support import classify_pre_acquisition
+
+    root = tmp_path / "codex"
+    root.mkdir()
     sidecar = root / "rollout-2026-06-02T00-00-00-long.jsonl"
-    line = b'{"type":"session_meta","payload":{"id":"x","timestamp":"2026-06-02T00:00:00Z"}}\n'
-    sidecar.write_bytes(line * 5000)
+    with sidecar.open("wb") as stream:
+        stream.write(b'{"type":"session_meta","payload":{"id":"x","timestamp":"2026-06-02T00:00:00Z"}}\n')
+        stream.write(b'{"type":"session_meta","payload":"' + b"x" * (8 * 1024 * 1024))
+
+    class CancelledError(Exception):
+        pass
+
     calls = 0
 
-    def cancelled() -> bool:
+    def checkpoint() -> None:
         nonlocal calls
         calls += 1
-        # The walk itself polls a few times; cancel once the scan is running.
-        return calls > 8
+        if calls >= 3:
+            raise CancelledError
 
-    with pytest.raises(ProductionBaselineObservationCancelledError):
-        capture_production_source_baseline(
-            (WatchSource("codex", root, suffixes=(".jsonl",)),), operation_id="cancel", cancelled=cancelled
+    with pytest.raises(CancelledError):
+        classify_pre_acquisition(
+            sidecar,
+            fallback_provider=Provider.CODEX,
+            source_only=False,
+            size_bytes=sidecar.stat().st_size,
+            checkpoint=checkpoint,
         )

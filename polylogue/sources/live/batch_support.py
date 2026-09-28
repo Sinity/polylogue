@@ -960,24 +960,37 @@ def _crash(exc: BaseException) -> str:
 
 
 class _CheckpointedLines:
-    """Iterate a byte stream's lines, calling ``checkpoint`` as the scan advances.
+    """Iterate a byte stream's lines, calling ``checkpoint`` before every chunk read.
 
     A session-evidence scan of a sidecar reads to EOF; a caller that must stop
     cooperatively (the cold-build baseline observation) raises from its
-    checkpoint instead of waiting for the whole file.
+    checkpoint. Reading in fixed chunks lets the checkpoint run inside one
+    long line too, not only between lines.
     """
 
-    _EVERY = 1024
+    _CHUNK_BYTES = 1024 * 1024
 
     def __init__(self, stream: IO[bytes], checkpoint: Callable[[], None]) -> None:
         self._stream = stream
         self._checkpoint = checkpoint
 
     def __iter__(self) -> Iterator[bytes]:
-        for index, line in enumerate(self._stream):
-            if index % self._EVERY == 0:
-                self._checkpoint()
-            yield line
+        parts: list[bytes] = []
+        while True:
+            self._checkpoint()
+            chunk = self._stream.read(self._CHUNK_BYTES)
+            if not chunk:
+                if parts:
+                    yield b"".join(parts)
+                return
+            start = 0
+            while (newline := chunk.find(b"\n", start)) >= 0:
+                parts.append(chunk[start : newline + 1])
+                yield b"".join(parts)
+                parts = []
+                start = newline + 1
+            if start < len(chunk):
+                parts.append(chunk[start:])
 
 
 def _jsonl_provider_and_session_artifact(

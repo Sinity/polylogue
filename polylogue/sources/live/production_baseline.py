@@ -386,10 +386,17 @@ def _probe_sqlite_readable(path: Path) -> None:
 
 
 def _unchanged_revision(row: SourceDecision) -> bool:
-    """Whether an earlier accepted revision is still the path's current content."""
+    """Whether an earlier accepted revision is still the path's current content.
+
+    A database's logical revision is not re-derived here: an earlier accepted
+    database revision stays demanded.
+    """
+    path = Path(row.path)
+    if is_sqlite_path(path):
+        return False
     try:
-        return _revision(Path(row.path))[0] == row.revision
-    except (OSError, sqlite3.Error, ValueError):
+        return _revision(path)[0] == row.revision
+    except OSError:
         return False
 
 
@@ -597,6 +604,7 @@ def capture_production_source_baseline(
             # take long enough that status must not still say ``baseline_walk``.
             if progress is not None:
                 progress("baseline_hash")
+            intake_exclusion: str | None = None
             try:
                 if path.suffix.lower() == ".zip":
                     members = _archive_members(path, source_name, cancelled=cancelled, progress=progress)
@@ -618,22 +626,24 @@ def capture_production_source_baseline(
                     checkpoint=lambda: _check_observation_cancelled(cancelled),
                 )
                 if admission.excluded_reason is not None:
+                    intake_exclusion = f"intake_excluded:{admission.excluded_reason}"
                     if is_sqlite_path(path):
                         # A structural recognizer reads an unreadable database
-                        # as "not ours". A read fault stays a retryable fault,
-                        # not a terminal exclusion that would drop a valid
-                        # database from the promotion demand.
+                        # as "not ours". A retryable read fault stays a fault
+                        # (handled below), not a terminal exclusion that drops
+                        # a valid database from the promotion demand.
                         _probe_sqlite_readable(path)
-                    decisions.append(
-                        SourceDecision(
-                            source_name, str(path), "excluded", f"intake_excluded:{admission.excluded_reason}"
-                        )
-                    )
+                    decisions.append(SourceDecision(source_name, str(path), "excluded", intake_exclusion))
                     continue
                 revision, material_bytes = _revision(path, cancelled=cancelled)
                 if progress is not None:
                     progress("baseline_hash", revisions=1, hashed_bytes=material_bytes)
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
+                if intake_exclusion is not None and not _retryable_read_fault(exc):
+                    # Bytes that are not a readable database are excluded by
+                    # intake for good; only a retryable fault is retried.
+                    decisions.append(SourceDecision(source_name, str(path), "excluded", intake_exclusion))
+                    continue
                 reason = "revision_io_unavailable" if _retryable_read_fault(exc) else "revision_unreadable"
                 decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))
                 continue
