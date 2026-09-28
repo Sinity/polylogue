@@ -19,7 +19,7 @@ from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, TypeVar
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 from polylogue.archive.revision_authority import (
     RAW_AUTHORITY_PARSER_FINGERPRINT,
@@ -1021,6 +1021,8 @@ T = TypeVar("T")
 _RETAINED_PREPARATION_STALL_REPORT_SECONDS = 600.0
 
 
+_STILL_RUNNING = object()
+
 #: How often a wait checks its caller's cancellation.
 _RETAINED_PREPARATION_CANCEL_POLL_SECONDS = 1.0
 
@@ -1050,15 +1052,16 @@ def _await_reporting_stalls(future: Future[T], *, subject: str, pool: ProcessPoo
         # Checked before each wait and before a finished result is accepted,
         # so a run of fast preparations cannot carry a cancelled pass on.
         refuse_if_cancelled()
+        result: object
         try:
             result = future.result(timeout=step)
         except TimeoutError:
-            if future.done():
-                # The worker itself raised TimeoutError: a result, not a wait.
-                raise
-        else:
+            # A future that finished between the wait expiring and this
+            # check is re-read for its value, or for the worker's exception.
+            result = future.result() if future.done() else _STILL_RUNNING
+        if result is not _STILL_RUNNING:
             refuse_if_cancelled()
-            return result
+            return cast(T, result)
         waited += step
         unreported += step
         if unreported >= window:

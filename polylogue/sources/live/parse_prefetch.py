@@ -53,7 +53,7 @@ from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_jsonl import PreparedJsonl as LivePathPreparation
-from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+from polylogue.sources.prepared_jsonl import VerificationCancelledError, prepare_jsonl_blob
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
 from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
 
@@ -605,7 +605,7 @@ class LiveParseStage:
             self._preempt_at.pop(source_path, None)
             if source_path in self._unverified:
                 self._unverified.discard(source_path)
-                self._verify_claimed(source_path)
+                self._verify_claimed(source_path, cancelled=cancelled)
         self._discard_retryable(claimed)
         if self._cleanup_blocked:
             for source_path, _provider, _is_stream in candidates:
@@ -637,12 +637,15 @@ class LiveParseStage:
         self._drop_stale_speculation()
         return held
 
-    def _verify_claimed(self, source_path: str) -> None:
+    def _verify_claimed(self, source_path: str, *, cancelled: threading.Event | None = None) -> None:
         result = self._path_results.get(source_path)
         if result is None or result.error is not None:
             return
         try:
-            result.verify_files(full=True)
+            result.verify_files(full=True, stop=None if cancelled is None else cancelled.is_set)
+        except VerificationCancelledError:
+            # A cancelled warm records nothing; the next claim prepares again.
+            self._path_results.pop(source_path).discard()
         except (OSError, ValueError) as exc:
             result.discard()
             self._path_results[source_path] = LivePathPreparation(

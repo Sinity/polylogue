@@ -128,10 +128,16 @@ def _append_gemini_raw_message(conn: sqlite3.Connection, ordinal: int, item: obj
     )
 
 
-def _source_digest(path: Path) -> str:
+class VerificationCancelledError(Exception):
+    """A digest pass stopped at a chunk boundary because its caller was cancelled."""
+
+
+def _source_digest(path: Path, *, stop: Callable[[], bool] | None = None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            if stop is not None and stop():
+                raise VerificationCancelledError(str(path))
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -173,12 +179,12 @@ class PreparedFileSeal:
             raise ValueError(f"prepared file changed while sealing: {path}")
         return cls(digest, *_file_identity(after))
 
-    def verify(self, path: Path, *, full: bool) -> None:
+    def verify(self, path: Path, *, full: bool, stop: Callable[[], bool] | None = None) -> None:
         before = path.stat()
         if _file_identity(before) != self.identity:
             raise ValueError(f"prepared file identity changed: {path}")
         if full:
-            if _source_digest(path) != self.sha256:
+            if _source_digest(path, stop=stop) != self.sha256:
                 raise ValueError(f"prepared file content changed: {path}")
             after = path.stat()
             if _file_identity(after) != self.identity:
@@ -241,8 +247,12 @@ class PreparedJsonl:
             attempt_directory=attempt_directory,
         )
 
-    def verify_files(self, *, full: bool) -> None:
-        """Scan bytes before admission; recheck inode identity at publication."""
+    def verify_files(self, *, full: bool, stop: Callable[[], bool] | None = None) -> None:
+        """Scan bytes before admission; recheck inode identity at publication.
+
+        ``stop`` is polled between digest chunks; when it returns true the
+        scan raises ``VerificationCancelledError``.
+        """
         if (
             self.sessions_path is None
             or self.shard_path is None
@@ -250,8 +260,8 @@ class PreparedJsonl:
             or self.shard_seal is None
         ):
             raise ValueError("JSONL preparation lacks closed-file seals")
-        self.sessions_seal.verify(self.sessions_path, full=full)
-        self.shard_seal.verify(self.shard_path, full=full)
+        self.sessions_seal.verify(self.sessions_path, full=full, stop=stop)
+        self.shard_seal.verify(self.shard_path, full=full, stop=stop)
 
     def discard(self) -> None:
         for prepared in self.prepared_writes:

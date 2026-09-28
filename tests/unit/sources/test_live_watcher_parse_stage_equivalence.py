@@ -1162,6 +1162,51 @@ async def test_a_refused_batch_drops_its_lookahead_offer(tmp_path: Path, monkeyp
         stage.shutdown()
 
 
+def test_a_preparation_finishing_as_its_wait_expires_is_accepted(tmp_path: Path) -> None:
+    """Anti-vacuity: re-raise the wait's own TimeoutError when the future is
+    found done and a completed preparation is discarded as a failure."""
+    from concurrent.futures import Future
+
+    from polylogue.storage.derived import raw as raw_derivation
+
+    class FinishesAtTheDeadline(Future[str]):
+        def result(self, timeout: float | None = None) -> str:
+            if timeout is not None and not self.done():
+                self.set_result("prepared")
+                raise TimeoutError
+            return super().result(timeout)
+
+    pool = ProcessPoolExecutor(max_workers=1)
+    try:
+        assert (
+            raw_derivation._await_reporting_stalls(FinishesAtTheDeadline(), subject="raw example", pool=pool)
+            == "prepared"
+        )
+    finally:
+        pool.shutdown(wait=False)
+
+
+def test_a_cancelled_warm_stops_verifying_a_claimed_read_ahead(tmp_path: Path) -> None:
+    """Anti-vacuity: scan a claimed read-ahead without polling the warm's
+    event and the cancelled warm still pays the full digest and keeps the
+    result."""
+    (path,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
+    try:
+        assert stage.prefetch_paths([str(path)], fallback_provider=Provider.CODEX) == 1
+        stage._path_futures[str(path)].result(timeout=30)
+        stage._collect_finished()
+        assert str(path) in stage._unverified
+        cancelled = threading.Event()
+        cancelled.set()
+        assert stage.warm_paths([(str(path), Provider.CODEX, True)], cancelled=cancelled) == frozenset()
+        assert str(path) not in stage._path_results
+        attempts = tmp_path / "parse-shards" / ".live-parse-attempts"
+        assert [entry for entry in attempts.iterdir() if entry.name.startswith("attempt-")] == []
+    finally:
+        stage.shutdown()
+
+
 def test_a_stalled_read_ahead_cannot_wedge_required_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Unclaimed read-ahead holding the byte budget is preempted, then reaped.
 
