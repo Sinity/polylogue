@@ -1140,6 +1140,43 @@ def test_unreadable_state_database_stays_retryable_instead_of_excluded(tmp_path:
     assert record is None or record.excluded is False
 
 
+def test_pre_acquisition_reports_a_retryable_read_as_its_typed_fault(tmp_path: Path) -> None:
+    """Callers see one typed retryable fault, never a raw SQLite or OS error.
+
+    Anti-vacuity: letting the probe's ``sqlite3.OperationalError`` escape
+    fails ``pytest.raises(RetryableSourceReadError)``; raising for bytes that
+    are not a database would fail the exclusion assertion.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.live.batch_support import RetryableSourceReadError, classify_pre_acquisition
+
+    root = tmp_path / "codex"
+    root.mkdir()
+    state = root / "state_5.sqlite"
+    with sqlite3.connect(state) as conn:
+        conn.execute("CREATE TABLE threads(id TEXT)")
+    state.chmod(0)
+    try:
+        with pytest.raises(RetryableSourceReadError) as fault:
+            classify_pre_acquisition(
+                state, fallback_provider=Provider.CODEX, source_only=False, size_bytes=state.stat().st_size
+            )
+    finally:
+        state.chmod(0o600)
+    assert fault.value.path == state
+    assert isinstance(fault.value.cause, (OSError, sqlite3.Error))
+
+    not_a_database = root / "state_6.sqlite"
+    not_a_database.write_bytes(b"not a database at all" * 64)
+    decision = classify_pre_acquisition(
+        not_a_database,
+        fallback_provider=Provider.CODEX,
+        source_only=False,
+        size_bytes=not_a_database.stat().st_size,
+    )
+    assert decision.excluded_reason is not None
+
+
 def test_source_only_full_ingest_streams_admitted_zip_members_without_decoding(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
