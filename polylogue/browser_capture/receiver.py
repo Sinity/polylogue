@@ -25,7 +25,6 @@ from polylogue.browser_capture.capture_stream import (
     CaptureSummary,
     StagedCapture,
     read_capture_state_fields,
-    semantic_provider_meta,
     stage_capture_body,
     summarize_capture_file,
     summarize_capture_stream,
@@ -356,8 +355,9 @@ def _attachment_content_enrichment(incoming: CaptureSummary, existing: CaptureSu
         mode="json", exclude_none=True
     ):
         return False
-    if semantic_provider_meta(incoming.head.provider_meta) != semantic_provider_meta(existing.head.provider_meta):
+    if incoming.provenance_meta_digest != existing.provenance_meta_digest:
         return False
+    # The envelope and session metadata are part of the carrierless fingerprint.
     if incoming.carrierless_fingerprint != existing.carrierless_fingerprint:
         return False
 
@@ -589,7 +589,9 @@ def _escape_like_suffix(value: str) -> str:
 # unlike a repeat capture of the SAME session, which replaces its existing
 # file in place and never grows the spool. These bounds cap that growth.
 SPOOL_MAX_FILES = 20_000
-SPOOL_MAX_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
+# Capture bytes have no quota of their own: ``stage_capture_body`` reserves
+# each body's declared length on the spool filesystem before writing it, so
+# the only byte refusal is the physical one (``SpoolStorageExhaustedError``).
 
 
 class SpoolQuotaExceededError(RuntimeError):
@@ -650,16 +652,16 @@ def _check_spool_quota(
     spool_root: Path,
     *,
     max_files: int,
-    max_bytes: int,
+    max_bytes: int | None,
     label: str = "capture spool",
 ) -> None:
     """Callers must pass max_files/max_bytes explicitly (not as defaults
     bound to the module constants) so tests can monkeypatch SPOOL_MAX_FILES/
-    SPOOL_MAX_BYTES/POST_COMMAND_QUEUE_MAX_* and have it take effect --
+    POST_COMMAND_QUEUE_MAX_* and have it take effect --
     a default parameter value binds at function-definition time, before
     any monkeypatch runs."""
     usage = spool_usage(spool_root)
-    if usage.file_count >= max_files or usage.total_bytes >= max_bytes:
+    if usage.file_count >= max_files or (max_bytes is not None and usage.total_bytes >= max_bytes):
         raise SpoolQuotaExceededError(
             f"{label} quota exceeded: {usage.file_count} files, {usage.total_bytes} bytes "
             f"(limits: {max_files} files, {max_bytes} bytes)"
@@ -806,8 +808,8 @@ def admit_staged_capture(
     the same name is summarized by the same streamed reader under the spool
     lock, so neither side is held whole. Raises
     :class:`SpoolQuotaExceededError` before publishing a NEW artifact (one
-    that does not replace an existing same-session file) once the spool quota
-    is reached — replacing an existing capture never grows the spool and is
+    that does not replace an existing same-session file) once the spool's
+    file-count quota is reached — replacing an existing capture never grows the spool and is
     always allowed. The quota check and the publication are serialized against
     every other call (see ``_SPOOL_WRITE_LOCK``). The caller discards
     ``staged`` afterwards; a published file has already been moved away.
@@ -852,7 +854,7 @@ def admit_staged_capture(
                     convergence=convergence,
                 )
         else:
-            _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=SPOOL_MAX_BYTES)
+            _check_spool_quota(root, max_files=SPOOL_MAX_FILES, max_bytes=None)
         target.parent.mkdir(parents=True, exist_ok=True)
         os.replace(staged.path, target)
         directory_fd = os.open(target.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))

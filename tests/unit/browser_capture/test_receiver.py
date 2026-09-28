@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import shutil
@@ -238,20 +239,6 @@ class TestSpoolGovernor:
         write_capture_envelope(
             BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-1")), spool_path=tmp_path
         )
-
-        with pytest.raises(SpoolQuotaExceededError):
-            write_capture_envelope(
-                BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-2")), spool_path=tmp_path
-            )
-
-    def test_new_session_over_byte_quota_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        import polylogue.browser_capture.receiver as receiver_mod
-        from polylogue.browser_capture.receiver import SpoolQuotaExceededError
-
-        write_capture_envelope(
-            BrowserCaptureEnvelope.model_validate(_payload(session_id="conv-1")), spool_path=tmp_path
-        )
-        monkeypatch.setattr(receiver_mod, "SPOOL_MAX_BYTES", 1)
 
         with pytest.raises(SpoolQuotaExceededError):
             write_capture_envelope(
@@ -1229,3 +1216,85 @@ def test_receiver_rejects_wrong_token(tmp_path: Path) -> None:
 
     assert response.status == HTTPStatus.UNAUTHORIZED
     assert error.error == "unauthorized"
+
+
+@pytest.mark.parametrize("fallocate_errno", [errno.ENOSPC, errno.EOPNOTSUPP])
+def test_capture_space_is_reserved_before_the_body_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fallocate_errno: int
+) -> None:
+    """A body the spool filesystem cannot hold is refused before any byte is read.
+
+    Covers both reservation routes: ``posix_fallocate`` reporting ENOSPC, and
+    a filesystem without allocation falling back to free space. Anti-vacuity:
+    staging without a reservation reads and writes the body first, so
+    ``reads`` is non-empty, and a check that ignores the incoming length
+    admits it into the one free byte.
+    """
+    import os
+
+    import polylogue.browser_capture.capture_stream as capture_stream
+
+    def failing_fallocate(fd: int, offset: int, length: int) -> None:
+        raise OSError(fallocate_errno, os.strerror(fallocate_errno))
+
+    monkeypatch.setattr(os, "posix_fallocate", failing_fallocate, raising=False)
+    monkeypatch.setattr(capture_stream, "_available_bytes", lambda _directory: 1)
+    reads: list[int] = []
+
+    def read(size: int) -> bytes:
+        reads.append(size)
+        return b"x" * size
+
+    with pytest.raises(capture_stream.SpoolStorageExhaustedError) as refused:
+        capture_stream.stage_capture_body(read, 4096, spool_root=tmp_path)
+
+    assert refused.value.requested_bytes == 4096
+    assert reads == []
+    assert list((tmp_path / capture_stream.STAGING_DIRNAME).iterdir()) == []
+
+
+def test_receiver_answers_an_unreservable_capture_with_retryable_pressure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The HTTP route maps the physical refusal to 507 and publishes nothing.
+
+    Anti-vacuity: an untyped refusal surfaces as ``write_failed`` (500).
+    """
+    import os
+
+    def full_disk(fd: int, offset: int, length: int) -> None:
+        raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC))
+
+    monkeypatch.setattr(os, "posix_fallocate", full_disk, raising=False)
+    raw = json.dumps(_payload()).encode("utf-8")
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(host, port, "POST", "/v1/browser-captures", body=raw, origin=_EXTENSION_ORIGIN)
+        error = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
+
+    assert response.status == HTTPStatus.INSUFFICIENT_STORAGE
+    assert error.error == "spool_storage_exhausted"
+    assert not list(tmp_path.rglob("*.json"))
+
+
+def test_receiver_startup_reaps_abandoned_staging_but_not_live_uploads(tmp_path: Path) -> None:
+    """A staging file no upload holds is removed at startup; a held one stays.
+
+    Anti-vacuity: without the startup reap the abandoned file survives, and a
+    reap that ignored the upload lock would delete the live upload's file.
+    """
+    import io
+
+    import polylogue.browser_capture.capture_stream as capture_stream
+
+    staging = tmp_path / capture_stream.STAGING_DIRNAME
+    staging.mkdir(parents=True)
+    abandoned = staging / ".capture-abandoned.tmp"
+    abandoned.write_bytes(b"half an upload")
+    live = capture_stream.stage_capture_body(io.BytesIO(b"{}").read, 2, spool_root=tmp_path)
+    try:
+        server = make_server("127.0.0.1", 0, spool_path=tmp_path)
+        server.server_close()
+        assert not abandoned.exists()
+        assert live.path.exists()
+    finally:
+        live.discard()

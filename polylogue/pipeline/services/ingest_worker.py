@@ -15,7 +15,7 @@ import threading
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import IO, TYPE_CHECKING, Literal, cast
 
 from polylogue.archive.artifact_taxonomy import (
     ArtifactClassification,
@@ -55,6 +55,7 @@ from polylogue.storage.runtime import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.core.json import JSONValue
     from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.sources.parsers.base import ParsedSession
@@ -1058,6 +1059,47 @@ def _run_parse_plan(
 # ---------------------------------------------------------------------------
 
 
+#: Source name of the browser-capture spool (``config.source_paths``).
+_BROWSER_CAPTURE_SOURCE_NAME = "browser-capture"
+
+
+def _browser_capture_payload(context: _IngestContext, blob_store: BlobStore) -> object | None:
+    """Decode a retained browser capture as a stream; ``None`` for other raws.
+
+    A capture's size is not bounded at the receiver, so it is never read or
+    decoded whole: attachment byte carriers are decoded straight into the
+    blob store as they stream past, and the parser records the blob instead
+    of holding the bytes. A document that turns out not to be a capture
+    envelope takes the ordinary decode.
+    """
+    from polylogue.browser_capture.capture_stream import iter_carrier_bytes, load_capture_for_ingest
+    from polylogue.browser_capture.models import SpilledCarrier, looks_like_browser_capture
+
+    if context.raw_record.source_name != _BROWSER_CAPTURE_SOURCE_NAME or is_jsonl_source_path(
+        context.raw_record.source_path
+    ):
+        return None
+
+    def spill(_field_name: str, carrier: str) -> SpilledCarrier | None:
+        def write(handle: IO[bytes]) -> None:
+            for chunk in iter_carrier_bytes(carrier):
+                handle.write(chunk)
+
+        try:
+            prepared = blob_store.prepare_from_writer(write)
+        except ValueError:
+            return None
+        try:
+            blob_hash, size_bytes = blob_store.publish_prepared(prepared)
+        finally:
+            blob_store.discard_prepared(prepared)
+        return SpilledCarrier(blob_hash, size_bytes)
+
+    with context.raw_source.open("rb") as handle:
+        payload = load_capture_for_ingest(handle, spill)
+    return payload if looks_like_browser_capture(payload) else None
+
+
 def ingest_record(
     raw_record: RawSessionRecord,
     archive_root_str: str,
@@ -1121,8 +1163,9 @@ def ingest_record(
 
     # ── Phase 1: Decode blob (ONE decode, not two) ────────────────────
     try:
+        capture_payload = _browser_capture_payload(context, blob_store)
         envelope = build_raw_payload_envelope(
-            context.raw_source,
+            context.raw_source if capture_payload is None else cast("JSONValue", capture_payload),
             source_path=raw_record.source_path,
             fallback_provider=raw_record.source_name or "",
             payload_provider=stored_payload_provider,

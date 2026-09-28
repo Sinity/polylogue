@@ -35,9 +35,9 @@ _RETRY_STATES = frozenset({"ready", "retry_wait", "held", "completed", "abandone
 # A capture-job event is a control message: a kind, a few refs, and a small
 # structured payload. It is not a capture envelope and never carries
 # conversation content -- that travels the capture route, which owns the spool
-# quota. The registry database lives outside the spool directory the
-# receiver's SPOOL_MAX_BYTES measures, so an uncapped event body grows
-# registry.sqlite3 without any quota noticing. 64 KiB is well below the local
+# quota. The registry database lives outside the spool directory whose
+# capture bodies the receiver reserves space for, so an uncapped event body
+# grows registry.sqlite3 without any reservation noticing. 64 KiB is well below the local
 # attachment precedent (ACTION_ATTACHMENT_MAX_BYTES, 16 MiB, which does carry
 # content) and still far above any real event: the largest payloads are a
 # handful of refs and a reason string.

@@ -6,8 +6,9 @@ identity, turn count, deduplication fingerprint, attachment identities and
 carriers, accepted message identities, native-payload shape -- so memory is
 bounded by the largest single turn or attachment, not by the capture.
 ``raw_provider_payload`` (a provider transcript as large as the capture
-itself) is never materialized: it contributes a structural digest and the
-shape of its root fields.
+itself) and the open-ended ``provider_meta`` objects are never materialized:
+each contributes a structural digest (plus, for the raw payload, the shape of
+its root fields).
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from __future__ import annotations
 import base64
 import binascii
 import errno
+import fcntl
 import hashlib
 import os
 import tempfile
@@ -29,10 +31,13 @@ from ijson.common import ObjectBuilder
 from pydantic import ValidationError
 
 from polylogue.browser_capture.models import (
+    ATTACHMENT_CARRIER_FIELDS,
     BrowserCaptureAttachment,
     BrowserCaptureEnvelope,
+    BrowserCaptureProvenance,
     BrowserCaptureSession,
     BrowserCaptureTurn,
+    SpilledCarrier,
     envelope_has_native_provider_payload,
 )
 from polylogue.core.enums import Provider
@@ -54,8 +59,14 @@ _BACKFILL_OBSERVER_ATTRIBUTION_KEYS = frozenset({"job_id", "queue_id", "instance
 
 _DEDUP_DOMAIN = b"polylogue-browser-capture-dedup/v2\x00"
 
-_ENVELOPE_FIELDS = frozenset(BrowserCaptureEnvelope.model_fields) - {"session", "raw_provider_payload"}
-_SESSION_FIELDS = frozenset(BrowserCaptureSession.model_fields) - {"turns", "attachments"}
+_ENVELOPE_FIELDS = frozenset(BrowserCaptureEnvelope.model_fields) - {
+    "session",
+    "raw_provider_payload",
+    "provider_meta",
+    "provenance",
+}
+_SESSION_FIELDS = frozenset(BrowserCaptureSession.model_fields) - {"turns", "attachments", "provider_meta"}
+_PROVENANCE_FIELDS = frozenset(BrowserCaptureProvenance.model_fields) - {"provider_meta"}
 
 _START = frozenset({"start_map", "start_array"})
 _END = frozenset({"end_map", "end_array"})
@@ -79,33 +90,107 @@ class CaptureBodyIncompleteError(ValueError):
     """The request ended before its declared ``Content-Length``."""
 
 
-@dataclass(frozen=True, slots=True)
-class StagedCapture:
-    """A received capture body on disk, with the digest of its exact bytes."""
+class SpoolStorageExhaustedError(RuntimeError):
+    """The spool filesystem cannot hold an incoming capture.
 
-    path: Path
-    size_bytes: int
-    sha256: str
+    Raised before any body byte is written: the declared length is reserved on
+    disk first, so the only refusal is the physical one, and it is retryable.
+    """
+
+    def __init__(self, requested_bytes: int, available_bytes: int | None) -> None:
+        super().__init__(f"spool storage cannot hold {requested_bytes} bytes (available: {available_bytes})")
+        self.requested_bytes = requested_bytes
+        self.available_bytes = available_bytes
+
+
+class StagedCapture:
+    """A received capture body on disk, with the digest of its exact bytes.
+
+    The staging file stays ``flock``-ed until :meth:`discard`, so a receiver
+    starting beside this one (:func:`reap_stale_staging`) can tell a live
+    upload from one a crashed process abandoned.
+    """
+
+    __slots__ = ("_lock_fd", "path", "sha256", "size_bytes")
+
+    def __init__(self, path: Path, size_bytes: int, sha256: str, lock_fd: int | None = None) -> None:
+        self.path = path
+        self.size_bytes = size_bytes
+        self.sha256 = sha256
+        self._lock_fd = lock_fd
 
     def discard(self) -> None:
         self.path.unlink(missing_ok=True)
+        if self._lock_fd is not None:
+            os.close(self._lock_fd)
+            self._lock_fd = None
+
+
+def _available_bytes(directory: Path) -> int:
+    stats = os.statvfs(directory)
+    return stats.f_bavail * stats.f_frsize
+
+
+def _reserve(fd: int, directory: Path, length: int) -> None:
+    """Reserve ``length`` bytes for the staging file before writing any.
+
+    ``posix_fallocate`` allocates the blocks, so concurrent uploads -- in this
+    process or another sharing the spool -- cannot both be admitted into the
+    same free space. Where the filesystem cannot allocate, free space is
+    compared instead.
+    """
+    if length <= 0:
+        return
+    fallocate = getattr(os, "posix_fallocate", None)
+    if fallocate is not None:
+        try:
+            fallocate(fd, 0, length)
+            return
+        except OSError as exc:
+            if is_storage_exhausted(exc):
+                raise SpoolStorageExhaustedError(length, _available_bytes(directory)) from exc
+            if exc.errno not in {errno.EOPNOTSUPP, errno.EINVAL, errno.ENOSYS}:
+                raise
+    available = _available_bytes(directory)
+    if length > available:
+        raise SpoolStorageExhaustedError(length, available)
+
+
+def _locked_staging_file(staging: Path) -> tuple[int, Path]:
+    """Create and lock a staging file that no concurrent reaper has removed."""
+    while True:
+        fd, name = tempfile.mkstemp(dir=staging, prefix=_STAGING_PREFIX, suffix=_STAGING_SUFFIX)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            if os.stat(name).st_ino == os.fstat(fd).st_ino:
+                return fd, Path(name)
+        except FileNotFoundError:
+            pass
+        os.close(fd)
+
+
+_STAGING_PREFIX = ".capture-"
+_STAGING_SUFFIX = ".tmp"
 
 
 def stage_capture_body(read: Callable[[int], bytes], length: int, *, spool_root: Path) -> StagedCapture:
     """Copy exactly ``length`` body bytes into a staging file in the spool.
 
-    Reads at most :data:`CAPTURE_READ_CHUNK_BYTES` per call and hashes while
-    writing, so no body is held in memory. The staged file is fsynced; the
-    caller publishes it by ``os.replace`` or discards it.
+    The declared length is reserved on disk before the first read, so a body
+    the filesystem cannot hold is refused with
+    :class:`SpoolStorageExhaustedError` without consuming space. Reads at
+    most :data:`CAPTURE_READ_CHUNK_BYTES` per call and hashes while writing,
+    so no body is held in memory. The staged file is fsynced and stays locked
+    until the caller publishes it by ``os.replace`` or discards it.
     """
     staging = spool_root / STAGING_DIRNAME
     staging.mkdir(parents=True, exist_ok=True)
-    fd, name = tempfile.mkstemp(dir=staging, prefix=".capture-", suffix=".tmp")
-    path = Path(name)
+    fd, path = _locked_staging_file(staging)
     digest = hashlib.sha256()
     remaining = length
     try:
-        with os.fdopen(fd, "wb") as handle:
+        _reserve(fd, staging, length)
+        with os.fdopen(os.dup(fd), "wb") as handle:
             while remaining > 0:
                 chunk = read(min(CAPTURE_READ_CHUNK_BYTES, remaining))
                 if not chunk:
@@ -117,8 +202,37 @@ def stage_capture_body(read: Callable[[int], bytes], length: int, *, spool_root:
             os.fsync(handle.fileno())
     except BaseException:
         path.unlink(missing_ok=True)
+        os.close(fd)
         raise
-    return StagedCapture(path=path, size_bytes=length, sha256=digest.hexdigest())
+    return StagedCapture(path=path, size_bytes=length, sha256=digest.hexdigest(), lock_fd=fd)
+
+
+def reap_stale_staging(spool_root: Path) -> int:
+    """Remove staging files no live upload holds; return how many.
+
+    A receiver that died mid-upload leaves its staging file behind, and it is
+    invisible to the spool quota. Every live upload holds its file's lock, so
+    a file whose lock can be taken belongs to no one.
+    """
+    staging = spool_root / STAGING_DIRNAME
+    if not staging.is_dir():
+        return 0
+    reaped = 0
+    for path in staging.glob(f"{_STAGING_PREFIX}*{_STAGING_SUFFIX}"):
+        try:
+            fd = os.open(path, os.O_RDONLY)
+        except FileNotFoundError:
+            continue
+        try:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            path.unlink(missing_ok=True)
+            reaped += 1
+        finally:
+            os.close(fd)
+    return reaped
 
 
 def is_storage_exhausted(exc: OSError) -> bool:
@@ -144,9 +258,11 @@ class AttachmentFact:
 class CaptureSummary:
     """Every fact spool admission reads from one capture envelope.
 
-    ``head`` is the validated envelope with its first turn only and neither
-    attachments nor raw provider payload; everything that depends on the rest
-    is folded into the other fields.
+    ``head`` is the validated envelope with its first turn only and no
+    attachments, raw provider payload or ``provider_meta``; everything that
+    depends on the rest is folded into the other fields.
+    ``provenance_meta_digest`` digests ``provenance.provider_meta``; the
+    envelope and session metadata are folded into both fingerprints.
 
     ``dedup_content_hash`` fingerprints capture content independently of
     observation-specific provenance: an extension instance and its capture
@@ -163,6 +279,7 @@ class CaptureSummary:
     attachments: tuple[AttachmentFact, ...]
     turn_identities: tuple[tuple[str, Literal["native", "unknown"]], ...]
     has_native_provider_payload: bool
+    provenance_meta_digest: bytes
 
     @property
     def provider(self) -> Provider:
@@ -177,47 +294,38 @@ class CaptureSummary:
         return self.head.capture_id
 
 
-def semantic_provider_meta(provider_meta: dict[str, object]) -> dict[str, object]:
-    """Return provider metadata without backfill-observer attribution."""
-    semantic_meta = dict(provider_meta)
-    backfill = semantic_meta.get("backfill")
-    if not isinstance(backfill, dict):
-        return semantic_meta
-    semantic_backfill = {
-        key: value for key, value in backfill.items() if key not in _BACKFILL_OBSERVER_ATTRIBUTION_KEYS
-    }
-    if semantic_backfill:
-        semantic_meta["backfill"] = semantic_backfill
-    else:
-        semantic_meta.pop("backfill", None)
-    return semantic_meta
-
-
 #: Base64 characters decoded per step when hashing a carrier (a multiple of 4).
 _CARRIER_DECODE_CHUNK_CHARS = 1 << 22
 
 
-def carrier_digest(value: str) -> bytes | None:
-    """SHA-256 of a ``content_base64`` carrier's decoded bytes; ``None`` when malformed.
+def iter_carrier_bytes(value: str) -> Iterator[bytes]:
+    """Decode a ``content_base64``-style carrier in pieces.
 
     Decoded in 4-aligned chunks, so the decoded payload never exists as one
     buffer beside the encoded string. Padding may only end the carrier; a
     carrier with ``=`` elsewhere is decoded whole so it is accepted or
-    refused exactly as a one-shot ``b64decode(validate=True)`` would.
+    refused exactly as a one-shot ``b64decode(validate=True)`` would. Raises
+    ``ValueError`` (``binascii.Error``) on a malformed carrier.
     """
     start = 0
     if value.startswith("data:"):
         marker = value.find(";base64,")
         if marker >= 0:
             start = marker + len(";base64,")
+    if value.find("=", start, max(start, len(value) - 2)) >= 0:
+        yield base64.b64decode(value[start:], validate=True)
+        return
+    step = _CARRIER_DECODE_CHUNK_CHARS
+    for offset in range(start, len(value), step):
+        yield base64.b64decode(value[offset : offset + step], validate=True)
+
+
+def carrier_digest(value: str) -> bytes | None:
+    """SHA-256 of a carrier's decoded bytes; ``None`` when malformed."""
     digest = hashlib.sha256()
     try:
-        if "=" in value[start : max(start, len(value) - 2)]:
-            digest.update(base64.b64decode(value[start:], validate=True))
-            return digest.digest()
-        step = _CARRIER_DECODE_CHUNK_CHARS
-        for offset in range(start, len(value), step):
-            digest.update(base64.b64decode(value[offset : offset + step], validate=True))
+        for chunk in iter_carrier_bytes(value):
+            digest.update(chunk)
     except (ValueError, binascii.Error):
         return None
     return digest.digest()
@@ -305,6 +413,7 @@ class _ItemFold:
 @dataclass
 class _SessionFold:
     head: dict[str, object] = field(default_factory=dict)
+    meta_digest: bytes = b""
     turns: _ItemFold = field(default_factory=_ItemFold)
     attachments: _ItemFold = field(default_factory=_ItemFold)
 
@@ -467,6 +576,64 @@ def _read_raw_payload(events: Iterator[_Event], event: str, value: object) -> _R
     return _RawFold(digest=_object_digest(members), shape=shape)
 
 
+def _read_meta(events: Iterator[_Event], event: str, value: object, *, semantic: bool) -> bytes:
+    """Digest one ``provider_meta`` object without materializing it.
+
+    The models coerce a non-object to ``{}``, so it digests as one. With
+    ``semantic``, backfill-observer attribution is left out -- it identifies
+    who acquired a snapshot, not a property of the session -- and a
+    ``backfill`` object left empty by that is dropped.
+    """
+    if event != "start_map":
+        _skip(events, event)
+        return _object_digest({})
+    members: dict[str, bytes] = {}
+    while True:
+        event, value = next(events)
+        if event == "end_map":
+            return _object_digest(members)
+        key = str(value)
+        event, value = next(events)
+        if not (semantic and key == "backfill" and event == "start_map"):
+            members[key] = _structural_digest(events, event, value)
+            continue
+        backfill: dict[str, bytes] = {}
+        while True:
+            event, value = next(events)
+            if event == "end_map":
+                break
+            backfill_key = str(value)
+            event, value = next(events)
+            if backfill_key in _BACKFILL_OBSERVER_ATTRIBUTION_KEYS:
+                _skip(events, event)
+            else:
+                backfill[backfill_key] = _structural_digest(events, event, value)
+        if backfill:
+            members[key] = _object_digest(backfill)
+        else:
+            members.pop(key, None)
+
+
+def _read_provenance(events: Iterator[_Event], event: str, value: object) -> tuple[object, bytes]:
+    """Build provenance except its ``provider_meta``, which is digested."""
+    meta = _object_digest({})
+    if event != "start_map":
+        return _build(events, event, value), meta
+    provenance: dict[str, object] = {}
+    while True:
+        event, value = next(events)
+        if event == "end_map":
+            return provenance, meta
+        key = str(value)
+        event, value = next(events)
+        if key == "provider_meta":
+            meta = _read_meta(events, event, value, semantic=False)
+        elif key in _PROVENANCE_FIELDS:
+            provenance[key] = _build(events, event, value)
+        else:
+            _skip(events, event)
+
+
 def _read_list(
     events: Iterator[_Event],
     event: str,
@@ -498,6 +665,8 @@ def _read_session(events: Iterator[_Event], event: str) -> _SessionFold:
         elif key == "attachments":
             session.attachments = _ItemFold()
             _read_list(events, event, key, session.attachments.add_raw_attachment)
+        elif key == "provider_meta":
+            session.meta_digest = _read_meta(events, event, value, semantic=True)
         elif key in _SESSION_FIELDS:
             session.head[key] = _build(events, event, value)
         else:
@@ -510,6 +679,8 @@ def summarize_capture_stream(handle: IO[bytes]) -> CaptureSummary:
     root: dict[str, object] = {}
     session: _SessionFold | None = None
     raw = _RawFold()
+    meta_digest = _object_digest({})
+    provenance_meta_digest = _object_digest({})
     try:
         event, value = next(events)
         if event != "start_map":
@@ -524,6 +695,10 @@ def summarize_capture_stream(handle: IO[bytes]) -> CaptureSummary:
                 session = _read_session(events, event)
             elif key == "raw_provider_payload":
                 raw = _read_raw_payload(events, event, value)
+            elif key == "provider_meta":
+                meta_digest = _read_meta(events, event, value, semantic=True)
+            elif key == "provenance":
+                root[key], provenance_meta_digest = _read_provenance(events, event, value)
             elif key in _ENVELOPE_FIELDS:
                 root[key] = _build(events, event, value)
             else:
@@ -542,7 +717,7 @@ def summarize_capture_stream(handle: IO[bytes]) -> CaptureSummary:
         if isinstance(exc, CaptureEnvelopeError):
             raise
         raise CaptureEnvelopeError("invalid_payload", repr(exc)) from exc
-    return _summary(root, session, raw)
+    return _summary(root, session, raw, meta_digest=meta_digest, provenance_meta_digest=provenance_meta_digest)
 
 
 def _require_well_formed(events: Iterator[_Event]) -> None:
@@ -553,7 +728,14 @@ def _require_well_formed(events: Iterator[_Event]) -> None:
         raise CaptureEnvelopeError("invalid_json", str(exc)) from exc
 
 
-def _summary(root: dict[str, object], session: _SessionFold | None, raw: _RawFold) -> CaptureSummary:
+def _summary(
+    root: dict[str, object],
+    session: _SessionFold | None,
+    raw: _RawFold,
+    *,
+    meta_digest: bytes,
+    provenance_meta_digest: bytes,
+) -> CaptureSummary:
     head_input: dict[str, object] = dict(root)
     if session is not None:
         first_turn = session.turns.first_turn
@@ -568,13 +750,13 @@ def _summary(root: dict[str, object], session: _SessionFold | None, raw: _RawFol
         raise CaptureEnvelopeError("invalid_payload", str(exc)) from exc
     assert session is not None  # a validated head has a session
     session_dump = head.session.model_dump(mode="json", exclude_none=True, exclude={"turns", "attachments"})
-    session_dump["provider_meta"] = semantic_provider_meta(head.session.provider_meta)
+    session_dump["provider_meta"] = (session.meta_digest or _object_digest({})).hex()
     head_bytes = dumps_bytes(
         {
             "polylogue_capture_kind": head.polylogue_capture_kind,
             "schema_version": head.schema_version,
             "session": session_dump,
-            "provider_meta": semantic_provider_meta(head.provider_meta),
+            "provider_meta": meta_digest.hex(),
         },
         sort_keys=True,
     )
@@ -598,7 +780,112 @@ def _summary(root: dict[str, object], session: _SessionFold | None, raw: _RawFol
         attachments=(*session.attachments.attachments, *session.turns.attachments),
         turn_identities=tuple(session.turns.identities),
         has_native_provider_payload=native,
+        provenance_meta_digest=provenance_meta_digest,
     )
+
+
+#: Decodes one attachment carrier into the blob store; ``None`` keeps the
+#: carrier inline (it is malformed and the parser refuses it as before).
+CarrierSpill = Callable[[str, str], SpilledCarrier | None]
+
+
+def _load_attachment(events: Iterator[_Event], event: str, value: object, spill: CarrierSpill) -> object:
+    if event != "start_map":
+        return _build(events, event, value)
+    attachment: dict[str, object] = {}
+    while True:
+        event, value = next(events)
+        if event == "end_map":
+            return attachment
+        key = str(value)
+        event, value = next(events)
+        if key in ATTACHMENT_CARRIER_FIELDS and event == "string":
+            assert isinstance(value, str)
+            spilled = spill(key, value)
+            attachment[key] = spilled if spilled is not None else value
+        else:
+            attachment[key] = _build(events, event, value)
+
+
+def _load_attachments(events: Iterator[_Event], event: str, value: object, spill: CarrierSpill) -> object:
+    if event != "start_array":
+        return _build(events, event, value)
+    attachments: list[object] = []
+    while True:
+        event, value = next(events)
+        if event == "end_array":
+            return attachments
+        attachments.append(_load_attachment(events, event, value, spill))
+
+
+def _load_members(
+    events: Iterator[_Event],
+    event: str,
+    value: object,
+    loaders: dict[str, Callable[[Iterator[_Event], str, object], object]],
+) -> object:
+    """Build an object, loading the members named in ``loaders`` with them."""
+    if event != "start_map":
+        return _build(events, event, value)
+    document: dict[str, object] = {}
+    while True:
+        event, value = next(events)
+        if event == "end_map":
+            return document
+        key = str(value)
+        event, value = next(events)
+        loader = loaders.get(key)
+        document[key] = loader(events, event, value) if loader is not None else _build(events, event, value)
+
+
+def _load_items(
+    events: Iterator[_Event], event: str, value: object, load: Callable[[Iterator[_Event], str, object], object]
+) -> object:
+    if event != "start_array":
+        return _build(events, event, value)
+    items: list[object] = []
+    while True:
+        event, value = next(events)
+        if event == "end_array":
+            return items
+        items.append(load(events, event, value))
+
+
+def load_capture_for_ingest(handle: IO[bytes], spill: CarrierSpill) -> object:
+    """Decode a retained capture document from a stream for parsing.
+
+    The file is never read whole. Each attachment byte carrier under
+    ``session.attachments`` and ``session.turns[].attachments`` is handed to
+    ``spill`` as soon as it is read and replaced by the returned
+    :class:`SpilledCarrier`, so no carrier is held beside the rest of the
+    document; the decoded tree holds the conversation itself. Numbers decode
+    as the stdlib decoder reads them, and a later duplicate key wins. Raises
+    ``ValueError`` when the bytes are not one JSON document.
+    """
+
+    def attachments(events: Iterator[_Event], event: str, value: object) -> object:
+        return _load_attachments(events, event, value, spill)
+
+    def turn(events: Iterator[_Event], event: str, value: object) -> object:
+        return _load_members(events, event, value, {"attachments": attachments})
+
+    def turns(events: Iterator[_Event], event: str, value: object) -> object:
+        return _load_items(events, event, value, turn)
+
+    def session(events: Iterator[_Event], event: str, value: object) -> object:
+        return _load_members(events, event, value, {"turns": turns, "attachments": attachments})
+
+    events: Iterator[_Event] = _json_events(handle)
+    try:
+        event, value = next(events)
+        document = _load_members(events, event, value, {"session": session})
+        for _ in events:
+            raise ValueError("content after the JSON document")
+    except ijson.JSONError as exc:
+        raise ValueError(f"invalid JSON: {exc}") from exc
+    except StopIteration as exc:
+        raise ValueError("truncated JSON document") from exc
+    return document
 
 
 def summarize_capture_file(path: Path) -> CaptureSummary:
@@ -659,11 +946,15 @@ __all__ = [
     "CaptureBodyIncompleteError",
     "CaptureEnvelopeError",
     "CaptureSummary",
+    "CarrierSpill",
+    "SpoolStorageExhaustedError",
     "StagedCapture",
     "carrier_digest",
     "is_storage_exhausted",
+    "iter_carrier_bytes",
+    "load_capture_for_ingest",
     "read_capture_state_fields",
-    "semantic_provider_meta",
+    "reap_stale_staging",
     "stage_capture_body",
     "summarize_capture_file",
     "summarize_capture_stream",

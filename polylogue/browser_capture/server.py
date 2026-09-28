@@ -36,8 +36,10 @@ from polylogue.browser_capture.capture_jobs import CaptureJobError, registry_for
 from polylogue.browser_capture.capture_stream import (
     CaptureBodyIncompleteError,
     CaptureEnvelopeError,
+    SpoolStorageExhaustedError,
     StagedCapture,
     is_storage_exhausted,
+    reap_stale_staging,
     stage_capture_body,
     summarize_capture_file,
 )
@@ -83,7 +85,7 @@ from polylogue.browser_capture.receiver import (
 )
 from polylogue.core.json import dumps_bytes
 from polylogue.core.loopback import is_loopback_host
-from polylogue.logging import WARNING, emit, get_logger
+from polylogue.logging import INFO, WARNING, emit, get_logger
 from polylogue.paths import archive_root as default_archive_root
 
 # polylogue.daemon.events is imported lazily inside the capture-health route
@@ -207,6 +209,11 @@ class BrowserCaptureHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, server_address: tuple[str, int], config: BrowserCaptureReceiverConfig) -> None:
         self.config = config
+        # Staging files left by a receiver that died mid-upload are invisible
+        # to the spool quota; reclaim them before accepting new uploads.
+        reaped = reap_stale_staging(config.spool_path)
+        if reaped:
+            emit("browser_capture.stale_staging_reaped", level=INFO, reaped=reaped)
         super().__init__(server_address, BrowserCaptureHandler)
 
 
@@ -585,7 +592,8 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         """Stream the capture body into the spool's staging area.
 
         No size refusal: the body is copied chunk by chunk while hashed, so
-        the receiver never holds it. Disk exhaustion is retryable pressure
+        the receiver never holds it. Its declared length is reserved on disk
+        first; a spool filesystem that cannot hold it is retryable pressure
         (507), not a refusal of the capture.
         """
         length = self._content_length()
@@ -601,6 +609,17 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                 request_id=self._request_id(),
             )
             self._safe_error(HTTPStatus.BAD_REQUEST, "incomplete_body")
+            return None
+        except SpoolStorageExhaustedError as exc:
+            emit(
+                "browser_capture.spool_storage_exhausted",
+                level=WARNING,
+                reason="spool_storage_exhausted",
+                request_id=self._request_id(),
+                requested_bytes=exc.requested_bytes,
+                available_bytes=exc.available_bytes,
+            )
+            self._safe_error(HTTPStatus.INSUFFICIENT_STORAGE, "spool_storage_exhausted")
             return None
         except OSError as exc:
             if is_storage_exhausted(exc):
