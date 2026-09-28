@@ -553,6 +553,7 @@ class RawObservationDerivation:
                     selected_prepared_membership_head,
                 )
                 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
+                    membership_key_has_pending_envelope_member,
                     pending_raw_envelope_has_membership_authority,
                     prepare_raw_revision_rebuild_classification,
                     prepared_raw_revision_classification_current,
@@ -816,7 +817,11 @@ class RawObservationDerivation:
                                 selected_artifact,
                             )
                         for logical_key in logical_keys:
-                            if planned_accepted_raw_ids.get(logical_key):
+                            if planned_accepted_raw_ids.get(
+                                logical_key
+                            ) and not membership_key_has_pending_envelope_member(
+                                archive.source_connection, logical_key
+                            ):
                                 continue
                             selected = selected_prepared_membership_head(archive, logical_key, prepared)
                             if selected is None:

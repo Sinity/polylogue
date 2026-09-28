@@ -100,7 +100,9 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     PreparedRawRevisionClassification,
     _raw_parse_success_state,
     apply_prepared_raw_revision_classification,
+    membership_key_has_pending_envelope_member,
     pending_raw_envelope_has_membership_authority,
+    raw_has_membership_governed_pending_envelope,
     record_current_parser_source_census,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
@@ -2061,12 +2063,17 @@ def _census_historical_revision_evidence(
             state.provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
             commit_unit()
         elif revision_kind is RawRevisionKind.UNKNOWN or (
-            len(sessions) > 1 and _raw_has_pending_envelope(archive, raw_id)
+            _raw_has_pending_envelope(archive, raw_id)
+            and (
+                len(sessions) > 1 or raw_has_membership_governed_pending_envelope(archive._ensure_source_conn(), raw_id)
+            )
         ):
             # A pending-raw envelope names bytes, not a session. One session
             # rebinds it to that session's key (the parser census below); a raw
             # holding several is governed per session, exactly as live ingest
-            # records a multi-session file.
+            # records a multi-session file. A raw already governed that way
+            # replaces its memberships whatever the current session count, so
+            # a parser that now yields one session cannot leave stale members.
             archive.replace_raw_membership_census(
                 raw_id,
                 sessions,
@@ -2386,7 +2393,9 @@ def _load_frozen_revision_evidence(
             )
             shard_transport.add_raw(raw_id, sessions, prepared_artifact=prepared_artifact)
         state.classified += int(len(sessions) == 1)
-        if revision_kind is RawRevisionKind.UNKNOWN:
+        if revision_kind is RawRevisionKind.UNKNOWN or raw_has_membership_governed_pending_envelope(
+            archive._ensure_source_conn(), raw_id
+        ):
             for session in sessions:
                 # Persist the same canonical Origin identity used by current
                 # parser census and live ingestion.
@@ -2934,7 +2943,10 @@ def validate_frozen_source_authority(
         membership_keys = {*persisted_membership_keys, *census.membership_candidates}
         byte_replayed_keys: set[str] = set()
 
+        source_conn = archive._ensure_source_conn()
         for logical_key in sorted(set(logical_keys) - transient_non_session_keys):
+            if pending_raw_envelope_has_membership_authority(source_conn, logical_key):
+                continue
             plan = archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
             if not plan.accepted_raw_ids:
                 convertible = archive.convertible_full_revision_raw_ids(logical_key)
@@ -2946,7 +2958,11 @@ def validate_frozen_source_authority(
                 continue
             byte_replayed_keys.add(logical_key)
 
-        for logical_key in sorted(membership_keys - byte_replayed_keys):
+        for logical_key in sorted(
+            key
+            for key in membership_keys
+            if key not in byte_replayed_keys or membership_key_has_pending_envelope_member(source_conn, key)
+        ):
             candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
             candidate_raw_ids.update(census.membership_candidates.get(logical_key, ()))
             revisions: list[MembershipRevision] = []
@@ -4121,11 +4137,17 @@ def backfill_historical_revision_evidence(
                 # bindings may still sit uncommitted in the open replay
                 # batch, so the in-memory candidates map rides along.
                 decode_prefetcher.start_phase(
-                    [key for key in sorted(membership_keys) if key not in byte_replayed_keys],
+                    [
+                        key
+                        for key in sorted(membership_keys)
+                        if key not in byte_replayed_keys or membership_key_has_pending_envelope_member(source_conn, key)
+                    ],
                     membership_candidates,
                 )
             for logical_key in sorted(membership_keys):
-                if logical_key in byte_replayed_keys:
+                if logical_key in byte_replayed_keys and not membership_key_has_pending_envelope_member(
+                    source_conn, logical_key
+                ):
                     continue
                 if deadline_check is not None:
                     deadline_check()

@@ -2777,6 +2777,38 @@ def pending_raw_envelope_has_membership_authority(conn: sqlite3.Connection, logi
     )
 
 
+def raw_has_membership_governed_pending_envelope(conn: sqlite3.Connection, raw_id: str) -> bool:
+    """Whether ``raw_id`` keeps a pending-raw envelope beside its memberships."""
+    row = conn.execute(
+        """
+        SELECT 1 FROM raw_sessions AS r
+        WHERE r.raw_id = ? AND substr(r.logical_source_key, 1, ?) = ?
+          AND EXISTS (SELECT 1 FROM raw_session_memberships AS m WHERE m.raw_id = r.raw_id)
+        """,
+        (raw_id, len(PENDING_RAW_LOGICAL_SOURCE_PREFIX), PENDING_RAW_LOGICAL_SOURCE_PREFIX),
+    ).fetchone()
+    return row is not None
+
+
+def membership_key_has_pending_envelope_member(conn: sqlite3.Connection, logical_source_key: str) -> bool:
+    """Whether a pending-raw envelope's raw is a member of ``logical_source_key``.
+
+    Such a member is settled only by membership replay, even when the same key
+    also has a byte chain from another raw: that replay records the member's
+    decision (yielding to a chain-governed head) instead of leaving it undecided.
+    """
+    row = conn.execute(
+        """
+        SELECT 1 FROM raw_session_memberships AS m
+        JOIN raw_sessions AS r ON r.raw_id = m.raw_id
+        WHERE m.logical_source_key = ? AND substr(r.logical_source_key, 1, ?) = ?
+        LIMIT 1
+        """,
+        (logical_source_key, len(PENDING_RAW_LOGICAL_SOURCE_PREFIX), PENDING_RAW_LOGICAL_SOURCE_PREFIX),
+    ).fetchone()
+    return row is not None
+
+
 def expand_raw_membership_selection(
     store: RawRevisionGovernanceHost, raw_ids: list[str] | None
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:

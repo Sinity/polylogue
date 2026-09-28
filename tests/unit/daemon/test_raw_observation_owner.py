@@ -279,3 +279,83 @@ async def test_multi_session_claude_code_raw_settles_every_session(
             )
     finally:
         await _shutdown(compute, coordinator)
+
+
+def _claude_code_payload(*sessions: str) -> bytes:
+    return b"".join(
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": f"{session}-u1",
+                "sessionId": session,
+                "timestamp": f"2026-07-01T10:00:0{index}Z",
+                "message": {"role": "user", "content": f"hello from {session}"},
+            }
+        ).encode()
+        + b"\n"
+        for index, session in enumerate(sessions)
+    )
+
+
+async def _settle(owner: RawObservationConvergenceOwner, raw_id: str) -> None:
+    reports = []
+    for _attempt in range(4):
+        report = await owner.converge_raw_id(raw_id)
+        reports.append(report)
+        assert report.failed == 0, report.outcomes
+        if report.done:
+            break
+    assert reports[-1].done == 1, [item.outcomes for item in reports]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_path", ["overlap.jsonl", "resumed.jsonl"])
+async def test_multi_session_raw_overlapping_a_byte_chain_decides_every_member(
+    tmp_path: Path, second_path: str
+) -> None:
+    """A later two-session file repeating a session another raw already governs.
+
+    ``overlap.jsonl`` recaptures the first file's path; ``resumed.jsonl`` is a
+    different file carrying the earlier session, as a resumed transcript does.
+    Anti-vacuity: skipping membership replay for a key that byte replay already
+    wrote leaves the later raw's member undecided (reported missing on every
+    retry); a membership yield to a chain-governed head that the receipt
+    validator cannot certify reports the settled raw stale forever.
+    """
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        first = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=_claude_code_payload("overlap-alpha"),
+            source_path="overlap.jsonl",
+            acquired_at_ms=1,
+            post_parse=True,
+        )
+    owner, compute, coordinator = await _owner(tmp_path)
+    try:
+        await _settle(owner, first)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            second = archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=_claude_code_payload("overlap-alpha", "overlap-beta"),
+                source_path=second_path,
+                acquired_at_ms=2,
+                post_parse=True,
+            )
+        await _settle(owner, second)
+        for raw_id in (first, second):
+            settled = await owner.converge_raw_id(raw_id)
+            assert settled.failed == settled.pending == 0, settled.outcomes
+        with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            assert archive.index_connection is not None
+            assert archive.source_connection.execute(
+                "SELECT logical_source_key, decision IS NOT NULL FROM raw_session_memberships "
+                "WHERE raw_id = ? ORDER BY logical_source_key",
+                (second,),
+            ).fetchall() == [("claude-code-session:overlap-alpha", 1), ("claude-code-session:overlap-beta", 1)]
+            assert {str(row[0]) for row in archive.index_connection.execute("SELECT session_id FROM sessions")} == {
+                "claude-code-session:overlap-alpha",
+                "claude-code-session:overlap-beta",
+            }
+    finally:
+        await _shutdown(compute, coordinator)
