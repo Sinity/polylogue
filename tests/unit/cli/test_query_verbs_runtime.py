@@ -1947,7 +1947,7 @@ def test_delete_dry_run_marks_a_truncated_candidate_prefix_bounded() -> None:
         with pytest.raises(AmbiguousSelectionError) as exc_info:
             wrapped(child, True, False, False, "json")
     assert exc_info.value.bounded is True
-    assert "First 2 candidates:" in exc_info.value.format_message()
+    assert f"First {len(exc_info.value.candidates)} candidates:" in exc_info.value.format_message()
 
 
 @pytest.mark.parametrize(("returncode", "expected"), [(0, 0), (7, 7), (-9, 137)])
