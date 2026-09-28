@@ -363,7 +363,7 @@ def test_read_message_windows_reduces_an_oversized_initial_export() -> None:
             raise OperationFailedError("result_too_large", "bounded envelope")
         return payload, ServedBy("daemon", None)
 
-    with patch("polylogue.cli.read_dispatch.dispatch_read", side_effect=dispatch):
+    with patch("polylogue.cli.messages.dispatch_read", side_effect=dispatch):
         windows = list(
             read_message_windows(
                 Config(archive_root=Path("/archive"), render_root=Path("/archive/render"), sources=[]),
@@ -405,9 +405,7 @@ def test_around_window_uses_the_requested_page_size() -> None:
     """
     payload = {"messages": [{"id": "m1", "text": "ok"}], "session": {}, "total": 1, "offset": 0}
     config = Config(archive_root=Path("/archive"), render_root=Path("/archive/render"), sources=[])
-    with patch(
-        "polylogue.cli.read_dispatch.dispatch_read", return_value=(payload, ServedBy("daemon", None))
-    ) as dispatch:
+    with patch("polylogue.cli.messages.dispatch_read", return_value=(payload, ServedBy("daemon", None))) as dispatch:
         list(
             read_message_windows(
                 config,

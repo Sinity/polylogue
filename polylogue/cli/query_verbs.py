@@ -10,6 +10,7 @@ import json
 import shlex
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import click
@@ -746,7 +747,7 @@ def _build_read_projection_spec(
     )
     query_spec = request.query_spec()
     if selection_limit is not None and query_spec.limit != selection_limit:
-        query_spec = query_spec.model_copy(update={"limit": selection_limit})
+        query_spec = replace(query_spec, limit=selection_limit)
     origin = query_spec.origins[0] if len(query_spec.origins) == 1 else None
     project_path = selection_project_path if selection_project_path is not None else query_spec.cwd_prefix
     project_repo = (

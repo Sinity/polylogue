@@ -550,7 +550,7 @@ class TestListFormatting:
         elif output_format == "yaml":
             snippet = yaml.safe_load(rendered)["items"][0]["match"]["snippet"]
         elif output_format == "csv":
-            snippet = rendered.rsplit(",", maxsplit=1)[-1].strip()
+            snippet = next(csv.DictReader(io.StringIO(rendered)))["snippet"]
         else:
             snippet = rendered.split("needle", maxsplit=1)[1]
         assert len(snippet) <= DEFAULT_SEARCH_SNIPPET_MAX_CHARS + 64

@@ -427,7 +427,7 @@ def test_read_request_normalization_receives_the_full_parsed_selection(monkeypat
     from polylogue.surfaces.read_contract import ReadRequest
 
     request = RootModeRequest.from_params({"query": ("typed_only:true", "repo:polylogue")})
-    expected_selection = request.query_spec()
+    expected_selection = replace(request.query_spec(), limit=7)
 
     normalized_selections: list[object] = []
     normalize = ReadRequest.normalize
@@ -1031,28 +1031,17 @@ def test_context_image_projection_max_sessions_controls_execution() -> None:
     Anti-vacuity: using only the dedicated flag default sends five sessions
     instead of the explicitly requested projection value.
     """
-    from polylogue.context.compiler import ContextImage
-
     _, child = _context_pair(query_terms=("repo:polylogue",))
     child.obj.config = SimpleNamespace()
     wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
-    image = ContextImage(
-        spec=ContextSpec(seed_query="repo:polylogue", read_views=("messages",)),
-        segments=(),
-        build_ref="build:context-image",
-        ledger=(),
-    )
     with (
-        patch(
-            "polylogue.cli.read_dispatch.dispatch_read",
-            return_value=({"view": "context-image", "payload": image.model_dump(mode="json")}, None),
-        ) as dispatch_image,
+        patch("polylogue.cli.query_verbs.run_read_context_image") as run_context_image,
         patch("polylogue.cli.read_views.context.configured_mutation_operation"),
         patch("polylogue.cli.read_views.base.deliver_content"),
     ):
         wrapped(child, **_read_verb_kwargs(view="context-image", projection_expr="context-max-sessions:2"))
-    assert dispatch_image.call_args.args[1].payload["max_sessions"] == 2
+    assert run_context_image.call_args.kwargs["max_sessions"] == 2
 
 
 def test_context_image_first_uses_only_resolved_seed() -> None:
