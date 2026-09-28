@@ -846,6 +846,11 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
     for key in ("python", "gil_enabled"):
         if before["environment"].get(key) != after["environment"].get(key):
             problems.append(f"different interpreter ({key})")
+    # Host capacity and storage explain wall, CPU and throughput deltas on
+    # their own; a comparison is a controlled one only on the same kind of host.
+    for key in ("machine", "host_cpu_count", "host_mem_total_kib", "work_filesystem"):
+        if before["environment"].get(key) != after["environment"].get(key):
+            problems.append(f"different host ({key})")
     for side, receipt in (("before", before), ("after", after)):
         if not receipt.get("qualified"):
             problems.append(f"{side} run is not qualified (outcome {receipt.get('outcome')})")

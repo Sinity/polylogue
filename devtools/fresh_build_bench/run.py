@@ -486,8 +486,12 @@ def _prepare_paths(config: RunConfig) -> dict[str, Path]:
         "daemon_log": work / "daemon.log",
         "receipt": work / "receipt.json",
     }
+    # The archive holds copies of private transcripts: the whole work tree is
+    # owner-only before the daemon creates anything in it.
+    work.mkdir(parents=True, exist_ok=True)
+    work.chmod(0o700)
     for name in ("archive", "tmp"):
-        paths[name].mkdir(parents=True)
+        paths[name].mkdir(parents=True, mode=0o700)
     for name in ("config", "data", "state", "cache", "runtime"):
         (paths["xdg"] / name).mkdir(parents=True)
     (paths["xdg"] / "runtime").chmod(0o700)

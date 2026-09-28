@@ -235,6 +235,10 @@ def test_compare_refuses_different_configs_and_unqualified_runs() -> None:
     assert not ok and "IDENTICAL" not in text
     ok, _text = compare(before, _receipt(qualified=True, environment={"python": "3.14.4", "gil_enabled": True}))
     assert not ok
+    ok, _text = compare(
+        before, _receipt(qualified=True, environment={"python": "3.14.4", "gil_enabled": False, "host_cpu_count": 2})
+    )
+    assert not ok
     unqualified = _receipt(qualified=False, outcome="settle_timeout")
     ok, _text = compare(before, unqualified)
     assert not ok

@@ -19,10 +19,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
 from devtools.fresh_build_bench.corpus import refuse_inside_checkout
+
+
+def _positive_seconds(value: str) -> float:
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds <= 0:
+        raise argparse.ArgumentTypeError("must be a finite number of seconds above zero")
+    return seconds
 
 
 def _refuse_repo_path(path: Path, what: str) -> None:
@@ -60,7 +68,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--candidate", type=Path, default=Path(__file__).resolve().parents[2])
     run.add_argument("--python", default=sys.executable)
     run.add_argument("--profile", action="store_true", help="run the in-daemon stack sampler")
-    run.add_argument("--profile-interval", type=float, default=0.01)
+    run.add_argument("--profile-interval", type=_positive_seconds, default=0.01)
     run.add_argument("--timeout", type=float, default=6 * 3600.0)
     run.add_argument("--settle-timeout", type=float, default=1800.0)
     run.add_argument("--stall-timeout", type=float, default=900.0, help="stop when nothing observable moves")

@@ -79,7 +79,7 @@ summarises it or writes flame-graph input.
 
 `compare BEFORE AFTER` prints the deltas and whether the per-table output
 digests are identical, and exits non-zero unless the receipts are comparable:
-same corpus, same run configuration and interpreter, and both qualified.
+same corpus, same run configuration, interpreter and host (architecture, CPU count, memory, work filesystem), and both qualified.
 `--allow-unqualified` admits a run that promoted but did not settle, with a
 warning. An optimisation claims equivalence only on identical digests from
 comparable receipts.
