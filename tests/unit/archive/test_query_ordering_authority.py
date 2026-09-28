@@ -16,6 +16,7 @@ import pytest
 from polylogue.archive.hydration import archive_envelope_to_session
 from polylogue.archive.query.archive_execution import list_archive, list_summaries_archive
 from polylogue.archive.query.plan import SessionQueryPlan
+from polylogue.archive.query.transaction import run_archive_read
 from polylogue.archive.session.domain_models import Session
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.storage_records import SessionBuilder
@@ -195,3 +196,81 @@ async def test_post_filtered_page_stops_once_the_page_is_full(tmp_path: Path, mo
 
     assert [session.title for session in sessions] == ["s11", "s10"]
     assert len(fetches) == 1
+
+
+@pytest.mark.asyncio
+async def test_ranked_composed_sort_keeps_the_requested_candidate_pool(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A vector-ranked composed sort sizes its candidate pool from the request.
+
+    Anti-vacuity: clear the window for ranked routes too and the semantic leg
+    sees ``limit=None``, falling back to its small default pool.
+    """
+    _seed(tmp_path, "only", updated_at="2026-01-01T00:00:00Z", messages=1)
+    pools: list[int | None] = []
+
+    def semantic(plan: SessionQueryPlan, *args: object, **kwargs: object) -> list[object]:
+        pools.append(plan.limit)
+        return []
+
+    monkeypatch.setattr("polylogue.archive.query.archive_execution._semantic_hits", semantic)
+
+    await list_archive(
+        SessionQueryPlan(similar_text="anything", sort="messages", limit=200), archive_root=tmp_path, config=None
+    )
+
+    assert pools == [200]
+
+
+@pytest.mark.asyncio
+async def test_served_survivor_gets_its_own_page_unit_allowance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Units of a filtered page are projected over the sessions served.
+
+    Anti-vacuity: keep the units projected over the candidate chunk and the
+    rejected neighbour halves the survivor's allowance, truncating it to one
+    message row.
+    """
+    _seed(tmp_path, "kept", updated_at="2026-01-01T00:00:00Z", messages=3)
+    _seed(tmp_path, "rejected", updated_at="2026-01-02T00:00:00Z", messages=1)
+    monkeypatch.setattr("polylogue.archive.query.attached_units._MAX_ROWS_PER_PAGE", 5)
+    monkeypatch.setattr("polylogue.archive.query.archive_execution._fetch_limit", lambda plan, *, default: 2)
+
+    def is_kept(session: Session) -> bool:
+        return session.title == "kept"
+
+    sessions = await list_archive(
+        SessionQueryPlan(predicates=(is_kept,), limit=2),
+        archive_root=tmp_path,
+        config=None,
+        with_units=("message",),
+    )
+
+    assert [session.title for session in sessions] == ["kept"]
+    assert len(sessions[0].attached_units["message"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_complete_composed_sort_is_admitted_as_a_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A one-row composed sort reads every candidate, so it is a scan.
+
+    Anti-vacuity: classify by the requested limit alone and this read is
+    admitted as ``interactive``.
+    """
+    import polylogue.archive.query.archive_execution as execution
+
+    _seed(tmp_path, "only", updated_at="2026-01-01T00:00:00Z", messages=1)
+    classes: list[str] = []
+    original = run_archive_read
+
+    async def recording(*args: object, **kwargs: object) -> object:
+        classes.append(str(kwargs["workload_class"]))
+        return await original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(execution, "run_archive_read", recording)
+
+    await list_archive(SessionQueryPlan(sort="messages", limit=1), archive_root=tmp_path, config=None)
+
+    assert classes == ["scan"]

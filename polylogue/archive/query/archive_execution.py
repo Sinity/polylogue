@@ -449,23 +449,18 @@ async def list_archive(
     # full sessions is therefore ordered over the composed sessions, from the
     # unwindowed candidate set, instead of trusting the tail-only SQL keys.
     composed_order = plan.sort in _COMPOSED_COUNT_SORTS
-    fetch_plan = replace(plan, limit=None, offset=0) if composed_order else plan
-
-    # Attached units are projected at most one result page at a time: a
-    # candidate batch (ten pages wide under post-filters, or the complete set
-    # under a composed sort) exceeds the projector's per-page row budget, and
-    # each session's allowance should be the one the served page gives it.
+    ranked_window = _ranked_window(plan)
+    # SQL-backed routes page through the whole candidate set for a composed
+    # sort. A ranked route already fetches an unwindowed candidate prefix
+    # sized from the requested window, so it keeps the requested plan.
+    complete = composed_order and not ranked_window
+    fetch_plan = replace(plan, limit=None, offset=0) if complete else plan
+    # Units filtered candidates see are projected at most one result page at
+    # a time: a candidate batch (ten pages wide under post-filters) exceeds
+    # the projector's per-page row budget.
     unit_page = plan.limit if plan.limit is not None and plan.limit > 0 else None
 
-    def hydrate(archive: ArchiveStore, rows: list[ArchiveSessionSummary]) -> list[Session]:
-        sessions = [
-            archive_envelope_to_session(
-                archive.read_session(summary.session_id),
-                display_label=summary.display_label,
-                display_label_source=summary.display_label_source,
-            )
-            for summary in rows
-        ]
+    def attach(archive: ArchiveStore, sessions: list[Session]) -> list[Session]:
         width = unit_page or max(len(sessions), 1)
         attached: list[Session] = []
         for start in range(0, len(sessions), width):
@@ -476,15 +471,25 @@ async def list_archive(
             )
         return attached
 
+    def hydrate(archive: ArchiveStore, rows: list[ArchiveSessionSummary]) -> list[Session]:
+        return [
+            archive_envelope_to_session(
+                archive.read_session(summary.session_id),
+                display_label=summary.display_label,
+                display_label_source=summary.display_label_source,
+            )
+            for summary in rows
+        ]
+
     def read(archive: ArchiveStore) -> list[Session]:
         # Each candidate is hydrated and filtered once; the survivors are
-        # returned as hydrated, so no predicate runs twice for one session.
+        # kept as hydrated, so no predicate runs twice for one session.
         kept_sessions: dict[str, Session] = {}
 
         def keep(rows: list[ArchiveSessionSummary]) -> list[ArchiveSessionSummary]:
             # Predicates see the same fully hydrated Session the caller gets:
             # display label and requested units included.
-            for session in plan._apply_full_filters(hydrate(archive, rows), sql_pushed=True):
+            for session in plan._apply_full_filters(attach(archive, hydrate(archive, rows)), sql_pushed=True):
                 kept_sessions[str(session.id)] = session
             return [row for row in rows if row.session_id in kept_sessions]
 
@@ -496,13 +501,21 @@ async def list_archive(
             archive_root=archive_root,
             default_limit=default_limit,
             keep=keep if filtering else None,
-            complete=composed_order,
+            complete=complete,
         )
         if filtering:
-            return [kept_sessions[row.session_id] for row in archive_rows]
-        return hydrate(archive, archive_rows)
+            candidates = [kept_sessions[row.session_id] for row in archive_rows]
+        else:
+            candidates = plan._apply_full_filters(hydrate(archive, archive_rows), sql_pushed=True)
+        ordered = plan._sort_sessions(candidates) if composed_order else order_query_sessions(plan, candidates)
+        if (complete or filtering or ranked_window) and plan.offset:
+            ordered = ordered[plan.offset :]
+        # The served page is projected once more on its own, so each
+        # returned session gets the allowance of the page it is served on,
+        # not of a candidate chunk that held rejected sessions.
+        return attach(archive, plan._finalize(ordered))
 
-    sessions = await run_archive_read(
+    return await run_archive_read(
         archive_root,
         operation="archive.query.list",
         arguments={"plan": plan, "default_limit": default_limit, "with_units": with_units},
@@ -510,14 +523,10 @@ async def list_archive(
         page_size=plan.limit,
         offset=plan.offset,
         projection="sessions",
-        workload_class="scan" if plan.limit is None or plan.limit > 1000 else "interactive",
+        # A complete composed sort reads and hydrates every candidate,
+        # whatever the requested page size.
+        workload_class="scan" if complete or plan.limit is None or plan.limit > 1000 else "interactive",
     )
-    filtered = sessions if plan.has_post_filters() else plan._apply_full_filters(sessions, sql_pushed=True)
-    ranked_window = _ranked_window(plan)
-    ordered = plan._sort_sessions(filtered) if composed_order else order_query_sessions(plan, filtered)
-    if (composed_order or plan.has_post_filters() or ranked_window) and plan.offset:
-        ordered = ordered[plan.offset :]
-    return plan._finalize(ordered)
 
 
 async def first_archive(
