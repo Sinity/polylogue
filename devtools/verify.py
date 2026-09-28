@@ -135,6 +135,15 @@ DESCRIPTOR_CONTRACT_TESTS = (
     "tests/unit/devtools/test_agent_env.py::test_every_declared_pytest_pool_operation_classifies_its_own_worker",
     "tests/unit/devtools/test_verify.py::test_verify_quick_descriptor_accepts_the_declared_json_projection",
 )
+#: Tests that read a tracked document through ``git grep`` rather than a traced
+#: Python import, so testmon never selects them for a change to that document.
+#: A retired name reintroduced in AGENTS.md would otherwise pass the verifier.
+CONTRACT_DOCUMENT_TESTS = (
+    "tests/unit/architecture/test_retired_analysis_modules.py::test_no_tracked_reference_to_a_retired_analysis_name",
+)
+#: Documentation that a contract test reads. A change touching one of these
+#: runs ``CONTRACT_DOCUMENT_TESTS`` whatever else the change selects.
+_CONTRACT_READ_DOCUMENTS = frozenset({"AGENTS.md"})
 _UNMEASURED_WORKLOAD_DIMENSIONS = (
     "cpu_ms",
     "current_rss_bytes",
@@ -209,7 +218,11 @@ def _pytest_worker_args(*, maximum: int | None = None) -> list[str]:
 
 
 def _pytest_steps(
-    *, selection: str, worker_args: Sequence[str], hypothesis_profile: str | None = None
+    *,
+    selection: str,
+    worker_args: Sequence[str],
+    hypothesis_profile: str | None = None,
+    contract_documents_changed: bool = False,
 ) -> list[tuple[str, list[str]]]:
     """Build one complete collection, or an affected collection, both tracing.
 
@@ -218,7 +231,47 @@ def _pytest_steps(
     and records what it traced, which is what makes the next affected run
     selectable. Only ``descriptor`` opts out: it collects a contract slice, not
     a corpus, so its fingerprints would describe a collection no later run has.
+
+    An affected run whose change touches a contract document adds a second,
+    untraced step for ``CONTRACT_DOCUMENT_TESTS``: testmon cannot select them,
+    and a positional test id under ``--testmon-forceselect`` would only
+    intersect the affected selection.
     """
+    steps = [
+        (
+            f"pytest ({selection})",
+            _pytest_command(
+                selection=selection,
+                worker_args=worker_args,
+                hypothesis_profile=hypothesis_profile,
+                explicit_tests=(
+                    (*DESCRIPTOR_CONTRACT_TESTS, *CONTRACT_DOCUMENT_TESTS) if selection == "descriptor" else ()
+                ),
+            ),
+        )
+    ]
+    if selection == "affected" and contract_documents_changed:
+        steps.append(
+            (
+                "pytest (contract documents)",
+                _pytest_command(
+                    selection="descriptor",
+                    worker_args=worker_args,
+                    hypothesis_profile=hypothesis_profile,
+                    explicit_tests=CONTRACT_DOCUMENT_TESTS,
+                ),
+            )
+        )
+    return steps
+
+
+def _pytest_command(
+    *,
+    selection: str,
+    worker_args: Sequence[str],
+    hypothesis_profile: str | None,
+    explicit_tests: Sequence[str],
+) -> list[str]:
     testmon = selection != "descriptor"
     select_flag = "--testmon-noselect" if selection == "all" else "--testmon-forceselect"
     collection_args = CLOSED_WORLD_COLLECTION_ARGS[:-1] if selection == "descriptor" else CLOSED_WORLD_COLLECTION_ARGS
@@ -242,11 +295,11 @@ def _pytest_steps(
         "no:randomly",
         *([f"--hypothesis-profile={hypothesis_profile}"] if hypothesis_profile else []),
         *worker_args,
-        *(DESCRIPTOR_CONTRACT_TESTS if selection == "descriptor" else []),
+        *explicit_tests,
         # Never under pytest-cov: testmon owns the tracer, and refuses to share
         # it with branch coverage.
     ]
-    return [(f"pytest ({selection})", command)]
+    return command
 
 
 #: Labels whose verdict is recorded but does not decide the verifier's exit.
@@ -256,7 +309,11 @@ GATE_PARALLELISM = max(1, min(8, os.cpu_count() or 1))
 
 
 def build_verify_steps(
-    *, quick: bool, selection: str = "all", hypothesis_profile: str | None = None
+    *,
+    quick: bool,
+    selection: str = "all",
+    hypothesis_profile: str | None = None,
+    changed_paths: frozenset[str] | None = None,
 ) -> list[tuple[str, list[str]]]:
     steps: list[tuple[str, list[str]]] = [(gate.label, gate.command(root=ROOT)) for gate in quick_gates()]
     if not quick and selection != "none":
@@ -267,6 +324,7 @@ def build_verify_steps(
                 maximum=AFFECTED_MAX_WORKERS if selection == "affected" else CORPUS_MAX_WORKERS
             ),
             hypothesis_profile=hypothesis_profile,
+            contract_documents_changed=_contract_documents_changed(changed_paths),
         )
     return steps
 
@@ -335,10 +393,21 @@ def _selection_for_changes(changed_paths: frozenset[str] | None) -> str:
     """
     if not changed_paths or not all(_no_test_path(path) for path in changed_paths):
         return "affected"
-    return "descriptor" if _PROJECT_DESCRIPTOR in changed_paths else "none"
+    if _PROJECT_DESCRIPTOR in changed_paths or changed_paths & _CONTRACT_READ_DOCUMENTS:
+        return "descriptor"
+    return "none"
 
 
-def _selection_reason(selection: str) -> str | None:
+def _contract_documents_changed(changed_paths: frozenset[str] | None) -> bool:
+    return bool(changed_paths and changed_paths & _CONTRACT_READ_DOCUMENTS)
+
+
+def _forced_tests(selection: str, changed_paths: frozenset[str] | None) -> tuple[str, ...]:
+    """Tests an affected run adds beyond the testmon selection."""
+    return CONTRACT_DOCUMENT_TESTS if selection == "affected" and _contract_documents_changed(changed_paths) else ()
+
+
+def _selection_reason(selection: str, changed_paths: frozenset[str] | None = None) -> str | None:
     if selection == "none":
         return (
             "every changed path is orchestration metadata, documentation or a hosted workflow "
@@ -347,6 +416,9 @@ def _selection_reason(selection: str) -> str | None:
             f"outside {_TEST_TREE_PREFIX}**); no test exercises them"
         )
     if selection == "descriptor":
+        if changed_paths is not None and _PROJECT_DESCRIPTOR not in changed_paths:
+            documents = ", ".join(sorted(changed_paths & _CONTRACT_READ_DOCUMENTS))
+            return f"the change stays inside documentation and includes a contract document a test reads ({documents})"
         return "the change stays inside orchestration metadata and includes the AgentCTL descriptor"
     return None
 
@@ -381,7 +453,9 @@ def _unrecorded_selection_term(root: Path) -> tuple[int | None, str | None]:
     return counted, None
 
 
-def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, float | None, str | None, int | None]:
+def _estimate_affected_selection(
+    root: Path, graph: Any, forced_tests: Sequence[str] = ()
+) -> tuple[int | None, float | None, str | None, int | None]:
     """Estimate the exact testmon selection without launching pytest.
 
     Testmon mutates its database while it determines stable tests, so this
@@ -392,6 +466,11 @@ def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, fl
     The fourth element is how much of the count is unrecorded-and-therefore-
     unknown tests, kept separate so the receipt can say where the plan's size
     came from.
+
+    ``forced_tests`` are node ids the run adds outside testmon (the contract
+    document step). Their recorded items -- every parametrization -- count
+    toward the plan; a forced node the graph never recorded makes the plan
+    unmeasured rather than silently smaller.
     """
     if getattr(graph, "status", None) is not TestmonGraphStatus.USABLE:
         return None, None, None, None
@@ -418,7 +497,16 @@ def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, fl
                     return None, None, "the testmon environment changed; affected selection is unbounded", None
                 data.determine_stable()
                 selected = set(data.unstable_test_names) | set(data.failing_tests)
-                durations = [data.all_tests[name].get("duration") for name in selected]
+                # The forced step runs its tests again even when the affected
+                # step also selected them, so each launch is counted: a list,
+                # not a union with ``selected``.
+                launched = list(selected)
+                for nodeid in forced_tests:
+                    recorded = {name for name in data.all_tests if name == nodeid or name.startswith(f"{nodeid}[")}
+                    if not recorded:
+                        return None, None, f"the forced test {nodeid} has no recorded execution", None
+                    launched.extend(recorded)
+                durations = [data.all_tests[name].get("duration") for name in launched]
                 estimated = (
                     None if any(value is None for value in durations) else sum(float(value) for value in durations)
                 )
@@ -426,16 +514,18 @@ def _estimate_affected_selection(root: Path, graph: Any) -> tuple[int | None, fl
                 # of the count the cap is applied to. They have no recorded
                 # duration, so the seconds estimate stays the graph's alone and
                 # is a floor rather than a prediction.
-                return len(selected) + unrecorded_tests, estimated, None, unrecorded_tests
+                return len(launched) + unrecorded_tests, estimated, None, unrecorded_tests
             finally:
                 database.con.close()
     except (ImportError, OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
         return None, None, "the affected selection could not be measured from the graph", None
 
 
-def _affected_admission(*, root: Path, graph: Any) -> AffectedAdmission:
+def _affected_admission(*, root: Path, graph: Any, forced_tests: Sequence[str] = ()) -> AffectedAdmission:
     """Build the bounded affected admission decision and its measurement note."""
-    selected_count, estimated_seconds, measurement_error, unrecorded_tests = _estimate_affected_selection(root, graph)
+    selected_count, estimated_seconds, measurement_error, unrecorded_tests = _estimate_affected_selection(
+        root, graph, forced_tests
+    )
     decision = admit_affected_selection(
         graph_status=str(getattr(graph, "status", "unknown")),
         graph_reason=str(getattr(graph, "reason", "graph state unavailable")),
@@ -1207,8 +1297,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     selection = "all" if args.all_tests else "affected"
     if args.all_tests:
         _clear_full_run_shards()
+    changed_paths: frozenset[str] | None = None
     if not args.quick and not args.all_tests:
-        selection = _selection_for_changes(_git_changed_paths(ROOT))
+        changed_paths = _git_changed_paths(ROOT)
+        selection = _selection_for_changes(changed_paths)
     seeded_from_primary = sync_testmon_graph(ROOT)
     graph = inspect_testmon_graph(ROOT)
     scope = _scope(quick=args.quick, selection=selection)
@@ -1241,7 +1333,9 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     if not args.quick:
         admission: AffectedAdmission | None = None
         if selection == "affected":
-            admission = _affected_admission(root=ROOT, graph=graph)
+            admission = _affected_admission(
+                root=ROOT, graph=graph, forced_tests=_forced_tests(selection, changed_paths)
+            )
         run.record_selection(
             selection_mode=selection,
             graph_status=str(graph.status),
@@ -1253,13 +1347,15 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             seed_source_mtime_ns=(
                 testmon_datafile(primary_worktree()).stat().st_mtime_ns if seeded_from_primary else None
             ),
-            selection_reason=(admission.reason if admission is not None else _selection_reason(selection)),
+            selection_reason=(
+                admission.reason if admission is not None else _selection_reason(selection, changed_paths)
+            ),
             selected_count=admission.selected_count if admission is not None else None,
             estimated_seconds=admission.estimated_seconds if admission is not None else None,
             admission=admission.to_payload() if admission is not None else None,
         )
         if selection == "none":
-            sys.stderr.write("verify: no pytest step: " + str(_selection_reason(selection)) + "\n")
+            sys.stderr.write("verify: no pytest step: " + str(_selection_reason(selection, changed_paths)) + "\n")
         if admission is not None and not admission.admitted:
             payload = _finish_and_record_verification(
                 run=run,
@@ -1281,7 +1377,12 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             _emit_affected_admission_refusal(graph=graph, decision=admission)
             _emit(payload, use_json=args.json, operation=agentctl_operation)
             return 2
-    steps = build_verify_steps(quick=args.quick, selection=selection, hypothesis_profile=args.hypothesis_profile)
+    steps = build_verify_steps(
+        quick=args.quick,
+        selection=selection,
+        hypothesis_profile=args.hypothesis_profile,
+        changed_paths=changed_paths,
+    )
     results: list[dict[str, Any]] = []
     try:
         exit_code = 0

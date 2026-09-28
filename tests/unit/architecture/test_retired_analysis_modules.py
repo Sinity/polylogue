@@ -101,7 +101,7 @@ SEARCHED_PATHSPECS = (
     "devtools",
     "tests",
     "docs",
-    "CLAUDE.md",
+    "AGENTS.md",
     "TESTING.md",
     "CONTRIBUTING.md",
     "README.md",

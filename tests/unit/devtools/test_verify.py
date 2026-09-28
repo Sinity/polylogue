@@ -712,7 +712,8 @@ def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testm
     descriptor_command = verify._pytest_steps(selection="descriptor", worker_args=[])[0][1]
     assert "--testmon" not in descriptor_command
     assert "tests" not in descriptor_command
-    assert descriptor_command[-len(verify.DESCRIPTOR_CONTRACT_TESTS) :] == list(verify.DESCRIPTOR_CONTRACT_TESTS)
+    contract_slice = [*verify.DESCRIPTOR_CONTRACT_TESTS, *verify.CONTRACT_DOCUMENT_TESTS]
+    assert descriptor_command[-len(contract_slice) :] == contract_slice
 
     affected_command = verify._pytest_steps(selection="affected", worker_args=[])[0][1]
     assert "--testmon" in affected_command
@@ -725,7 +726,7 @@ def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testm
     [
         frozenset({"docs/devtools.md"}),
         frozenset({".github/workflows/verify.yml"}),
-        frozenset({".agentctl/README.md", "CLAUDE.md", ".github/CODEOWNERS"}),
+        frozenset({".agentctl/README.md", "README.md", ".github/CODEOWNERS"}),
     ],
 )
 def test_metadata_only_changes_select_no_pytest_step(changed: frozenset[str]) -> None:
@@ -754,19 +755,62 @@ def test_one_code_path_makes_the_change_set_affected(changed: frozenset[str], ex
     assert verify._selection_for_changes(changed) == expected
 
 
+def test_an_agents_only_change_runs_the_tracked_reference_ratchet() -> None:
+    """AGENTS.md is read by a contract test, so it is not no-test documentation.
+
+    Anti-vacuity: drop ``_CONTRACT_READ_DOCUMENTS`` and an AGENTS-only change
+    selects ``none``, so the retired-name ratchet never runs on it.
+    """
+    assert verify._selection_for_changes(frozenset({"AGENTS.md"})) == "descriptor"
+    commands = [command for label, command in verify.build_verify_steps(quick=False, selection="descriptor")]
+    ratchet = (
+        "tests/unit/architecture/test_retired_analysis_modules.py::test_no_tracked_reference_to_a_retired_analysis_name"
+    )
+    assert any(ratchet in command for command in commands)
+
+
+def test_a_mixed_change_touching_agents_still_runs_the_ratchet() -> None:
+    """AGENTS.md plus a source edit keeps the affected selection and adds the ratchet.
+
+    Anti-vacuity: without the contract-document step, the affected step is the
+    only pytest step, and testmon never selects a test that reads AGENTS.md
+    through ``git grep``, so a retired name added there passes the verifier.
+    """
+    changed = frozenset({"AGENTS.md", "polylogue/example.py"})
+    assert verify._selection_for_changes(changed) == "affected"
+    steps = [
+        (label, command)
+        for label, command in verify.build_verify_steps(quick=False, selection="affected", changed_paths=changed)
+        if label.startswith("pytest")
+    ]
+    assert [label for label, _command in steps] == ["pytest (affected)", "pytest (contract documents)"]
+    affected_command, contract_command = (command for _label, command in steps)
+    assert "--testmon-forceselect" in affected_command
+    assert not any(nodeid in affected_command for nodeid in verify.CONTRACT_DOCUMENT_TESTS)
+    assert "--testmon" not in contract_command
+    assert contract_command[-len(verify.CONTRACT_DOCUMENT_TESTS) :] == list(verify.CONTRACT_DOCUMENT_TESTS)
+
+    source_only = frozenset({"polylogue/example.py"})
+    labels = [
+        label
+        for label, _command in verify.build_verify_steps(quick=False, selection="affected", changed_paths=source_only)
+    ]
+    assert "pytest (contract documents)" not in labels
+
+
 class _StubTestmonData:
     """Just enough of ``TestmonData`` for the estimator to reach its arithmetic."""
 
     system_packages_change = False
 
-    def __init__(self, selected: tuple[str, ...]) -> None:
+    def __init__(self, selected: tuple[str, ...], recorded: tuple[str, ...] = ()) -> None:
         self.unstable_test_names = list(selected)
         self.failing_tests: list[str] = []
-        self.all_tests = {name: {"duration": 0.5} for name in selected}
+        self.all_tests = {name: {"duration": 0.5} for name in (*selected, *recorded)}
 
     @classmethod
-    def factory(cls, selected: tuple[str, ...]) -> Any:
-        return lambda **_kwargs: cls(selected)
+    def factory(cls, selected: tuple[str, ...], recorded: tuple[str, ...] = ()) -> Any:
+        return lambda **_kwargs: cls(selected, recorded)
 
     def determine_stable(self) -> None:
         return None
@@ -779,6 +823,7 @@ def _stub_affected_graph(
     selected: tuple[str, ...],
     unrecorded_files: tuple[str, ...],
     unrecorded_tests: int | None,
+    recorded: tuple[str, ...] = (),
 ) -> None:
     """Point the estimator at a stub graph with a known selection and unknown set."""
     import testmon.db
@@ -790,10 +835,59 @@ def _stub_affected_graph(
     monkeypatch.setattr(verify, "snapshot_testmon_graph", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(testmon.db, "DB", lambda *_a, **_k: SimpleNamespace(con=SimpleNamespace(close=lambda: None)))
     monkeypatch.setattr(
-        testmon.testmon_core.TestmonData, "for_local_run", _StubTestmonData.factory(selected), raising=False
+        testmon.testmon_core.TestmonData, "for_local_run", _StubTestmonData.factory(selected, recorded), raising=False
     )
     monkeypatch.setattr(verify, "unrecorded_test_files", lambda _root, **_kwargs: unrecorded_files)
     monkeypatch.setattr(verify, "count_collected", lambda _paths, **_kwargs: unrecorded_tests)
+
+
+def test_the_estimate_counts_forced_contract_tests(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Forced contract tests count toward the admitted plan, every parametrization.
+
+    Anti-vacuity: drop ``forced_tests`` from the estimate and the count stays
+    at the one testmon-selected test while the run launches three; union the
+    forced tests into the selection and the overlap case counts three of the
+    four launches.
+    """
+    graph = SimpleNamespace(status=TestmonGraphStatus.USABLE, full_rerun_cause=None)
+    (forced,) = verify.CONTRACT_DOCUMENT_TESTS
+    _stub_affected_graph(
+        monkeypatch,
+        tmp_path,
+        selected=("tests/unit/a.py::test_one",),
+        unrecorded_files=(),
+        unrecorded_tests=0,
+        recorded=(f"{forced}[alpha]", f"{forced}[beta]", "tests/unit/b.py::test_unrelated"),
+    )
+
+    count, seconds, error, _unrecorded = verify._estimate_affected_selection(tmp_path, graph, (forced,))
+    assert (count, seconds, error) == (3, 1.5, None)
+
+    count, _seconds, error, _unrecorded = verify._estimate_affected_selection(
+        tmp_path, graph, ("tests/unit/never.py::test_missing",)
+    )
+    assert count is None and error is not None
+
+    # A forced test the affected step also selected runs twice and counts twice.
+    _stub_affected_graph(
+        monkeypatch,
+        tmp_path,
+        selected=("tests/unit/a.py::test_one", f"{forced}[alpha]"),
+        unrecorded_files=(),
+        unrecorded_tests=0,
+        recorded=(f"{forced}[beta]",),
+    )
+    count, seconds, error, _unrecorded = verify._estimate_affected_selection(tmp_path, graph, (forced,))
+    assert (count, seconds, error) == (4, 2.0, None)
+
+
+def test_an_agents_only_selection_reason_names_the_contract_document() -> None:
+    """Anti-vacuity: reuse the descriptor reason and an AGENTS-only receipt
+    claims the change included the AgentCTL descriptor."""
+    reason = verify._selection_reason("descriptor", frozenset({"AGENTS.md"}))
+    assert reason is not None and "AGENTS.md" in reason and "descriptor" not in reason
+    descriptor_reason = verify._selection_reason("descriptor", frozenset({".agentctl/project.toml", "AGENTS.md"}))
+    assert descriptor_reason is not None and "AgentCTL descriptor" in descriptor_reason
 
 
 def test_the_estimate_counts_tests_the_graph_never_recorded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1007,7 +1101,7 @@ def test_affected_admission_refuses_without_launching_pytest(
     monkeypatch.setattr(
         verify,
         "_estimate_affected_selection",
-        lambda _root, _graph: (selected_count, 1.0, None, 0),
+        lambda _root, _graph, _forced=(): (selected_count, 1.0, None, 0),
     )
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
