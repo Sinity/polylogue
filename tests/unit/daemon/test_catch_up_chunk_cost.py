@@ -204,6 +204,12 @@ def test_chunk_convergence_cost_does_not_grow_with_archive_size(
     results: dict[int, tuple[int, int, dict[str, float]]] = {}
     for seeded_sessions in (small_sessions, large_sessions):
         processor, corpus_root, source_db = _build(tmp_path, monkeypatch=monkeypatch, seeded_sessions=seeded_sessions)
+        # The first chunk after seeding also prunes the seeding's consumed
+        # raw-existence journal, one trigger firing per row (#5657), so it is
+        # O(seeded rows) once. Converge one warm-up chunk so the measured one
+        # is a steady-state chunk.
+        warm_up = [_write_session(corpus_root, seeded_sessions + chunk_files)]
+        assert _converge_chunk(processor, probe, warm_up, whole_archive=False).succeeded_file_count == 1
         chunk = [_write_session(corpus_root, seeded_sessions + offset) for offset in range(chunk_files)]
         for offset in range(chunk_files):
             _seed_hook_event(source_db, seeded_sessions + offset)

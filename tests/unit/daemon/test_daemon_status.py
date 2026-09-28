@@ -265,7 +265,9 @@ def test_caller_payload_refresh_uses_invocation_frame(monkeypatch: pytest.Monkey
     result = get_status_snapshot_payload()
     metadata = cast(dict[str, Any], result["status_snapshot"])
     assert result.get("checked_at") != "unbound"
-    assert metadata["state"] == "stale"
+    # No coherent rich observation exists to fall back on, so the snapshot is
+    # unavailable rather than stale (#5621); the frame evidence is unchanged.
+    assert metadata["state"] == "unavailable"
     assert metadata["frame"] == "A"
     assert metadata["current_frame"] == "B"
     assert metadata["frame_error"] == "archive frame changed during status collection"
