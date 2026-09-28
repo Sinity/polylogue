@@ -422,7 +422,7 @@ class CursorStore:
         implicitly relied on, so a second, unserialized entrant raises
         :class:`UnleasedWriteError` instead of silently interleaving commits.
         """
-        require_write_lease("live ingest ops write scope")
+        require_write_lease("live ingest ops write scope", archive_root=self._archive_root)
         state = self._ops_scope
         if getattr(state, "conn", None) is not None:
             state.depth += 1
