@@ -290,7 +290,9 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                         retained.append(message)
                 yield message
         # Only a walk that reached the end holds the whole session.
-        if key is not None and retained is not None and len(retained) == self._count:
+        # An empty session costs nothing to decode and would occupy an LRU
+        # entry the byte budget never charges for.
+        if key is not None and retained and len(retained) == self._count:
             _DECODED_SESSIONS.put(key, tuple(retained), retained_bytes)
 
     def _decoded_key(self) -> _DecodedKey | None:

@@ -12,7 +12,7 @@ import uuid
 import zipfile
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
-from contextlib import ExitStack, closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -2837,7 +2837,16 @@ class LiveBatchProcessor:
         )
         if not candidates:
             return 0
-        return await asyncio.to_thread(self._parse_stage.prefetch_paths, candidates)
+        # The offloaded call mutates the stage's bookkeeping. If the caller is
+        # cancelled, settle the thread before the ingest lock is released, so
+        # no warm or shutdown can run beside it.
+        submission = asyncio.ensure_future(asyncio.to_thread(self._parse_stage.prefetch_paths, candidates))
+        try:
+            return await asyncio.shield(submission)
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await submission
+            raise
 
     async def _ingest_full_paths(
         self,

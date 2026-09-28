@@ -641,11 +641,14 @@ class LiveParseStage:
 
         A speculative (prefetch) submission records no result when the path
         cannot be stat'ed or submitted: the warm that needs the path retries
-        it then, instead of inheriting a transient failure.
+        it then, instead of inheriting a transient failure. Only a warm
+        collects finished futures: collection fully re-hashes the sealed
+        artifacts, which a read-ahead call must not pay for unrelated paths.
         """
-        for source_path, future in tuple(self._path_futures.items()):
-            if future.done():
-                self._collect_path_future(source_path, future)
+        if not speculative:
+            for source_path, future in tuple(self._path_futures.items()):
+                if future.done():
+                    self._collect_path_future(source_path, future)
         next_wave: list[tuple[str, Provider, bool]] = []
         for source_path, provider, is_stream in candidates:
             if source_path in self._path_results or source_path in self._path_futures:

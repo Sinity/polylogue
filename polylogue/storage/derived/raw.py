@@ -11,6 +11,7 @@ import hashlib
 import json
 import sqlite3
 import tempfile
+import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -607,6 +608,12 @@ class RawObservationDerivation:
                     prefix=".raw-prepared-", dir=Path(frame.source_revision).resolve().parent
                 )
                 scratch = Path(scratch_owner.name)
+                # Whatever path removes the scratch tree (publication, an
+                # exception, or the directory's own finalizer when publication
+                # is bypassed), the decodes cached from it go with it.
+                from polylogue.sources.prepared_message_sink import discard_decoded_sessions_under
+
+                weakref.finalize(scratch_owner, discard_decoded_sessions_under, scratch)
                 prepared: dict[str, PreparedRetainedInput] = {}
                 aggregates: dict[str, PreparedRetainedAggregate] = {}
                 prepared_writes: dict[tuple[str, str], PreparedSessionWrite] = {}
