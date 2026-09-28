@@ -30,6 +30,8 @@ class CommandSpec:
     json_flag: bool = False
     #: Flags surfaced in this command's own ``--help`` and forwarded verbatim.
     flags: tuple[tuple[str, str], ...] = ()
+    #: Value-taking options surfaced in ``--help`` and forwarded as pairs.
+    value_options: tuple[tuple[str, str, str], ...] = ()
     use_when: str | None = None
     examples: tuple[str, ...] = ()
     featured: bool = False
@@ -529,14 +531,15 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Classify every archived tool result by origin, construct, outcome and unknown reason.",
         "devtools.tool_outcome_census",
         json_flag=True,
+        value_options=(("--archive-root", "PATH", "Required candidate archive root to census."),),
         use_when=(
             "Before accepting a rebuilt archive, prove the tool-outcome contract holds over the whole "
             "candidate: no unknown outcome without a reason, no known outcome carrying one, no reason "
             "an origin's parsers do not own, and no public projection that disagrees with the block."
         ),
         examples=(
-            "devtools archive tool-outcome-census --archive-root /path/to/archive",
-            "devtools archive tool-outcome-census --archive-root /path/to/archive --json",
+            "devtools archive tool-outcome-census --archive-root /candidate/archive",
+            "devtools archive tool-outcome-census --archive-root /candidate/archive --json",
         ),
     ),
     CommandSpec(

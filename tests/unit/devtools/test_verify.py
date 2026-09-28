@@ -458,6 +458,44 @@ def test_early_gate_failure_exit_is_authoritative() -> None:
     assert result["exit"] == 127
 
 
+def test_descriptor_selection_does_not_enable_archive_prewarm() -> None:
+    """Anti-vacuity: descriptor-only tests must not construct shared archives."""
+    env = {"POLYLOGUE_BROAD_PREWARM": "1"}
+    verify._normalize_managed_pytest_environment(env, verify.DESCRIPTOR_CONTRACT_TESTS)
+    assert "POLYLOGUE_BROAD_PREWARM" not in env
+
+
+def test_optimized_python_is_refused_before_running_verification() -> None:
+    """Anti-vacuity: a -O child must report the preflight refusal, not run gates."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-O",
+            "-c",
+            "from devtools.verify import _main; raise SystemExit(_main(['--quick', '--json']))",
+        ],
+        cwd=verify.ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 125
+    assert json.loads(result.stdout)["diagnosis"] == "optimized_python"
+
+
+def test_interrupted_aggregate_keeps_completed_lane_outcomes() -> None:
+    aggregate = verify._aggregate_pytest_results(
+        [{"name": "pytest (parallel)", "statistics": {"outcomes": {"passed": 4}}}],
+        expected_step_count=3,
+        mode="all",
+        exit_code=130,
+    )
+    assert aggregate["outcomes"] == {"passed": 4}
+    assert aggregate["terminal_green"] is False
+    assert aggregate["complete_corpus_covered"] is False
+
+
 def test_finish_step_does_not_retry_unavailable_pytest_statistics(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

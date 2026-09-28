@@ -470,7 +470,7 @@ def _affected_admission(*, root: Path, graph: Any) -> AffectedAdmission:
     return decision
 
 
-def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
+def _normalize_managed_pytest_environment(env: dict[str, str], command: Sequence[str] = ()) -> None:
     env.pop("PYTEST_ADDOPTS", None)
     env.pop("PYTEST_PLUGINS", None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
@@ -483,7 +483,10 @@ def _normalize_managed_pytest_environment(env: dict[str, str]) -> None:
     # This opt-in is the BROAD verifier's alone: `devtools.run_tests` defines
     # a function of the same name that deliberately does not set it, because a
     # focused selection would pay the warm-up for archives it never opens.
-    env["POLYLOGUE_BROAD_PREWARM"] = "1"
+    if all(nodeid in command for nodeid in DESCRIPTOR_CONTRACT_TESTS):
+        env.pop("POLYLOGUE_BROAD_PREWARM", None)
+    else:
+        env["POLYLOGUE_BROAD_PREWARM"] = "1"
     env["COVERAGE_CORE"] = TESTMON_COVERAGE_CORE
     env.pop("POLYLOGUE_CI", None)
 
@@ -750,7 +753,7 @@ def _run(
     if pytest_step:
         command = _bind_pytest_reports_to_step(command, artifacts)
         _clear_pytest_report(command)
-        _normalize_managed_pytest_environment(env)
+        _normalize_managed_pytest_environment(env, command)
         env = env_for_pytest_step(env, run=run, artifacts=artifacts)
         # The pytest slot re-checks the branch and records what it executed
         # when the run starts, as it does for focused runs: the checkout can
@@ -767,7 +770,7 @@ def _run(
                 early_metadata["pytest_slot_terminal"] = runtime_evidence
             run.finish_step(
                 step_id=artifacts.step_id,
-                result=_early_gate_failure_result(started, early_metadata),
+                result={**_early_gate_failure_result(started, early_metadata), "exit": 125},
             )
             _write_step_result(label, pytest_step, f"FAILED ({exc})")
             return 125, time.monotonic() - started, early_metadata
@@ -1009,6 +1012,7 @@ def _finish_interrupted_verification(
     agentctl_operation: str | None,
     exit_code: int,
     termination_reason: str,
+    results: Sequence[Mapping[str, Any]] = (),
 ) -> int:
     """Persist the terminal state when an outer runtime ends verification."""
     run.finish_interrupted_steps(
@@ -1024,8 +1028,9 @@ def _finish_interrupted_verification(
         verification_scope=scope.value,
         final_git_head=git_head(ROOT),
         pytest_aggregate={
-            "selection_mode": "quick" if args.quick else selection,
-            "outcomes": {},
+            **_aggregate_pytest_results(
+                results, expected_step_count=3, mode="quick" if args.quick else selection, exit_code=exit_code
+            ),
             "terminal_green": False,
             "complete_corpus_covered": False,
             "termination_reason": termination_reason,
@@ -1139,6 +1144,17 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         help="run on the default branch deliberately (a base comparison, or the hosted gate on a push)",
     )
     args = parser.parse_args(argv)
+    if sys.flags.optimize > 0:
+        message = (
+            "devtools verify refuses optimized Python; run with the standard interpreter (sys.flags.optimize must be 0)"
+        )
+        if args.json:
+            print(
+                json.dumps({"status": "refused", "diagnosis": "optimized_python", "message": message, "exit_code": 125})
+            )
+        else:
+            sys.stderr.write(message + "\n")
+        return 125
     _anchor_verification_paths()
     identity = checkout_identity(ROOT)
     branch_refusal = default_branch_refusal(identity, command="devtools verify", allowed=args.on_default_branch)
@@ -1251,8 +1267,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             _emit(payload, use_json=args.json, operation=agentctl_operation)
             return 2
     steps = build_verify_steps(quick=args.quick, selection=selection, hypothesis_profile=args.hypothesis_profile)
+    results: list[dict[str, Any]] = []
     try:
-        results: list[dict[str, Any]] = []
         exit_code = 0
         for label, (rc, elapsed, metadata) in _run_steps(steps, run=run, runner=args.runner):
             results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc, **metadata})
@@ -1268,6 +1284,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             agentctl_operation=agentctl_operation,
             exit_code=128 + exc.signum,
             termination_reason=signal.Signals(exc.signum).name.lower(),
+            results=results,
         )
     except KeyboardInterrupt:
         return _finish_interrupted_verification(
@@ -1279,6 +1296,7 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             agentctl_operation=agentctl_operation,
             exit_code=130,
             termination_reason="operator_interrupt",
+            results=results,
         )
     executed: set[tuple[object, object, object]] = set()
     for result in results:

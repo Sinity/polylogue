@@ -230,6 +230,30 @@ def test_optional_scope_clause_is_censused(tmp_path: Path) -> None:
     assert "omissible_scope" in _kinds(tmp_path, "sweep")
 
 
+def test_values_are_lexically_scoped_and_empty_sentinel_survives_the_cap(tmp_path: Path) -> None:
+    """Anti-vacuity: foreign locals cannot taint this function, and branch 9 remains visible."""
+    _package(
+        tmp_path,
+        "scoped.py",
+        "def unrelated():\n    clause = ''\n"
+        "def mandatory(conn):\n    clause = 'WHERE session_id = ?'\n"
+        "    conn.execute(f'DELETE FROM session_profiles {clause}', ('x',))\n"
+        "def optional(conn, branch):\n"
+        "    clause = 'WHERE id = 0'\n    clause = 'WHERE id = 1'\n"
+        "    clause = 'WHERE id = 2'\n    clause = 'WHERE id = 3'\n"
+        "    clause = 'WHERE id = 4'\n    clause = 'WHERE id = 5'\n"
+        "    clause = 'WHERE id = 6'\n    clause = 'WHERE id = 7'\n"
+        + "    if branch:\n        clause = ''\n"
+        + "    conn.execute(f'DELETE FROM session_profiles {clause}')\n"
+        "def outer():\n    clause = 'WHERE session_id = ?'\n"
+        "    def nested(conn):\n"
+        "        conn.execute(f'DELETE FROM session_profiles {clause}', ('x',))\n",
+    )
+    assert _kinds(tmp_path, "mandatory") == set()
+    assert _kinds(tmp_path, "outer.nested") == set()
+    assert "omissible_scope" in _kinds(tmp_path, "optional")
+
+
 def test_state_selected_subject_is_censused(tmp_path: Path) -> None:
     """A row-bound rewrite whose subjects come from an unbound scan is seen.
 

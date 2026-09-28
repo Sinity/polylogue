@@ -500,7 +500,6 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
         except (SyntaxError, UnicodeDecodeError):
             continue
         relative = path.relative_to(repo_root).as_posix()
-        values = string_values(tree)
         scopes = function_scopes(tree)
 
         # First pass: what each call site executes. The populations below are
@@ -519,6 +518,7 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
             if node.func.attr not in SQL_EXECUTION_METHODS or not node.args:
                 continue
             function = scopes.get(node, "<module>")
+            values = string_values(tree, scope=function)
             texts = statement_texts(node.args[0], values)
             if not texts:
                 continue

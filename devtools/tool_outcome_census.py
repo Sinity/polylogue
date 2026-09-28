@@ -39,6 +39,16 @@ __all__ = [
 
 UNPAIRED_CONSTRUCT = "<unpaired>"
 
+
+def _candidate_root(value: str) -> Path:
+    if not value.strip():
+        raise argparse.ArgumentTypeError("--archive-root must be a non-empty absolute candidate root")
+    root = Path(value).expanduser()
+    if not root.is_absolute():
+        raise argparse.ArgumentTypeError("--archive-root must be an absolute candidate root")
+    return root
+
+
 _KNOWN_OUTCOMES = (ToolOutcome.OK.value, ToolOutcome.ERROR.value, ToolOutcome.NO_RESULT.value)
 
 #: ``actions.result_state`` a result block's own ``tool_outcome`` implies.
@@ -165,7 +175,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--archive-root",
-        type=Path,
+        type=_candidate_root,
         required=True,
         help="Candidate archive root to census; active configured archives are never selected.",
     )

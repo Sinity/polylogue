@@ -6,6 +6,7 @@ import shlex
 
 from click.testing import CliRunner
 
+from devtools.click_dispatch import cli
 from devtools.command_catalog import (
     CATEGORY_ORDER,
     COMMAND_SPECS,
@@ -149,3 +150,10 @@ def test_documented_examples_parse_against_their_own_command_parser() -> None:
         except SystemExit as exit_code:
             failures.append((name, example, f"SystemExit {exit_code.code}"))
     assert not failures, f"documented examples their own parser refuses: {failures}"
+
+
+def test_tool_outcome_help_declares_required_candidate_root() -> None:
+    """Anti-vacuity: removing the value option hides the required root from generated help."""
+    result = CliRunner().invoke(cli, ["archive", "tool-outcome-census", "--help"])
+    assert result.exit_code == 0
+    assert "--archive-root PATH" in result.output

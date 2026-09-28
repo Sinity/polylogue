@@ -27,6 +27,8 @@ from tests.infra.workload_artifacts import (
     validate_seeded_archive_reachability,
 )
 
+_MAX_REFUSAL_LENGTH = 2_048
+
 
 def _report_payload(report: ArtifactGcReport, *, inventory: SeededArchiveReachabilityInventory) -> dict[str, object]:
     payload = report.to_payload()
@@ -120,7 +122,10 @@ def main(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
         )
     except (OSError, RuntimeError, ValueError) as exc:
         if args.json:
-            print(json.dumps({"refused": str(exc)}, indent=2, sort_keys=True), file=output)
+            message = str(exc)
+            if len(message) > _MAX_REFUSAL_LENGTH:
+                message = message[: _MAX_REFUSAL_LENGTH - 3] + "..."
+            print(json.dumps({"refused": message}, indent=2, sort_keys=True), file=output)
         else:
             print(f"refused: {exc}", file=output)
         return 1
