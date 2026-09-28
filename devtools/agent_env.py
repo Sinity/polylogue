@@ -33,7 +33,9 @@ PYTEST_POOL = "pytest"
 #: Bounded selections (one file, one worker's focused check) run in a second
 #: pool so they never queue behind the corpus; both pools own the slot.
 PYTEST_QUICK_POOL = "pytest-quick"
-PYTEST_POOLS = frozenset({PYTEST_POOL, PYTEST_QUICK_POOL})
+#: The complete corpus (`verify_all`) runs in its own heavy pool.
+PYTEST_HEAVY_POOL = "pytest-heavy"
+PYTEST_POOLS = frozenset({PYTEST_POOL, PYTEST_QUICK_POOL, PYTEST_HEAVY_POOL})
 _CGROUP_PATH = Path("/proc/self/cgroup")
 
 
@@ -43,7 +45,7 @@ def pool_slices(pool: str) -> frozenset[str]:
 
 
 _AGENT_CGROUP_SLICES = frozenset({"agent.slice"}) | pool_slices("agent")
-_PYTEST_CGROUP_SLICES = pool_slices(PYTEST_POOL) | pool_slices(PYTEST_QUICK_POOL)
+_PYTEST_CGROUP_SLICES = pool_slices(PYTEST_POOL) | pool_slices(PYTEST_QUICK_POOL) | pool_slices(PYTEST_HEAVY_POOL)
 
 
 def runtime_env_names(variable: str) -> tuple[str, str]:

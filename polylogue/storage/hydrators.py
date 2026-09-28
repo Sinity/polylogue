@@ -56,7 +56,7 @@ def attachment_from_record(record: AttachmentRecord) -> Attachment:
     availability = resolve_attachment_availability(
         blob_hash=record.blob_hash,
         acquisition_status=record.acquisition_status,
-        verify=get_blob_store().verify,
+        verify=get_blob_store().verify_for_read,
         exists=get_blob_store().exists,
     )
     return Attachment(

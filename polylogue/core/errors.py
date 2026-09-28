@@ -119,7 +119,14 @@ class SchemaSkewError(SchemaRefusalError):
             )
         else:
             message = f"{tier} schema skew: expected {expected}, found {found}. {remedy}"
+        self._explicit_remedy = remedy
         super().__init__(message)
+
+    def __reduce__(self) -> tuple[type[SchemaSkewError], tuple[str, object, object, str | None]]:
+        # A worker process raises this across a process-pool boundary; the
+        # default exception pickling replays only ``args`` (the message) and
+        # the unpickle then fails, which the pool reports as a dead worker.
+        return (type(self), (self.tier, self.expected, self.found, self._explicit_remedy))
 
 
 SchemaSkew = SchemaSkewError

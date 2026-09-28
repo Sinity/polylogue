@@ -176,7 +176,7 @@ def _archive_root_has_real_content(root: Path) -> bool:
     Checks the durable tiers (``source.db``'s ``raw_sessions``, ``user.db``'s
     ``assertions``) directly rather than trusting the rebuildable index tier
     alone. ``index.db`` is explicitly the rebuildable tier (see this repo's
-    "Schema regimes" doc) and can legitimately be absent or unreadable on a
+    AGENTS.md "Storage tiers" section) and can legitimately be absent or unreadable on a
     real archive -- freshly initialized, mid-rebuild, or reset via
     ``polylogue ops reset --index`` -- so treating a missing/corrupt index as
     proof of "0 sessions" would authorize writing (or, worse, self-heal
@@ -372,8 +372,8 @@ def _self_heal_stale_demo_archive_tiers(archive_root: Path) -> tuple[str, ...]:
     Only ever called after :func:`_archive_root_is_demo_owned` has confirmed
     ``archive_root`` is a disposable demo archive this exact command
     regenerates every run (never the live/production archive). ``index.db``
-    and friends are declared *rebuildable* tiers (see ``CLAUDE.md``'s "Schema
-    regimes"), and a demo archive's content is entirely synthetic fixture
+    and friends are declared *rebuildable* tiers (see ``AGENTS.md``'s "Storage
+    tiers"), and a demo archive's content is entirely synthetic fixture
     data with no durability requirement at all, so a stale on-disk schema
     version here is safe to move aside and rebuild automatically -- unlike
     the live archive, where the same version drift requires an explicit,

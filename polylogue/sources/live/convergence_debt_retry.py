@@ -9,7 +9,11 @@ from pathlib import Path
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    attach_database,
+    attach_readonly_database,
+    open_readonly_connection,
+)
 
 
 def convergence_debt_retry_delay_s(failure_count: int, *, error: str | None) -> int:
@@ -116,7 +120,7 @@ def _ensure_source_tier_attached(conn: sqlite3.Connection, source_db: Path) -> s
     for row in conn.execute("PRAGMA database_list").fetchall():
         if str(row[1]) == "source_tier":
             return "source_tier"
-    conn.execute("ATTACH DATABASE ? AS source_tier", (str(source_db),))
+    attach_database(conn, source_db, alias="source_tier")
     return "source_tier"
 
 

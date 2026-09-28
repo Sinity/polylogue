@@ -13,7 +13,6 @@ import pytest
 import polylogue.security.excision_policy as excision_policy_module
 from polylogue.core.enums import AssertionKind
 from polylogue.security.excision import (
-    ExcisionPolicyError,
     ExcisionPolicySnapshot,
     build_excision_policy_snapshot,
 )
@@ -47,8 +46,7 @@ def test_snapshot_contains_identities_and_no_removed_literals(tmp_path: Path) ->
     assert snapshot.removed_hashes == (bytes.fromhex(digest),)
     assert snapshot.assertion_refs == ("excision-record-1",)
     assert "secret bytes" not in json.dumps(snapshot, default=str)
-    with pytest.raises(ExcisionPolicyError):
-        snapshot.assert_admissible(bytes.fromhex(digest), source_path="reacquired.json")
+    assert not snapshot.allows(bytes.fromhex(digest))
 
 
 def test_snapshot_digest_changes_when_durable_generation_changes() -> None:

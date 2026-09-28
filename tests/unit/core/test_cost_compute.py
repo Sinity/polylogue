@@ -12,6 +12,8 @@ genuinely reported and billed a zero cost.
 
 from __future__ import annotations
 
+import pytest
+
 from polylogue.archive.semantic.cost_compute import (
     _per_model_from_messages,
     _per_model_from_model_usage,
@@ -428,3 +430,52 @@ def test_message_fallback_stays_reported_when_every_lane_was_captured() -> None:
     (breakdown,) = summary.per_model
     assert breakdown.confidence == "reported"
     assert summary.cost_confidence == "reported"
+
+
+def test_runtime_protocol_text_in_an_assistant_envelope_is_not_estimated_output() -> None:
+    """Harness-written text (an API-error notice) is not model output.
+
+    Anti-vacuity: drop the RUNTIME_PROTOCOL skip in ``_per_model_from_messages``
+    and the error notice's words are estimated as output tokens.
+    """
+    session = make_conv(
+        id="claude-code-api-error-session",
+        provider="claude-code",
+        messages=[
+            make_msg(
+                id="m1",
+                role="assistant",
+                text="API Error: 429 rate limited, please retry after some time has passed",
+                material_origin="runtime_protocol",
+            ),
+        ],
+    )
+
+    per_model = _per_model_from_messages(session)
+
+    assert per_model == {}
+
+
+@pytest.mark.parametrize("role", ["system", "user"])
+def test_runtime_protocol_input_is_still_estimated(role: str) -> None:
+    """Protocol text sent to the model (a system prompt, a task notification) is input.
+
+    Anti-vacuity: skip every RUNTIME_PROTOCOL message regardless of role and
+    the session has no estimated input tokens.
+    """
+    session = make_conv(
+        id=f"runtime-protocol-{role}-session",
+        provider="claude-code",
+        messages=[
+            make_msg(
+                id="m1",
+                role=role,
+                text="You are a helpful assistant working in the operator's repository",
+                material_origin="runtime_protocol",
+            ),
+        ],
+    )
+
+    per_model = _per_model_from_messages(session)
+
+    assert sum(breakdown.input_tokens for breakdown in per_model.values()) > 0
