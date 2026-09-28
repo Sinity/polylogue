@@ -46,6 +46,23 @@ def validate_captured_blob(
         raise
 
 
+def release_refused_capture(blob_store: BlobStore, blob_hash: str, receipt_id: str | None) -> None:
+    """Release a capture refused after its publication was already reserved.
+
+    A few refusals can only be decided after publication (a discriminator
+    beyond the validation prefix, found while parsing). Dropping a pending
+    blob or releasing a flushed reservation both hand the bytes back to
+    ordinary GC; nothing references them.
+    """
+    if discard_pending_blob(blob_store, blob_hash):
+        return
+    source_db_path = getattr(blob_store, "source_db_path", None)
+    if source_db_path is not None and receipt_id is not None:
+        from polylogue.storage.blob_publication import release_refused_publication_receipt
+
+        release_refused_publication_receipt(source_db_path, receipt_id, blob_hash)
+
+
 def capture_bound_source(
     blob_store: BlobStore,
     path: Path,
@@ -58,4 +75,4 @@ def capture_bound_source(
     return blob_hash, blob_size
 
 
-__all__ = ["capture_bound_source", "validate_captured_blob"]
+__all__ = ["capture_bound_source", "release_refused_capture", "validate_captured_blob"]

@@ -460,8 +460,16 @@ def parse_one_source_path(
         )
         # Parse the captured, validated blob -- never a reopened source path,
         # which may have changed since capture.
-        with resolved_store.open(blob_hash) as handle:
-            yield from emitter.emit(handle, path.name, precomputed_raw=raw_data)
+        try:
+            with resolved_store.open(blob_hash) as handle:
+                yield from emitter.emit(handle, path.name, precomputed_raw=raw_data)
+        except ForeignOriginContentError:
+            # Refused while parsing (the discriminator lay beyond the
+            # validation prefix): release the reservation the flush made.
+            from polylogue.sources.bound_capture import release_refused_capture
+
+            release_refused_capture(resolved_store, blob_hash, receipt_id)
+            raise
     else:
         with path.open("rb") as handle:
             yield from emitter.emit(handle, path.name)
