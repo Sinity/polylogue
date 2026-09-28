@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from http import HTTPStatus
 from http.cookies import SimpleCookie
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -489,18 +490,22 @@ def test_the_exchange_page_is_served_even_to_a_credentialed_browser() -> None:
     assert body == WEB_SIGN_IN_HTML
 
 
+def _peer(**overrides: object) -> dict[str, object]:
+    return {"local_ip": "127.0.0.1", "local_port": 8765, "remote_ip": "127.0.0.1", "remote_port": 52345, **overrides}
+
+
 def test_peer_ownership_is_decided_without_procfs_on_non_linux_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
     """A host without ``/proc/net/tcp`` still attributes the peer socket to its uid.
 
-    Anti-vacuity (Codex P1, #5704): consult only procfs and a macOS peer is
-    never the owner, so every valid cookie is discarded and the signed-in
-    shell answers 401. Our own accepted socket (named the other way round)
-    must not count as the peer.
+    Anti-vacuity (Codex P1/P2, #5704): consult only procfs and a macOS peer is
+    never the owner; pass the lookup a deadline and a slow ``lsof`` under load
+    invalidates a valid cookie. Our own accepted socket (named the other way
+    round) must not count as the peer.
     """
     import subprocess
     from types import SimpleNamespace
 
-    from polylogue.daemon import http as daemon_http
+    from polylogue.daemon import peer_identity
 
     listings = {
         "peer": "p100\nn127.0.0.1:52345->127.0.0.1:8765\n",
@@ -508,25 +513,86 @@ def test_peer_ownership_is_decided_without_procfs_on_non_linux_hosts(monkeypatch
     }
     listing = "peer"
 
-    def fake_run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
         assert command[0].endswith("lsof")
         assert "-iTCP@127.0.0.1:52345" in command
+        assert "timeout" not in kwargs
         return SimpleNamespace(returncode=0, stdout=listings[listing], stderr="")
 
-    monkeypatch.setattr(daemon_http, "sys", SimpleNamespace(platform="darwin"))
-    monkeypatch.setattr(daemon_http, "shutil", SimpleNamespace(which=lambda _name: "/usr/sbin/lsof"))
+    monkeypatch.setattr(peer_identity, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(peer_identity, "shutil", SimpleNamespace(which=lambda _name: "/usr/sbin/lsof"))
     fake_subprocess = SimpleNamespace(run=fake_run, SubprocessError=subprocess.SubprocessError)
-    monkeypatch.setattr(daemon_http, "subprocess", fake_subprocess)
+    monkeypatch.setattr(peer_identity, "subprocess", fake_subprocess)
     monkeypatch.setattr(
-        daemon_http, "_tcp_socket_owner_uid", lambda *_args: pytest.fail("procfs is not consulted off Linux")
+        peer_identity, "tcp_socket_owner_uid", lambda **_kwargs: pytest.fail("procfs is not consulted off Linux")
     )
 
-    assert daemon_http._peer_socket_owned_by_current_uid(8765, "127.0.0.1", 52345) is True
+    assert peer_identity.peer_socket_owned_by_current_uid(**_peer()) is True  # type: ignore[arg-type]
     listing = "server_side_only"
-    assert daemon_http._peer_socket_owned_by_current_uid(8765, "127.0.0.1", 52345) is False
+    assert peer_identity.peer_socket_owned_by_current_uid(**_peer()) is False  # type: ignore[arg-type]
 
     def missing(*_args: object, **_kwargs: object) -> SimpleNamespace:
-        raise subprocess.TimeoutExpired("lsof", 5)
+        raise OSError("lsof is gone")
 
     monkeypatch.setattr(fake_subprocess, "run", missing)
-    assert daemon_http._peer_socket_owned_by_current_uid(8765, "127.0.0.1", 52345) is False
+    assert peer_identity.peer_socket_owned_by_current_uid(**_peer()) is False  # type: ignore[arg-type]
+
+
+def test_the_procfs_lookup_keys_on_the_accepted_loopback_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A daemon bound to ``127.0.0.2`` still finds its peer's table entry.
+
+    Anti-vacuity (Codex P2, #5704): hard-code ``127.0.0.1`` as the local key
+    and the ``127.0.0.2`` peer never matches, so every cookie is discarded.
+    """
+    import os
+
+    from polylogue.daemon import peer_identity
+
+    table = tmp_path / "tcp"
+    # local 127.0.0.1:52345 -> remote 127.0.0.2:8765, owned by our uid.
+    table.write_text(
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid\n"
+        f"   0: 0100007F:CC79 0200007F:223D 01 00000000:00000000 00:00000000 00000000  {os.getuid()}\n",
+        encoding="ascii",
+    )
+    monkeypatch.setattr(peer_identity, "_PROC_NET_TCP", table)
+
+    assert (
+        peer_identity.tcp_socket_owner_uid(
+            local_ip="127.0.0.2", local_port=8765, remote_ip="127.0.0.1", remote_port=52345
+        )
+        == os.getuid()
+    )
+
+
+def test_the_browser_proxy_forwards_the_cookie_only_for_an_owned_peer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A foreign uid's replay through the browser proxy reaches the daemon without the cookie.
+
+    Anti-vacuity (Codex P1, #5704): forward every ``Cookie`` header and the
+    daemon's peer check sees the owner-run proxy, accepting the replay.
+    """
+    from starlette.requests import Request
+
+    from polylogue.daemon import browser_host
+
+    def request() -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/",
+                "headers": [(b"cookie", b"polylogue_web=secret"), (b"host", b"127.0.0.1:9000")],
+                "client": ("127.0.0.1", 40000),
+                "server": ("127.0.0.1", 9000),
+            }
+        )
+
+    monkeypatch.setattr(browser_host, "peer_socket_owned_by_current_uid", lambda **_kwargs: False)
+    foreign = dict(browser_host._backend_headers(request(), "http://127.0.0.1:8765"))
+    monkeypatch.setattr(browser_host, "peer_socket_owned_by_current_uid", lambda **_kwargs: True)
+    owned = dict(browser_host._backend_headers(request(), "http://127.0.0.1:8765"))
+
+    assert "cookie" not in {name.lower() for name in foreign}
+    assert owned.get("cookie") == "polylogue_web=secret"

@@ -8,13 +8,9 @@ import functools
 import hashlib
 import hmac
 import json
-import os
 import select
-import shutil
 import socket
 import sqlite3
-import subprocess
-import sys
 import threading
 from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -51,6 +47,7 @@ from polylogue.daemon.execution import (
     DaemonOperationCancelled,
     current_cancellation,
 )
+from polylogue.daemon.peer_identity import peer_socket_owned_by_current_uid
 from polylogue.daemon.route_contracts import (
     DAEMON_ROUTE_DECLARATIONS,
     RouteContract,
@@ -1338,80 +1335,6 @@ def _check_auth_logic(
     return _AuthResult(allowed=True, reason=None)
 
 
-def _tcp_socket_owner_uid(local_port: int, remote_ip: str, remote_port: int) -> int | None:
-    """The uid owning the IPv4 socket at *remote_ip*:*remote_port*, from ``/proc/net/tcp``.
-
-    The web-credential cookie has no port scoping — RFC 6265 cookies never do — so a
-    browser also attaches it to a same-host request aimed at a different local uid's
-    service on another port; that uid's process can then replay the leaked cookie back
-    to this daemon with forged Host, Origin, and Sec-Fetch-Site headers, since none of
-    those are enforced for a raw (non-browser) client. ``/proc/net/tcp`` is the kernel's
-    own connection table: the uid it reports for the peer's socket cannot be forged by
-    anything the peer sends over the connection. Returns ``None`` when the entry is
-    missing or the table is unavailable; callers then fail closed. Hosts without
-    procfs answer through ``_lsof_peer_is_current_uid``.
-    """
-    try:
-        remote_octets = [int(part) for part in remote_ip.split(".")]
-        if len(remote_octets) != 4 or any(not 0 <= octet <= 255 for octet in remote_octets):
-            return None
-    except ValueError:
-        return None
-    remote_hex = "".join(f"{octet:02X}" for octet in reversed(remote_octets))
-    remote_key = f"{remote_hex}:{remote_port:04X}"
-    local_key = f"0100007F:{local_port:04X}"  # 127.0.0.1, byte-reversed
-    try:
-        text = Path("/proc/net/tcp").read_text(encoding="ascii", errors="replace")
-    except OSError:
-        return None
-    for line in text.splitlines()[1:]:
-        fields = line.split()
-        if len(fields) < 8:
-            continue
-        # The PEER's own socket entry has its local_address as what we see as remote,
-        # and its rem_address as the address it connected to (our listening socket).
-        if fields[1] == remote_key and fields[2] == local_key:
-            try:
-                return int(fields[7])
-            except ValueError:
-                return None
-    return None
-
-
-def _lsof_peer_is_current_uid(local_port: int, remote_ip: str, remote_port: int) -> bool:
-    """Whether this uid owns the peer socket ``remote_ip:remote_port -> 127.0.0.1:local_port``.
-
-    The portable counterpart of ``/proc/net/tcp`` for hosts without procfs
-    (macOS): ``lsof -u <uid>`` lists only sockets this uid's processes hold,
-    and the peer's own entry is named ``<remote>-><local>``. Our accepted
-    socket is named the other way round, so it can never satisfy the match.
-    Fails closed when ``lsof`` is missing or does not answer.
-    """
-    lsof = shutil.which("lsof") or ("/usr/sbin/lsof" if Path("/usr/sbin/lsof").exists() else None)
-    if lsof is None:
-        return False
-    try:
-        result = subprocess.run(
-            [lsof, "-nP", "-a", "-u", str(os.getuid()), f"-iTCP@{remote_ip}:{remote_port}", "-Fn"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return False
-    peer_name = f"n{remote_ip}:{remote_port}->127.0.0.1:{local_port}"
-    return any(line.strip() == peer_name for line in result.stdout.splitlines())
-
-
-def _peer_socket_owned_by_current_uid(local_port: int, remote_ip: str, remote_port: int) -> bool:
-    """Whether the kernel attributes the TCP peer's socket to this process's uid."""
-    if sys.platform.startswith("linux"):
-        uid = _tcp_socket_owner_uid(local_port, remote_ip, remote_port)
-        return uid is not None and uid == os.getuid()
-    return _lsof_peer_is_current_uid(local_port, remote_ip, remote_port)
-
-
 def _check_host_admission_logic(host_header: str, api_host: str) -> bool:
     """Pure logic: is *host_header* an allowed Host for this daemon?
 
@@ -1507,7 +1430,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         token = read_web_credential_cookie(self.headers.get("Cookie", ""))
         if token and not self._peer_is_owner():
             # The cookie's bytes may have leaked to another local uid's process
-            # (no port scoping; see ``_tcp_socket_owner_uid``); honor it only
+            # (no port scoping; see ``polylogue.daemon.peer_identity``); honor it only
             # from a peer the kernel itself attributes to this process's uid.
             return None
         return token
@@ -1526,7 +1449,12 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         server_address = getattr(self.server, "server_address", None)
         if not isinstance(server_address, tuple) or len(server_address) < 2:
             return False
-        return _peer_socket_owned_by_current_uid(int(server_address[1]), str(client_address[0]), int(client_address[1]))
+        return peer_socket_owned_by_current_uid(
+            local_ip=str(server_address[0]),
+            local_port=int(server_address[1]),
+            remote_ip=str(client_address[0]),
+            remote_port=int(client_address[1]),
+        )
 
     def _web_credential_decision(self, required_scope: WebCredentialScope) -> WebCredentialDecision:
         return self._web_credentials.validate(

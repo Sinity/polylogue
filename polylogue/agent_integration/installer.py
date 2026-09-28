@@ -1180,6 +1180,25 @@ class AgentIntegrationManager:
             retained_drift: list[dict[str, str]] = []
             try:
                 if options.replace_clients:
+                    # Journal every unselected client's removals before any
+                    # native effect is removed, as the selected-client path
+                    # does: a kill mid-removal then leaves each removed
+                    # effect recorded as a journaled removal, not as drift.
+                    journaled = False
+                    for client in tuple(clients_state):
+                        raw_client = clients_state.get(client)
+                        if client in selected or not isinstance(raw_client, dict):
+                            continue
+                        removals = sorted(
+                            cast(str, operation["identity"])
+                            for operation, _unconfirmed in _reconciled_operations(raw_client)
+                        )
+                        if removals and raw_client.get("prepared_removals") != removals:
+                            raw_client["prepared_removals"] = removals
+                            journaled = True
+                    if journaled:
+                        state["clients"] = clients_state
+                        self._write_state(state, transaction)
                     for client in tuple(clients_state):
                         if client in selected:
                             continue
