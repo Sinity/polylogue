@@ -1278,6 +1278,8 @@ async def redrive_accepted_ingests(
     """
     from polylogue.operations.audit import AuditRepository
 
+    if not (archive_root / "audit.db").is_file():
+        return
     audit = AuditRepository(
         archive_root / "audit.db",
         attempt_owner_id=AuditRepository.current_process_attempt_owner(),
