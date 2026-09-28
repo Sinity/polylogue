@@ -900,9 +900,14 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         settings_effort.strip() if isinstance(settings_effort, str) and settings_effort.strip() else None
     )
     session_thinking = _thinking_configuration(payload)
-    settings_thinking_mode = settings.get("thinking_mode")
-    if session_thinking is None and isinstance(settings_thinking_mode, str) and settings_thinking_mode.strip():
-        session_thinking = {"mode": settings_thinking_mode.strip()}
+    if session_thinking is None:
+        # ``effective_thinking_mode`` is the mode the conversation ran under;
+        # the nested setting is only what was requested, and is absent from
+        # half the exports that carry the effective value.
+        for thinking_mode in (payload.get("effective_thinking_mode"), settings.get("thinking_mode")):
+            if isinstance(thinking_mode, str) and thinking_mode.strip():
+                session_thinking = {"mode": thinking_mode.strip()}
+                break
     active_leaf_message_provider_id = _first_identity_field(
         payload,
         "current_leaf_message_uuid",

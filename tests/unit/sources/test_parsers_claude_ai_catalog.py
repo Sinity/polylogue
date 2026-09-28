@@ -1127,3 +1127,28 @@ def test_claude_ai_repeated_id_summaries_order_by_content() -> None:
 
     assert summaries(forward.session_events) == summaries(reverse.session_events) == ["alpha", "beta"]
     assert session_content_hash(forward) == session_content_hash(reverse)
+
+
+def test_claude_ai_effective_thinking_mode_reaches_the_model_configuration() -> None:
+    """The top-level effective thinking mode is the session's thinking configuration.
+
+    Anti-vacuity: read only ``settings.thinking_mode`` and an export carrying
+    just ``effective_thinking_mode`` emits no thinking configuration; read the
+    requested setting first and it overrides the effective mode.
+    """
+
+    def thinking(payload: dict[str, object]) -> object:
+        session = parse_ai(
+            {"uuid": "claude-thinking", "chat_messages": [{"sender": "human", "text": "hi"}], **payload}, "fallback"
+        )
+        (event,) = [
+            event
+            for event in session.session_events
+            if event.event_type == "model_configuration" and event.source_message_provider_id is None
+        ]
+        return event.payload.get("thinking")
+
+    assert thinking({"effective_thinking_mode": "extended"}) == {"mode": "extended"}
+    assert thinking({"effective_thinking_mode": "extended", "settings": {"thinking_mode": "normal"}}) == {
+        "mode": "extended"
+    }
