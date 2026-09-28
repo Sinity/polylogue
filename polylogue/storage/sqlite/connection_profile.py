@@ -1140,6 +1140,16 @@ class LiveGenerationImmutableError(ValueError):
     code = "immutable_over_live_state"
 
 
+def _rollback_journal_header_is_zeroed(journal: Path) -> bool:
+    """True when a rollback journal's magic header is zeroed (inactive, not hot)."""
+    try:
+        with journal.open("rb") as handle:
+            header = handle.read(8)
+    except FileNotFoundError:
+        return True
+    return header == bytes(len(header))
+
+
 def _refuse_immutable_over_live_state(path: str | Path) -> None:
     database = Path(path)
     for suffix in ("-wal", "-journal"):
@@ -1147,6 +1157,11 @@ def _refuse_immutable_over_live_state(path: str | Path) -> None:
         try:
             size = sidecar.stat().st_size
         except FileNotFoundError:
+            continue
+        if size > 0 and suffix == "-journal" and _rollback_journal_header_is_zeroed(sidecar):
+            # journal_mode=PERSIST leaves a non-empty journal whose header is
+            # zeroed after every commit; SQLite treats it as inactive, so the
+            # main file already holds all committed state.
             continue
         if size > 0:
             raise LiveGenerationImmutableError(

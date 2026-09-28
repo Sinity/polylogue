@@ -117,6 +117,30 @@ def test_migration_runner_reads_a_live_tier_user_version_through_its_wal(version
         writer.close()
 
 
+def test_immutable_read_accepts_an_inactive_persistent_journal(versioned_db: Path) -> None:
+    """A PERSIST-mode journal left after commit has a zeroed header and is not live state.
+
+    Anti-vacuity: judging the journal by size alone refuses this committed
+    snapshot; a journal with a non-zero header is still refused.
+    """
+    from polylogue.storage.sqlite.connection_profile import LiveGenerationImmutableError
+    from polylogue.storage.sqlite.migration_runner import _sqlite_user_version
+
+    writer = sqlite3.connect(versioned_db)
+    try:
+        writer.execute("PRAGMA journal_mode=PERSIST")
+        writer.execute("PRAGMA user_version = 9")
+        writer.commit()
+    finally:
+        writer.close()
+    journal = versioned_db.with_name(versioned_db.name + "-journal")
+    assert journal.stat().st_size > 0
+    assert _sqlite_user_version(versioned_db) == 9
+    journal.write_bytes(bytes.fromhex("d9d505f920a163d7") + bytes(504))
+    with pytest.raises(LiveGenerationImmutableError):
+        _sqlite_user_version(versioned_db)
+
+
 def test_cli_paths_read_user_version_closes_connection(monkeypatch: pytest.MonkeyPatch, versioned_db: Path) -> None:
     from polylogue.cli.commands.paths import _read_user_version
 

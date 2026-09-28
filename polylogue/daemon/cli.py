@@ -3468,6 +3468,10 @@ async def _run_daemon_services_under_active_writer_lease(
                     error_detail=", ".join(surviving_compute),
                     timeout_ms=round(_COMPUTE_JOIN_TIMEOUT_S * 1000),
                 )
+                # A live compute worker is an incomplete shutdown: keep archive
+                # ownership and report the stop as degraded, never clean.
+                writer_drained = False
+                ownership_retained_reason = "compute_threads_orphaned"
             if cleanup_task is not None:
                 for _ in range(cleanup_cancel_requests):
                     cleanup_task.cancel()
