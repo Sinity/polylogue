@@ -244,13 +244,24 @@ class RetainedSidecarResolver:
         session_dir = path.parent.parent if path.parent.name == "subagents" else path.parent / path.stem
         root_path = session_dir.parent / f"{session_dir.name}.jsonl"
         low, high = _prefix_range(f"{(session_dir / 'subagents').as_posix()}/")
+        # Revisions are ranked by their newest durable ``raw_payload``
+        # receipt, as ``retained_assembly`` ranks currency: bytes that return
+        # to an earlier value reuse that raw row, so ``acquired_at_ms`` is its
+        # first sighting and would rank an intervening revision newest.
         rows = conn.execute(
             """
-            SELECT source_path, hex(blob_hash), revision_kind, blob_size,
-                   append_start_offset, append_end_offset
-            FROM raw_sessions
-            WHERE source_path = ? OR (source_path >= ? AND source_path < ?)
-            ORDER BY source_path, acquired_at_ms, raw_id
+            SELECT r.source_path, hex(r.blob_hash), r.revision_kind, r.blob_size,
+                   r.append_start_offset, r.append_end_offset
+            FROM raw_sessions AS r
+            WHERE r.source_path = ? OR (r.source_path >= ? AND r.source_path < ?)
+            ORDER BY r.source_path,
+                COALESCE((SELECT b.acquired_at_ms FROM blob_refs AS b
+                          WHERE b.ref_id = r.raw_id AND b.ref_type = 'raw_payload'
+                          ORDER BY b.acquired_at_ms DESC, b.rowid DESC LIMIT 1), r.acquired_at_ms),
+                COALESCE((SELECT b.rowid FROM blob_refs AS b
+                          WHERE b.ref_id = r.raw_id AND b.ref_type = 'raw_payload'
+                          ORDER BY b.acquired_at_ms DESC, b.rowid DESC LIMIT 1), r.rowid),
+                r.raw_id
             """,
             (root_path.as_posix(), low, high),
         ).fetchall()

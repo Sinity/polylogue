@@ -628,3 +628,33 @@ def test_session_index_dependents_are_paged_not_listed(tmp_path: Path, monkeypat
     while page := discovery._dependents_selected(None, _Adapter(), 2):
         pages.append(page)
     assert pages == [("t0", "t1"), ("t2", "t3")]
+
+
+def test_session_index_dependents_rotate_with_the_fair_lanes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A project scan that owes work on every page never monopolizes discovery.
+
+    Anti-vacuity (Codex P2, #5643): serve the dependent lane with strict
+    priority and every call returns dependents while arrivals and the sweep,
+    which also owe work, are never offered.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.operations import intake_adapters, raw_observation_derivation
+
+    (tmp_path / "source.db").touch()
+    frame = SimpleNamespace(archive_root=tmp_path, source_revision="r1", recipe_version=lambda _domain: "v1")
+    monkeypatch.setattr(raw_observation_derivation, "raw_observation_frame", lambda _root: frame)
+    monkeypatch.setattr(raw_observation_derivation, "make_raw_observation_derivation", lambda _root: object())
+    discovery = intake_adapters.RawMaterializationDiscovery(tmp_path)
+    monkeypatch.setattr(discovery, "_raw_frontier", lambda: 0)
+    monkeypatch.setattr(discovery, "_with_costs", lambda selected: selected)
+    monkeypatch.setattr(discovery, "_arrival_selected", lambda *_args: ("arrival",))
+    monkeypatch.setattr(discovery, "_sweep_selected", lambda *_args: ("sweep",))
+    monkeypatch.setattr(discovery, "_dependents_selected", lambda *_args: ("dependent",))
+    discovery._evidence_projects.append(("/p/proj", "", -1))
+
+    served = [discovery.discover_pending_raw_ids(8) for _ in range(6)]
+
+    assert served.count(("dependent",)) == 2
+    assert served.count(("arrival",)) == 2
+    assert served.count(("sweep",)) == 2

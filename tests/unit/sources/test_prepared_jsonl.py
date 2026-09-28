@@ -3167,6 +3167,63 @@ def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
     assert tool_ids == {tail_sibling: {"toolu_base", "toolu_tail"}, branch_sibling: {"toolu_base"}}
 
 
+def test_sibling_baseline_follows_the_newest_durable_receipt(tmp_path: Path) -> None:
+    """A sibling whose bytes returned to an earlier value replays that value.
+
+    Content-addressed admission reuses revision A's raw row when a sibling
+    goes A -> B -> A, so ``raw_sessions.acquired_at_ms`` still orders B last;
+    the newest ``raw_payload`` receipt names A as current.
+
+    Anti-vacuity (Codex P1, #5643): rank full revisions by
+    ``raw_sessions.acquired_at_ms`` and the baseline is B, so the sibling
+    index names ``toolu_b`` instead of the current file's ``toolu_a``.
+    """
+    from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
+
+    source_db = tmp_path / "source.db"
+    with sqlite3.connect(source_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+    blob_root = tmp_path / "blob"
+    store = BlobStore(blob_root)
+    session_dir = tmp_path / "project" / "session-1"
+    sibling = (session_dir / "subagents" / "agent-a.jsonl").as_posix()
+
+    def tool_use(tool_id: str) -> bytes:
+        record = {
+            "type": "assistant",
+            "message": {"content": [{"type": "tool_use", "id": tool_id, "name": "Bash", "input": {}}]},
+        }
+        return json.dumps(record).encode() + b"\n"
+
+    a_hash, a_size = store.write_from_bytes(tool_use("toolu_a"))
+    b_hash, b_size = store.write_from_bytes(tool_use("toolu_b"))
+    with sqlite3.connect(source_db) as conn:
+        for raw_id, blob_hash, size, first_seen, newest_receipt in (
+            ("rev-a", a_hash, a_size, 1, 3),
+            ("rev-b", b_hash, b_size, 2, 2),
+        ):
+            conn.execute(
+                "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms, "
+                "revision_kind) VALUES (?, 'claude-code-session', ?, ?, ?, ?, 'full')",
+                (raw_id, sibling, bytes.fromhex(blob_hash), size, first_seen),
+            )
+            conn.execute(
+                "INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
+                "VALUES (?, ?, 'raw_payload', ?, ?, ?)",
+                (bytes.fromhex(blob_hash), raw_id, sibling, size, newest_receipt),
+            )
+    with sqlite3.connect(source_db) as conn:
+        resolver = RetainedSidecarResolver(tmp_path, blob_root=blob_root, source_conn=conn)
+        (resolved,) = resolver._retained_siblings(conn, session_dir.parent / "session-1.jsonl")
+        tool_ids = {
+            block["id"]
+            for record in resolved.open_records()
+            if isinstance(record, dict)
+            for block in record["message"]["content"]
+        }
+    assert tool_ids == {"toolu_a"}
+
+
 def test_chatgpt_spill_keeps_every_per_node_collection_in_scratch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

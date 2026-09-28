@@ -1293,7 +1293,10 @@ class RawMaterializationDiscovery:
         #: stalled head.
         self._held_page: tuple[str | None, tuple[str, ...]] | None = None
         self._frontier: int = 0
-        self._arrivals_first = False
+        #: Which lane leads the next discovery call. Arrivals, the sweep and
+        #: any queued project dependents rotate, so no lane -- not even a
+        #: project scan whose every page owes work -- starves the others.
+        self._lane_turn = 0
         #: Sessions whose enrichment evidence just arrived: a project's
         #: ``sessions-index.json`` names the transcripts beside it. Inspected
         #: on later calls, after the evidence itself was admitted, so a
@@ -1377,17 +1380,20 @@ class RawMaterializationDiscovery:
             self._cursor = None
             self._held_page = None
             self._frontier = self._raw_frontier()
-            self._arrivals_first = False
+            self._lane_turn = 0
 
         inspected_limit = min(limit, _RAW_DISCOVERY_INSPECTION_LIMIT)
         adapter = make_raw_observation_derivation(self._archive_root)
-        self._arrivals_first = not self._arrivals_first
-        lanes: tuple[Callable[[Any, Any, int], tuple[str, ...]], ...] = (
-            (self._arrival_selected, self._sweep_selected)
-            if self._arrivals_first
-            else (self._sweep_selected, self._arrival_selected)
+        # Queued project dependents join the rotation only while a scan is
+        # pending, so arrivals and the sweep otherwise keep alternating.
+        rotation: tuple[Callable[[Any, Any, int], tuple[str, ...]], ...] = (
+            self._arrival_selected,
+            self._sweep_selected,
+            *((self._dependents_selected,) if self._evidence_projects else ()),
         )
-        for lane in (self._dependents_selected, *lanes):
+        turn = self._lane_turn % len(rotation)
+        self._lane_turn += 1
+        for lane in (*rotation[turn:], *rotation[:turn]):
             selected = lane(frame, adapter, inspected_limit)
             if selected:
                 return self._with_costs(selected)

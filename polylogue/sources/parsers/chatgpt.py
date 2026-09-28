@@ -25,6 +25,7 @@ from polylogue.core.enums import (
 )
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.core.types import AttachmentDirection
+from polylogue.logging import WARNING, emit
 from polylogue.sources.providers.chatgpt_session_models import ChatGPTNode
 from polylogue.sources.tool_result_reasons import unknown_reason
 
@@ -1020,6 +1021,14 @@ def _strip_citation_markers(text: str) -> str:
 
 _SANDBOX_FILE_RE = re.compile(r"sandbox:(/mnt/data/[^\s)\]\"'>]+)")
 
+#: Sandbox attachments one assistant message may materialize when the parse
+#: holds its attachments in memory (no scratch spill). The text is
+#: attacker-authored: unique ``sandbox:/mnt/data/<n>`` links expand into
+#: ``ParsedAttachment`` models at ~80x the source text's size, so an
+#: in-memory parse keeps this physical bound and reports the excess; the
+#: scratch-backed prepared route records every link.
+MAX_IN_MEMORY_SANDBOX_ATTACHMENTS_PER_MESSAGE = 512
+
 
 def _sandbox_file_paths(text: str, seen: MutableSet[str] | None = None) -> Iterator[str]:
     """Ordered, distinct ``/mnt/data`` paths linked in assistant text.
@@ -1466,6 +1475,7 @@ def _collect_message_entries(
     preserve_empty_messages: bool,
     default_model_slug: str | None,
     new_seen_set: Callable[[], MutableSet[str]] = set,
+    sandbox_attachment_limit: int | None = MAX_IN_MEMORY_SANDBOX_ATTACHMENTS_PER_MESSAGE,
 ) -> _ActivePath:
     """Normalize every message node into ``entries``; return the active path."""
     if admission is not None:
@@ -1591,7 +1601,13 @@ def _collect_message_entries(
         # produced it. attachment_kind="sandbox_file" keeps every acquisition
         # path away from it (there is nothing local to fetch).
         if role is Role.ASSISTANT and text:
+            sandbox_found = 0
+            sandbox_recorded = 0
             for sandbox_path in _sandbox_file_paths(text, new_seen_set()):
+                sandbox_found += 1
+                if sandbox_attachment_limit is not None and sandbox_recorded >= sandbox_attachment_limit:
+                    continue
+                sandbox_recorded += 1
                 attachments.append(
                     ParsedAttachment(
                         provider_attachment_id=f"sandbox:{msg_id}:{sandbox_path}",
@@ -1602,6 +1618,20 @@ def _collect_message_entries(
                         direction="model_output",
                         producer_ref=f"message:{msg_id}",
                     )
+                )
+            if sandbox_found > sandbox_recorded:
+                # A counted degradation of the in-memory route, never a
+                # silent truncation: the exact number of distinct links stays
+                # in the record even though only the bounded prefix is kept.
+                emit(
+                    "sources.chatgpt.sandbox_links_bounded",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="sandbox_attachment_cap",
+                    message_provider_id=str(msg_id),
+                    found=sandbox_found,
+                    recorded=sandbox_recorded,
+                    skipped=sandbox_found - sandbox_recorded,
                 )
 
         model_slug: object = None
@@ -2903,6 +2933,7 @@ def parse(payload: Mapping[str, object], fallback_id: str, *, spill: SessionSpil
         preserve_empty_messages=derived_current_node is not None,
         default_model_slug=conversation_model_slug,
         new_seen_set=spill.seen_set if spill is not None else set,
+        sandbox_attachment_limit=None if spill is not None else MAX_IN_MEMORY_SANDBOX_ATTACHMENTS_PER_MESSAGE,
     )
     emitted_message_ids = entries.emitted_provider_ids()
     generation_timings: list[_GenerationTiming] = []
