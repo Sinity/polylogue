@@ -1994,20 +1994,21 @@ def _write_session_entry(
         # session carries), never a parse failure to retry: the raw's outcome
         # is the non-retryable ``validation_rejected`` with a
         # ``content_excised`` diagnostic -- an existing durable outcome, so
-        # ``source_items`` records it without a vocabulary change.
+        # ``source_items`` records it without a vocabulary change. The raw is
+        # settled as skipped, never failed: a ``parse_error`` would count the
+        # intentionally absent session as an unexplained parser failure.
         if batch_owns_transaction:
             conn.execute(f"ROLLBACK TO {_SESSION_WRITE_SAVEPOINT}")
             conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
         logger.info("Session refused as excised content: %s", exc)
         summary.excised_skips += 1
-        summary.failed_raw_ids[raw_id] = f"content_excised: {exc}"[:500]
+        summary.skipped_raw_ids.add(raw_id)
         outcome = summary.outcomes.get(raw_id)
         if outcome is not None:
             summary.outcomes[raw_id] = replace(
                 outcome,
                 outcome_code=IngestOutcome.VALIDATION_REJECTED.value,
                 retryable=False,
-                parse_error=f"content_excised: {exc}"[:500],
                 diagnostic=f"content_excised: {exc}"[:500],
             )
         return False

@@ -5043,7 +5043,11 @@ def test_a_prepared_excision_refusal_is_a_typed_permanent_outcome(
 
     assert summary.parse_failures == 0
     assert summary.excised_skips == 1
+    # Settled as a skip, not a failure: no ``parse_error`` reaches raw state.
+    assert raw_record.raw_id not in summary.failed_raw_ids
+    assert raw_record.raw_id in summary.skipped_raw_ids
     outcome = summary.outcomes[raw_record.raw_id]
+    assert outcome.parse_error is None
     assert outcome.outcome_code == IngestOutcome.VALIDATION_REJECTED.value
     assert str(outcome.diagnostic).startswith("content_excised")
     assert outcome.retryable is False

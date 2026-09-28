@@ -250,6 +250,39 @@ class TestApplySessionExcision:
         worker.join(timeout=30)
         assert finished.is_set()
 
+    def test_targets_are_resolved_under_the_publisher_exclusion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No batch can replace a target between its resolution and its apply.
+
+        Anti-vacuity (Codex P1, #5696): resolve targets before taking the
+        exclusion and a shared publisher slot is still available while they
+        are resolved.
+        """
+        import fcntl
+
+        from polylogue.storage.blob_publication import _writer_lock_path
+
+        session_id = _seed_session(tmp_path, native_id="resolve-under-lock")
+        observed: list[bool] = []
+        original = excision_module._resolve_session_excision_target
+
+        def probe(*args: object, **kwargs: object) -> object:
+            with _writer_lock_path(tmp_path / "source.db").open("a+b") as lock:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    observed.append(True)
+                else:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                    observed.append(False)
+            return original(*args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(excision_module, "_resolve_session_excision_target", probe)
+        apply_session_excision(tmp_path, session_id, reason="r", actor="user:local")
+
+        assert observed == [True]
+
     def test_apply_removes_rows_from_every_tier(self, tmp_path: Path) -> None:
         session_id = _seed_session(tmp_path, native_id="apply-1", with_embedding=True)
 
