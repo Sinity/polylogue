@@ -38,7 +38,7 @@ from polylogue.storage.accepted_marker_inputs import (
     prepare_accepted_marker_input,
 )
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.schema_inventory import canonical_schema_objects
 from polylogue.storage.sqlite.archive_tiers.source import RETIRED_SOURCE_SCHEMA_OBJECTS
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
@@ -53,6 +53,7 @@ _OTHER_PAYLOAD = b'{"conversation": "someone else in the same export"}'
 
 def _seed_archive(tmp_path: Path) -> tuple[str, str]:
     """Two sessions acquired from one container export, plus an index row each."""
+    initialize_active_archive_root(tmp_path)
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     initialize_archive_database(source_db, ArchiveTier.SOURCE)

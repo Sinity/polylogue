@@ -358,6 +358,7 @@ class CursorStore:
         # that already know the plain root should pass it explicitly via
         # ``ops_db_path`` instead of relying on the sibling derivation.
         self._ops_db_path = ops_db_path if ops_db_path is not None else db_path.with_name("ops.db")
+        self._archive_root = self._ops_db_path.parent
         # Per-thread holder for ``ops_write_scope``: ``conn`` (the shared
         # connection, or None), ``depth`` (re-entry count) and ``pending``
         # (buffered stage events awaiting the next commit on ``conn``).
@@ -388,7 +389,7 @@ class CursorStore:
         # sqlite3.Connection`` only commits, it never closes — a per-operation
         # connection leak in the live cursor store).
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = open_connection(self._db_path, timeout=10.0)
+        conn = open_connection(self._db_path, timeout=10.0, archive_root=self._archive_root)
         try:
             with conn:
                 yield conn
@@ -430,7 +431,7 @@ class CursorStore:
             finally:
                 state.depth -= 1
             return
-        conn = open_connection(self._ops_db_path, timeout=10.0)
+        conn = open_connection(self._ops_db_path, timeout=10.0, archive_root=self._archive_root)
         state.conn = conn
         state.depth = 1
         state.pending = []
@@ -489,7 +490,7 @@ class CursorStore:
     def _connect_ops(self) -> Iterator[sqlite3.Connection]:
         held = cast(sqlite3.Connection | None, getattr(self._ops_scope, "conn", None))
         if held is None:
-            conn = open_connection(self._ops_db_path, timeout=10.0)
+            conn = open_connection(self._ops_db_path, timeout=10.0, archive_root=self._archive_root)
             try:
                 with conn:
                     yield conn

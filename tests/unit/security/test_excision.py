@@ -50,7 +50,7 @@ from polylogue.storage.accepted_marker_inputs import (
     persist_pending_marker_input_sync,
     prepare_accepted_marker_input,
 )
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ContentExcisedError,
     deterministic_blob_hash,
@@ -72,6 +72,8 @@ def _seed_session(
     with_embedding: bool = False,
 ) -> str:
     """Seed a minimal but real session spanning source.db + index.db (+ optionally embeddings.db)."""
+
+    initialize_active_archive_root(archive_root)
 
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
@@ -620,6 +622,7 @@ class TestApplySessionExcision:
         from polylogue.schemas.synthetic import SyntheticCorpus
 
         archive_root = tmp_path / "archive"
+        initialize_active_archive_root(archive_root)
 
         specs = build_default_corpus_specs(providers=["codex"], count=1, messages_min=2, messages_max=3, seed=11)
         corpus_dir = tmp_path / "corpus"

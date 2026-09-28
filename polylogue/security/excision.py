@@ -152,9 +152,9 @@ def _connect_ro(path: Path) -> sqlite3.Connection:
     return open_profiled_connection(path, profile=READ_PROFILES["background-read"])
 
 
-def _connect_rw(path: Path) -> sqlite3.Connection:
+def _connect_rw(path: Path, *, archive_root: Path) -> sqlite3.Connection:
     """Open a one-shot writable tier connection, attaching no sibling tier."""
-    return open_isolated_write_connection(path, purpose=f"excision apply({path})")
+    return open_isolated_write_connection(path, purpose=f"excision apply({path})", archive_root=archive_root)
 
 
 @dataclass(frozen=True, slots=True)
@@ -1105,7 +1105,7 @@ def _apply_single_session_excision(
 
     embeddings_db = archive_root / "embeddings.db"
     if embeddings_db.exists() and target.message_ids:
-        conn = _connect_rw(embeddings_db)
+        conn = _connect_rw(embeddings_db, archive_root=archive_root)
         try:
             try_load_sqlite_vec(conn)
             with conn:
@@ -1172,7 +1172,7 @@ def _apply_single_session_excision(
         or target.material_ids
         or target.marker_input_targets
     ):
-        conn = _connect_rw(source_db)
+        conn = _connect_rw(source_db, archive_root=archive_root)
         conn.execute("PRAGMA foreign_keys = ON")
         try:
             with conn:
@@ -1403,7 +1403,7 @@ def _apply_single_session_excision(
     # before index cleanup so a crash after the receipt remains attributable.
     user_db = archive_root / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    conn = _connect_rw(user_db)
+    conn = _connect_rw(user_db, archive_root=archive_root)
     existing_receipt: tuple[str, dict[str, object]] | None = None
     receipt_id = _receipt_assertion_id(session_id, timestamp)
     try:
@@ -1482,7 +1482,7 @@ def _apply_single_session_excision(
         conn.close()
 
     if index_db.exists():
-        conn = _connect_rw(index_db)
+        conn = _connect_rw(index_db, archive_root=archive_root)
         try:
             with conn:
                 if target.marker_input_targets and _table_exists(conn, "ingest_marker_witnesses"):
