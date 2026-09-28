@@ -866,7 +866,7 @@ class RawObservationDerivation:
                 except BaseException:
                     for prepared_write in prepared_writes.values():
                         prepared_write.close()
-                    scratch_owner.cleanup()
+                    _cleanup_scratch(scratch_owner)
                     raise
                 return RawObservationReplacement(
                     key,
@@ -998,4 +998,12 @@ class RawObservationDerivation:
                         prepared_write.close()
                 finally:
                     if replacement.scratch_owner is not None:
-                        replacement.scratch_owner.cleanup()
+                        _cleanup_scratch(replacement.scratch_owner)
+
+
+def _cleanup_scratch(scratch_owner: tempfile.TemporaryDirectory[str]) -> None:
+    """Remove a replay scratch tree and the decodes cached from its carriers."""
+    from polylogue.sources.prepared_message_sink import discard_decoded_sessions_under
+
+    discard_decoded_sessions_under(Path(scratch_owner.name))
+    scratch_owner.cleanup()

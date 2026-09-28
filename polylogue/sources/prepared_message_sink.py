@@ -83,6 +83,12 @@ class _DecodedSessions:
             for key in [key for key in self._entries if key[0] == path]:
                 self._bytes -= self._entries.pop(key)[1]
 
+    def discard_under(self, directory: str) -> None:
+        prefix = directory.rstrip(os.sep) + os.sep
+        with self._lock:
+            for key in [key for key in self._entries if key[0].startswith(prefix)]:
+                self._bytes -= self._entries.pop(key)[1]
+
     def clear(self) -> None:
         with self._lock:
             self._entries.clear()
@@ -95,6 +101,11 @@ _DECODED_SESSIONS = _DecodedSessions(DECODED_SESSION_BUDGET_BYTES)
 def discard_decoded_sessions(path: Path) -> None:
     """Release retained decodes of one sealed carrier before it is removed."""
     _DECODED_SESSIONS.discard_path(str(path))
+
+
+def discard_decoded_sessions_under(directory: Path) -> None:
+    """Release retained decodes of every carrier in a scratch tree being removed."""
+    _DECODED_SESSIONS.discard_under(str(directory))
 
 
 def _message_json(value: ParsedMessage) -> str:

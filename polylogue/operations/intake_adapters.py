@@ -943,12 +943,6 @@ class FileIntakeAdapter(IntakeAdapter):
                 await converge_profiles(tuple(getattr(metrics, "changed_session_ids", ()) or ()))
         return outcomes
 
-    async def prefetch(self, items: Sequence[IntakeItem]) -> None:
-        """Start parsing this page's never-ingested files before its turn."""
-        await self._prefetch_fresh_paths(
-            [Path(item.payload) for item in items if isinstance(item.payload, (str, Path))]
-        )
-
     async def _prefetch_fresh_paths(self, paths: Sequence[Path]) -> None:
         """Hand files with no cursor yet to the parse stage, ahead of their batch.
 
@@ -1174,12 +1168,6 @@ class MultiplexIntakeAdapter(IntakeAdapter):
                 )
                 continue
             groups.setdefault(id(adapter), (adapter, []))[1].append(item)
-        # Every group's files start parsing now, so a later group's parse
-        # overlaps the earlier groups' publication instead of following it.
-        for adapter, group in groups.values():
-            prefetch = getattr(adapter, "prefetch", None)
-            if callable(prefetch):
-                await prefetch(tuple(group))
         for adapter, group in groups.values():
             admit_page = getattr(adapter, "admit_page", None)
             if admit_page is None:

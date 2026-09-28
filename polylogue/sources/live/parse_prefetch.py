@@ -647,9 +647,10 @@ class LiveParseStage:
             expired = [] if speculative else self._expired_speculative_futures()
             pending_count = len(self._path_futures) - len(expired)
             inflight = self._path_inflight_bytes - sum(self._path_sizes.get(path, 0) for path in expired)
-            if pending_count >= self._max_path_pending or (
-                pending_count and inflight + source_bytes > self._max_path_bytes
-            ):
+            # Read-ahead never takes the last worker: required work always has
+            # an executor slot, even behind read-ahead no warm will claim.
+            limit = self._max_path_pending - 1 if speculative and self._max_path_pending > 1 else self._max_path_pending
+            if pending_count >= limit or (pending_count and inflight + source_bytes > self._max_path_bytes):
                 next_wave.append((source_path, provider, is_stream))
                 continue
             attempt_directory: Path | None = None

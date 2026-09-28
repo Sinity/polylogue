@@ -1019,7 +1019,7 @@ def test_prefetch_submits_without_waiting_and_warm_claims_the_work(
 
     import polylogue.sources.live.parse_prefetch as parse_prefetch
 
-    paths = _write_fixture_corpus(tmp_path / "sessions", count=2)
+    paths = _write_fixture_corpus(tmp_path / "sessions", count=3)
     released = threading.Event()
     original_worker = parse_prefetch.live_parse_path_worker
     calls: list[str] = []
@@ -1030,15 +1030,16 @@ def test_prefetch_submits_without_waiting_and_warm_claims_the_work(
         return original_worker(provider_value, source_path, *args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", held_worker)
-    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
+    stage = LiveParseStage(max_workers=3, shard_directory=tmp_path / "parse-shards")
     candidates = [(str(path), Provider.CODEX, True) for path in paths]
     try:
+        # Read-ahead leaves the last worker for required work.
         assert stage.prefetch_paths(candidates) == 2
         # Returned while both workers are still held: nothing waited on them.
         assert len(stage._path_futures) == 2
         assert not any(future.done() for future in stage._path_futures.values())
         released.set()
-        assert stage.warm_paths(candidates) == 2
+        assert stage.warm_paths(candidates) == 3
         assert sorted(calls) == sorted(str(path) for path in paths)
         for path in paths:
             result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())

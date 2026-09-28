@@ -2502,3 +2502,17 @@ def test_retained_claude_design_object_uses_streamed_replay_route(
     assert len(actual.session_events) == 300
     assert actual.created_at == "2026-01-01T00:00:00+00:00"
     assert actual.updated_at == "2026-01-01T00:00:59+00:00"
+
+
+def test_removing_a_scratch_tree_releases_its_decodes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: removing replay scratch without evicting leaves the walked
+    session's decode resident, so the next walk decodes nothing."""
+    from polylogue.sources import prepared_message_sink
+
+    artifact, _coordinate = _prepared_artifact(tmp_path)
+    (session,) = list(artifact.iter_sessions())
+    decodes = _count_message_decodes(monkeypatch)
+    list(session.messages)
+    prepared_message_sink.discard_decoded_sessions_under(tmp_path)
+    list(session.messages)
+    assert decodes[0] == 2
