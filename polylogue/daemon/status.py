@@ -281,11 +281,15 @@ def _daemon_status_fingerprint(active_db: Path) -> str:
     Stat-only (no query execution), so checking it stays cheap even when the
     cached value itself is reused.
     """
-    ops_db = archive_root() / "ops.db"
+    root = archive_root()
+    source_db = root / "source.db"
+    ops_db = root / "ops.db"
     parts: list[str] = []
     for candidate in (
         active_db,
         active_db.with_suffix(".db-wal"),
+        source_db,
+        source_db.with_suffix(".db-wal"),
         ops_db,
         ops_db.with_suffix(".db-wal"),
     ):
@@ -2434,7 +2438,9 @@ def _daemon_embedding_repair_hint(
 
 
 def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentReadiness:
-    if storage.archive_ready:
+    if storage.identity_conflicts:
+        state = CapabilityReadinessState.BLOCKED
+    elif storage.archive_ready:
         state = CapabilityReadinessState.READY
     elif (
         storage.final_shape_ready
@@ -2457,6 +2463,8 @@ def _component_from_archive_storage(storage: ArchiveStorageStatus) -> ComponentR
     caveats: tuple[str, ...] = ()
     if storage.missing_tiers:
         caveats += (f"missing_tiers:{','.join(storage.missing_tiers)}",)
+    if storage.identity_conflicts:
+        caveats += ("archive_identity_conflict",)
     if storage.schema_mismatches:
         caveats += (f"schema_mismatch:{','.join(storage.schema_mismatches)}",)
     if storage.unreadable_tiers:
@@ -3204,6 +3212,7 @@ def build_daemon_status(
             "timed_out",
             "degraded",
             "refreshing",
+            "stale",
         }
     ):
         severity = (

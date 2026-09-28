@@ -168,7 +168,8 @@ def _collect_group(
         lines.extend(pending)
         reason = "none"
         available = 1
-    states.append(({"group": group, "reason": reason}, available))
+    states.append(({"group": group}, available))
+    states.append(({"group": group, "reason": reason}, -1))
 
 
 class EmbeddingMetricState(TypedDict):
@@ -203,9 +204,8 @@ class ArchiveEmbeddingRunState(TypedDict):
     error_count: int
     estimated_cost_usd: float
 
-    # ``processed`` is the successful work denominator, not the number of
-    # rows scanned/planned.  Keep this explicit so a capped or failed run
-    # cannot publish the scan count under two different labels.
+    # ``scanned_sessions`` is the number of attempted sessions, including
+    # attempts that were deferred or failed.
 
 
 PROMETHEUS_CONTENT_TYPE: str = "text/plain; version=0.0.4; charset=utf-8"
@@ -965,9 +965,7 @@ def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = 
         # denominator: omitting the series is more honest than publishing the
         # same quantity under both labels.
         "latest_planned_sessions": None if latest is not None else 0,
-        "latest_processed_sessions": (
-            latest["embedded_sessions"] + latest["skipped_sessions"] if latest is not None else 0
-        ),
+        "latest_processed_sessions": latest["scanned_sessions"] if latest is not None else 0,
         "latest_embedded_sessions": latest["embedded_sessions"] if latest is not None else 0,
         "latest_skipped_sessions": latest["skipped_sessions"] if latest is not None else 0,
         "latest_error_count": latest["error_count"] if latest is not None else 0,
@@ -1390,13 +1388,16 @@ def format_metrics(
         )
         states.append(({"group": "archive_resolution", "reason": resolution_reason}, 0))
 
-    _collect_group(
-        lines,
-        states,
-        "archive_storage",
-        lambda group: _emit_archive_storage_metrics(group, db, configured_root=configured_root),
-        path=db,
-    )
+    if resolution_reason is None:
+        _collect_group(
+            lines,
+            states,
+            "archive_storage",
+            lambda group: _emit_archive_storage_metrics(group, db, configured_root=configured_root),
+            path=db,
+        )
+    else:
+        states.append(({"group": "archive_storage", "reason": resolution_reason}, 0))
     _collect_group(lines, states, "hook_flow", lambda group: _emit_hook_flow_metrics(group, configured_root), path=db)
     if resolution_reason is not None:
         states.append(({"group": "archive_index", "reason": resolution_reason}, 0))
@@ -1409,11 +1410,11 @@ def format_metrics(
             path=db,
         )
     else:
-        ops_attempts_available = False
+        ops_attempts_available: bool | None = None
 
         def collect_ops_or_discovery(group: list[str]) -> None:
             nonlocal ops_attempts_available
-            ops_attempts_available = _format_archive_metrics(group, db, configured_root) is True
+            ops_attempts_available = _format_archive_metrics(group, db, configured_root)
 
         _collect_group(
             lines,
@@ -1424,17 +1425,49 @@ def format_metrics(
         )
         states.append(
             (
-                {"group": "ops_attempts", "reason": "none" if ops_attempts_available else "schema_unavailable"},
-                1 if ops_attempts_available else 0,
+                {
+                    "group": "ops_attempts",
+                    "reason": (
+                        "archive_unreadable"
+                        if _ops_probe_reason(configured_root / "ops.db") == "archive_unreadable"
+                        else "none"
+                        if ops_attempts_available is True
+                        else "schema_unavailable"
+                    ),
+                },
+                1 if ops_attempts_available is True else 0,
             )
         )
         states.append(({"group": "archive_index", "reason": "schema_unavailable"}, 0))
+    current_reasons = {
+        labels["group"]: (labels["reason"], 1 if value == -1 else 0) for labels, value in states if "reason" in labels
+    }
+    for labels, value in states:
+        group = labels.get("group")
+        if group is not None and group not in current_reasons:
+            current_reasons[group] = ("none" if value == 1 else "collector_failed", value)
+    bounded_reasons = ("none", "archive_unreadable", "schema_unavailable", "collector_failed")
+    reason_samples = [
+        ({"group": group, "reason": reason}, int(current_reason == reason))
+        for group, (current_reason, _available) in current_reasons.items()
+        for reason in bounded_reasons
+    ]
+    stable_states = [
+        ({"group": labels["group"]} if "group" in labels else labels, value) for labels, value in states if value != -1
+    ]
     _emit_metric(
         lines,
         name="polylogue_daemon_metrics_collection_available",
         help_text="1 when a metrics collection group completed for this scrape.",
         metric_type="gauge",
-        samples=states,
+        samples=stable_states,
+    )
+    _emit_metric(
+        lines,
+        name="polylogue_daemon_metrics_collection_reason",
+        help_text="Current bounded reason for each metrics collection group.",
+        metric_type="gauge",
+        samples=reason_samples,
     )
     return "\n".join(lines) + "\n"
 
@@ -1646,6 +1679,14 @@ def _format_archive_metrics(lines: list[str], db: Path, configured_root: Path) -
 
 
 def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> bool | None:
+    if ops_db.exists():
+        probe = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
+        try:
+            result = probe.execute("PRAGMA quick_check").fetchone()
+            if result is None or result[0] != "ok":
+                raise sqlite3.DatabaseError("ops database quick_check failed")
+        finally:
+            probe.close()
     attempts = _ops_attempt_counts(ops_db)
     durations = _ops_recent_attempt_durations(ops_db)
     debt = _ops_convergence_debt_by_stage(ops_db)
@@ -1989,6 +2030,21 @@ def _emit_ops_throughput_metrics(lines: list[str], ops_db: Path) -> bool:
         samples=[(None, materialized_count / duration)],
     )
     return True
+
+
+def _ops_probe_reason(ops_db: Path) -> str:
+    """Distinguish an unreadable ops tier from a readable uninitialized ledger."""
+    if not ops_db.exists():
+        return "schema_unavailable"
+    try:
+        conn = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
+        try:
+            result = conn.execute("PRAGMA quick_check").fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return "archive_unreadable"
+    return "none" if result is not None and result[0] == "ok" else "archive_unreadable"
 
 
 def _emit_db_space_metrics(lines: list[str], db: Path) -> None:
