@@ -339,6 +339,7 @@ class SourceItemAdmission:
     entry_ordinal: int | None = None
     split_index: int | None = None
     addressing_mode: str | None = None
+    content_identity: str | None = None
 
 
 def execute_source_item_admission(
@@ -400,6 +401,7 @@ def execute_source_item_admission(
                 entry_ordinal=member.entry_ordinal,
                 split_index=member.split_index,
                 addressing_mode=member.addressing_mode,
+                content_identity=member.content_identity,
                 manage_transaction=False,
             )
         consume_blob_publication_receipt(conn, plan.request.blob_publication_receipt_id, plan.request.blob_hash)

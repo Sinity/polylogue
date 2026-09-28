@@ -140,6 +140,7 @@ class ProbeSummary(TypedDict):
     sample: NotRequired[ArchiveSubsetSampleSummary]
     budgets: NotRequired[BudgetReport]
     regression_case: NotRequired[RegressionCaseSummary]
+    workload_receipt: NotRequired[JSONDocument]
 
 
 def _names(value: object | None) -> list[str]:

@@ -57,7 +57,7 @@ def _child_schema_nodes(schema: SchemaNode, path: SchemaPath) -> Iterable[tuple[
 
 
 def _walk_values(schema: SchemaNode, path: SchemaPath = "$") -> list[SchemaValueRecord]:
-    """Walk every nested JSON value and collect x-polylogue-values entries.
+    """Walk schema values and collect annotation and literal keyword strings.
 
     JSON Schema adds schema-bearing keywords over time, and several of them
     are map or list containers rather than ``properties`` children. Walking
@@ -69,6 +69,14 @@ def _walk_values(schema: SchemaNode, path: SchemaPath = "$") -> list[SchemaValue
     values = _string_values(schema.get("x-polylogue-values"))
     if values:
         results.append((path, values))
+
+    # Standard JSON Schema keywords can publish literals just as the private
+    # annotation can. Keep their source paths in the audit evidence.
+    for keyword in ("const", "default", "examples", "enum"):
+        literal = schema.get(keyword)
+        strings = [literal] if isinstance(literal, str) else _string_values(literal)
+        if strings:
+            results.append((f"{path}.{keyword}", strings))
 
     for key, child in schema.items():
         if key == "x-polylogue-values":

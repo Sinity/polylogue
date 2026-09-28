@@ -114,7 +114,7 @@ GATES: tuple[Gate, ...] = (
     ),
     Gate(
         "patterns",
-        "Enforce AST-shape defect-family rules with shrinking grandfathered baselines.",
+        "Enforce AST-shape defect-family rules with shrinking grandfathered baselines. Baselines use path:sha1[:count] content anchors.",
         "module",
         ("devtools.verify_patterns", "--json"),
         label="gate patterns",

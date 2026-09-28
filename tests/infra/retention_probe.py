@@ -116,6 +116,7 @@ class RetentionProbe:
     post_collection: dict[str, int] = field(default_factory=dict)
     previous_anon_kib: int = 0
     previous_hwm_kib: int = 0
+    observed_hwm_kib: int = 0
     tests_seen: int = 0
     files: dict[str, _FileCost] = field(default_factory=dict)
     peaks: list[tuple[int, str]] = field(default_factory=list)
@@ -151,6 +152,7 @@ class RetentionProbe:
         self.post_collection = read_memory_kib()
         self.previous_anon_kib = self.post_collection["RssAnon"]
         self.previous_hwm_kib = self.post_collection["VmHWM"]
+        self.observed_hwm_kib = self.post_collection["VmHWM"]
         self.observed_anon_peak_kib = self.post_collection["RssAnon"]
 
     def pytest_runtest_logfinish(self, nodeid: str, location: tuple[str, int | None, str]) -> None:
@@ -172,13 +174,14 @@ class RetentionProbe:
         # per-test readings, so nothing but the process's actual occupancy
         # moves it.
         self.observed_anon_peak_kib = max(self.observed_anon_peak_kib, current["RssAnon"])
-        raised = current["VmHWM"] - self.previous_hwm_kib
+        raised = max(current["VmHWM"] - self.observed_hwm_kib, 0)
         if raised > 0:
             cost.hwm_raise_kib += raised
             self.peaks.append((raised, nodeid))
             self.peaks.sort(reverse=True)
             del self.peaks[_CENSUS_WIDTH:]
         self.previous_anon_kib = current["RssAnon"]
+        self.observed_hwm_kib = max(self.observed_hwm_kib, current["VmHWM"])
         self.previous_hwm_kib = current["VmHWM"]
         self.tests_seen += 1
         if self.trim_every and self.tests_seen % self.trim_every == 0:
@@ -199,7 +202,8 @@ class RetentionProbe:
         after_gc = read_memory_kib()
         trimmed = _malloc_trim()
         after_trim = read_memory_kib()
-        ranked = sorted(self.files.items(), key=lambda row: row[1].hwm_raise_kib, reverse=True)
+        ranked = sorted(self.files.items(), key=lambda row: row[1].anon_delta_kib, reverse=True)
+        peak_ranked = sorted(self.files.items(), key=lambda row: row[1].hwm_raise_kib, reverse=True)
         payload = {
             "worker": os.environ.get("PYTEST_XDIST_WORKER", "main"),
             "pid": os.getpid(),
@@ -232,10 +236,22 @@ class RetentionProbe:
                 }
                 for path, cost in ranked[:_CENSUS_WIDTH]
             ],
+            "peak_setter_files": [
+                {
+                    "path": path,
+                    "tests": cost.tests,
+                    "anon_delta_kib": cost.anon_delta_kib,
+                    "hwm_raise_kib": cost.hwm_raise_kib,
+                }
+                for path, cost in peak_ranked[:_CENSUS_WIDTH]
+            ],
             "peak_raising_tests": [{"hwm_raise_kib": raised, "nodeid": nodeid} for raised, nodeid in self.peaks],
             "object_census": _object_census(),
         }
         destination = self.report_path
+        worker = os.environ.get("PYTEST_XDIST_WORKER")
+        if worker and destination.suffix == ".json" and not destination.is_dir():
+            destination = destination.with_name(f"{destination.stem}-{worker}{destination.suffix}")
         if destination.is_dir() or destination.suffix != ".json":
             destination.mkdir(parents=True, exist_ok=True)
             destination = destination / f"retention-{payload['worker']}-{payload['pid']}.json"

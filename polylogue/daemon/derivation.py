@@ -245,6 +245,9 @@ class Budget:
     inspection: int | None = None
     compute: int | None = None
     publication: int | None = None
+    #: Stop scheduling keys once this many have failed, even if compute and
+    #: publication budgets remain. This is a per-pass circuit breaker.
+    max_errors: int | None = None
     retained_outcomes: int | None = None
     deadline_s: float | None = None
     #: An absolute ``time.monotonic`` instant the pass must stop by, for a
@@ -255,6 +258,8 @@ class Budget:
     def __post_init__(self) -> None:
         if self.page < 1:
             raise ValueError("page budget must request at least one key")
+        if self.max_errors is not None and self.max_errors < 1:
+            raise ValueError("max_errors must be at least one")
 
     @classmethod
     def coerce(cls, value: Budget | int | None, *, deadline_s: float | None = None) -> Budget:
@@ -637,6 +642,8 @@ class _Pass:
         if budget.publication is not None and self.published >= budget.publication:
             return True
         if budget.compute is not None and self.computed >= budget.compute:
+            return True
+        if budget.max_errors is not None and self.counts[Outcome.FAILED] >= budget.max_errors:
             return True
         return not inspected and budget.inspection is not None and self.inspected >= budget.inspection
 

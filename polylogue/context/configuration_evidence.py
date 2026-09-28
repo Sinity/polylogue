@@ -8,6 +8,7 @@ historical context without consulting the current checkout.
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
@@ -90,6 +91,10 @@ class EfficacyComparison:
     coverage: str
     judgment_authority: str
 
+    def __post_init__(self) -> None:
+        if not self.confounds or not self.coverage.strip() or not self.judgment_authority.strip():
+            raise ValueError("efficacy comparisons require confounds, coverage, and judgment authority")
+
 
 def artifact_from_bytes(
     *,
@@ -129,7 +134,7 @@ def capture_path(
     return artifact_from_bytes(
         kind=kind,
         path=str(path),
-        payload=path.read_bytes(),
+        payload=os.fsencode(os.readlink(path)) if path.is_symlink() else path.read_bytes(),
         owner=owner,
         repository=repository,
         observed_from_ms=observed_from_ms,
@@ -137,7 +142,11 @@ def capture_path(
 
 
 def resolve_context(
-    artifacts: Sequence[ConfigurationArtifactVersion], *, at_ms: int, expected_paths: Sequence[str] = ()
+    artifacts: Sequence[ConfigurationArtifactVersion] | ConfigurationObservation,
+    *,
+    at_ms: int,
+    expected_paths: Sequence[str] = (),
+    unknown_fields: Sequence[str] = (),
 ) -> ContextResolution:
     """Resolve only revisions whose recorded interval contains ``at_ms``.
 
@@ -145,6 +154,9 @@ def resolve_context(
     a gap.  Neither condition is filled from current files.
     """
 
+    if isinstance(artifacts, ConfigurationObservation):
+        unknown_fields = (*unknown_fields, *artifacts.unknown_fields)
+        artifacts = artifacts.artifacts
     by_path: dict[str, list[ConfigurationArtifactVersion]] = {}
     for artifact in artifacts:
         if artifact.observed_from_ms <= at_ms and (
@@ -156,16 +168,19 @@ def resolve_context(
     selected = tuple(sorted((rows[0] for path, rows in by_path.items() if len(rows) == 1), key=lambda item: item.path))
     if overlaps:
         return ContextResolution(None, "overlap", selected, missing, overlaps)
-    fields = {f"artifact:{item.path}": item.content_hash for item in selected}
-    unknown = tuple(f"missing:{path}" for path in missing)
+    fields = {f"artifact:{item.kind}:{item.path}": item.content_hash for item in selected}
+    unknown = tuple(dict.fromkeys((*[f"missing:{path}" for path in missing], *unknown_fields)))
     if not selected and missing:
         return ContextResolution(None, "gap", selected, missing)
     context = ExecutionContextRef.from_observation(fields, unknown_fields=unknown)
-    return ContextResolution(context, "partial" if missing else "exact", selected, missing)
+    return ContextResolution(context, "partial" if missing or unknown_fields else "exact", selected, missing)
 
 
 def join_invocations(
-    invocations: Sequence[tuple[str, ArtifactKind, int]], artifacts: Sequence[ConfigurationArtifactVersion]
+    invocations: Sequence[tuple[str, ArtifactKind, int]],
+    artifacts: Sequence[ConfigurationArtifactVersion],
+    *,
+    declaration_names: dict[str, str] | None = None,
 ) -> tuple[StructuralInvocation, ...]:
     """Join structural invocations to the unique declaration active at that time."""
 
@@ -175,7 +190,7 @@ def join_invocations(
             artifact
             for artifact in artifacts
             if artifact.kind == kind
-            and artifact.path == name
+            and (declaration_names or {}).get(name, artifact.path) == artifact.path
             and artifact.observed_from_ms <= observed_at_ms
             and (artifact.observed_until_ms is None or observed_at_ms < artifact.observed_until_ms)
         ]
@@ -189,7 +204,7 @@ def git_artifact_history(
     """Read authoritative committed revisions without treating the worktree as history."""
 
     result = subprocess.run(
-        ["git", "log", f"--max-count={limit}", "--format=%H", "--", path],
+        ["git", "log", "--follow", f"--max-count={limit}", "--format=%H", "--", path],
         cwd=repository,
         capture_output=True,
         text=True,
@@ -198,20 +213,24 @@ def git_artifact_history(
     if result.returncode:
         return ()
     revisions: list[ConfigurationArtifactVersion] = []
+    deleted_at: list[int] = []
     commits = [line.strip() for line in result.stdout.splitlines() if line.strip()]
     for commit in reversed(commits):
         show = subprocess.run(["git", "show", f"{commit}:{path}"], cwd=repository, capture_output=True, check=False)
-        if show.returncode == 0:
-            timestamp = subprocess.run(
-                ["git", "show", "-s", "--format=%ct", commit],
-                cwd=repository,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            if timestamp.returncode != 0 or not timestamp.stdout.strip().isdigit():
-                continue
-            observed_from_ms = int(timestamp.stdout.strip()) * 1000
+        timestamp = subprocess.run(
+            ["git", "show", "-s", "--format=%ct", commit],
+            cwd=repository,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if timestamp.returncode != 0 or not timestamp.stdout.strip().isdigit():
+            continue
+        observed_from_ms = int(timestamp.stdout.strip()) * 1000
+        if show.returncode != 0:
+            deleted_at.append(observed_from_ms)
+            continue
+        else:
             revisions.append(
                 artifact_from_bytes(
                     kind=kind,
@@ -223,20 +242,29 @@ def git_artifact_history(
                     source_revision=commit,
                 )
             )
-    return tuple(
-        replace(
-            revision,
-            observed_until_ms=next(
-                (
-                    later.observed_from_ms
-                    for later in revisions[index + 1 :]
-                    if later.observed_from_ms > revision.observed_from_ms
-                ),
-                None,
-            ),
+    result_revisions: list[ConfigurationArtifactVersion] = []
+    for index, revision in enumerate(revisions):
+        later = revisions[index + 1 :]
+        same_second = [item for item in later if item.observed_from_ms == revision.observed_from_ms]
+        previous_same_second = index > 0 and revisions[index - 1].observed_from_ms == revision.observed_from_ms
+        later_time = next(
+            (item.observed_from_ms for item in later if item.observed_from_ms > revision.observed_from_ms), None
         )
-        for index, revision in enumerate(revisions)
-    )
+        deletion = next((stamp for stamp in deleted_at if stamp >= revision.observed_from_ms), None)
+        if same_second or previous_same_second:
+            # Preserve every snapshot as ambiguous within the timestamp
+            # bucket, then expose the final commit-order state after it.
+            result_revisions.append(replace(revision, observed_until_ms=revision.observed_from_ms + 1000))
+            if previous_same_second and not same_second:
+                start = revision.observed_from_ms + 1000
+                end = min((stamp for stamp in (later_time, deletion) if stamp is not None), default=None)
+                result_revisions.append(replace(revision, observed_from_ms=start, observed_until_ms=end))
+        else:
+            end = min((stamp for stamp in (later_time, deletion) if stamp is not None), default=None)
+            if end is not None and end <= revision.observed_from_ms:
+                end = revision.observed_from_ms + 1000
+            result_revisions.append(replace(revision, observed_until_ms=end))
+    return tuple(result_revisions)
 
 
 def compare_cohorts(
@@ -244,8 +272,6 @@ def compare_cohorts(
 ) -> EfficacyComparison:
     """Construct a comparison whose limitations are mandatory data, not prose."""
 
-    if not confounds or not coverage.strip() or not judgment_authority.strip():
-        raise ValueError("efficacy comparisons require confounds, coverage, and judgment authority")
     return EfficacyComparison(cohort, compared_cohort, outcome, tuple(confounds), coverage, judgment_authority)
 
 

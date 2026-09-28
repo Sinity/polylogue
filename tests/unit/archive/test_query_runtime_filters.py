@@ -352,6 +352,26 @@ def test_apply_full_filters_handles_message_type_and_since_session_scope() -> No
     assert missing_reference == []
 
 
+def test_sql_pushed_since_session_scope_survives_post_filter_candidates() -> None:
+    """Post-filter chunks must not need the SQL-removed anchor row.
+
+    Anti-vacuity: reapplying ``_apply_since_session`` with ``sql_pushed=True``
+    empties this valid candidate chunk because it intentionally excludes the
+    reference session.
+    """
+    candidate = _session(
+        "session-later",
+        make_msg(id="later", role="user", text="public result"),
+        working_directories=["/repo"],
+    )
+    filtered = apply_full_filters(
+        SessionQueryPlan(since_session_id="session-root", negative_terms=("secret",)),
+        [candidate],
+        sql_pushed=True,
+    )
+    assert [str(session.id) for session in filtered] == ["session-later"]
+
+
 def test_apply_full_filters_rejects_unknown_message_type() -> None:
     session = _session(
         "session",

@@ -1957,6 +1957,23 @@ def _delete_sessions_without_fk_cascade(conn: sqlite3.Connection, session_ids: S
             conn.execute(f"UPDATE {table} SET {column} = NULL WHERE {column} IN ({placeholders})", params)
         elif on_delete.upper() == "CASCADE":
             conn.execute(f"DELETE FROM {table} WHERE {column} IN ({placeholders})", params)
+    # Bulk ingest disables SQLite FK actions. Owner rows may reference only
+    # the compound (message_id, session_id) key, so they are invisible to the
+    # direct-session scan above. Delete those message-owned rows explicitly
+    # while their session_id still identifies the stale subtree.
+    table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    for table_row in table_rows:
+        table_name = str(table_row[0])
+        owns_message_rows = False
+        for fk in conn.execute(f"PRAGMA foreign_key_list({_quote_identifier(table_name)})").fetchall():
+            if str(fk[2]) == "messages" and str(fk[6]).upper() == "CASCADE" and str(fk[3]) == "session_id":
+                owns_message_rows = True
+                break
+        if owns_message_rows:
+            conn.execute(
+                f"DELETE FROM {_quote_identifier(table_name)} WHERE {_quote_identifier('session_id')} IN ({placeholders})",
+                params,
+            )
 
 
 def _session_foreign_key_actions(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
@@ -2839,8 +2856,15 @@ def _prepare_ingest_unit_sync(
         cohort_ids = tuple(sorted({raw_id, *(str(row[members.columns.index("raw_id")]) for row in members.rows)}))
         cohort_marks = ",".join("?" for _ in cohort_ids)
         census = _source_snapshot(source, "raw_membership_census", f"raw_id IN ({cohort_marks})", cohort_ids)
+        # Membership classification queries source-generation ownership
+        # (#5630), so the scratch needs the relation's shape. The Drive route
+        # classifies without a source generation (``raw_membership_raw_ids``
+        # in ``_bind_drive_revision_lineage``), so no ownership row can match:
+        # copying the cohort's rows would only let a raw retained across many
+        # generations exceed the row cap and go permanently stale.
+        generation_members = _source_snapshot(source, "source_item_raw_members", "0", ())
         artifacts = _source_snapshot(source, "raw_artifacts", "raw_id=?", (raw_id,))
-    snapshots = (raw, members, census, artifacts)
+    snapshots = (raw, members, census, generation_members, artifacts)
     raw_id_position = raw.columns.index("raw_id")
     stale = not any(row[raw_id_position] == raw_id and row == input_row for row in raw.rows)
     stale |= any(len(snapshot.rows) > _DRIVE_COHORT_MAX_ROWS for snapshot in snapshots)

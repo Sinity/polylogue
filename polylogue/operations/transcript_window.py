@@ -42,7 +42,7 @@ reader; see the ``Reader`` protocol below.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
@@ -161,11 +161,15 @@ def frame_request(
     reference = {**_window_arguments(original), **dict(extra_arguments or {})}
     if dict(transaction.arguments) != reference:
         raise QueryContinuationInvalidError("continuation arguments do not match the requested transcript window")
-    supplied = request.model_dump(mode="json", exclude_unset=True, exclude={"continuation", "operation"})
+    supplied = request.model_dump(mode="json", exclude_unset=True, exclude={"continuation", "operation", "limit"})
     for name, value in supplied.items():
         if value != original.model_dump(mode="json")[name]:
             raise QueryContinuationInvalidError(f"continuation conflicts with {name}")
-    return original, transaction
+    if "limit" not in request.model_fields_set:
+        return original, transaction
+    if request.limit > transaction.page_size:
+        raise QueryContinuationInvalidError("continuation cannot widen its bound window")
+    return request, replace(transaction, page_size=request.limit)
 
 
 def bind_snapshot(archive: Any, transaction: QueryTransactionRequest) -> QueryTransactionRequest:
@@ -337,7 +341,15 @@ async def message_transcript_window(api: Any, request: SessionRead) -> Transcrip
             raise ValueError(f"session not found: {session_id}")
         return list(messages), total, completeness
 
-    return await read_transcript_window(Path(api.archive_root), request, read=read)
+    # The repository's explicit index path is authoritative for compatibility
+    # facades constructed with a split configured root and active database.
+    active_db = Path(api.repository.backend.db_path)
+    active_root = active_db.parent
+    if active_root.name == ".index-generations":
+        active_root = active_root.parent
+    elif active_root.parent.name == ".index-generations":
+        active_root = active_root.parent.parent
+    return await read_transcript_window(active_root, request, read=read)
 
 
 def window_request(

@@ -33,12 +33,13 @@ class OperationUnavailableError(OperationKernelError):
 
     code = "daemon_required"
 
-    def __init__(self, detail: object = None, *, operation: str | None = None) -> None:
+    def __init__(self, detail: object = None, *, operation: str | None = None, archive_root: str | None = None) -> None:
         self.detail = detail
         #: The declared operation that had no executor, carried as a field so
         #: the machine envelope can name it without a client parsing it back
         #: out of the message (polylogue-re6s3 AC4).
         self.operation = operation
+        self.archive_root = archive_root
         super().__init__(str(detail) if detail is not None else self.code)
 
 
@@ -295,6 +296,7 @@ def dispatch(
             # only "start polylogued run" cannot tell WHICH route refused.
             f"start polylogued run to serve this operation: {operation}",
             operation=operation,
+            archive_root=str(root),
         ) from None
 
     from polylogue.daemon.api_auth import resolve_api_auth_token
@@ -322,6 +324,7 @@ def dispatch(
             # only "start polylogued run" cannot tell WHICH route refused.
             f"start polylogued run to serve this operation: {operation}",
             operation=operation,
+            archive_root=str(root),
         ) from None
 
 
