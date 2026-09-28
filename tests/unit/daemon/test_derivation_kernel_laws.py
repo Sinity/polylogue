@@ -423,6 +423,30 @@ def test_publish_refusal_is_pending_not_failed() -> None:
     assert adapter.output == {}
 
 
+def test_successful_cleanup_is_pending_when_requiredness_moved_before_certification() -> None:
+    """A vanished required key is a binding race, not a broken publisher.
+
+    Anti-vacuity: omit the requiredness recheck and a successful cleanup with
+    missing output is classified FAILED instead of retryable BINDING_MOVED.
+    """
+
+    class VanishingDomain(RecordingDerivation):
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            del frame, replacement
+            self._required = ()
+            return True
+
+        def is_required_key(self, frame: DerivationFrame, key: str) -> bool:
+            del frame
+            return key in self._required
+
+    report = converge(DerivationRegistry([VanishingDomain("d", required=("vanishing",))]), FRAME)
+
+    assert report.failed == 0
+    assert report.pending == 1
+    assert report.by_outcome(Outcome.PENDING)[0].reason is PendingReason.BINDING_MOVED
+
+
 def test_a_publication_the_output_relation_does_not_confirm_is_a_failure() -> None:
     """Publishing reports a claim; the output relation certifies it.
 

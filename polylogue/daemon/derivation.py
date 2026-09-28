@@ -991,6 +991,30 @@ class _Pass:
             )
             return
         if after is KeyStatus.MISSING and expected is KeyStatus.VALID:
+            still_required = getattr(adapter, "is_required_key", None)
+            if callable(still_required):
+                try:
+                    if not still_required(self.frame, key):
+                        self.record(
+                            KeyOutcome(
+                                key=derivation_key,
+                                outcome=Outcome.PENDING,
+                                reason=PendingReason.BINDING_MOVED,
+                                error="required key disappeared before publication completed",
+                                elapsed_s=elapsed,
+                            )
+                        )
+                        return
+                except Exception as exc:
+                    self.record(
+                        KeyOutcome(
+                            key=derivation_key,
+                            outcome=Outcome.FAILED,
+                            error=f"requiredness inspection: {exc}",
+                            elapsed_s=elapsed,
+                        )
+                    )
+                    return
             # A publication that rechecks the authoritative required relation
             # returns False when this key ceased to be required.  A successful
             # publication that still leaves a required output missing is a
