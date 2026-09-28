@@ -22,6 +22,7 @@ loop, not a substitute for it.
 from __future__ import annotations
 
 import contextlib
+import functools
 import json
 import os
 import platform
@@ -33,6 +34,8 @@ from collections.abc import Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
+
+import tomllib
 
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
@@ -641,6 +644,22 @@ LARGE_SELECTION_MODULES = 8
 BROAD_SELECTION_MODULES = 100
 
 
+@functools.cache
+def _configured_test_module_globs() -> tuple[str, ...]:
+    """The suite's ``python_files`` collection globs, from ``pyproject.toml``.
+
+    A directory expansion must match every pattern pytest is configured to
+    collect (``fuzz_*.py`` alongside ``test_*.py``), or modules that pattern
+    alone would collect are missing from the module count and the large- or
+    broad-selection thresholds under-fire.
+    """
+    data = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    patterns = data.get("tool", {}).get("pytest", {}).get("ini_options", {}).get("python_files")
+    if not patterns:
+        return ("test_*.py",)
+    return tuple(patterns) if isinstance(patterns, list) else (str(patterns),)
+
+
 def _selected_test_modules(selection: list[str]) -> int:
     """How many test modules the selection names, directories expanded."""
     modules: set[Path] = set()
@@ -662,7 +681,8 @@ def _selected_test_modules(selection: list[str]) -> int:
         target = Path(argument.split("::", 1)[0])
         target = target if target.is_absolute() else ROOT / target
         if target.is_dir():
-            modules.update(path.resolve() for path in target.rglob("test_*.py") if path.is_file())
+            for glob in _configured_test_module_globs():
+                modules.update(path.resolve() for path in target.rglob(glob) if path.is_file())
         elif target.is_file():
             # Node ids of one file are one module, not several.
             modules.add(target.resolve())

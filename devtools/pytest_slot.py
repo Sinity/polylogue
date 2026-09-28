@@ -1344,6 +1344,11 @@ def _rerun_failures_in_slot(
         )
     except OSError as exc:
         log.write(f"devtools.pytest_slot: could not start the rerun: {exc}\n".encode())
+        with contextlib.suppress(OSError):
+            (step_dir / RERUN_IN_SLOT_RESULT).write_text(
+                json.dumps({"attempted": failed, "rerun_exit": 125, "launch_error": str(exc)[:500]}),
+                encoding="utf-8",
+            )
         return
     # The launch's signal handlers stop whichever child is registered, so a
     # cancelled or deadline-killed job reaps the rerun and still writes its

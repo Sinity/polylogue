@@ -96,9 +96,27 @@ def operand_count(arguments: Sequence[str], index: int) -> int:
         return 0
     if argument.startswith("--") and "=" in argument:
         return 0
-    if not argument.startswith("--") and len(argument) > 2:
-        return 0
-    nargs = pytest_option_nargs().get(argument, 0)
+    table = pytest_option_nargs()
+    if not argument.startswith("--") and len(argument) > 2 and argument not in table:
+        # A clustered short-option run (``-qW``): walk it character by
+        # character, as argparse does. A no-value option in the cluster is
+        # consumed and skipped; the first value-taking option ends the
+        # cluster, taking any remaining characters as its attached value, or
+        # the next argument if none remain.
+        for offset, letter in enumerate(argument[1:], start=1):
+            option = f"-{letter}"
+            option_nargs = table.get(option, 0)
+            if option_nargs == 0:
+                continue
+            if offset < len(argument) - 1:
+                # Characters remain after this option: they are its attached
+                # value (``-Werror``), so nothing further is consumed.
+                return 0
+            argument = option
+            break
+        else:
+            return 0
+    nargs = table.get(argument, 0)
     following = list(arguments[index + 1 :])
     if nargs is None:
         return min(1, len(following))
