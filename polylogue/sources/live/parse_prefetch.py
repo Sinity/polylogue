@@ -502,23 +502,14 @@ class LiveParseStage:
             return 0
         self._stage_calls += 1
         deadline = time.monotonic() + self._warm_timeout_seconds
-        claimed = [source_path for source_path, _p, _s in candidates if source_path in self._speculative]
-        # A speculative preparation this warm now needs is awaited first, so
-        # that a retryable failure it produced (the source moved while it was
-        # read ahead of time) is known before the warm decides what to submit.
-        running = [self._path_futures[path] for path in claimed if path in self._path_futures]
-        if running:
-            wait(running, timeout=max(0.0, deadline - time.monotonic()))
-            for source_path, future in tuple(self._path_futures.items()):
-                if future.done():
-                    self._collect_path_future(source_path, future)
+        # Read-ahead this warm now claims. A retryable failure it produced
+        # (the source moved while it was read ahead) is not this warm's
+        # answer: it is prepared again, whether it finished before the warm
+        # or while the warm waited.
+        claimed = {source_path for source_path, _p, _s in candidates if source_path in self._speculative}
         for source_path in claimed:
             self._speculative.pop(source_path, None)
-            result = self._path_results.get(source_path)
-            if result is not None and result.error is not None and result.deferred:
-                # A retryable failure of a speculative preparation is not this
-                # warm's answer: prepare the path again now.
-                self._path_results.pop(source_path).discard()
+        self._discard_retryable(claimed)
         if self._cleanup_blocked:
             for source_path, _provider, _is_stream in candidates:
                 if source_path not in self._path_results and source_path not in self._path_futures:
@@ -526,6 +517,33 @@ class LiveParseStage:
                         None, None, None, "worker stop could not be verified; scratch cleanup is blocked", deferred=True
                     )
             return len(candidates)
+        self._warm_until(list(candidates), deadline)
+        retry = self._discard_retryable(claimed)
+        if retry and deadline > time.monotonic():
+            self._warm_until([candidate for candidate in candidates if candidate[0] in retry], deadline)
+        if archive_root is not None:
+            self._prepare_existing_session_writes(
+                archive_root,
+                read_snapshot=read_snapshot,
+                capture_mode=capture_mode,
+                source_index=source_index,
+                paths={source_path for source_path, _provider, _is_stream in candidates},
+            )
+        self._drop_stale_speculation()
+        return len(candidates)
+
+    def _discard_retryable(self, paths: set[str]) -> set[str]:
+        """Drop retryable failures recorded for ``paths``; return which."""
+        dropped: set[str] = set()
+        for source_path in paths:
+            result = self._path_results.get(source_path)
+            if result is not None and result.error is not None and result.deferred:
+                self._path_results.pop(source_path).discard()
+                dropped.add(source_path)
+        return dropped
+
+    def _warm_until(self, candidates: list[tuple[str, Provider, bool]], deadline: float) -> None:
+        """Submit ``candidates`` as capacity allows and wait for them until ``deadline``."""
         remaining = list(candidates)
         while remaining:
             remaining = self._submit_path_candidates(remaining)
@@ -564,16 +582,6 @@ class LiveParseStage:
         for source_path, future in tuple(self._path_futures.items()):
             if future.done():
                 self._collect_path_future(source_path, future)
-        if archive_root is not None:
-            self._prepare_existing_session_writes(
-                archive_root,
-                read_snapshot=read_snapshot,
-                capture_mode=capture_mode,
-                source_index=source_index,
-                paths={source_path for source_path, _provider, _is_stream in candidates},
-            )
-        self._drop_stale_speculation()
-        return len(candidates)
 
     def _expired_speculative_futures(self) -> list[str]:
         return [
@@ -610,16 +618,19 @@ class LiveParseStage:
         if self._shard_directory is None or self._cleanup_blocked or self._closing:
             return 0
         self._stage_calls += 1
-        before = set(self._path_futures)
-        self._submit_path_candidates(list(candidates), speculative=True)
-        submitted = [path for path in self._path_futures if path not in before]
+        submitted: list[str] = []
+        self._submit_path_candidates(list(candidates), speculative=True, submitted=submitted)
         for source_path in submitted:
             self._speculative[source_path] = self._stage_calls
         self._drop_stale_speculation()
         return len(submitted)
 
     def _submit_path_candidates(
-        self, candidates: list[tuple[str, Provider, bool]], *, speculative: bool = False
+        self,
+        candidates: list[tuple[str, Provider, bool]],
+        *,
+        speculative: bool = False,
+        submitted: list[str] | None = None,
     ) -> list[tuple[str, Provider, bool]]:
         """Submit every candidate that fits the worker and byte budget; return the rest.
 
@@ -649,7 +660,8 @@ class LiveParseStage:
             inflight = self._path_inflight_bytes - sum(self._path_sizes.get(path, 0) for path in expired)
             # Read-ahead never takes the last worker: required work always has
             # an executor slot, even behind read-ahead no warm will claim.
-            limit = self._max_path_pending - 1 if speculative and self._max_path_pending > 1 else self._max_path_pending
+            # With a single worker there is no spare slot, so no read-ahead.
+            limit = self._max_path_pending - 1 if speculative else self._max_path_pending
             if pending_count >= limit or (pending_count and inflight + source_bytes > self._max_path_bytes):
                 next_wave.append((source_path, provider, is_stream))
                 continue
@@ -674,6 +686,8 @@ class LiveParseStage:
                     )
                 continue
             self._path_futures[source_path] = future
+            if submitted is not None:
+                submitted.append(source_path)
             self._path_attempt_dirs[source_path] = attempt_directory
             self._path_sizes[source_path] = source_bytes
             self._path_inflight_bytes += source_bytes

@@ -1059,7 +1059,7 @@ def test_unclaimed_prefetch_is_dropped_with_its_scratch(tmp_path: Path) -> None:
     import polylogue.sources.live.parse_prefetch as parse_prefetch
 
     skipped, claimed = _write_fixture_corpus(tmp_path / "sessions", count=2)
-    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
     try:
         assert stage.prefetch_paths([(str(skipped), Provider.CODEX, True)]) == 1
         for _ in range(parse_prefetch._SPECULATIVE_LIFETIME_CALLS):
@@ -1080,7 +1080,7 @@ def test_a_prefetch_only_walk_does_not_accumulate_results(tmp_path: Path) -> Non
     import polylogue.sources.live.parse_prefetch as parse_prefetch
 
     paths = _write_fixture_corpus(tmp_path / "sessions", count=parse_prefetch._SPECULATIVE_LIFETIME_CALLS + 4)
-    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
     try:
         for path in paths:
             stage.prefetch_paths([(str(path), Provider.CODEX, True)])
@@ -1117,7 +1117,7 @@ def test_a_speculative_failure_finishing_during_the_warm_is_retried(
         return original_worker(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", flaky_worker)
-    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
     candidate = [(str(path), Provider.CODEX, True)]
     try:
         assert stage.prefetch_paths(candidate) == 1
@@ -1128,6 +1128,18 @@ def test_a_speculative_failure_finishing_during_the_warm_is_retried(
         assert calls == 2
     finally:
         released.set()
+        stage.shutdown()
+
+
+def test_a_single_worker_stage_reads_nothing_ahead(tmp_path: Path) -> None:
+    """Anti-vacuity: read-ahead on the only worker leaves required work
+    queued behind a parse nobody may claim."""
+    [path] = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    try:
+        assert stage.prefetch_paths([(str(path), Provider.CODEX, True)]) == 0
+        assert stage._path_futures == {}
+    finally:
         stage.shutdown()
 
 
