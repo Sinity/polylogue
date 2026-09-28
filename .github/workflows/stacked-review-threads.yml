@@ -1,0 +1,53 @@
+name: stacked-review-threads
+
+# Posts the required `stacked-review-threads` commit status on each open PR
+# targeting master: failure while any PR merged into its head branch, at any
+# stack depth, has an unresolved review thread. Branch protection resolves
+# conversations on master only, so a stacked PR's threads are otherwise never
+# gated. Resolving a thread fires no Actions event, so the schedule and a
+# manual dispatch re-evaluate; review and comment events re-evaluate at once.
+
+on:
+  pull_request:
+    branches: [master]
+    types: [opened, reopened, synchronize, ready_for_review, edited]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to evaluate (empty: every open PR targeting master)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: read
+  statuses: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || 'all' }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.14"
+      - name: Evaluate and post statuses
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || inputs.pr }}
+          TARGET_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          args=(--repo "$GITHUB_REPOSITORY" --post-status --target-url "$TARGET_URL")
+          if [ -n "$PR_NUMBER" ]; then args+=(--pr "$PR_NUMBER"); fi
+          uv run --no-project python -m devtools.stacked_review_threads "${args[@]}"
