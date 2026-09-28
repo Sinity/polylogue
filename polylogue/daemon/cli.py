@@ -2547,6 +2547,9 @@ async def _run_daemon_services_under_active_writer_lease(
             # server already owns rather than standing up a second pool
             # (polylogue-c0l7n).
             publish_daemon_compute_adapter(api_server.execution_kernel)
+            # The re-drive's claim phase runs on this loop; the listeners
+            # serve only after it claimed every interrupted accepted ingest.
+            await api_server.operation_runtime.accepted_ingest_redrive_claimed()
             api_server_task = supervisor.start(
                 "api_server",
                 lambda: _serve_until_complete(api_server, label="api"),

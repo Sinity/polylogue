@@ -117,6 +117,8 @@ class DaemonOperationRuntime:
         # has fenced while it runs.
         self._redrive: Future[None] | None = None
         self._redrive_cancelled: set[str] = set()
+        # Set on the owner loop once every eligible run is claimed.
+        self._redrive_claimed: threading.Event = threading.Event()
 
     def start_accepted_ingest_redrive(self) -> None:
         """Re-drive accepted ingests left without a terminal checkpoint, once per owner start.
@@ -139,7 +141,7 @@ class DaemonOperationRuntime:
                         return "cancelled"
                     return "shutdown" if self._closing else None
 
-            claimed = threading.Event()
+            claimed = self._redrive_claimed
 
             async def redrive() -> None:
                 try:
@@ -161,6 +163,14 @@ class DaemonOperationRuntime:
 
             self._redrive = asyncio.run_coroutine_threadsafe(redrive(), self._owner_loop)
             redrive_future = self._redrive
+        try:
+            on_owner_loop = asyncio.get_running_loop() is self._owner_loop
+        except RuntimeError:
+            on_owner_loop = False
+        if on_owner_loop:
+            # The claim phase runs on this very loop: blocking here would
+            # deadlock it. The caller awaits ``accepted_ingest_redrive_claimed``.
+            return
         # Hold the caller -- the server, before it exposes its listeners --
         # until every eligible run is claimed: a resent request then reads
         # its run as ``running`` and follows it to the receipt, instead of
@@ -168,6 +178,17 @@ class DaemonOperationRuntime:
         while not claimed.wait(0.05):
             if redrive_future.done():
                 break
+
+    async def accepted_ingest_redrive_claimed(self) -> None:
+        """Wait, on the owner loop, until the started re-drive claimed every eligible run.
+
+        The owner-loop composition (``polylogued run``) constructs its server
+        on the loop the re-drive runs on, so it awaits this before its
+        listeners serve instead of blocking in the constructor.
+        """
+        redrive = self._redrive
+        while redrive is not None and not self._redrive_claimed.is_set() and not redrive.done():
+            await asyncio.sleep(0.02)
 
     async def shutdown(self) -> None:
         """Stop admission and settle actual operation workers before owner teardown."""

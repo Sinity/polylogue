@@ -258,25 +258,40 @@ async def test_a_transient_refusal_retries_the_claimed_run(
     Anti-vacuity (Codex P1, #5717): leaving a reprepare-required run as it is
     keeps it ``running`` under the live owner, which discovery never returns
     again, and settling backpressure as failed terminalizes a run a retry
-    completes; either way no session materializes.
+    completes; either way no session materializes. Retrying under the old
+    pinned identity fails the moved generation as ``archive_identity_stale``,
+    and cleaning up through the saturated admission class escapes the retry.
     """
     from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.daemon.operation_runtime import DaemonOperationRuntime
     from polylogue.operations.daemon_ingest import IngestReprepareRequiredError
 
     archive_root, source = _archive(tmp_path)
     await _die_after_acceptance(archive_root, source, monkeypatch)
     original = IngestExecution.archive_write
-    refusals = {"left": 1}
+    original_compute = DaemonOperationRuntime.compute_phase
+    refusals = {"left": 1, "saturated": 0}
 
     async def refuse_once(self: IngestExecution, work: Any) -> Any:
         if refusals["left"]:
             refusals["left"] -= 1
+            refusals["saturated"] = 1
             if transient == "reprepare":
+                # The promotion moved the archive identity this run pinned.
+                self.observed_identity = "a-generation-since-promoted"
                 raise IngestReprepareRequiredError("ingest publication generation changed; reprepare required")
             raise DaemonBackpressureError("control admission is full")
         return await original(self, work)
 
+    async def saturated(self: DaemonOperationRuntime, work: Any) -> Any:
+        # Admission stays full for the next submission after a refusal.
+        if refusals["saturated"]:
+            refusals["saturated"] = 0
+            raise DaemonBackpressureError("control admission is still full")
+        return await original_compute(self, work)
+
     monkeypatch.setattr(IngestExecution, "archive_write", refuse_once)
+    monkeypatch.setattr(DaemonOperationRuntime, "compute_phase", saturated)
     await _restart_and_settle(archive_root)
 
     assert refusals["left"] == 0
@@ -376,3 +391,149 @@ async def test_runs_are_claimed_before_the_listeners_serve(tmp_path: Path, monke
             await asyncio.wrap_future(redrive)
         finally:
             await harness.close()
+
+
+@pytest.mark.timeout(300)
+async def test_a_retry_after_this_attempts_materialization_still_completes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Backpressure after the re-drive published its sessions does not make its retry indeterminate.
+
+    Anti-vacuity (Codex P1, #5717): reclassify prior materialization on every
+    retry, or count this attempt's own re-publication as unchanged, and the
+    retry sees its own sessions as a dead attempt's and finalizes indeterminate.
+    """
+    from polylogue.daemon.execution import DaemonBackpressureError
+
+    archive_root, source = _archive(tmp_path)
+    await _die_after_acceptance(archive_root, source, monkeypatch)
+    original = IngestExecution.converge_profiles
+    refusals = {"left": 1}
+
+    async def refuse_once(self: IngestExecution, receipt: Any) -> Any:
+        if refusals["left"]:
+            refusals["left"] -= 1
+            raise DaemonBackpressureError("control admission is full")
+        return await original(self, receipt)
+
+    monkeypatch.setattr(IngestExecution, "converge_profiles", refuse_once)
+    await _restart_and_settle(archive_root)
+
+    assert refusals["left"] == 0
+    run, state = _run_and_state(archive_root)
+    assert run is not None and run["status"] == "completed", run
+    assert state["outcome"] in {"completed", "degraded"}, state
+
+
+@pytest.mark.timeout(300)
+async def test_shutdown_releases_every_claimed_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An owner stopping mid re-drive hands every claimed run back, so a server in the same process reclaims them.
+
+    Anti-vacuity (Codex P1, #5717): release only the active run and the later
+    claimed one keeps a ``running`` attempt owned by this live process, which
+    discovery never returns, so it never completes.
+    """
+    from polylogue.operations import daemon_ingest
+    from polylogue.operations.daemon_ingest import IngestStoppedError
+
+    archive_root, source = _archive(tmp_path)
+    await _die_after_acceptance(archive_root, source, monkeypatch)
+    second = tmp_path / "inputs" / "second.json"
+    export = json.loads(source.read_text(encoding="utf-8"))
+    export["title"] = "Second Redrive"
+    second.write_text(json.dumps(export), encoding="utf-8")
+    from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+
+    with monkeypatch.context() as patch:
+        # The second acceptance must not re-drive the first dead run.
+        patch.setattr(DaemonOperationRuntime, "start_accepted_ingest_redrive", lambda self: None)
+        await _die_after_acceptance(archive_root, second, monkeypatch)
+
+    async def owner_stops(*_args: object, **_kwargs: object) -> Any:
+        raise IngestStoppedError("shutdown")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(daemon_ingest, "drive_accepted_generation", owner_stops)
+        await _restart_and_settle(archive_root)
+    with sqlite3.connect(archive_root / "audit.db") as audit:
+        assert audit.execute("SELECT COUNT(*) FROM operation_attempts WHERE state = 'running'").fetchone() == (0,)
+
+    await _restart_and_settle(archive_root)
+
+    assert _session_titles(archive_root) == ["Retained Redrive", "Second Redrive"]
+
+
+@pytest.mark.timeout(300)
+async def test_a_transient_refusal_of_a_fresh_ingest_stays_redrivable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh request's post-acceptance backpressure leaves its generation for the ingest owner.
+
+    Anti-vacuity (Codex P1, #5717): fence it as ``refused`` like a permanent
+    failure and discovery excludes the stopped request, so it never materializes.
+    """
+    from polylogue.daemon.execution import DaemonBackpressureError
+
+    archive_root, source = _archive(tmp_path)
+    original = IngestExecution.archive_write
+    refusals = {"left": 1}
+
+    async def refuse_once(self: IngestExecution, work: Any) -> Any:
+        if refusals["left"]:
+            refusals["left"] -= 1
+            raise DaemonBackpressureError("control admission is full")
+        return await original(self, work)
+
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    with monkeypatch.context() as patch:
+        patch.setattr(IngestExecution, "archive_write", refuse_once)
+        with _serving(archive_root) as (harness, _api_server):
+            try:
+                with pytest.raises(Exception):  # noqa: B017 - the surface's error type is not this contract
+                    await archive.parse_file(source, source_name="redrive")
+            finally:
+                try:
+                    await harness.close()
+                finally:
+                    await archive.close()
+    _operation_id, record = _only_request(archive_root)
+    assert record["stop_reason"] is None
+
+    await _restart_and_settle(archive_root)
+
+    assert _session_titles(archive_root) == ["Retained Redrive"]
+
+
+@pytest.mark.timeout(60)
+async def test_starting_the_redrive_on_its_owner_loop_does_not_block_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``polylogued run`` constructs its server on the loop the re-drive runs on.
+
+    Anti-vacuity (Codex P1, #5717): wait for the claim inside the start call
+    and the loop that must run the claim is blocked, so this test times out.
+    """
+    from typing import cast
+
+    from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+    from polylogue.operations import daemon_ingest
+
+    claimed: list[bool] = []
+
+    async def redrive(*_args: object, on_claimed: Any = None, **_kwargs: object) -> None:
+        await asyncio.sleep(0.05)
+        claimed.append(True)
+        on_claimed()
+
+    monkeypatch.setattr(daemon_ingest, "redrive_accepted_ingests", redrive)
+    runtime = DaemonOperationRuntime(
+        tmp_path,
+        write_bridge=cast(Any, object()),
+        execution_kernel=cast(Any, object()),
+        owner_loop=asyncio.get_running_loop(),
+        session_maintenance=cast(Any, object()),
+    )
+    runtime.start_accepted_ingest_redrive()
+    assert claimed == []
+    await runtime.accepted_ingest_redrive_claimed()
+    assert claimed == [True]

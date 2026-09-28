@@ -315,6 +315,14 @@ class IngestExecution:
                 (session_id, message_count),
             )
 
+    def changed_session_recorded(self, session_id: str) -> bool:
+        """Whether this execution already recorded ``session_id`` as changed (a retry re-publishing its own work)."""
+        with closing(sqlite3.connect(self.state_path)) as state:
+            return (
+                state.execute("SELECT 1 FROM changed_sessions WHERE session_id = ?", (session_id,)).fetchone()
+                is not None
+            )
+
     def stop_reason(self) -> str | None:
         return self.durable_stop_reason(self.runtime.stop_reason(self.request))
 
@@ -890,7 +898,11 @@ class IngestExecution:
                             pending.execute("INSERT OR IGNORE INTO pending VALUES (?)", (redo_key,))
                     if changed_message_count is not None and publication.session_id is not None:
                         self.record_changed_session(publication.session_id, changed_message_count)
-                    elif publication.published and publication.session_id is not None:
+                    elif (
+                        publication.published
+                        and publication.session_id is not None
+                        and not self.changed_session_recorded(publication.session_id)
+                    ):
                         self.unchanged_publications += 1
         finally:
             observed.close()
@@ -1244,7 +1256,10 @@ class IngestRedrive(IngestExecution):
             str(record["operation_name"]),
         )
         self._stop_requested = stop_requested
-        self.prior_materialization = False
+        #: Whether generation content was materialized before this re-drive's
+        #: first drive -- decided once: a transient retry sees this attempt's
+        #: own work, whose projection it still holds.
+        self.prior_materialization: bool | None = None
 
     def stop_reason(self) -> str | None:
         return self._stop_requested() or self.durable_stop_reason(None)
@@ -1309,8 +1324,26 @@ class IngestRedrive(IngestExecution):
 
         # A generation raw already materialized may be the interrupted
         # attempt's work, whose changed-session projection died with it.
-        self.prior_materialization = await self.runtime.compute_phase(already_materialized)
+        if self.prior_materialization is None:
+            self.prior_materialization = await self.runtime.compute_phase(already_materialized)
         return generation
+
+    def repin(self) -> None:
+        """Forget the pinned archive identity before a retry after the generation moved."""
+        self.observed_identity = None
+
+    async def release(self, reason: str) -> None:
+        """Hand a claimed run back as interrupted, so any later owner -- even one in this process -- reclaims it."""
+        if self.terminalized:
+            return
+        if self.started_mutation is not None:
+            await self.mark_unknown(reason)
+            return
+        await self.runtime.write_phase(
+            "ingest.redrive-release",
+            lambda: self.audit.finalize_attempt(self.operation_id, status="unknown", unknown_reason=reason[:512]),
+        )
+        self.terminalized = True
 
     async def settle_failed(self, reason: str) -> None:
         """Terminalize this attempt as failed; a retry would meet the same refusal."""
@@ -1381,7 +1414,7 @@ async def redrive_accepted_ingests(
         if on_claimed is not None:
             on_claimed()
 
-    for operation_id, request_id, execution in claimed:
+    for position, (operation_id, request_id, execution) in enumerate(claimed):
         try:
             emit("ingest.redrive.started", operation_id=operation_id, request_id=request_id, outcome="running")
             backoff_s = 0.5
@@ -1400,7 +1433,10 @@ async def redrive_accepted_ingests(
                         error_type=type(exc).__name__,
                         error_detail=str(exc)[:512],
                     )
-                    await runtime.compute_phase(execution.publisher.discard_pending)
+                    # Cleanup takes no admission: a full control class would
+                    # refuse it too and escape this retry.
+                    await asyncio.to_thread(execution.publisher.discard_pending)
+                    execution.repin()
                     execution.check_stop()
                     await asyncio.sleep(backoff_s)
                     backoff_s = min(backoff_s * 2, 30.0)
@@ -1414,9 +1450,13 @@ async def redrive_accepted_ingests(
                 break
         except IngestStoppedError as exc:
             if exc.reason == "shutdown":
-                # Runs claimed but not yet started keep an attempt owned by
-                # this exiting process, so the next owner reclaims them.
-                await execution.mark_unknown("the ingest owner stopped before the terminal checkpoint")
+                # Every claimed run goes back as interrupted: the attempts
+                # name this live process, so a server recreated in it could
+                # otherwise never reclaim them.
+                for _operation_id, _request_id, remaining in claimed[position:]:
+                    await remaining.release("the ingest owner stopped before the terminal checkpoint")
+                    if remaining is not execution:
+                        remaining.state_path.unlink(missing_ok=True)
                 return
             # As a fresh request's stop: fenced first, then indeterminate,
             # because sessions published before the stop remain.
@@ -1441,7 +1481,7 @@ async def redrive_accepted_ingests(
             )
             await execution.settle_failed(f"{type(exc).__name__}: {exc}")
         finally:
-            await runtime.compute_phase(execution.publisher.discard_pending)
+            await asyncio.to_thread(execution.publisher.discard_pending)
             execution.state_path.unlink(missing_ok=True)
 
 
@@ -1505,6 +1545,8 @@ async def execute_ingest_operation(
     request: DaemonOperationRequest, context: OperationContext
 ) -> DaemonOperationEnvelope:
     """Accept immutable input before any raw admission, then settle each phase."""
+    from polylogue.daemon.execution import DaemonBackpressureError
+
     started = monotonic()
     request = validate_execution_request(request, context)
     execution = IngestExecution(request, context)
@@ -1579,10 +1621,15 @@ async def execute_ingest_operation(
             outcome="cancelled" if exc.reason == "cancelled" else "timed-out",
             reference=execution.record,
         )
+    except (IngestReprepareRequiredError, DaemonBackpressureError):
+        # Transient after acceptance: left unstopped, the accepted generation
+        # stays eligible for its ingest owner's re-drive.
+        await execution.mark_unknown("accepted ingest met a transient refusal before its terminal checkpoint")
+        raise
     except Exception:
         await execution.fence("refused")
         await execution.mark_unknown("accepted ingest lacks a terminal checkpoint")
         raise
     finally:
-        await execution.runtime.compute_phase(execution.publisher.discard_pending)
+        await asyncio.to_thread(execution.publisher.discard_pending)
         execution.state_path.unlink(missing_ok=True)
