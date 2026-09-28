@@ -179,7 +179,15 @@ retention pass share one authenticated lock. Detail retention keeps the newest
 eight successful runs and, for failures, always keeps the newest run plus up to
 twelve runs that fit within seven days and 64 MiB. A malformed receipt, unsafe
 tree, or active lock retains the affected detail instead of guessing. `devtools
-why --history HOURS` reads the compact checkout-local history. A
+why --history HOURS` reads the compact checkout-local history.
+
+Checkout-local files go when the worktree does, so every terminal run is also
+appended, as a bounded `polylogue.verification-receipt` row (schema version 1:
+status, source revision, per-step outcome and duration, AgentCTL job
+reference; no argv, environment, logs or paths), to the durable evidence lane
+at `$XDG_STATE_HOME/polylogue/verification/evidence.jsonl`, relocatable with
+`POLYLOGUE_VERIFICATION_EVIDENCE_PATH`. That lane is the stable surface for
+anything that analyses verification history across checkouts. A
 native verify record carries its selected scope, gate-step results, and decoded
 pytest outcomes. Setup, call, and teardown timings come only from pytest
 reports in the event stream.

@@ -171,6 +171,11 @@ class LiveBatchMetrics:
     # batch took could not grow unbounded. They remain ordinary backlog for
     # the next catch-up scan or watch tick.
     time_budget_exceeded: bool = False
+    #: True when the batch was refused whole because the daemon was degraded
+    #: before any file was attempted. Carried apart from
+    #: refused_bytes_by_reason so an all-zero-byte batch, which refuses no
+    #: bytes, still reads as unattempted rather than attempted.
+    daemon_degraded_skip: bool = False
 
     @property
     def deferred_file_count(self) -> int:
@@ -277,6 +282,7 @@ class LiveBatchMetrics:
             "updated_sessions": updated_sessions,
             "updated_sessions_omitted": updated_sessions_omitted,
             "time_budget_exceeded": self.time_budget_exceeded,
+            "daemon_degraded_skip": self.daemon_degraded_skip,
         }
 
 

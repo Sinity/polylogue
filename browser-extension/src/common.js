@@ -129,7 +129,11 @@
       ? stableProviderSessionId
       : `${provider}:${stableProviderSessionId}`;
     const sessionProviderMeta = {
-      capture_fidelity: rawProviderPayload ? "native_full" : "dom_degraded",
+      // A compact bridge projection is native but not the full provider body;
+      // labelling it native_full would claim fidelity the receiver refuses.
+      capture_fidelity: rawProviderPayload
+        ? (rawProviderPayload?.polylogue_bridge_projection === "chatgpt-native-compact-v1" ? "native_compact" : "native_full")
+        : "dom_degraded",
       ...providerMeta,
     };
     if (urlSessionId === "__polylogue_temporary_chat__" || stableProviderSessionId.startsWith("temporary:")) {

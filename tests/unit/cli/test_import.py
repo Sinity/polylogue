@@ -11,6 +11,7 @@ have to fail loudly and name the staged file — only their seam moved.
 
 from __future__ import annotations
 
+import errno
 import json
 import sqlite3
 from pathlib import Path
@@ -285,6 +286,243 @@ def test_stage_for_daemon_removes_stale_sqlite_provenance(tmp_path: Path, worksp
     assert _stage_for_daemon(replacement, replace_existing=True) == staged
     assert staged.read_bytes() == replacement.read_bytes()
     assert not metadata_path.exists()
+
+
+def test_stage_for_daemon_reflinks_and_restages_idempotently(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """Staging clones by reflink, and re-staging the same export replaces it.
+
+    Anti-vacuity: stage with ``shutil.copy2`` again and ``reflink_into`` is
+    never asked; replace the destination before the copy completes and the
+    restage leaves temporary siblings or a partial entry.
+    """
+    from polylogue.cli.commands import import_command
+
+    export = tmp_path / "exports"
+    export.mkdir()
+    (export / "conversations.json").write_text('{"a": 1}')
+    (export / "nested").mkdir()
+    (export / "nested" / "one.json").write_text('{"b": 2}')
+    single = tmp_path / "chatgpt-data.zip"
+    single.write_bytes(b"PK\x05\x06" + b"\x00" * 18)
+
+    cloned: list[int] = []
+
+    def record_reflink(source_fd: int, destination_fd: int) -> bool:
+        cloned.append(source_fd)
+        return False
+
+    with patch("polylogue.core.durable_fs.reflink_into", side_effect=record_reflink):
+        staged_dir = import_command._stage_for_daemon(export)
+        staged_file = import_command._stage_for_daemon(single)
+        again_dir = import_command._stage_for_daemon(export)
+        again_file = import_command._stage_for_daemon(single)
+
+    assert (staged_dir, staged_file) == (again_dir, again_file)
+    assert (staged_dir / "nested" / "one.json").read_text() == '{"b": 2}'
+    assert staged_file.read_bytes() == single.read_bytes()
+    assert len(cloned) == 6
+    assert not [path for path in staged_dir.rglob(".*") if path.is_file()]
+
+
+def test_failed_restage_keeps_the_earlier_import(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """A restage that cannot read its source leaves the earlier staged copy.
+
+    Anti-vacuity: remove the destination before the new copy is complete and
+    the earlier import's bytes are gone after the failed restage.
+    """
+    from polylogue.cli.commands import import_command
+
+    source = tmp_path / "export.json"
+    source.write_text('{"first": true}')
+    staged = import_command._stage_for_daemon(source)
+    source.write_text('{"second": true}')
+
+    # A deterministic mid-copy read failure; permission bits would not stop
+    # a restage running as root.
+    def failing_copy(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, "injected read failure")
+
+    with (
+        patch("polylogue.core.durable_fs.reflink_into", return_value=False),
+        patch("polylogue.core.durable_fs.shutil.copyfileobj", side_effect=failing_copy),
+        pytest.raises(SystemExit),
+    ):
+        import_command._stage_for_daemon(source)
+
+    assert staged.read_text() == '{"first": true}'
+    assert [path.name for path in staged.parent.iterdir()] == [staged.name]
+
+
+def test_failed_restage_keeps_the_earlier_snapshot_provenance(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """A failed restage over a staged snapshot keeps its provenance sidecar.
+
+    Anti-vacuity: unlink the sidecar before the copy and never restore it,
+    and the preserved snapshot loses its original source path.
+    """
+    from polylogue.cli.commands import import_command
+    from polylogue.sources.sqlite_snapshot import (
+        original_sqlite_source_path,
+        sqlite_staging_metadata_path,
+        stage_sqlite_snapshot,
+    )
+
+    first_root = tmp_path / "hermes"
+    first_root.mkdir()
+    first = first_root / "state.db"
+    with sqlite3.connect(first) as conn:
+        conn.execute("CREATE TABLE evidence(value TEXT)")
+    staged = workspace_env["archive_root"] / "inbox" / "state.db"
+    stage_sqlite_snapshot(first, staged)
+    earlier = staged.read_bytes()
+
+    replacement_root = tmp_path / "replacement"
+    replacement_root.mkdir()
+    replacement = replacement_root / "state.db"
+    replacement.write_bytes(b"not a Hermes database")
+
+    def failing_copy(*_args: object, **_kwargs: object) -> None:
+        raise OSError(errno.EIO, "injected read failure")
+
+    with (
+        patch("polylogue.core.durable_fs.reflink_into", return_value=False),
+        patch("polylogue.core.durable_fs.shutil.copyfileobj", side_effect=failing_copy),
+        pytest.raises(SystemExit),
+    ):
+        import_command._stage_for_daemon(replacement)
+
+    assert staged.read_bytes() == earlier
+    assert sqlite_staging_metadata_path(staged).exists()
+    assert original_sqlite_source_path(staged) == first.resolve()
+
+
+def test_restage_keeps_snapshot_provenance_for_the_whole_copy(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """The earlier snapshot's sidecar exists while its replacement is copied.
+
+    Anti-vacuity: unlink the sidecar before the copy starts and the copy
+    observes the still-visible old database without its provenance.
+    """
+    import shutil
+
+    from polylogue.cli.commands import import_command
+    from polylogue.sources.sqlite_snapshot import sqlite_staging_metadata_path, stage_sqlite_snapshot
+
+    first_root = tmp_path / "hermes"
+    first_root.mkdir()
+    first = first_root / "state.db"
+    with sqlite3.connect(first) as conn:
+        conn.execute("CREATE TABLE evidence(value TEXT)")
+    staged = workspace_env["archive_root"] / "inbox" / "state.db"
+    stage_sqlite_snapshot(first, staged)
+    metadata_path = sqlite_staging_metadata_path(staged)
+
+    replacement_root = tmp_path / "replacement"
+    replacement_root.mkdir()
+    replacement = replacement_root / "state.db"
+    replacement.write_bytes(b"not a Hermes database")
+
+    during_copy: list[bool] = []
+    real_copy = shutil.copyfileobj
+
+    def observing_copy(source: object, target: object, *args: object) -> None:
+        during_copy.append(metadata_path.exists())
+        real_copy(source, target, *args)  # type: ignore[arg-type]
+
+    with (
+        patch("polylogue.core.durable_fs.reflink_into", return_value=False),
+        patch("polylogue.core.durable_fs.shutil.copyfileobj", side_effect=observing_copy),
+    ):
+        assert import_command._stage_for_daemon(replacement) == staged
+
+    assert during_copy == [True]
+    assert staged.read_bytes() == replacement.read_bytes()
+    assert not metadata_path.exists()
+
+
+def test_failed_directory_restage_restores_read_only_modes(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """A directory restage that fails puts the staged tree's modes back.
+
+    Anti-vacuity: leave the owner-write bits added for the restage and the
+    staged ``0555`` directory is ``0755`` after the failure.
+    """
+    import os
+    import stat
+
+    from polylogue.cli.commands import import_command
+
+    export = tmp_path / "export"
+    locked = export / "locked"
+    locked.mkdir(parents=True)
+    (locked / "member.json").write_text('{"first": true}')
+    locked.chmod(0o555)
+    staged_locked = workspace_env["archive_root"] / "inbox" / "export" / "locked"
+    try:
+        staged = import_command._stage_for_daemon(export)
+        assert stat.S_IMODE(os.stat(staged / "locked").st_mode) == 0o555
+
+        def failing_copytree(*_args: object, **_kwargs: object) -> None:
+            raise OSError(errno.EACCES, "injected source scan failure")
+
+        with (
+            patch("polylogue.cli.commands.import_command.shutil.copytree", side_effect=failing_copytree),
+            pytest.raises(SystemExit),
+        ):
+            import_command._stage_for_daemon(export)
+
+        assert stat.S_IMODE(os.stat(staged_locked).st_mode) == 0o555
+    finally:
+        locked.chmod(0o755)
+        if staged_locked.exists():
+            staged_locked.chmod(0o755)
+
+
+def test_restage_publishes_into_a_read_only_staged_directory(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """An export with a ``0555`` directory can be staged again.
+
+    Anti-vacuity: without making the earlier staged tree owner-writable, the
+    replacement's temporary cannot be created inside the read-only directory
+    and the restage fails with ``EACCES`` (for a non-root user).
+    """
+    import os
+    import stat
+
+    from polylogue.cli.commands import import_command
+
+    export = tmp_path / "export"
+    locked = export / "locked"
+    locked.mkdir(parents=True)
+    member = locked / "member.json"
+    member.write_text('{"first": true}')
+    locked.chmod(0o555)
+    try:
+        staged = import_command._stage_for_daemon(export)
+        locked.chmod(0o755)
+        member.write_text('{"second": true}')
+        locked.chmod(0o555)
+        assert import_command._stage_for_daemon(export) == staged
+        assert (staged / "locked" / "member.json").read_text() == '{"second": true}'
+        assert stat.S_IMODE(os.stat(staged / "locked").st_mode) == 0o555
+    finally:
+        locked.chmod(0o755)
+        staged_locked = workspace_env["archive_root"] / "inbox" / "export" / "locked"
+        if staged_locked.exists():
+            staged_locked.chmod(0o755)
+
+
+def test_staging_refuses_a_fifo_without_opening_it(tmp_path: Path, workspace_env: dict[str, Path]) -> None:
+    """A named pipe in an export directory is refused, never opened.
+
+    Anti-vacuity: drop the regular-file check in ``clone_or_copy_replace``
+    and opening the writerless FIFO blocks this test forever.
+    """
+    import os
+
+    from polylogue.core.durable_fs import clone_or_copy_replace
+
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+
+    with pytest.raises(OSError, match="not a regular file"):
+        clone_or_copy_replace(fifo, tmp_path / "staged" / "pipe")
 
 
 def test_import_command_uses_daemon_url_env_by_default(

@@ -159,7 +159,7 @@ def test_the_cold_build_boundary_survives_an_open_transaction(tmp_path: Path) ->
         assert archive.active_cold_build_engaged is True
         archive._conn.execute("BEGIN")
         # session_id is a generated column (origin || ':' || native_id), so it
-        # is never inserted directly -- see the identity model in CLAUDE.md.
+        # is never inserted directly -- see the identity model in AGENTS.md.
         archive._conn.execute(
             "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
             ("open-txn", "codex-session", b"\x00" * 32),

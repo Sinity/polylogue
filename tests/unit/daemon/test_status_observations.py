@@ -345,11 +345,13 @@ def test_daemon_status_names_every_halted_unit_and_is_not_ok(tmp_path: Path, mon
     # An initialized but empty archive is not ok on its own: its search, raw
     # materialization and frontier are unmeasured (#5491). Pin every collector
     # to a measured healthy value (keeping this archive's real, healthy
-    # raw-failure lifecycle), so the baseline is green for a reason other than
-    # the halt under test.
+    # raw-failure lifecycle and frontier proof), so the baseline is green for
+    # a reason other than the halt under test.
     real_raw_failure_info = status_module._raw_failure_info
+    real_frontier_info = status_module._raw_frontier_integrity_info
     _patch_healthy_collectors(monkeypatch, archive_root)
     monkeypatch.setattr(status_module, "_raw_failure_info", real_raw_failure_info)
+    monkeypatch.setattr(status_module, "_raw_frontier_integrity_info", real_frontier_info)
 
     assert daemon_status_payload(sources=(), include_archive_debt=False)["ok"] is True, (
         "the baseline is not green, so a not-ok answer afterwards would not be about the halt"
