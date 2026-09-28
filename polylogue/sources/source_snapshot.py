@@ -349,6 +349,33 @@ def _sha256_path(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _snapshot_regular_file(path: Path) -> tuple[str, int, str]:
+    """Hash one descriptor's captured prefix and return its matching identity.
+
+    A concurrent append after ``fstat`` must not pair an old size with a digest
+    read through EOF. Reading exactly the captured size gives one coherent
+    append-log prefix, even if the path grows while the descriptor is read.
+    """
+    digest = hashlib.sha256()
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+        info = os.fstat(descriptor)
+        remaining = info.st_size
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                raise SourceSnapshotError(f"source member was truncated while reading: {path}")
+            digest.update(chunk)
+            remaining -= len(chunk)
+    except OSError as exc:
+        raise SourceSnapshotError(f"source member is unreadable: {path}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    return digest.hexdigest(), info.st_size, _identity(info)
+
+
 def _root_identity(root: Path) -> SourceRootIdentity:
     try:
         info = root.lstat()
@@ -423,8 +450,9 @@ def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
             # and page layout are transport observations, not source meaning.
             content_sha256 = identity
         else:
-            identity = _identity(info)
-            content_sha256 = _sha256_path(path)
+            content_sha256, captured_size, identity = _snapshot_regular_file(path)
+            result.append(CutItem(binding.source.source_id, coordinate, identity, content_sha256, captured_size))
+            continue
         result.append(CutItem(binding.source.source_id, coordinate, identity, content_sha256, info.st_size))
     return tuple(result)
 

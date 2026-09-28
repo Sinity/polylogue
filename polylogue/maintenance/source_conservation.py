@@ -864,7 +864,7 @@ def audit_source_conservation(
                 # the archive root loses member ownership (and makes equal
                 # byte siblings indistinguishable); do not prefix the archive
                 # name a second time.
-                expected_paths = {f"{root}!{archive_member}"}
+                expected_paths = {f"{root}:{archive_member}"}
             else:
                 expected_paths = {str(root / member.coordinate) if root.is_dir() else str(root)}
             configured_paths |= expected_paths
