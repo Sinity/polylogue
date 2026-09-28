@@ -1097,8 +1097,23 @@ _RETRYABLE_READ_ERRNOS = frozenset(
 )
 
 
+class RetryableSourceReadError(RuntimeError):
+    """A source read failed for a reason a later pass can clear.
+
+    Raised by :func:`classify_pre_acquisition` so callers handle a retryable
+    read as a typed outcome instead of catching raw SQLite or OS errors.
+    """
+
+    def __init__(self, path: Path, cause: BaseException) -> None:
+        super().__init__(f"{path}: {cause}")
+        self.path = path
+        self.cause = cause
+
+
 def retryable_read_fault(exc: BaseException) -> bool:
     """Whether a source read failed for a reason a later read can clear."""
+    if isinstance(exc, RetryableSourceReadError):
+        return True
     sqlite_code = getattr(exc, "sqlite_errorcode", None)
     return (isinstance(exc, OSError) and exc.errno in _RETRYABLE_READ_ERRNOS) or (
         isinstance(exc, sqlite3.Error)
@@ -1160,20 +1175,34 @@ def classify_pre_acquisition(
     instead, so the caller retries the file rather than excluding a valid
     database for good; bytes that are not a readable database stay excluded.
     """
-    decision = _classify_pre_acquisition(
-        path,
-        fallback_provider=fallback_provider,
-        source_only=source_only,
-        size_bytes=size_bytes,
-        checkpoint=checkpoint,
-    )
+    try:
+        decision = _classify_pre_acquisition(
+            path,
+            fallback_provider=fallback_provider,
+            source_only=source_only,
+            size_bytes=size_bytes,
+            checkpoint=checkpoint,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        if retryable_read_fault(exc):
+            raise RetryableSourceReadError(path, exc) from exc
+        raise
     if decision.excluded_reason is not None and is_sqlite_path(path):
-        try:
-            probe_sqlite_readable(path)
-        except (OSError, sqlite3.Error) as exc:
-            if retryable_read_fault(exc):
-                raise
+        _raise_retryable_probe_fault(path)
     return decision
+
+
+def _raise_retryable_probe_fault(path: Path) -> None:
+    """Raise :class:`RetryableSourceReadError` if the database cannot be read now.
+
+    Any other probe failure (bytes that are not a database) leaves the
+    exclusion standing, so it is deliberately not raised.
+    """
+    try:
+        probe_sqlite_readable(path)
+    except (OSError, sqlite3.Error) as exc:
+        if retryable_read_fault(exc):
+            raise RetryableSourceReadError(path, exc) from exc
 
 
 def _classify_pre_acquisition(
