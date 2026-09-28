@@ -67,8 +67,9 @@ def _load_sqlite_vec(conn: sqlite3.Connection) -> bool:
 
 def _configure_read_connection(conn: sqlite3.Connection) -> None:
     """Apply read-safe settings without taking write-oriented locks."""
+    # The profiled reader already applied its pragmas before installing the
+    # read authorizer, which denies re-assigning them here.
     conn.row_factory = sqlite3.Row
-    _apply_pragma_statements(conn, READ_CONNECTION_PRAGMA_STATEMENTS)
     _attach_sibling_tiers(conn)
     register_pl_fold(conn)
 

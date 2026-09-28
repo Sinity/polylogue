@@ -13,6 +13,7 @@ from devtools.verify_runs import (
     append_verification_evidence,
     append_verify_history,
     read_verification_evidence,
+    verification_evidence_path,
 )
 
 
@@ -43,6 +44,25 @@ def test_canonical_receipt_is_bounded_and_foreground_has_no_agentctl_ids(
     assert "argv" not in history_row
     assert "cmd" not in json.dumps(history_row)
     assert receipt["artifact_ref"].startswith("polylogue://verification/")
+
+
+def test_evidence_receipt_drops_the_slot_log_path(tmp_path: Path) -> None:
+    """The durable row keeps the slot outcome but not its checkout-local log path.
+
+    Anti-vacuity: copy the slot receipt through unchanged and ``log_path``
+    reappears in the row.
+    """
+    run = VerifyRun(tier="focused-test", argv=[], git_head="sha:abc", root=tmp_path)
+    step = run.start_step(label="pytest focused", cmd=["pytest"])
+    slot = {"status": "passed", "exit_code": 0, "log_path": str(tmp_path / ".cache" / "slot.log")}
+    run.finish_step(step_id=step.step_id, result={"exit": 0, "duration_s": 0.1, "pytest_slot_receipt": slot})
+    payload = run.finish(exit_code=0, duration_s=0.2, final_git_head="sha:abc")
+    evidence = tmp_path / "evidence.jsonl"
+    append_verification_evidence(payload, path=evidence)
+
+    [row] = read_verification_evidence(evidence)
+    assert row["steps"][0]["pytest_slot_receipt"] == {"status": "passed", "exit_code": 0}
+    assert str(tmp_path) not in json.dumps(row)
 
 
 def test_history_exposes_declared_agentctl_join_identity_without_lifecycle_state(
@@ -111,3 +131,71 @@ def test_concurrent_evidence_appends_keep_complete_json_rows(tmp_path: Path) -> 
     rows = read_verification_evidence(evidence)
     assert {row["run_id"] for row in rows} == {f"run-{index}" for index in range(12)}
     assert len(evidence.read_text(encoding="utf-8").splitlines()) == 12
+
+
+def test_evidence_lane_outlives_the_checkout_that_ran_the_verifier(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The default lane is user state, so removing a worktree keeps its runs.
+
+    Anti-vacuity: point the default back at the checkout's ``.cache/verify``
+    and the row disappears with the removed checkout.
+    """
+    import shutil
+
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.delenv("POLYLOGUE_VERIFICATION_EVIDENCE_PATH", raising=False)
+    checkout = tmp_path / "worktree"
+    checkout.mkdir()
+    monkeypatch.chdir(checkout)
+    payload = _payload(checkout)
+
+    append_verification_evidence(payload)
+    shutil.rmtree(checkout)
+
+    lane = verification_evidence_path()
+    assert lane == state / "polylogue" / "verification" / "evidence.jsonl"
+    assert [row["run_id"] for row in read_verification_evidence(lane)] == [payload["run_id"]]
+
+
+def test_configured_evidence_path_overrides_the_state_default(tmp_path: Path) -> None:
+    configured = tmp_path / "elsewhere" / "evidence.jsonl"
+    env = {"POLYLOGUE_VERIFICATION_EVIDENCE_PATH": str(configured), "XDG_STATE_HOME": str(tmp_path / "state")}
+    assert verification_evidence_path(env) == configured
+    assert verification_evidence_path({"HOME": str(tmp_path)}) == (
+        tmp_path / ".local" / "state" / "polylogue" / "verification" / "evidence.jsonl"
+    )
+
+
+def test_reconciled_abandoned_run_joins_the_durable_lane(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A run stranded as ``running`` is recorded in the durable lane once reconciled.
+
+    Anti-vacuity: route the reconciler's append back to ``runs_root.parent``
+    and the durable lane stays empty.
+    """
+    from devtools.verify_runs import reconcile_and_record_abandoned_verify_runs
+
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    monkeypatch.delenv("POLYLOGUE_VERIFICATION_EVIDENCE_PATH", raising=False)
+    checkout = tmp_path / "worktree"
+    # A pid above any pid_max: no process owns it, so the run is abandoned.
+    run_id = f"20260101T000000Z-focused-test-{2**31 - 2}-deadbeef"
+    runs_root = checkout / ".cache" / "verify" / "runs"
+    (runs_root / run_id).mkdir(parents=True)
+    stranded = {
+        "run_id": run_id,
+        "tier": "focused-test",
+        "status": "running",
+        "started_at": "2026-01-01T00:00:00Z",
+        "steps": [],
+    }
+    (runs_root / run_id / "run.json").write_text(json.dumps(stranded), encoding="utf-8")
+
+    reconciled = reconcile_and_record_abandoned_verify_runs(runs_root=runs_root, state_root=tmp_path / "jobs")
+
+    assert [entry["run_id"] for entry in reconciled] == [run_id]
+    rows = read_verification_evidence(verification_evidence_path())
+    assert [row["run_id"] for row in rows] == [run_id]
+    assert not (checkout / ".cache" / "verify" / "evidence.jsonl").exists()
