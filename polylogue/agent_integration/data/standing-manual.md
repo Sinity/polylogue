@@ -309,7 +309,7 @@ Combine semantic retrieval with file-touch history, then inspect exact prior rat
 Measure the declared cohort without mixing exact counters, estimates, missing coverage, or logical and physical grains.
 
 1. `{"arguments":{"include":["coverage","freshness","usage-counter-support"],"scope":"sources"},"name":"status"}` — Establish which origins have exact, partial, estimated, or absent usage evidence.
-2. `{"arguments":{"expression":"sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01","limit":50,"projection":"cost-rollups"},"name":"query"}` — Compute the requested cohort using declared cost semantics. Capture `cost_result_ref`.
+2. `{"arguments":{"expression":"sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01","limit":50,"projection":"sessions"},"name":"query"}` — Select the requested cohort for cost analysis; the result remains bounded and coverage-aware. Capture `cost_result_ref`.
 3. `{"arguments":{"ref":"result:0123456789abcdef01234567","subject":"result"},"name":"explain"}` — Inspect denominator, physical/logical grain, missing counts, estimate policy, and continuation state.
 4. `{"arguments":{"limit":50,"ref":"result:0123456789abcdef01234567","view":"cost-evidence"},"name":"read"}` — Read per-session evidence and continue through every exhaustive page required by the claim.
 5. `{"arguments":{"projection":"usage-provenance","ref":"session:codex-session:demo-receipts"},"name":"get"}` — Resolve a representative source record when a counter or estimate is disputed.

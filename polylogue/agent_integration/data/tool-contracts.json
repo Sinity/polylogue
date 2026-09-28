@@ -33,7 +33,7 @@
           "required_initial": false
         },
         {
-          "description": "Declared result projection such as sessions or cost-rollups.",
+          "description": "Declared result projection such as sessions or personal-state kinds.",
           "enum_values": [],
           "kind": "string",
           "name": "projection",
@@ -162,10 +162,10 @@
           "arguments": {
             "expression": "sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
             "limit": 50,
-            "projection": "cost-rollups"
+            "projection": "sessions"
           },
           "id": "query-cost-cohort",
-          "result_note": "A session result set suitable for the declared cost-rollups projection; coverage still governs completeness.",
+          "result_note": "A filtered session result set for a later cost audit; coverage still governs completeness.",
           "title": "Select a recent provider cohort for a cost audit"
         }
       ],

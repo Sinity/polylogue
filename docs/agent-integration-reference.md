@@ -25,7 +25,7 @@ Arguments:
 |---|---|---:|---|
 | `expression` | `string` | no | Parser-owned DSL expression; omit when resuming with continuation. |
 | `limit` | `integer` | no | Requested page size, subject to server and transport bounds. |
-| `projection` | `string` | no | Declared result projection such as sessions or cost-rollups. |
+| `projection` | `string` | no | Declared result projection such as sessions or personal-state kinds. |
 | `session_operation` | `string` | no | Declared session operation; required by the session-operations projection. |
 | `continuation` | `string` | no | Opaque token from the preceding response; send alone. |
 | `offset` | `integer` | no | Offset for projections that use decimal offset pagination. |
@@ -61,13 +61,13 @@ Example — Select a recent provider cohort for a cost audit:
   "arguments": {
     "expression": "sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
     "limit": 50,
-    "projection": "cost-rollups"
+    "projection": "sessions"
   },
   "name": "query"
 }
 ```
 
-A session result set suitable for the declared cost-rollups projection; coverage still governs completeness.
+A filtered session result set for a later cost audit; coverage still governs completeness.
 
 ### `read`
 
@@ -817,14 +817,14 @@ Measure the declared cohort without mixing exact counters, estimates, missing co
 }
 ```
 
-2. `query` — Compute the requested cohort using declared cost semantics.
+2. `query` — Select the requested cohort for cost analysis; the result remains bounded and coverage-aware.
 
 ```json
 {
   "arguments": {
     "expression": "sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01",
     "limit": 50,
-    "projection": "cost-rollups"
+    "projection": "sessions"
   },
   "name": "query"
 }

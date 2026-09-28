@@ -359,7 +359,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         arguments=(
             _arg("expression", "string", False, "Parser-owned DSL expression; omit when resuming with continuation."),
             _arg("limit", "integer", False, "Requested page size, subject to server and transport bounds."),
-            _arg("projection", "string", False, "Declared result projection such as sessions or cost-rollups."),
+            _arg("projection", "string", False, "Declared result projection such as sessions or personal-state kinds."),
             _arg(
                 "session_operation",
                 "string",
@@ -385,10 +385,10 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             _example(
                 "query-cost-cohort",
                 "Select a recent provider cohort for a cost audit",
-                "A session result set suitable for the declared cost-rollups projection; coverage still governs completeness.",
+                "A filtered session result set for a later cost audit; coverage still governs completeness.",
                 expression="sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
                 limit=50,
-                projection="cost-rollups",
+                projection="sessions",
             ),
         ),
         supports_continuation=True,
@@ -869,8 +869,8 @@ RECIPES: tuple[Recipe, ...] = (
             ),
             RecipeStep(
                 "query",
-                _args(limit=50, projection="cost-rollups"),
-                "Compute the requested cohort using declared cost semantics.",
+                _args(limit=50, projection="sessions"),
+                "Select the requested cohort for cost analysis; the result remains bounded and coverage-aware.",
                 capture="cost_result_ref",
                 example_key="sample-origin-cohort-window",
             ),

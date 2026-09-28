@@ -309,11 +309,11 @@
           "arguments": {
             "expression": "sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01",
             "limit": 50,
-            "projection": "cost-rollups"
+            "projection": "sessions"
           },
           "capture": "cost_result_ref",
           "example_key": "sample-origin-cohort-window",
-          "purpose": "Compute the requested cohort using declared cost semantics.",
+          "purpose": "Select the requested cohort for cost analysis; the result remains bounded and coverage-aware.",
           "tool": "query"
         },
         {
