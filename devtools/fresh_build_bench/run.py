@@ -371,12 +371,19 @@ def _meminfo_kib(key: str) -> int | None:
 
 
 def environment(config: RunConfig) -> dict[str, Any]:
-    probe = subprocess.run(
-        [config.python, "-c", "import sys,platform;print(platform.python_version(), int(sys._is_gil_enabled()))"],
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.split()
+    probe = json.loads(
+        subprocess.run(
+            [
+                config.python,
+                "-c",
+                "import json,os,platform,sys;print(json.dumps([platform.python_version(),"
+                " int(sys._is_gil_enabled()), sys.version, os.path.realpath(sys.executable)]))",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    )
     return {
         "host_cpu_count": os.cpu_count(),
         "host_mem_total_kib": _meminfo_kib("MemTotal"),
@@ -385,7 +392,11 @@ def environment(config: RunConfig) -> dict[str, Any]:
         "kernel": platform.release(),
         "machine": platform.machine(),
         "python": probe[0],
-        "gil_enabled": probe[1] == "1",
+        "gil_enabled": probe[1] == 1,
+        # Build string (compiler, build date) and resolved executable: two
+        # builds of one version are different interpreters.
+        "python_build": probe[2],
+        "python_executable": probe[3],
         "work_filesystem": _filesystem(config.work),
     }
 

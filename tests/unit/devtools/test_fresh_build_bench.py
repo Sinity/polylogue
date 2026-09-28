@@ -521,3 +521,87 @@ def test_sampler_keeps_io_counters_of_a_process_that_vanished(monkeypatch: pytes
     readable["io"] = False
     sampler._sample()
     assert sampler.samples[-1][4:] == (400, 7)
+
+
+def test_different_builds_of_one_python_version_are_not_comparable() -> None:
+    """Anti-vacuity: comparing only version and GIL mode admits a PGO and a
+    non-PGO build of 3.14.4 as the same interpreter."""
+    env = {"python": "3.14.4", "gil_enabled": False, "python_build": "3.14.4 (pgo)", "python_executable": "/a"}
+    other = {**env, "python_build": "3.14.4 (plain)"}
+    ok, text = compare(_receipt(qualified=True, environment=env), _receipt(qualified=True, environment=other))
+    assert not ok and "python_build" in text
+
+
+def test_sampled_units_carry_their_sidecars(tmp_path: Path) -> None:
+    """Anti-vacuity: a suffix-only census drops Claude Code tool-results and
+    Gemini tool-outputs files, so the sample parses different sessions."""
+    from devtools.fresh_build_bench.corpus import default_sample_sources
+
+    home = tmp_path / "home"
+    project = home / ".claude" / "projects" / "proj"
+    (project / "s1" / "tool-results").mkdir(parents=True)
+    (project / "s1.jsonl").write_text("{}\n", encoding="utf-8")
+    (project / "s1" / "tool-results" / "toolu_1.txt").write_text("full output", encoding="utf-8")
+    gemini = home / ".gemini" / "tmp" / "hash1"
+    (gemini / "chats").mkdir(parents=True)
+    (gemini / "tool-outputs" / "session-x").mkdir(parents=True)
+    (gemini / "chats" / "session-x.json").write_text("{}", encoding="utf-8")
+    (gemini / "tool-outputs" / "session-x" / "shell_1.txt").write_text("output", encoding="utf-8")
+    manifest = sample_real(tmp_path / "corpus", seed=1, fraction=1.0, sources=default_sample_sources(home))
+    paths = {row[0] for row in manifest["files"]}
+    assert "home/.claude/projects/proj/s1/tool-results/toolu_1.txt" in paths
+    assert "home/.gemini/tmp/hash1/tool-outputs/session-x/shell_1.txt" in paths
+
+
+def test_parse_component_uses_the_production_stream_predicate_and_times_only_the_worker(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: an exact ``.jsonl`` comparison parses ``rollout.JSONL``
+    as a document; timing the count loop charges its 0.3 s to the worker."""
+    import time
+    from types import SimpleNamespace
+
+    from devtools.fresh_build_bench import components
+
+    corpus = tmp_path / "corpus"
+    transcript = corpus / "home" / ".codex" / "sessions" / "rollout.JSONL"
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text("{}\n", encoding="utf-8")
+    seal(corpus, kind="sample", parameters={})
+    seen: list[bool] = []
+
+    def slow_sessions() -> list[object]:
+        time.sleep(0.3)
+        return [SimpleNamespace(messages=[1, 2])]
+
+    def worker(_provider: str, _path: str, _stem: str, *, is_stream: bool, **_kwargs: object) -> object:
+        seen.append(is_stream)
+        return SimpleNamespace(error=None, iter_sessions=slow_sessions)
+
+    monkeypatch.setattr("polylogue.sources.live.parse_prefetch.live_parse_path_worker", worker)
+    result = components.bench_parse(corpus, tmp_path / "scratch", workers=1, origins=None, limit=None)
+    assert seen == [True]
+    assert result["counts"] == {"sessions": 1, "messages": 2}
+    assert result["by_origin"]["codex"]["seconds"] < 0.2
+
+
+def test_refresh_voids_cpu_to_promotion_when_promotion_moves(tmp_path: Path) -> None:
+    """Anti-vacuity: keeping the recorded CPU leaves a value cut at the old
+    promotion time beside the new one."""
+    from devtools.fresh_build_bench.report import refresh
+
+    (tmp_path / "events.jsonl").write_text(
+        _event("20.000", "daemon.cold_build.generation_promoted") + "\n", encoding="utf-8"
+    )
+    receipt = _receipt(
+        started_at_unix=_ts("2026-09-27T10:00:00.000000Z"),
+        process_tree={"rss_peak_bytes": 1 << 30, "cpu_seconds_to_promotion": 9.0, "mean_cores_to_promotion": 0.9},
+    )
+    receipt["corpus"]["path"] = str(tmp_path / "absent-corpus")
+    path = tmp_path / "receipt.json"
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    refreshed = refresh(path)
+    assert refreshed["timing_s"]["promotion"] == 20.0
+    assert refreshed["process_tree"]["cpu_seconds_to_promotion"] is None
+    assert refreshed["process_tree"]["mean_cores_to_promotion"] is None
+    assert json.loads(path.read_text(encoding="utf-8")) == refreshed

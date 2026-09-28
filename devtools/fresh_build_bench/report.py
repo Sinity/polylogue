@@ -840,7 +840,9 @@ def comparability_problems(before: dict[str, Any], after: dict[str, Any]) -> lis
         problems.append("different corpora")
     if before["config"]["digest"] != after["config"]["digest"]:
         problems.append("different run configurations (profile, overrides or budgets)")
-    for key in ("python", "gil_enabled"):
+    # Version and GIL mode alone equate two builds of one version (PGO or
+    # not); the build string and the resolved executable tell them apart.
+    for key in ("python", "gil_enabled", "python_build", "python_executable"):
         if before["environment"].get(key) != after["environment"].get(key):
             problems.append(f"different interpreter ({key})")
     # Host capacity and storage explain wall, CPU and throughput deltas on
@@ -937,6 +939,13 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
     work = receipt_path.parent
     events = analyse_events(work / "events.jsonl", origin_unix=receipt["started_at_unix"])
     milestones = events.get("milestones_s", {})
+    if milestones.get("promoted_s") != receipt["timing_s"].get("promotion"):
+        # CPU to promotion was cut from the full sample series, which the
+        # receipt does not retain; a moved milestone leaves it unknown, not stale.
+        tree = receipt.get("process_tree") or {}
+        for key in ("cpu_seconds_to_promotion", "mean_cores_to_promotion"):
+            if key in tree:
+                tree[key] = None
     receipt["stages"] = analyse_batches(work / "archive" / "ops.db")
     for key in ("writer", "chunks", "intake_pages_by_class", "by_source", "warnings_and_errors"):
         receipt[key] = events.get(key)
@@ -957,5 +966,8 @@ def refresh(receipt_path: Path) -> dict[str, Any]:
             events.get("by_source") or {},
             (milestones.get("last_chunk_done_s") or 0) - (milestones.get("preparation_done_s") or 0) or None,
         )
-    receipt_path.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    # Atomic: the receipt is replaced only by a complete document.
+    staging = receipt_path.with_name(receipt_path.name + ".tmp")
+    staging.write_text(json.dumps(receipt, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    staging.replace(receipt_path)
     return receipt

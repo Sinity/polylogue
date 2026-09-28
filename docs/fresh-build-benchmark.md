@@ -18,7 +18,7 @@ only when their corpus digests match.
 
 | Kind | Command | Use |
 | --- | --- | --- |
-| sample | `corpus sample --out DIR --seed N --fraction F` | A seeded byte-fraction of each (origin, size bucket) stratum of real sources. Private. |
+| sample | `corpus sample --out DIR --seed N --fraction F` | A seeded byte-fraction of each (origin, size bucket) stratum of real sources. A unit keeps its parser sidecars: a Claude Code session with its subagents and `tool-results/`, a Gemini CLI project with its `tool-outputs/`. Private. |
 | files | `corpus files --out DIR [--export ORIGIN=PATH] FILE...` | Exactly the named real transcripts, e.g. one whale; each must be a file its source root's watcher admits. `--export` stages a ChatGPT or Claude.ai export under `exports/`. Private. |
 
 Both are private: corpora, manifests and receipts stay outside the checkout
@@ -79,7 +79,7 @@ summarises it or writes flame-graph input.
 
 `compare BEFORE AFTER` prints the deltas and whether the per-table output
 digests are identical, and exits non-zero unless the receipts are comparable:
-same corpus, same run configuration, interpreter and host (architecture, CPU count, memory, work filesystem), and both qualified.
+same corpus, same run configuration, interpreter (version, GIL mode, build string and resolved executable) and host (architecture, CPU count, memory, work filesystem), and both qualified.
 `--allow-unqualified` admits a run that promoted but did not settle, with a
 warning; it never admits a run whose candidate or corpus changed during the
 build or whose event log lost events. An optimisation claims equivalence only on identical digests from

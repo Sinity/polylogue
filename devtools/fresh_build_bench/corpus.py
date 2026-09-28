@@ -204,17 +204,47 @@ class SampleSource:
     root: Path
     target: str
     suffixes: tuple[str, ...]
-    #: Sample whole per-session units (a Claude Code transcript and its
-    #: sibling subagent directory) rather than single files.
+    #: Sample whole units rather than single files: every file whose first
+    #: ``unit_depth`` path parts (suffix stripped) agree is one unit.
     session_units: bool = False
+    unit_depth: int = 2
+    #: Directories of parser sidecars (persisted tool output) that belong to
+    #: the unit that contains them, whatever their suffix.
+    sidecar_dirs: tuple[str, ...] = ()
 
 
 def default_sample_sources(home: Path) -> tuple[SampleSource, ...]:
     return (
-        SampleSource("claude-code", home / ".claude" / "projects", "home/.claude/projects", (".jsonl",), True),
+        # <project>/<session>.jsonl, its subagents and its tool-results/
+        # sidecars are one unit.
+        SampleSource(
+            "claude-code",
+            home / ".claude" / "projects",
+            "home/.claude/projects",
+            (".jsonl",),
+            True,
+            sidecar_dirs=("tool-results",),
+        ),
         SampleSource("codex", home / ".codex" / "sessions", "home/.codex/sessions", (".jsonl",)),
-        SampleSource("gemini-cli", home / ".gemini" / "tmp", "home/.gemini/tmp", (".json", ".jsonl")),
+        # Gemini keeps a project's transcripts under chats/ and their
+        # persisted tool output under tool-outputs/session-<id>/; the project
+        # is the smallest unit that holds both.
+        SampleSource(
+            "gemini-cli",
+            home / ".gemini" / "tmp",
+            "home/.gemini/tmp",
+            (".json", ".jsonl"),
+            True,
+            unit_depth=1,
+            sidecar_dirs=("tool-outputs",),
+        ),
     )
+
+
+def _admitted(source: SampleSource, path: Path) -> bool:
+    if path.suffix.lower() in source.suffixes:
+        return True
+    return any(part in source.sidecar_dirs for part in path.relative_to(source.root).parts[:-1])
 
 
 def _units(source: SampleSource) -> list[tuple[str, list[Path], int]]:
@@ -222,19 +252,18 @@ def _units(source: SampleSource) -> list[tuple[str, list[Path], int]]:
     if not source.root.is_dir():
         return []
     files = sorted(
-        path
-        for path in source.root.rglob("*")
-        if path.is_file() and not path.is_symlink() and path.suffix.lower() in source.suffixes
+        path for path in source.root.rglob("*") if path.is_file() and not path.is_symlink() and _admitted(source, path)
     )
     if not source.session_units:
         return [(str(path), [path], path.stat().st_size) for path in files]
     grouped: dict[str, list[Path]] = defaultdict(list)
+    depth = source.unit_depth
     for path in files:
         relative = path.relative_to(source.root)
         parts = relative.parts
-        # <project>/<session>.jsonl and <project>/<session>/subagents/... share
-        # the key <project>/<session>.
-        key = str(Path(*parts[:2]).with_suffix("")) if len(parts) >= 2 else str(relative)
+        # With depth 2, <project>/<session>.jsonl and <project>/<session>/...
+        # (subagents, tool-results) share the key <project>/<session>.
+        key = str(Path(*parts[:depth]).with_suffix("")) if len(parts) >= depth else str(relative)
         grouped[key].append(path)
     return [(key, paths, sum(path.stat().st_size for path in paths)) for key, paths in sorted(grouped.items())]
 

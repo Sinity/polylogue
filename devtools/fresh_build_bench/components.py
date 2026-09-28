@@ -82,14 +82,22 @@ def _summarise(rows: list[tuple[str, int, float]], wall: float, extra: dict[str,
 
 
 def _timed_map(
-    work: Callable[[tuple[Path, str, int]], dict[str, int]], files: list[tuple[Path, str, int]], workers: int
+    work: Callable[[tuple[Path, str, int]], Callable[[], dict[str, int]]],
+    files: list[tuple[Path, str, int]],
+    workers: int,
 ) -> tuple[list[tuple[str, int, float]], float, dict[str, int]]:
+    """Time ``work`` per file; the callable it returns runs after the timer.
+
+    That callable collects counts (reading prepared artifacts back, say),
+    which is the caller's consumption, not the stage being measured.
+    """
     counts: dict[str, int] = defaultdict(int)
 
     def run(item: tuple[Path, str, int]) -> tuple[str, int, float, dict[str, int]]:
         began = time.perf_counter()
-        produced = work(item)
-        return item[1], item[2], time.perf_counter() - began, produced
+        finish = work(item)
+        elapsed = time.perf_counter() - began
+        return item[1], item[2], elapsed, finish()
 
     began = time.perf_counter()
     if workers <= 1:
@@ -109,6 +117,7 @@ def _timed_map(
 def bench_parse(
     corpus: Path, scratch: Path, *, workers: int, origins: list[str] | None, limit: int | None
 ) -> dict[str, Any]:
+    from polylogue.sources.dispatch import is_stream_record_provider
     from polylogue.sources.live.parse_prefetch import live_parse_path_worker
 
     manifest = load_manifest(corpus)
@@ -116,27 +125,37 @@ def bench_parse(
     shard_root = scratch / "parse-shards"
     shard_root.mkdir(parents=True, exist_ok=True)
 
-    def work(item: tuple[Path, str, int]) -> dict[str, int]:
+    def work(item: tuple[Path, str, int]) -> Callable[[], dict[str, int]]:
         path, origin, _size = item
+        provider = _PROVIDER_BY_ORIGIN[origin]
         attempt = Path(tempfile.mkdtemp(prefix="attempt-", dir=shard_root))
         try:
             result = live_parse_path_worker(
-                _PROVIDER_BY_ORIGIN[origin],
+                provider,
                 str(path),
                 path.stem,
-                is_stream=path.suffix == ".jsonl",
+                # The production predicate: a case-insensitive suffix check.
+                is_stream=is_stream_record_provider(str(path), provider),
                 shard_directory=str(shard_root),
                 attempt_directory=str(attempt),
             )
-            if result.error is not None:
-                return {"errors": 1}
-            sessions = messages = 0
-            for session in result.iter_sessions():
-                sessions += 1
-                messages += len(session.messages)
-            return {"sessions": sessions, "messages": messages}
-        finally:
+        except BaseException:
             shutil.rmtree(attempt, ignore_errors=True)
+            raise
+
+        def count() -> dict[str, int]:
+            try:
+                if result.error is not None:
+                    return {"errors": 1}
+                sessions = messages = 0
+                for session in result.iter_sessions():
+                    sessions += 1
+                    messages += len(session.messages)
+                return {"sessions": sessions, "messages": messages}
+            finally:
+                shutil.rmtree(attempt, ignore_errors=True)
+
+        return count
 
     rows, wall, counts = _timed_map(work, files, workers)
     verify_manifest(corpus, manifest)
@@ -154,9 +173,9 @@ def bench_blob(
     files = _corpus_files(corpus, manifest, origins, limit)
     store = BlobStore(scratch / "blob")
 
-    def work(item: tuple[Path, str, int]) -> dict[str, int]:
+    def work(item: tuple[Path, str, int]) -> Callable[[], dict[str, int]]:
         store.write_from_path(item[0])
-        return {}
+        return dict
 
     rows, wall, counts = _timed_map(work, files, workers)
     verify_manifest(corpus, manifest)
