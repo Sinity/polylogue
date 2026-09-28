@@ -331,6 +331,10 @@ class _FullIngestResult:
     # group's cursors first and only then stops taking new work -- a batch is
     # never left committed-and-failed with its cursor unrecorded.
     write_hold_exhausted: bool = False
+    #: Planned paths held back for publication order: each shares a
+    #: canonical session with a path this group published, so it was not
+    #: attempted here and publishes in the next group.
+    ordering_held: list[Path] = field(default_factory=list)
 
 
 def _full_ingest_result_from_summary(

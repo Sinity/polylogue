@@ -24,6 +24,7 @@ uses), not a reimplementation of either.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import sqlite3
@@ -966,60 +967,161 @@ async def test_fresh_discovery_keeps_a_page_of_lookahead_for_prefetch(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_lookahead_sampling_never_blocks_the_batch_in_flight(tmp_path: Path) -> None:
-    """A lookahead whose source read is stuck is skipped, not waited on or stacked.
+async def test_lookahead_reads_no_source_on_the_admission_path(tmp_path: Path) -> None:
+    """The lookahead hands the stage cursorless paths without reading them.
 
-    Anti-vacuity: await the lookahead sample inside ``_submit_ready_lookahead``
-    (or sample on the admission path) and the first submission blocks on the
-    held selection instead of returning with nothing submitted; start a
-    sampler per offer and the second offer runs the selection again while the
-    first is still stuck.
+    Anti-vacuity: sample candidates (open the file) on the parent, whether in
+    the offer or the submission, and the FIFO blocks this coroutine until the
+    test's writer times out; submit a path that has a cursor row and the
+    stage receives it.
     """
-    (path,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    import os
+
+    (ingested,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    stuck = ingested.parent / "stuck.jsonl"
+    os.mkfifo(stuck)
     archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    submitted: list[list[tuple[str, Provider, bool]]] = []
+    await _ingest(archive_root, [ingested], parse_stage=None)
+    submitted: list[tuple[list[str], Provider]] = []
 
     class RecordingStage:
-        def prefetch_paths(self, candidates: list[tuple[str, Provider, bool]]) -> int:
-            submitted.append(list(candidates))
-            return len(candidates)
+        def prefetch_paths(self, paths: list[str], *, fallback_provider: Provider) -> int:
+            submitted.append((list(paths), fallback_provider))
+            return len(paths)
 
     processor = LiveBatchProcessor(
         Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
-        (WatchSource(name="codex", root=path.parent),),
+        (WatchSource(name="codex", root=ingested.parent),),
         cursor=CursorStore(archive_root / "index.db"),
         parser_fingerprint=_PARSER_FINGERPRINT,
         parse_stage=RecordingStage(),  # type: ignore[arg-type]
         read_snapshot=open_operation_read,
     )
+    processor.offer_parse_lookahead([ingested, stuck], source_name="codex")
+    await asyncio.wait_for(processor._submit_ready_lookahead(), timeout=10)
+    assert submitted == [([str(stuck)], Provider.CODEX)]
+    assert processor._parse_lookahead is None
+
+
+def test_a_stalled_read_ahead_cannot_wedge_required_work(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unclaimed read-ahead holding the byte budget is preempted, then reaped.
+
+    Anti-vacuity: let a required path wait for budget held by unclaimed
+    read-ahead (the stalled worker never finishes and no stage call advances
+    its lifetime) and the warm thread is still alive after the join.
+    """
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    stalled_path, required_path = _write_fixture_corpus(tmp_path / "sessions", count=2)
     released = threading.Event()
-    selections: list[int] = []
+    original_worker = parse_prefetch.live_parse_path_worker
 
-    def held_selection() -> list[Path]:
-        selections.append(1)
-        released.wait(timeout=30)
-        return [path]
+    def stalled_worker(provider_value: str, source_path: str, *args: object, **kwargs: object) -> object:
+        if source_path == str(stalled_path):
+            released.wait(timeout=60)  # a source read that never returns
+        return original_worker(provider_value, source_path, *args, **kwargs)  # type: ignore[arg-type]
 
-    processor.offer_parse_lookahead(held_selection, source_name="codex")
-    stuck = processor._parse_lookahead
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", stalled_worker)
+    monkeypatch.setattr(parse_prefetch, "_PROGRESS_POLL_SECONDS", 0.05)
+    budget = stalled_path.stat().st_size + required_path.stat().st_size - 1
+    stage = LiveParseStage(
+        max_workers=2,
+        max_inflight_bytes=budget,
+        shard_directory=tmp_path / "parse-shards",
+        preempt_grace_seconds=0.1,
+    )
+    warm = threading.Thread(target=stage.warm_paths, args=([(str(required_path), Provider.CODEX, True)],))
     try:
-        await processor._submit_ready_lookahead()
-        assert submitted == []
-        processor.offer_parse_lookahead(held_selection, source_name="codex")
-        assert processor._parse_lookahead is None
+        assert stage.prefetch_paths([str(stalled_path)], fallback_provider=Provider.CODEX) == 1
+        warm.start()
+        warm.join(timeout=10)
+        assert not warm.is_alive()
+        prepared = stage.pop_path(str(required_path), blob_hash=hashlib.sha256(required_path.read_bytes()).hexdigest())
+        assert prepared is not None and prepared.error is None
+        prepared.discard()
+        assert str(stalled_path) not in stage._path_futures
+        assert str(stalled_path) not in stage._speculative
     finally:
         released.set()
-    assert stuck is not None
-    stuck.result(timeout=30)
-    assert len(selections) == 1
-    processor.offer_parse_lookahead(lambda: [path], source_name="codex")
-    lookahead = processor._parse_lookahead
-    assert lookahead is not None
-    lookahead.result(timeout=30)
-    await processor._submit_ready_lookahead()
-    assert [[candidate[0] for candidate in batch] for batch in submitted] == [[str(path)]]
-    assert processor._parse_lookahead is None
+        warm.join(timeout=30)
+        stage.shutdown()
+
+
+@pytest.mark.uses_real_clock("waits for a real worker process to block in a source read")
+def test_an_abandoned_read_ahead_stuck_in_a_source_read_is_reaped(tmp_path: Path) -> None:
+    """Read-ahead blocked in a source read is stopped with its worker process.
+
+    The FIFO has no writer, so the worker's candidate sampling blocks in
+    ``open`` as it would on a stalled mount. Anti-vacuity: drop an expired
+    read-ahead without reaping it (or sample on a parent thread) and the
+    worker process is still alive after expiry.
+    """
+    import os
+
+    source = tmp_path / "sessions"
+    source.mkdir()
+    stuck = source / "stuck.jsonl"
+    os.mkfifo(stuck)
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    try:
+        assert stage.prefetch_paths([str(stuck)], fallback_provider=Provider.CODEX) == 1
+        executor = stage._executor
+        assert isinstance(executor, ProcessPoolExecutor)
+        deadline = time.monotonic() + 30
+        while not getattr(executor, "_processes", None) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        workers = tuple(executor._processes.values())
+        assert workers
+        time.sleep(0.5)
+        assert not stage._path_futures[str(stuck)].done()
+        import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+        for _ in range(parse_prefetch._SPECULATIVE_LIFETIME_CALLS):
+            stage.prefetch_paths([], fallback_provider=Provider.CODEX)
+        assert stage._path_futures == {}
+        assert stage._path_inflight_bytes == 0
+        assert not any(worker.is_alive() for worker in workers)
+        attempts = tmp_path / "parse-shards" / ".live-parse-attempts"
+        assert [path for path in attempts.iterdir() if path.name.startswith("attempt-")] == []
+    finally:
+        stage.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_a_warm_reconciles_one_path_per_session_in_intake_order(tmp_path: Path) -> None:
+    """A later revision of a session in the same warm is held, not pinned.
+
+    Both paths revise an archived session. Only the first is reconciled
+    against this snapshot; the second is returned held, carrying no prepared
+    write, and the next warm reconciles it afresh. Anti-vacuity: reconcile
+    every path of the warm against one snapshot and the second path carries
+    a prepared write pinned to predecessor state the first path's
+    publication replaces, and nothing is held.
+    """
+    archive_root = tmp_path / "archive"
+    (original,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    await _ingest(archive_root, [original], parse_stage=None)
+    first = original.parent / "revision-1.jsonl"
+    second = original.parent / "revision-2.jsonl"
+    turns: tuple[tuple[str, str], ...] = (("user", "question 0"), ("assistant", "answer 0"), ("user", "more"))
+    first.write_bytes(_codex_session_bytes("session-0", turns))
+    second.write_bytes(_codex_session_bytes("session-0", (*turns, ("assistant", "latest"))))
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
+    candidates = [(str(first), Provider.CODEX, True), (str(second), Provider.CODEX, True)]
+    try:
+        held = stage.warm_paths(candidates, archive_root=archive_root, read_snapshot=open_operation_read)
+        assert held == frozenset({str(second)})
+        assert len(stage._path_results[str(first)].prepared_writes) == 1
+        assert stage._path_results[str(second)].prepared_writes == ()
+        # The next warm (after the first path publishes) reconciles the held
+        # path; a reconciliation never outlives the warm that made it.
+        stage._path_results.pop(str(first)).discard()
+        assert stage.warm_paths([candidates[1]], archive_root=archive_root, read_snapshot=open_operation_read) == (
+            frozenset()
+        )
+        assert len(stage._path_results[str(second)].prepared_writes) == 1
+    finally:
+        stage.shutdown()
 
 
 def test_a_cancelled_warm_stops_waiting_and_installs_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1097,12 +1199,12 @@ def test_prefetch_submits_without_waiting_and_warm_claims_the_work(
     candidates = [(str(path), Provider.CODEX, True) for path in paths]
     try:
         # Read-ahead leaves the last worker for required work.
-        assert stage.prefetch_paths(candidates) == 2
+        assert stage.prefetch_paths([str(path) for path in paths], fallback_provider=Provider.CODEX) == 2
         # Returned while both workers are still held: nothing waited on them.
         assert len(stage._path_futures) == 2
         assert not any(future.done() for future in stage._path_futures.values())
         released.set()
-        assert stage.warm_paths(candidates) == 3
+        assert stage.warm_paths(candidates) == frozenset()
         assert sorted(calls) == sorted(str(path) for path in paths)
         for path in paths:
             result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
@@ -1124,7 +1226,7 @@ def test_unclaimed_prefetch_is_dropped_with_its_scratch(tmp_path: Path) -> None:
     skipped, claimed = _write_fixture_corpus(tmp_path / "sessions", count=2)
     stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
     try:
-        assert stage.prefetch_paths([(str(skipped), Provider.CODEX, True)]) == 1
+        assert stage.prefetch_paths([str(skipped)], fallback_provider=Provider.CODEX) == 1
         for _ in range(parse_prefetch._SPECULATIVE_LIFETIME_CALLS):
             stage.warm_paths([(str(claimed), Provider.CODEX, True)])
             stage.pop_path(str(claimed), blob_hash="")
@@ -1146,7 +1248,7 @@ def test_a_prefetch_only_walk_does_not_accumulate_results(tmp_path: Path) -> Non
     stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
     try:
         for path in paths:
-            stage.prefetch_paths([(str(path), Provider.CODEX, True)])
+            stage.prefetch_paths([str(path)], fallback_provider=Provider.CODEX)
             for future in tuple(stage._path_futures.values()):
                 future.result(timeout=30)
         held = len(stage._path_results) + len(stage._path_futures)
@@ -1167,10 +1269,10 @@ def test_a_finished_unclaimed_prefetch_expires_without_a_warm(tmp_path: Path) ->
     (skipped,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
     stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
     try:
-        assert stage.prefetch_paths([(str(skipped), Provider.CODEX, True)]) == 1
+        assert stage.prefetch_paths([str(skipped)], fallback_provider=Provider.CODEX) == 1
         stage._path_futures[str(skipped)].result(timeout=30)
         for _ in range(parse_prefetch._SPECULATIVE_LIFETIME_CALLS):
-            stage.prefetch_paths([])
+            stage.prefetch_paths([], fallback_provider=Provider.CODEX)
         assert str(skipped) not in stage._path_futures
         assert str(skipped) not in stage._path_results
         assert str(skipped) not in stage._speculative
@@ -1208,7 +1310,7 @@ def test_a_speculative_failure_finishing_during_the_warm_is_retried(
     stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
     candidate = [(str(path), Provider.CODEX, True)]
     try:
-        assert stage.prefetch_paths(candidate) == 1
+        assert stage.prefetch_paths([str(path)], fallback_provider=Provider.CODEX) == 1
         threading.Timer(0.05, released.set).start()
         stage.warm_paths(candidate)
         result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
@@ -1225,7 +1327,7 @@ def test_a_single_worker_stage_reads_nothing_ahead(tmp_path: Path) -> None:
     [path] = _write_fixture_corpus(tmp_path / "sessions", count=1)
     stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
     try:
-        assert stage.prefetch_paths([(str(path), Provider.CODEX, True)]) == 0
+        assert stage.prefetch_paths([str(path)], fallback_provider=Provider.CODEX) == 0
         assert stage._path_futures == {}
     finally:
         stage.shutdown()
@@ -1241,7 +1343,7 @@ def test_a_failed_prefetch_stat_is_retried_by_the_warm(tmp_path: Path) -> None:
     path.unlink()
     stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
     try:
-        assert stage.prefetch_paths([(str(path), Provider.CODEX, True)]) == 0
+        assert stage.prefetch_paths([str(path)], fallback_provider=Provider.CODEX) == 0
         path.write_bytes(payload)
         stage.warm_paths([(str(path), Provider.CODEX, True)])
         result = stage.pop_path(str(path), blob_hash=hashlib.sha256(payload).hexdigest())
@@ -1293,7 +1395,7 @@ def test_a_warm_waits_for_every_path_through_limited_capacity(tmp_path: Path, mo
     candidates = [(str(path), Provider.CODEX, True) for path in paths]
     try:
         threading.Timer(0.3, released.set).start()
-        assert stage.warm_paths(candidates) == 3
+        assert stage.warm_paths(candidates) == frozenset()
         assert len(calls) == 3
         for path in paths:
             result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
@@ -1360,7 +1462,7 @@ def test_a_slow_process_worker_is_awaited_and_verified_off_the_writer(
 
     monkeypatch.setattr(PreparedJsonl, "verify_files", verify_outside_writer)
     try:
-        assert stage.warm_paths([candidate]) == 1
+        assert stage.warm_paths([candidate]) == frozenset()
         assert stage._path_futures == {}
         assert full_verifications == 1
         inside_writer = True
@@ -1402,7 +1504,7 @@ def test_path_worker_death_reclaims_only_its_attempt_before_retry(
     unrelated.write_text("keep")
     assert not stale_attempt.exists(), "startup did not reclaim a stale parent-owned attempt directory"
     try:
-        assert stage.warm_paths([(str(sibling_path), Provider.CODEX, True)]) == 1
+        assert stage.warm_paths([(str(sibling_path), Provider.CODEX, True)]) == frozenset()
         sibling = stage._path_results[str(sibling_path)]
         assert sibling.attempt_directory is not None and sibling.attempt_directory.exists()
 
@@ -1410,7 +1512,7 @@ def test_path_worker_death_reclaims_only_its_attempt_before_retry(
             killed = tmp_path / f"killed-{index}.json"
             killed.write_text("worker exits before parsing")
             candidate = (str(killed), Provider.CODEX, True)
-            assert stage.warm_paths([candidate]) == 1
+            assert stage.warm_paths([candidate]) == frozenset()
             failed = stage.pop_path(str(killed), blob_hash="0" * 64)
             assert failed is not None and failed.deferred
             assert "worker process died" in str(failed.error)
@@ -1418,7 +1520,7 @@ def test_path_worker_death_reclaims_only_its_attempt_before_retry(
             assert attempts == (sibling.attempt_directory,)
             assert not any(any(attempt.glob("*partial*")) for attempt in attempts)
 
-        assert stage.warm_paths([(str(retry_path), Provider.CODEX, True)]) == 1
+        assert stage.warm_paths([(str(retry_path), Provider.CODEX, True)]) == frozenset()
         retry = stage.pop_path(str(retry_path), blob_hash=hashlib.sha256(retry_path.read_bytes()).hexdigest())
         assert retry is not None and retry.error is None
         assert sibling.attempt_directory.exists(), "another attempt failure swept the pending sibling carrier"
@@ -1449,7 +1551,7 @@ def test_path_worker_stop_unknown_blocks_cleanup_and_replacement(
     try:
         with monkeypatch.context() as context:
             context.setattr(process_pool, "terminate_process_pool", lambda _executor: False)
-            assert stage.warm_paths([(str(killed), Provider.CODEX, True)]) == 1
+            assert stage.warm_paths([(str(killed), Provider.CODEX, True)]) == frozenset()
             assert stage._cleanup_blocked
             assert stage.cleanup_failure_count == 1
             failed = stage.pop_path(str(killed), blob_hash="0" * 64)
@@ -1464,7 +1566,7 @@ def test_path_worker_stop_unknown_blocks_cleanup_and_replacement(
 
             retry = tmp_path / "killed-retry-must-not-start.json"
             retry.write_text("must remain unsubmitted")
-            assert stage.warm_paths([(str(retry), Provider.CODEX, True)]) == 1
+            assert stage.warm_paths([(str(retry), Provider.CODEX, True)]) == frozenset()
             deferred = stage.pop_path(str(retry), blob_hash="0" * 64)
             assert deferred is not None and deferred.deferred
             assert not stage._path_futures
@@ -1527,7 +1629,7 @@ def test_path_preparation_refuses_source_changed_after_worker_seal(tmp_path: Pat
     directory = tmp_path / "parse-shards"
     stage = LiveParseStage(max_workers=1, shard_directory=directory)
     try:
-        assert stage.warm_paths([(str(path), Provider.CODEX, True)]) == 1
+        assert stage.warm_paths([(str(path), Provider.CODEX, True)]) == frozenset()
         path.write_bytes(path.read_bytes() + b' {"type":"event_msg","payload":{}}\n')
         result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
         assert result is not None and result.deferred
@@ -1590,7 +1692,7 @@ async def test_existing_session_preparation_uses_controlled_pinned_snapshot(tmp_
             stage.warm_paths(
                 [(str(path), Provider.CODEX, True)], archive_root=archive_root, read_snapshot=controlled_read
             )
-            == 1
+            == frozenset()
         )
         prepared = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
         assert snapshots == 1
@@ -1623,7 +1725,7 @@ async def test_existing_session_preparation_overlaps_paths_and_seals_selected_ro
     stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
     try:
         candidates = [(str(path), Provider.CODEX, True) for path in paths]
-        assert stage.warm_paths(candidates, archive_root=archive_root, read_snapshot=concurrent_read) == 2
+        assert stage.warm_paths(candidates, archive_root=archive_root, read_snapshot=concurrent_read) == frozenset()
         for index, path in enumerate(paths):
             prepared = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
             assert prepared is not None and not prepared.deferred

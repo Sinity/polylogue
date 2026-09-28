@@ -79,6 +79,13 @@ sites:
     scope: "writing_module"
     classification: producer_scoped_transaction
     reason: "the ingest producer composing the event payload it is about to write: _preacquire_sidecar_blobs publishes the matched sidecar bytes through the archive blob store and copies the resulting blob_hash back onto the session event via model_copy, before write_parsed_session_to_archive stores it. Nothing stored is read back and substituted; blocks.text is explicitly not touched"
+  - file: "polylogue/sources/live/parse_prefetch.py"
+    function: "LiveParseStage._prepare_existing_session_writes"
+    subject: "prepared_writes"
+    kind: "read_path_substitution"
+    scope: "read_only_module"
+    classification: producer_scoped_transaction
+    reason: "the parse stage clears prepared writes on its own in-memory preparation before reconciling it again: a reconciliation is valid only for the publication that follows the warm that made it, so an older one is closed and rebuilt against a snapshot taken after every earlier publication. Nothing stored is read back or substituted; the sealed carrier files are unchanged"
   - file: "polylogue/storage/derived/session/rebuild.py"
     function: "_delete_orphan_session_insights_async"
     subject: "session_latency_profiles"

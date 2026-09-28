@@ -1014,43 +1014,16 @@ class FileIntakeAdapter(IntakeAdapter):
         return outcomes
 
     def _offer_parse_lookahead(self, paths: Sequence[Path]) -> None:
-        """Offer the next page's cursorless files for read-ahead parsing.
+        """Offer the next page's files for read-ahead parsing.
 
-        Only a file with no cursor row is certain to be ingested in full, so
-        only those are prepared early. Selection and provider sampling read
-        the source, so they run off the admission path: a slow or unavailable
-        lookahead file never delays the page being admitted, and a lookahead
-        not sampled by the time that page's warm finishes is simply unused.
+        Nothing is read here. The next full ingest keeps only cursorless
+        files, the ones certain to be ingested in full, and the parse stage
+        samples and prepares them in workers it can reap, so a slow or
+        unavailable lookahead file never delays the page being admitted.
         """
         offer = getattr(self.context.watcher, "offer_parse_lookahead", None)
-        if not callable(offer) or not paths:
-            return
-        offered = tuple(paths)
-        offer(lambda: self._fresh_lookahead_paths(offered), source_name=self.source.name)
-
-    def _fresh_lookahead_paths(self, paths: Sequence[Path]) -> list[Path]:
-        """The still-owned, cursorless subset of ``paths``; runs on a worker thread."""
-
-        def still_owned(path: Path) -> bool:
-            # The same carrier checks admission applies, re-read now: a path
-            # discovered earlier may since have become a symlink or moved.
-            try:
-                regular = stat.S_ISREG(path.lstat().st_mode)
-            except OSError:
-                return False
-            return (
-                regular
-                and deepest_source_for_path(path, self.context.sources) is self.source
-                and self.source.accepts(path)
-            )
-
-        owned = [path for path in paths if still_owned(path)]
-        if not owned:
-            return []
-        cursor = getattr(self.context.watcher, "_cursor", None)
-        get_records = getattr(cursor, "get_records", None)
-        records = get_records(tuple(owned)) if callable(get_records) else {}
-        return [path for path in owned if records.get(path) is None]
+        if callable(offer) and paths:
+            offer(tuple(paths), source_name=self.source.name)
 
     async def acknowledge(self, item: IntakeItem) -> None:
         # Files remain retained source carriers.  The live batch's durable

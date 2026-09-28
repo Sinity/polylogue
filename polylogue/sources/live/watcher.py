@@ -1196,14 +1196,13 @@ class LiveWatcher:
         logger.info("live.watcher: reconciled cursor from archive source row for %s", path)
         return _ArchivedCursorReconciliation.RECONCILED
 
-    def offer_parse_lookahead(self, select: Callable[[], Sequence[Path]], *, source_name: str) -> None:
+    def offer_parse_lookahead(self, paths: Sequence[Path], *, source_name: str) -> None:
         """Offer the paths a later batch will ingest in full for read-ahead parsing.
 
-        ``select`` runs on a worker thread. Nothing here touches the parse
-        stage: the next ingest submits the sampled candidates while it owns
-        the stage under the ingest lock.
+        Nothing is read or submitted here: the next ingest filters and
+        submits the offer while it owns the stage under the ingest lock.
         """
-        self._batch_processor.offer_parse_lookahead(select, source_name=source_name)
+        self._batch_processor.offer_parse_lookahead(paths, source_name=source_name)
 
     async def _ingest_files(
         self,
