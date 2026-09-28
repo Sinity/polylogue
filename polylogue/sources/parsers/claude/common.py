@@ -1394,14 +1394,23 @@ def normalize_chat_messages(
                 )
             )
     # A summary on a record with no other material, and so no message of its
-    # own, is still kept, after the messages, in evidence-key order.
+    # own, is still kept, after the messages. These carriers have no
+    # canonical position (an ID-less one's occurrence suffix follows array
+    # order), so they are ordered by their own content.
     session_events.extend(
-        event
-        for evidence in sorted(
-            (evidence for evidence in evidence_by_id.values() if evidence.evidence_key not in emitted_ids),
-            key=lambda row: row.evidence_key,
+        sorted(
+            (
+                event
+                for evidence in evidence_by_id.values()
+                if evidence.evidence_key not in emitted_ids
+                if (event := _compaction_summary_event(evidence)) is not None
+            ),
+            key=lambda event: (
+                event.source_message_provider_id or "",
+                json.dumps(event.payload, sort_keys=True),
+                event.timestamp or "",
+            ),
         )
-        if (event := _compaction_summary_event(evidence)) is not None
     )
 
     if duplicate_ids:

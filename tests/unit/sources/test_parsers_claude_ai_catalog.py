@@ -1076,3 +1076,26 @@ def test_claude_ai_compaction_summaries_follow_canonical_message_order() -> None
 
     assert summaries(forward) == summaries(reverse) == ["summary one", "summary two"]
     assert session_content_hash(forward) == session_content_hash(reverse)
+
+
+def test_claude_ai_summary_only_records_order_by_content() -> None:
+    """ID-less summary-only records keep one event order under any array order.
+
+    Anti-vacuity: order these carriers by evidence key, whose occurrence
+    suffix follows array order, and the reversed export swaps the two events.
+    """
+    from polylogue.pipeline.ids import session_content_hash
+
+    chat_messages = [
+        {"sender": "assistant", "text": "kept", "created_at": "2026-01-01T00:00:00Z"},
+        {"sender": "assistant", "compaction_summary": [{"type": "text", "text": "alpha"}]},
+        {"sender": "assistant", "compaction_summary": [{"type": "text", "text": "beta"}]},
+    ]
+    forward = parse_ai({"uuid": "claude-summary-only", "chat_messages": chat_messages}, "fallback")
+    reverse = parse_ai({"uuid": "claude-summary-only", "chat_messages": list(reversed(chat_messages))}, "fallback")
+
+    def summaries(events: list[Any]) -> list[object]:
+        return [event.payload["summary"] for event in events if event.event_type == "claude_ai_compaction_summary"]
+
+    assert summaries(forward.session_events) == summaries(reverse.session_events) == ["alpha", "beta"]
+    assert session_content_hash(forward) == session_content_hash(reverse)
