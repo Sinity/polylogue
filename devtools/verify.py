@@ -42,6 +42,7 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
+    OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
     PytestSlotUnavailableError,
     run_pytest,
@@ -1447,6 +1448,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
                     provenance.get("git_worktree_content_sha256"),
                 )
             )
+        elif result.get("diagnosis") == OOM_KILLED_DIAGNOSIS:
+            # The kill took the slot receipt, so nothing identified the tree
+            # pytest ran against; the admitted head is not that evidence.
+            run.record_execution_worktree({"capture_source": "unavailable"})
     # The static gates read the checkout directly, with no slot to re-check it:
     # a run whose branch, HEAD or Git-visible content changed while it ran, or
     # whose pytest step executed other content, verified no single tree.

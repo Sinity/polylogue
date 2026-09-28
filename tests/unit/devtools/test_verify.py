@@ -2027,3 +2027,27 @@ def test_stopping_gates_shares_one_grace_period(monkeypatch: pytest.MonkeyPatch)
     verify._stop_gate_processes()
 
     assert waits == [10.0, 0.0]
+
+
+def test_verify_names_an_oomd_killed_pytest_step(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: drop the termination merge in ``verify._run`` and the
+    step reads ``pytest_failed`` with no killer or unit."""
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "_clear_pytest_report", lambda _command: None)
+    monkeypatch.setattr(verify, "executable_gate_result", lambda *_args, **_kwargs: SimpleNamespace(ok=True))
+    killed = SimpleNamespace(
+        returncode=137,
+        slot="agentctl job 9",
+        receipt=None,
+        termination={"killer": "oom-kill", "unit": "unit.service"},
+    )
+    monkeypatch.setattr(verify, "run_pytest", lambda *_args, **_kwargs: killed)
+    run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
+
+    exit_code, _elapsed, metadata = verify._run("pytest selected", ["pytest"], run=run)
+
+    assert exit_code == 137
+    assert metadata["diagnosis"] == "oom_killed"
+    assert metadata["termination_killer"] == "oom-kill"
+    assert metadata["termination_unit"] == "unit.service"
