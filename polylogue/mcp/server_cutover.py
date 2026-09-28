@@ -1458,6 +1458,10 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         results, async tasks, selected sources, token budgets, and voice
         notes (polylogue-kktg).
 
+        ``projection="materials"`` returns the source-tier materials retained
+        for the session with their content -- Codex goals (objective, status,
+        budget) and memories, which are stored nowhere else.
+
         ``ref="cost-outlook:<plan_name>"`` projects the current billing cycle
         for a configured subscription plan (the standalone ``cost_outlook``
         MCP tool retired by the six-tool cutover, #3095/polylogue-t46.8, has

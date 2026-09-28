@@ -98,9 +98,24 @@ WEB_CONTENT_WINDOW = EvidenceWindowFamily(
     stable_order="message_id,block_id,position",
 )
 
+#: ``material_observations`` whose referrer is the session -- source-tier
+#: materials such as Codex goals and memories.  Ordered by admission.
+#: Windowed because one material carries its retained bytes.
+SESSION_MATERIALS_WINDOW = EvidenceWindowFamily(
+    kind="materials",
+    projection="session-materials-v1",
+    stable_order="created_at_ms,material_id",
+)
+
 EVIDENCE_WINDOW_FAMILIES: dict[str, EvidenceWindowFamily] = {
     family.kind: family
-    for family in (SESSION_EVENTS_WINDOW, RAW_ARTIFACTS_WINDOW, FILE_EDITS_WINDOW, WEB_CONTENT_WINDOW)
+    for family in (
+        SESSION_EVENTS_WINDOW,
+        RAW_ARTIFACTS_WINDOW,
+        FILE_EDITS_WINDOW,
+        WEB_CONTENT_WINDOW,
+        SESSION_MATERIALS_WINDOW,
+    )
 }
 
 
@@ -210,6 +225,7 @@ __all__ = [
     "FILE_EDITS_WINDOW",
     "RAW_ARTIFACTS_WINDOW",
     "SESSION_EVENTS_WINDOW",
+    "SESSION_MATERIALS_WINDOW",
     "WEB_CONTENT_WINDOW",
     "EvidenceReader",
     "EvidenceWindowFamily",

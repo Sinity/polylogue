@@ -284,6 +284,12 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         execution_kind="distinct-operation",
         operations=("read.effective_context",),
     ),
+    "orchestration": ReadViewHandlerMetadata(
+        "orchestration",
+        "required",
+        execution_kind="distinct-operation",
+        operations=("read.orchestration",),
+    ),
     "lineage": ReadViewHandlerMetadata(
         "lineage",
         "required",
@@ -314,6 +320,14 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     ),
     "web-content": ReadViewHandlerMetadata(
         "web-content",
+        "required",
+        frozenset({"limit"}),
+        declared_options=(CONTINUATION_OPTION,),
+        execution_kind="session-read-projection",
+        operations=("session.read",),
+    ),
+    "materials": ReadViewHandlerMetadata(
+        "materials",
         "required",
         frozenset({"limit"}),
         declared_options=(CONTINUATION_OPTION,),

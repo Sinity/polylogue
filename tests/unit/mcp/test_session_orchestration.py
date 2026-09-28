@@ -143,6 +143,73 @@ async def test_api_and_mcp_preserve_counter_and_native_evidence(tmp_path: Path) 
     assert missing["code"] == "not_found"
 
 
+def test_cli_orchestration_view_renders_the_payload_api_and_mcp_return(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``read --view orchestration`` serves the same evidence as ``get``.
+
+    The CLI view dispatches the declared ``read.orchestration`` operation,
+    which is executed here on a pinned archive instead of a daemon.
+    Anti-vacuity: remove the ``orchestration`` read view (the CLI then has no
+    handler for it) or build the operation's evidence from anything other than
+    ``read_session_orchestration`` and the rendered file stops matching the
+    API payload; an unknown session must still refuse by name.
+    """
+    from unittest.mock import MagicMock
+
+    from polylogue.cli.operation_kernel import OperationRequest
+    from polylogue.cli.read_view_handlers import READ_VIEW_HANDLERS, run_read_view
+    from polylogue.cli.read_views import orchestration as orchestration_view
+    from polylogue.cli.read_views.base import ReadViewInvocation
+    from polylogue.cli.root_request import RootModeRequest
+    from polylogue.operations.daemon_protocol import validate_operation_result
+    from polylogue.operations.daemon_reads import execute_read_operation
+
+    root = tmp_path / "archive"
+    session_id = _seed(root)
+    dispatched: list[str] = []
+
+    def pinned_dispatch(config: object, request: OperationRequest, **_: object) -> tuple[dict[str, object], None]:
+        operation = request.operation
+        dispatched.append(operation)
+        with ArchiveStore.open_existing(root) as archive:
+            result = execute_read_operation(operation, dict(request.payload), archive=archive, serving_identity="test")
+        validate_operation_result(operation, result)
+        return result, None
+
+    monkeypatch.setattr(orchestration_view, "dispatch_read", pinned_dispatch)
+    assert READ_VIEW_HANDLERS["orchestration"].session_policy == "required"
+    env = MagicMock()
+    env.config = SimpleNamespace(archive_root=root)
+    out_path = tmp_path / "orchestration.json"
+    run_read_view(
+        env,
+        RootModeRequest.from_params({"id": session_id}),
+        ReadViewInvocation(
+            view="orchestration",
+            session_id=session_id,
+            output_format=None,
+            destination="file",
+            out_path=str(out_path),
+        ),
+    )
+
+    import asyncio
+
+    evidence = asyncio.run(Polylogue(archive_root=root).get_session_orchestration(session_id))
+    assert evidence is not None
+    assert dispatched == ["read.orchestration"]
+    assert json.loads(out_path.read_text()) == evidence.model_dump(mode="json")
+
+    with ArchiveStore.open_existing(root) as archive, pytest.raises(KeyError, match="Session not found"):
+        execute_read_operation(
+            "read.orchestration",
+            {"session_id": "codex-session:missing"},
+            archive=archive,
+            serving_identity="test",
+        )
+
+
 @pytest.mark.asyncio
 async def test_reset_does_not_claim_a_session_total(tmp_path: Path) -> None:
     root = tmp_path / "archive"

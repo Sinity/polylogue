@@ -203,6 +203,23 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         degraded_states=("missing session", "no compaction boundary"),
     ),
     SessionViewProfile(
+        view_id="orchestration",
+        label="Orchestration",
+        owner="polylogue.operations.orchestration.read_session_orchestration",
+        purpose=(
+            "Structured launch, child, model, token-usage, quota and task-mention evidence recorded "
+            "by this session itself, excluding inherited dialogue."
+        ),
+        input_scope="single session id",
+        included_kinds=("launch", "child session", "model segment", "usage observation", "rate limit", "bead mention"),
+        lossiness="derived",
+        evidence_policy="required",
+        privacy_policy="omits launch prompts and source paths; renders identities, models and counters",
+        formats=("json",),
+        machine_payload="SessionOrchestrationEvidence",
+        degraded_states=("missing session", "unmeasured token lanes", "native child identity not retained"),
+    ),
+    SessionViewProfile(
         view_id="lineage",
         label="Lineage",
         owner="polylogue.storage.derived.lineage.compact.derive_compact_lineage",
@@ -296,6 +313,23 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         formats=("json",),
         machine_payload="web content construct list payload",
         degraded_states=("missing session", "session with no captured web content constructs"),
+    ),
+    SessionViewProfile(
+        view_id="materials",
+        label="Materials",
+        owner="polylogue.cli.read_views.session_evidence.run_read_materials",
+        purpose=(
+            "Source-tier materials retained for the session: Codex goals (objective, status, budget) and "
+            "memories (raw memory and rollout summary, split into text parts), with their acquisition state."
+        ),
+        input_scope="single session id",
+        included_kinds=("codex goal", "codex memory", "text part", "acquisition state"),
+        lossiness="raw",
+        evidence_policy="required",
+        privacy_policy="renders retained material content verbatim with its privacy classification",
+        formats=("json",),
+        machine_payload="session material list payload",
+        degraded_states=("missing session", "session with no retained materials"),
     ),
     SessionViewProfile(
         view_id="context",

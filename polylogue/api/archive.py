@@ -4970,39 +4970,14 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
     async def get_session_orchestration(self, session_id: str) -> SessionOrchestrationEvidence | None:
         """Return versioned orchestration evidence from the archive's stored records."""
-        from polylogue.analysis.orchestration_evidence import build_session_orchestration
-        from polylogue.operations.orchestration import read_orchestration_usage
+        from polylogue.operations.orchestration import read_session_orchestration
 
-        resolved = await self.repository.resolve_id(session_id)
-        session = await self.repository.get(str(resolved) if resolved is not None else session_id)
-        if session is None:
-            return None
-        resolved_id = str(session.id)
-        topology = await cast("Polylogue", self).get_session_topology(resolved_id)
-        artifacts, _ = await self.get_raw_artifacts_for_session(resolved_id, limit=1)
-        acquisition = artifacts[0] if artifacts else None
-        usage_rows = await run_archive_read(
+        return await run_archive_read(
             _active_archive_root(self.config),
-            operation="archive.orchestration.usage",
-            arguments={"session_id": resolved_id},
-            work=lambda archive: read_orchestration_usage(archive._conn, resolved_id),
-            projection="orchestration-usage",
-            stable_order="position",
-        )
-        delegations = await run_archive_read(
-            _active_archive_root(self.config),
-            operation="archive.orchestration.delegations",
-            arguments={"session_id": resolved_id},
-            work=lambda archive: archive.query_delegations(_archive_context_session_predicate(resolved_id), limit=1001),
-            projection="orchestration-delegations",
-            stable_order="parent_session_id,instruction_tool_use_block_id,child_session_id",
-        )
-        return build_session_orchestration(
-            session,
-            topology,
-            acquisition=acquisition,
-            delegations=delegations,
-            usage_rows=usage_rows,
+            operation="archive.orchestration",
+            arguments={"session_id": session_id},
+            work=lambda archive: read_session_orchestration(archive, session_id),
+            projection="orchestration",
         )
 
     async def get_session_events(
@@ -5196,6 +5171,34 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             }
             for construct in constructs
         ]
+
+    async def get_session_materials(self, session_id: str) -> list[dict[str, object]] | None:
+        """Return the source-tier materials retained for one session, with their content.
+
+        Codex goals and memories are admitted only as materials, so this is
+        where their objective, status and memory text are read back. Rows are
+        the ones ``read --view materials`` pages, in the same order.
+
+        Returns ``None`` when the session does not exist (distinct from an
+        empty list, meaning it exists with no retained materials).
+        """
+        from polylogue.operations.session_evidence import read_session_materials
+
+        def work(archive: ArchiveStore) -> list[dict[str, object]] | None:
+            try:
+                resolved = archive.resolve_session_id(session_id)
+            except KeyError:
+                return None
+            return read_session_materials(archive, resolved)
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session.materials",
+            arguments={"session_id": session_id},
+            work=work,
+            projection="session-materials",
+            stable_order="created_at_ms,material_id",
+        )
 
     async def get_agent_policies(self, session_id: str) -> list[dict[str, object]] | None:
         """Return sandbox/approval/network policy facts recorded for one session.
