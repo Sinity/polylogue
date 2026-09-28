@@ -2364,7 +2364,7 @@ def test_chatgpt_text_nodes_spill_attachment_metadata_with_parser_parity(
     )
     assert artifact.error is None
     assert len(normalized_sizes) == len(mapping) + 1
-    actual = artifact.load_sessions()[0]
+    actual = next(artifact.iter_sessions())
     assert [message.model_dump(mode="json") for message in actual.messages] == [
         message.model_dump(mode="json") for message in expected.messages
     ]
