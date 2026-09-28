@@ -1142,6 +1142,7 @@ def test_main_reuses_a_green_receipt_without_queueing(
     # lock for this very selection; the lock has its own law below.
     monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
     receipt = tmp_path / "run.json"
+    receipt.write_text(json.dumps({"status": "success"}), encoding="utf-8")
     monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: receipt)
     monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "d1")
 
@@ -1201,14 +1202,15 @@ def test_reuse_is_keyed_on_the_execution_environment(tmp_path: Path) -> None:
     """
     runs = tmp_path / ".cache" / "verify" / "runs"
     selection = ["tests/property/test_a.py"]
-    verify_key = run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "verify", "HOME": "/h"})
-    default_key = run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "default", "HOME": "/h"})
+    verify_key = run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "verify", "SHELL": "/bin/zsh"})
+    default_key = run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "default", "SHELL": "/bin/zsh"})
     receipt = _green_receipt(
         runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1", execution_environment_key=verify_key
     )
 
     assert verify_key != default_key
-    assert run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "verify", "HOME": "/other"}) == verify_key
+    # A variable outside the declared inputs does not split the key.
+    assert run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "verify", "SHELL": "/bin/bash"}) == verify_key
     assert (
         run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1", environment_key=verify_key)
         == receipt
