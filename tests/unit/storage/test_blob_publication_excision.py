@@ -199,3 +199,43 @@ def test_an_excised_grouped_raw_capture_is_refused_and_a_zip_keeps_its_other_mem
     captured = {raw.blob_hash for raw, _session in pairs if raw is not None}
     assert hashlib.sha256(kept).hexdigest() in captured
     assert hashlib.sha256(excised).hexdigest() not in captured
+
+
+def test_archive_store_records_an_excised_inline_attachment_unavailable(tmp_path: Path) -> None:
+    """The direct replay and membership routes neither republish nor reference excised bytes.
+
+    Anti-vacuity: drop the ledger check from
+    ``ArchiveStore._preacquire_attachment_blobs`` and it returns an
+    ``acquired`` attachment and an ``ArchiveSourceBlobRef`` for the excised
+    hash, which ``write_source_blob_refs`` then refuses for the whole session.
+    """
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from polylogue.sources.parsers.base import ParsedAttachment
+
+    root = tmp_path / "archive"
+    excised = b"attachment bytes excised from another session"
+    kept = b"attachment bytes that stay"
+    with ArchiveStore(root, initialize=True, read_only=False) as store:
+        record_excised_blob_hash(
+            store._ensure_source_conn(),
+            blob_hash=hashlib.sha256(excised).digest(),
+            reason="synthetic excision",
+            actor="test",
+            excised_at_ms=1,
+        )
+        store._ensure_source_conn().commit()
+        excised_attachment = ParsedAttachment(provider_attachment_id="excised", inline_bytes=excised)
+        kept_attachment = ParsedAttachment(provider_attachment_id="kept", inline_bytes=kept)
+        acquired, refs = store._preacquire_attachment_blobs(
+            cast(Any, SimpleNamespace(attachments=[excised_attachment, kept_attachment])),
+            source_path="synthetic",
+            acquired_at_ms=1,
+        )
+        if store._blob_publisher is not None:
+            store._blob_publisher.discard_pending()
+
+    assert acquired[excised_attachment.acquisition_key] == (None, len(excised), "unavailable")
+    assert acquired[kept_attachment.acquisition_key][2] == "acquired"
+    assert [ref.blob_hash for ref in refs] == [hashlib.sha256(kept).digest()]

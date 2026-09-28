@@ -1554,20 +1554,27 @@ def apply_session_excision(
         return ExcisionReceipt(session_id=session_id, found=False)
 
     timestamp = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
-    cascaded_receipts = tuple(
-        _apply_single_session_excision(
-            archive_root,
-            dependent_id,
-            reason=reason,
-            actor=actor,
-            now_ms=timestamp,
-            resolved_target=resolved_target,
+    # A publisher checks the excision ledger when it reserves and then moves
+    # staged bytes into place. Excising between those two steps would let it
+    # publish bytes the ledger now names, so excision holds the archive-wide
+    # publisher exclusion that blob GC also uses.
+    from polylogue.storage.blob_publication import exclude_archive_blob_publishers
+
+    with exclude_archive_blob_publishers(archive_root / "source.db"):
+        cascaded_receipts = tuple(
+            _apply_single_session_excision(
+                archive_root,
+                dependent_id,
+                reason=reason,
+                actor=actor,
+                now_ms=timestamp,
+                resolved_target=resolved_target,
+            )
+            for dependent_id, resolved_target in zip(dependent_ids, targets[:-1], strict=True)
         )
-        for dependent_id, resolved_target in zip(dependent_ids, targets[:-1], strict=True)
-    )
-    primary = _apply_single_session_excision(
-        archive_root, session_id, reason=reason, actor=actor, now_ms=timestamp, resolved_target=target
-    )
+        primary = _apply_single_session_excision(
+            archive_root, session_id, reason=reason, actor=actor, now_ms=timestamp, resolved_target=target
+        )
 
     actually_cascaded = tuple(receipt.session_id for receipt in cascaded_receipts if receipt.found)
     if not actually_cascaded:

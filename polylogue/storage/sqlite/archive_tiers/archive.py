@@ -266,6 +266,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     delete_source_hook_event,
     deterministic_blob_hash,
     deterministic_raw_session_id,
+    is_blob_hash_excised,
     list_hook_events,
     record_raw_container_coordinate,
     write_source_hook_event,
@@ -1716,6 +1717,12 @@ class ArchiveStore:
                 acquired[attachment.acquisition_key] = (bytes.fromhex(hash_hex), size, "acquired")
                 continue
             if attachment.inline_bytes is None:
+                continue
+            if is_blob_hash_excised(self._ensure_source_conn(), hashlib.sha256(attachment.inline_bytes).digest()):
+                # Bytes excised elsewhere are never republished or referenced;
+                # the rest of the session still writes, with this attachment in
+                # the declared terminal state.
+                acquired[attachment.acquisition_key] = (None, len(attachment.inline_bytes), "unavailable")
                 continue
             hash_hex, size = self._blob_publisher.write_from_bytes(attachment.inline_bytes)
             blob_hash = bytes.fromhex(hash_hex)

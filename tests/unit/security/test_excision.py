@@ -221,6 +221,32 @@ class TestApplySessionExcision:
         receipt = apply_session_excision(tmp_path, "codex-session:nope", reason="r", actor="user:local")
         assert receipt.found is False
 
+    def test_apply_waits_for_an_in_flight_blob_publication(self, tmp_path: Path) -> None:
+        """Excision and a publisher's reserve-then-publish are mutually exclusive.
+
+        Anti-vacuity: drop ``exclude_archive_blob_publishers`` from
+        ``apply_session_excision`` and the excision commits while a publisher
+        holds its slot between reserving and publishing, so the publisher can
+        move bytes the ledger now names into the blob namespace.
+        """
+        import threading
+
+        from polylogue.storage.blob_publication import _archive_blob_publisher_slot
+
+        session_id = _seed_session(tmp_path, native_id="apply-serialized")
+        finished = threading.Event()
+
+        def excise() -> None:
+            apply_session_excision(tmp_path, session_id, reason="r", actor="user:local")
+            finished.set()
+
+        with _archive_blob_publisher_slot(tmp_path / "source.db"):
+            worker = threading.Thread(target=excise)
+            worker.start()
+            assert not finished.wait(timeout=1.0)
+        worker.join(timeout=30)
+        assert finished.is_set()
+
     def test_apply_removes_rows_from_every_tier(self, tmp_path: Path) -> None:
         session_id = _seed_session(tmp_path, native_id="apply-1", with_embedding=True)
 
