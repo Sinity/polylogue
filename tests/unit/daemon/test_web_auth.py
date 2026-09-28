@@ -11,6 +11,7 @@ import pytest
 
 from polylogue.daemon.web_auth import (
     WEB_CREDENTIAL_COOKIE,
+    WEB_SIGN_IN_HTML,
     WebCredentialBootstrapPayload,
     WebCredentialDecision,
     WebCredentialRegistry,
@@ -95,9 +96,11 @@ def test_registry_bounds_rotation_records_and_preserves_recent_lifecycle_state()
 def test_bootstrap_rotates_http_only_cookie_and_authenticates_read_route() -> None:
     server = MockDaemonServer(auth_token="secret")
     origin = "http://127.0.0.1:8766"
+    ticket, _ = server.web_credentials.issue_sign_in_ticket()
     bootstrap = _make_handler(
         "POST",
         "/api/web-auth/session",
+        auth_header=f"Bearer {ticket}",
         origin=origin,
         host="127.0.0.1:8766",
         web_client=True,
@@ -232,10 +235,12 @@ def test_non_ascii_cookie_is_total_across_bootstrap_read_and_revoke() -> None:
     origin = "http://127.0.0.1:8766"
     malformed_cookie = f'{WEB_CREDENTIAL_COOKIE}="\N{LATIN SMALL LETTER E WITH ACUTE}"'
     server = MockDaemonServer(auth_token="secret")
+    ticket, _ = server.web_credentials.issue_sign_in_ticket()
 
     bootstrap = _make_handler(
         "POST",
         "/api/web-auth/session",
+        auth_header=f"Bearer {ticket}",
         origin=origin,
         host="127.0.0.1:8766",
         cookie=malformed_cookie,
@@ -302,3 +307,116 @@ def test_cookie_and_origin_helpers_reject_authority_confusion() -> None:
     header = credential_cookie("opaque-value", ttl_s=30)
     assert read_web_credential_cookie(header) == "opaque-value"
     assert read_web_credential_cookie("not a valid cookie; =") is None
+
+
+def _bootstrap(server: MockDaemonServer, *, auth_header: str = "", cookie: str = "") -> tuple[MagicMock, MagicMock]:
+    handler = _make_handler(
+        "POST",
+        "/api/web-auth/session",
+        auth_header=auth_header,
+        cookie=cookie,
+        origin="http://127.0.0.1:8766",
+        host="127.0.0.1:8766",
+        web_client=True,
+        server=server,
+    )
+    send_error, _ = capture_responses(handler)
+    send_cookie_json = MagicMock()
+    handler._send_json_with_cookie = send_cookie_json  # type: ignore[method-assign]
+    handler.do_POST()
+    return send_error, send_cookie_json
+
+
+def test_loopback_alone_does_not_bootstrap_a_web_credential() -> None:
+    """Any local uid reaches loopback, so a bare request must not mint a cookie (polylogue-n3xdn).
+
+    Anti-vacuity: drop the bootstrap proof check and this request receives a
+    first-party credential that reads every archived transcript.
+    """
+    server = MockDaemonServer(auth_token="secret")
+    send_error, send_cookie_json = _bootstrap(server)
+
+    send_cookie_json.assert_not_called()
+    assert send_error.call_args.args[:2] == (HTTPStatus.UNAUTHORIZED, "web_credential_missing")
+
+
+def test_sign_in_ticket_bootstraps_once_and_is_then_spent() -> None:
+    """Anti-vacuity: keep tickets after redemption and a leaked fragment signs in any browser."""
+    server = MockDaemonServer(auth_token="secret")
+    ticket, _ = server.web_credentials.issue_sign_in_ticket()
+
+    first_error, first_cookie = _bootstrap(server, auth_header=f"Bearer {ticket}")
+    second_error, second_cookie = _bootstrap(server, auth_header=f"Bearer {ticket}")
+
+    first_error.assert_not_called()
+    assert first_cookie.call_args.args[0] == HTTPStatus.CREATED
+    second_cookie.assert_not_called()
+    assert second_error.call_args.args[:2] == (HTTPStatus.UNAUTHORIZED, "web_credential_missing")
+
+
+def test_sign_in_ticket_expires() -> None:
+    now = [1000.0]
+    registry = WebCredentialRegistry(ttl_s=30, clock=lambda: now[0])
+    ticket, expires_at = registry.issue_sign_in_ticket(ttl_s=60)
+    assert expires_at == 1060.0
+    now[0] = 1061.0
+    assert registry.redeem_sign_in_ticket(ticket) is False
+
+
+def test_valid_cookie_rotation_needs_no_other_proof() -> None:
+    server = MockDaemonServer(auth_token="secret")
+    issued = server.web_credentials.issue("http://127.0.0.1:8766")
+    send_error, send_cookie_json = _bootstrap(server, cookie=f"{WEB_CREDENTIAL_COOKIE}={issued.token}")
+    send_error.assert_not_called()
+    assert send_cookie_json.call_args.args[0] == HTTPStatus.CREATED
+
+
+def test_ticket_route_requires_the_daemon_bearer() -> None:
+    server = MockDaemonServer(auth_token="secret")
+    anonymous = _make_handler("POST", "/api/web-auth/ticket", host="127.0.0.1:8766", server=server)
+    anonymous_error, anonymous_json = capture_responses(anonymous)
+    anonymous.do_POST()
+    anonymous_json.assert_not_called()
+    assert anonymous_error.call_args.args[:2] == (HTTPStatus.UNAUTHORIZED, "unauthorized")
+
+    owner = _make_handler(
+        "POST", "/api/web-auth/ticket", auth_header="Bearer secret", host="127.0.0.1:8766", server=server
+    )
+    owner_error, owner_json = capture_responses(owner)
+    owner.do_POST()
+    owner_error.assert_not_called()
+    status, payload = owner_json.call_args.args
+    assert status == HTTPStatus.CREATED
+    assert server.web_credentials.redeem_sign_in_ticket(payload["ticket"]) is True
+
+
+def test_uncredentialed_browser_gets_the_sign_in_page_not_archive_html() -> None:
+    """Anti-vacuity: restore the loopback exemption and the overview HTML is served."""
+    server = MockDaemonServer(auth_token="secret")
+    handler = _make_handler("GET", "/", host="127.0.0.1:8766", server=server)
+    handler.headers._headers["Accept"] = "text/html,application/xhtml+xml"  # type: ignore[attr-defined]
+    send_html = MagicMock()
+    handler._send_webui_html = send_html  # type: ignore[method-assign]
+    handler._serve_webui_archive_overview = MagicMock()  # type: ignore[method-assign]
+    handler.do_GET()
+    handler._serve_webui_archive_overview.assert_not_called()
+    status, body = send_html.call_args.args
+    assert status == HTTPStatus.UNAUTHORIZED
+    assert body == WEB_SIGN_IN_HTML
+    assert "/web-auth/sign-in.js" in body
+
+
+def test_credentialed_browser_reads_the_shell() -> None:
+    server = MockDaemonServer(auth_token="secret")
+    issued = server.web_credentials.issue("http://127.0.0.1:8766")
+    handler = _make_handler(
+        "GET",
+        "/",
+        host="127.0.0.1:8766",
+        cookie=f"{WEB_CREDENTIAL_COOKIE}={issued.token}",
+        fetch_site="same-origin",
+        server=server,
+    )
+    handler._serve_webui_archive_overview = MagicMock()  # type: ignore[method-assign]
+    handler.do_GET()
+    handler._serve_webui_archive_overview.assert_called_once_with()

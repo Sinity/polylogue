@@ -6,8 +6,8 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
-import socket
 import sqlite3
 import stat as stat_module
 import subprocess
@@ -17,7 +17,6 @@ from collections.abc import Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from glob import glob
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol
@@ -1157,7 +1156,14 @@ class AntigravityLanguageServerClient:
         self.root = root.expanduser()
         self.language_server_path = language_server_path
         self.startup_timeout_s = startup_timeout_s
-        self.port = _free_local_port()
+        # The vendor server picks its own port (``-http_server_port=0``) and
+        # publishes it in its discovery file, so no port is reserved and
+        # released ahead of the child (the old TOCTOU). Every request carries a
+        # per-run CSRF token; the server answers 401 without it, so another
+        # local uid that finds the loopback port cannot search or export the
+        # operator's conversations (polylogue-dahse).
+        self.port: int | None = None
+        self._csrf_token = secrets.token_urlsafe(32)
         self._process: subprocess.Popen[bytes] | None = None
         self.server_info: AntigravityLanguageServerInfo | None = None
 
@@ -1186,7 +1192,8 @@ class AntigravityLanguageServerClient:
             str(binary),
             "-standalone",
             "-persistent_mode",
-            f"-http_server_port={self.port}",
+            "-http_server_port=0",
+            f"-csrf_token={self._csrf_token}",
             f"-gemini_dir={self.root.parent}",
             f"-app_data_dir={self.root.name}",
             "-override_ide_name=antigravity",
@@ -1198,6 +1205,7 @@ class AntigravityLanguageServerClient:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
+        self.port = self._await_discovered_port()
         self._wait_until_ready()
         self.server_info = AntigravityLanguageServerInfo(
             binary_path=binary,
@@ -1236,6 +1244,33 @@ class AntigravityLanguageServerClient:
             raise AntigravityExportError(f"Antigravity returned no markdown for cascade {cascade_id}")
         return markdown
 
+    def _await_discovered_port(self) -> int:
+        """Read the port our own child published in its persistent-mode discovery file.
+
+        The directory can also hold a discovery file from the operator's
+        running IDE, so only the file naming this child's pid is accepted.
+        """
+        process = self._process
+        if process is None:
+            raise AntigravityExportError("Antigravity language server is not running")
+        discovery_dir = self.root / "daemon"
+        deadline = time.monotonic() + self.startup_timeout_s
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise AntigravityExportError(f"Antigravity language server exited with code {process.returncode}")
+            for candidate in sorted(discovery_dir.glob("ls_*.json")) if discovery_dir.is_dir() else ():
+                try:
+                    published = loads(candidate.read_bytes())
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(published, dict) or published.get("pid") != process.pid:
+                    continue
+                port = published.get("httpPort")
+                if isinstance(port, int) and not isinstance(port, bool) and port > 0:
+                    return port
+            time.sleep(_READY_RETRY_SLEEP_S)
+        raise AntigravityExportError("Antigravity language server published no HTTP port before its startup deadline")
+
     def _wait_until_ready(self) -> None:
         """Probe the vendor surface until it answers a search call.
 
@@ -1262,10 +1297,12 @@ class AntigravityLanguageServerClient:
         )
 
     def _post(self, endpoint: str, payload: JSONDocument, *, timeout: float | None = None) -> JSONDocument:
+        if self.port is None:
+            raise AntigravityExportError("Antigravity language server has not published its port")
         request = Request(
             f"http://127.0.0.1:{self.port}{endpoint}",
             data=dumps_bytes(payload),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "x-codeium-csrf-token": self._csrf_token},
             method="POST",
         )
         budget = _REQUEST_TIMEOUT_S if timeout is None else timeout
@@ -1480,13 +1517,35 @@ def discover_language_server() -> Path | None:
     if binary_path := shutil.which("language_server_linux_x64"):
         return Path(binary_path)
 
-    candidates = sorted(
-        Path(match)
-        for match in glob(
-            "/nix/store/*-antigravity-*/lib/antigravity/resources/app/extensions/antigravity/bin/language_server_linux_x64"
-        )
-    )
-    return candidates[-1] if candidates else None
+    return _nix_store_language_server()
+
+
+_NIX_STORE = Path("/nix/store")
+_PACKAGED_LANGUAGE_SERVER_PATHS = (
+    "lib/antigravity/resources/app/extensions/antigravity/bin/language_server_linux_x64",
+    "lib/antigravity-ide/resources/app/extensions/antigravity/bin/language_server_linux_x64",
+)
+
+
+def _nix_store_language_server() -> Path | None:
+    """Find a packaged binary by streaming the store's top level once.
+
+    The store holds hundreds of thousands of entries; one ``scandir`` pass
+    filtered by name reads it without expanding a glob per pattern.
+    """
+    candidates: list[Path] = []
+    try:
+        with os.scandir(_NIX_STORE) as entries:
+            for entry in entries:
+                if "-antigravity-" not in entry.name:
+                    continue
+                for relative in _PACKAGED_LANGUAGE_SERVER_PATHS:
+                    binary = Path(entry.path) / relative
+                    if binary.is_file():
+                        candidates.append(binary)
+    except OSError:
+        return None
+    return sorted(candidates)[-1] if candidates else None
 
 
 def _discover_language_server_version(binary: Path) -> str:
@@ -1709,12 +1768,6 @@ def _strip_markdown_preamble(markdown: str) -> str:
 
 def _message_kind(heading: str) -> str:
     return heading.lower().replace(" ", "_")
-
-
-def _free_local_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 def _string(value: object) -> str | None:

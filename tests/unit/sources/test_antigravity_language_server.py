@@ -58,6 +58,7 @@ def fake_client(tmp_path: Path) -> AntigravityLanguageServerClient:
 
     client.start = _noop_start  # type: ignore[method-assign]
     client.close = _noop_close  # type: ignore[method-assign]
+    client.port = 49152
     return client
 
 
@@ -296,7 +297,7 @@ def test_discover_language_server_falls_back_to_path(
         "polylogue.sources.parsers.antigravity.shutil.which",
         lambda name: "/usr/local/bin/language_server_linux_x64" if name == "language_server_linux_x64" else None,
     )
-    monkeypatch.setattr("polylogue.sources.parsers.antigravity.glob", lambda _pattern: [])
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity._NIX_STORE", Path("/nonexistent-nix-store"))
     found = discover_language_server()
     assert found == Path("/usr/local/bin/language_server_linux_x64")
 
@@ -306,7 +307,7 @@ def test_discover_language_server_returns_none_when_absent(
 ) -> None:
     monkeypatch.delenv("POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER", raising=False)
     monkeypatch.setattr("polylogue.sources.parsers.antigravity.shutil.which", lambda _name: None)
-    monkeypatch.setattr("polylogue.sources.parsers.antigravity.glob", lambda _pattern: [])
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity._NIX_STORE", Path("/nonexistent-nix-store"))
     assert discover_language_server() is None
 
 
@@ -812,3 +813,78 @@ def test_a_multi_line_accepted_command_is_one_marker_not_prose() -> None:
     assert command.tool_input is not None
     assert str(command.tool_input["command"]).splitlines()[-1] == "PYEOF"
     assert [b.tool_name for b in session.messages[1].blocks] == ["accepted_command", "checked_command_status"]
+
+
+def test_packaged_binary_is_found_under_either_ide_layout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: drop the ``lib/antigravity-ide`` layout and the current package is never found."""
+    binary = tmp_path / "abc-antigravity-ide-2.1.1" / antigravity._PACKAGED_LANGUAGE_SERVER_PATHS[1]
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"")
+    (tmp_path / "unrelated-package").mkdir()
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity._NIX_STORE", tmp_path)
+    assert antigravity._nix_store_language_server() == binary
+
+
+class _FakeProcess:
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+
+def test_client_reads_only_its_own_discovery_file_and_sends_csrf_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The vendor port comes from our child's discovery file; every request carries the run token.
+
+    Anti-vacuity: accept any discovery file and the operator's running IDE
+    (pid 111) would be used; drop the header and the server answers 401.
+    """
+    daemon_dir = tmp_path / "daemon"
+    daemon_dir.mkdir()
+    (daemon_dir / "ls_aaaa.json").write_text('{"pid": 111, "httpPort": 40001}')
+    (daemon_dir / "ls_bbbb.json").write_text('{"pid": 222, "httpPort": 40002}')
+    client = AntigravityLanguageServerClient(tmp_path, startup_timeout_s=2.0)
+    client._process = _FakeProcess(222)  # type: ignore[assignment]
+    assert client._await_discovered_port() == 40002
+    client.port = 40002
+
+    seen: list[Any] = []
+
+    def fake_urlopen(request: Any, *, timeout: float) -> _FakeHTTPResponse:
+        del timeout
+        seen.append(request)
+        return _FakeHTTPResponse(b'{"results": []}')
+
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity.urlopen", fake_urlopen)
+    client.search_sessions()
+    request = seen[0]
+    assert request.full_url.startswith("http://127.0.0.1:40002/")
+    assert request.get_header("X-codeium-csrf-token") == client._csrf_token
+    assert len(client._csrf_token) >= 32
+
+
+def test_client_launches_vendor_on_a_random_port_with_a_run_token(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: reserve a port ahead of the child and the TOCTOU returns."""
+    launched: list[list[str]] = []
+
+    def fake_popen(cmd: list[str], **_kwargs: object) -> _FakeProcess:
+        launched.append(cmd)
+        return _FakeProcess(333)
+
+    binary = tmp_path / "language_server_linux_x64"
+    binary.write_bytes(b"")
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity._discover_language_server_version", lambda _b: "1.11.0")
+    monkeypatch.setattr(AntigravityLanguageServerClient, "_await_discovered_port", lambda self: 40003)
+    monkeypatch.setattr(AntigravityLanguageServerClient, "_wait_until_ready", lambda self: None)
+    client = AntigravityLanguageServerClient(tmp_path / "antigravity", language_server_path=binary)
+    client.start()
+    cmd = launched[0]
+    assert "-http_server_port=0" in cmd
+    assert f"-csrf_token={client._csrf_token}" in cmd
+    assert client.port == 40003

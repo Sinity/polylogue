@@ -376,12 +376,14 @@ def _build_openapi_document() -> dict[str, Any]:
                 "post": {
                     "summary": "Bootstrap or rotate a first-party web credential",
                     "description": (
-                        "Loopback, exact-origin browser bootstrap. The opaque credential is returned only in an "
-                        "HttpOnly SameSite=Strict cookie; the JSON body contains lifecycle metadata, scopes, and "
-                        "expiry but never credential bytes."
+                        "Loopback, exact-origin browser bootstrap. Loopback is not identity: the request must "
+                        "present the daemon bearer, a one-time sign-in ticket from POST /api/web-auth/ticket as "
+                        "a bearer, or a valid credential cookie being rotated. The opaque credential is returned "
+                        "only in an HttpOnly SameSite=Strict cookie; the JSON body contains lifecycle metadata, "
+                        "scopes, and expiry but never credential bytes."
                     ),
                     "operationId": "bootstrapWebCredential",
-                    "security": [],
+                    "security": [{"machineBearer": []}, {"webCredentialCookie": []}],
                     "responses": {
                         "201": {
                             "description": "Credential issued and protected cookie set.",
@@ -878,7 +880,9 @@ def _build_openapi_document() -> dict[str, Any]:
             path_item[declaration.method.lower()] = operation
         words = re.findall(r"[A-Za-z0-9]+", declaration.kernel.public_name)
         operation.setdefault("operationId", "route" + "".join(word.title() for word in words))
-        operation["security"] = _route_security(declaration.auth_policy)
+        # A hand-authored operation states its own security (the credential
+        # lifecycle routes validate proofs the generic policy cannot name).
+        operation.setdefault("security", _route_security(declaration.auth_policy))
         operation["x-polylogue-declaration"] = {
             "declaration_id": declaration.kernel.declaration_id,
             "method": declaration.method,

@@ -237,6 +237,16 @@ def _ensure_parent(path: Path, created_directories: set[Path]) -> None:
         created_directories.add(directory)
 
 
+def _plan_parent(path: Path, planned_directories: set[Path]) -> None:
+    """Record the ancestors ``_ensure_parent`` would create, without creating them."""
+    current = path.parent
+    while not current.exists():
+        planned_directories.add(current)
+        if current.parent == current:
+            break
+        current = current.parent
+
+
 def _remove_empty_directories(paths: Sequence[Path]) -> None:
     for path in sorted(set(paths), key=lambda value: len(value.parts), reverse=True):
         with contextlib.suppress(OSError):
@@ -621,13 +631,17 @@ def _apply_structured_operation(
     *,
     transaction: _Transaction,
     created_directories: set[Path],
+    dry_run: bool = False,
 ) -> dict[str, object]:
     kind = cast(OperationKind, desired["kind"])
     path = Path(cast(str, desired["path"]))
     keys = tuple(cast(list[str], desired["keys"]))
     wanted = cast(JSONValue, desired["desired"])
     file_existed = path.exists()
-    _ensure_parent(path, created_directories)
+    if dry_run:
+        _plan_parent(path, created_directories)
+    else:
+        _ensure_parent(path, created_directories)
     data = _json_load(path) if kind == "json_value" else _yaml_load(path)
     present, current = _path_get(data, keys)
 
@@ -654,7 +668,7 @@ def _apply_structured_operation(
         else:
             raise NativeConfigConflict(f"operator-owned Claude SessionStart hook conflicts at {path}")
         _path_set(data, ("hooks", "SessionStart"), cast(JSONValue, hook_list))
-        if not path.exists() or current != hook_list:
+        if not dry_run and (not path.exists() or current != hook_list):
             _write_structured(path, data, kind, transaction)
         record = copy.deepcopy(desired)
         record.update(
@@ -688,7 +702,7 @@ def _apply_structured_operation(
         before_value = None
         owned = True
 
-    if current != wanted:
+    if current != wanted and not dry_run:
         _path_set(data, keys, wanted)
         _write_structured(path, data, kind, transaction)
     record = copy.deepcopy(desired)
@@ -711,11 +725,15 @@ def _apply_marked_block(
     *,
     transaction: _Transaction,
     created_directories: set[Path],
+    dry_run: bool = False,
 ) -> dict[str, object]:
     path = Path(cast(str, desired["path"]))
     marker = cast(str, desired["marker"])
     wanted = cast(str, desired["desired"])
-    _ensure_parent(path, created_directories)
+    if dry_run:
+        _plan_parent(path, created_directories)
+    else:
+        _ensure_parent(path, created_directories)
     text = _read_text(path) if path.exists() else ""
     existing = _extract_marked_block(text, marker)
     if marker == "codex-mcp":
@@ -747,7 +765,7 @@ def _apply_marked_block(
             tomllib.loads(updated)
         except tomllib.TOMLDecodeError as exc:
             raise NativeConfigConflict(f"generated Codex TOML is invalid at {path}: {exc}") from exc
-    if updated != text:
+    if updated != text and not dry_run:
         transaction.capture(path)
         mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
         _atomic_write(path, updated.encode(), mode=mode)
@@ -769,10 +787,14 @@ def _apply_owned_file(
     *,
     transaction: _Transaction,
     created_directories: set[Path],
+    dry_run: bool = False,
 ) -> dict[str, object]:
     path = Path(cast(str, desired["path"]))
     wanted = cast(str, desired["desired"])
-    _ensure_parent(path, created_directories)
+    if dry_run:
+        _plan_parent(path, created_directories)
+    else:
+        _ensure_parent(path, created_directories)
     current = _read_text(path) if path.exists() else None
     previous_owned = previous is not None and previous.get("owned") is True
     if previous is not None and previous_owned:
@@ -789,7 +811,7 @@ def _apply_owned_file(
     else:
         owned = True
         created_file = True
-    if current != wanted:
+    if current != wanted and not dry_run:
         transaction.capture(path)
         mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
         _atomic_write(path, wanted.encode(), mode=mode)
@@ -811,7 +833,13 @@ def _apply_operation(
     *,
     transaction: _Transaction,
     created_directories: set[Path],
+    dry_run: bool = False,
 ) -> dict[str, object]:
+    """Apply one desired native mutation, or with ``dry_run`` only plan its record.
+
+    The planned record carries the same ownership and pre-state an apply
+    would record, and a conflict raises before anything is written.
+    """
     kind = cast(OperationKind, desired["kind"])
     if kind in {"json_value", "yaml_value"}:
         return _apply_structured_operation(
@@ -819,6 +847,7 @@ def _apply_operation(
             previous,
             transaction=transaction,
             created_directories=created_directories,
+            dry_run=dry_run,
         )
     if kind == "marked_block":
         return _apply_marked_block(
@@ -826,13 +855,61 @@ def _apply_operation(
             previous,
             transaction=transaction,
             created_directories=created_directories,
+            dry_run=dry_run,
         )
     return _apply_owned_file(
         desired,
         previous,
         transaction=transaction,
         created_directories=created_directories,
+        dry_run=dry_run,
     )
+
+
+_EFFECT_PRESENT_STATES = frozenset({"ok", "satisfied-unowned"})
+
+
+def _prepared_operations(client_record: Mapping[str, object]) -> dict[str, dict[str, object]]:
+    return _as_operation_map(client_record.get("prepared_operations"))
+
+
+def _remove_prepared_operation(operation: dict[str, object], *, transaction: _Transaction) -> tuple[bool, str]:
+    """Undo one operation an interrupted install recorded but may not have applied.
+
+    A prepared operation is written to the state file before its native
+    effect, so after a crash its effect is either present (remove it exactly
+    as a committed operation) or absent (nothing was applied; nothing to
+    remove). Only content that is neither the prepared value nor absent is
+    drift.
+    """
+    if operation.get("owned") is not True:
+        return True, "prepared operation did not own its value"
+    observed = _observe_operation(operation)
+    if observed.state in _EFFECT_PRESENT_STATES:
+        return _remove_operation(operation, transaction=transaction)
+    if observed.state == "missing":
+        return True, "prepared operation was never applied"
+    if operation.get("kind") in {"json_value", "yaml_value"} and operation.get("merge") != "claude_hook":
+        path = Path(cast(str, operation["path"]))
+        kind = cast(OperationKind, operation["kind"])
+        data = _json_load(path) if kind == "json_value" else _yaml_load(path)
+        present, current = _path_get(data, cast(list[str], operation["keys"]))
+        before_present = operation.get("before_present") is True
+        if not present and not before_present:
+            return True, "prepared operation was never applied"
+        if present and before_present and current == cast(JSONValue, operation.get("before_value")):
+            return True, "prepared operation was never applied"
+        return False, observed.detail
+    if operation.get("kind") == "marked_block":
+        path = Path(cast(str, operation["path"]))
+        if _extract_marked_block(_read_text(path), cast(str, operation["marker"])) is None:
+            return True, "prepared operation was never applied"
+    if operation.get("merge") == "claude_hook":
+        path = Path(cast(str, operation["path"]))
+        _, hooks_value = _path_get(_json_load(path), ("hooks", "SessionStart"))
+        if _find_claude_hook_index(hooks_value) is None:
+            return True, "prepared operation was never applied"
+    return False, observed.detail
 
 
 def _remove_structured_operation(
@@ -1074,17 +1151,59 @@ class AgentIntegrationManager:
                             clients_state.pop(client, None)
                             removed_clients.append(client)
 
-                receipts: list[dict[str, object]] = []
+                # Two-phase: record every intended operation in the state file
+                # BEFORE any native file is touched. A crash between a native
+                # write and the final record then still leaves uninstall a
+                # record of work install may have done (polylogue-dzk48).
+                plans: dict[str, tuple[dict[str, dict[str, object]], list[dict[str, object]]]] = {}
+                planned_directories: set[Path] = set()
+                needs_prepared_record = False
                 for client in selected:
                     raw_previous = clients_state.get(client)
                     previous_client = cast(dict[str, object], raw_previous) if isinstance(raw_previous, dict) else {}
                     previous_operations = _as_operation_map(previous_client.get("operations"))
+                    for identity, prepared in _prepared_operations(previous_client).items():
+                        if identity in previous_operations:
+                            continue
+                        if _observe_operation(prepared).state in _EFFECT_PRESENT_STATES:
+                            previous_operations[identity] = prepared
                     desired_operations = _client_desired_operations(
                         client,
                         options,
                         home=self.home,
                         environment=self.environment,
                     )
+                    planned = [
+                        _apply_operation(
+                            desired,
+                            previous_operations.get(cast(str, desired["identity"])),
+                            transaction=transaction,
+                            created_directories=planned_directories,
+                            dry_run=True,
+                        )
+                        for desired in desired_operations
+                    ]
+                    plans[client] = (previous_operations, desired_operations)
+                    already_committed = all(
+                        previous_operations.get(cast(str, item["identity"])) == item for item in planned
+                    ) and len(planned) == len(_as_operation_map(previous_client.get("operations")))
+                    if already_committed:
+                        continue
+                    prepared_client = dict(previous_client)
+                    prepared_client.setdefault("client", client)
+                    prepared_client["prepared_operations"] = planned
+                    clients_state[client] = prepared_client
+                    needs_prepared_record = True
+                if needs_prepared_record:
+                    state["clients"] = clients_state
+                    state["created_directories"] = [
+                        str(path) for path in sorted(created_directories | planned_directories)
+                    ]
+                    self._write_state(state, transaction)
+
+                receipts: list[dict[str, object]] = []
+                for client in selected:
+                    previous_operations, desired_operations = plans[client]
                     desired_identities = {cast(str, operation["identity"]) for operation in desired_operations}
                     remaining_operations: list[dict[str, object]] = []
                     for identity, old_operation in previous_operations.items():
@@ -1174,13 +1293,24 @@ class AgentIntegrationManager:
                     remaining: list[dict[str, object]] = []
                     removed_count = 0
                     drifted: list[dict[str, str]] = []
-                    for operation in _as_operation_map(raw_client.get("operations")).values():
+                    committed = _as_operation_map(raw_client.get("operations"))
+                    for operation in committed.values():
                         removed, detail = _remove_operation(operation, transaction=transaction)
                         if removed:
                             removed_count += 1
                         else:
                             remaining.append(operation)
                             drifted.append({"identity": cast(str, operation["identity"]), "detail": detail})
+                    for identity, operation in _prepared_operations(raw_client).items():
+                        if identity in committed:
+                            continue
+                        removed, detail = _remove_prepared_operation(operation, transaction=transaction)
+                        if removed:
+                            removed_count += 1 if detail != "prepared operation was never applied" else 0
+                        else:
+                            remaining.append(operation)
+                            drifted.append({"identity": identity, "detail": detail})
+                    raw_client.pop("prepared_operations", None)
                     if remaining:
                         raw_client["operations"] = remaining
                     else:

@@ -18,10 +18,14 @@ paths:
   /api/web-auth/session:
     post:
       summary: Bootstrap or rotate a first-party web credential
-      description: Loopback, exact-origin browser bootstrap. The opaque credential is returned only in an HttpOnly SameSite=Strict
-        cookie; the JSON body contains lifecycle metadata, scopes, and expiry but never credential bytes.
+      description: 'Loopback, exact-origin browser bootstrap. Loopback is not identity: the request must present the daemon
+        bearer, a one-time sign-in ticket from POST /api/web-auth/ticket as a bearer, or a valid credential cookie being rotated.
+        The opaque credential is returned only in an HttpOnly SameSite=Strict cookie; the JSON body contains lifecycle metadata,
+        scopes, and expiry but never credential bytes.'
       operationId: bootstrapWebCredential
-      security: []
+      security:
+      - machineBearer: []
+      - webCredentialCookie: []
       responses:
         '201':
           description: Credential issued and protected cookie set.
@@ -75,7 +79,8 @@ paths:
     delete:
       summary: Revoke the current first-party web credential
       operationId: revokeWebCredential
-      security: []
+      security:
+      - webCredentialCookie: []
       responses:
         '200':
           description: Credential revoked and browser cookie expired.
@@ -1679,6 +1684,30 @@ paths:
         auth_policy: bearer_if_configured_and_same_origin
         owner_path: polylogue/daemon/http.py
         domain_operation: maintenance.demo.augment
+  /api/web-auth/ticket:
+    post:
+      summary: Execute POST /api/web-auth/ticket through the daemon HTTP adapter.
+      responses:
+        default:
+          description: WebSignInTicketPayload
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+      x-polylogue-client-generation: false
+      operationId: routePostApiWebAuthTicket
+      security:
+      - machineBearer: []
+      x-polylogue-declaration:
+        declaration_id: daemon.http.post.api.web-auth.ticket
+        method: POST
+        path: /api/web-auth/ticket
+        request_contract: HTTP route request
+        response_contract: WebSignInTicketPayload
+        auth_policy: bearer_if_configured_and_same_origin
+        owner_path: polylogue/daemon/http.py
+        migration_reason: First-party credential lifecycle is owned by the daemon credential registry.
   /api/health/check:
     get:
       summary: Execute GET /api/health/check through the daemon HTTP adapter.
@@ -6438,9 +6467,9 @@ x-polylogue-route-contracts:
   pattern: /
   kind: browser_shell
   stability: shell_supported
-  auth_policy: unauthenticated_loopback
+  auth_policy: credential_if_configured
   response_contract: semantic archive overview HTML
-  notes: Canonical typed WebUI overview; browser data access remains behind the authenticated /api boundary.
+  notes: Canonical typed WebUI overview; an uncredentialed browser receives the sign-in page instead.
 - method: GET
   pattern: /observability
   kind: browser_shell
@@ -6460,58 +6489,65 @@ x-polylogue-route-contracts:
   pattern: /sessions
   kind: browser_shell
   stability: shell_supported
-  auth_policy: unauthenticated_loopback
+  auth_policy: credential_if_configured
   response_contract: semantic session list HTML
   notes: SSR-first origin/date/repo faceted session list; Preact enhances only bounded pagination.
 - method: GET
   pattern: /sessions/:session_id
   kind: browser_shell
   stability: shell_supported
-  auth_policy: unauthenticated_loopback
+  auth_policy: credential_if_configured
   response_contract: semantic session read HTML
   notes: 'SSR-first session shell: header, lineage banner, and a simple message-flow placeholder Preact enhances with paging.'
 - method: GET
   pattern: /search
   kind: browser_shell
   stability: shell_supported
-  auth_policy: unauthenticated_loopback
+  auth_policy: credential_if_configured
   response_contract: semantic search results HTML
   notes: SSR-first ranked search over the shared SearchEnvelope; Preact enhances only cursor-based pagination.
 - method: GET
   pattern: /assets/:asset
   kind: browser_shell
   stability: shell_supported
-  auth_policy: unauthenticated_loopback
+  auth_policy: credential_if_configured
   response_contract: manifest-governed immutable Vite asset
   notes: Only content-hashed files named by the packaged Vite manifest are served.
 - method: GET
   pattern: /s/:session_id
   kind: browser_shell
   stability: shell_supported
-  auth_policy: unauthenticated_loopback
+  auth_policy: credential_if_configured
   response_contract: semantic session read HTML
   notes: Typed WebUI session deep-link; equivalent to /sessions/:session_id.
 - method: GET
   pattern: /w/:mode
   kind: browser_shell
   stability: shell_supported
-  auth_policy: unauthenticated_loopback
+  auth_policy: credential_if_configured
   response_contract: text/html web shell
   notes: Workspace shell bootstrap for registered workspace modes.
 - method: GET
   pattern: /p
   kind: browser_shell
   stability: shell_supported
-  auth_policy: unauthenticated_loopback
+  auth_policy: credential_if_configured
   response_contract: text/html paste browser
   notes: Standalone reader page; archive API calls remain authenticated.
 - method: GET
   pattern: /a
   kind: browser_shell
   stability: shell_supported
-  auth_policy: unauthenticated_loopback
+  auth_policy: credential_if_configured
   response_contract: text/html attachment library
   notes: Standalone reader page; archive API calls remain authenticated.
+- method: GET
+  pattern: /web-auth/sign-in.js
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: unauthenticated_loopback
+  response_contract: static sign-in page script
+  notes: Static script for the sign-in page an uncredentialed browser receives; carries no archive data.
 - method: GET
   pattern: /healthz/live
   kind: operational
@@ -6797,6 +6833,14 @@ x-polylogue-route-contracts:
   response_contract: WebCredentialRevocationPayload
   notes: declaration=daemon.http.delete.api.web-auth.session; request=HTTP route request; operation-migration=First-party
     credential lifecycle is owned by the daemon credential registry.
+- method: POST
+  pattern: /api/web-auth/ticket
+  kind: browser_shell
+  stability: shell_supported
+  auth_policy: bearer_if_configured_and_same_origin
+  response_contract: WebSignInTicketPayload
+  notes: declaration=daemon.http.post.api.web-auth.ticket; request=HTTP route request; operation-migration=First-party credential
+    lifecycle is owned by the daemon credential registry.
 - method: GET
   pattern: /api/health/check
   kind: operational

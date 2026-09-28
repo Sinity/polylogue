@@ -375,3 +375,78 @@ def test_enabling_one_capability_leaves_the_others_pinned_off(tmp_path: Path) ->
     assert env["POLYLOGUE_MCP_JUDGE_ENABLED"] == "1"
     assert env["POLYLOGUE_MCP_WRITE_ENABLED"] == "0"
     assert env["POLYLOGUE_MCP_MAINTENANCE_ENABLED"] == "0"
+
+
+class _KilledMidInstall(BaseException):
+    """Stands in for SIGKILL: a BaseException bypasses the in-process rollback."""
+
+
+def _kill_after_native_writes(monkeypatch: pytest.MonkeyPatch, writes_before_kill: int) -> None:
+    from polylogue.agent_integration import installer
+
+    real_apply = installer._apply_operation
+    applied = {"count": 0}
+
+    def apply_then_die(*args: object, **kwargs: object) -> dict[str, object]:
+        if kwargs.get("dry_run"):
+            return real_apply(*args, **kwargs)  # type: ignore[arg-type]
+        if applied["count"] >= writes_before_kill:
+            raise _KilledMidInstall()
+        applied["count"] += 1
+        return real_apply(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(installer, "_apply_operation", apply_then_die)
+
+
+def test_uninstall_after_a_killed_install_removes_what_was_written(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash between native writes and the final record must not leave a false clean (polylogue-dzk48).
+
+    Anti-vacuity: record ownership only after applying (the old order) and
+    this uninstall finds no recorded operations, reports ok, and leaves the
+    Claude settings entries in place.
+    """
+    manager, home, polylogue, server = _manager(tmp_path)
+    _kill_after_native_writes(monkeypatch, writes_before_kill=2)
+    with pytest.raises(_KilledMidInstall):
+        manager.install(_options(polylogue, server, clients=("claude-code",)))
+    monkeypatch.undo()
+    assert (home / ".claude.json").exists()
+
+    receipt = AgentIntegrationManager(home=home, environment=manager.environment).uninstall()
+
+    assert receipt["ok"] is True
+    assert list(home.iterdir()) == []
+
+
+def test_uninstall_after_a_kill_before_any_native_write_is_a_clean_no_op(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Prepared-but-never-applied operations are nothing to remove, not drift."""
+    manager, home, polylogue, server = _manager(tmp_path)
+    _kill_after_native_writes(monkeypatch, writes_before_kill=0)
+    with pytest.raises(_KilledMidInstall):
+        manager.install(_options(polylogue, server, clients=("claude-code", "codex")))
+    monkeypatch.undo()
+
+    receipt = AgentIntegrationManager(home=home, environment=manager.environment).uninstall()
+
+    assert receipt["ok"] is True
+    assert all(not client["retained_drift"] for client in receipt["clients"])  # type: ignore[union-attr]
+
+
+def test_reinstall_after_a_killed_install_keeps_ownership_of_written_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A value the killed install wrote stays owned, so a later uninstall still removes it."""
+    manager, home, polylogue, server = _manager(tmp_path)
+    _kill_after_native_writes(monkeypatch, writes_before_kill=1)
+    with pytest.raises(_KilledMidInstall):
+        manager.install(_options(polylogue, server, clients=("claude-code",)))
+    monkeypatch.undo()
+
+    fresh = AgentIntegrationManager(home=home, environment=manager.environment)
+    assert fresh.install(_options(polylogue, server, clients=("claude-code",)))["ok"] is True
+    assert fresh.uninstall()["ok"] is True
+    assert list(home.iterdir()) == []

@@ -1066,7 +1066,9 @@ def _open_session(env: AppEnv, session_id: str, *, output_format: str, print_url
             click.echo(web_url)
         return
 
-    webbrowser.open(web_url)
+    from polylogue.cli.shared.web_sign_in import signed_in_web_url
+
+    webbrowser.open(signed_in_web_url(env, daemon_url, web_url))
     env.ui.console.print(f"Opened: {web_url}")
 
 

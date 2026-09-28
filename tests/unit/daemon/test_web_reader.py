@@ -3514,13 +3514,18 @@ class TestReaderAuthSurface:
         assert missing_status == 401
         assert isinstance(ok_payload, dict)
 
-    def test_unauthenticated_root_still_serves_typed_webui(self, workspace_env: dict[str, Path]) -> None:
-        # The web shell at / is the only unauthenticated GET (see
-        # docs/security.md and daemon/http.py:_dispatch_get).
+    def test_unauthenticated_root_serves_only_the_sign_in_page(self, workspace_env: dict[str, Path]) -> None:
+        """Loopback is not identity: an uncredentialed browser gets the sign-in page (polylogue-n3xdn).
+
+        Anti-vacuity: restore the loopback exemption and this request reads
+        the archive overview instead.
+        """
         with _running_server(workspace_env, auth_token="secret-token") as (_, base_url):
-            status, content_type, _ = _get_text(base_url, "/")
-        assert status == 200
+            status, content_type, body = _get_text(base_url, "/", headers={"Accept": "text/html"})
+        assert status == HTTPStatus.UNAUTHORIZED
         assert "text/html" in content_type
+        assert "Sign in to this Polylogue archive" in body
+        assert "archive-overview" not in body
 
 
 # ---------------------------------------------------------------------------

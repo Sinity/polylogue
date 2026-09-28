@@ -604,12 +604,18 @@
       if (root.polylogueAmbientSurfaceMounted === api) root.polylogueAmbientSurfaceMounted = null;
     }
 
-    chip.addEventListener("click", () => panel.hidden ? openPanel() : closePanel());
-    close.addEventListener("click", closePanel);
-    refreshButton.addEventListener("click", () => { void refresh(); });
-    hideButton.addEventListener("click", () => { void hideOnSite(); });
-    assertionButton.addEventListener("click", () => { void saveAssertion(); });
-    cancelButton.addEventListener("click", cancelAssertion);
+    // Page scripts can dispatch synthetic clicks into this surface; every
+    // control acts only on a real operator gesture (polylogue-l6v61).
+    const onGesture = (handler) => (event) => {
+      if (!event.isTrusted) return;
+      handler(event);
+    };
+    chip.addEventListener("click", onGesture(() => panel.hidden ? openPanel() : closePanel()));
+    close.addEventListener("click", onGesture(closePanel));
+    refreshButton.addEventListener("click", onGesture(() => { void refresh(); }));
+    hideButton.addEventListener("click", onGesture(() => { void hideOnSite(); }));
+    assertionButton.addEventListener("click", onGesture(() => { void saveAssertion(); }));
+    cancelButton.addEventListener("click", onGesture(cancelAssertion));
     doc.addEventListener("keydown", keyboardToggle);
     shadow.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !panel.hidden) {

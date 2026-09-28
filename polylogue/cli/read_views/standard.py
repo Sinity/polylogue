@@ -676,7 +676,9 @@ def run_read_browser(env: AppEnv, request: RootModeRequest, invocation: ReadView
 
     daemon_url = str(getattr(env, "daemon_url", None) or "http://127.0.0.1:8766").rstrip("/")
     web_url = f"{daemon_url}/s/{quote(session_id, safe='')}"
-    webbrowser.open(web_url)
+    from polylogue.cli.shared.web_sign_in import signed_in_web_url
+
+    webbrowser.open(signed_in_web_url(env, daemon_url, web_url))
     env.ui.console.print(f"Opened: {web_url}")
 
 

@@ -206,6 +206,76 @@ def _secret_findings(*, artifact: str, json_path: str, value: str) -> list[Promo
     return findings
 
 
+#: Annotations whose strings are identifiers Polylogue itself derived (digests
+#: of structure, profile families, internal refs), not observed provider values.
+_DERIVED_IDENTIFIER_ANNOTATIONS = frozenset(
+    {
+        "x-polylogue-anchor-profile-family-id",
+        "x-polylogue-exact-structure-ids",
+        "x-polylogue-package-profile-family-ids",
+        "x-polylogue-profile-family-ids",
+        "x-polylogue-ref",
+    }
+)
+
+
+def _observed_value_leak(value: str) -> bool:
+    """A UUID or long hex run is an observed identifier, never a field name or path."""
+    return bool(_UUID_RE.match(value) or _HEX_RE.match(value))
+
+
+def _annotation_findings(
+    value: object,
+    *,
+    artifact: str,
+    json_path: str,
+    findings: list[PromotionAuditFinding],
+) -> None:
+    """Apply the value predicates to every string nested under an annotation.
+
+    ``x-polylogue-values`` is not the only route a provider value can take
+    into a package: distribution annotations carry observed field names as
+    map keys (``co_occurring_fields``), and other annotations carry observed
+    names or defaults. The keyword-scoped checks above never looked inside
+    them, so a rejected value could publish through a nested annotation
+    (polylogue-mdlft). Every key and string beneath an annotation is held to
+    the same bar as a property name or an enum value.
+    """
+    if isinstance(value, dict):
+        for key, child in value.items():
+            unsafe_key = _unsafe_property_name(key) or _observed_value_leak(key)
+            key_path = f"{json_path}[{_redacted_value(key) if unsafe_key else key!r}]"
+            key_secrets = _secret_findings(artifact=artifact, json_path=key_path, value=key)
+            findings.extend(key_secrets)
+            if not key_secrets and unsafe_key:
+                findings.append(
+                    PromotionAuditFinding(
+                        severity="blocker",
+                        category="unsafe_annotation_key",
+                        artifact=artifact,
+                        json_path=key_path,
+                        value=_redacted_value(key),
+                    )
+                )
+            _annotation_findings(child, artifact=artifact, json_path=key_path, findings=findings)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _annotation_findings(child, artifact=artifact, json_path=f"{json_path}[{index}]", findings=findings)
+    elif isinstance(value, str):
+        value_secrets = _secret_findings(artifact=artifact, json_path=json_path, value=value)
+        findings.extend(value_secrets)
+        if not value_secrets and _observed_value_leak(value):
+            findings.append(
+                PromotionAuditFinding(
+                    severity="blocker",
+                    category="unsafe_annotation_value",
+                    artifact=artifact,
+                    json_path=json_path,
+                    value=_redacted_value(value),
+                )
+            )
+
+
 def _walk_artifact(
     value: object,
     *,
@@ -242,6 +312,12 @@ def _walk_artifact(
                         value=f"field={key};value_count={len(_strings(child))}",
                     )
                 )
+            if (
+                key.startswith("x-polylogue-")
+                and key not in _REVIEW_FIELDS
+                and key not in _DERIVED_IDENTIFIER_ANNOTATIONS
+            ):
+                _annotation_findings(child, artifact=artifact, json_path=child_path, findings=findings)
             if key in _REVIEW_FIELDS:
                 for text in _strings(child):
                     secret_findings = _secret_findings(artifact=artifact, json_path=child_path, value=text)

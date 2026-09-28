@@ -233,7 +233,16 @@
     nativeCaptures.push(data.capture);
     if (nativeCaptures.length > 8) nativeCaptures.splice(0, nativeCaptures.length - 8);
     const identity = nativeCaptureIdentity(data.capture);
-    if (identity && data.capture.source !== "polylogue_native_fetch") {
+    // A MAIN-world message is page data: page scripts can post it too. It may
+    // wake a capture only for the conversation this tab's URL already names,
+    // never supply that identity itself (polylogue-l6v61 / qut1).
+    const urlBoundId = conversationIdFromUrl();
+    if (
+      identity
+      && data.capture.source !== "polylogue_native_fetch"
+      && urlBoundId
+      && identity.nativeId === urlBoundId
+    ) {
       queueFreshnessHint("provider_native_observed", identity.nativeId, 3000, identity.updatedAt);
     }
   });

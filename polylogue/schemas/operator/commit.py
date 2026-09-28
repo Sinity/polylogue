@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from polylogue.core.json import JSONDocument
@@ -54,6 +55,7 @@ from polylogue.schemas.operator.receipt import (
     write_schema_inference_receipt,
 )
 from polylogue.schemas.package_publication import provider_tree_lock
+from polylogue.schemas.promotion_audit import PromotionAuditFinding, audit_schema_artifacts
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.runtime_registry import canonical_schema_provider
 from polylogue.schemas.type_narrowing import added_paths, narrowed_paths
@@ -82,6 +84,49 @@ class SchemaCommitPrivacyError(Exception):
         super().__init__(
             f"{provider}: generated schema bundle retains private values before staging\n" + "\n".join(violations)
         )
+
+
+class SchemaCommitAuditError(Exception):
+    """Raised when the persisted provider tree fails the promotion audit.
+
+    ``schema commit`` publishes a package only after the same audit that gates
+    promotion passes on the exact bytes written. On a blocker the provider's
+    previous tree is restored, so an unaudited package is never left behind
+    (polylogue-mdlft).
+    """
+
+    def __init__(self, provider: str, blockers: tuple[PromotionAuditFinding, ...]) -> None:
+        self.provider = provider
+        self.blockers = blockers
+        categories = sorted({item.category for item in blockers})
+        super().__init__(
+            f"{provider}: committed package failed the promotion audit with {len(blockers)} blocker(s): "
+            + ", ".join(categories)
+        )
+
+
+def _persist_audited(output_dir: Path, provider_token: str, bundle: _ProviderBundle) -> None:
+    """Persist *bundle*, audit the written provider tree, and roll back on a blocker."""
+    _write_audited(
+        output_dir, provider_token, lambda: persist_generated_provider_bundle(output_dir, provider_token, bundle)
+    )
+
+
+def _write_audited(output_dir: Path, provider_token: str, write: Callable[[], object]) -> None:
+    """Run *write*, audit the provider tree it produced, and restore the prior tree on a blocker."""
+    provider_dir = output_dir / provider_token
+    with tempfile.TemporaryDirectory(prefix="polylogue-schema-commit-prior-") as prior_root:
+        prior = Path(prior_root) / provider_token
+        if provider_dir.exists():
+            shutil.copytree(provider_dir, prior)
+        write()
+        report = audit_schema_artifacts(provider_dir) if provider_dir.exists() else None
+        if report is None or not report.blockers:
+            return
+        shutil.rmtree(provider_dir)
+        if prior.exists():
+            shutil.copytree(prior, provider_dir)
+        raise SchemaCommitAuditError(provider_token, report.blockers)
 
 
 def _refuse_private_retained_values(provider: str, bundle: _ProviderBundle) -> None:
@@ -149,15 +194,25 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
         )
         generation_results = [source_bundle.result]
     else:
-        generation_results = generate_all_schemas(
+        # The archive route persists inside generation; the promotion audit of
+        # what it wrote is the gate, with the prior tree restored on a blocker.
+        audited_results: list[list[GenerationResult]] = []
+        _write_audited(
             output_dir,
-            db_path=request.db_path,
-            providers=[request.provider],
-            max_samples=request.max_samples,
-            privacy_config=privacy_config_from_payload(request.privacy_config),
-            full_corpus=request.full_corpus,
-            archive_location=request.archive_location,
+            provider_token,
+            lambda: audited_results.append(
+                generate_all_schemas(
+                    output_dir,
+                    db_path=request.db_path,
+                    providers=[request.provider],
+                    max_samples=request.max_samples,
+                    privacy_config=privacy_config_from_payload(request.privacy_config),
+                    full_corpus=request.full_corpus,
+                    archive_location=request.archive_location,
+                )
+            ),
         )
+        generation_results = audited_results[0]
     generation = (
         generation_results[0]
         if generation_results
@@ -176,7 +231,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
                 if source_bundle is None:
                     raise AssertionError("source schema generation did not produce a bundle")
                 _refuse_private_retained_values(provider_token, source_bundle)
-                persist_generated_provider_bundle(output_dir, provider_token, source_bundle)
+                _persist_audited(output_dir, provider_token, source_bundle)
             registry_after = SchemaRegistry(storage_root=output_dir)
             catalog_after = registry_after.load_package_catalog(provider_token)
             if catalog_after is not None:
@@ -276,6 +331,7 @@ def commit_provider_schema(request: SchemaCommitRequest) -> SchemaCommitResult:
 
 
 __all__ = [
+    "SchemaCommitAuditError",
     "SchemaCommitPrivacyError",
     "SchemaCommitRequest",
     "SchemaCommitResult",

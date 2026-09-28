@@ -60,12 +60,15 @@ from polylogue.daemon.route_types import RouteMethod
 from polylogue.daemon.status_snapshot import get_status_snapshot_payload
 from polylogue.daemon.web_auth import (
     WEB_CREDENTIAL_SCOPES,
+    WEB_SIGN_IN_HTML,
+    WEB_SIGN_IN_SCRIPT,
     WebCredentialBootstrapPayload,
     WebCredentialDecision,
     WebCredentialRegistry,
     WebCredentialRevocationPayload,
     WebCredentialRevokedPayload,
     WebCredentialScope,
+    WebSignInTicketPayload,
     credential_cookie,
     exact_origin_allowed,
     expired_credential_cookie,
@@ -488,6 +491,7 @@ def implemented_daemon_route_patterns() -> tuple[tuple[RouteMethod, str], ...]:
         ("GET", "/healthz/live"),
         ("GET", "/healthz/ready"),
         ("GET", "/metrics"),
+        ("GET", "/web-auth/sign-in.js"),
     ]
     routes.extend(("GET", route.pattern) for route in _static_get_routes())
     routes.extend(("GET", route.pattern) for route in _parameterized_get_routes())
@@ -1874,18 +1878,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # The typed WebUI is the canonical browser surface. Every browser
         # route enters the same SSR handlers, asset-manifest boundary, and
         # authentication checks.
+        if path == ["web-auth", "sign-in.js"]:
+            self._serve_web_sign_in_script()
+            return
         if path == [""]:
             if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_archive_overview()
             return
         if path == ["observability"]:
-            if not self._check_auth():
+            if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_observability()
             return
         if path == ["cost"]:
-            if not self._check_auth():
+            if not self._check_shell_bootstrap_access():
                 return
             self._serve_webui_cost()
             return
@@ -2050,12 +2057,38 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         (refuse if refuse is not None else self._send_error)(HTTPStatus.FORBIDDEN, "cross_origin_denied")
         return False
 
-    def _check_shell_bootstrap_access(self) -> bool:
-        """Allow unauthenticated shell HTML only on loopback deployments."""
+    def _shell_request_authorized(self) -> bool:
+        """Is this browser-shell request backed by the owner's credential?
 
-        if is_loopback_host(self._api_host) and is_loopback_host(self._client_host):
+        Loopback is not identity: any local uid can open a TCP connection to
+        the daemon. When a bearer token is configured, shell HTML (which
+        embeds archive content) requires either that bearer or a valid
+        first-party web credential cookie, exactly like the ``/api`` routes.
+        """
+
+        if not self._auth_token:
             return True
-        return self._check_auth(allow_web=False)
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header:
+            return bool(_check_auth_logic(self._auth_token, self._client_host, auth_header))
+        if not self._web_credential_token():
+            return False
+        return self._web_credential_decision("read").allowed
+
+    def _check_shell_bootstrap_access(self) -> bool:
+        """Serve shell HTML only to the credentialed owner.
+
+        A browser navigation without a credential receives the sign-in page;
+        any other client receives the ordinary typed 401.
+        """
+
+        if self._shell_request_authorized():
+            return True
+        if "text/html" in self.headers.get("Accept", "") or self.headers.get("Sec-Fetch-Mode", "") == "navigate":
+            self._send_webui_html(HTTPStatus.UNAUTHORIZED, WEB_SIGN_IN_HTML)
+        else:
+            self._send_error(HTTPStatus.UNAUTHORIZED, "unauthorized")
+        return False
 
     def _dispatch_declared_mutation(self, method: str, path: list[str], params: dict[str, list[str]]) -> bool:
         route = next((item for item in _declared_mutation_routes(method) if item.matches(path)), None)
@@ -2180,6 +2213,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 },
             )
             return
+        if self._auth_token and not self._web_bootstrap_proof():
+            self._send_web_credential_error(WebCredentialDecision(False, "web_credential_missing"))
+            return
         issued = self._web_credentials.issue(
             origin,
             previous_token=self._web_credential_token(),
@@ -2195,6 +2231,52 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             ),
             credential_state="ready",
         )
+
+    def _web_bootstrap_proof(self) -> bool:
+        """Does this bootstrap request prove it acts for the archive owner?
+
+        Accepted proofs: the daemon bearer token, a one-time sign-in ticket
+        minted against that bearer (``POST /api/web-auth/ticket``), or a
+        still-valid web credential being rotated. A bare loopback request is
+        not proof: every local uid can reach loopback.
+        """
+
+        auth_header = self.headers.get("Authorization", "")
+        if auth_header.startswith("Bearer "):
+            presented = auth_header[7:]
+            if self._auth_token and hmac.compare_digest(presented, self._auth_token):
+                return True
+            return self._web_credentials.redeem_sign_in_ticket(presented)
+        if auth_header:
+            return False
+        return self._web_credential_decision("read").allowed
+
+    def _handle_web_auth_ticket(self) -> None:
+        """Mint a one-time browser sign-in ticket for a bearer-authenticated caller."""
+
+        ticket, expires_at = self._web_credentials.issue_sign_in_ticket()
+        self._send_json(
+            HTTPStatus.CREATED,
+            WebSignInTicketPayload(
+                ticket=ticket,
+                expires_at=datetime.fromtimestamp(expires_at, tz=UTC),
+            ).model_dump(mode="json"),
+            extra_headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+        )
+
+    def _serve_web_sign_in_script(self) -> None:
+        """Serve the static sign-in page script; it carries no archive data."""
+
+        raw = WEB_SIGN_IN_SCRIPT.encode("utf-8")
+        self.send_response(HTTPStatus.OK.value)
+        self.send_header("Content-Type", "text/javascript; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+        self._send_request_id_header()
+        self.end_headers()
+        self.wfile.write(raw)
 
     def _handle_web_auth_revoke(self) -> None:
         """Revoke the current first-party credential and clear its cookie."""
