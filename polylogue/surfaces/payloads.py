@@ -1587,6 +1587,9 @@ class QueryErrorPayload(SurfacePayloadModel):
     error: str
     detail: str | None = None
     field: str | None = None
+    # Set where a row-bearing surface decides its terminal outcome as an error
+    # (for example the daemon HTTP boundary's unexpected-failure answer).
+    outcome: OutcomeEnvelope | None = None
 
 
 class QueryMissReasonPayload(SurfacePayloadModel):

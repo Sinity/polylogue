@@ -5193,6 +5193,11 @@ components:
           - type: 'null'
           default: null
           title: Field
+        outcome:
+          anyOf:
+          - $ref: '#/components/schemas/OutcomeEnvelope'
+          - type: 'null'
+          default: null
       required:
       - error
       title: QueryErrorPayload

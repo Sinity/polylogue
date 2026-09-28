@@ -1059,25 +1059,33 @@ def _answer_route_exception(
     """Map one escaped route exception to its HTTP answer.
 
     PolylogueError subclasses carry ``http_status_code`` — use it. Unexpected
-    exceptions map to a 500 ``internal_error`` envelope with ``outcome: error``
-    and are logged once. When the response has already started, a second
-    status line would corrupt the stream, so the failure is logged and the
-    connection is closed instead.
+    exceptions map to a 500 ``internal_error`` envelope whose ``outcome`` is
+    an error ``OutcomeEnvelope``, logged once. When the response has already
+    started, a second status line would corrupt the stream, so the failure is
+    logged and the connection is closed instead. A client that disconnects,
+    whether in the route or while this answer is written, is logged at debug.
     """
 
     context: dict[str, object] = {"route": route}
     if method is not None:
         context["method"] = method
-    if isinstance(exc, _CLIENT_DISCONNECT_ERRORS):
-        emit(
-            "daemon.http.client_disconnected",
-            level=DEBUG,
-            outcome="skipped",
-            reason="client_disconnected",
-            error_type=type(exc).__name__,
-            **context,
-        )
-        return
+    try:
+        if not isinstance(exc, _CLIENT_DISCONNECT_ERRORS):
+            _write_route_exception_answer(handler, exc, context=context)
+            return
+    except _CLIENT_DISCONNECT_ERRORS as write_exc:
+        exc = write_exc
+    emit(
+        "daemon.http.client_disconnected",
+        level=DEBUG,
+        outcome="skipped",
+        reason="client_disconnected",
+        error_type=type(exc).__name__,
+        **context,
+    )
+
+
+def _write_route_exception_answer(handler: DaemonAPIHandler, exc: Exception, *, context: dict[str, object]) -> None:
     if handler._response_started:
         emit(
             "daemon.http.route_failed",
@@ -1176,9 +1184,12 @@ def _answer_route_exception(
         error_detail=str(exc),
         **context,
     )
-    payload = QueryErrorPayload(error=error_code).model_dump(mode="json")
-    payload["outcome"] = "error"
-    handler._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, payload)
+    handler._send_json(
+        HTTPStatus.INTERNAL_SERVER_ERROR,
+        QueryErrorPayload(error=error_code, outcome=OutcomeEnvelope(state="error", reason=error_code)).model_dump(
+            mode="json"
+        ),
+    )
 
 
 def _is_sqlite_busy_error(exc: sqlite3.OperationalError) -> bool:

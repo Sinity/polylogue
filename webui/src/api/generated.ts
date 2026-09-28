@@ -276,6 +276,7 @@ export type QueryErrorPayload = {
   readonly error: string;
   readonly field?: string | null;
   readonly ok?: false;
+  readonly outcome?: OutcomeEnvelope | null;
 };
 
 export type QueryExistsPredicateAst = {
