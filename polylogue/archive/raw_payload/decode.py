@@ -25,6 +25,7 @@ from polylogue.core.json import (
     is_json_value,
     loads,
 )
+from polylogue.core.json_envelope import OversizedRecord, bounded_lines
 from polylogue.sources.dispatch import detect_provider
 
 _BINARY_ARTIFACT_MARKER = "unrecognized_binary_artifact"
@@ -149,8 +150,13 @@ def _decode_jsonl_payload(
     line_number = 0
 
     with raw_line_stream(raw) as stream:
-        for raw_line in stream:
+        for raw_line in bounded_lines(stream):
             line_number += 1
+            if isinstance(raw_line, OversizedRecord):
+                malformed_lines += 1
+                if malformed_detail is None:
+                    malformed_detail = f"line {line_number}: record of {raw_line.size} bytes is beyond the record bound"
+                continue
             try:
                 line = decode_provider_utf8(raw_line) if isinstance(raw_line, bytes) else raw_line
             except UnicodeDecodeError as exc:

@@ -14,6 +14,7 @@ import ijson
 
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
+from polylogue.core.json_envelope import OversizedRecord, bounded_lines
 from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
@@ -190,10 +191,10 @@ def _iter_jsonl_stream(
     pending_line_number: int | None = None
     first_decode_error_line: int | None = None
 
-    for line in handle:
+    for line in bounded_lines(handle):
         physical_line_number += 1
-        raw = line.strip()
-        if not raw:
+        raw = None if isinstance(line, OversizedRecord) else line.strip()
+        if raw is not None and not raw:
             continue
         if pending is not None:
             records, new_errors, error_line = _yield_jsonl_pending(
@@ -212,6 +213,19 @@ def _iter_jsonl_stream(
                 elif error_count == 4:
                     logger_obj.warning("Skipping further invalid JSON lines in %s...", path_name)
             yield from records
+            pending = None
+        if isinstance(line, OversizedRecord):
+            # Refused by name at the record bound, never allocated.
+            error_count += 1
+            if first_decode_error_line is None:
+                first_decode_error_line = physical_line_number
+            logger_obj.warning(
+                "Skipping JSONL record of %d bytes at line %d in %s: beyond the record bound",
+                line.size,
+                physical_line_number,
+                path_name,
+            )
+            continue
         pending = raw
         pending_line_number = physical_line_number
 

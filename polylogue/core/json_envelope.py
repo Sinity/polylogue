@@ -15,7 +15,7 @@ import codecs
 import re
 import sqlite3
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from functools import cache
 from typing import IO, Protocol
 
@@ -47,6 +47,17 @@ _NUMBER_RUN = re.compile(rb"[-+0-9.eE]+")
 #: Passed in place of an over-long integer token so the tokenizer rejects it
 #: as malformed instead of converting it.
 _INVALID_NUMBER_END = b"x"
+
+#: The non-finite constants the production decoder (stdlib ``json``) accepts
+#: and the tokenizer rejects. Each reaches the tokenizer as a float
+#: placeholder padded with spaces, so a constant glued to another token stays
+#: as malformed as the decoder finds it.
+_NON_FINITE = re.compile(rb"-Infinity|Infinity|NaN")
+_NON_FINITE_PLACEHOLDER = b" 0.0 "
+
+#: A leading part of a non-finite constant at the end of a chunk, held back
+#: until the next chunk completes or ends it.
+_NON_FINITE_PARTIAL = re.compile(rb"(?:-|-?I|-?In|-?Inf|-?Infi|-?Infin|-?Infini|-?Infinit|N|Na)\Z")
 
 #: Marks the end of a number token's integer part.
 _NUMBER_NON_INTEGER = re.compile(rb"[.eE]")
@@ -166,7 +177,8 @@ class _EscapeSavings:
 
 
 @cache
-def _sqlite_value_limit() -> int:
+def sqlite_value_limit() -> int:
+    """SQLite's maximum value length: the physical bound on one stored value or record."""
     connection = sqlite3.connect(":memory:")
     try:
         return connection.getlimit(sqlite3.SQLITE_LIMIT_LENGTH)
@@ -245,6 +257,8 @@ class _PrefixStringReader:
         self._number_in_integer_part = True
         self._number_digits = 0
         self._skip_decoder: codecs.IncrementalDecoder | None = None
+        #: Structure bytes held back at a chunk end (see ``_NON_FINITE_PARTIAL``).
+        self._structure_carry = b""
 
     def read(self, size: int = -1) -> bytes:
         if size == 0:
@@ -257,13 +271,16 @@ class _PrefixStringReader:
                 self._eof = True
                 if self._in_string and not self._skipping:
                     out += self._string
-                elif self._number_open:
-                    self._end_number(out)
+                else:
+                    if self._structure_carry:
+                        self._pass_structure(b"", out)
+                    if self._number_open:
+                        self._end_number(out)
                 break
             self._consume(chunk, out)
         return bytes(out)
 
-    def _pass_structure(self, segment: bytes, out: bytearray) -> None:
+    def _pass_structure(self, segment: bytes, out: bytearray, *, chunk_end: bool = False) -> None:
         """Pass bytes outside any string through, number tokens bounded.
 
         Each number token is held back until it ends. A short token reaches
@@ -275,8 +292,15 @@ class _PrefixStringReader:
         ``Decimal``'s range, reaches it as a placeholder of the same JSON
         type: an envelope is a view of presence and type, and a signature
         never reads a number's value, so a number of any length costs bounded
-        memory.
+        memory. ``NaN`` and the infinities, which the decoder accepts, reach
+        it as a float placeholder.
         """
+        segment = self._structure_carry + segment
+        self._structure_carry = b""
+        if chunk_end and (partial := _NON_FINITE_PARTIAL.search(segment)) is not None:
+            self._structure_carry = segment[partial.start() :]
+            segment = segment[: partial.start()]
+        segment = _NON_FINITE.sub(_NON_FINITE_PLACEHOLDER, segment)
         position = 0
         for run in _NUMBER_RUN.finditer(segment):
             if self._number_open and run.start() > 0:
@@ -353,7 +377,7 @@ class _PrefixStringReader:
             if not self._in_string:
                 quote = data.find(b'"', position)
                 if quote < 0:
-                    self._pass_structure(data[position:], out)
+                    self._pass_structure(data[position:], out, chunk_end=True)
                     return
                 self._pass_structure(data[position : quote + 1], out)
                 self._in_string = True
@@ -505,11 +529,19 @@ class _LineSource:
 
 
 class _Line:
-    """One physical line; reads stop at its newline."""
+    """One physical line; reads stop at its newline.
+
+    ``size`` counts the line's bytes read so far and ``decodable`` says
+    whether they are provider UTF-8 (``decode_provider_utf8``'s rule), as the
+    JSONL decoder judges a line before reading it as JSON.
+    """
 
     def __init__(self, source: _LineSource) -> None:
         self._source = source
         self._done = False
+        self.size = 0
+        self.decodable = True
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="surrogatepass")
 
     def read(self, size: int = -1) -> bytes:
         if self._done or size == 0:
@@ -518,15 +550,28 @@ class _Line:
         if not source._buffer and not source._eof:
             source._fill()
         if not source._buffer:
-            self._done = True
+            self._finish(b"")
             return b""
         newline = source._buffer.find(b"\n")
         if newline >= 0:
             data, source._buffer = source._buffer[:newline], source._buffer[newline + 1 :]
-            self._done = True
+            self._finish(data)
             return data
         data, source._buffer = source._buffer, b""
+        self._observe(data, final=False)
         return data
+
+    def _finish(self, data: bytes) -> None:
+        self._done = True
+        self._observe(data, final=True)
+
+    def _observe(self, data: bytes, *, final: bool) -> None:
+        self.size += len(data)
+        if self.decodable:
+            try:
+                self._decoder.decode(data, final=final)
+            except UnicodeDecodeError:
+                self.decodable = False
 
     def drain(self) -> None:
         while self.read(_READ_BYTES):
@@ -563,8 +608,14 @@ def _envelopes(
     element_key: str | None = None
     expanding = False
     ordinal = 0
+    #: Exact root fields whose current (last-key-wins) value carried a stand-in.
+    substituted_exact: set[str] = set()
     for event, value in events:
         if event in ("map_key", "string"):
+            # The previous token is consumed: drop its per-token reader state,
+            # so a document of any number of strings costs bounded memory.
+            reader.substituted.discard(ordinal)
+            reader.truncated.pop(ordinal, None)
             ordinal += 1
         if event in ("start_map", "start_array"):
             placeholder: object = {} if event == "start_map" else []
@@ -582,6 +633,10 @@ def _envelopes(
         if event in ("end_map", "end_array"):
             depth -= 1
             if depth == 0 and not expanding:
+                if substituted_exact:
+                    # Refused only once duplicate keys have settled on their
+                    # final value, as the full decoder's last-key-wins reads it.
+                    raise EnvelopeValueUnrepresentableError(min(substituted_exact))
                 yield root
             elif depth == 1 and expanding:
                 yield element
@@ -600,8 +655,11 @@ def _envelopes(
         if depth == 0 or (depth == 1 and expanding):
             yield scalar
         elif depth == 1 and isinstance(root, dict) and key in fields:
-            if key in exact_fields and event == "string" and ordinal in reader.substituted:
-                raise EnvelopeValueUnrepresentableError(key)
+            if key in exact_fields:
+                if event == "string" and ordinal in reader.substituted:
+                    substituted_exact.add(key)
+                else:
+                    substituted_exact.discard(key)
             root[key] = scalar
         elif depth == 2 and expanding and isinstance(element, dict) and element_key in fields:
             element[element_key] = scalar
@@ -664,7 +722,7 @@ def top_level_envelopes(
                 value = envelope[field]
                 if not isinstance(value, _TruncatedText):
                     continue
-                limit = _sqlite_value_limit()
+                limit = sqlite_value_limit()
                 if value.decoded_bytes > limit:
                     raise EnvelopeValueTooLargeError(field, value.decoded_bytes, limit)
                 envelope[field] = _whole_string(handle, value.ordinal, field)
@@ -681,21 +739,72 @@ def jsonl_record_envelopes(handle: IO[bytes], *, fields: frozenset[str]) -> Iter
     """
     import ijson
 
+    limit = sqlite_value_limit()
     lines = _LineSource(handle)
-    # The decoder strips byte-order marks from the start of the first line.
-    lines.strip_leading_byte_order_marks()
-    while (line := lines.next_line()) is not None:
+    # The decoder strips byte-order marks from the start of the first line it
+    # can decode as UTF-8; an undecodable (or over-long) line before it
+    # leaves that line still to come.
+    first_decodable_pending = True
+    while True:
+        if first_decodable_pending:
+            lines.strip_leading_byte_order_marks()
+        if (line := lines.next_line()) is None:
+            return
         reader = _PrefixStringReader(line)
         try:
             values = list(
                 _envelopes(ijson.basic_parse(reader, use_float=False), reader, expand_arrays=False, fields=fields)
             )
         except (ijson.JSONError, UnicodeDecodeError, ArithmeticError, ValueError):
-            line.drain()
-            continue
+            values = []
         line.drain()
+        if line.size > limit:
+            # The decoders refuse a record beyond the record bound unread
+            # (``bounded_lines``), so recognition does not admit it either.
+            continue
+        if line.decodable:
+            first_decodable_pending = False
         if len(values) == 1:
             yield values[0]
+
+
+class OversizedRecord:
+    """A physical line longer than the record bound, skipped without being held."""
+
+    __slots__ = ("size",)
+
+    def __init__(self, size: int) -> None:
+        self.size = size
+
+
+def bounded_lines(handle: IO[bytes] | IO[str] | Iterable[bytes | str]) -> Iterator[bytes | str | OversizedRecord]:
+    """Physical lines of ``handle``, each held whole only up to the record bound.
+
+    The bound is SQLite's value limit, the physical limit on what one record
+    can be stored as. A longer line is read past in bounded pieces and
+    reported as :class:`OversizedRecord` with its length, so a JSONL decoder
+    refuses it by name instead of allocating it. A plain iterable of lines
+    the caller already holds is refused by the same bound.
+    """
+    limit = sqlite_value_limit()
+    if not hasattr(handle, "readline"):
+        for held in handle:
+            ending = b"\n" if isinstance(held, bytes) else "\n"
+            content = len(held) - (1 if held.endswith(ending) else 0)  # type: ignore[arg-type]
+            yield held if content <= limit else OversizedRecord(content)
+        return
+    while line := handle.readline(limit + 1):  # type: ignore[union-attr]
+        newline: bytes | str = b"\n" if isinstance(line, bytes) else "\n"
+        if len(line) <= limit or line.endswith(newline):  # type: ignore[arg-type]
+            yield line
+            continue
+        size = len(line)
+        while rest := handle.readline(_READ_BYTES):
+            size += len(rest)
+            if rest.endswith(newline):  # type: ignore[arg-type]
+                size -= 1
+                break
+        yield OversizedRecord(size)
 
 
 __all__ = [
@@ -703,6 +812,9 @@ __all__ = [
     "UNDECLARED_FIELDS",
     "EnvelopeValueTooLargeError",
     "EnvelopeValueUnrepresentableError",
+    "OversizedRecord",
+    "bounded_lines",
     "jsonl_record_envelopes",
+    "sqlite_value_limit",
     "top_level_envelopes",
 ]
