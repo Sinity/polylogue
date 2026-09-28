@@ -692,6 +692,10 @@
     },
     {
       "file": "polylogue/sources/live/batch.py",
+      "digest": "5b632e9d7e8c193098c94a6b023359c315229db7"
+    },
+    {
+      "file": "polylogue/sources/live/batch.py",
       "digest": "7d74bb8df702297e3dbd655d8e8ce2729486be20",
       "count": 2
     },
@@ -731,7 +735,7 @@
     },
     {
       "file": "polylogue/sources/live/production_baseline.py",
-      "digest": "3c378cc88fc50e85c597c5b1e2bed63bd9382ec8"
+      "digest": "741396bb2726923221c287c8d117a21e8cd57b33"
     },
     {
       "file": "polylogue/sources/live/sqlite_locking.py",
