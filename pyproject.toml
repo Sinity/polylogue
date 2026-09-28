@@ -132,7 +132,7 @@ audit = [
   "radon>=6.0",
   "jedi>=0.19",
   "duckdb>=1.3",
-  "networkx>=3.4",
+  "networkx>=3.7",
   "libcst>=1.8",
 ]
 
