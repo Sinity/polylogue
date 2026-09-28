@@ -258,7 +258,7 @@ async def measure_query_envelope(
             "swap_bytes": baseline_swap,
             "temp_delta_bytes": baseline_temp,
         },
-        "peak": asdict(peak),
+        "peak": asdict(peak_sample),
         "initial_sample": asdict(initial),
         "quiescent_sample": asdict(quiescent),
         "final_samples": [asdict(sample) for sample in final],
