@@ -173,6 +173,24 @@ def operand_count(arguments: Sequence[str], index: int) -> int:
     return count
 
 
+def split_short_cluster(argument: str, value_short: frozenset[str]) -> tuple[list[str], str | None, str | None]:
+    """Decompose a short-option cluster as argparse reads it.
+
+    Returns ``(flags, value_option, attached_value)``: the no-value options
+    in order, then the first value-taking option (if any) with the rest of
+    the cluster as its attached value -- ``""`` when the value is the next
+    argument. ``-vn8`` is ``(["-v"], "-n", "8")``; ``-sv`` is
+    ``(["-s", "-v"], None, None)``.
+    """
+    flags: list[str] = []
+    for offset, letter in enumerate(argument[1:], start=1):
+        option = f"-{letter}"
+        if option in value_short:
+            return flags, option, argument[offset + 1 :]
+        flags.append(option)
+    return flags, None, None
+
+
 def short_options_with_value(plugins: tuple[str, ...] = ()) -> frozenset[str]:
     """Single-letter options that take a value, which may be attached (``-n8``)."""
     return frozenset(
@@ -185,6 +203,7 @@ def short_options_with_value(plugins: tuple[str, ...] = ()) -> frozenset[str]:
 __all__ = [
     "PytestOptionTableError",
     "caller_plugins",
+    "split_short_cluster",
     "operand_count",
     "pytest_option_nargs",
     "short_options_with_value",

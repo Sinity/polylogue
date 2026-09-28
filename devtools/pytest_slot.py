@@ -1479,6 +1479,9 @@ def _run_launch(launch_path: Path) -> int:
     # corroborate against the same profile the width was admitted under.
     profile, max_workers = charge_profile_for(environment)
 
+    #: Process groups this launch started, reaped by the signal handler.
+    started_groups: list[int] = []
+
     def terminate_on_signal(signal_number: int, _frame: object) -> None:
         nonlocal terminating
         if terminating:
@@ -1494,6 +1497,11 @@ def _run_launch(launch_path: Path) -> int:
                     os.killpg(child.pid, signal.SIGKILL)
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     child.wait(timeout=STOP_KILL_GRACE_S)
+        # Every group this launch started, the first attempt's included: a
+        # signal during the rerun's setup (while the first group's lingering
+        # descendants are being reaped) must still finish that reaping.
+        for group in started_groups:
+            _group_reaped(group)
         with contextlib.suppress(OSError):
             receipt = _write_interrupted_result(
                 log_path,
@@ -1530,6 +1538,7 @@ def _run_launch(launch_path: Path) -> int:
             # The process being measured; the in-slot rerun replaces it, and
             # live telemetry names whichever attempt is running now.
             measured = [child]
+            started_groups.append(child.pid)
             sampler = ProcessGroupMemorySampler(
                 child.pid,
                 snapshot_path=telemetry_path,
@@ -1549,6 +1558,7 @@ def _run_launch(launch_path: Path) -> int:
                     nonlocal child
                     child = process
                     measured[0] = process
+                    started_groups.append(process.pid)
                     if sampler is not None:
                         sampler.follow(process.pid)
 

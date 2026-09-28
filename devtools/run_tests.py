@@ -21,7 +21,6 @@ loop, not a substitute for it.
 
 from __future__ import annotations
 
-import contextlib
 import functools
 import json
 import os
@@ -56,7 +55,7 @@ from devtools.pytest_invocation import (
     effective_hypothesis_profile,
     managed_plugin_args,
 )
-from devtools.pytest_options import caller_plugins, operand_count, short_options_with_value
+from devtools.pytest_options import caller_plugins, operand_count, short_options_with_value, split_short_cluster
 from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, rerun_failed_once, semantic_rerun_options
 from devtools.pytest_slot import (
     WORKTREE_PROVENANCE_ENV,
@@ -396,14 +395,14 @@ def _reuse_environment_key() -> str:
 
 
 def hypothesis_database_revision(root: Path) -> str:
-    """A digest of the example database's entry names (each names its content)."""
-    import hashlib
+    """The example database's declared revision marker, read without a walk.
 
-    database = root / _HYPOTHESIS_DATABASE
-    names: list[str] = []
-    with contextlib.suppress(OSError):
-        names = sorted(str(path.relative_to(database)) for path in database.rglob("*") if path.is_file())
-    return hashlib.sha256("\n".join(names).encode("utf-8")).hexdigest()
+    ``tests/conftest.py`` writes through ``RevisionedExampleDatabase``, which
+    replaces the marker on every save, delete or move.
+    """
+    from devtools.hypothesis_database import read_revision
+
+    return read_revision(root / _HYPOTHESIS_DATABASE)
 
 
 def reusable_green_receipt(
@@ -720,12 +719,24 @@ def _xdist_disabled(selection: list[str]) -> bool:
     live output, and ``--pdb``/``--trace`` for an interactive debugger, neither
     of which xdist workers can provide.
     """
-    return any(
+    if any(
         argument in {"-pno:xdist", "-p=no:xdist", "-s", "--capture=no", "--pdb", "--trace"}
         or (argument == "no:xdist" and index and selection[index - 1] == "-p")
         or (argument == "no" and index and selection[index - 1] == "--capture")
         for index, argument in enumerate(selection)
-    )
+    ):
+        return True
+    # ``-sv`` is ``-s -v``: a clustered ``-s`` asks for live output too.
+    value_short: frozenset[str] | None = None
+    for argument in selection:
+        if argument.startswith("--") or not argument.startswith("-") or len(argument) <= 2:
+            continue
+        if value_short is None:
+            value_short = short_options_with_value(caller_plugins(selection))
+        flags, _option, _value = split_short_cluster(argument, value_short)
+        if "-s" in flags:
+            return True
+    return False
 
 
 def _worker_args(selection: list[str]) -> list[str]:

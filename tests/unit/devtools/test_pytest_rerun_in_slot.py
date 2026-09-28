@@ -393,3 +393,12 @@ def test_a_caller_plugins_value_option_keeps_its_value_in_the_rerun(
     monkeypatch.setenv("PYTHONPATH", f"{tmp_path}:{os.environ.get('PYTHONPATH', '')}")
     command = ["python", "-m", "pytest", "tests/test_w.py", "-p", plugin, "--mode", "strict"]
     assert pytest_rerun.semantic_rerun_options(command) == ["-p", plugin, "--mode", "strict"]
+
+
+@pytest.mark.parametrize(("cluster", "kept"), [("-ln8", ["-l"]), ("-xl", ["-l"]), ("-lW", ["-lW", "error"])])
+def test_clustered_dropped_options_leave_the_rerun(cluster: str, kept: list[str]) -> None:
+    """Anti-vacuity (Codex P1, #5708): judge a cluster by its leading flag and
+    ``-ln8`` rides into the one-process rerun whole, starting eight workers
+    (``-l`` is kept on its own; ``-n`` and ``-x`` are dropped)."""
+    command = ["python", "-m", "pytest", "tests/test_w.py", cluster, *(["error"] if cluster == "-lW" else [])]
+    assert pytest_rerun.semantic_rerun_options(command) == kept

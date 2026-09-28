@@ -1388,16 +1388,32 @@ def test_only_checkout_local_selections_with_inert_options_are_reused(
     assert run_tests._reuse_eligible(selection, root=tmp_path) is eligible
 
 
+def test_the_database_revision_is_read_from_its_marker_without_a_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity (Codex P1, #5708): enumerate the example database for the
+    key and every focused run pays a walk that grows with the database."""
+    examples = tmp_path / ".cache" / "hypothesis" / "examples"
+    (examples / "abc").mkdir(parents=True)
+    (examples / "abc" / "def").write_bytes(b"counterexample")
+
+    def refuse_walk(self: Path, pattern: str) -> object:
+        raise AssertionError("the example database was walked")
+
+    monkeypatch.setattr(Path, "rglob", refuse_walk)
+    assert run_tests.hypothesis_database_revision(tmp_path) == "absent"
+
+
 def test_a_new_hypothesis_counterexample_or_golden_switch_changes_the_key(tmp_path: Path) -> None:
     """Inputs outside the tree digest still decide whether a receipt answers.
 
     Anti-vacuity: drop the database revision or ``UPDATE_GOLDEN`` from the key
     and the corresponding pair below compares equal.
     """
+    from devtools.hypothesis_database import RevisionedExampleDatabase
+
     before = run_tests.hypothesis_database_revision(tmp_path)
-    example = tmp_path / ".cache" / "hypothesis" / "examples" / "abc" / "def"
-    example.parent.mkdir(parents=True)
-    example.write_bytes(b"counterexample")
+    RevisionedExampleDatabase(tmp_path / ".cache" / "hypothesis" / "examples").save(b"key", b"counterexample")
     assert run_tests.hypothesis_database_revision(tmp_path) != before
 
     assert run_tests.execution_environment_key({}) != run_tests.execution_environment_key({"UPDATE_GOLDEN": "1"})
@@ -1693,3 +1709,11 @@ def test_a_newer_red_run_outranks_an_older_green(tmp_path: Path) -> None:
     _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
     _green_receipt(runs, "20260102T000000Z-focused-test-2-b", argv=selection, digest="d1", status="failed", exit_code=1)
     assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_a_clustered_capture_flag_keeps_xdist_off() -> None:
+    """Anti-vacuity (Codex P2, #5708): match ``-s`` only as a whole argument and
+    ``-sv`` gets an automatic worker count, losing the live output it asked for."""
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", "-sv"])
+
+    assert "-n" not in cmd

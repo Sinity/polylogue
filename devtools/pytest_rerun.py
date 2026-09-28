@@ -30,7 +30,7 @@ from devtools.pytest_invocation import (
     REPORT_PLUGIN_ARGS,
     SUITE_COST_PLUGIN_NAME,
 )
-from devtools.pytest_options import caller_plugins, operand_count, short_options_with_value
+from devtools.pytest_options import caller_plugins, operand_count, short_options_with_value, split_short_cluster
 from devtools.pytest_slot import PytestSlotUnavailableError, run_pytest, run_pytest_isolated
 from devtools.pytest_stream_report import report_file_argument
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
@@ -170,6 +170,23 @@ def semantic_rerun_options(command: list[str]) -> list[str]:
             # ``-n8``, ``-kexpr``, ``-rf``: a short option with its value attached.
             name = argument[:2]
         span = 1 + operand_count(arguments, index)
+        if not argument.startswith("--") and len(argument) > 2 and argument[:2] not in short_with_value:
+            # A cluster (``-vn8``, ``-xs``): judge each option in it, so a
+            # dropped option (a worker count, ``-x``) never rides along
+            # behind a kept flag.
+            flags, value_option, attached = split_short_cluster(argument, short_with_value)
+            kept_flags = [flag for flag in flags if flag not in _RERUN_DROPPED_FLAGS]
+            rebuilt = "".join(flag[1:] for flag in kept_flags)
+            tail: list[str] = []
+            if value_option is not None and value_option not in _RERUN_DROPPED_WITH_VALUE:
+                rebuilt += value_option[1:] + (attached or "")
+                if not attached:
+                    tail = arguments[index + 1 : index + span]
+            if rebuilt:
+                kept.append("-" + rebuilt)
+                kept.extend(tail)
+            index += span
+            continue
         if name in _RERUN_DROPPED_WITH_VALUE or argument in _RERUN_DROPPED_FLAGS or _is_managed(argument):
             index += span
             continue
