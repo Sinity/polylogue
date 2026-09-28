@@ -3,11 +3,23 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Callable, Container, Iterable, Iterator, Mapping, MutableSequence, MutableSet, Sequence
-from dataclasses import dataclass, replace
+import sqlite3
+from collections.abc import (
+    Callable,
+    Container,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+    MutableSet,
+    Sequence,
+)
+from contextlib import closing, nullcontext
+from dataclasses import asdict, dataclass, replace
 from decimal import Decimal
 from types import MappingProxyType
-from typing import Protocol, cast, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 from pydantic import ValidationError
 
@@ -59,8 +71,6 @@ class _GenerationTiming:
     ended_at_ms: int | None
     event_timestamp: str | None
     fidelity: str
-    related_message_provider_ids: frozenset[str]
-    duplicate_duration_message_provider_ids: frozenset[str]
 
 
 def _coerce_float(value: object) -> float | None:
@@ -96,7 +106,9 @@ def _non_negative_finite_float(value: object) -> float | None:
     return parsed
 
 
-def _generation_branch_key(mapping: Mapping[str, object], node_id: str, memo: dict[str, str] | None = None) -> str:
+def _generation_branch_key(
+    mapping: Mapping[str, object], node_id: str, memo: MutableMapping[str, str] | None = None
+) -> str:
     """Return the first assistant-side node below the nearest user ancestor.
 
     ChatGPT repeats run-wide reasoning metadata across thought, tool, recap,
@@ -159,7 +171,26 @@ def _generation_branch_key(mapping: Mapping[str, object], node_id: str, memo: di
     return result
 
 
-def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_GenerationTiming]:
+class GenerationTimingSelection(Protocol):
+    """Where :func:`_extract_generation_timings` selects one timing per generation.
+
+    Implemented over SQLite by ``prepared_message_sink.GenerationTimings``,
+    on the spill's scratch database or a private in-memory one, so the
+    per-node selection state is never held in process memory.
+    """
+
+    branch_memo: MutableMapping[str, str]
+
+    def add_related(self, branch_key: str, message_id: str) -> None: ...
+
+    def set_legacy_duration(self, branch_key: str, message_id: str, duration_ms: int) -> None: ...
+
+    def offer(
+        self, branch_key: str, score: tuple[int, int, int, int, str], elapsed_ms: int, timing: Mapping[str, object]
+    ) -> None: ...
+
+
+def _extract_generation_timings(mapping: Mapping[str, object], timings: GenerationTimingSelection) -> None:
     """Select one authoritative lifecycle timing per ChatGPT generation.
 
     Native conversation payloads commonly copy ``reasoning_start_time`` and
@@ -184,10 +215,6 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
     attachments, and events.
     """
 
-    candidates: dict[str, list[tuple[tuple[int, int, int, int, str], _GenerationTiming]]] = {}
-    related_message_ids: dict[str, set[str]] = {}
-    legacy_duration_by_message_id: dict[str, dict[str, int]] = {}
-    branch_key_memo: dict[str, str] = {}
     for node_id, raw_node in mapping.items():
         if not isinstance(raw_node, Mapping):
             continue
@@ -207,7 +234,7 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
 
         message_id_raw = raw_message.get("id") or raw_node.get("id") or node_id
         message_id = str(message_id_raw)
-        branch_key = _generation_branch_key(mapping, str(node_id), branch_key_memo)
+        branch_key = _generation_branch_key(mapping, str(node_id), timings.branch_memo)
         native_timing_field_names = (
             "reasoning_start_time",
             "reasoning_end_time",
@@ -216,7 +243,7 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
         has_native_timing_field = any(field_name in raw_metadata for field_name in native_timing_field_names)
         has_legacy_duration_field = "durationMs" in raw_metadata or "duration_ms" in raw_metadata
         if has_native_timing_field or has_legacy_duration_field:
-            related_message_ids.setdefault(branch_key, set()).add(message_id)
+            timings.add_related(branch_key, message_id)
 
         start_sec = _non_negative_finite_float(raw_metadata.get("reasoning_start_time"))
         end_sec = _non_negative_finite_float(raw_metadata.get("reasoning_end_time"))
@@ -226,7 +253,7 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
             legacy_duration_raw = raw_metadata.get("duration_ms")
         legacy_duration_ms = _non_negative_int(legacy_duration_raw)
         if legacy_duration_ms is not None:
-            legacy_duration_by_message_id.setdefault(branch_key, {})[message_id] = legacy_duration_ms
+            timings.set_legacy_duration(branch_key, message_id, legacy_duration_ms)
 
         has_valid_native_timing_value = any(value is not None for value in (start_sec, end_sec, finished_sec))
         if finished_sec is not None:
@@ -257,8 +284,6 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
             ended_at_ms=round(end_sec * 1000) if end_sec is not None else None,
             event_timestamp=str(end_sec) if end_sec is not None else None,
             fidelity=fidelity,
-            related_message_provider_ids=frozenset(),
-            duplicate_duration_message_provider_ids=frozenset(),
         )
         score = (
             source_rank,
@@ -267,23 +292,7 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
             int(raw_message.get("end_turn") is True),
             message_id,
         )
-        candidates.setdefault(branch_key, []).append((score, timing))
-
-    timings: list[_GenerationTiming] = []
-    for branch_key, branch_candidates in candidates.items():
-        selected = max(branch_candidates, key=lambda item: item[0])[1]
-        timings.append(
-            replace(
-                selected,
-                related_message_provider_ids=frozenset(related_message_ids.get(branch_key, ())),
-                duplicate_duration_message_provider_ids=frozenset(
-                    message_provider_id
-                    for message_provider_id, duration_ms in legacy_duration_by_message_id.get(branch_key, {}).items()
-                    if duration_ms == selected.elapsed_duration_ms
-                ),
-            )
-        )
-    return timings
+        timings.offer(branch_key, score, timing.elapsed_duration_ms, asdict(timing))
 
 
 #: The export's terminal states for a completed tool run. Everything else --
@@ -841,6 +850,33 @@ def _asset_pointer_block_metadata(record: Mapping[str, object], pointer: str) ->
     return metadata
 
 
+class _MessageAttachmentIds:
+    """Normalized file id -> index of one message's own attachments.
+
+    Indexed incrementally: each attachment appended to the message since the
+    last lookup is read once, so a message naming N attachments and N
+    pointers costs O(N) reads rather than a rescan of its suffix per pointer.
+    The first attachment with a given id wins, as the linear scan it
+    replaces found.
+    """
+
+    def __init__(
+        self, attachments: MutableSequence[ParsedAttachment], start: int, ids: MutableMapping[str, str]
+    ) -> None:
+        self.attachments = attachments
+        self.ids = ids
+        self.indexed = start
+
+    def find(self, file_id: str) -> int | None:
+        while self.indexed < len(self.attachments):
+            key = strip_asset_pointer_scheme(self.attachments[self.indexed].provider_attachment_id)
+            if key and key not in self.ids:
+                self.ids[key] = str(self.indexed)
+            self.indexed += 1
+        found = self.ids.get(file_id)
+        return int(found) if found is not None else None
+
+
 def _append_asset_attachment(
     attachments: MutableSequence[ParsedAttachment],
     record: Mapping[str, object],
@@ -850,7 +886,7 @@ def _append_asset_attachment(
     attachment_kind: str,
     direction: AttachmentDirection | None,
     producer_ref: str | None,
-    dedupe_from: int,
+    dedupe: _MessageAttachmentIds,
 ) -> None:
     """Record an asset-pointer record as the attachment its bytes bind to.
 
@@ -859,8 +895,7 @@ def _append_asset_attachment(
     the bare file id, so a pointer that reaches storage as block metadata
     alone leaves its acquired bytes with nothing to bind to.
 
-    ``dedupe_from`` is the index at which this message's own attachments
-    start. A user upload is named twice — once by the message's ``metadata``
+    ``dedupe`` indexes this message's own attachments. A user upload is named twice — once by the message's ``metadata``
     attachment row (bare ``file-<id>``) and once by the content part's
     pointer URI (``file-service://file-<id>``) — and both normalize to the
     same id, so the second naming must not mint a second row.
@@ -868,32 +903,33 @@ def _append_asset_attachment(
     file_id = strip_asset_pointer_scheme(pointer)
     if not file_id:
         return
-    for index, existing in enumerate(attachments[dedupe_from:], start=dedupe_from):
-        if strip_asset_pointer_scheme(existing.provider_attachment_id) == file_id:
-            # A user upload is commonly named by both a metadata attachment
-            # row (the bare ``file-…`` id) and an image/audio pointer part.
-            # Keep that one acquisition identity, but do not lose the richer
-            # media/provenance facts carried by the pointer part.  In
-            # particular, metadata rows predate ``attachment_kind`` and may
-            # otherwise remain indistinguishable from an ordinary upload.
-            update: dict[str, object] = {}
-            if existing.attachment_kind is None:
-                update["attachment_kind"] = attachment_kind
-            if existing.mime_type is None:
-                pointer_mime_type = _string_value(record, "mime_type", "media_type")
-                if pointer_mime_type is not None:
-                    update["mime_type"] = pointer_mime_type
-            if existing.size_bytes is None:
-                pointer_size = _non_negative_int(record.get("size_bytes"))
-                if pointer_size is not None:
-                    update["size_bytes"] = pointer_size
-            if existing.direction is None and direction is not None:
-                update["direction"] = direction
-            if existing.producer_ref is None and producer_ref is not None:
-                update["producer_ref"] = producer_ref
-            if update:
-                attachments[index] = existing.model_copy(update=update)
-            return
+    index = dedupe.find(file_id)
+    if index is not None:
+        existing = attachments[index]
+        # A user upload is commonly named by both a metadata attachment
+        # row (the bare ``file-…`` id) and an image/audio pointer part.
+        # Keep that one acquisition identity, but do not lose the richer
+        # media/provenance facts carried by the pointer part.  In
+        # particular, metadata rows predate ``attachment_kind`` and may
+        # otherwise remain indistinguishable from an ordinary upload.
+        update: dict[str, object] = {}
+        if existing.attachment_kind is None:
+            update["attachment_kind"] = attachment_kind
+        if existing.mime_type is None:
+            pointer_mime_type = _string_value(record, "mime_type", "media_type")
+            if pointer_mime_type is not None:
+                update["mime_type"] = pointer_mime_type
+        if existing.size_bytes is None:
+            pointer_size = _non_negative_int(record.get("size_bytes"))
+            if pointer_size is not None:
+                update["size_bytes"] = pointer_size
+        if existing.direction is None and direction is not None:
+            update["direction"] = direction
+        if existing.producer_ref is None and producer_ref is not None:
+            update["producer_ref"] = producer_ref
+        if update:
+            attachments[index] = existing.model_copy(update=update)
+        return
     attachments.append(
         ParsedAttachment(
             provider_attachment_id=pointer,
@@ -1127,7 +1163,9 @@ _TOOL_RESULT_CARRIER_TYPES: frozenset[BlockType] = frozenset(
 )
 
 
-def _owning_tool_call_id(mapping: Mapping[str, object], parent_id: str | None) -> str | None:
+def _owning_tool_call_id(
+    mapping: Mapping[str, object], parent_id: str | None, memo: MutableMapping[str, str] | None = None
+) -> str | None:
     """Resolve which node a ``role: tool`` result answers.
 
     A tool episode is a chain: the calling node, then one or more ``role: tool``
@@ -1135,23 +1173,44 @@ def _owning_tool_call_id(mapping: Mapping[str, object], parent_id: str | None) -
     *previous result*, so the direct mapping parent names another answer rather
     than the node the episode hangs off. Skipping the tool-role ancestors
     reaches that node, and every result of one episode names the same owner.
+
+    ``memo`` caches the owner of every tool node a walk passes through (each
+    of them resolves to the same owner), so a long chain of results is walked
+    once rather than once per result. A walk that ends on a parent cycle is
+    not cached, as in ``_generation_branch_key``.
     """
     seen: set[str] = set()
+    path: list[str] = []
     current = parent_id
+    result: str | None = current
+    cycle = True
     while isinstance(current, str) and current and current not in seen:
+        if memo is not None and current in memo:
+            result, cycle = memo[current], False
+            break
         seen.add(current)
         node = mapping.get(current)
         if not isinstance(node, Mapping):
-            return current
+            result, cycle = current, False
+            break
         message = node.get("message")
         author = message.get("author") if isinstance(message, Mapping) else None
         if not (isinstance(author, Mapping) and author.get("role") == "tool"):
-            return current
+            result, cycle = current, False
+            break
+        path.append(current)
         parent = node.get("parent")
         if not parent:
-            return current
+            result, cycle = current, False
+            break
         current = str(parent)
-    return current
+    else:
+        result = current
+        cycle = isinstance(current, str) and bool(current)
+    if memo is not None and not cycle and result is not None:
+        for visited in path:
+            memo[visited] = result
+    return result
 
 
 def _tool_role_result_blocks(
@@ -1419,6 +1478,14 @@ class SessionSpill(Protocol):
         """An empty set for per-message deduplication."""
         ...
 
+    def string_map(self) -> MutableMapping[str, str]:
+        """An empty string map for per-node memos and indexes."""
+        ...
+
+    def connection(self) -> sqlite3.Connection:
+        """The scratch database the session's selection tables live in."""
+        ...
+
 
 def extract_messages_from_mapping(
     mapping: Mapping[str, object],
@@ -1476,6 +1543,7 @@ def _collect_message_entries(
     default_model_slug: str | None,
     new_seen_set: Callable[[], MutableSet[str]] = set,
     sandbox_attachment_limit: int | None = MAX_IN_MEMORY_SANDBOX_ATTACHMENTS_PER_MESSAGE,
+    new_string_map: Callable[[], MutableMapping[str, str]] = dict,
 ) -> _ActivePath:
     """Normalize every message node into ``entries``; return the active path."""
     if admission is not None:
@@ -1486,6 +1554,7 @@ def _collect_message_entries(
     message_ordinal = 0
     sibling_ordinal = _sibling_ordinal_lookup(mapping)
     active_path = _active_path(mapping, current_node, new_seen_set)
+    tool_owners = new_string_map()
     for idx, node_id in enumerate(mapping.keys(), start=1):
         node = mapping.get(node_id)
         if not isinstance(node, dict):
@@ -1535,7 +1604,7 @@ def _collect_message_entries(
         parent_id = node.get("parent")
         parent_message_provider_id = str(parent_id) if parent_id else None
         tool_result_owner_id = (
-            _owning_tool_call_id(mapping, parent_message_provider_id)
+            _owning_tool_call_id(mapping, parent_message_provider_id, tool_owners)
             if role is Role.TOOL
             else parent_message_provider_id
         )
@@ -1553,7 +1622,7 @@ def _collect_message_entries(
 
         # Where this message's own attachments begin, so an asset named both
         # by a metadata row and by a content part collapses to one row.
-        message_attachment_start = len(attachments)
+        message_attachment_ids = _MessageAttachmentIds(attachments, len(attachments), new_string_map())
 
         # Extract attachments from message metadata
         raw_msg_metadata = msg.get("metadata")
@@ -1843,7 +1912,7 @@ def _collect_message_entries(
                     attachment_kind="computer_screenshot",
                     direction="model_output",
                     producer_ref=f"message:{msg_id}",
-                    dedupe_from=message_attachment_start,
+                    dedupe=message_attachment_ids,
                 )
         elif content_type in ("tether_quote", "tether_browsing_display", "sonic_webpage"):
             # Browsing/web-search retrieval (April-era layer, polylogue-xofj):
@@ -2001,7 +2070,7 @@ def _collect_message_entries(
                             attachment_kind="image_asset",
                             direction=image_direction,
                             producer_ref=image_producer,
-                            dedupe_from=message_attachment_start,
+                            dedupe=message_attachment_ids,
                         )
                 elif isinstance(part, dict) and part.get("content_type") in {
                     "audio_asset_pointer",
@@ -2037,7 +2106,7 @@ def _collect_message_entries(
                             attachment_kind=_chatgpt_media_attachment_kind(pointer_field, content_type),
                             direction=media_direction,
                             producer_ref=media_producer,
-                            dedupe_from=message_attachment_start,
+                            dedupe=message_attachment_ids,
                         )
                     if not media_constructs:
                         media_constructs.append(
@@ -2934,63 +3003,62 @@ def parse(payload: Mapping[str, object], fallback_id: str, *, spill: SessionSpil
         default_model_slug=conversation_model_slug,
         new_seen_set=spill.seen_set if spill is not None else set,
         sandbox_attachment_limit=None if spill is not None else MAX_IN_MEMORY_SANDBOX_ATTACHMENTS_PER_MESSAGE,
+        new_string_map=spill.string_map if spill is not None else dict,
     )
     emitted_message_ids = entries.emitted_provider_ids()
-    generation_timings: list[_GenerationTiming] = []
-    for timing in _extract_generation_timings(mapping):
-        if timing.message_provider_id in emitted_message_ids:
-            generation_timings.append(timing)
-            continue
-        fallback_owner_id = entries.last_emitted_among(timing.related_message_provider_ids)
-        generation_timings.append(
-            replace(timing, message_provider_id=fallback_owner_id) if fallback_owner_id is not None else timing
-        )
-    timing_by_message_id = {timing.message_provider_id: timing for timing in generation_timings}
-    duplicate_duration_message_ids = {
-        message_provider_id
-        for timing in generation_timings
-        for message_provider_id in timing.duplicate_duration_message_provider_ids
-    }
     session_events: MutableSequence[ParsedSessionEvent] = spill.events() if spill is not None else []
-    session_events.extend(
-        ParsedSessionEvent(
-            event_type="generation_lifecycle",
-            timestamp=timing.event_timestamp,
-            source_message_provider_id=timing.message_provider_id,
-            payload={
-                "state": "completed",
-                "evidence_source": "provider_native",
-                "fidelity": timing.fidelity,
-                "duration_semantics": "provider_reported_elapsed",
-                "elapsed_duration_ms": timing.elapsed_duration_ms,
-                **({"started_at_ms": timing.started_at_ms} if timing.started_at_ms is not None else {}),
-                **({"ended_at_ms": timing.ended_at_ms} if timing.ended_at_ms is not None else {}),
-            },
-        )
-        for timing in generation_timings
-    )
-    # One pass over the final messages writes them and gathers every
-    # per-message summary, so neither route holds a second copy.
     messages: MutableSequence[ParsedMessage] = spill.messages() if spill is not None else []
     message_count = 0
     reported_duration_ms: int | None = None
     model_names: set[str] = set()
     active_leaf_message_provider_id: str | None = None
-    for message in _resolved_messages(entries, active_path):
-        resolved_timing = timing_by_message_id.get(message.provider_message_id)
-        if resolved_timing is not None:
-            message = message.model_copy(update={"duration_ms": resolved_timing.elapsed_duration_ms})
-        elif message.provider_message_id in duplicate_duration_message_ids:
-            message = message.model_copy(update={"duration_ms": None})
-        messages.append(message)
-        message_count += 1
-        session_events.extend(_block_metadata_evidence_events((message,)))
-        if message.duration_ms is not None:
-            reported_duration_ms = (reported_duration_ms or 0) + message.duration_ms
-        if message.model_name:
-            model_names.add(message.model_name)
-        if active_leaf_message_provider_id is None and message.is_active_leaf:
-            active_leaf_message_provider_id = message.provider_message_id
+    # The generation-timing selection lives in the spill's scratch database,
+    # or in a private in-memory one when the parse collects into lists.
+    with nullcontext(spill.connection()) if spill is not None else closing(sqlite3.connect(":memory:")) as timing_conn:
+        from polylogue.sources.prepared_message_sink import GenerationTimings as _Timings
+
+        timings = _Timings(timing_conn)
+        _extract_generation_timings(mapping, timings)
+        for branch_key, selected in timings.selected():
+            timing = _GenerationTiming(**cast("dict[str, Any]", selected))
+            if timing.message_provider_id not in emitted_message_ids:
+                fallback_owner_id = entries.last_emitted_among(timings.related(branch_key))
+                if fallback_owner_id is not None:
+                    timing = replace(timing, message_provider_id=fallback_owner_id)
+            timings.resolve(timing.message_provider_id, timing.elapsed_duration_ms)
+            session_events.append(
+                ParsedSessionEvent(
+                    event_type="generation_lifecycle",
+                    timestamp=timing.event_timestamp,
+                    source_message_provider_id=timing.message_provider_id,
+                    payload={
+                        "state": "completed",
+                        "evidence_source": "provider_native",
+                        "fidelity": timing.fidelity,
+                        "duration_semantics": "provider_reported_elapsed",
+                        "elapsed_duration_ms": timing.elapsed_duration_ms,
+                        **({"started_at_ms": timing.started_at_ms} if timing.started_at_ms is not None else {}),
+                        **({"ended_at_ms": timing.ended_at_ms} if timing.ended_at_ms is not None else {}),
+                    },
+                )
+            )
+        # One pass over the final messages writes them and gathers every
+        # per-message summary, so neither route holds a second copy.
+        for message in _resolved_messages(entries, active_path):
+            resolved_duration_ms = timings.resolved_duration_ms(message.provider_message_id)
+            if resolved_duration_ms is not None:
+                message = message.model_copy(update={"duration_ms": resolved_duration_ms})
+            elif timings.repeats_selected_duration(message.provider_message_id):
+                message = message.model_copy(update={"duration_ms": None})
+            messages.append(message)
+            message_count += 1
+            session_events.extend(_block_metadata_evidence_events((message,)))
+            if message.duration_ms is not None:
+                reported_duration_ms = (reported_duration_ms or 0) + message.duration_ms
+            if message.model_name:
+                model_names.add(message.model_name)
+            if active_leaf_message_provider_id is None and message.is_active_leaf:
+                active_leaf_message_provider_id = message.provider_message_id
     session_events.extend(_aggregate_result_events(mapping, emitted_message_ids))
     session_events.extend(_message_authorship_events(mapping, emitted_message_ids))
     session_events.extend(

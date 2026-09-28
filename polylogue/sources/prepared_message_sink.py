@@ -8,7 +8,7 @@ import os
 import re
 import sqlite3
 import uuid
-from collections.abc import Container, Iterable, Iterator, Mapping, MutableSequence, MutableSet, Set
+from collections.abc import Container, Iterable, Iterator, Mapping, MutableMapping, MutableSequence, MutableSet, Set
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -37,6 +37,26 @@ _ACTIVE_PARENT_LOOKUP_SQL = (
 
 def _read_uri(path: Path) -> str:
     return f"file:{quote(str(path))}?mode=ro"
+
+
+def _write_row(conn: sqlite3.Connection, sql: str, parameters: tuple[object, ...], *, kind: str) -> None:
+    """Write one scratch row, typing SQLite's refusal of an oversized row.
+
+    Each serialized value is bounded on its own, but SQLite applies the same
+    length limit to the complete encoded row, so values just under the bound
+    can still combine past it with the row's other columns.
+    """
+    try:
+        conn.execute(sql, parameters)
+    except sqlite3.DataError as exc:
+        if "too big" not in str(exc):
+            raise
+        observed = sum(
+            len(value.encode("utf-8", "surrogatepass")) if isinstance(value, str) else len(value)
+            for value in parameters
+            if isinstance(value, (str, bytes))
+        )
+        raise value_bounds.ValueBoundRefusedError(kind, observed, value_bounds.MAX_STORABLE_VALUE_BYTES) from exc
 
 
 def _message_json(value: ParsedMessage) -> str:
@@ -127,6 +147,20 @@ def _tool_call_texts(tool_record: JSONDocument) -> list[str]:
     elif display is not None:
         texts.append(json.dumps(display))
     return texts
+
+
+#: How many copies of one sidecar a join holds at its peak (bytes, decoded
+#: text up to four bytes per character, the bound SQLite value), with margin.
+_SIDECAR_MEMORY_COPIES = 8
+
+
+def _gemini_sidecar_limit_bytes() -> int:
+    from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes
+
+    physical = effective_physical_memory_bytes()
+    if physical is None:
+        return value_bounds.MAX_STORABLE_VALUE_BYTES
+    return min(value_bounds.MAX_STORABLE_VALUE_BYTES, physical // _SIDECAR_MEMORY_COPIES)
 
 
 class GeminiToolOutputIndex:
@@ -224,8 +258,11 @@ class GeminiToolOutputIndex:
             full_text = ""
             if owner is None:
                 reason = "no_owning_tool_call"
-            elif entry.byte_size > value_bounds.MAX_STORABLE_VALUE_BYTES:
-                # The only limit on a sidecar is what one SQLite cell holds.
+            elif entry.byte_size > _gemini_sidecar_limit_bytes():
+                # A sidecar is read whole and held as bytes, as decoded text
+                # and as a bound SQLite value at once, so the physical limit
+                # is the smaller of one SQLite cell and a share of this
+                # process's memory -- refused typed, never truncated.
                 reason = value_bounds.VALUE_BOUND_REFUSED
             else:
                 try:
@@ -381,7 +418,8 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             raise TypeError("sealed prepared messages are immutable")
         if index != self._count:
             raise TypeError("prepared messages can only be appended")
-        self._writer.execute(
+        _write_row(
+            self._writer,
             "INSERT INTO prepared_message VALUES (?, ?, ?, ?, ?, ?)",
             (
                 self.session_ordinal,
@@ -391,6 +429,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 value.parent_message_provider_id,
                 int(bool(value.is_active_leaf)),
             ),
+            kind="prepared message row",
         )
         self._count += 1
 
@@ -629,9 +668,11 @@ class SqliteAttachmentSink(MutableSequence[ParsedAttachment]):
             raise TypeError("sealed prepared attachments are immutable")
         if isinstance(index, slice) or not isinstance(value, ParsedAttachment):
             raise TypeError("prepared attachment replacement needs one attachment")
-        self._writer.execute(
+        _write_row(
+            self._writer,
             "UPDATE prepared_attachment SET attachment_json = ? WHERE session_ordinal = ? AND attachment_ordinal = ?",
             (_attachment_json(value), self.session_ordinal, self._ordinal(index)),
+            kind="prepared attachment row",
         )
 
     def __delitem__(self, index: int | slice) -> None:
@@ -642,9 +683,11 @@ class SqliteAttachmentSink(MutableSequence[ParsedAttachment]):
             raise TypeError("sealed prepared attachments are immutable")
         if index != self._count:
             raise TypeError("prepared attachments can only be appended")
-        self._writer.execute(
+        _write_row(
+            self._writer,
             "INSERT INTO prepared_attachment VALUES (?, ?, ?)",
             (self.session_ordinal, self._count, _attachment_json(value)),
+            kind="prepared attachment row",
         )
         self._count += 1
 
@@ -757,9 +800,11 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
                 "WHERE session_ordinal = ? AND event_ordinal < 0",
                 (self.session_ordinal,),
             )
-        self._writer.execute(
+        _write_row(
+            self._writer,
             "INSERT INTO prepared_event (session_ordinal, event_ordinal, timestamp, event_type, event_json) VALUES (?, ?, ?, ?, ?)",
             (self.session_ordinal, index, value.timestamp, value.event_type, _event_json(value)),
+            kind="prepared event row",
         )
         self._count += 1
 
@@ -1066,9 +1111,11 @@ class _ScratchChatGPTEntries:
         conn.execute(f"CREATE INDEX chatgpt_entry_order ON chatgpt_entry({self._ORDER})")
 
     def add(self, timestamp: float | None, idx: int, node_id: str, message: ParsedMessage) -> None:
-        self.conn.execute(
+        _write_row(
+            self.conn,
             "INSERT INTO chatgpt_entry VALUES (?, ?, ?, ?, ?, ?)",
             (node_id, idx, timestamp, message.position, message.provider_message_id, _message_json(message)),
+            kind="normalized message row",
         )
 
     def ordered(self) -> Iterator[ParsedMessage]:
@@ -1144,6 +1191,12 @@ class ScratchSessionSpill:
     def seen_set(self) -> _ScratchStringSet:
         return _ScratchStringSet(self.store.conn)
 
+    def string_map(self) -> _ScratchStringMap:
+        return _ScratchStringMap(self.store.conn)
+
+    def connection(self) -> sqlite3.Connection:
+        return self.store.conn
+
 
 class _ScratchStringSet(MutableSet[str]):
     """A string set kept in scratch: one table per preparation, one id per set."""
@@ -1184,6 +1237,170 @@ class _ScratchStringSet(MutableSet[str]):
 
     def discard(self, value: str) -> None:
         self.conn.execute("DELETE FROM scratch_string_set WHERE set_id = ? AND value = ?", (self.set_id, value))
+
+
+class GenerationTimings:
+    """One authoritative timing per generation, selected in SQLite.
+
+    Every per-node fact the selection reads (branch roots, the best
+    candidate per branch, related and legacy-duration message ids) and the
+    owner each timing resolves to live in tables on ``conn``: the scratch
+    database on the preparation route, an in-memory database otherwise. A
+    parse therefore holds none of them in process memory.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        for table in ("gt_candidate", "gt_related", "gt_legacy", "gt_owner"):
+            conn.execute(f"DROP TABLE IF EXISTS temp.{table}")
+        conn.execute(
+            "CREATE TEMP TABLE gt_candidate (branch_key TEXT PRIMARY KEY, first_ordinal INTEGER NOT NULL, "
+            "s1 INTEGER NOT NULL, s2 INTEGER NOT NULL, s3 INTEGER NOT NULL, s4 INTEGER NOT NULL, s5 TEXT NOT NULL, "
+            "elapsed_ms INTEGER NOT NULL, timing_json TEXT NOT NULL)"
+        )
+        conn.execute("CREATE INDEX temp.gt_candidate_order ON gt_candidate(first_ordinal)")
+        conn.execute(
+            "CREATE TEMP TABLE gt_related (branch_key TEXT NOT NULL, message_id TEXT NOT NULL, "
+            "PRIMARY KEY (branch_key, message_id)) WITHOUT ROWID"
+        )
+        conn.execute(
+            "CREATE TEMP TABLE gt_legacy (branch_key TEXT NOT NULL, message_id TEXT NOT NULL, "
+            "duration_ms INTEGER NOT NULL, PRIMARY KEY (branch_key, message_id)) WITHOUT ROWID"
+        )
+        conn.execute("CREATE INDEX temp.gt_legacy_message ON gt_legacy(message_id)")
+        conn.execute(
+            "CREATE TEMP TABLE gt_owner (ordinal INTEGER PRIMARY KEY, owner TEXT NOT NULL, elapsed_ms INTEGER)"
+        )
+        conn.execute("CREATE INDEX temp.gt_owner_owner ON gt_owner(owner, ordinal)")
+        self.branch_memo: MutableMapping[str, str] = _ScratchStringMap(conn)
+        self._ordinal = 0
+
+    def add_related(self, branch_key: str, message_id: str) -> None:
+        self.conn.execute("INSERT OR IGNORE INTO gt_related VALUES (?, ?)", (branch_key, message_id))
+
+    def set_legacy_duration(self, branch_key: str, message_id: str, duration_ms: int) -> None:
+        self.conn.execute(
+            "INSERT INTO gt_legacy VALUES (?, ?, ?) ON CONFLICT(branch_key, message_id) "
+            "DO UPDATE SET duration_ms = excluded.duration_ms",
+            (branch_key, message_id, duration_ms),
+        )
+
+    def offer(
+        self, branch_key: str, score: tuple[int, int, int, int, str], elapsed_ms: int, timing: Mapping[str, object]
+    ) -> None:
+        """Keep ``timing`` for its branch when it outranks the kept one.
+
+        A tie keeps the earlier candidate, exactly as ``max`` over the
+        branch's candidates in arrival order did.
+        """
+        self.conn.execute(
+            "INSERT INTO gt_candidate VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(branch_key) DO UPDATE SET "
+            "s1 = excluded.s1, s2 = excluded.s2, s3 = excluded.s3, s4 = excluded.s4, s5 = excluded.s5, "
+            "elapsed_ms = excluded.elapsed_ms, timing_json = excluded.timing_json "
+            "WHERE (excluded.s1, excluded.s2, excluded.s3, excluded.s4, excluded.s5) "
+            "> (gt_candidate.s1, gt_candidate.s2, gt_candidate.s3, gt_candidate.s4, gt_candidate.s5)",
+            (
+                branch_key,
+                self._ordinal,
+                *score,
+                elapsed_ms,
+                json.dumps(dict(timing), sort_keys=True),
+            ),
+        )
+        self._ordinal += 1
+
+    def selected(self) -> Iterator[tuple[str, dict[str, object]]]:
+        """Each branch's timing, in the order its first candidate arrived."""
+        cursor = self.conn.execute("SELECT branch_key, timing_json FROM gt_candidate ORDER BY first_ordinal")
+        try:
+            for branch_key, timing_json in cursor:
+                yield str(branch_key), json.loads(timing_json)
+        finally:
+            cursor.close()
+
+    def related(self, branch_key: str) -> frozenset[str]:
+        return frozenset(
+            str(row[0])
+            for row in self.conn.execute("SELECT message_id FROM gt_related WHERE branch_key = ?", (branch_key,))
+        )
+
+    def resolve(self, owner: str, elapsed_duration_ms: int) -> None:
+        """Record the message a selected timing is finally anchored to."""
+        self.conn.execute("INSERT INTO gt_owner (owner, elapsed_ms) VALUES (?, ?)", (owner, elapsed_duration_ms))
+
+    def resolved_duration_ms(self, message_id: str) -> int | None:
+        """The duration of the last timing anchored to ``message_id``."""
+        row = self.conn.execute(
+            "SELECT elapsed_ms FROM gt_owner WHERE owner = ? ORDER BY ordinal DESC LIMIT 1", (message_id,)
+        ).fetchone()
+        return int(row[0]) if row is not None else None
+
+    def repeats_selected_duration(self, message_id: str) -> bool:
+        """Whether ``message_id``'s legacy duration copies its branch's selected timing."""
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM gt_legacy l JOIN gt_candidate c ON c.branch_key = l.branch_key "
+                "WHERE l.message_id = ? AND l.duration_ms = c.elapsed_ms LIMIT 1",
+                (message_id,),
+            ).fetchone()
+            is not None
+        )
+
+
+class _ScratchStringMap(MutableMapping[str, str]):
+    """A string-to-string map kept in scratch, one id per map."""
+
+    _next_id = 0
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS scratch_string_map (map_id INTEGER NOT NULL, key TEXT NOT NULL, "
+            "value TEXT NOT NULL, PRIMARY KEY (map_id, key)) WITHOUT ROWID"
+        )
+        type(self)._next_id += 1
+        self.map_id = type(self)._next_id
+
+    def __getitem__(self, key: str) -> str:
+        row = self.conn.execute(
+            "SELECT value FROM scratch_string_map WHERE map_id = ? AND key = ?", (self.map_id, key)
+        ).fetchone()
+        if row is None:
+            raise KeyError(key)
+        return str(row[0])
+
+    def __setitem__(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO scratch_string_map VALUES (?, ?, ?) ON CONFLICT(map_id, key) DO UPDATE SET value = excluded.value",
+            (self.map_id, key, value),
+        )
+
+    def __delitem__(self, key: str) -> None:
+        if key not in self:
+            raise KeyError(key)
+        self.conn.execute("DELETE FROM scratch_string_map WHERE map_id = ? AND key = ?", (self.map_id, key))
+
+    def __contains__(self, key: object) -> bool:
+        return (
+            isinstance(key, str)
+            and self.conn.execute(
+                "SELECT 1 FROM scratch_string_map WHERE map_id = ? AND key = ?", (self.map_id, key)
+            ).fetchone()
+            is not None
+        )
+
+    def __iter__(self) -> Iterator[str]:
+        cursor = self.conn.execute("SELECT key FROM scratch_string_map WHERE map_id = ? ORDER BY key", (self.map_id,))
+        try:
+            for (key,) in cursor:
+                yield str(key)
+        finally:
+            cursor.close()
+
+    def __len__(self) -> int:
+        return int(
+            self.conn.execute("SELECT COUNT(*) FROM scratch_string_map WHERE map_id = ?", (self.map_id,)).fetchone()[0]
+        )
 
 
 def read_chatgpt_mapping_object(

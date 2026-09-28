@@ -915,7 +915,15 @@ def prepare_jsonl_blob(
                     "DELETE FROM prepared_attachment WHERE session_ordinal NOT IN "
                     "(SELECT attachment_ordinal FROM prepared_session)"
                 )
-            for table in ("chatgpt_node", "chatgpt_child", "chatgpt_entry", "scratch_string_set"):
+            # Parser-only scratch never reaches the sealed artifact.
+            for table in (
+                "chatgpt_node",
+                "chatgpt_child",
+                "chatgpt_sibling",
+                "chatgpt_entry",
+                "scratch_string_set",
+                "scratch_string_map",
+            ):
                 store.conn.execute(f"DROP TABLE IF EXISTS {table}")
             after_hash = _source_digest(source)
             if before_hash != after_hash:

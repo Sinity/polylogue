@@ -976,15 +976,22 @@ def iter_json_container_records(handle: JsonReadable, prefix: str) -> Iterable[J
 
 
 def _require_storable_member(value: object) -> None:
-    if isinstance(value, str):
-        value_bounds.require_storable_string(value)
-    elif isinstance(value, list):
-        for item in value:
-            _require_storable_member(item)
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            value_bounds.require_storable_string(key, kind="object key")
-            _require_storable_member(item)
+    """Refuse a member holding an unstorable string, at any nesting depth.
+
+    An explicit stack, not recursion: a field nested past Python's recursion
+    limit is still valid input that a provider parser may simply ignore.
+    """
+    pending: list[object] = [value]
+    while pending:
+        current = pending.pop()
+        if isinstance(current, str):
+            value_bounds.require_storable_string(current)
+        elif isinstance(current, list):
+            pending.extend(current)
+        elif isinstance(current, dict):
+            for key, item in current.items():
+                value_bounds.require_storable_string(key, kind="object key")
+                pending.append(item)
 
 
 __all__ = [

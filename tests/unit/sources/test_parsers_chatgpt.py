@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import replace
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any, TypeAlias
 from unittest.mock import patch
@@ -2132,32 +2131,30 @@ def test_chatgpt_mapping_order_does_not_create_revision_conflict() -> None:
     assert result.equivalent_raw_ids == ("raw-right",)
     assert result.ambiguous_raw_ids == ()
 
-    original_extract = chatgpt_parser._extract_generation_timings
+    from polylogue.sources.prepared_message_sink import GenerationTimings
 
-    def historical_extract(mapping: Mapping[str, object]) -> list[Any]:
-        timings = original_extract(mapping)
-        timed_message_ids: list[str] = []
-        for node_id, raw_node in mapping.items():
-            if not isinstance(raw_node, Mapping):
-                continue
-            raw_message = raw_node.get("message")
-            if not isinstance(raw_message, Mapping):
-                continue
-            raw_author = raw_message.get("author")
-            if not isinstance(raw_author, Mapping) or raw_author.get("role") not in {"assistant", "tool"}:
-                continue
-            metadata = raw_message.get("metadata")
-            if not isinstance(metadata, Mapping) or not any(
-                field in metadata for field in ("reasoning_start_time", "reasoning_end_time", "finished_duration_sec")
-            ):
-                continue
-            timed_message_ids.append(str(raw_message.get("id") or raw_node.get("id") or node_id))
-        assert timed_message_ids
-        return [replace(timing, message_provider_id=timed_message_ids[0]) for timing in timings]
+    original_selected = GenerationTimings.selected
 
     def historically_parsed(order: list[dict[str, Any]]) -> ParsedSession:
+        # The historical parser anchored each timing to whichever timed
+        # message the mapping order surfaced first.
+        timed_message_ids = [
+            str(node["message"]["id"])
+            for node in order
+            if node["message"]["author"]["role"] in {"assistant", "tool"}
+            and any(
+                field in node["message"].get("metadata", {})
+                for field in ("reasoning_start_time", "reasoning_end_time", "finished_duration_sec")
+            )
+        ]
+        assert timed_message_ids
+
+        def historical_selected(self: Any) -> Iterator[tuple[str, Any]]:
+            for branch_key, timing in original_selected(self):
+                yield branch_key, {**timing, "message_provider_id": timed_message_ids[0]}
+
         payload = {"id": "tie-break-order", "mapping": {node["id"]: node for node in order}, "current_node": "node_b"}
-        with patch.object(chatgpt_parser, "_extract_generation_timings", historical_extract):
+        with patch.object(GenerationTimings, "selected", historical_selected):
             return chatgpt_parse(payload, "fallback-id")
 
     historical_left = historically_parsed([user, node_a, node_b])

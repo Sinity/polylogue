@@ -234,11 +234,12 @@ class RetainedSidecarResolver:
 
         The root ``.jsonl`` plus every ``subagents/agent-*.jsonl``. A sibling
         that grew through append ingest is its newest full revision followed
-        by the contiguous append chain from that revision's end: each step is
-        the one append starting where the chain ends. Two appends starting at
-        the same offset are competing branches; the chain stops there rather
-        than guess, so a superseded branch never contributes tool ids. A
-        shorter index can only over-report debt, a wrong one would hide it.
+        by the append chain descended from it: each step is the one append
+        whose recorded predecessor is the chain's last raw and which starts
+        where the chain ends. An append of another revision, or two competing
+        steps, stops the chain rather than guess, so a superseded revision
+        never contributes tool ids. A shorter index can only over-report
+        debt, a wrong one would hide it.
         """
         path = Path(source_path)
         session_dir = path.parent.parent if path.parent.name == "subagents" else path.parent / path.stem
@@ -251,7 +252,7 @@ class RetainedSidecarResolver:
         rows = conn.execute(
             """
             SELECT r.source_path, hex(r.blob_hash), r.revision_kind, r.blob_size,
-                   r.append_start_offset, r.append_end_offset
+                   r.append_start_offset, r.append_end_offset, r.raw_id, r.predecessor_raw_id
             FROM raw_sessions AS r
             WHERE r.source_path = ? OR (r.source_path >= ? AND r.source_path < ?)
             ORDER BY r.source_path,
@@ -266,8 +267,17 @@ class RetainedSidecarResolver:
             (root_path.as_posix(), low, high),
         ).fetchall()
         own = path.as_posix()
-        revisions: dict[str, list[tuple[str, str, int, int | None, int | None]]] = {}
-        for candidate_path, blob_hash, revision_kind, blob_size, append_start, append_end in rows:
+        revisions: dict[str, list[tuple[str, str, int, int | None, int | None, str, str | None]]] = {}
+        for (
+            candidate_path,
+            blob_hash,
+            revision_kind,
+            blob_size,
+            append_start,
+            append_end,
+            raw_id,
+            predecessor_raw_id,
+        ) in rows:
             candidate = str(candidate_path)
             if candidate == own:
                 continue
@@ -280,6 +290,8 @@ class RetainedSidecarResolver:
                     int(blob_size or 0),
                     int(append_start) if append_start is not None else None,
                     int(append_end) if append_end is not None else None,
+                    str(raw_id),
+                    str(predecessor_raw_id) if predecessor_raw_id is not None else None,
                 )
             )
         siblings: list[SiblingTranscript] = []
@@ -295,15 +307,21 @@ class RetainedSidecarResolver:
             baseline = fulls[-1]
             blob_hashes = [baseline[0]]
             end = baseline[2]
+            last_raw_id = baseline[5]
             appends = [row for row in candidate_rows if row[1] == "append" and row[3] is not None]
             while True:
-                steps = {row for row in appends if row[3] == end and row[4] is not None and row[4] > end}
+                steps = {
+                    row
+                    for row in appends
+                    if row[6] == last_raw_id and row[3] == end and row[4] is not None and row[4] > end
+                }
                 if len(steps) != 1:
                     break
                 step = next(iter(steps))
                 blob_hashes.append(step[0])
                 assert step[4] is not None
                 end = step[4]
+                last_raw_id = step[5]
             siblings.append(SiblingTranscript(coordinate=candidate, open_records=self._records_from_blobs(blob_hashes)))
         return tuple(siblings)
 

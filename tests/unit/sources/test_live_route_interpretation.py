@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -647,7 +648,7 @@ def test_session_index_dependents_rotate_with_the_fair_lanes(tmp_path: Path, mon
     monkeypatch.setattr(raw_observation_derivation, "make_raw_observation_derivation", lambda _root: object())
     discovery = intake_adapters.RawMaterializationDiscovery(tmp_path)
     monkeypatch.setattr(discovery, "_raw_frontier", lambda: 0)
-    monkeypatch.setattr(discovery, "_with_costs", lambda selected: selected)
+    monkeypatch.setattr(discovery, "_with_costs", lambda selected: tuple((key, 1) for key in selected))
     monkeypatch.setattr(discovery, "_arrival_selected", lambda *_args: ("arrival",))
     monkeypatch.setattr(discovery, "_sweep_selected", lambda *_args: ("sweep",))
     monkeypatch.setattr(discovery, "_dependents_selected", lambda *_args: ("dependent",))
@@ -655,6 +656,47 @@ def test_session_index_dependents_rotate_with_the_fair_lanes(tmp_path: Path, mon
 
     served = [discovery.discover_pending_raw_ids(8) for _ in range(6)]
 
-    assert served.count(("dependent",)) == 2
-    assert served.count(("arrival",)) == 2
-    assert served.count(("sweep",)) == 2
+    assert served.count((("dependent", 1),)) == 2
+    assert served.count((("arrival", 1),)) == 2
+    assert served.count((("sweep", 1),)) == 2
+
+
+def _evidence_db(path: Path, value: str) -> None:
+    with closing(sqlite3.connect(path)) as conn:
+        conn.execute("CREATE TABLE IF NOT EXISTS evidence (value TEXT)")
+        conn.execute("DELETE FROM evidence")
+        conn.execute("INSERT INTO evidence VALUES (?)", (value,))
+        conn.commit()
+
+
+def test_enrichment_frames_rebind_and_refuse_moved_evidence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A preparation outliving a read frame gets a fresh frame, never a moved view.
+
+    Anti-vacuity (Codex P1, #5682): hold one frame across the whole parse and
+    a long preparation outlives its bound; rebind without comparing the
+    enriched evidence and the sealed digest certifies evidence earlier
+    sessions never read.
+    """
+    from polylogue.sources.revision_backfill import EnrichmentEvidenceMovedError, _RebindingEvidenceFrames
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    source, index = tmp_path / "source.db", tmp_path / "index.db"
+    _evidence_db(source, "a")
+    _evidence_db(index, "a")
+    monkeypatch.setattr("polylogue.sources.revision_backfill._EVIDENCE_FRAME_REBIND_S", 0.0)
+    frames = _RebindingEvidenceFrames(source_db_path=source, index_db_path=index)
+
+    def digest() -> str:
+        conn = frames.connections[ArchiveTier.SOURCE]
+        assert conn is not None
+        return str(conn.execute("SELECT value FROM evidence").fetchone()[0])
+
+    try:
+        first = frames.current(None)[ArchiveTier.SOURCE]
+        rebound = frames.current(digest)[ArchiveTier.SOURCE]
+        assert rebound is not first
+        _evidence_db(source, "b")
+        with pytest.raises(EnrichmentEvidenceMovedError):
+            frames.current(digest)
+    finally:
+        frames.close()

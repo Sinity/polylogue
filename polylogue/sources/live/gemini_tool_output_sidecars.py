@@ -131,18 +131,20 @@ def tool_output_files_from_directory(tool_outputs_dir: Path) -> tuple[RetainedSi
     for entry in sorted(tool_outputs_dir.iterdir()):
         if not entry.is_file():
             continue
+        identity: tuple[int, int, int, int, int] | None
         try:
             stat_result = entry.stat()
             byte_size = stat_result.st_size
             file_mtime_ms: int | None = int(stat_result.st_mtime * 1000)
+            identity = _file_identity(stat_result)
         except OSError:
-            byte_size, file_mtime_ms = 0, None
+            byte_size, file_mtime_ms, identity = 0, None, None
         files.append(
             RetainedSidecarFile(
                 filename=entry.name,
                 byte_size=byte_size,
                 file_mtime_ms=file_mtime_ms,
-                read_text=_read_text_from_path(entry, expected_size=byte_size),
+                read_text=_read_text_from_path(entry, expected_size=byte_size, enumerated=identity),
             )
         )
     return tuple(files)
@@ -157,7 +159,27 @@ class SidecarChangedDuringReadError(OSError):
     """
 
 
-def _read_text_from_path(path: Path, *, expected_size: int) -> Callable[[], str]:
+def _file_identity(stat_result: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        stat_result.st_dev,
+        stat_result.st_ino,
+        stat_result.st_size,
+        stat_result.st_mtime_ns,
+        stat_result.st_ctime_ns,
+    )
+
+
+def _read_text_from_path(
+    path: Path, *, expected_size: int, enumerated: tuple[int, int, int, int, int] | None = None
+) -> Callable[[], str]:
+    """Read the sidecar the enumeration observed, or refuse it as changed.
+
+    The opened handle is compared with the enumerated device, inode, size,
+    mtime and ctime, not only with itself: a same-length rewrite or atomic
+    replacement between enumeration and read would otherwise pair new bytes
+    with the enumerated mtime.
+    """
+
     def read() -> str:
         with path.open("rb") as handle:
             before = os.fstat(handle.fileno())
@@ -167,6 +189,7 @@ def _read_text_from_path(path: Path, *, expected_size: int) -> Callable[[], str]
             len(payload) != expected_size
             or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
             or after.st_size != expected_size
+            or (enumerated is not None and _file_identity(before) != enumerated)
         ):
             raise SidecarChangedDuringReadError(f"sidecar changed while it was read: {path.name}")
         return payload.decode("utf-8", errors="replace")

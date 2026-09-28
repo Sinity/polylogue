@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
-from typing import IO, BinaryIO
+from typing import IO, BinaryIO, cast
 
 import ijson
 import pytest
@@ -2788,6 +2788,12 @@ def test_chatgpt_complex_nodes_prepare_in_scratch_with_parser_parity(
     }
     assert len(expected.attachments) >= 3
     assert actual.content_hash == session_content_hash(expected)
+    # Parser-only scratch (Codex P2, #5643): the sealed artifact carries no
+    # sibling-order or string-map table, only the publication tables.
+    assert artifact.sessions_path is not None
+    with sqlite3.connect(artifact.sessions_path) as conn:
+        tables = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert not tables & {"chatgpt_sibling", "chatgpt_node", "chatgpt_child", "scratch_string_map"}
     artifact.discard()
 
 
@@ -3104,13 +3110,16 @@ def test_browser_capture_envelope_with_a_mapping_keeps_the_capture_route(tmp_pat
 def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
     """A sibling grown by append ingest contributes its accepted tail's tool ids.
 
-    The chain is the full revision plus the contiguous appends from its end.
-    A later append for the same start offset competes with the first; the
-    chain stops there rather than include a superseded branch.
+    The chain is the newest full revision plus the appends descended from
+    it. A later append for the same start offset competes with the first;
+    the chain stops there rather than include a superseded branch. An
+    append of an older full revision never extends a newer one, even when
+    the newer one has the length the append starts at.
 
     Anti-vacuity: select only the full revision in
     ``RetainedSidecarResolver._retained_siblings`` and ``toolu_tail`` is
-    missing; concatenate every append and ``toolu_branch`` appears.
+    missing; concatenate every append and ``toolu_branch`` appears; chain by
+    offset alone and ``toolu_stale`` joins the newer revision of ``agent-c``.
     """
     from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
 
@@ -3122,6 +3131,7 @@ def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
     session_dir = tmp_path / "project" / "session-1"
     tail_sibling = (session_dir / "subagents" / "agent-a.jsonl").as_posix()
     branch_sibling = (session_dir / "subagents" / "agent-b.jsonl").as_posix()
+    rebased_sibling = (session_dir / "subagents" / "agent-c.jsonl").as_posix()
 
     def tool_use(tool_id: str) -> bytes:
         return (
@@ -3137,20 +3147,36 @@ def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
     base_hash, base_size = store.write_from_bytes(tool_use("toolu_base"))
     tail_hash, tail_size = store.write_from_bytes(tool_use("toolu_tail"))
     branch_hash, branch_size = store.write_from_bytes(tool_use("toolu_branch"))
+    newer_hash, newer_size = store.write_from_bytes(tool_use("toolu_newr"))
+    stale_hash, stale_size = store.write_from_bytes(tool_use("toolu_stale"))
+    assert newer_size == base_size
     rows = (
-        ("a-base", tail_sibling, base_hash, base_size, "full", 1, None, None),
-        ("a-tail", tail_sibling, tail_hash, tail_size, "append", 2, base_size, base_size + tail_size),
-        ("b-base", branch_sibling, base_hash, base_size, "full", 1, None, None),
-        ("b-one", branch_sibling, tail_hash, tail_size, "append", 2, base_size, base_size + tail_size),
-        ("b-two", branch_sibling, branch_hash, branch_size, "append", 3, base_size, base_size + branch_size + 7),
+        ("a-base", tail_sibling, base_hash, base_size, "full", 1, None, None, None),
+        ("a-tail", tail_sibling, tail_hash, tail_size, "append", 2, base_size, base_size + tail_size, "a-base"),
+        ("b-base", branch_sibling, base_hash, base_size, "full", 1, None, None, None),
+        ("b-one", branch_sibling, tail_hash, tail_size, "append", 2, base_size, base_size + tail_size, "b-base"),
+        (
+            "b-two",
+            branch_sibling,
+            branch_hash,
+            branch_size,
+            "append",
+            3,
+            base_size,
+            base_size + branch_size + 7,
+            "b-base",
+        ),
+        ("c-old", rebased_sibling, base_hash, base_size, "full", 1, None, None, None),
+        ("c-stale", rebased_sibling, stale_hash, stale_size, "append", 2, base_size, base_size + stale_size, "c-old"),
+        ("c-new", rebased_sibling, newer_hash, newer_size, "full", 3, None, None, None),
     )
     with sqlite3.connect(source_db) as conn:
-        for raw_id, path, blob_hash, size, kind, acquired, start, end in rows:
+        for raw_id, path, blob_hash, size, kind, acquired, start, end, predecessor in rows:
             conn.execute(
                 "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms, "
-                "revision_kind, append_start_offset, append_end_offset) "
-                "VALUES (?, 'claude-code-session', ?, ?, ?, ?, ?, ?, ?)",
-                (raw_id, path, bytes.fromhex(blob_hash), size, acquired, kind, start, end),
+                "revision_kind, append_start_offset, append_end_offset, predecessor_raw_id) "
+                "VALUES (?, 'claude-code-session', ?, ?, ?, ?, ?, ?, ?, ?)",
+                (raw_id, path, bytes.fromhex(blob_hash), size, acquired, kind, start, end, predecessor),
             )
     with sqlite3.connect(source_db) as conn:
         resolver = RetainedSidecarResolver(tmp_path, blob_root=blob_root, source_conn=conn)
@@ -3164,7 +3190,11 @@ def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
             }
             for sibling in siblings
         }
-    assert tool_ids == {tail_sibling: {"toolu_base", "toolu_tail"}, branch_sibling: {"toolu_base"}}
+    assert tool_ids == {
+        tail_sibling: {"toolu_base", "toolu_tail"},
+        branch_sibling: {"toolu_base"},
+        rebased_sibling: {"toolu_newr"},
+    }
 
 
 def test_sibling_baseline_follows_the_newest_durable_receipt(tmp_path: Path) -> None:
@@ -3401,3 +3431,93 @@ def test_gemini_sidecar_decoded_past_the_cell_limit_is_typed_debt(
         ]
     finally:
         conn.close()
+
+
+def test_chatgpt_message_attachment_ids_read_each_attachment_once() -> None:
+    """Pointer dedupe reads each of a message's attachments once in total.
+
+    Anti-vacuity: rescan ``attachments[start:]`` per pointer and the reads
+    grow quadratically with the message's attachments and pointers.
+    """
+    reads = 0
+
+    class CountingList(list[ParsedAttachment]):
+        def __getitem__(self, index: object) -> object:  # type: ignore[override]
+            nonlocal reads
+            reads += 1
+            return super().__getitem__(cast(int, index))
+
+    count = 400
+    attachments = CountingList(
+        ParsedAttachment(provider_attachment_id=f"file-{index}", message_provider_id="m1") for index in range(count)
+    )
+    index = chatgpt._MessageAttachmentIds(attachments, 0, {})
+    assert [index.find(f"file-{position}") for position in range(count)] == list(range(count))
+    assert index.find("file-missing") is None
+    assert reads == count
+
+
+def test_chatgpt_scratch_row_past_the_length_limit_is_typed(tmp_path: Path) -> None:
+    """A normalized message row SQLite refuses as too big is a typed refusal.
+
+    Anti-vacuity: insert without typing the refusal and the parse fails with
+    an untyped ``sqlite3.DataError``.
+    """
+    from polylogue.sources.prepared_message_sink import _ScratchChatGPTEntries
+    from polylogue.sources.value_bounds import ValueBoundRefusedError
+
+    store = SqliteMessageStore(tmp_path / "scratch.db")
+    try:
+        if not hasattr(store.conn, "setlimit"):
+            pytest.skip("this sqlite driver cannot lower its length limit")
+        entries = _ScratchChatGPTEntries(store.conn)
+        store.conn.setlimit(sqlite3.SQLITE_LIMIT_LENGTH, 4_000)
+        message = ParsedMessage(provider_message_id="m1", role=Role.USER, text="x" * 1_500, position=0)
+        with pytest.raises(ValueBoundRefusedError, match="value_bound_refused"):
+            entries.add(None, 1, "n" * 3_000, message)
+    finally:
+        store.close()
+
+
+def test_chatgpt_generation_timings_live_in_the_spill_database(tmp_path: Path) -> None:
+    """The spilled parse selects generation timings in its scratch database.
+
+    Anti-vacuity: select them in process memory and the scratch database has
+    no candidate row for the timed generation.
+    """
+    builder = ChatGPTExportBuilder("timed")
+    builder.add_node("user", "question", node_id="n1")
+    builder.add_node("assistant", "answer", node_id="n2")
+    record = builder.build()
+    mapping = record["mapping"]
+    assert isinstance(mapping, dict)
+    mapping["n2"]["message"]["metadata"] = {"finished_duration_sec": 2.5}
+    expected = parse_payload(Provider.CHATGPT, [record], "fallback")[0]
+    store = SqliteMessageStore(tmp_path / "scratch.db")
+    try:
+        session = chatgpt.parse(record, "fallback", spill=ScratchSessionSpill(store))
+        assert store.conn.execute("SELECT COUNT(*) FROM temp.gt_candidate").fetchone()[0] == 1
+        assert [message.duration_ms for message in session.messages] == [
+            message.duration_ms for message in expected.messages
+        ]
+        assert [event.model_dump(mode="json") for event in session.session_events] == [
+            event.model_dump(mode="json") for event in expected.session_events
+        ]
+    finally:
+        store.close()
+
+
+def test_bundle_member_nested_past_the_recursion_limit_is_checked_iteratively() -> None:
+    """A member with a field nested deeper than the recursion limit still streams.
+
+    Anti-vacuity: walk the member recursively and the check raises
+    ``RecursionError`` before the parser can ignore the deep field.
+    """
+    import sys
+
+    from polylogue.sources.decoder_json import iter_json_container_records
+
+    depth = sys.getrecursionlimit() + 100
+    payload = b'[{"id": "c1", "deep": ' + b"[" * depth + b"]" * depth + b"}]"
+    (record,) = list(iter_json_container_records(BytesIO(payload), "item"))
+    assert isinstance(record, dict) and record["id"] == "c1"

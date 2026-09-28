@@ -23,6 +23,7 @@ regression test for that constraint.
 
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
 from pathlib import Path
@@ -954,16 +955,17 @@ def test_enrichment_evidence_moved_reads_titles_through_a_real_index_connection(
         conn.commit()
 
     source_path = "/codex-home/sessions/rollout-2026-07-20T10-00-00-" + _THREAD_ID + ".jsonl"
-    key_kwargs = {
-        "provider": Provider.CODEX,
-        "source_path": source_path,
-        "native_id": _THREAD_ID,
-        "source_conn": None,
-        "blob_root": None,
-    }
+    key = functools.partial(
+        session_enrichment_evidence_key,
+        provider=Provider.CODEX,
+        source_path=source_path,
+        native_id=_THREAD_ID,
+        source_conn=None,
+        blob_root=None,
+    )
 
     # No index evidence at all -- the "nothing has a title" baseline.
-    no_evidence = session_enrichment_evidence_key(index_conn=None, **key_kwargs)
+    no_evidence = key(index_conn=None)
 
     # The exact defect: passing a connection whose *own* main schema is not
     # index.db (source.db here, standing in for the source-tier connection
@@ -972,11 +974,11 @@ def test_enrichment_evidence_moved_reads_titles_through_a_real_index_connection(
     # that identity match is what made a curated-title session's binding
     # look perpetually current even after the title moved.
     with sqlite3.connect(":memory:") as wrong_conn:
-        degraded = session_enrichment_evidence_key(index_conn=wrong_conn, **key_kwargs)
+        degraded = key(index_conn=wrong_conn)
     assert degraded == no_evidence
 
     with sqlite3.connect(index_path) as real_conn:
-        current = session_enrichment_evidence_key(index_conn=real_conn, **key_kwargs)
+        current = key(index_conn=real_conn)
     assert current is not None
     assert current != no_evidence
     assert current != degraded

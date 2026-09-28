@@ -24,6 +24,8 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.sources.dispatch import parse_payload
@@ -473,3 +475,51 @@ def test_complete_sidecar_replaces_an_envelope_longer_than_itself(tmp_path: Path
 
     [match] = result.matched
     assert match.was_truncated and len(match.full_text) == 40_001
+
+
+def test_a_same_length_replacement_after_enumeration_is_read_error_debt(tmp_path: Path) -> None:
+    """The read is bound to the enumerated file, not only to the opened handle.
+
+    Anti-vacuity (Codex P2, #5643): compare the opened handle only with
+    itself and an atomic replacement of equal length is joined with the
+    enumerated mtime.
+    """
+    import os
+
+    filename = "run_shell_command_run_shell_command_1773524726450_0_keyt3f.txt"
+    snapshot = _sidecar_corpus(tmp_path, filename=filename)
+    outputs = resolve_tool_outputs_dir(snapshot, "sess-1")
+    assert outputs is not None
+    scope = _dir_scope(outputs)
+    original = outputs / filename
+    replacement = outputs / "replacement.tmp"
+    replacement.write_text("REPLACED-SIDECAR!\n" * 2300, encoding="utf-8")
+    assert replacement.stat().st_size == original.stat().st_size
+    os.replace(replacement, original)
+
+    result = join_gemini_tool_output_sidecars(json.loads(snapshot.read_text(encoding="utf-8")), scope)
+
+    assert not result.matched
+    [debt] = result.debt
+    assert debt.reason == "read_error:SidecarChangedDuringReadError"
+
+
+def test_a_sidecar_beyond_the_memory_bound_is_typed_debt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sidecar the join could not hold in memory is refused typed, not read.
+
+    Anti-vacuity (Codex P1, #5643): bound sidecars only by the SQLite cell
+    ceiling and a sidecar far beyond this process's memory share is read
+    whole and joined.
+    """
+
+    filename = "run_shell_command_run_shell_command_1773524726450_0_keyt3f.txt"
+    snapshot = _sidecar_corpus(tmp_path, filename=filename)
+    outputs = resolve_tool_outputs_dir(snapshot, "sess-1")
+    assert outputs is not None
+    monkeypatch.setattr("polylogue.pipeline.parsed_tree_size.effective_physical_memory_bytes", lambda: 8 * 1024)
+
+    result = join_gemini_tool_output_sidecars(json.loads(snapshot.read_text(encoding="utf-8")), _dir_scope(outputs))
+
+    assert not result.matched
+    [debt] = result.debt
+    assert debt.reason == "value_bound_refused"

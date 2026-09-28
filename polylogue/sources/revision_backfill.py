@@ -5275,6 +5275,7 @@ class RetainedSessionEnricher:
         "_blob_root",
         "_bundle",
         "_cached",
+        "_frames",
         "_index_conn",
         "_keeps_session_ids",
         "_provider",
@@ -5291,8 +5292,10 @@ class RetainedSessionEnricher:
         index_conn: sqlite3.Connection | None,
         source_conn: sqlite3.Connection | None,
         blob_root: Path | None,
+        frames: _RebindingEvidenceFrames | None = None,
     ) -> None:
         self._provider = provider
+        self._frames = frames
         self._source_path = source_path
         self._index_conn = index_conn
         self._source_conn = source_conn
@@ -5304,12 +5307,31 @@ class RetainedSessionEnricher:
         self._keeps_session_ids = _replay_enrichment_reads_index(provider)
         self._session_ids: list[str] = []
 
+    def _bind(self, *, enriched: bool) -> None:
+        """Take the current evidence frames, rebinding them when they near expiry."""
+        if self._frames is None:
+            return
+        connections = self._frames.current(self._digest_from_bound if enriched else None)
+        self._index_conn = connections.get(ArchiveTier.INDEX)
+        self._source_conn = connections.get(ArchiveTier.SOURCE)
+
+    def _digest_from_bound(self) -> str:
+        connections = self._frames.connections if self._frames is not None else {}
+        if self._frames is not None:
+            self._index_conn = connections.get(ArchiveTier.INDEX)
+            self._source_conn = connections.get(ArchiveTier.SOURCE)
+        return self._compute_digest()
+
     def dependency_digest(self) -> str:
         """The evidence every session enriched so far depends on.
 
         Sealed into a prepared artifact, then recomputed by the writer
         (``prepared_enrichment_dependency_state``) before it publishes.
         """
+        self._bind(enriched=True)
+        return self._compute_digest()
+
+    def _compute_digest(self) -> str:
         return enrichment_dependency_digest(
             provider=self._provider,
             source_path=self._source_path,
@@ -5323,6 +5345,7 @@ class RetainedSessionEnricher:
     def __call__(self, session: ParsedSession) -> ParsedSession:
         from polylogue.sources.assembly import get_assembly_spec
 
+        self._bind(enriched=bool(self._session_ids) or self._cached is not None)
         if self._keeps_session_ids and session.provider_session_id:
             self._session_ids.append(session.provider_session_id)
         spec = get_assembly_spec(self._provider)
@@ -5352,6 +5375,74 @@ class RetainedSessionEnricher:
         return [self(session) for session in sessions]
 
 
+class EnrichmentEvidenceMovedError(RuntimeError):
+    """Retained evidence changed while one preparation was enriching its sessions.
+
+    Retryable: a fresh preparation reads one consistent view again.
+    """
+
+
+class _RebindingEvidenceFrames:
+    """Short read frames for a worker's enrichment, rebound before they expire.
+
+    A preparation can outlast any read frame's declared bound (a very large
+    bundle), so the frames are not held across the whole parse: each is
+    opened when enrichment first reads it and replaced once it has lived half
+    its bound. Every session enriched so far must read the same evidence in
+    the replacement as in the frame it was enriched from, or the sealed
+    digest -- computed from the last frame -- would certify evidence some
+    sessions never saw; a moved view refuses the preparation instead.
+    """
+
+    def __init__(self, *, source_db_path: str | Path, index_db_path: str | Path) -> None:
+        self._paths = ((ArchiveTier.SOURCE, Path(source_db_path)), (ArchiveTier.INDEX, Path(index_db_path)))
+        self._stack: ExitStack | None = None
+        self._opened_at = 0.0
+        self.connections: dict[ArchiveTier, sqlite3.Connection | None] = {}
+
+    def _open(self) -> None:
+        stack = ExitStack()
+        connections: dict[ArchiveTier, sqlite3.Connection | None] = {}
+        try:
+            for tier, path in self._paths:
+                if not path.exists():
+                    connections[tier] = None
+                    continue
+                frame = stack.enter_context(read_frame(path, tier=tier, timeout_class="background-read"))
+                frame.connection.execute("BEGIN")
+                connections[tier] = frame.connection
+        except BaseException:
+            stack.close()
+            raise
+        self._stack, self.connections, self._opened_at = stack, connections, time.monotonic()
+
+    def current(self, digest: Callable[[], str] | None) -> dict[ArchiveTier, sqlite3.Connection | None]:
+        """The live frames, rebound when half their bound has passed.
+
+        ``digest`` computes the enrichment dependency digest from
+        ``self.connections``; ``None`` when nothing has been enriched yet.
+        """
+        if self._stack is None:
+            self._open()
+        elif time.monotonic() - self._opened_at >= _EVIDENCE_FRAME_REBIND_S:
+            before = digest() if digest is not None else None
+            self.close()
+            self._open()
+            if before is not None and digest is not None and digest() != before:
+                raise EnrichmentEvidenceMovedError("retained enrichment evidence moved during preparation")
+        return self.connections
+
+    def close(self) -> None:
+        if self._stack is not None:
+            stack, self._stack = self._stack, None
+            self.connections = {}
+            stack.close()
+
+
+#: Half the background read frame bound: a frame is replaced well before it expires.
+_EVIDENCE_FRAME_REBIND_S = 150.0
+
+
 @contextmanager
 def open_retained_session_enricher(
     provider: Provider,
@@ -5361,28 +5452,24 @@ def open_retained_session_enricher(
     index_db_path: str | Path,
     blob_root: str | Path,
 ) -> Iterator[RetainedSessionEnricher]:
-    """Open read-only evidence frames for a worker that has no archive handle.
+    """Enrichment for a worker that has no archive handle, over rebinding read frames.
 
     An absent tier is ordinary absence (a source-only or not yet bootstrapped
     archive): enrichment then counts the degradation and applies only the
     parsed-content fallbacks, exactly as retained replay does without it.
     """
-    with ExitStack() as stack:
-        connections: dict[ArchiveTier, sqlite3.Connection | None] = {}
-        for tier, path in ((ArchiveTier.SOURCE, source_db_path), (ArchiveTier.INDEX, index_db_path)):
-            if not Path(path).exists():
-                connections[tier] = None
-                continue
-            frame = stack.enter_context(read_frame(path, tier=tier, timeout_class="background-read"))
-            frame.connection.execute("BEGIN")
-            connections[tier] = frame.connection
+    frames = _RebindingEvidenceFrames(source_db_path=source_db_path, index_db_path=index_db_path)
+    try:
         yield RetainedSessionEnricher(
             provider,
             source_path=source_path,
-            index_conn=connections[ArchiveTier.INDEX],
-            source_conn=connections[ArchiveTier.SOURCE],
+            index_conn=None,
+            source_conn=None,
             blob_root=Path(blob_root),
+            frames=frames,
         )
+    finally:
+        frames.close()
 
 
 def enrich_sessions_from_archive(
