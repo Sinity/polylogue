@@ -78,6 +78,7 @@ def test_build_pytest_cmd_uses_the_managed_plugin_contract() -> None:
     assert "pytest-testmon" not in cmd
     assert "xdist" not in cmd
     assert CLEAR_CONFIGURED_ADDOPTS in cmd
+    assert "--assert=plain" in cmd
     ignored_start = cmd.index(IGNORED_COLLECTION_ARGS[0])
     assert [*IGNORED_COLLECTION_ARGS] == cmd[ignored_start : ignored_start + len(IGNORED_COLLECTION_ARGS)]
 

@@ -13,6 +13,7 @@ from typing import Final
 
 __all__ = [
     "CLEAR_CONFIGURED_ADDOPTS",
+    "ASSERT_PLAIN_ARGS",
     "CLOSED_WORLD_COLLECTION_ARGS",
     "DEVTOOLS_PLUGIN_ARGS",
     "DEVTOOLS_PLUGIN_NAMES",
@@ -31,6 +32,10 @@ __all__ = [
 
 #: Neutralize any addopts configured in pyproject so the invocation is closed.
 CLEAR_CONFIGURED_ADDOPTS: Final = "--override-ini=addopts="
+
+# ``addopts`` is cleared above for hermetic managed runs, so preserve the
+# repository's memory-saving assertion mode as an explicit pytest argument.
+ASSERT_PLAIN_ARGS: Final = "--assert=plain"
 
 #: The repository's own plugins, loaded by module path rather than entry-point
 #: name. The progress plugin writes the incremental ledgers, the report plugin
