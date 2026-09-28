@@ -102,7 +102,7 @@ class FakeGitHub:
                 threads = self.extra_threads[variables["number"]]
             repo = {"pullRequest": {"reviewThreads": threads}}
         elif "commits(first: 100" in query:
-            oids = self.commits[variables["number"]]
+            oids = self.commits.get(variables["number"], [])
             repo = {"pullRequest": {"commits": {"pageInfo": page, "nodes": [{"commit": {"oid": o}} for o in oids]}}}
         else:
             raise AssertionError(f"unexpected query: {query}")
@@ -283,6 +283,31 @@ def test_each_lifetime_of_a_reused_child_branch_is_walked_with_its_own_window() 
         commits={80: ["rebased"]},
     )
     assert set(_offenders(fake, 80)) == {83, 84}
+
+
+def test_child_merged_before_a_squashed_parent_opened_is_found_through_the_parent_commits() -> None:
+    fake = FakeGitHub(
+        roots=[_root(100, "feature-a", created="2026-01-01T00:00:00Z")],
+        merged_into={
+            "feature-a": [
+                _merged(
+                    101, "feature-b", created="2026-01-05T00:00:00Z", merged="2026-01-06T00:00:00Z", oid="squash101"
+                )
+            ],
+            "feature-b": [
+                _merged(
+                    102,
+                    "feature-c",
+                    created="2026-01-02T00:00:00Z",
+                    merged="2026-01-03T00:00:00Z",
+                    oid="m102",
+                    threads=(False,),
+                )
+            ],
+        },
+        commits={100: ["squash101"], 101: ["b1", "m102"]},
+    )
+    assert set(_offenders(fake, 100)) == {102}
 
 
 def test_threads_are_read_only_for_prs_in_the_stack() -> None:

@@ -6,8 +6,8 @@ merged into another PR's head branch is never gated, yet its code reaches
 the evaluated PR's head branch, recursively (a PR merged into a branch that was
 itself merged into the head), and reports each unresolved review thread.
 
-A merged PR belongs to the stack when its merge commit is in the root PR's
-commit list. When it is not (the parent branch was rebased, or the branch name
+A merged PR belongs to the stack when its merge commit is in the root PR's or
+its parent PR's commit list. When it is not (the parent branch was rebased, or the branch name
 was reused), the PR still counts if it merged while its parent's branch was the
 live one: after the parent PR was opened and, below the root, before the parent
 itself merged. A PR merged into a child after that child merged never reached
@@ -159,7 +159,7 @@ def github_transport(query: str, variables: dict[str, Any]) -> dict[str, Any]:
         headers={"Authorization": f"bearer {_token()}", "Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=60) as reply:
+    with urllib.request.urlopen(request) as reply:
         response: dict[str, Any] = json.load(reply)
     if response.get("errors"):
         raise RuntimeError(f"GraphQL errors: {response['errors']}")
@@ -170,6 +170,7 @@ class StackedThreadGate:
     def __init__(self, transport: Transport, owner: str, name: str) -> None:
         self._transport = transport
         self._repo = {"owner": owner, "name": name}
+        self._commit_sets: dict[int, set[str]] = {}
 
     def _query(self, query: str, **variables: Any) -> dict[str, Any]:
         response = self._transport(query, {**self._repo, **variables})
@@ -194,7 +195,6 @@ class StackedThreadGate:
 
     def evaluate(self, root: RootPullRequest) -> Verdict:
         verdict = Verdict(root)
-        root_commits: set[str] | None = None
         # (branch, parent number, parent created_at, parent merged_at or None for the root).
         # Expansion is keyed by parent PR, not branch name: a reused branch name
         # is a different lifetime with its own merge window.
@@ -209,16 +209,15 @@ class StackedThreadGate:
                 if child["number"] in expanded or child["number"] == root.number:
                     continue
                 merge_oid = (child.get("mergeCommit") or {}).get("oid")
-                if merge_oid is not None:
-                    if root_commits is None:
-                        root_commits = self._commits(root.number)
-                    in_root_history = merge_oid in root_commits
-                else:
-                    in_root_history = False
+                # The parent's own commit list also counts: a parent squash-merged
+                # below the root carries the child's content under a new OID.
+                in_history = merge_oid is not None and any(
+                    merge_oid in self._commits(number) for number in dict.fromkeys((root.number, parent_number))
+                )
                 merged_while_live = child["mergedAt"] >= parent_created and (
                     parent_merged is None or child["mergedAt"] <= parent_merged
                 )
-                if not (in_root_history or merged_while_live):
+                if not (in_history or merged_while_live):
                     continue
                 unresolved = self._unresolved_threads(child["number"])
                 if unresolved and all(pr.number != child["number"] for pr in verdict.offenders):
@@ -254,12 +253,15 @@ class StackedThreadGate:
             cursor = threads["pageInfo"]["endCursor"]
 
     def _commits(self, number: int) -> set[str]:
+        if number in self._commit_sets:
+            return self._commit_sets[number]
         oids: set[str] = set()
         cursor: str | None = None
         while True:
             commits = self._query(_COMMITS_QUERY, number=number, cursor=cursor)["pullRequest"]["commits"]
             oids.update(node["commit"]["oid"] for node in commits["nodes"])
             if not commits["pageInfo"]["hasNextPage"]:
+                self._commit_sets[number] = oids
                 return oids
             cursor = commits["pageInfo"]["endCursor"]
 
