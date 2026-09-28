@@ -7,6 +7,7 @@ import json
 import random
 from collections import Counter
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -483,18 +484,135 @@ def test_codex_completion_items_keep_their_public_type() -> None:
     assert not str(record.get("type", "")).startswith("=")
 
 
-def _scripted_codex(monkeypatch: pytest.MonkeyPatch, kinds: list[str]) -> list[dict[str, object]]:
+def _scripted_codex(
+    monkeypatch: pytest.MonkeyPatch, kinds: list[str], **main_fields: object
+) -> list[dict[str, object]]:
     from polylogue.schemas.synthetic.workload import StreamProfile
 
     measured = load_workload_profile("codex")
     profile = dataclasses.replace(
         measured,
+        streams={**measured.streams, "main": dataclasses.replace(measured.streams["main"], **main_fields)},  # type: ignore[arg-type]
         subagents_per_session=Histogram((0,), (1.0,)),
         shares={**measured.shares, "orphan_subagents_per_session": 0.0},
     )
     monkeypatch.setattr(StreamProfile, "kind_sequence", lambda self, rng, count: list(kinds))
     files, _ = _codex_session(random.Random(3), profile, index=0)
     return _records(files[0].data)
+
+
+def _payloads(records: list[dict[str, object]]) -> list[dict[str, object]]:
+    return [payload for record in records if isinstance(payload := record.get("payload"), dict)]
+
+
+def test_an_unmodelled_function_call_is_not_rendered_as_exec(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5670): rewrite a sampled ``function_call:other``
+    to ``exec_command`` and every unmodelled function becomes a shell command."""
+    from polylogue.schemas.synthetic.workload import tool_calls_of
+
+    records = _scripted_codex(
+        monkeypatch, ["session_meta", "function_call"] * 5, tool_names={"function_call:other": 1.0}
+    )
+    calls = [record for record in records if _mapping_type(record) == "function_call"]
+    assert len(calls) == 5
+    for record in calls:
+        assert record["payload"]["name"] != "exec_command"  # type: ignore[index]
+        assert tool_calls_of("codex", "function_call", record)[0][0] == "other"
+
+
+def _mapping_type(record: Mapping[str, object]) -> object:
+    payload = record.get("payload")
+    return payload.get("type") if isinstance(payload, Mapping) else None
+
+
+def test_event_and_agent_messages_keep_their_template_semantics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5670): route every ``*_message`` kind through the
+    relational renderer and ``record:event_msg:agent_message`` becomes a
+    ``response_item`` message with the fabricated role ``record:event_msg:agent``."""
+    records = _scripted_codex(monkeypatch, ["session_meta", "record:event_msg:agent_message", "user_message"])
+    event = records[1]
+    assert event["type"] == "event_msg"
+    assert _mapping_type(event) == "agent_message"
+    roles = [payload.get("role") for payload in _payloads(records) if payload.get("type") == "message"]
+    assert roles == ["user"]
+
+
+def test_turn_contexts_carry_their_measured_instructions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P2, #5670): a hand-built turn context without
+    instruction fields never populates ``instructions_text``."""
+    records = _scripted_codex(
+        monkeypatch,
+        ["session_meta", "turn_context", "turn_context"],
+        shares={
+            "codex_turn_context_user_instructions_share": 1.0,
+            "codex_turn_context_developer_instructions_share": 0.0,
+        },
+    )
+    contexts = [record["payload"] for record in records if record.get("type") == "turn_context"]
+    assert len(contexts) == 2
+    first, second = contexts
+    assert isinstance(first, dict) and isinstance(second, dict)
+    assert first["user_instructions"] and first["user_instructions"] == second["user_instructions"]
+    assert "developer_instructions" not in first
+
+
+def test_a_codex_child_declares_its_identity_where_the_parser_reads_it() -> None:
+    """Anti-vacuity (Codex P2, #5670): write role and nickname only under
+    ``source.subagent.thread_spawn`` and the parser's session_meta read finds neither."""
+    from polylogue.schemas.synthetic.workload import _Clock, _codex_stream
+
+    profile = load_workload_profile("codex")
+    rng = random.Random(4)
+    stream = profile.streams["subagent"]
+    clock = _Clock(rng, datetime(2026, 1, 1, tzinfo=timezone.utc), stream.gap_ms)
+    generated = _codex_stream(rng, profile, stream, thread_id="t", parent_thread_id="p", clock=clock)
+    meta = _records(b"".join(_segment_bytes(generated.segments)))[0]["payload"]
+    assert isinstance(meta, dict)
+    assert meta["agent_role"] and meta["agent_nickname"]
+
+
+def _segment_bytes(segments: object) -> list[bytes]:
+    return [WorkloadFile("codex", "x.jsonl", segments, "transcript", "x").data]  # type: ignore[arg-type]
+
+
+def test_a_parallel_claude_tool_message_carries_its_measured_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5670): render one ``tool_use`` block per message
+    and parallel calls never reach generated call/result concurrency."""
+    from polylogue.schemas.synthetic.workload import StreamProfile, _claude_code_session
+
+    measured = load_workload_profile("claude-code")
+    main = measured.streams["main"]
+    profile = dataclasses.replace(
+        measured,
+        streams={
+            **measured.streams,
+            "main": dataclasses.replace(
+                main, lengths={**main.lengths, "assistant_tool_use:blocks": Histogram((2,), (1.0,))}
+            ),
+        },
+        subagents_per_session=Histogram((0,), (1.0,)),
+        shares={**measured.shares, "orphan_subagents_per_session": 0.0},
+    )
+    monkeypatch.setattr(StreamProfile, "kind_sequence", lambda self, rng, count: ["assistant_tool_use"])
+    files, stats = _claude_code_session(random.Random(5), profile, index=0)
+    message = _records(files[0].data)[0]["message"]
+    assert isinstance(message, dict)
+    blocks = [block for block in message["content"] if block["type"] == "tool_use"]
+    assert len(blocks) >= 2
+    assert stats.tool_calls == len(blocks)
+
+
+def test_each_stream_family_renders_its_own_tool_mix() -> None:
+    """Anti-vacuity (Codex P2, #5670): one all-family tool mix renders main
+    sessions and subagents from the same mixture."""
+    from polylogue.schemas.synthetic.workload import _draw_tool
+
+    profile = load_workload_profile("claude-code")
+    main = dataclasses.replace(profile.streams["main"], tool_names={"Bash": 1.0})
+    subagent = dataclasses.replace(profile.streams["subagent"], tool_names={"Read": 1.0})
+    rng = random.Random(6)
+    assert {_draw_tool(rng, profile.for_stream(main), "", ("Grep",)) for _ in range(20)} == {"Bash"}
+    assert {_draw_tool(rng, profile.for_stream(subagent), "", ("Grep",)) for _ in range(20)} == {"Read"}
 
 
 def test_a_result_with_no_open_call_of_its_class_emits_that_call(monkeypatch: pytest.MonkeyPatch) -> None:

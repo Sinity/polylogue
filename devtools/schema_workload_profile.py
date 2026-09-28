@@ -20,7 +20,6 @@ import json
 import math
 import os
 import random
-import re
 import sys
 from collections import defaultdict
 from collections.abc import Iterator, Mapping
@@ -29,6 +28,7 @@ from pathlib import Path
 
 from polylogue.core.sources import source_for_family
 from polylogue.schemas.synthetic.workload import (
+    CODEX_TURN_INSTRUCTION_FIELDS,
     PERSISTED_OUTPUT,
     WORKLOAD_PROFILE_KIND,
     WORKLOAD_PROFILE_VERSION,
@@ -41,12 +41,11 @@ from polylogue.schemas.synthetic.workload import (
     record_skeleton,
     template_measures,
     text_measure,
-    tool_name_of,
+    tool_calls_of,
     workload_profile_path,
 )
+from polylogue.sources.parsers.codex import _codex_exec_envelope_outcome
 
-#: Skeletons kept per template kind.
-_SKELETONS_PER_KIND = 4
 #: Source family whose runtime root each origin is measured from by default.
 _SOURCE_FAMILIES = {"claude-code": "claude-code-session", "codex": "codex-session"}
 
@@ -91,7 +90,9 @@ class _Templates:
         templates: dict[str, object] = {}
         per_path: dict[str, dict[str, object]] = {"str": {}, "list": {}}
         for kind, entries in sorted(self.skeletons.items()):
-            ranked = sorted(entries.items(), key=lambda item: (-item[1], item[0]))[:_SKELETONS_PER_KIND]
+            # Every observed variant: a rare skeleton is the one structure
+            # some parser path sees, and it passed the public allowlists.
+            ranked = sorted(entries.items(), key=lambda item: (-item[1], item[0]))
             templates[kind] = [{"skeleton": json.loads(key), "weight": _round2(weight)} for key, weight in ranked]
             for measure, by_kind in self.measures.items():
                 per_path[measure][kind] = {
@@ -106,9 +107,6 @@ def default_source_root(origin: str) -> Path:
     if source is None or source.runtime_root is None:
         raise ValueError(f"{origin} has no runtime root")
     return Path(os.path.expanduser(source.runtime_root))
-
-
-_EXEC_EXIT = re.compile(r"^Process exited with code (-?\d+)$", re.MULTILINE)
 
 
 def _round2(value: float) -> float:
@@ -152,8 +150,10 @@ class _Stream:
         self.transitions: defaultdict[str, Weights] = defaultdict(_weights)
         self.lengths: defaultdict[str, defaultdict[int, float]] = defaultdict(_buckets)
         self.gaps = _buckets()
+        #: This family's own share counters (see :func:`_family_payload`).
+        self.shares = _weights()
 
-    def measure(self, origin: str, path: Path, weight: float, shares: Weights, templates: _Templates) -> int:
+    def measure(self, origin: str, path: Path, weight: float, templates: _Templates) -> int:
         classify = classify_claude_code_record if origin == "claude-code" else classify_codex_record
         previous_kind: str | None = None
         previous_ms: float | None = None
@@ -166,14 +166,25 @@ class _Stream:
             else:
                 self.transitions[previous_kind][kind] += weight
             previous_kind = kind
-            length = text_measure(origin, kind, record)
-            if length is not None:
-                self.lengths[kind][log2_bucket(length)] += weight
-                tool = tool_name_of(origin, kind, record)
-                if tool is not None:
-                    # Per-tool lengths: a Read path and a Write body differ by
-                    # orders of magnitude within one record kind.
-                    self.lengths[f"{kind}:{tool}"][log2_bucket(length)] += weight
+            calls = tool_calls_of(origin, kind, record)
+            if calls:
+                # Each call its own length, also per tool: a Read path and a
+                # Write body differ by orders of magnitude within one kind.
+                for tool, text in calls:
+                    self.lengths[kind][log2_bucket(len(text))] += weight
+                    self.lengths[f"{kind}:{tool}"][log2_bucket(len(text))] += weight
+                if origin == "claude-code":
+                    self.lengths[f"{kind}:blocks"][log2_bucket(len(calls))] += weight
+            else:
+                length = text_measure(origin, kind, record)
+                if length is not None:
+                    self.lengths[kind][log2_bucket(length)] += weight
+            if kind == "turn_context":
+                payload = record.get("payload")
+                for field_name in CODEX_TURN_INSTRUCTION_FIELDS:
+                    value = payload.get(field_name) if isinstance(payload, Mapping) else None
+                    if isinstance(value, str):
+                        self.lengths[f"turn_context:{field_name}"][log2_bucket(len(value))] += weight
             if kind.startswith("record:"):
                 templates.add(kind, record, weight)
             moment = _parse_ms(record.get("timestamp"))
@@ -181,13 +192,14 @@ class _Stream:
                 if previous_ms is not None and moment >= previous_ms:
                     self.gaps[log2_bucket(moment - previous_ms)] += weight
                 previous_ms = moment
-            _count_shares(origin, kind, record, shares, weight)
+            _count_shares(origin, kind, record, self.shares, weight)
         if count:
             self.records[log2_bucket(count)] += weight
         return count
 
-    def payload(self) -> dict[str, object]:
+    def payload(self, origin: str) -> dict[str, object]:
         return {
+            **_family_payload(origin, self.shares),
             "records": _histogram(self.records),
             "start": {kind: _round2(weight) for kind, weight in _ranked(self.start)},
             "transitions": {
@@ -212,9 +224,14 @@ def _count_shares(origin: str, kind: str, record: Mapping[str, object], shares: 
         if not text.isascii():
             shares["non_ascii_texts"] += weight
             shares[f"non_ascii_texts:{kind}"] += weight
-    tool = tool_name_of(origin, kind, record)
-    if tool is not None:
+    for tool, _text in tool_calls_of(origin, kind, record):
         shares[f"tool:{tool}" if origin == "claude-code" else f"tool:{kind}:{tool}"] += weight
+    if kind == "turn_context":
+        payload = record.get("payload")
+        shares["turn_contexts"] += weight
+        for field_name in CODEX_TURN_INSTRUCTION_FIELDS:
+            if isinstance(payload, Mapping) and isinstance(payload.get(field_name), str):
+                shares[f"turn_context:{field_name}"] += weight
     if origin == "claude-code":
         message = record.get("message")
         if kind.startswith("assistant_") and isinstance(message, Mapping):
@@ -246,10 +263,12 @@ def _count_shares(origin: str, kind: str, record: Mapping[str, object], shares: 
         output = payload.get("output") if isinstance(payload, Mapping) else None
         if kind == "function_call_output":
             shares["exec_outputs"] += weight
-            match = _EXEC_EXIT.search(output) if isinstance(output, str) else None
-            if match is not None:
+            # The parser's own anchored recognizer, so the shares are what
+            # production parsing observes.
+            _is_error, exit_code = _codex_exec_envelope_outcome(output)
+            if exit_code is not None:
                 shares["exec_envelopes"] += weight
-                if int(match.group(1)) != 0:
+                if exit_code != 0:
                     shares["exec_errors"] += weight
         else:
             shares["custom_outputs"] += weight
@@ -264,6 +283,41 @@ def _count_shares(origin: str, kind: str, record: Mapping[str, object], shares: 
                 shares["custom_json"] += weight
                 if metadata["exit_code"] != 0:
                     shares["custom_errors"] += weight
+
+
+def _family_payload(origin: str, shares: Mapping[str, float]) -> dict[str, object]:
+    """One stream family's shares, character classes and tool mix."""
+
+    def ratio(numerator: str, denominator: str) -> float:
+        return round(shares.get(numerator, 0.0) / shares[denominator], 4) if shares.get(denominator) else 0.0
+
+    large = shares.get("sidecar_refs", 0.0) + shares.get("large_inline", 0.0)
+    origin_shares = (
+        {
+            "codex_exec_envelope_share": ratio("exec_envelopes", "exec_outputs"),
+            "codex_exec_error_share": ratio("exec_errors", "exec_envelopes"),
+            "codex_custom_json_share": ratio("custom_json", "custom_outputs"),
+            "codex_custom_error_share": ratio("custom_errors", "custom_json"),
+            **{
+                f"codex_turn_context_{field_name}_share": ratio(f"turn_context:{field_name}", "turn_contexts")
+                for field_name in CODEX_TURN_INSTRUCTION_FIELDS
+            },
+        }
+        if origin == "codex"
+        else {
+            "assistant_usage_share": ratio("assistant_usage", "assistant"),
+            "tool_error_share": ratio("tool_errors", "tool_results"),
+            "sidecar_share_of_large": round(shares.get("sidecar_refs", 0.0) / large, 4) if large else 0.0,
+        }
+    )
+    kinds = sorted({key.split(":", 1)[1] for key in shares if key.startswith("texts:")})
+    return {
+        "shares": {"non_ascii_text_share": ratio("non_ascii_texts", "texts"), **origin_shares},
+        "non_ascii_by_kind": {kind: ratio(f"non_ascii_texts:{kind}", f"texts:{kind}") for kind in kinds},
+        "tool_names": {
+            key.split(":", 1)[1]: _round2(weight) for key, weight in _ranked(shares) if key.startswith("tool:")
+        },
+    }
 
 
 def _stream_families(origin: str, root: Path) -> dict[str, list[Path]]:
@@ -343,7 +397,6 @@ def _fanout(
 
 def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> dict[str, object]:
     families = _stream_families(origin, root)
-    shares = _weights()
     templates = _Templates(published_field_names(origin), published_kind_tokens())
     streams: dict[str, object] = {}
     source_bytes = 0
@@ -360,28 +413,13 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
         weight = len(rest) / len(drawn) if drawn else 0.0
         stream = _Stream()
         for index, path in enumerate(tail_paths + drawn):
-            stream.measure(origin, path, 1.0 if path in tail_paths else weight, shares, templates)
+            stream.measure(origin, path, 1.0 if path in tail_paths else weight, templates)
             if index % 200 == 0:
                 print(f"  {origin}/{name}: {index + 1}/{len(tail_paths) + len(drawn)}", file=sys.stderr, flush=True)
-        streams[name] = stream.payload()
-
-    def ratio(numerator: str, denominator: str) -> float:
-        return round(shares[numerator] / shares[denominator], 4) if shares[denominator] else 0.0
+        streams[name] = stream.payload(origin)
 
     fanout, nested_per_subagent, orphans_per_session = _fanout(origin, root, families)
-    kinds = sorted({key.split(":", 1)[1] for key in shares if key.startswith("texts:")})
     template_payload, template_strings, template_lists = templates.payload()
-    large = shares["sidecar_refs"] + shares["large_inline"]
-    outcome_shares = (
-        {
-            "codex_exec_envelope_share": ratio("exec_envelopes", "exec_outputs"),
-            "codex_exec_error_share": ratio("exec_errors", "exec_envelopes"),
-            "codex_custom_json_share": ratio("custom_json", "custom_outputs"),
-            "codex_custom_error_share": ratio("custom_errors", "custom_json"),
-        }
-        if origin == "codex"
-        else {}
-    )
     return {
         "kind": WORKLOAD_PROFILE_KIND,
         "version": WORKLOAD_PROFILE_VERSION,
@@ -391,17 +429,8 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
         "streams": streams,
         "subagents_per_session": _histogram(fanout),
         "shares": {
-            "non_ascii_text_share": ratio("non_ascii_texts", "texts"),
-            "assistant_usage_share": ratio("assistant_usage", "assistant") if origin == "claude-code" else 1.0,
-            "tool_error_share": ratio("tool_errors", "tool_results") if origin == "claude-code" else 0.03,
-            "sidecar_share_of_large": round(shares["sidecar_refs"] / large, 4) if large else 0.0,
             "orphan_subagents_per_session": round(orphans_per_session, 4),
             "nested_subagents_per_subagent": round(nested_per_subagent, 4),
-            **outcome_shares,
-        },
-        "non_ascii_by_kind": {kind: ratio(f"non_ascii_texts:{kind}", f"texts:{kind}") for kind in kinds},
-        "tool_names": {
-            key.split(":", 1)[1]: _round2(weight) for key, weight in _ranked(shares) if key.startswith("tool:")
         },
         "templates": template_payload,
         "template_strings": template_strings,

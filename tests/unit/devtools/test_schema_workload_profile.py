@@ -109,3 +109,74 @@ def test_template_measures_keep_field_paths_and_list_lengths() -> None:
     assert ("str", "attachment.filePath", 4) in measures
     assert ("str", "attachment.content", 5000) in measures
     assert ("list", "attachment.files", 9) in measures
+
+
+def test_a_rare_fifth_template_skeleton_is_retained() -> None:
+    """Anti-vacuity (Codex P1, #5670): keep the four commonest skeletons and a
+    fifth valid variant can never be generated."""
+    from devtools.schema_workload_profile import _Templates
+
+    templates = _Templates(frozenset({"type", "a", "b", "c", "d", "e"}), frozenset())
+    for index, key in enumerate("abcde"):
+        templates.add("record:probe", {"type": "x", key: "v"}, 10.0 - index)
+    skeletons, _strings, _lists = templates.payload()
+    assert len(skeletons["record:probe"]) == 5  # type: ignore[arg-type]
+
+
+def test_every_list_item_contributes_its_string_tail() -> None:
+    """Anti-vacuity (Codex P1, #5670): measure only the first four items and a
+    fifth item's multi-kilobyte payload vanishes from the profile."""
+    from polylogue.schemas.synthetic.workload import template_measures
+
+    record = {"items": [{"content": "x"}] * 4 + [{"content": "y" * 50_000}]}
+    assert ("str", "items[].content", 50_000) in set(template_measures(record))
+
+
+@pytest.mark.parametrize(
+    ("output", "envelope", "error"),
+    [
+        ("Wall time: 0.1 seconds\nProcess completed with exit code 1\nOutput:\n", True, True),
+        ("Chunk ID: ab12\nWall time: 0.1 seconds\nProcess exited with code 0\nOutput:\n", True, False),
+        ("build log\nProcess exited with code 2\n", False, False),
+    ],
+)
+def test_exec_envelopes_are_recognized_as_the_parser_recognizes_them(output: str, envelope: bool, error: bool) -> None:
+    """Anti-vacuity (Codex P2, #5670): a multiline unanchored regex misses the
+    older ``Process completed`` envelope and counts a later
+    ``Process exited`` line in command output as one."""
+    shares: Weights = defaultdict(float)
+    _count_shares("codex", "function_call_output", {"payload": {"output": output}}, shares, 1.0)
+    assert shares["exec_envelopes"] == (1.0 if envelope else 0.0)
+    assert shares["exec_errors"] == (1.0 if error else 0.0)
+
+
+def _tool_message(*names: str) -> str:
+    blocks = [{"type": "tool_use", "id": f"t{i}", "name": name, "input": {"x": "y"}} for i, name in enumerate(names)]
+    return json.dumps({"type": "assistant", "message": {"role": "assistant", "content": blocks}}) + "\n"
+
+
+def test_families_keep_their_own_tool_mix_and_every_parallel_call(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P1/P2, #5670): count one call per message and mix
+    families into one accumulator, and a two-call main message records one
+    Bash call inside a Bash/Read mixture for both families."""
+    root = tmp_path / "projects"
+    (root / "p" / "s1" / "subagents").mkdir(parents=True)
+    (root / "p" / "s1.jsonl").write_text(_tool_message("Bash", "Bash"), encoding="utf-8")
+    (root / "p" / "s1" / "subagents" / "agent-a.jsonl").write_text(_tool_message("Read"), encoding="utf-8")
+    profile = measure("claude-code", root, sample=10, tail=0, seed=1)
+    streams = profile["streams"]
+    assert isinstance(streams, dict)
+    assert streams["main"]["tool_names"] == {"Bash": 2.0}
+    assert streams["subagent"]["tool_names"] == {"Read": 1.0}
+    assert streams["main"]["lengths"]["assistant_tool_use:blocks"] == {"2": 1.0}
+
+
+def test_turn_context_instructions_are_profiled() -> None:
+    """Anti-vacuity (Codex P2, #5670): count only the record kind and no
+    instruction presence reaches the profile."""
+    shares: Weights = defaultdict(float)
+    record = {"type": "turn_context", "payload": {"user_instructions": "be brief"}}
+    _count_shares("codex", "turn_context", record, shares, 1.0)
+    assert shares["turn_context:user_instructions"] == 1.0
+    assert shares["turn_context:developer_instructions"] == 0.0
+    assert shares["turn_contexts"] == 1.0

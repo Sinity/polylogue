@@ -32,14 +32,14 @@ import random
 import re
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from functools import cache
 from pathlib import Path
 
 WORKLOAD_PROFILE_FILE = "workload-corpus.json"
 WORKLOAD_PROFILE_KIND = "polylogue.synthetic-workload-profile"
-WORKLOAD_PROFILE_VERSION = 2
+WORKLOAD_PROFILE_VERSION = 3
 
 #: Origins with a workload renderer.
 WORKLOAD_ORIGINS: tuple[str, ...] = ("claude-code", "codex")
@@ -341,11 +341,6 @@ def published_field_names(origin: str) -> frozenset[str]:
     return frozenset(names)
 
 
-#: List items per list whose string leaves are measured; a list's length is
-#: always measured whole.
-_MEASURED_LIST_ITEMS = 4
-
-
 def template_measures(
     value: object,
     *,
@@ -378,7 +373,8 @@ def template_measures(
         if depth >= _SKELETON_DEPTH:
             return
         yield "list", path, len(value)
-        for item in value[:_MEASURED_LIST_ITEMS]:
+        # Every item: a long list's one huge payload is its tail.
+        for item in value:
             yield from template_measures(item, allowed=allowed, path=f"{path}[]", depth=depth + 1)
 
 
@@ -443,6 +439,13 @@ class StreamProfile:
     transitions: Mapping[str, Mapping[str, float]]
     lengths: Mapping[str, Histogram]
     gap_ms: Histogram
+    #: Rates and conditional shares measured on this family alone: main
+    #: sessions and subagents use different tool mixes and fail differently.
+    shares: Mapping[str, float] = field(default_factory=dict)
+    #: Tool-call names (modelled tools only; others fold into ``other``).
+    tool_names: Mapping[str, float] = field(default_factory=dict)
+    #: Share of texts carrying non-ASCII characters, per record kind.
+    non_ascii_by_kind: Mapping[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> StreamProfile:
@@ -460,6 +463,9 @@ class StreamProfile:
             },
             lengths={str(k): Histogram.from_payload(_mapping(v)) for k, v in lengths.items()},
             gap_ms=Histogram.from_payload(_mapping(payload.get("gap_ms"))),
+            shares=_numbers(payload.get("shares")),
+            tool_names={k: v for k, v in _numbers(payload.get("tool_names")).items() if v > 0},
+            non_ascii_by_kind=_numbers(payload.get("non_ascii_by_kind")),
         )
 
     def kind_sequence(self, rng: random.Random, count: int) -> list[str]:
@@ -475,9 +481,18 @@ class StreamProfile:
         histogram = self.lengths.get(kind) or (self.lengths.get(fallback) if fallback else None)
         return histogram.sample(rng) if histogram is not None else rng.randint(8, 64)
 
+    def count(self, rng: random.Random, key: str) -> int:
+        """A measured per-record cardinality (at least one; one when unmeasured)."""
+        histogram = self.lengths.get(key)
+        return max(1, histogram.sample(rng)) if histogram is not None else 1
+
 
 def _mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
+
+
+def _numbers(value: object) -> dict[str, float]:
+    return {str(k): float(v) for k, v in _mapping(value).items() if isinstance(v, int | float)}
 
 
 def _number(value: object) -> float:
@@ -498,13 +513,14 @@ class WorkloadProfile:
     streams: Mapping[str, StreamProfile]
     #: Subagent transcripts per main session.
     subagents_per_session: Histogram
-    #: Named rates and conditional shares (see ``devtools schema workload-profile``).
+    #: Session-structure rates (fan-out, orphans, nesting); a family's own
+    #: shares are on its :class:`StreamProfile` and merged by :meth:`for_stream`.
     shares: Mapping[str, float]
     #: Byte share of this origin in the measured source set.
     source_bytes: int
     #: Main (non-subagent) sessions in the measured source set.
     main_sessions: int = 0
-    #: Share of texts carrying non-ASCII characters, per record kind.
+    #: The rendered family's non-ASCII shares per kind (set by :meth:`for_stream`).
     non_ascii_by_kind: Mapping[str, float] = field(default_factory=dict)
     #: Measured key skeletons per template kind, with weights.
     templates: Mapping[str, tuple[tuple[object, float], ...]] = field(default_factory=dict)
@@ -512,7 +528,7 @@ class WorkloadProfile:
     template_strings: Mapping[str, Mapping[str, Histogram]] = field(default_factory=dict)
     #: List lengths per template kind and field path.
     template_lists: Mapping[str, Mapping[str, Histogram]] = field(default_factory=dict)
-    #: Tool-call names (modelled tools only; others fold into ``other``).
+    #: The rendered family's tool-call names (set by :meth:`for_stream`).
     tool_names: Mapping[str, float] = field(default_factory=dict)
 
     @classmethod
@@ -523,15 +539,9 @@ class WorkloadProfile:
             origin=str(payload.get("origin")),
             streams={str(name): StreamProfile.from_payload(_mapping(value)) for name, value in streams.items()},
             subagents_per_session=Histogram.from_payload(_mapping(payload.get("subagents_per_session"))),
-            shares={str(k): float(v) for k, v in shares.items() if isinstance(v, int | float)},
+            shares=_numbers(shares),
             source_bytes=int(_number(payload.get("source_bytes"))),
             main_sessions=int(_number(payload.get("main_sessions"))),
-            tool_names={str(k): _number(v) for k, v in _mapping(payload.get("tool_names")).items() if _number(v) > 0},
-            non_ascii_by_kind={
-                str(k): float(v)
-                for k, v in _mapping(payload.get("non_ascii_by_kind")).items()
-                if isinstance(v, int | float)
-            },
             templates={
                 str(kind): tuple(
                     (entry["skeleton"], _number(entry.get("weight")))
@@ -543,6 +553,16 @@ class WorkloadProfile:
             },
             template_strings=_path_histograms(payload.get("template_strings")),
             template_lists=_path_histograms(payload.get("template_lists")),
+        )
+
+    def for_stream(self, stream: StreamProfile) -> WorkloadProfile:
+        """This profile as one stream family renders it: the family's shares,
+        tool mix and character classes, not the all-family mixture."""
+        return replace(
+            self,
+            shares={**self.shares, **stream.shares},
+            tool_names=stream.tool_names,
+            non_ascii_by_kind=stream.non_ascii_by_kind,
         )
 
     def share(self, name: str, default: float = 0.0) -> float:
@@ -1000,27 +1020,43 @@ _CC_OTHER_TOOLS = ("WebSearch", "NotebookEdit", "Skill")
 _TODO_STATUSES = ("pending", "in_progress", "completed")
 #: Codex function tools whose argument shape is modelled.
 CODEX_FUNCTION_TOOLS = ("exec_command", "shell", "write_stdin", "apply_patch", "update_plan")
+#: The name an unmodelled (``other``) function call renders with: no exec
+#: semantics, so it neither parses as a command nor as a file operation.
+_CODEX_OTHER_FUNCTION = "synthetic_function"
+#: Instruction fields a Codex ``turn_context`` may carry.
+CODEX_TURN_INSTRUCTION_FIELDS = ("user_instructions", "developer_instructions")
+#: The relational message kinds; ``record:*:agent_message`` and event
+#: messages are template kinds with their own semantics.
+_CODEX_MESSAGE_KINDS = frozenset({"user_message", "assistant_message", "developer_message"})
 
 
-def tool_name_of(origin: str, kind: str, record: Mapping[str, object]) -> str | None:
-    """The modelled tool name of a call record (``other`` when unmodelled), or None."""
+def tool_calls_of(origin: str, kind: str, record: Mapping[str, object]) -> list[tuple[str, str]]:
+    """``(modelled tool name, measured input)`` of each call a record makes.
+
+    A Claude Code assistant message may carry several ``tool_use`` blocks
+    (parallel calls); each is its own call. Unmodelled names fold into
+    ``other``.
+    """
     if origin == "claude-code":
         if kind != "assistant_tool_use":
-            return None
+            return []
         message = record.get("message")
         content = message.get("content") if isinstance(message, Mapping) else None
+        calls: list[tuple[str, str]] = []
         for block in content if isinstance(content, list) else []:
             if isinstance(block, Mapping) and block.get("type") == "tool_use":
                 name = block.get("name")
-                return name if name in CLAUDE_CODE_TOOLS else "other"
-        return None
+                modelled = name if isinstance(name, str) and name in CLAUDE_CODE_TOOLS else "other"
+                calls.append((modelled, _compact(block.get("input"))))
+        return calls
     if kind not in {"function_call", "custom_tool_call"}:
-        return None
+        return []
     payload = record.get("payload")
     name = payload.get("name") if isinstance(payload, Mapping) else None
+    text = measured_text(origin, kind, record) or ""
     if kind == "function_call":
-        return name if name in CODEX_FUNCTION_TOOLS else "other"
-    return name if name == "apply_patch" else "other"
+        return [(name if isinstance(name, str) and name in CODEX_FUNCTION_TOOLS else "other", text)]
+    return [(name if name == "apply_patch" else "other", text)]
 
 
 def _path_text(rng: random.Random, cwd: str, length: int) -> Text:
@@ -1166,6 +1202,7 @@ def _claude_code_stream(
     owns: each answered Agent/Task call names the next one as its
     ``agentId``, so the result binds its call to a generated child.
     """
+    profile = profile.for_stream(stream)
     count = max(1, stream.records.sample(rng))
     kinds = stream.kind_sequence(rng, count)
     cwd = f"/workspace/{project_dir}"
@@ -1204,26 +1241,29 @@ def _claude_code_stream(
         base = {"parentUuid": parent, **common, "uuid": record_uuid, "timestamp": placeholder_timestamp}
         record: dict[str, object]
         if kind.startswith("assistant_"):
+            blocks: list[dict[str, object]] = []
             if kind == "assistant_tool_use":
-                call_id = _token(rng, "toolu_", 24)
-                name = _draw_tool(rng, profile, "", CLAUDE_CODE_TOOLS)
-                modelled = name
-                if name == "other":
-                    name = rng.choice(_CC_OTHER_TOOLS)
-                tool_input = _claude_code_tool_input(rng, name, cwd, text(kind, f"{kind}:{modelled}"))
-                block: dict[str, object] = {"type": "tool_use", "id": call_id, "name": name, "input": tool_input}
-                open_calls.append((call_id, record_uuid, name, tool_input))
-                out.tool_calls += 1
+                # Parallel calls: one message, the measured number of blocks.
+                for _ in range(stream.count(rng, f"{kind}:blocks")):
+                    call_id = _token(rng, "toolu_", 24)
+                    name = _draw_tool(rng, profile, "", CLAUDE_CODE_TOOLS)
+                    modelled = name
+                    if name == "other":
+                        name = rng.choice(_CC_OTHER_TOOLS)
+                    tool_input = _claude_code_tool_input(rng, name, cwd, text(kind, f"{kind}:{modelled}"))
+                    blocks.append({"type": "tool_use", "id": call_id, "name": name, "input": tool_input})
+                    open_calls.append((call_id, record_uuid, name, tool_input))
+                    out.tool_calls += 1
             elif kind == "assistant_thinking":
-                block = {"type": "thinking", "thinking": text(kind), "signature": _token(rng, "", 180)}
+                blocks.append({"type": "thinking", "thinking": text(kind), "signature": _token(rng, "", 180)})
             else:
-                block = {"type": "text", "text": text(kind)}
+                blocks.append({"type": "text", "text": text(kind)})
             message: dict[str, object] = {
                 "model": _CC_MODEL,
                 "id": _token(rng, "msg_", 24),
                 "type": "message",
                 "role": "assistant",
-                "content": [block],
+                "content": blocks,
                 "stop_reason": None,
                 "stop_sequence": None,
             }
@@ -1403,7 +1443,9 @@ def _codex_arguments(rng: random.Random, name: str, body: Text) -> Text:
         return concat('{"plan":[{"step":"', embedded(body), '","status":"in_progress"}]}')
     if name == "shell":
         return concat('{"command":["bash","-lc","', embedded(body), '"]}')
-    return concat('{"cmd":"', embedded(body), '"}')
+    if name == "exec_command":
+        return concat('{"cmd":"', embedded(body), '"}')
+    return concat('{"input":"', embedded(body), '"}')
 
 
 def _codex_stream(
@@ -1415,6 +1457,7 @@ def _codex_stream(
     parent_thread_id: str | None,
     clock: _Clock,
 ) -> _Stream:
+    profile = profile.for_stream(stream)
     count = max(1, stream.records.sample(rng))
     # The first draw stands for the session_meta record every rollout opens with.
     kinds = stream.kind_sequence(rng, count)[1:]
@@ -1442,10 +1485,18 @@ def _codex_stream(
         source = {"subagent": {"thread_spawn": {"parent_thread_id": parent_thread_id, "depth": 1,
                                                 "agent_nickname": "helper", "agent_role": "worker"}}}  # fmt: skip
         meta_payload["parent_thread_id"] = parent_thread_id
+        # The parser reads a child's identity from the metadata payload itself.
+        meta_payload["agent_nickname"] = "helper"
+        meta_payload["agent_role"] = "worker"
     meta_payload["source"] = source
     out.lines.append(_dumps({"timestamp": meta_payload["timestamp"], "type": "session_meta", "payload": meta_payload}))
     passthrough = {"turn_id": turn_id}
     replayed_id = parent_thread_id or _uuid(rng)
+    # Instructions are re-declared on each turn context, normally unchanged:
+    # one text per stream and field, present at its measured share.
+    instructions = {
+        field_name: text("turn_context", f"turn_context:{field_name}") for field_name in CODEX_TURN_INSTRUCTION_FIELDS
+    }
     for kind in kinds:
         if kind == "legacy":
             continue
@@ -1473,7 +1524,10 @@ def _codex_stream(
             record_type = "turn_context"
             payload = {"turn_id": turn_id, "cwd": "/workspace/synthetic", "model": "gpt-synthetic",
                        "approval_policy": "never", "sandbox_policy": {"type": "danger-full-access"}, "effort": "high"}  # fmt: skip
-        elif kind.endswith("_message"):
+            for field_name, instruction in instructions.items():
+                if rng.random() < profile.share(f"codex_turn_context_{field_name}_share", 0.0):
+                    payload[field_name] = instruction
+        elif kind in _CODEX_MESSAGE_KINDS:
             role = kind.removesuffix("_message")
             part_type = "output_text" if role == "assistant" else "input_text"
             payload = {"type": "message", "id": _token(rng, "msg_", 48), "role": role,
@@ -1488,10 +1542,10 @@ def _codex_stream(
             open_calls.append((call_id, kind))
             out.tool_calls += 1
             if kind == "function_call":
-                name = _draw_tool(rng, profile, "function_call:", CODEX_FUNCTION_TOOLS)
-                if name == "other":
-                    name = "exec_command"
-                arguments = _codex_arguments(rng, name, text(kind, f"{kind}:{name}"))
+                modelled = _draw_tool(rng, profile, "function_call:", CODEX_FUNCTION_TOOLS)
+                # An unmodelled function stays unmodelled: not a shell command.
+                name = _CODEX_OTHER_FUNCTION if modelled == "other" else modelled
+                arguments = _codex_arguments(rng, name, text(kind, f"{kind}:{modelled}"))
                 payload = {"type": "function_call", "name": name, "arguments": arguments, "call_id": call_id}
             else:
                 # The committed profile distinguishes apply_patch from every
