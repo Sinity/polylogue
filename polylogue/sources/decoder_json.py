@@ -809,10 +809,15 @@ def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | Non
 def grok_export_item_count(
     handle: JsonReadable,
     *,
-    on_item: Callable[[int, bool], None] | None = None,
+    on_item: Callable[[int, bool, str | None], None] | None = None,
     on_positive_marker: Callable[[bool], None] | None = None,
 ) -> int | None:
-    """Validate a Grok object and report each member's shape without decoding it."""
+    """Validate a Grok object and report each member's shape without decoding it.
+
+    ``on_item`` also receives the member's first future wire type, which the
+    per-conversation parser admission reports; the collecting lowering admits
+    conversation members only, so a future type elsewhere carries no event.
+    """
     count = 0
     keys = 0
     arrays = 0
@@ -820,6 +825,7 @@ def grok_export_item_count(
     member_is_map = False
     member_conversation = False
     member_responses = False
+    member_future_type: _FirstFutureType | None = None
     valid_members = 0
     taxonomy_keys: set[str] = set()
     taxonomy_values: dict[str, bool] = {}
@@ -864,29 +870,21 @@ def grok_export_item_count(
     )
 
     def finish_member() -> None:
-        nonlocal valid_members
+        nonlocal valid_members, member_future_type
         valid = member_is_map and member_conversation and member_responses
         valid_members += int(valid)
+        future_type = member_future_type.value if member_future_type is not None else None
+        member_future_type = None
         if on_item is not None:
-            on_item(count - 1, valid)
+            on_item(count - 1, valid, future_type)
 
     try:
         events = ijson.parse(handle)
         if next(events, None) != ("", "start_map", None):
             return None
         for prefix, event, value in events:
-            if (
-                event == "string"
-                and prefix.rsplit(".", 1)[-1] in {"type", "content_type", "kind", "record_type"}
-                and isinstance(value, str)
-                and (
-                    value.startswith(("future_", "unknown_", "unsupported_"))
-                    or value in {"future", "unknown", "unsupported"}
-                )
-            ):
-                # The ordinary admission wrapper emits an evidence event for
-                # future wire types; retain that exact path for such exports.
-                return None
+            if member_future_type is not None:
+                member_future_type.observe(event, value)
             if prefix == "" and event == "map_key":
                 root_field_count = min(root_field_count + 1, 17)
                 if value in {"sessions", "polylogue_capture_kind"}:
@@ -943,6 +941,7 @@ def grok_export_item_count(
                 count += 1
                 member_keys.clear()
                 member_is_map = event == "start_map"
+                member_future_type = _FirstFutureType() if member_is_map else None
                 member_conversation = False
                 member_responses = False
                 if event not in {"start_map", "start_array"}:

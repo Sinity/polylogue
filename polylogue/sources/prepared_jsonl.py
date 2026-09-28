@@ -745,11 +745,15 @@ def prepare_jsonl_blob(
             and (prepare_records is None or classify_grok_export is not None)
             and Path(source_path).name.lower().endswith(".json")
         ):
-            store.conn.execute("CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL)")
+            store.conn.execute(
+                "CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL, future_type TEXT)"
+            )
             grok_probe_conn = store.conn
 
-            def record_grok_member(index: int, valid: bool) -> None:
-                grok_probe_conn.execute("INSERT INTO grok_member_valid VALUES (?, ?)", (index, int(valid)))
+            def record_grok_member(index: int, valid: bool, future_type: str | None) -> None:
+                grok_probe_conn.execute(
+                    "INSERT INTO grok_member_valid VALUES (?, ?, ?)", (index, int(valid), future_type)
+                )
 
             def record_grok_marker(found: bool) -> None:
                 nonlocal grok_positive_marker
@@ -1388,13 +1392,22 @@ def prepare_jsonl_blob(
                             fallback_id if grok_count == 1 else f"{fallback_id}-{member_index}",
                             member_messages,
                         )
-                        # The event probe leaves future wire types on the
-                        # ordinary parser path. Admit this known outer record
-                        # through the same wrapper without reloading responses.
-                        admitted = grok.parse_conversation(
-                            {"conversation": {}, "responses": []}, session.provider_session_id
+                        # Admit this outer record through the parser's own
+                        # wrapper, over a stub carrying the member's first
+                        # future wire type, without reloading its responses.
+                        future_row = grok_member_conn.execute(
+                            "SELECT future_type FROM grok_member_valid WHERE ordinal = ?", (member_index,)
+                        ).fetchone()
+                        admission_stub: dict[str, object] = {"conversation": {}, "responses": []}
+                        if future_row is not None and future_row[0] is not None:
+                            admission_stub["type"] = future_row[0]
+                        admitted = grok.parse_conversation(admission_stub, session.provider_session_id)
+                        session = session.model_copy(
+                            update={
+                                "session_events": [*session.session_events, *admitted.session_events],
+                                "unit_accounting": admitted.unit_accounting,
+                            }
                         )
-                        session = session.model_copy(update={"unit_accounting": admitted.unit_accounting})
                         if prepare_sessions is not None:
                             selected = prepare_sessions([session])
                             if len(selected) > 1:
