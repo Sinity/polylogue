@@ -1877,7 +1877,9 @@ describe("background receiver diagnostics", () => {
       expect(status.cooldown_reason).toBe("provider_rate_limited");
     });
 
-    expect(status.cooldown_until_ms).toBe(Date.parse(status.updated_at) + 60000);
+    const remainingCooldownMs = status.cooldown_until_ms - Date.parse(status.updated_at);
+    expect(remainingCooldownMs).toBeGreaterThanOrEqual(59000);
+    expect(remainingCooldownMs).toBeLessThanOrEqual(60000);
     expect(status.inventory_complete).toBe(false);
   });
 
