@@ -50,7 +50,11 @@ fi
 #
 # Falls through to `python` when the checkout has no venv, preserving the
 # previous behaviour for a fresh clone or a Nix-only environment.
+# PYTHONPATH is dropped for the checkout's own interpreter: an inherited value
+# can name another checkout, and a sitecustomize there would run during
+# interpreter start-up, before devtools can rebind anything. The venv needs no
+# PYTHONPATH; the agentctl job environment already unsets it.
 if [ -x "$resolved/.venv/bin/python" ]; then
-  exec "$resolved/.venv/bin/python" "$resolved/devtools/__main__.py" "$@"
+  exec env -u PYTHONPATH "$resolved/.venv/bin/python" "$resolved/devtools/__main__.py" "$@"
 fi
 exec python "$resolved/devtools/__main__.py" "$@"

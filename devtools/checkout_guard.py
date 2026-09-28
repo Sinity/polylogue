@@ -174,8 +174,16 @@ def normalize_checkout_environment(root: Path, environ: dict[str, str] | None = 
             env[name] = str(resolved_root)
             corrected.append(f"{name}={value}")
     own_venv = resolved_root / ".venv"
+    # The running interpreter's own venv, when it is one: VIRTUAL_ENV must name
+    # the environment actually executing, not merely one in this checkout.
+    running_venv = Path(sys.prefix).resolve() if environ is None and sys.prefix != sys.base_prefix else None
+    if running_venv is not None and _polylogue_checkout_ancestor(running_venv) == resolved_root:
+        own_venv = running_venv
     virtual_env = env.get("VIRTUAL_ENV")
-    if virtual_env and _polylogue_checkout_ancestor(Path(virtual_env)) != resolved_root:
+    if virtual_env and (
+        _polylogue_checkout_ancestor(Path(virtual_env)) != resolved_root
+        or (running_venv is not None and Path(virtual_env).resolve() != own_venv)
+    ):
         corrected.append(f"VIRTUAL_ENV={virtual_env}")
         if own_venv.is_dir():
             env["VIRTUAL_ENV"] = str(own_venv)
@@ -186,13 +194,18 @@ def normalize_checkout_environment(root: Path, environ: dict[str, str] | None = 
         if not value:
             continue
         entries = value.split(os.pathsep)
-        kept = [entry for entry in entries if not _foreign_checkout(entry, resolved_root)]
+        # Relative entries are made absolute as of now: a command that later
+        # changes directory would otherwise resolve them somewhere else.
+        absolute = [
+            str((Path.cwd() / entry).resolve()) if entry and not os.path.isabs(entry) else entry for entry in entries
+        ]
+        kept = [entry for entry in absolute if not _foreign_checkout(entry, resolved_root)]
         if name == "PATH" and (own_venv / "bin").is_dir():
             # First, not merely present: an earlier directory with the same
             # tool would otherwise still win.
             kept = [str(own_venv / "bin"), *(entry for entry in kept if entry != str(own_venv / "bin"))]
         if kept != entries:
-            dropped = [entry for entry in entries if entry not in kept]
+            dropped = [entry for entry in absolute if entry not in kept]
             if dropped:
                 corrected.append(f"{name} entries {dropped}")
             env[name] = os.pathsep.join(kept)

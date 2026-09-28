@@ -165,3 +165,34 @@ def test_a_foreign_interpreter_is_refused_before_the_import_path_is_cleaned(tmp_
 
     assert completed.returncode == 125, completed.stderr
     assert "another checkout's interpreter" in completed.stderr
+
+
+def test_relative_entries_are_made_absolute_as_of_invocation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: keep the relative text and a later ``chdir`` re-resolves it elsewhere."""
+    worktree = _checkout(tmp_path / "worktree").resolve()
+    (worktree / "tools").mkdir()
+    monkeypatch.chdir(worktree)
+    environ = {"PATH": os.pathsep.join(["tools", "/usr/bin"])}
+
+    normalize_checkout_environment(worktree, environ)
+
+    assert str(worktree / "tools") in environ["PATH"].split(os.pathsep)
+    assert "tools" not in environ["PATH"].split(os.pathsep)
+
+
+def test_virtual_env_names_the_running_interpreter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stale VIRTUAL_ENV inside this same checkout is replaced by the running venv.
+
+    Anti-vacuity: compare VIRTUAL_ENV only by owning checkout and ``.venv-old``
+    survives, so the receipt names the wrong environment.
+    """
+    worktree = _checkout(tmp_path / "worktree").resolve()
+    (worktree / ".venv-old").mkdir()
+    monkeypatch.setattr(sys, "prefix", str(worktree / ".venv"))
+    monkeypatch.setattr(sys, "base_prefix", "/nix/store/python")
+    monkeypatch.setattr(os, "environ", {"VIRTUAL_ENV": str(worktree / ".venv-old"), "PATH": "/usr/bin"})
+    monkeypatch.setattr(sys, "path", [str(worktree)])
+
+    normalize_checkout_environment(worktree)
+
+    assert os.environ["VIRTUAL_ENV"] == str(worktree / ".venv")
