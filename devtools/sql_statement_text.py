@@ -213,10 +213,14 @@ def string_values(tree: ast.Module, *, scope: str | None = None) -> dict[str, tu
         values[name] = tuple(dict.fromkeys((*sentinels, *ordinary[: max(0, _VALUE_LIMIT - len(sentinels))])))
 
     scopes = function_scopes(tree)
+    visible_scopes = {"<module>"}
+    if scope is not None:
+        parts = scope.split(".")
+        visible_scopes.update(".".join(parts[:index]) for index in range(1, len(parts) + 1))
     bindings = [
         node
         for node in walk_module(tree)
-        if isinstance(node, _BINDING_NODES) and (scope is None or scopes.get(node, "<module>") in {scope, "<module>"})
+        if isinstance(node, _BINDING_NODES) and (scope is None or scopes.get(node, "<module>") in visible_scopes)
     ]
     for _ in range(3):
         for node in bindings:

@@ -139,9 +139,13 @@ def test_values_are_lexically_scoped_and_empty_sentinel_survives_the_cap(tmp_pat
         "    clause = 'WHERE id = 4'\n    clause = 'WHERE id = 5'\n"
         "    clause = 'WHERE id = 6'\n    clause = 'WHERE id = 7'\n"
         + "    if branch:\n        clause = ''\n"
-        + "    conn.execute(f'DELETE FROM session_profiles {clause}')\n",
+        + "    conn.execute(f'DELETE FROM session_profiles {clause}')\n"
+        "def outer():\n    clause = 'WHERE session_id = ?'\n"
+        "    def nested(conn):\n"
+        "        conn.execute(f'DELETE FROM session_profiles {clause}', ('x',))\n",
     )
     assert _kinds(tmp_path, "mandatory") == set()
+    assert _kinds(tmp_path, "outer.nested") == set()
     assert "omissible_scope" in _kinds(tmp_path, "optional")
 
 
