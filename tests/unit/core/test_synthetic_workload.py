@@ -34,6 +34,13 @@ from polylogue.schemas.synthetic.workload import (
     text_measure,
 )
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from tests.infra.synthetic_workload_bounds import clip_committed_profiles
+
+
+@pytest.fixture(autouse=True)
+def _clipped_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Materialized corpora stay within test memory (see ``tests.infra.synthetic_workload_bounds``)."""
+    clip_committed_profiles(monkeypatch)
 
 
 def _records(data: bytes) -> list[dict[str, object]]:

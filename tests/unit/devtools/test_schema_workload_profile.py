@@ -17,6 +17,13 @@ from devtools.schema_workload_profile import (
     measure,
 )
 from polylogue.schemas.synthetic.workload import generate_workload_corpus
+from tests.infra.synthetic_workload_bounds import clip_committed_profiles
+
+
+@pytest.fixture(autouse=True)
+def _clipped_profiles(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Materialized corpora stay within test memory (see ``tests.infra.synthetic_workload_bounds``)."""
+    clip_committed_profiles(monkeypatch)
 
 
 def _records(data: bytes) -> list[dict[str, object]]:
