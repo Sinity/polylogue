@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Literal, Protocol, get_args
 
 from polylogue.core.enums import PolylogueStrEnum
@@ -164,7 +165,20 @@ def evaluate_evidence(
     cancelled: Callable[[], bool] | None = None,
 ) -> EvidenceIntegrityVerdict:
     """Evaluate one claim with deterministic, fail-closed witnesses."""
-    node_map = dict(nodes) if isinstance(nodes, Mapping) else {node.ref: node for node in nodes}
+    if isinstance(nodes, Mapping):
+        node_map = dict(nodes)
+    else:
+        node_map = {}
+        duplicates: set[str] = set()
+        for node in nodes:
+            if node.ref in node_map:
+                duplicates.add(node.ref)
+            node_map[node.ref] = node
+        if duplicates:
+            witness = EvidenceWitness(
+                "duplicate_ref", tuple(sorted(duplicates)), "sequence contains duplicate node refs"
+            )
+            return EvidenceIntegrityVerdict(root_ref, EvidenceIntegrityStatus.UNRESOLVED, (witness,))
     adjacency: dict[str, list[EvidenceGraphEdge]] = {}
     for edge in edges:
         adjacency.setdefault(edge.src_ref, []).append(edge)
@@ -185,13 +199,13 @@ def evaluate_evidence(
         nonlocal count
         if cancelled and cancelled():
             raise EvaluationCancelledError
-        if count >= max_nodes:
-            add("evaluation_budget_exhausted", path, f"node budget {max_nodes} exceeded")
-            return
         if ref in visiting:
             add("cycle", (*path, ref), "evidence path revisits an active node")
             return
         if ref in visited:
+            return
+        if count >= max_nodes:
+            add("evaluation_budget_exhausted", path, f"node budget {max_nodes} exceeded")
             return
         count += 1
         node = node_map.get(ref)
@@ -212,7 +226,7 @@ def evaluate_evidence(
             add("definition_drift", (*path, ref), "definition hash differs from evaluation")
         if frame_hash and node.frame_hash and node.frame_hash != frame_hash:
             add("frame_drift", (*path, ref), "frame hash differs from evaluation")
-        if as_of and node.as_of and node.as_of > as_of:
+        if as_of and node.as_of and _parse_as_of(node.as_of) > _parse_as_of(as_of):
             add("stale", (*path, ref), "node is newer than the evaluation as-of frame")
         # The claim node is not grounding evidence; only descendants decide
         # whether an assertion-only ancestry can launder itself into support.
@@ -245,7 +259,7 @@ def evaluate_evidence(
         status = EvidenceIntegrityStatus.UNRESOLVED
     elif "grounding_incompatible" in codes or "review_unapproved" in codes:
         status = EvidenceIntegrityStatus.NOT_SUPPORTED
-    elif "closed_loop" in codes or authorities <= {"agent", "assertion"}:
+    elif "closed_loop" in codes or (bool(authorities) and authorities <= {"agent", "assertion"}):
         status = EvidenceIntegrityStatus.CLOSED_LOOP
     elif "missing_ref" in codes or "unknown_authority" in codes or codes & _UNRESOLVED_REF_STATES:
         status = EvidenceIntegrityStatus.UNRESOLVED
@@ -266,7 +280,7 @@ def evaluate_evidence(
         status=status,
         witnesses=tuple(witnesses),
         supported_paths=tuple(supported_paths),
-        blind_spots=tuple(sorted(codes - {item.code for item in witnesses})),
+        blind_spots=tuple(sorted({"no_grounding_evidence"} if not supported_paths and not codes else set())),
         definition_ref=definition_hash,
         frame_ref=frame_hash,
         as_of=as_of,
@@ -297,3 +311,13 @@ __all__ = [
     "evaluate_adapter",
     "evaluate_evidence",
 ]
+
+
+def _parse_as_of(value: str) -> datetime:
+    """Parse the accepted ISO-8601 instant or numeric epoch-N form."""
+    if value.startswith("epoch-") and value[6:].isdigit():
+        return datetime.fromtimestamp(int(value[6:]), tz=__import__("datetime").UTC)
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("as_of timestamps must include a timezone")
+    return parsed

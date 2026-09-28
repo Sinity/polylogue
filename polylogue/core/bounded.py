@@ -8,6 +8,7 @@ code review and by the AST ratchet.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
 import os
 import subprocess
@@ -93,6 +94,8 @@ def run_bounded(
     seconds = _validate_budget(budget)
     if "timeout" in kwargs or "check" in kwargs:
         raise TypeError("run_bounded owns timeout and check; use budget and check_exit")
+    if isinstance(argv, str):
+        raise TypeError("argv must be a sequence of arguments, not a string")
     try:
         result: subprocess.CompletedProcess[str | bytes] = subprocess.run(
             [str(argument) for argument in argv],
@@ -114,7 +117,11 @@ def _timeout_exception(handler: TimeoutHandler | None, budget: float) -> BaseExc
         if not issubclass(handler, BaseException):
             raise TypeError("on_timeout class must derive from BaseException")
         exception_type: type[BaseException] = handler
-        return exception_type()
+        try:
+            inspect.signature(exception_type).bind(budget)
+        except (TypeError, ValueError):
+            return exception_type()
+        return exception_type(budget)
     return handler(budget)
 
 
@@ -131,10 +138,13 @@ async def bounded(
     class, an exception instance, or a factory receiving the budget.
     """
     seconds = _validate_budget(budget)
+    timeout_context = asyncio.timeout(seconds)
     try:
-        async with asyncio.timeout(seconds):
+        async with timeout_context:
             return await awaitable
     except TimeoutError as exc:
+        if not timeout_context.expired():
+            raise
         raise _timeout_exception(on_timeout, seconds) from exc
 
 

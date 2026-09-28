@@ -185,27 +185,29 @@ def _lower_json_value(value: object) -> object:
     if isinstance(value, Decimal):
         return int(value) if value == value.to_integral_value() else float(value)
     if isinstance(value, list):
-        changed = False
-        items: list[object] = []
-        for item in value:
+        items: list[object] | None = None
+        for index, item in enumerate(value):
             lowered = _lower_json_value(item)
             if lowered is _NOT_JSON:
                 return _NOT_JSON
-            changed = changed or lowered is not item
-            items.append(lowered)
-        return items if changed else value
+            if items is None and lowered is not item:
+                items = list(value[:index])
+            if items is not None:
+                items.append(lowered)
+        return items if items is not None else value
     if isinstance(value, dict):
-        changed = False
-        mapping: dict[str, object] = {}
+        mapping: dict[str, object] | None = None
         for key, item in value.items():
             if not isinstance(key, str):
                 return _NOT_JSON
             lowered = _lower_json_value(item)
             if lowered is _NOT_JSON:
                 return _NOT_JSON
-            changed = changed or lowered is not item
-            mapping[key] = lowered
-        return mapping if changed else value
+            if mapping is None and lowered is not item:
+                mapping = dict(list(value.items())[: list(value).index(key)])
+            if mapping is not None:
+                mapping[key] = lowered
+        return mapping if mapping is not None else value
     return _NOT_JSON
 
 
@@ -329,7 +331,7 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
     # Scan string literals as opaque spans, and only run the small number
     # matcher at positions outside strings.  The output is one linear copy
     # of the input, plus at most one byte per normalized exponent.
-    chunks: list[bytes] = []
+    chunks: list[bytes] | None = None
     cursor = 0
     index = 0
     length = len(data)
@@ -337,7 +339,7 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
     while index < length:
         byte = data[index]
         if byte == 34:  # '"'
-            if cursor < index:
+            if chunks is not None and cursor < index:
                 chunks.append(data[cursor:index])
             end = index + 1
             while end < length:
@@ -349,7 +351,8 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
                     break
                 else:
                     end += 1
-            chunks.append(data[index:end])
+            if chunks is not None:
+                chunks.append(data[index:end])
             index = end
             cursor = end
             continue
@@ -358,7 +361,10 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
             if match is not None:
                 exponent = match.group(1)
                 if not exponent.startswith(b"-"):
-                    chunks.append(data[cursor : match.start(1)])
+                    if chunks is None:
+                        chunks = [data[: match.start(1)]]
+                    else:
+                        chunks.append(data[cursor : match.start(1)])
                     chunks.append(b"+")
                     chunks.append(exponent)
                     changed = True
@@ -368,9 +374,12 @@ def _normalize_msgspec_float_exponents(data: bytes) -> bytes:
                 index = match.end()
                 continue
         index += 1
+    if not changed:
+        return data
+    assert chunks is not None
     if cursor < length:
         chunks.append(data[cursor:])
-    return b"".join(chunks) if changed else data
+    return b"".join(chunks)
 
 
 def _raw_loads(data: str | bytes | bytearray) -> object:

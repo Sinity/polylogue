@@ -56,6 +56,10 @@ class ArchiveTierUnavailableError(DatabaseError):
         self.guidance = guidance
         super().__init__(f"{tier} tier unavailable at {path}: {reason}. {guidance}")
 
+    @property
+    def public_message(self) -> str:
+        return f"{self.tier} archive tier is unavailable. {self.guidance}"
+
 
 class SchemaRefusalError(DatabaseError):
     """Base class for schema refusals raised before a tier can be served.

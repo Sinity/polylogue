@@ -39,8 +39,17 @@ def sync_directory(path: Path) -> None:
 
 def write_once(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
     """Create ``path`` exactly once, persisting its bytes and directory entry."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    created: list[Path] = []
+    missing: list[Path] = []
+    parent = path.parent
+    while not parent.exists():
+        missing.append(parent)
+        parent = parent.parent
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        created = list(reversed(missing))
+        for directory in created:
+            _fsync_directory(directory.parent)
         with path.open("xb") as stream:
             os.fchmod(stream.fileno(), mode)
             stream.write(payload)
@@ -48,6 +57,10 @@ def write_once(path: Path, payload: bytes, *, mode: int = 0o600) -> None:
             os.fsync(stream.fileno())
         _fsync_directory(path.parent)
     except OSError as exc:
+        if "stream" in locals() and path.exists():
+            with suppress(OSError):
+                path.unlink()
+                _fsync_directory(path.parent)
         raise DurableFilesystemError(f"cannot durably create: {path}") from exc
 
 

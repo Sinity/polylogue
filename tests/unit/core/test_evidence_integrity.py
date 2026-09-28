@@ -7,6 +7,7 @@ from polylogue.core.evidence_integrity import (
     EvidenceAuthority,
     EvidenceGraphEdge,
     EvidenceGraphNode,
+    EvidenceIntegrityStatus,
     evaluate_evidence,
 )
 
@@ -186,3 +187,44 @@ def test_private_review_state_is_still_held_private() -> None:
         verdict = evaluate_evidence("finding:f", nodes, edges, frame_hash="frame", definition_hash="def")
         assert verdict.status == "held_private"
         assert not any(w.code == "review_unapproved" for w in verdict.witnesses)
+
+
+def test_duplicate_refs_are_unresolved_instead_of_last_wins() -> None:
+    first = EvidenceGraphNode("root", "claim", frame_hash="frame")
+    second = EvidenceGraphNode("root", "claim", frame_hash="frame", public=False)
+    verdicts = [evaluate_evidence("root", [first, second], []), evaluate_evidence("root", [second, first], [])]
+    assert all(v.status is EvidenceIntegrityStatus.UNRESOLVED for v in verdicts)
+    assert all("duplicate_ref" in v.reason_codes for v in verdicts)
+
+
+def test_revisited_nodes_do_not_exhaust_exact_node_budget() -> None:
+    nodes = [
+        EvidenceGraphNode("root", "claim", frame_hash="frame"),
+        EvidenceGraphNode("leaf", "raw", authority="raw", frame_hash="frame"),
+    ]
+    edges = [EvidenceGraphEdge("root", "leaf"), EvidenceGraphEdge("root", "leaf")]
+    verdict = evaluate_evidence("root", nodes, edges, max_nodes=2)
+    assert verdict.status is EvidenceIntegrityStatus.SUPPORTED
+    assert "evaluation_budget_exhausted" not in verdict.reason_codes
+
+
+def test_as_of_comparison_uses_instants_not_lexical_order() -> None:
+    nodes = [
+        EvidenceGraphNode("root", "claim", frame_hash="frame"),
+        EvidenceGraphNode("leaf", "raw", authority="raw", frame_hash="frame", as_of="2026-01-01T00:00:00+02:00"),
+    ]
+    verdict = evaluate_evidence("root", nodes, [EvidenceGraphEdge("root", "leaf")], as_of="2025-12-31T23:00:00Z")
+    assert verdict.status is EvidenceIntegrityStatus.SUPPORTED
+    assert "stale" not in verdict.reason_codes
+
+
+def test_missing_root_is_unresolved_not_empty_authority_loop() -> None:
+    verdict = evaluate_evidence("absent", [], [])
+    assert verdict.status is EvidenceIntegrityStatus.UNRESOLVED
+    assert "missing_ref" in verdict.reason_codes
+
+
+def test_blind_spots_are_derived_from_unwitnessed_grounding() -> None:
+    """Anti-vacuity: subtracting witnesses from their own code set always returns empty."""
+    verdict = evaluate_evidence("root", [EvidenceGraphNode("root", "claim")], [])
+    assert verdict.blind_spots == ("no_grounding_evidence",)

@@ -31,7 +31,7 @@ from polylogue.archive.query.transaction import (
     archive_read_context,
 )
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES
-from polylogue.core.errors import DatabaseError, PolylogueError
+from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
 from polylogue.core.sqlite_locking import is_corrupt_sqlite_database, is_transient_sqlite_lock
@@ -1061,7 +1061,7 @@ def daemon_safe_handler(fn: Callable[..., Any]) -> Callable[..., Any]:
                 status,
                 QueryErrorPayload(
                     error=type(exc).__name__,
-                    detail=str(exc),
+                    detail=(exc.public_message if isinstance(exc, ArchiveTierUnavailableError) else str(exc)),
                     field=field,
                 ).model_dump(mode="json"),
             )

@@ -362,7 +362,29 @@ def _invalid_unicode_ref_payload(ref: str) -> Any | None:
 #: (polylogue-rxdo analysis-provenance epic). ``resolve_ref`` returns a typed
 #: ``PendingObjectRefPayload`` (reason=substrate-pending) for these instead of
 #: attempting a lookup against tables that do not exist yet.
-_PENDING_OBJECT_REF_KINDS: frozenset[str] = frozenset({"query", "query-run", "result-set", "cohort", "analysis"})
+_PENDING_OBJECT_REF_KINDS: frozenset[str] = frozenset(
+    {
+        "query",
+        "query-run",
+        "result-set",
+        "cohort",
+        "analysis",
+        "match-set",
+        "finding",
+        "metric",
+        "pattern",
+        "experiment",
+        "improvement-loop",
+        "context-policy",
+        "relation",
+        "analysis-run",
+        "basket",
+        "judgment-set",
+        "ranker",
+        "elicitation-session",
+        "experiment-analysis",
+    }
+)
 
 
 def _pending_ref_payload(ref: str, normalized_ref: str, kind: str) -> Any:

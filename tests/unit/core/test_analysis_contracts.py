@@ -357,3 +357,32 @@ def test_shared_loop_contract_compares_the_whole_state_ref() -> None:
     assert forked.state_ref.kind == first.state_ref.kind
     with pytest.raises(AnalysisContractError, match="scheduler/state contract"):
         require_shared_loop_contract(first, forked)
+
+
+def test_definition_compatibility_is_json_type_sensitive() -> None:
+    enabled = DefinitionIdentity("metric", "metric.v1", {"enabled": True})
+    numeric = DefinitionIdentity("metric", "metric.v1", {"enabled": 1})
+    assert enabled.ref != numeric.ref
+    assert not enabled.compatible_with(numeric)
+
+
+def test_evaluation_world_normalizes_protocol_before_identity() -> None:
+    """Anti-vacuity: equality and IDs must use the same normalized payload."""
+    canonical = _world()
+    padded = replace(canonical, world_protocol_version=" polylogue.evaluation-world.v1 ")
+    assert padded.world_protocol_version == canonical.world_protocol_version
+    assert padded.world_id == canonical.world_id
+    assert padded == canonical
+    assert _world() != replace(_world(), resolved_bounds={"enabled": True})
+    assert _world() != replace(_world(), resolved_bounds={"enabled": 1})
+
+
+def test_relation_rejects_coverage_from_another_grain() -> None:
+    relation = _relation()
+    with pytest.raises(AnalysisContractError, match="coverage grain"):
+        replace(relation, coverage=replace(relation.coverage, grain="message"))
+
+
+def test_basket_rejects_non_relation_refs() -> None:
+    with pytest.raises(AnalysisContractError, match="relation-shaped"):
+        BasketPointer(_ref("workspace", "w"), _ref("user", "u"), "v1")
