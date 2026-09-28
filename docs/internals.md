@@ -136,23 +136,15 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   reset: that operation creates a new empty archive at format version 1 and
   preserves the prior archive without opening or transforming its tiers.
 - **Derived tiers** (`index.db`, `ops.db`, `embeddings.db`) have no migration
-  chain. They still stamp a tier version constant, which the profile seam
-  compares like any other tier, but their governing contract is one identity
-  hash over schema *and* the code that fills it. They are rebuildable products
-  over durable source/user evidence:
-  `storage/sqlite/archive_tiers/schema_identity.py:derived_schema_identity()`
-  digests the tier's canonical DDL together with the runtime-index DDL and the
-  `lowering`, `materializer` and `replay_routing` fingerprints from
-  `polylogue.sources.origin_specs`, and stamps it into the tier's
-  `schema_identity` table at create. Every open recomputes and compares it
-  (`storage/sqlite/schema_bootstrap.py:assert_derived_schema_identity`), so any
-  change to derived schema *or* to the code that lowers records into it moves
-  the hash automatically. A mismatch is one typed `SchemaSkew` refusal naming
-  expected and found; the remedy is always the same and always available —
-  reconverge from durable evidence through the daemon route. There is no delta
-  classification, no fast-forward plan, and no per-version actuator: the cost of
-  a derived-schema edit is one full reconvergence, which is why derived-schema
-  changes are batched rather than trickled.
+  chain and stamp tier version constants. Runtime derived-identity checks cover
+  only `index.db` and `ops.db`, represented by `DerivedTier.INDEX` and
+  `DerivedTier.OPS` in `storage/sqlite/archive_tiers/schema_identity.py`.
+  For those tiers, `derived_schema_identity()` digests canonical DDL, runtime
+  index DDL, and lowering, materializer, and replay-routing fingerprints; each
+  open recomputes and compares the stamp and raises typed `SchemaSkew` on a
+  mismatch. `embeddings.db` has no derived-identity enforcement, so a same-
+  version DDL change is not rejected by this mechanism. Do not rely on an
+  identity mismatch to trigger its reconvergence.
 - **The identity moves on ordinary code edits.** The three fingerprints are AST
   closures over imported source (`_ProjectionFingerprintStripper` normalizes
   only projection keywords and helpers; parser, detector, replay and
@@ -1123,16 +1115,18 @@ defense-in-depth and never proves a publisher is dead.
    live, or failed; only then may `gc_generations` become terminal and publish
    reclaimed counters.
 
-Publication reservations close the byte-publication-to-reference window:
-archive orchestration prepares a bounded batch of private temporary files,
-commits every per-publication receipt in one source-tier transaction, then
-publishes every final content-addressed path. The exact source-reference
-transaction consumes its own receipt ID; an index-only attachment consumes its
-receipt only after the index commit. Same-hash publishers cannot consume one
-another. Pure parser/source APIs receive an injected writer and remain
-independent of archive paths/schema. GC enumerates outside its lock, then holds
-the source-tier write lock only across the bounded final reference/receipt
-recheck and unlink. Dry-run is read-only.
+Publication reservations close the byte-publication-to-reference window.
+Archive orchestration prepares a bounded batch of private temporary files,
+commits per-publication reservations in one source-tier transaction, then
+publishes final content-addressed paths. The exact source-reference transaction
+consumes its own reservation; an index-only attachment consumes its reservation
+only after the index commit. A crash after publication but before reference
+commit leaves a GC-protected reservation that requires explicit reconciliation
+or abandonment. Same-hash publishers cannot consume one another. Pure
+parser/source APIs receive an injected writer and remain independent of archive
+paths/schema. GC enumerates outside its lock, then holds the source-tier write
+lock only across the bounded final reference/receipt recheck and unlink.
+Dry-run is read-only.
 
 A prior revision carried a late lease mechanism (`pending_blob_refs`,
 `acquire_blob_leases`/`release_operation_leases`) meant to make that window

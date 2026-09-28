@@ -580,7 +580,7 @@ writes:
     table: "raw_authority_verdicts"
     kind: "delete"
     tier: "source"
-    classification: row_supersession
+    classification: unclassified
     reason: "raw_authority_verdicts is a cohort-scoped projection cache. Its cohort_fingerprint covers cohort rows, not the derive_raw_authority_verdict implementation, so producer changes can leave cached judgments stale. Do not classify delete-and-reinsert as content-keyed row_supersession unless cache validity is also bound to the derivation version or fingerprint."
   - file: "polylogue/storage/raw_reconciler.py"
     function: "_reconcile_frontier_obligations"
