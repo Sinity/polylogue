@@ -315,6 +315,37 @@ def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
     return True
 
 
+def _ignored_python_sources(root: Path) -> bool:
+    """Whether any Python source pytest may load is ignored by Git.
+
+    The tree digest omits ignored files, and a named test still loads its
+    ancestors' ``conftest.py`` and whatever it imports; an ignored one could
+    change the run without changing the key. Such a checkout never reuses.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "ls-files",
+                "--others",
+                "--ignored",
+                "--exclude-standard",
+                "--",
+                "tests/*.py",
+                "polylogue/*.py",
+                "devtools/*.py",
+                "conftest.py",
+            ],
+            cwd=root,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return result.returncode != 0 or bool(result.stdout.strip())
+
+
 def _git_ignored(path: Path, *, root: Path) -> bool:
     """Whether Git ignores ``path``, so the tree digest does not cover it."""
     try:
@@ -366,7 +397,7 @@ def reusable_green_receipt(
     tests over the same bytes with the same interpreter, so its receipt
     answers the question and the pool admission is skipped.
     """
-    if content_sha256 is None or not _reuse_eligible(selection, root=root):
+    if content_sha256 is None or not _reuse_eligible(selection, root=root) or _ignored_python_sources(root):
         return None
     runs_root = root / ".cache" / "verify" / "runs"
     try:
@@ -537,17 +568,50 @@ LARGE_SELECTION_MODULES = 8
 BROAD_SELECTION_MODULES = 100
 
 
+#: Pytest options whose next argument is their value, not a selection.
+_VALUE_TAKING_OPTIONS = frozenset(
+    {
+        "-k",
+        "-m",
+        "-p",
+        "-c",
+        "-o",
+        "-W",
+        "-n",
+        "--ignore",
+        "--ignore-glob",
+        "--deselect",
+        "--rootdir",
+        "--basetemp",
+        "--confcutdir",
+        "--junitxml",
+        "--junit-xml",
+        "--log-file",
+        "--maxfail",
+        "--tb",
+        "--dist",
+        "--numprocesses",
+        "--timeout",
+        "--hypothesis-profile",
+        "--hypothesis-seed",
+        "--override-ini",
+        "--config-file",
+        "--capture",
+        "--import-mode",
+    }
+)
+
+
 def _selected_test_modules(selection: list[str]) -> int:
     """How many test modules the selection names, directories expanded."""
     count = 0
-    # A standalone flag (``-x``, ``-q``) takes no operand, so the path after it
-    # is still a selection; only a possible option value is skipped.
-    standalone = _REUSABLE_FLAGS
+    # Only the operand of an option known to take one is skipped: pytest's
+    # standalone flags (``-x``, ``--strict-markers``, ...) take none, and the
+    # path after them is still a selection.
     certain = [
         argument
         for index, argument in enumerate(selection)
-        if not (index and selection[index - 1].startswith("-") and "=" not in selection[index - 1])
-        or selection[index - 1] in standalone
+        if not (index and selection[index - 1] in _VALUE_TAKING_OPTIONS)
     ]
     for argument in certain:
         if argument.startswith("-"):

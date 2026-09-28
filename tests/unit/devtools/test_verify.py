@@ -1621,3 +1621,11 @@ def test_a_json_verdict_line_stays_off_the_machine_contract(
     captured = capsys.readouterr()
     assert json.loads(captured.out)["exit_code"] == 1
     assert captured.err.strip().splitlines()[-1].startswith("verify: FAILED exit=1")
+
+
+def test_broad_verification_never_inherits_the_focused_profile(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: keep the ambient token and a corpus run is admitted on focused sizing."""
+    from devtools.worker_memory import CHARGE_PROFILE_ENV
+
+    monkeypatch.setenv(CHARGE_PROFILE_ENV, "focused")
+    assert CHARGE_PROFILE_ENV not in verify._subprocess_env()

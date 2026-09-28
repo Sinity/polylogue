@@ -1464,3 +1464,27 @@ def test_a_broad_selection_is_sized_by_the_corpus_model(monkeypatch: pytest.Monk
     monkeypatch.setattr(run_tests, "_selected_test_modules", lambda _selection: 1)
     run_tests.main(["tests/unit/devtools/test_run_tests.py"])
     assert seen["profile"] == "focused"
+
+
+def test_an_ignored_conftest_disables_reuse(tmp_path: Path) -> None:
+    """A named test still loads its ancestors' conftest, which the digest omits when ignored.
+
+    Anti-vacuity: drop the ignored-source guard and the receipt below is reused.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/foo/test_a.py"]
+    receipt = _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") == receipt
+
+    (tmp_path / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("tests/unit/foo/conftest.py\n", encoding="utf-8")
+    (tmp_path / "tests" / "unit" / "foo" / "conftest.py").write_text("", encoding="utf-8")
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_a_standalone_long_flag_before_a_directory_keeps_xdist() -> None:
+    """Anti-vacuity: treat every option as taking a value and ``--strict-markers``
+    swallows the directory, so no workers are requested."""
+    cmd = run_tests.build_pytest_cmd(["--strict-markers", "tests/unit/devtools"])
+    assert cmd[cmd.index("-n") + 1] == str(FOCUSED_MAX_WORKERS)

@@ -86,7 +86,7 @@ from devtools.verify_runs import (
     reconcile_and_record_abandoned_verify_runs,
 )
 from devtools.verify_test_collection import count_collected
-from devtools.worker_memory import CORPUS_MAX_WORKERS
+from devtools.worker_memory import CHARGE_PROFILE_ENV, CORPUS_MAX_WORKERS
 from polylogue.scenarios import (
     MeasurementScope,
     WorkloadEnvelopeSpec,
@@ -565,7 +565,12 @@ def _project_latest_pytest_report(command: Sequence[str]) -> None:
 
 
 def _subprocess_env() -> dict[str, str]:
-    return {**os.environ, "POLYLOGUE_ROOT": str(ROOT), "PYTHONPYCACHEPREFIX": str(ROOT / ".cache" / "pycache")}
+    environment = {**os.environ, "POLYLOGUE_ROOT": str(ROOT), "PYTHONPYCACHEPREFIX": str(ROOT / ".cache" / "pycache")}
+    # Broad verification is sized by the corpus model; an ambient focused
+    # profile token (``devtools test`` sets it for its own launches) must not
+    # reach this route's slot.
+    environment.pop(CHARGE_PROFILE_ENV, None)
+    return environment
 
 
 def _run(
