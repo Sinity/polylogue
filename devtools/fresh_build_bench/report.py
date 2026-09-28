@@ -211,6 +211,10 @@ def analyse_batches(ops_path: Path) -> dict[str, Any]:
     totals: defaultdict[str, float] = defaultdict(float)
     count = 0
     with closing(sqlite3.connect(f"file:{ops_path}?mode=ro", uri=True)) as conn:
+        # A daemon that exited during bootstrap may leave ops.db without its
+        # ledger; that is zero batches, and the failure receipt still follows.
+        if not conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'daemon_events'").fetchone():
+            return {"batches": 0}
         for (payload,) in conn.execute("SELECT payload_json FROM daemon_events WHERE kind = 'ingestion_batch'"):
             data = json.loads(payload)
             count += 1
@@ -274,6 +278,46 @@ def archive_census(archive: Path, promoted_index: str | None) -> dict[str, Any]:
     return result
 
 
+_PROBE_TOKEN = re.compile(r"[^\W_]{4,}")
+
+
+def _fts_probe(read: sqlite3.Connection, *, probes: int = 64) -> dict[str, Any]:
+    """Digest what search returns, not just how many rows FTS holds.
+
+    ``messages_fts`` is contentless, so its postings cannot be read back and
+    the table census skips it. Instead a deterministic set of terms drawn
+    from ``blocks.search_text`` (every k-th block, its first word) is run
+    through MATCH, and the matching block ids are digested per term.
+    """
+    total = int(read.execute("SELECT COUNT(*) FROM blocks WHERE search_text IS NOT NULL").fetchone()[0])
+    if not total:
+        return {"rows": 0, "sha256": hashlib.sha256(b"").hexdigest()}
+    step = max(1, total // probes)
+    terms: list[str] = []
+    for index, (text,) in enumerate(
+        read.execute("SELECT search_text FROM blocks WHERE search_text IS NOT NULL ORDER BY block_id")
+    ):
+        if index % step:
+            continue
+        match = _PROBE_TOKEN.search(str(text))
+        if match and match.group(0).lower() not in terms:
+            terms.append(match.group(0).lower())
+    digest = hashlib.sha256()
+    hits = 0
+    for term in sorted(terms):
+        ids = [
+            str(row[0])
+            for row in read.execute(
+                "SELECT b.block_id FROM messages_fts JOIN blocks b ON b.rowid = messages_fts.rowid "
+                "WHERE messages_fts MATCH ? ORDER BY b.block_id",
+                ('"' + term.replace('"', '""') + '"',),
+            )
+        ]
+        hits += len(ids)
+        digest.update(json.dumps([term, ids]).encode())
+    return {"rows": hits, "terms": len(terms), "sha256": digest.hexdigest()}
+
+
 def output_fingerprint(archive: Path, promoted_index: str, scratch: Path) -> dict[str, Any]:
     """Per-table digests over the comparable index relations.
 
@@ -321,6 +365,7 @@ def output_fingerprint(archive: Path, promoted_index: str, scratch: Path) -> dic
                 digest.update(payload.encode())
                 digest.update(b"\n")
             tables[table] = {"rows": rows, "sha256": digest.hexdigest()}
+        tables["messages_fts:search_probe"] = _fts_probe(read)
     spool_path.unlink(missing_ok=True)
     overall = hashlib.sha256(json.dumps(tables, sort_keys=True).encode()).hexdigest()
     return {"digest": overall, "tables": tables}
@@ -412,12 +457,22 @@ def projection(manifest: dict[str, Any], by_source: dict[str, Any], intake_wall_
         serial_sample += seconds
         rows[origin] = entry
     scale = (intake_wall_s / serial_sample) if intake_wall_s and serial_sample else None
+    # A populated origin without a measured rate is not priced at zero: the
+    # projection then covers only part of the census and says so.
+    unmeasured = sorted(origin for origin, pop in population.items() if pop.get("bytes") and origin not in rows)
     return {
+        "complete": not unmeasured,
+        "unmeasured_origins": unmeasured,
         "by_origin": rows,
         "serial_sample_s": round(serial_sample, 1),
         "intake_wall_s": intake_wall_s,
         "wall_scale": round(scale, 4) if scale else None,
-        "projected_intake_hours": round(serial_projected * scale / 3600, 2) if scale and serial_projected else None,
+        "projected_intake_hours": round(serial_projected * scale / 3600, 2)
+        if scale and serial_projected and not unmeasured
+        else None,
+        "projected_measured_origins_hours": round(serial_projected * scale / 3600, 2)
+        if scale and serial_projected
+        else None,
     }
 
 
@@ -589,6 +644,9 @@ def build_receipt(
         # A daemon that reached terminal but had to be killed on shutdown is
         # not a finished build.
         "clean_shutdown": exit_code == 0,
+        # The receipt's timings are reductions of the event log; a promoted
+        # pointer without the promotion event leaves them unmeasured.
+        "milestones_recorded": promoted is not None,
         "corpus_unchanged": corpus_unchanged,
         # Receipt sections are reductions of the event log; a dropped or
         # undelivered event makes them understate.

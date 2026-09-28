@@ -137,6 +137,12 @@ def main(argv: list[str] | None = None) -> int:
             key, _, value = item.partition("=")
             if not key.startswith("POLYLOGUE_"):
                 raise SystemExit(f"--env accepts POLYLOGUE_* settings only: {item}")
+            if key.startswith("POLYLOGUE_LOG_") or key.endswith(
+                ("_ROOT", "_ROOTS", "_CONFIG", "_PATH", "_DIR", "_HOME", "_FILE")
+            ):
+                # A path override can add an unsealed source (or move the
+                # log the receipt reads); the corpus is the only input.
+                raise SystemExit(f"--env may not set source, path or log settings: {key}")
             if any(existing == key for existing, _value in extra):
                 raise SystemExit(f"--env names {key} more than once")
             extra.append((key, value))

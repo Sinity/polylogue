@@ -372,3 +372,47 @@ def test_private_corpora_are_owner_only(tmp_path: Path) -> None:
     assert out.stat().st_mode & 0o077 == 0
     copied = out / "home" / ".codex" / "sessions" / "rollout.jsonl"
     assert copied.stat().st_mode & 0o077 == 0
+
+
+def test_projection_is_incomplete_when_a_populated_origin_is_unmeasured() -> None:
+    """Anti-vacuity: iterating only measured origins reports a full-census
+    projection that silently omits gemini-cli."""
+    manifest = {
+        "by_origin": {"codex": {"files": 1, "bytes": 1 << 20}},
+        "parameters": {"population": {"codex": {"bytes": 10 << 20}, "gemini-cli": {"bytes": 5 << 20}}},
+    }
+    result = projection(manifest, {"codex": {"seconds": 2.0}}, intake_wall_s=2.0)
+    assert result["complete"] is False
+    assert result["unmeasured_origins"] == ["gemini-cli"]
+    assert result["projected_intake_hours"] is None
+    assert result["projected_measured_origins_hours"] == round(20.0 / 3600, 2)
+
+
+def test_a_ledgerless_ops_db_reduces_to_zero_batches(tmp_path: Path) -> None:
+    import sqlite3
+
+    ops = tmp_path / "ops.db"
+    sqlite3.connect(ops).close()
+    assert analyse_batches(ops) == {"batches": 0}
+
+
+def test_search_probe_sees_postings_not_just_counts(tmp_path: Path) -> None:
+    """Anti-vacuity: two indexes with the same FTS row count but different
+    indexed text have different probe digests."""
+    import sqlite3
+
+    from devtools.fresh_build_bench.report import _fts_probe
+
+    def build(indexed: str) -> dict[str, object]:
+        path = tmp_path / f"{indexed}.db"
+        with sqlite3.connect(path) as conn:
+            conn.execute("CREATE TABLE blocks (block_id TEXT, search_text TEXT)")
+            conn.execute("CREATE VIRTUAL TABLE messages_fts USING fts5(text, content='')")
+            conn.execute("INSERT INTO blocks (rowid, block_id, search_text) VALUES (1, 'b1', 'alpha beta')")
+            conn.execute("INSERT INTO messages_fts (rowid, text) VALUES (1, ?)", (indexed,))
+        with sqlite3.connect(path) as conn:
+            return _fts_probe(conn)
+
+    right, wrong = build("alpha beta"), build("gamma delta")
+    assert right["rows"] == 1 and wrong["rows"] == 0
+    assert right["sha256"] != wrong["sha256"]

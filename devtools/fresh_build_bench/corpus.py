@@ -260,8 +260,10 @@ def sample_real(
     _private_root(out)
     rng = random.Random(seed)
     population: dict[str, dict[str, int]] = {}
+    census: dict[str, list[tuple[str, list[Path], int]]] = {}
     for source in sources:
         units = _units(source)
+        census[source.origin] = units
         population[source.origin] = {"units": len(units), "bytes": sum(unit[2] for unit in units)}
         strata: dict[int, list[tuple[str, list[Path], int]]] = defaultdict(list)
         for unit in units:
@@ -302,6 +304,12 @@ def sample_real(
                 taken += size
                 if boundary:
                     break
+    # The population is the projection's denominator: a live source that
+    # grew, shrank or lost a file while sampling makes it stale.
+    for source in sources:
+        recount = {key: size for key, _paths, size in _units(source)}
+        if recount != {key: size for key, _paths, size in census[source.origin]}:
+            raise ValueError(f"{source.origin} sources changed while sampling; sample a quiescent tree")
     return seal(
         out,
         kind="sample",
