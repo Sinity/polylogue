@@ -399,6 +399,9 @@ def _converge_selected_prerequisites(
     *,
     lookup: Callable[[str], object],
     admission: _DerivationAdmission,
+    session_id: str,
+    barrier: PublicationBarrier | None,
+    stop_requested: Callable[[], str | None],
 ) -> str | None:
     """Converge the exact upstream keys one selected target reads.
 
@@ -437,10 +440,30 @@ def _converge_selected_prerequisites(
             if status_of(upstream, binding.key) is KeyStatus.VALID:
                 continue
             replacement = upstream.compute(frame, binding.key)
-            accepted = admission(
-                binding.domain,
-                lambda upstream=upstream, replacement=replacement: bool(upstream.publish(frame, replacement)),
-            )
+            if (stopped := stop_requested()) is not None:
+                return f"stopped before prerequisite {binding}: {stopped}"
+            held: list[str] = []
+
+            def publish_unless_held(
+                upstream: Any = upstream, replacement: object = replacement, held: list[str] = held
+            ) -> bool:
+                # Re-decide the primary-publication barrier inside the writer
+                # admission, as the target's own publish does: compute ran
+                # outside it, so a newer revision may have been staged since.
+                if barrier is not None:
+                    try:
+                        waiting = session_id in barrier((session_id,))
+                    except Exception as exc:
+                        held.append(f"publication barrier unreadable: {exc}")
+                        return False
+                    if waiting:
+                        held.append("awaits primary publication")
+                        return False
+                return bool(upstream.publish(frame, replacement))
+
+            accepted = admission(binding.domain, publish_unless_held)
+            if held:
+                return held[0]
             status = status_of(upstream, binding.key)
             if status is not KeyStatus.VALID:
                 refused = "" if accepted else "; its publication was refused"
@@ -539,7 +562,14 @@ def _converge_selected_session_parts_sync(
         if target.expected == "required" and prerequisite_lookup is not None:
             try:
                 blocked = _converge_selected_prerequisites(
-                    frame, adapter, target.session_id, lookup=prerequisite_lookup, admission=admission
+                    frame,
+                    adapter,
+                    target.session_id,
+                    lookup=prerequisite_lookup,
+                    admission=admission,
+                    session_id=target.session_id,
+                    barrier=barrier,
+                    stop_requested=stop_requested,
                 )
             except Exception as exc:
                 outcomes.append(_selected_outcome(target, "failed", before, reason=f"prerequisite: {exc}"))
