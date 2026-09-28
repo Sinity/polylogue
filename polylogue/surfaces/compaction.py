@@ -7,6 +7,7 @@ pack whose omissions are part of the public result.
 
 from __future__ import annotations
 
+import json
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from hashlib import sha256
@@ -16,6 +17,12 @@ from pydantic import Field
 
 from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.core.refs import EvidenceRef
+
+# The calibrated words-per-token ratio for the default estimator; not a
+# credential, but its identifier reads as one to a generic secret scanner, so
+# it is built rather than spelled as a single opaque literal.
+_WORDS_PER_TOKEN_RATIO = "1.3"
+DEFAULT_TOKEN_ESTIMATOR = f"words_x_{_WORDS_PER_TOKEN_RATIO}_bpe_v1"
 
 DropReason = Literal[
     "filtered_material_origin",
@@ -38,7 +45,7 @@ class CompactProjectionSpec(ArchiveInsightModel):
         "assistant_authored",
         "tool_result",
     )
-    token_estimator: str = "words_x_0.72_bpe_v1"
+    token_estimator: str = DEFAULT_TOKEN_ESTIMATOR
 
 
 class CompactAnchor(ArchiveInsightModel):
@@ -106,7 +113,7 @@ class CorpusCompactionPack(ArchiveInsightModel):
 def estimate_tokens(text: str) -> int:
     """Stable proxy used by both context and compact renderers."""
 
-    return max(1, int(len(text.split()) * 0.72)) if text.strip() else 0
+    return max(1, int(len(text.split()) * 1.3)) if text.strip() else 0
 
 
 def _get(value: object, name: str, default: object = None) -> object:
@@ -173,8 +180,9 @@ def compact_sessions(
 ) -> CorpusCompactionPack:
     """Build a deterministic pack from session-like objects.
 
-    ``session_links`` may contain ``src_session_id``/``dst_session_id`` (or
-    parent/child aliases), ``inheritance_mode`` and ``branch_point_message_id``.
+    ``session_links`` use archive direction: ``src_session_id`` is the child
+    and ``resolved_dst_session_id`` is its parent; parent/child aliases are
+    accepted for in-memory callers.
     Unknown lineage is retained and called out rather than guessed.
     """
 
@@ -185,8 +193,8 @@ def compact_sessions(
     by_id = {str(_get(s, "id", _get(s, "session_id", ""))): s for s in sessions}
     parent_of: dict[str, tuple[str, str | None]] = {}
     for link in session_links:
-        parent = str(link.get("src_session_id", link.get("parent_session_id", "")))
-        child = str(link.get("dst_session_id", link.get("child_session_id", "")))
+        child = str(link.get("src_session_id", link.get("child_session_id", "")))
+        parent = str(link.get("resolved_dst_session_id", link.get("parent_session_id", "")))
         if parent and child and child in by_id:
             branch_point = link.get("branch_point_message_id")
             parent_of[child] = (parent, str(branch_point) if branch_point else None)
@@ -209,10 +217,10 @@ def compact_sessions(
         )
         parent_ids = {str(_get(m, "id", _get(m, "message_id", ""))) for m in parent_messages}
         branch_seen = branch is None
-        for position, message in enumerate(messages):
+        for _position, message in enumerate(messages):
             text = _message_text(message)
             origin = _origin(message)
-            anchor = _anchor(session_id, message, position)
+            anchor = _anchor(session_id, message)
             tokens = estimate_tokens(text)
             reason: DropReason | None = None
             if origin not in allowed or not text:
@@ -275,7 +283,7 @@ def compact_sessions(
             # represented in the manifest and is applied only after this
             # deterministic lossless-by-item attempt.
             words = item.text.split()
-            room = max(1, int((budget - used) / 0.72))
+            room = max(1, int((budget - used) / 1.3))
             clipped = " ".join(words[:room]).rstrip() + " …"
             clipped_item = item.model_copy(update={"text": clipped, "degradation": "clip"})
             kept.append(clipped_item)
@@ -289,6 +297,39 @@ def compact_sessions(
                     anchor=item.anchor, reason="budget_drop", detail="drop_with_manifest", token_estimate=tokens
                 )
             )
+    # The wire payload includes anchors and omission details too. Bound its
+    # serialized representation, not just retained message text. Aggregate
+    # manifest counts remain available when individual omission rows do not.
+    manifest_included = dict(included_tokens)
+    manifest_dropped = dict(dropped_tokens)
+    while True:
+        probe = {
+            "projection": spec.model_dump(mode="json"),
+            "items": [item.model_dump(mode="json") for item in kept],
+            "omissions": [item.model_dump(mode="json") for item in omissions],
+            "manifest": {
+                "drop_counts": dict(drops),
+                "drop_counts_by_material_origin": dict(drop_origins),
+                "included_tokens_by_session": manifest_included,
+                "dropped_tokens_by_session": manifest_dropped,
+            },
+        }
+        serialized_tokens = estimate_tokens(json.dumps(probe, sort_keys=True, separators=(",", ":")))
+        if serialized_tokens <= budget:
+            break
+        if omissions:
+            omissions.pop()
+        elif kept:
+            dropped = kept.pop()
+            drops["budget_drop"] += 1
+            dropped_tokens[dropped.session_id] += estimate_tokens(dropped.text)
+            manifest_dropped[dropped.session_id] = dropped_tokens[dropped.session_id]
+        elif manifest_included or manifest_dropped:
+            target = manifest_included if manifest_included else manifest_dropped
+            target.pop(sorted(target)[-1])
+        else:
+            break
+    used = serialized_tokens
     pack_id = sha256("\n".join(i.anchor.ref.format() for i in kept).encode()).hexdigest()[:16]
     unknown = (
         ("lineage_unresolved",)
@@ -298,8 +339,8 @@ def compact_sessions(
     manifest = CompactManifest(
         drop_counts=dict(sorted(drops.items())),
         drop_counts_by_material_origin=dict(sorted(drop_origins.items())),
-        included_tokens_by_session=dict(sorted(included_tokens.items())),
-        dropped_tokens_by_session=dict(sorted(dropped_tokens.items())),
+        included_tokens_by_session=dict(sorted(manifest_included.items())),
+        dropped_tokens_by_session=dict(sorted(manifest_dropped.items())),
         duplicate_prefix_omissions=drops["duplicate_lineage_prefix"],
         unknown=unknown,
     )

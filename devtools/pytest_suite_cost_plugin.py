@@ -107,6 +107,10 @@ def _heap_census(*, limit: int = _HEAP_TYPE_LIMIT) -> dict[str, Any]:
     to settle.
     """
     collected = gc.collect()
+    return _heap_census_after_collect(collected, limit=limit)
+
+
+def _heap_census_after_collect(collected: int, *, limit: int = _HEAP_TYPE_LIMIT) -> dict[str, Any]:
     objects = gc.get_objects()
     counts: Counter[str] = Counter()
     for item in objects:
@@ -209,7 +213,7 @@ class SuiteCostRecorder:
         self._peak_apparent = 0
         self._peak_allocated = 0
         self._scratch_truncated = False
-        self._rss_start_kib = _read_rss_kib() if sample_rss else None
+        self._rss_start_kib = _read_rss_kib() if self._sample_rss else None
         self._peak_rss_kib = self._rss_start_kib or 0
         self._rss_trajectory: list[dict[str, Any]] = []
         self._rss_truncated = False
@@ -254,11 +258,10 @@ class SuiteCostRecorder:
             return
         point: dict[str, Any] = {"tests": self._tests, "rss_kib": rss, "nodeid": self._last_nodeid}
         if self._sample_heap:
-            census = _heap_census()
-            # Read AFTER the census: the difference against ``rss_kib`` above
-            # is what a full collection released, which is the term that says
-            # whether the plateau is retention or uncollected garbage.
+            collected = gc.collect()
+            # Capture post-collection RSS before census allocations.
             point["rss_after_gc_kib"] = _read_rss_kib()
+            census = _heap_census_after_collect(collected)
             point["gc_collected"] = census["collected"]
             point["heap_objects"] = census["objects"]
             point["heap_top"] = census["top"]
@@ -328,6 +331,15 @@ def pytest_configure(config: pytest.Config) -> None:
     if not directory:
         return
     worker_id = getattr(config, "workerinput", {}).get("workerid", "master")
+    receipts_dir = Path(directory)
+    if worker_id == "master":
+        # A reused directory is one managed run's namespace. Remove prior
+        # worker receipts before xdist starts so stale workers cannot enter
+        # this run's aggregation.
+        for old_receipt in receipts_dir.glob("*.json"):
+            if old_receipt.name != RUN_RECEIPT_NAME:
+                with contextlib.suppress(OSError):
+                    old_receipt.unlink()
     # The controller's collection and worker warm-up are part of the run's
     # elapsed time. Record it separately rather than pretending its duration
     # is another worker's active time.
@@ -349,7 +361,7 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 def pytest_runtest_logreport(report: pytest.TestReport) -> None:
-    if _RECORDER is not None and report.when == "call":
+    if _RECORDER is not None and (report.when == "call" or (report.when == "setup" and report.failed)):
         _RECORDER.note_test(report.nodeid)
 
 

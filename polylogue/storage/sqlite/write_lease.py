@@ -226,6 +226,9 @@ _ACTIVE: contextvars.ContextVar[WriteLease | None] = contextvars.ContextVar(
 _ENFORCEMENT = threading.local()
 _ENFORCEMENT_DEFAULT = False
 _PROCESS_ENFORCEMENT = False
+_PROCESS_ENFORCEMENT_LOCK = threading.RLock()
+_PROCESS_ENFORCEMENT_USERS = 0
+_PROCESS_ENFORCEMENT_SUPPRESSORS = 0
 
 
 def _current_task_id() -> int | None:
@@ -251,17 +254,27 @@ def arm_write_lease_enforcement(*, armed: bool = True, process_wide: bool = Fals
     The daemon opts into ``process_wide=True`` for its process-lifetime writer
     boundary; tests and one-shot callers keep the default local scope.
     """
-    global _PROCESS_ENFORCEMENT
+    global _PROCESS_ENFORCEMENT, _PROCESS_ENFORCEMENT_USERS, _PROCESS_ENFORCEMENT_SUPPRESSORS
     previous = getattr(_ENFORCEMENT, "armed", _ENFORCEMENT_DEFAULT)
-    previous_process = _PROCESS_ENFORCEMENT
     _ENFORCEMENT.armed = armed
     if process_wide:
-        _PROCESS_ENFORCEMENT = armed
+        with _PROCESS_ENFORCEMENT_LOCK:
+            if armed:
+                _PROCESS_ENFORCEMENT_USERS += 1
+            else:
+                _PROCESS_ENFORCEMENT_SUPPRESSORS += 1
+            _PROCESS_ENFORCEMENT = _PROCESS_ENFORCEMENT_USERS > 0 and _PROCESS_ENFORCEMENT_SUPPRESSORS == 0
     try:
         yield
     finally:
         _ENFORCEMENT.armed = previous
-        _PROCESS_ENFORCEMENT = previous_process
+        if process_wide:
+            with _PROCESS_ENFORCEMENT_LOCK:
+                if armed:
+                    _PROCESS_ENFORCEMENT_USERS -= 1
+                else:
+                    _PROCESS_ENFORCEMENT_SUPPRESSORS -= 1
+                _PROCESS_ENFORCEMENT = _PROCESS_ENFORCEMENT_USERS > 0 and _PROCESS_ENFORCEMENT_SUPPRESSORS == 0
 
 
 def current_write_lease() -> WriteLease | None:
@@ -284,6 +297,10 @@ def require_write_lease(purpose: str, *, archive_root: str | Path | None = None)
                 raise UnleasedWriteError(f"{purpose} uses a write lease inherited by a child task")
         elif not lease.current_thread_is_authorized():
             raise UnleasedWriteError(f"{purpose} uses a write lease from an unauthorized thread")
+        if lease.archive_root is not None and archive_root is None:
+            raise UnleasedWriteError(
+                f"{purpose} omitted archive identity for writer {lease.actor} bound to {lease.archive_root}"
+            )
         if archive_root is not None and lease.archive_root is not None:
             expected = Path(archive_root).resolve()
             actual = lease.archive_root.resolve()
@@ -335,7 +352,11 @@ def grant_write_lease_thread() -> WriteLeaseThreadGrant:
     authority the caller does not have. The owner mints this *before* starting
     the worker thread; the worker calls :func:`bind_write_lease_thread` with it.
     """
-    lease = require_write_lease("granting a write lease thread binding")
+    active_lease = _ACTIVE.get()
+    lease = require_write_lease(
+        "granting a write lease thread binding",
+        archive_root=active_lease.archive_root if active_lease is not None else None,
+    )
     if lease is None:
         raise UnleasedWriteError(
             "cannot grant a write lease thread binding without holding the lease; "
@@ -370,7 +391,11 @@ def delegate_write_lease() -> WriteLeaseDelegation:
     check runs through :func:`require_write_lease`, so delegation can never
     manufacture authority that the caller does not already have.
     """
-    lease = require_write_lease("delegating the daemon write lease")
+    active_lease = _ACTIVE.get()
+    lease = require_write_lease(
+        "delegating the daemon write lease",
+        archive_root=active_lease.archive_root if active_lease is not None else None,
+    )
     if lease is None:
         raise UnleasedWriteError(
             "cannot delegate the write lease without holding it; mint the delegation "

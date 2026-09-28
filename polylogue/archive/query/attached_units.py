@@ -44,7 +44,15 @@ _MAX_ROWS_PER_SESSION = 200
 #: the page or where its rows sort within it (polylogue-fvsjn).
 _MAX_ROWS_PER_PAGE = 5000
 
+#: Characters of a message's ``text`` or an action's ``output_text`` an
+#: attached row carries. The cut happens inside SQLite (``text_prefix_chars``
+#: on the session unit reads), so a whale-sized block is never read into
+#: Python only to be shortened; the row reports how much was left out.
 _MAX_ATTACHED_TEXT_CHARS = 2000
+
+#: Row attribute holding the full length of each text field the session unit
+#: reads return as a prefix.
+_TEXT_FULL_LENGTH_ATTRIBUTES = {"text": "text_chars", "output_text": "output_text_chars"}
 
 #: Named gap a bounded projection carries so the envelope degrades instead of
 #: reporting a cut row set as the session's complete one.
@@ -143,13 +151,25 @@ def _row_session_id(row: Any) -> str | None:
     return None
 
 
-def _compact_attached_payload(payload: JSONDocument) -> JSONDocument:
+def _compact_attached_payload(payload: JSONDocument, row: Any) -> JSONDocument:
+    """Report how much of each text field the attached row leaves out.
+
+    Text normally arrives already cut in SQL, with the whole length on the
+    row. A value holding an embedded NUL arrives whole (SQLite's text
+    functions stop at NUL; its length attribute is ``None``) and is cut here.
+    """
     compacted = dict(payload)
-    for field in ("text", "output_text"):
+    for field, length_attribute in _TEXT_FULL_LENGTH_ATTRIBUTES.items():
         value = compacted.get(field)
-        if isinstance(value, str) and len(value) > _MAX_ATTACHED_TEXT_CHARS:
-            compacted[field] = value[:_MAX_ATTACHED_TEXT_CHARS]
-            compacted[f"{field}_truncated_chars"] = len(value) - _MAX_ATTACHED_TEXT_CHARS
+        if not isinstance(value, str):
+            continue
+        full_length = getattr(row, length_attribute, None)
+        if full_length is None:
+            full_length = len(value)
+            value = value[:_MAX_ATTACHED_TEXT_CHARS]
+            compacted[field] = value
+        if full_length > len(value):
+            compacted[f"{field}_truncated_chars"] = full_length - len(value)
     return compacted
 
 
@@ -230,9 +250,11 @@ def _fetch_session_unit_rows(
         "action": "query_session_actions",
         "file": "query_session_files",
     }.get(descriptor.unit)
-    if method_name is None or not hasattr(archive, method_name):
+    if method_name is None:
         return None
     query_method = cast(Any, getattr(archive, method_name))
+    # Text-bearing units cut their text in SQL; ``file`` carries none.
+    text_bound = {} if descriptor.unit == "file" else {"text_prefix_chars": _MAX_ATTACHED_TEXT_CHARS}
     return cast(
         Sequence[Any],
         query_method(
@@ -241,6 +263,7 @@ def _fetch_session_unit_rows(
             offset=0,
             sort_direction=sort_direction,
             per_session_limit=per_session_limit,
+            **text_bound,
         ),
     )
 
@@ -403,7 +426,7 @@ def fetch_attached_units(
                 continue
             buckets.setdefault(session_id, []).append(
                 _select_payload_fields(
-                    _compact_attached_payload(payload_document),
+                    _compact_attached_payload(payload_document, row),
                     selected_fields,
                 )
             )

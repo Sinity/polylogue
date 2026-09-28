@@ -63,4 +63,35 @@ describe('generated session request adapters', () => {
       vi.useRealTimers();
     }
   });
+
+  it('bootstraps again when a healthy daemon has forgotten the cached credential', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2030-01-01T00:00:00.000Z'));
+    vi.resetModules();
+    const [{ withWebCredential }, { PolylogueClient: FreshPolylogueClient }, { DaemonHttpError: FreshDaemonHttpError }] = await Promise.all([
+      import('./api'),
+      import('../api/generated'),
+      import('../api/runtime'),
+    ]);
+    const bootstrap = vi.spyOn(FreshPolylogueClient.prototype, 'bootstrapWebCredential')
+      .mockResolvedValue({
+        ok: true,
+        credential: { expires_at: new Date(Date.now() + 300_000).toISOString(), scopes: ['read'] },
+      } as never);
+    const request = vi.fn()
+      .mockRejectedValueOnce(new FreshDaemonHttpError(
+        new Response(null, { status: 401, statusText: 'Unauthorized' }),
+        { error: 'web_credential_invalid' },
+        { code: 'web_credential_invalid', detail: null, field: null },
+      ))
+      .mockResolvedValueOnce('recovered');
+
+    try {
+      await expect(withWebCredential(request)).resolves.toBe('recovered');
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(bootstrap).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

@@ -125,7 +125,7 @@ def main(argv: list[str] | None = None) -> int:
                 raise SchemaFrontierError("the declared frontier does not match the live roots")
             declared_inputs = frontier_source_inputs(frontier, provider_token)
             declared_subject = frontier.subject(provider_token)
-            if not declared_inputs and declared_subject is not None:
+            if check.checked_members == 0 and declared_subject is not None:
                 # A subject whose declared roots admit nothing has a complete
                 # zero denominator, not an empty sample set. Falling through
                 # here would hand the subject to the archive-backed route and

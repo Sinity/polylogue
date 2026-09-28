@@ -114,6 +114,45 @@ def test_movement_reports_a_dropped_and_an_added_leaf() -> None:
     assert "note" in paths
 
 
+def test_movement_paths_distinguish_dotted_keys_from_nested_keys() -> None:
+    paths = {m.path for m in measurement_movement({"latency.p95": 10}, {"latency": {"p95": 10}})}
+    assert paths == {'"latency.p95"', "latency.p95"}
+
+
+def test_movement_tracks_empty_containers_and_json_safe_absence() -> None:
+    movements = measurement_movement({}, {"errors": []})
+    errors = next(m for m in movements if m.path == "errors")
+    assert errors.after == {"$type": "array", "$empty": True}
+    assert json.dumps([movement.to_dict() for movement in movements])
+
+
+def test_boolean_and_number_are_different_measurement_types() -> None:
+    assert measurement_movement({"blocking": True}, {"blocking": 1})
+
+
+def test_baseline_name_cannot_escape_baseline_directory(tmp_path: Path) -> None:
+    from devtools.measurement_receipts import baseline_path
+
+    with pytest.raises(MeasurementBaselineError, match="filename stem"):
+        baseline_path("../../escape", root=tmp_path)
+
+
+def test_raw_measurement_with_measurement_key_is_not_unwrapped(tmp_path: Path) -> None:
+    from devtools.measurement_receipts import _read_observation
+
+    raw = {"measurement": {"latency": 1}, "verdict": "pass"}
+    path = tmp_path / "raw.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    assert _read_observation(path) == (None, None, raw)
+
+
+def test_raw_receipt_does_not_inherit_promoter_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    raw = tmp_path / "raw.json"
+    raw.write_text('{"value": 1}', encoding="utf-8")
+    assert _record(tmp_path, raw, monkeypatch, "--reason", "imported result") == 0
+    assert load_baseline(tmp_path / BASELINE_DIR / "raw.json")["host"] == {"producer": "unavailable"}  # type: ignore[index]
+
+
 def test_first_record_refuses_without_a_stated_reason(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

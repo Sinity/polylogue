@@ -386,6 +386,16 @@ def test_generation_and_receipt_roots_reject_symlinks(tmp_path: Path) -> None:
         EmbeddingGenerationStore(tmp_path)
 
 
+def test_configured_archive_root_symlink_resolves_to_owned_directory(tmp_path: Path) -> None:
+    """Anti-vacuity: rejecting the configured alias breaks startup for this same archive."""
+    real_root = tmp_path / "real-archive"
+    real_root.mkdir()
+    alias = tmp_path / "archive-alias"
+    alias.symlink_to(real_root, target_is_directory=True)
+    store = EmbeddingGenerationStore(alias)
+    assert store.archive_root == real_root.resolve()
+
+
 def test_historical_retired_artifacts_are_not_owned(tmp_path: Path) -> None:
     retired = tmp_path / ".embeddings-generations" / "retired-legacy"
     retired.mkdir(parents=True)
@@ -537,6 +547,19 @@ def test_membership_rejects_each_mixed_vector_contract_axis_independently(tmp_pa
 
     with pytest.raises(EmbeddingGenerationError, match="mixed vector contracts"):
         store.replace(candidate)
+
+
+def test_mixed_candidate_is_rejected_before_generation_staging(tmp_path: Path) -> None:
+    """Anti-vacuity: allocating gen-* before contract validation leaves malformed inventory behind."""
+    store = EmbeddingGenerationStore(tmp_path)
+    candidate = tmp_path / "mixed-before-stage.db"
+    initialize_archive_database(candidate, ArchiveTier.EMBEDDINGS)
+    with sqlite3.connect(candidate) as conn:
+        _meta_row(conn, b"\x01" * 32, model="voyage-4", recipe=b"\x0a" * 32)
+        _meta_row(conn, b"\x02" * 32, model="voyage-4-lite", recipe=b"\x0a" * 32)
+    with pytest.raises(EmbeddingGenerationError, match="mixed vector contracts"):
+        store.replace(candidate)
+    assert not list(store.root.glob("gen-*/generation.json"))
 
 
 # ── Pointer replacement during lease-free computation (polylogue-c0l7n) ─────

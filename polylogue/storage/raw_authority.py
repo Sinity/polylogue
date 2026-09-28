@@ -804,7 +804,7 @@ def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 1
             """
             SELECT b.blocker_id,
                    json_extract(b.expected_json, '$.plan_id') AS plan_id,
-                   b.observed_pass_id, b.reason, b.created_at_ms,
+                   b.observed_pass_id, b.reason, b.expected_json, b.observed_json, b.created_at_ms,
                    COALESCE(json_extract(b.expected_json, '$.authority_witness.schema'), '') AS witness_schema
             FROM raw_authority_blockers AS b
             WHERE b.resolved_at_ms IS NULL
@@ -820,6 +820,8 @@ def list_unresolved_raw_authority_blockers(archive_root: Path, *, limit: int = 1
                 "plan_id": str(row["plan_id"]),
                 "observed_pass_id": (None if row["observed_pass_id"] is None else str(row["observed_pass_id"])),
                 "reason": str(row["reason"]),
+                "expected": json.loads(str(row["expected_json"])),
+                "observed": json.loads(str(row["observed_json"])),
                 "created_at_ms": int(row["created_at_ms"]),
                 "kind": _blocker_kind(witness_schema=str(row["witness_schema"])),
             }

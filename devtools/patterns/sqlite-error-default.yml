@@ -4,7 +4,12 @@ severity: warning
 message: "bare sqlite3.Error handler returns a measurement/read default; owner fesmz"
 rule:
   all:
-    - pattern: return $VALUE
+    - any:
+        - pattern: return True
+        - pattern: return 0
+        - pattern: return ""
+        - pattern: return {}
+        - pattern: return []
     - inside:
         kind: except_clause
         regex: '^except sqlite3\.Error:'

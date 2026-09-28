@@ -152,6 +152,78 @@ def test_a_required_key_that_disappears_after_discovery_is_binding_moved() -> No
     assert outcome[0].reason is PendingReason.BINDING_MOVED
 
 
+class _DemandVsAuditDerivation(StringStatusDerivation):
+    """Demand and audit read genuinely different keyspaces, as production does.
+
+    The demand-only sweep pages ``session_profile_demand`` -- only the
+    requested subset -- while an archive-wide audit pages every key. A fake
+    that served the same key set to both frames would mask a shared cursor:
+    consuming ``b`` for demand would also (accidentally, via the shared
+    required set) remove it from the audit's pending set, passing even
+    without separate cursors.
+    """
+
+    def required_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
+        keys = ("a",) if frame.profile_demand_only else ("a", "b")
+        return _page(keys, cursor=cursor, limit=limit)
+
+
+@pytest.mark.asyncio
+async def test_a_demand_sweep_leaves_the_archive_audit_cursor_alone() -> None:
+    """A demand-only pass pages its own keyspace from its own cursor.
+
+    Anti-vacuity (polylogue-6remh): with one shared cursor the demand pass
+    resumed the audit's partial position, finished it, and stored its
+    terminal cursor, so the next audit slice wrapped to its first key and a
+    large archive never reached its tail.
+    """
+    adapter = _DemandVsAuditDerivation(("a", "b"))
+    adapter.domain = "session_profile"
+    converger = DaemonConverger([], derivations=[adapter])
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    owner = SessionProfileConvergenceOwner(
+        converger,
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    try:
+        audit = DerivationFrame(archive_root="/archive", source_revision="r1", profile_full_scan=True)
+        assert (await owner.converge(audit, budget=Budget(page=1, compute=1))).done == 1
+        audit_cursor = converger._derivation_cursor
+        assert audit_cursor.position("session_profile").page_cursor == "1"
+
+        demand = DerivationFrame(archive_root="/archive", source_revision="r1", profile_demand_only=True)
+        await owner.converge(demand, budget=Budget(page=1, compute=1))
+        assert converger._derivation_cursor == audit_cursor
+
+        assert (await owner.converge(audit, budget=Budget(page=1, compute=1))).done == 1
+        assert adapter.output == {"a": "b0", "b": "b0"}
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+def test_a_promoted_generation_restarts_the_demand_cursor() -> None:
+    """A demand sweep never resumes a keyset position from an older generation.
+
+    Anti-vacuity: without binding the demand cursor to
+    ``frame.source_revision``, the ``r2`` pass resumes at the ``r1`` position
+    after ``a`` and publishes ``b``, leaving the promoted generation's ``a``
+    unserved until the cursor wraps.
+    """
+    adapter = StringStatusDerivation(("a", "b"))
+    converger = DaemonConverger([], derivations=[adapter])
+    old = DerivationFrame(archive_root="/archive", source_revision="r1", profile_demand_only=True)
+    assert converger.converge_derivations(old, budget=Budget(page=1, compute=1)).done == 1
+    assert adapter.output == {"a": "b0"}
+
+    adapter.output.clear()  # the promoted generation holds no profiles yet
+    promoted = DerivationFrame(archive_root="/archive", source_revision="r2", profile_demand_only=True)
+    converger.converge_derivations(promoted, budget=Budget(page=1, compute=1))
+    assert adapter.output == {"a": "b0"}
+
+
 @pytest.mark.asyncio
 async def test_session_owner_keeps_archive_resume_but_restarts_targeted_scope() -> None:
     """A targeted earlier id cannot inherit an archive sweep's page cursor.

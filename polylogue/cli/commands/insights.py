@@ -7,10 +7,11 @@ profiles`` works without re-specifying the filter on the subcommand.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import click
 
@@ -73,6 +74,14 @@ def _build_click_params(pt: InsightType) -> list[click.Parameter]:
             default=pt.mcp_default_limit,
             show_default=True,
             help="Maximum rows",
+        )
+    )
+    params.append(
+        click.Option(
+            ("--json", "output_format"),
+            flag_value="json",
+            default=None,
+            help="Alias for --format json.",
         )
     )
     params.append(
@@ -214,6 +223,10 @@ def _render_status_plain(report: InsightReadinessReport) -> None:
         expected = f" expected={insight.expected_row_count}" if insight.expected_row_count is not None else ""
         presence = "" if insight.table_present else " (table absent)"
         click.echo(f"{insight.insight_name}: rows={insight.row_count}{expected}{presence}")
+        if insight.degraded_count or insight.fallback_reason_counts:
+            reasons = ", ".join(f"{name}={count}" for name, count in sorted(insight.fallback_reason_counts.items()))
+            detail = f" fallback_reasons={reasons}" if reasons else ""
+            click.echo(f"  degraded={insight.degraded_count}{detail}")
         if insight.missing_count or insight.stale_count or insight.orphan_count or insight.incompatible_count:
             click.echo(
                 "  "
@@ -252,6 +265,7 @@ def _render_export_plain(result: InsightExportBundleResult) -> None:
 @click.option("--since", default=None, help="Limit coverage details to rows at/after this timestamp or date.")
 @click.option("--until", default=None, help="Limit coverage details to rows at/before this timestamp or date.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+@click.option("--json", "output_format", flag_value="json", default=None, help="Alias for --format json.")
 @click.pass_context
 def insights_status_command(
     ctx: click.Context,
@@ -293,6 +307,7 @@ def insights_status_command(
 
 @ops_insights_command.command("hermes-health")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+@click.option("--json", "output_format", flag_value="json", default=None, help="Alias for --format json.")
 @click.pass_context
 def insights_hermes_health_command(ctx: click.Context, output_format: str | None) -> None:
     """Report the bounded Hermes-to-Polylogue integration health rollup (fs1.15).
@@ -360,6 +375,7 @@ def _render_hermes_health_plain(health: object) -> None:
 @click.option("--until", default=None, help="Limit supported insights to rows at/before this timestamp or date.")
 @click.option("--bundle-format", type=click.Choice(["jsonl"]), default="jsonl", show_default=True)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+@click.option("--json", "output_format", flag_value="json", default=None, help="Alias for --format json.")
 @click.option(
     "--overwrite", is_flag=True, help="Replace an existing bundle directory after writing a complete new one."
 )
@@ -417,6 +433,7 @@ def insights_export_command(
 @click.option("--schema-version", type=click.IntRange(min=1), default=1, show_default=True)
 @click.option("--exact-template-cap", type=click.IntRange(min=1), default=1, show_default=True)
 @click.option("-f", "--format", "output_format", type=click.Choice(["json"]), default=None)
+@click.option("--json", "output_format", flag_value="json", default=None, help="Alias for --format json.")
 @click.pass_context
 def insights_fable_packet_command(
     ctx: click.Context,
@@ -441,9 +458,9 @@ def insights_fable_packet_command(
         )
     except ValueError as exc:
         fail("insights fable-packet", str(exc))
-    payload = asdict(packet)
+    payload = _packet_json_document(packet)
     if output_format == "json" or ctx.find_root().params.get("output_format") == "json":
-        emit_success(cast(dict[str, object], payload))
+        emit_success(payload)
         return
     click.echo(f"Fable packet: {packet.status}")
     click.echo(
@@ -462,6 +479,14 @@ def _format_pct(count: int, sample: int) -> str:
     if sample <= 0:
         return "-"
     return f"{(count * 100) // sample}%"
+
+
+def _packet_json_document(packet: Any) -> dict[str, object]:
+    """Lower the packet dataclass's tuples to JSON-native arrays."""
+    payload = json.loads(json.dumps(asdict(packet)))
+    if not isinstance(payload, dict):
+        raise TypeError("Fable packet did not lower to a JSON object")
+    return cast(dict[str, object], payload)
 
 
 def _render_audit_plain(report: InsightRigorAuditReport) -> None:
@@ -525,6 +550,7 @@ def _render_audit_plain(report: InsightRigorAuditReport) -> None:
     default=None,
     help="Output format.",
 )
+@click.option("--json", "output_format", flag_value="json", default=None, help="Alias for --format json.")
 @click.pass_context
 def insights_audit_command(
     ctx: click.Context,

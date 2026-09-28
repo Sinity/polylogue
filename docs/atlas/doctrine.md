@@ -112,9 +112,9 @@ new uncontrolled read could license itself by claiming to be the boundary.
 ## Doctrine: finding provenance
 
 **Invariant**: a finding is an ordinary durable assertion carrying a
-`polylogue.finding.v1` value with its own evidence refs, and it is rejected at
-the write boundary if those refs, its statistic, or its declared negative
-controls do not hold up. Provenance is queryable, not prose.
+`polylogue.finding.v1` value with its own evidence refs, and its shape, statistic, and declared negative controls are validated at
+the write boundary. Reference existence is resolved later; missing referenced
+objects make the finding stale rather than preventing storage. Provenance is queryable, not prose.
 
 **Owner**: the write-boundary projection and its refusals are
 `polylogue/storage/sqlite/archive_tiers/user_write.py:1593-1612`; the finding
@@ -239,10 +239,12 @@ to retire this non-goal, not to leave both.
 
 ## Doctrine: injected-context trust
 
-**Invariant**: trust is derived from authenticated provenance *and* the
-source's own authority; content can never raise its own trust class. Assertion
-prose is not eligible for `system` trust at all. A context source supplies
-candidates; it cannot allocate budget or grant trust.
+**Intended invariant**: trust should derive from authenticated provenance
+*and* the source's own authority; content must not raise its own trust class.
+Assertion prose is not eligible for `system` trust. The current policy-item
+authorization path does not authenticate provenance independently: a context
+source can supply the fields that qualify an item for executable policy. Those
+fields alone are not structural proof of trust.
 
 **Owner**: `polylogue/core/assertions.py:72-101` derives the trust class and
 treats an assertion-controlled context policy as a capability cap rather than
@@ -293,12 +295,7 @@ two refusals are `devtools/scaffold.py:36-48` and
 up in one family, so a read that is safe for one becomes a claim the other
 cannot support. Worked examples, all anchored in current source:
 
-- **Accepted reuse**: several daemon read routes share one family because they
-  genuinely match on all five dimensions — same identity kind, stable
-  lifecycle, daemon-read authority, read-only durability — and differ only in
-  envelope shape, which is itself one of the five
-  (`polylogue/daemon/route_contracts.py:165`;
-  `polylogue/daemon/route_contracts.py:193`).
+- **Required separation**: status and query-units have distinct identities and access result shapes. `_STATUS_DECLARATION` uses `daemon.read-status` with `status-envelope`; `_QUERY_UNITS_DECLARATION` uses `daemon.read-query-units` with `query-unit-envelope` (`polylogue/daemon/route_contracts.py`). Because result shape is one of the five compatibility dimensions, keep them in separate families.
 - **Rejected: query run into context delivery.** A query object is durable,
   content-addressed, and re-resolvable
   (`polylogue/storage/sqlite/query_objects.py:1`); a context delivery decision

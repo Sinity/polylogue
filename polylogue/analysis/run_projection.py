@@ -30,6 +30,10 @@ ObservedEventKind = Literal[
     "command_failed",
     "test_passed",
     "test_failed",
+    "tool_run",
+    "subagent_spawn",
+    "decision",
+    "artifact_change",
 ]
 ObservedDeliveryState = Literal["observed", "unknown"]
 

@@ -23,6 +23,7 @@ from polylogue.sources.revision_backfill import parse_retained_raw_sessions
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.ingest_governance import (
     CohortMembershipRefusalError,
+    _census_binding,
     prepare_ingest_cohort,
     prepare_raw_census,
     publish_ingest_cohort,
@@ -37,6 +38,27 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
 from tests.infra.archive_templates import bootstrap_archive_root
 
 ParseFunction: TypeAlias = Callable[[ArchiveStore, str], list[ParsedSession]]
+
+
+def test_prepared_census_binding_includes_revision_authority(tmp_path: Path) -> None:
+    """Authority-only census changes stale prepared descriptors.
+
+    Anti-vacuity: remove ``revision_authority`` from ``_census_binding``'s
+    SELECT/value and these two prepared-work snapshots become equal.
+    """
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        (raw_id,) = _write_raws(archive, 1)
+        conn = archive._ensure_source_conn()
+        conn.execute(
+            "INSERT INTO raw_membership_census(raw_id, parser_fingerprint, status, member_count, censused_at_ms, detail, revision_authority) "
+            "VALUES (?, 'parser', 'complete', 0, 1, '', 'semantic')",
+            (raw_id,),
+        )
+        before = _census_binding(archive, raw_id)
+        conn.execute("UPDATE raw_membership_census SET revision_authority='byte' WHERE raw_id=?", (raw_id,))
+        after = _census_binding(archive, raw_id)
+        assert before != after
 
 
 def _session(

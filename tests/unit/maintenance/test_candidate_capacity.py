@@ -378,6 +378,50 @@ def test_prospective_material_changes_fresh_admission_and_binds_refusal(
     assert receipt.observations == 0
 
 
+def test_projection_calibrates_only_source_evidence_and_includes_forecast_source_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The ratio denominator excludes user/audit and includes new source rows.
+
+    Anti-vacuity: adding ``user.db`` to ``evidence_bytes`` or removing the
+    prospective source-row term makes either asserted boundary change fail.
+    """
+    root = tmp_path / "archive"
+    _archive_with_generation(root, generation_bytes=1024)
+    _dense(root / "source.db", 4096)
+    _dense(root / "user.db", 1024 * 1024)
+    _dense(root / "audit.db", 1024 * 1024)
+    monkeypatch.setattr("polylogue.maintenance.candidate_capacity._available_bytes", lambda _path: 1 << 40)
+
+    base = project_candidate_capacity(root)
+    with_source_rows = project_candidate_capacity(root, prospective_source_db_allocation_bytes=64 * 1024)
+    assert base.evidence_bytes == (
+        measure_archive_capacity(root).population("source_evidence").allocated_bytes
+        + measure_archive_capacity(root).population("blob").allocated_bytes
+    )
+    assert with_source_rows.projected_index_bytes - base.projected_index_bytes >= 4 * 64 * 1024
+
+
+def test_generation_baseline_copy_is_charged_to_candidate_filesystem(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The candidate's own baseline copy consumes candidate-destination space.
+
+    Anti-vacuity: removing the baseline term from candidate growth makes the
+    candidate filesystem requirement identical despite a split receipt root.
+    """
+    root = tmp_path / "archive"
+    _archive_with_generation(root, generation_bytes=1024)
+    monkeypatch.setattr("polylogue.maintenance.candidate_capacity._available_bytes", lambda _path: 1 << 40)
+    base = project_candidate_capacity(root)
+    with_baseline = project_candidate_capacity(root, prospective_generation_baseline_bytes=12345)
+
+    def candidate_requirement(projection: CandidateCapacityProjection) -> int:
+        return next(row.required_bytes for row in projection.filesystem_requirements if "candidate" in row.destinations)
+
+    assert candidate_requirement(with_baseline) == candidate_requirement(base) + 12345
+
+
 def test_many_tiny_sealed_payloads_are_charged_as_retained_blocks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
