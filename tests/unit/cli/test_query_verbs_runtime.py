@@ -1045,6 +1045,20 @@ def test_context_image_projection_max_sessions_controls_execution() -> None:
     assert run_context_image.call_args.kwargs["max_sessions"] == 2
 
 
+def test_read_explain_reports_compact_render_format() -> None:
+    """The compact render expression appears in the read explanation.
+
+    Anti-vacuity: capturing the local format before parsing ``--render``
+    reports ``default`` even though the read will render JSON.
+    """
+    _, child = _context_pair(params={"explain_query": True})
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+    with patch("polylogue.cli.query_verbs._explain_terminal_action", return_value=True) as explain:
+        wrapped(child, **_read_verb_kwargs(view="messages", render_expr="format:json"))
+    assert explain.call_args.kwargs["format"] == "json"
+
+
 def test_context_image_first_uses_only_resolved_seed() -> None:
     """A scoped --first result cannot be widened by a second seed query."""
     _, child = _context_pair(query_terms=("repo:polylogue",))
