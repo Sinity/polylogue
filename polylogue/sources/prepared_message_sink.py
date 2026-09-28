@@ -8,7 +8,7 @@ import os
 import re
 import sqlite3
 import uuid
-from collections.abc import Container, Iterable, Iterator, Mapping, MutableSequence, Set
+from collections.abc import Container, Iterable, Iterator, Mapping, MutableSequence, MutableSet, Set
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -43,13 +43,15 @@ def _message_json(value: ParsedMessage) -> str:
     payload = value.model_dump(mode="json")
     payload["parent_message_position"] = value.parent_message_position
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
-    return json.dumps(payload, ensure_ascii=False)
+    # Each serialized record is one SQLite cell: individually storable
+    # values can still combine into an unstorable row.
+    return require_storable_string(json.dumps(payload, ensure_ascii=False), kind="serialized message")
 
 
 def _event_json(value: ParsedSessionEvent) -> str:
     payload = value.model_dump(mode="json")
     payload["boundary_message_position"] = value.boundary_message_position
-    return json.dumps(payload, ensure_ascii=False)
+    return require_storable_string(json.dumps(payload, ensure_ascii=False), kind="serialized event")
 
 
 def _attachment_json(value: ParsedAttachment) -> str:
@@ -61,7 +63,7 @@ def _attachment_json(value: ParsedAttachment) -> str:
     payload["_prepared_inline_bytes"] = (
         base64.b64encode(value.inline_bytes).decode("ascii") if value.inline_bytes is not None else None
     )
-    return json.dumps(payload, ensure_ascii=False)
+    return require_storable_string(json.dumps(payload, ensure_ascii=False), kind="serialized attachment")
 
 
 def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachment_ordinal: int) -> ParsedAttachment:
@@ -84,6 +86,22 @@ _POINTER_RE = re.compile(r"tool-outputs/[^\s\"'\\,)]+")
 _MASK_RE = re.compile(
     r"<tool_output_masked>|Output too large\. Showing first [\d,]+ and last [\d,]+ characters",
 )
+
+
+_ADVERTISED_EXCERPT_RE = re.compile(r"Showing first ([\d,]+) and last ([\d,]+) characters")
+
+
+def _advertised_output_length(text: str) -> int:
+    """The minimum length of the full output a masking envelope describes.
+
+    The envelope excerpts the first N and last M characters of a longer
+    output, so the full output holds at least N + M. Without the counts only
+    a non-empty file is evidence.
+    """
+    match = _ADVERTISED_EXCERPT_RE.search(text)
+    if match is None:
+        return 1
+    return int(match.group(1).replace(",", "")) + int(match.group(2).replace(",", ""))
 
 
 def is_masked_tool_output(text: str | None) -> bool:
@@ -114,7 +132,7 @@ class GeminiToolOutputIndex:
         conn.executescript("""
             CREATE TABLE gemini_tool_owner (
                 tool_id TEXT PRIMARY KEY, first_ordinal INTEGER NOT NULL,
-                inline_len INTEGER NOT NULL, masked INTEGER NOT NULL
+                inline_len INTEGER NOT NULL, masked INTEGER NOT NULL, complete_len INTEGER NOT NULL
             );
             CREATE TABLE gemini_tool_pointer (filename TEXT PRIMARY KEY, tool_id TEXT NOT NULL);
             CREATE TABLE gemini_tool_present (filename TEXT PRIMARY KEY);
@@ -136,17 +154,21 @@ class GeminiToolOutputIndex:
                 continue
             inline = ""
             masked = False
+            complete_len = 0
             results = tool_record.get("result")
             for result_item in results if isinstance(results, list) else []:
                 response = json_document(json_document(result_item).get("functionResponse")).get("response")
                 output = json_document(response).get("output")
                 if isinstance(output, str):
                     inline = output if len(output) > len(inline) else inline
-                    masked = masked or is_masked_tool_output(output)
+                    if is_masked_tool_output(output):
+                        masked = True
+                        complete_len = max(complete_len, _advertised_output_length(output))
             self.conn.execute(
-                "INSERT INTO gemini_tool_owner VALUES (?, ?, ?, ?) ON CONFLICT(tool_id) "
-                "DO UPDATE SET inline_len = excluded.inline_len, masked = excluded.masked",
-                (tool_id, self._tool_ordinal, len(inline), int(masked)),
+                "INSERT INTO gemini_tool_owner VALUES (?, ?, ?, ?, ?) ON CONFLICT(tool_id) "
+                "DO UPDATE SET inline_len = excluded.inline_len, masked = excluded.masked, "
+                "complete_len = excluded.complete_len",
+                (tool_id, self._tool_ordinal, len(inline), int(masked), complete_len),
             )
             self._tool_ordinal += 1
             for text in _tool_call_texts(tool_record):
@@ -188,7 +210,7 @@ class GeminiToolOutputIndex:
             tool_id = self._owner_for_stem(stem) or self._pointer_owner(entry.filename, stem)
             owner = (
                 self.conn.execute(
-                    "SELECT inline_len, masked FROM gemini_tool_owner WHERE tool_id = ?", (tool_id,)
+                    "SELECT inline_len, masked, complete_len FROM gemini_tool_owner WHERE tool_id = ?", (tool_id,)
                 ).fetchone()
                 if tool_id is not None
                 else None
@@ -206,10 +228,11 @@ class GeminiToolOutputIndex:
                 except OSError as exc:
                     reason = f"read_error:{type(exc).__name__}"
                 else:
-                    if bool(owner[1]) and len(full_text) < int(owner[0]):
+                    if bool(owner[1]) and len(full_text) < int(owner[2]):
                         # A file still being written can read as an empty or
-                        # partial prefix. It never replaces an inline envelope
-                        # it is not at least as complete as.
+                        # partial prefix. The envelope advertises how much it
+                        # excerpts ("first N and last M characters"); a
+                        # sidecar shorter than that is not the full output.
                         reason = "sidecar_less_complete_than_inline"
                         full_text = ""
             if reason is not None:
@@ -842,8 +865,9 @@ class ChatGPTNodeMapping(Mapping[str, object]):
         self.conn = conn
         conn.execute(
             "CREATE TABLE chatgpt_node (node_key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL UNIQUE, "
-            "node_json TEXT NOT NULL, child_ordinal INTEGER)"
+            "node_json TEXT NOT NULL, child_ordinal INTEGER, parent_key TEXT)"
         )
+        conn.execute("CREATE INDEX chatgpt_node_parent ON chatgpt_node(parent_key, ordinal)")
         conn.execute(
             "CREATE TABLE chatgpt_child (node_ordinal INTEGER NOT NULL, item_ordinal INTEGER NOT NULL, "
             "child_json TEXT NOT NULL, child_key TEXT, PRIMARY KEY (node_ordinal, item_ordinal)) WITHOUT ROWID"
@@ -851,14 +875,19 @@ class ChatGPTNodeMapping(Mapping[str, object]):
         conn.execute("CREATE INDEX chatgpt_child_key ON chatgpt_child(node_ordinal, child_key, item_ordinal)")
 
     def put(self, key: str, node: object, ordinal: int) -> None:
-        encoded = json.dumps(node, ensure_ascii=False)
+        encoded = require_storable_string(json.dumps(node, ensure_ascii=False), kind="serialized mapping node")
+        # ``_sibling_ordinals``' grouping: only mapping nodes count, and a
+        # missing or empty parent groups under the root key "".
+        parent = node.get("parent") if isinstance(node, dict) else None
+        parent_key = (parent if isinstance(parent, str) and parent else "") if isinstance(node, dict) else None
         previous = self.conn.execute("SELECT child_ordinal FROM chatgpt_node WHERE node_key = ?", (key,)).fetchone()
         if previous is not None and previous[0] is not None:
             self.conn.execute("DELETE FROM chatgpt_child WHERE node_ordinal = ?", (previous[0],))
         self.conn.execute(
-            "INSERT INTO chatgpt_node VALUES (?, ?, ?, NULL) "
-            "ON CONFLICT(node_key) DO UPDATE SET node_json = excluded.node_json, child_ordinal = NULL",
-            (key, ordinal, encoded),
+            "INSERT INTO chatgpt_node VALUES (?, ?, ?, NULL, ?) "
+            "ON CONFLICT(node_key) DO UPDATE SET node_json = excluded.node_json, child_ordinal = NULL, "
+            "parent_key = excluded.parent_key",
+            (key, ordinal, encoded, parent_key),
         )
 
     def put_child(self, node_ordinal: int, item_ordinal: int, child: object) -> None:
@@ -895,6 +924,22 @@ class ChatGPTNodeMapping(Mapping[str, object]):
     def shallow_view(self) -> _ShallowChatGPTMapping:
         """Expose node shapes to the canonical parser without rebuilding child arrays."""
         return _ShallowChatGPTMapping(self)
+
+    def sibling_ordinal(self, key: str) -> int:
+        """Arrival ordinal of ``key`` among nodes naming the same parent.
+
+        The scratch form of ``chatgpt._sibling_ordinals``: mapping order is
+        the export's record order, answered by index instead of a dict over
+        every node.
+        """
+        row = self.conn.execute("SELECT parent_key, ordinal FROM chatgpt_node WHERE node_key = ?", (key,)).fetchone()
+        if row is None or row[0] is None:
+            return 0
+        return int(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM chatgpt_node WHERE parent_key = ? AND ordinal < ?", (row[0], row[1])
+            ).fetchone()[0]
+        )
 
     def declared_child_position(self, parent_key: str, child_id: object) -> int | None:
         """First index of ``child_id`` in the parent's spilled ``children`` array.
@@ -978,6 +1023,9 @@ class _ShallowChatGPTMapping(Mapping[str, object]):
 
     def declared_child_position(self, parent_key: str, child_id: object) -> int | None:
         return self.mapping.declared_child_position(parent_key, child_id)
+
+    def sibling_ordinal(self, key: str) -> int:
+        return self.mapping.sibling_ordinal(key)
 
 
 class _ScratchChatGPTEntries:
@@ -1073,6 +1121,50 @@ class ScratchSessionSpill:
 
     def events(self) -> SqliteSessionEventSink:
         return self.store.new_event_sink()
+
+    def seen_set(self) -> _ScratchStringSet:
+        return _ScratchStringSet(self.store.conn)
+
+
+class _ScratchStringSet(MutableSet[str]):
+    """A string set kept in scratch: one table per preparation, one id per set."""
+
+    _next_id = 0
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS scratch_string_set (set_id INTEGER NOT NULL, value TEXT NOT NULL, "
+            "PRIMARY KEY (set_id, value)) WITHOUT ROWID"
+        )
+        type(self)._next_id += 1
+        self.set_id = type(self)._next_id
+
+    def __contains__(self, value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and self.conn.execute(
+                "SELECT 1 FROM scratch_string_set WHERE set_id = ? AND value = ?", (self.set_id, value)
+            ).fetchone()
+            is not None
+        )
+
+    def __iter__(self) -> Iterator[str]:
+        for (value,) in self.conn.execute(
+            "SELECT value FROM scratch_string_set WHERE set_id = ? ORDER BY value", (self.set_id,)
+        ).fetchall():
+            yield str(value)
+
+    def __len__(self) -> int:
+        return int(
+            self.conn.execute("SELECT COUNT(*) FROM scratch_string_set WHERE set_id = ?", (self.set_id,)).fetchone()[0]
+        )
+
+    def add(self, value: str) -> None:
+        self.conn.execute("INSERT OR IGNORE INTO scratch_string_set VALUES (?, ?)", (self.set_id, value))
+
+    def discard(self, value: str) -> None:
+        self.conn.execute("DELETE FROM scratch_string_set WHERE set_id = ? AND value = ?", (self.set_id, value))
 
 
 def read_chatgpt_mapping_object(

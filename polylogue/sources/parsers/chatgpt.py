@@ -3,11 +3,11 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Container, Iterable, Iterator, Mapping, MutableSequence, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Mapping, MutableSequence, MutableSet, Sequence
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from types import MappingProxyType
-from typing import Protocol, runtime_checkable
+from typing import Protocol, cast, runtime_checkable
 
 from pydantic import ValidationError
 
@@ -63,16 +63,25 @@ class _GenerationTiming:
 
 
 def _coerce_float(value: object) -> float | None:
+    """A finite float from a numeric or timestamp value, else ``None``.
+
+    Non-finite values (``"nan"``, ``inf``) are no ordering evidence: NaN
+    compares false with everything, so a sort over it depends on the store
+    (SQLite keeps NaN as NULL), and message order must not.
+    """
     # Exclude bool explicitly (bool is a subclass of int)
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        result = float(value)
+        return result if math.isfinite(result) else None
     if isinstance(value, str):
         try:
-            return float(value)
+            result = float(value)
         except (ValueError, TypeError):
             pass
+        else:
+            return result if math.isfinite(result) else None
         parsed = parse_timestamp(value)
         if parsed is not None:
             return parsed.timestamp()
@@ -988,17 +997,20 @@ def _strip_citation_markers(text: str) -> str:
 _SANDBOX_FILE_RE = re.compile(r"sandbox:(/mnt/data/[^\s)\]\"'>]+)")
 
 
-def _sandbox_file_paths(text: str) -> Iterator[str]:
+def _sandbox_file_paths(text: str, seen: MutableSet[str] | None = None) -> Iterator[str]:
     """Ordered, distinct ``/mnt/data`` paths linked in assistant text.
 
     Trailing prose punctuation is stripped so ``(sandbox:/mnt/data/kit.zip).``
     yields ``/mnt/data/kit.zip``. Directory links keep their trailing slash in
     the returned path. Every distinct link becomes an attachment; the prepared
     route keeps them in scratch, so a message linking many files is recorded
-    whole rather than capped.
+    whole rather than capped. ``seen`` holds the distinct paths; the prepared
+    route passes a scratch-backed set so a message linking millions of files
+    does not hold them all in memory.
     """
 
-    seen: set[str] = set()
+    if seen is None:
+        seen = set()
     for match in _SANDBOX_FILE_RE.finditer(text):
         path = match.group(1).rstrip(".,;:!?*`")
         if path == "/mnt/data/" or path in seen:
@@ -1258,6 +1270,19 @@ class DeclaredChildPositions(Protocol):
     def declared_child_position(self, parent_key: str, child_id: object) -> int | None: ...
 
 
+def _sibling_ordinal_lookup(mapping: Mapping[str, object]) -> Callable[[str], int]:
+    """Answer each node's arrival ordinal among its parent's children.
+
+    A scratch-backed mapping answers from its own index; any other mapping
+    computes the ordinals once (``_sibling_ordinals``).
+    """
+    lookup = getattr(mapping, "sibling_ordinal", None)
+    if callable(lookup):
+        return cast(Callable[[str], int], lookup)
+    ordinals = _sibling_ordinals(mapping)
+    return lambda node_id: ordinals.get(node_id, 0)
+
+
 def _declared_child_position(mapping: Mapping[str, object], parent_key: str, node: Mapping[str, object]) -> int | None:
     """Index of ``node`` in its parent's ``children`` array, when it is listed."""
     if isinstance(mapping, DeclaredChildPositions):
@@ -1357,6 +1382,10 @@ class SessionSpill(Protocol):
 
     def events(self) -> MutableSequence[ParsedSessionEvent]: ...
 
+    def seen_set(self) -> MutableSet[str]:
+        """An empty set for per-message deduplication."""
+        ...
+
 
 def extract_messages_from_mapping(
     mapping: Mapping[str, object],
@@ -1412,6 +1441,7 @@ def _collect_message_entries(
     admission: AdmissionLedger | None,
     preserve_empty_messages: bool,
     default_model_slug: str | None,
+    new_seen_set: Callable[[], MutableSet[str]] = set,
 ) -> list[str]:
     """Normalize every message node into ``entries``; return the active path."""
     if admission is not None:
@@ -1420,7 +1450,7 @@ def _collect_message_entries(
             sum(1 for node in mapping.values() if isinstance(node, dict) and isinstance(node.get("message"), dict)),
         )
     message_ordinal = 0
-    sibling_ordinals = _sibling_ordinals(mapping)
+    sibling_ordinal = _sibling_ordinal_lookup(mapping)
     active_path_ids = _active_path_node_ids(mapping, current_node)
     active_path_id_set = set(active_path_ids)
     for idx, node_id in enumerate(mapping.keys(), start=1):
@@ -1483,7 +1513,7 @@ def _collect_message_entries(
         # naming the same parent carries the same sequence
         # (``_sibling_ordinals``).
         if parent_message_provider_id:
-            branch_index = sibling_ordinals.get(node_id, 0)
+            branch_index = sibling_ordinal(node_id)
             declared_position = _declared_child_position(mapping, str(parent_id), node)
             if declared_position is not None:
                 branch_index = declared_position
@@ -1538,7 +1568,7 @@ def _collect_message_entries(
         # produced it. attachment_kind="sandbox_file" keeps every acquisition
         # path away from it (there is nothing local to fetch).
         if role is Role.ASSISTANT and text:
-            for sandbox_path in _sandbox_file_paths(text):
+            for sandbox_path in _sandbox_file_paths(text, new_seen_set()):
                 attachments.append(
                     ParsedAttachment(
                         provider_attachment_id=f"sandbox:{msg_id}:{sandbox_path}",
@@ -2871,6 +2901,7 @@ def parse(payload: Mapping[str, object], fallback_id: str, *, spill: SessionSpil
         admission=admission,
         preserve_empty_messages=derived_current_node is not None,
         default_model_slug=conversation_model_slug,
+        new_seen_set=spill.seen_set if spill is not None else set,
     )
     emitted_message_ids = entries.emitted_provider_ids()
     generation_timings: list[_GenerationTiming] = []

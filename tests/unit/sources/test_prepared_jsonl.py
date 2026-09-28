@@ -33,6 +33,7 @@ from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact, pre
 from polylogue.sources.prepared_message_sink import (
     _ACTIVE_PARENT_LOOKUP_SQL,
     ChatGPTNodeMapping,
+    ScratchSessionSpill,
     SqliteAttachmentSink,
     SqliteMessageSink,
     SqliteMessageStore,
@@ -3101,11 +3102,15 @@ def test_browser_capture_envelope_with_a_mapping_keeps_the_capture_route(tmp_pat
 
 
 def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
-    """A sibling grown by append ingest contributes its tail's tool ids.
+    """A sibling grown by append ingest contributes its accepted tail's tool ids.
+
+    The chain is the full revision plus the contiguous appends from its end.
+    A later append for the same start offset competes with the first; the
+    chain stops there rather than include a superseded branch.
 
     Anti-vacuity: select only the full revision in
     ``RetainedSidecarResolver._retained_siblings`` and ``toolu_tail`` is
-    missing, so the root replay reports its sidecar as unowned debt.
+    missing; concatenate every append and ``toolu_branch`` appears.
     """
     from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
 
@@ -3115,7 +3120,8 @@ def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
     blob_root = tmp_path / "blob"
     store = BlobStore(blob_root)
     session_dir = tmp_path / "project" / "session-1"
-    sibling = (session_dir / "subagents" / "agent-a.jsonl").as_posix()
+    tail_sibling = (session_dir / "subagents" / "agent-a.jsonl").as_posix()
+    branch_sibling = (session_dir / "subagents" / "agent-b.jsonl").as_posix()
 
     def tool_use(tool_id: str) -> bytes:
         return (
@@ -3128,21 +3134,117 @@ def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
             + b"\n"
         )
 
-    baseline_hash, baseline_size = store.write_from_bytes(tool_use("toolu_base"))
+    base_hash, base_size = store.write_from_bytes(tool_use("toolu_base"))
     tail_hash, tail_size = store.write_from_bytes(tool_use("toolu_tail"))
+    branch_hash, branch_size = store.write_from_bytes(tool_use("toolu_branch"))
+    rows = (
+        ("a-base", tail_sibling, base_hash, base_size, "full", 1, None, None),
+        ("a-tail", tail_sibling, tail_hash, tail_size, "append", 2, base_size, base_size + tail_size),
+        ("b-base", branch_sibling, base_hash, base_size, "full", 1, None, None),
+        ("b-one", branch_sibling, tail_hash, tail_size, "append", 2, base_size, base_size + tail_size),
+        ("b-two", branch_sibling, branch_hash, branch_size, "append", 3, base_size, base_size + branch_size + 7),
+    )
     with sqlite3.connect(source_db) as conn:
-        for raw_id, blob_hash, size, kind, acquired, start in (
-            ("raw-base", baseline_hash, baseline_size, "full", 1, None),
-            ("raw-tail", tail_hash, tail_size, "append", 2, baseline_size),
-        ):
+        for raw_id, path, blob_hash, size, kind, acquired, start, end in rows:
             conn.execute(
                 "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms, "
-                "revision_kind, append_start_offset) VALUES (?, 'claude-code-session', ?, ?, ?, ?, ?, ?)",
-                (raw_id, sibling, bytes.fromhex(blob_hash), size, acquired, kind, start),
+                "revision_kind, append_start_offset, append_end_offset) "
+                "VALUES (?, 'claude-code-session', ?, ?, ?, ?, ?, ?, ?)",
+                (raw_id, path, bytes.fromhex(blob_hash), size, acquired, kind, start, end),
             )
     with sqlite3.connect(source_db) as conn:
         resolver = RetainedSidecarResolver(tmp_path, blob_root=blob_root, source_conn=conn)
-        [transcript] = resolver._retained_siblings(conn, session_dir.parent / "session-1.jsonl")
-        records = list(transcript.open_records())
-    tool_ids = {block["id"] for record in records if isinstance(record, dict) for block in record["message"]["content"]}
-    assert tool_ids == {"toolu_base", "toolu_tail"}
+        siblings = resolver._retained_siblings(conn, session_dir.parent / "session-1.jsonl")
+        tool_ids = {
+            sibling.coordinate: {
+                block["id"]
+                for record in sibling.open_records()
+                if isinstance(record, dict)
+                for block in record["message"]["content"]
+            }
+            for sibling in siblings
+        }
+    assert tool_ids == {tail_sibling: {"toolu_base", "toolu_tail"}, branch_sibling: {"toolu_base"}}
+
+
+def test_chatgpt_spill_keeps_every_per_node_collection_in_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Events, sibling ordinals and sandbox dedup stay in scratch; order matches.
+
+    Anti-vacuity: each monkeypatch below fails if the spilled parse falls
+    back to an in-memory collection: ``_sibling_ordinals`` builds a dict over
+    every node, a builtin ``set`` dedups sandbox links, and the admission
+    wrapper's ``list(session_events)`` replaces the scratch event sink. The
+    ``"nan"`` timestamp pins the finite-timestamp rule: with NaN kept as a
+    float, the collecting sort and SQLite (NaN stored as NULL) order the
+    messages differently.
+    """
+    builder = ChatGPTExportBuilder("scratch-only")
+    builder.add_node("user", "first", node_id="n1")
+    builder.add_node("assistant", "see sandbox:/mnt/data/a.txt and sandbox:/mnt/data/b.txt", node_id="n2")
+    builder.add_node("user", "third", node_id="n3")
+    record = builder.build()
+    mapping = record["mapping"]
+    assert isinstance(mapping, dict)
+    mapping["n1"]["message"]["create_time"] = "nan"
+    mapping["n2"]["message"]["create_time"] = 2.0
+    mapping["n3"]["message"]["create_time"] = 1.0
+    mapping["n2"]["message"]["metadata"] = {"targeted_reply": "quoted"}
+    expected = parse_payload(Provider.CHATGPT, [record], "fallback")[0]
+
+    def refuse_ordinals(_mapping: object) -> object:
+        raise AssertionError("sibling ordinals collected in memory")
+
+    original_paths = chatgpt._sandbox_file_paths
+
+    def scratch_seen_only(text: str, seen: object = None) -> object:
+        assert seen is not None and not isinstance(seen, set), "sandbox dedup used an in-memory set"
+        return original_paths(text, seen)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(chatgpt, "_sibling_ordinals", refuse_ordinals)
+    monkeypatch.setattr(chatgpt, "_sandbox_file_paths", scratch_seen_only)
+    store = SqliteMessageStore(tmp_path / "scratch.db")
+    try:
+        (tmp_path / "chatgpt.json").write_text(json.dumps(record), encoding="utf-8")
+        with (tmp_path / "chatgpt.json").open("rb") as source_handle:
+            read = read_chatgpt_mapping_object(source_handle, store.conn)
+        assert read is not None
+        envelope, node_mapping = read
+        session = chatgpt.parse(
+            {**envelope, "mapping": node_mapping.shallow_view()}, "fallback", spill=ScratchSessionSpill(store)
+        )
+        assert isinstance(session.session_events, SqliteSessionEventSink)
+        assert [message.provider_message_id for message in session.messages] == [
+            message.provider_message_id for message in expected.messages
+        ]
+        assert [event.model_dump(mode="json") for event in session.session_events] == [
+            event.model_dump(mode="json") for event in expected.session_events
+        ]
+        assert len(session.attachments) == len(expected.attachments) == 2
+    finally:
+        store.close()
+
+
+def test_chatgpt_refuses_values_that_only_combine_past_the_cell_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Individually storable parts that combine into an unstorable cell refuse.
+
+    Anti-vacuity: drop the serialized-record check in ``_message_json`` (and
+    ``ChatGPTNodeMapping.put``) and preparation stores the combined record.
+    """
+    _lower_storable_limit(monkeypatch, 200)
+    builder = ChatGPTExportBuilder("combined").add_node("user", "a" * 150, "b" * 150)
+    source = tmp_path / "chatgpt.json"
+    source.write_text(json.dumps(builder.build()), encoding="utf-8")
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CHATGPT.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "scratch"),
+    )
+    assert artifact.error is not None and "value_bound_refused" in artifact.error
+    assert artifact.deferred is False

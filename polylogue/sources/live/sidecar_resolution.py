@@ -233,11 +233,12 @@ class RetainedSidecarResolver:
         """Retained transcripts sharing this scope, excluding ``source_path``.
 
         The root ``.jsonl`` plus every ``subagents/agent-*.jsonl``. A sibling
-        that grew through append ingest is a full baseline plus append
-        revisions; its records are the newest full revision followed by every
-        append admitted after it, so tool ids introduced in appended tails are
-        in the ownership index. A sibling index only corroborates ownership,
-        and a partial one can only over-report debt.
+        that grew through append ingest is its newest full revision followed
+        by the contiguous append chain from that revision's end: each step is
+        the one append starting where the chain ends. Two appends starting at
+        the same offset are competing branches; the chain stops there rather
+        than guess, so a superseded branch never contributes tool ids. A
+        shorter index can only over-report debt, a wrong one would hide it.
         """
         path = Path(source_path)
         session_dir = path.parent.parent if path.parent.name == "subagents" else path.parent / path.stem
@@ -245,8 +246,8 @@ class RetainedSidecarResolver:
         low, high = _prefix_range(f"{(session_dir / 'subagents').as_posix()}/")
         rows = conn.execute(
             """
-            SELECT source_path, hex(blob_hash), revision_kind, acquired_at_ms, raw_id,
-                   COALESCE(append_start_offset, 0)
+            SELECT source_path, hex(blob_hash), revision_kind, blob_size,
+                   append_start_offset, append_end_offset
             FROM raw_sessions
             WHERE source_path = ? OR (source_path >= ? AND source_path < ?)
             ORDER BY source_path, acquired_at_ms, raw_id
@@ -254,29 +255,44 @@ class RetainedSidecarResolver:
             (root_path.as_posix(), low, high),
         ).fetchall()
         own = path.as_posix()
-        revisions: dict[str, list[tuple[str, str, int, str, int]]] = {}
-        for candidate_path, blob_hash, revision_kind, acquired_at_ms, raw_id, append_start in rows:
+        revisions: dict[str, list[tuple[str, str, int, int | None, int | None]]] = {}
+        for candidate_path, blob_hash, revision_kind, blob_size, append_start, append_end in rows:
             candidate = str(candidate_path)
             if candidate == own:
                 continue
             if candidate != root_path.as_posix() and not candidate.endswith(".jsonl"):
                 continue
             revisions.setdefault(candidate, []).append(
-                (str(blob_hash).lower(), str(revision_kind), int(acquired_at_ms or 0), str(raw_id), int(append_start))
+                (
+                    str(blob_hash).lower(),
+                    str(revision_kind),
+                    int(blob_size or 0),
+                    int(append_start) if append_start is not None else None,
+                    int(append_end) if append_end is not None else None,
+                )
             )
         siblings: list[SiblingTranscript] = []
         for candidate, candidate_rows in sorted(revisions.items()):
             fulls = [row for row in candidate_rows if row[1] != "append"]
-            baseline = fulls[-1] if fulls else None
-            appends = sorted(
-                (
-                    row
-                    for row in candidate_rows
-                    if row[1] == "append" and (baseline is None or (row[2], row[3]) > (baseline[2], baseline[3]))
-                ),
-                key=lambda row: (row[4], row[2], row[3]),
-            )
-            blob_hashes = ([baseline[0]] if baseline is not None else []) + [row[0] for row in appends]
+            if not fulls:
+                # Only deltas retained: the largest is the best partial view.
+                largest = max(candidate_rows, key=lambda row: row[2])
+                siblings.append(
+                    SiblingTranscript(coordinate=candidate, open_records=self._records_from_blobs([largest[0]]))
+                )
+                continue
+            baseline = fulls[-1]
+            blob_hashes = [baseline[0]]
+            end = baseline[2]
+            appends = [row for row in candidate_rows if row[1] == "append" and row[3] is not None]
+            while True:
+                steps = {row for row in appends if row[3] == end and row[4] is not None and row[4] > end}
+                if len(steps) != 1:
+                    break
+                step = next(iter(steps))
+                blob_hashes.append(step[0])
+                assert step[4] is not None
+                end = step[4]
             siblings.append(SiblingTranscript(coordinate=candidate, open_records=self._records_from_blobs(blob_hashes)))
         return tuple(siblings)
 
