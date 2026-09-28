@@ -6,12 +6,12 @@ merged into another PR's head branch is never gated, yet its code reaches
 the evaluated PR's head branch, recursively (a PR merged into a branch that was
 itself merged into the head), and reports each unresolved review thread.
 
-A merged PR belongs to the stack when its merge commit is in the root PR's or
-its parent PR's commit list. When it is not (the parent branch was rebased, or the branch name
-was reused), the PR still counts if it merged while its parent's branch was the
-live one: after the parent PR was opened and, below the root, before the parent
-itself merged. A PR merged into a child after that child merged never reached
-the root, so it is excluded.
+Every PR ever merged into the root's head branch counts, and so does every PR
+merged into a stacked PR's head branch before that stacked PR itself merged. A
+PR merged into a child after the child merged never reached the root. No other
+exclusion is attempted: merge-commit ancestry is erased by rebases and squash
+merges, so a PR merged into an earlier branch of the same name fails the gate
+too, named like any other, and resolving its threads clears it.
 
 Stdlib only, so the CircleCI ``stacked-review-threads`` job runs it without
 syncing the project. The GitHub token comes from ``GH_TOKEN`` or
@@ -61,7 +61,7 @@ query($owner: String!, $name: String!, $number: Int!) {
 
 _ROOT_FRAGMENT = """
 fragment Root on PullRequest {
-  number url state baseRefName headRefName createdAt isCrossRepository
+  number url state baseRefName headRefName isCrossRepository
 }
 """
 
@@ -71,8 +71,7 @@ query($owner: String!, $name: String!, $branch: String!, $cursor: String) {
     pullRequests(states: MERGED, baseRefName: $branch, first: 50, after: $cursor) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number url headRefName createdAt mergedAt
-        mergeCommit { oid }
+        number url headRefName mergedAt
       }
     }
   }
@@ -92,26 +91,12 @@ query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
 }
 """
 
-_COMMITS_QUERY = """
-query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequest(number: $number) {
-      commits(first: 100, after: $cursor) {
-        pageInfo { hasNextPage endCursor }
-        nodes { commit { oid } }
-      }
-    }
-  }
-}
-"""
-
 
 @dataclass(frozen=True)
 class RootPullRequest:
     number: int
     url: str
     head_ref: str
-    created_at: str
     cross_repository: bool
 
 
@@ -170,7 +155,6 @@ class StackedThreadGate:
     def __init__(self, transport: Transport, owner: str, name: str) -> None:
         self._transport = transport
         self._repo = {"owner": owner, "name": name}
-        self._commit_sets: dict[int, set[str]] = {}
 
     def _query(self, query: str, **variables: Any) -> dict[str, Any]:
         response = self._transport(query, {**self._repo, **variables})
@@ -195,29 +179,20 @@ class StackedThreadGate:
 
     def evaluate(self, root: RootPullRequest) -> Verdict:
         verdict = Verdict(root)
-        # (branch, parent number, parent created_at, parent merged_at or None for the root).
-        # Expansion is keyed by parent PR, not branch name: a reused branch name
-        # is a different lifetime with its own merge window.
-        pending: list[tuple[str, int, str, str | None]] = [(root.head_ref, root.number, root.created_at, None)]
+        # (branch, parent number, parent merged_at or None for the root). Expansion
+        # is keyed by parent PR, not branch name: a reused branch name is a
+        # different lifetime with its own merge bound.
+        pending: list[tuple[str, int, str | None]] = [(root.head_ref, root.number, None)]
         expanded: set[int] = set()
         while pending:
-            branch, parent_number, parent_created, parent_merged = pending.pop()
+            branch, parent_number, parent_merged = pending.pop()
             if parent_number in expanded or branch == "master":
                 continue
             expanded.add(parent_number)
             for child in self._merged_into(branch):
                 if child["number"] in expanded or child["number"] == root.number:
                     continue
-                merge_oid = (child.get("mergeCommit") or {}).get("oid")
-                # The parent's own commit list also counts: a parent squash-merged
-                # below the root carries the child's content under a new OID.
-                in_history = merge_oid is not None and any(
-                    merge_oid in self._commits(number) for number in dict.fromkeys((root.number, parent_number))
-                )
-                merged_while_live = child["mergedAt"] >= parent_created and (
-                    parent_merged is None or child["mergedAt"] <= parent_merged
-                )
-                if not (in_history or merged_while_live):
+                if parent_merged is not None and child["mergedAt"] > parent_merged:
                     continue
                 unresolved = self._unresolved_threads(child["number"])
                 if unresolved and all(pr.number != child["number"] for pr in verdict.offenders):
@@ -229,7 +204,7 @@ class StackedThreadGate:
                             parent_number=parent_number,
                         )
                     )
-                pending.append((child["headRefName"], child["number"], child["createdAt"], child["mergedAt"]))
+                pending.append((child["headRefName"], child["number"], child["mergedAt"]))
         verdict.offenders.sort(key=lambda pr: pr.number)
         return verdict
 
@@ -252,26 +227,12 @@ class StackedThreadGate:
                 return urls
             cursor = threads["pageInfo"]["endCursor"]
 
-    def _commits(self, number: int) -> set[str]:
-        if number in self._commit_sets:
-            return self._commit_sets[number]
-        oids: set[str] = set()
-        cursor: str | None = None
-        while True:
-            commits = self._query(_COMMITS_QUERY, number=number, cursor=cursor)["pullRequest"]["commits"]
-            oids.update(node["commit"]["oid"] for node in commits["nodes"])
-            if not commits["pageInfo"]["hasNextPage"]:
-                self._commit_sets[number] = oids
-                return oids
-            cursor = commits["pageInfo"]["endCursor"]
-
 
 def _parse_root(node: dict[str, Any]) -> RootPullRequest:
     return RootPullRequest(
         number=node["number"],
         url=node["url"],
         head_ref=node["headRefName"],
-        created_at=node["createdAt"],
         cross_repository=node["isCrossRepository"],
     )
 
