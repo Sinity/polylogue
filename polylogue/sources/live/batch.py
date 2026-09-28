@@ -5506,6 +5506,9 @@ class LiveBatchProcessor:
                                 stage="live_ingest_admission",
                             )
         except (zipfile.BadZipFile, OSError) as exc:
+            # An aborted scan reconciles nothing; drop its partial refusal set
+            # so a later pass starts clean.
+            self._zip_member_refusals_this_pass.pop(str(path), None)
             # Members stream into the archive's blob staging: a full or
             # read-only archive is not a property of this ZIP, and reporting
             # "no admissible record" would exclude the unchanged file for good.
@@ -5615,6 +5618,9 @@ class LiveBatchProcessor:
                         )
                     )
         except (zipfile.BadZipFile, OSError) as exc:
+            # An aborted scan reconciles nothing; drop its partial refusal set
+            # so a later pass starts clean.
+            self._zip_member_refusals_this_pass.pop(str(path), None)
             raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             # A transport/read failure is not evidence that the archive has no

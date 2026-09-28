@@ -29,7 +29,12 @@ from polylogue.sources.decoder_zip import (
     is_declared_artifact_path,
     provider_detection_path,
 )
-from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider, refuse_foreign_material
+from polylogue.sources.dispatch import (
+    LOCATION_VALIDATION_PREFIX_BYTES,
+    ForeignOriginContentError,
+    bound_location_provider,
+    refuse_foreign_material,
+)
 from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
@@ -364,7 +369,17 @@ BaselineProgress = Callable[..., None]
 """``progress(phase, *, inspected=0, revisions=0, hashed_bytes=0)``: cheap counters, no I/O."""
 
 
-def _revision(path: Path, *, cancelled: Callable[[], bool] | None = None) -> tuple[str, int]:
+def _revision(
+    path: Path,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+    location: Provider | None = None,
+) -> tuple[str, int]:
+    """Hash one file; with ``location``, validate the same bytes it hashes.
+
+    Validating a separate read would let a file that changes in between be
+    baselined as accepted while live capture refuses its bytes.
+    """
     _check_observation_cancelled(cancelled)
     if is_sqlite_path(path):
         return sqlite_member_revision_and_size(path)
@@ -373,6 +388,8 @@ def _revision(path: Path, *, cancelled: Callable[[], bool] | None = None) -> tup
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             _check_observation_cancelled(cancelled)
+            if size == 0 and location is not None:
+                refuse_foreign_material(path, location, prefix=chunk[:LOCATION_VALIDATION_PREFIX_BYTES])
             digest.update(chunk)
             size += len(chunk)
     return digest.hexdigest(), size
@@ -588,13 +605,14 @@ def capture_production_source_baseline(
                     Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
                 )
                 try:
-                    refuse_foreign_material(path, location)
+                    if is_sqlite_path(path):
+                        refuse_foreign_material(path, location)
+                    revision, material_bytes = _revision(path, cancelled=cancelled, location=location)
                 except ForeignOriginContentError as exc:
                     decisions.append(
                         SourceDecision(source_name, str(path), "excluded", f"{exc.code}:{exc.found.value}")
                     )
                     continue
-                revision, material_bytes = _revision(path, cancelled=cancelled)
                 if progress is not None:
                     progress("baseline_hash", revisions=1, hashed_bytes=material_bytes)
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
