@@ -18,6 +18,7 @@ from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
 from polylogue.cli import query_verbs, read_view_handlers
 from polylogue.cli.click_app import cli as click_cli
+from polylogue.cli.contextual_errors import AmbiguousSelectionError
 from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, ReadViewOptionDeclaration
 from polylogue.cli.root_request import RootModeRequest
@@ -427,7 +428,7 @@ def test_read_request_normalization_receives_the_full_parsed_selection(monkeypat
     from polylogue.surfaces.read_contract import ReadRequest
 
     request = RootModeRequest.from_params({"query": ("typed_only:true", "repo:polylogue")})
-    expected_selection = request.query_spec()
+    expected_selection = replace(request.query_spec(), limit=7)
 
     normalized_selections: list[object] = []
     normalize = ReadRequest.normalize
@@ -1023,6 +1024,39 @@ def test_read_verb_context_image_invokes_declared_read() -> None:
     assert "query=repo:polylogue" in delivered
     assert "limit 3" in delivered
     assert "- Selection query: repo:polylogue" not in delivered
+
+
+def test_context_image_projection_max_sessions_controls_execution() -> None:
+    """The projection selector reaches the context-image operation.
+
+    Anti-vacuity: using only the dedicated flag default sends five sessions
+    instead of the explicitly requested projection value.
+    """
+    _, child = _context_pair(query_terms=("repo:polylogue",))
+    child.obj.config = SimpleNamespace()
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+    with (
+        patch("polylogue.cli.query_verbs.run_read_context_image") as run_context_image,
+        patch("polylogue.cli.read_views.context.configured_mutation_operation"),
+        patch("polylogue.cli.read_views.base.deliver_content"),
+    ):
+        wrapped(child, **_read_verb_kwargs(view="context-image", projection_expr="context-max-sessions:2"))
+    assert run_context_image.call_args.kwargs["max_sessions"] == 2
+
+
+def test_read_explain_reports_compact_render_format() -> None:
+    """The compact render expression appears in the read explanation.
+
+    Anti-vacuity: capturing the local format before parsing ``--render``
+    reports ``default`` even though the read will render JSON.
+    """
+    _, child = _context_pair(params={"explain_query": True})
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+    with patch("polylogue.cli.query_verbs._explain_terminal_action", return_value=True) as explain:
+        wrapped(child, **_read_verb_kwargs(view="messages", render_expr="format:json"))
+    assert explain.call_args.kwargs["format"] == "json"
 
 
 def test_context_image_first_uses_only_resolved_seed() -> None:
@@ -1909,6 +1943,37 @@ def test_delete_verb_updates_confirmation_and_dry_run_flags() -> None:
     assert confirmed_kwargs.get("dry_run") is None
 
 
+def test_delete_dry_run_marks_a_truncated_candidate_prefix_bounded() -> None:
+    """The dry-run refusal labels the two-row prefix as incomplete.
+
+    Anti-vacuity: treating the bounded probe as complete tells users the
+    displayed candidates are the full ambiguous selection.
+    """
+    from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
+
+    _, child = _context_pair(query_terms=("alpha",))
+    wrapped = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+    with patch(
+        "polylogue.cli.verb_cardinality.probe_session_ids_for_verb",
+        return_value=[f"session-{index}" for index in range(AMBIGUITY_CANDIDATE_LIMIT + 1)],
+    ):
+        with pytest.raises(AmbiguousSelectionError) as exc_info:
+            wrapped(child, True, False, False, "json")
+    assert exc_info.value.bounded is True
+    assert f"First {len(exc_info.value.candidates)} candidates:" in exc_info.value.format_message()
+
+
+@pytest.mark.parametrize(("returncode", "expected"), [(0, 0), (7, 7), (-9, 137)])
+def test_continue_subprocess_status_uses_shell_signal_convention(returncode: int, expected: int) -> None:
+    """Negative subprocess return codes become conventional shell statuses.
+
+    Anti-vacuity: passing ``-9`` directly to Click makes the shell observe
+    247 rather than the signal's conventional status 137.
+    """
+    assert query_verbs._shell_exit_status(returncode) == expected
+
+
 def test_terminal_facet_helpers_sort_and_bound_noisy_rows(capsys: pytest.CaptureFixture[str]) -> None:
     values = {f"value-{index:02d}": 20 - index for index in range(14)}
 
@@ -1933,3 +1998,51 @@ def test_terminal_idf_helper_bounds_rows(capsys: pytest.CaptureFixture[str]) -> 
     assert "tag-11: 19.000" in output
     assert "tag-12: 18.000" not in output
     assert "… 1 more value omitted from terminal view; use --format json for full IDF." in output
+
+
+def test_multi_session_resolution_separates_a_query_miss_from_no_seed() -> None:
+    """A seed query that ran and missed is not the same as no seed at all.
+
+    ``_emit_context_image`` routes an empty list to ``context_image_payload``,
+    which re-selects under its own looser context-image filters. Returning
+    ``[]`` for a zero-match selection therefore turned
+    ``polylogue find <miss> then read --view context-image`` into a context
+    image built from unrelated sessions and handed to a resume/handoff as
+    though it answered the query. The singleton counterpart
+    ``_resolve_query_action_session_id`` already raises on this state through
+    ``check_cardinality``; the multi-session route now does the same.
+
+    Anti-vacuity: delete the ``check_cardinality`` call and the first case
+    returns ``[]`` instead of raising, so ``pytest.raises`` goes red. The
+    second and third cases pin the opposite direction -- a blanket raise would
+    break both the ordinary match and the genuine no-seed path that
+    ``test_read_verb_context_image_invokes_pack_view`` depends on.
+    """
+    from polylogue.cli.verb_cardinality import EmptyCardinalityError
+
+    _, child = _context_pair(query_terms=("repo:polylogue",))
+    child.obj.config = SimpleNamespace()
+    request = query_verbs._parent_request(child)
+    env = cast(AppEnv, child.obj)
+
+    # 1. The selection query ran and matched nothing: a refusal, not a seed.
+    with patch("polylogue.cli.session_rows.query_session_ids", return_value=[]):
+        with pytest.raises(EmptyCardinalityError):
+            query_verbs._resolve_query_action_session_ids(env, request, limit=5)
+
+    # 2. Ordinary multi-match still resolves; several matches are normal here.
+    with patch(
+        "polylogue.cli.session_rows.query_session_ids",
+        return_value=["codex-session:a", "codex-session:b"],
+    ):
+        assert query_verbs._resolve_query_action_session_ids(env, request, limit=5) == [
+            "codex-session:a",
+            "codex-session:b",
+        ]
+
+    # 3. No seed at all: no query terms, so no selection query ever ran and the
+    #    context-image filter route stays reachable.
+    _, bare_child = _context_pair()
+    bare_child.obj.config = SimpleNamespace()
+    bare_request = query_verbs._parent_request(bare_child)
+    assert query_verbs._resolve_query_action_session_ids(cast(AppEnv, bare_child.obj), bare_request, limit=5) == []

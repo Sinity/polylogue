@@ -200,6 +200,7 @@ def _compaction_snapshot(
 
 
 def test_compaction_boundary_reports_the_stored_replaced_range() -> None:
+    assert PATHOLOGY_DETECTOR_VERSION == 6
     proj = _projection(snapshots=[_compaction_snapshot()])
     findings = [f for f in detect_session_pathologies(proj) if f.kind == "stale_context"]
     assert len(findings) == 1

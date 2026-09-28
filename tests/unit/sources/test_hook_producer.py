@@ -39,7 +39,9 @@ from polylogue.sources.hooks import hook_carrier_dir, hook_carrier_provider_dir
 # already in use. ``tempfile`` left when the producer stopped publishing by
 # temp-file-and-rename: a carrier line is one ``O_APPEND`` write, so nothing
 # on this path needs it any more.
-_ALLOWED_IMPORTS = frozenset({"__future__", "datetime", "json", "os", "pathlib", "sys", "types"})
+# ``fcntl`` is a builtin C module: the shared/exclusive carrier lock needs it
+# and it costs no Python-level import work.
+_ALLOWED_IMPORTS = frozenset({"__future__", "datetime", "fcntl", "json", "os", "pathlib", "sys", "types"})
 
 _PAYLOAD = '{"session_id":"producer-session","permission_mode":"bypassPermissions","tool_name":"Bash"}'
 

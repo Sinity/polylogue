@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import re
+import sqlite3
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import IO, Protocol, cast
 
 import ijson
 
@@ -34,7 +36,8 @@ from polylogue.sources.dispatch import (
     detect_provider_from_raw_bytes_evidence,
     is_jsonl_source_path,
 )
-from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
+from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
+from polylogue.sources.sqlite_snapshot import is_sqlite_path
 from polylogue.storage.runtime import RawSessionRecord
 
 _FULL_PARSE_PROGRESS_MAX_BYTES = 64 * 1024 * 1024
@@ -316,6 +319,7 @@ class _FullIngestResult:
     ingested_message_count: int = 0
     changed_session_count: int = 0
     excised_skips: int = 0
+    excised_paths: tuple[Path, ...] = ()
     stage_timings_s: dict[str, float] = field(default_factory=dict)
     # Real session ids materialized by this full-ingest group (polylogue-20d.13),
     # threaded from ``_IngestBatchSummary.changed_session_ids`` so callers can
@@ -352,6 +356,7 @@ def _full_ingest_result_from_summary(
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
     summary: object | None,
     excised_skips: int = 0,
+    excised_paths: tuple[Path, ...] = (),
     time_budget_exceeded: bool = False,
     write_hold_exhausted: bool = False,
 ) -> _FullIngestResult:
@@ -376,6 +381,7 @@ def _full_ingest_result_from_summary(
         ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
         changed_session_count=len(getattr(summary, "changed_session_ids", ())) if summary is not None else 0,
         excised_skips=excised_skips,
+        excised_paths=excised_paths,
         changed_session_ids=tuple(getattr(summary, "changed_session_ids", ()) or ()) if summary is not None else (),
         stage_timings_s=dict(getattr(summary, "stage_timings_s", {})) if summary is not None else {},
         time_budget_exceeded=time_budget_exceeded,
@@ -959,9 +965,45 @@ def _crash(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+class _CheckpointedLines:
+    """Iterate a byte stream's lines, calling ``checkpoint`` before every chunk read.
+
+    A session-evidence scan of a sidecar reads to EOF; a caller that must stop
+    cooperatively (the cold-build baseline observation) raises from its
+    checkpoint. Reading in fixed chunks lets the checkpoint run inside one
+    long line too, not only between lines.
+    """
+
+    _CHUNK_BYTES = 1024 * 1024
+
+    def __init__(self, stream: IO[bytes], checkpoint: Callable[[], None]) -> None:
+        self._stream = stream
+        self._checkpoint = checkpoint
+
+    def __iter__(self) -> Iterator[bytes]:
+        parts: list[bytes] = []
+        while True:
+            self._checkpoint()
+            chunk = self._stream.read(self._CHUNK_BYTES)
+            if not chunk:
+                if parts:
+                    yield b"".join(parts)
+                return
+            start = 0
+            while (newline := chunk.find(b"\n", start)) >= 0:
+                parts.append(chunk[start : newline + 1])
+                yield b"".join(parts)
+                parts = []
+                start = newline + 1
+            if start < len(chunk):
+                parts.append(chunk[start:])
+
+
 def _jsonl_provider_and_session_artifact(
     path: Path,
     fallback_provider: Provider,
+    *,
+    checkpoint: Callable[[], None] | None = None,
 ) -> tuple[Provider, bool, str | None]:
     """Classify a JSONL path from one sample.
 
@@ -981,7 +1023,14 @@ def _jsonl_provider_and_session_artifact(
     # ``sessionId`` keys a transcript does -- is never session-parsed.
     if path_declaration_refuses_session(provider, path):
         return provider, False, detection_failure
-    if jsonl_session_artifact(path, provider=provider) is not None:
+    if checkpoint is None:
+        artifact = jsonl_session_artifact(path, provider=provider)
+    else:
+        with path.open("rb") as handle:
+            artifact = jsonl_session_artifact(
+                cast(IO[bytes], _CheckpointedLines(handle, checkpoint)), provider=provider
+            )
+    if artifact is not None:
         return provider, True, detection_failure
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
@@ -1031,6 +1080,220 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
     except JSONDecodeError:
         return False
     return classify_artifact(document, provider=provider, source_path=path).parse_as_session
+
+
+_RETRYABLE_READ_ERRNOS = frozenset(
+    {
+        errno.EIO,
+        errno.EACCES,
+        errno.EPERM,
+        errno.ESTALE,
+        errno.ETIMEDOUT,
+        errno.EAGAIN,
+        errno.EBUSY,
+        errno.ENOSPC,
+        errno.EDQUOT,
+    }
+)
+
+
+class RetryableSourceReadError(RuntimeError):
+    """A source read failed for a reason a later pass can clear.
+
+    Raised by :func:`classify_pre_acquisition` so callers handle a retryable
+    read as a typed outcome instead of catching raw SQLite or OS errors.
+    """
+
+    def __init__(self, path: Path, cause: BaseException) -> None:
+        super().__init__(f"{path}: {cause}")
+        self.path = path
+        self.cause = cause
+
+
+def retryable_read_fault(exc: BaseException) -> bool:
+    """Whether a source read failed for a reason a later read can clear."""
+    if isinstance(exc, RetryableSourceReadError):
+        return True
+    sqlite_code = getattr(exc, "sqlite_errorcode", None)
+    return (isinstance(exc, OSError) and exc.errno in _RETRYABLE_READ_ERRNOS) or (
+        isinstance(exc, sqlite3.Error)
+        and isinstance(sqlite_code, int)
+        and sqlite_code & 0xFF
+        in {
+            sqlite3.SQLITE_IOERR,
+            sqlite3.SQLITE_BUSY,
+            sqlite3.SQLITE_LOCKED,
+            sqlite3.SQLITE_CANTOPEN,
+            sqlite3.SQLITE_PERM,
+        }
+    )
+
+
+def probe_sqlite_readable(path: Path) -> None:
+    """Raise the read fault of a database about to be excluded, if any."""
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
+    try:
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    finally:
+        conn.close()
+
+
+@dataclass(frozen=True, slots=True)
+class PreAcquisitionDecision:
+    """Whether full intake retains a discovered file, and the sniff it used.
+
+    ``excluded_reason`` is the typed cursor-exclusion reason, or ``None`` when
+    intake retains the file's bytes. ``detected_provider`` and
+    ``detection_crash`` carry the content sniff this decision already paid
+    for, so the retaining branch does not sniff again.
+    """
+
+    excluded_reason: str | None
+    detected_provider: Provider | None = None
+    detection_crash: str | None = None
+
+
+def classify_pre_acquisition(
+    path: Path,
+    *,
+    fallback_provider: Provider,
+    source_only: bool,
+    size_bytes: int,
+    checkpoint: Callable[[], None] | None = None,
+) -> PreAcquisitionDecision:
+    """Decide whether full intake excludes ``path`` before retaining any bytes.
+
+    This is the one authority for pre-acquisition exclusion. The full-ingest
+    batch applies it to every file it acquires, and the cold-build production
+    baseline applies it to every file discovery accepts, so a revision the
+    baseline requires is always one intake retains. The branch order mirrors
+    the batch's acquisition branches: an earlier retaining branch wins over a
+    later exclusion rule.
+
+    The structural SQLite recognizers read an unreadable database as "not
+    ours". Before a database is excluded, a retryable read fault is raised
+    instead, so the caller retries the file rather than excluding a valid
+    database for good; bytes that are not a readable database stay excluded.
+    """
+    try:
+        decision = _classify_pre_acquisition(
+            path,
+            fallback_provider=fallback_provider,
+            source_only=source_only,
+            size_bytes=size_bytes,
+            checkpoint=checkpoint,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        if retryable_read_fault(exc):
+            raise RetryableSourceReadError(path, exc) from exc
+        raise
+    if decision.excluded_reason is not None and is_sqlite_path(path):
+        _raise_retryable_probe_fault(path)
+    return decision
+
+
+def _raise_retryable_probe_fault(path: Path) -> None:
+    """Raise :class:`RetryableSourceReadError` if the database cannot be read now.
+
+    Any other probe failure (bytes that are not a database) leaves the
+    exclusion standing, so it is deliberately not raised.
+    """
+    try:
+        probe_sqlite_readable(path)
+    except (OSError, sqlite3.Error) as exc:
+        if retryable_read_fault(exc):
+            raise RetryableSourceReadError(path, exc) from exc
+
+
+def _classify_pre_acquisition(
+    path: Path,
+    *,
+    fallback_provider: Provider,
+    source_only: bool,
+    size_bytes: int,
+    checkpoint: Callable[[], None] | None,
+) -> PreAcquisitionDecision:
+    from polylogue.sources.origin_specs import (
+        artifact_rule_for_path,
+        database_capability_for_provider,
+        recognize_source_class,
+    )
+
+    if path.suffix.lower() == ".zip":
+        # ZIP members are admitted or excluded one by one by the member walk.
+        return PreAcquisitionDecision(None)
+    if (
+        fallback_provider is Provider.ANTIGRAVITY
+        and path.suffix.lower() == ".pb"
+        and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
+    ):
+        # Converted as one cohort through the vendor language server.
+        return PreAcquisitionDecision(None)
+    hermes_capability = database_capability_for_provider(Provider.HERMES)
+    hermes_member = hermes_capability.member(path.name) if hermes_capability is not None else None
+    hermes_owned_sqlite_name = (
+        source_only
+        and fallback_provider is Provider.HERMES
+        and hermes_member is not None
+        and hermes_member.disposition != "out-of-scope"
+    )
+    source_class = recognize_source_class(fallback_provider, path, source_only=source_only)
+    if source_class is not None and source_class.source_class == "unsupported" and not hermes_owned_sqlite_name:
+        return PreAcquisitionDecision("unsupported source class")
+    if fallback_provider in {Provider.ANTIGRAVITY, Provider.UNKNOWN} and antigravity.looks_like_trajectory_db_path(
+        path
+    ):
+        return PreAcquisitionDecision(None)
+    if hermes_owned_sqlite_name or (
+        not source_only
+        and (
+            hermes_state.looks_like_state_db_path(path)
+            or hermes_verification.looks_like_verification_evidence_db_path(path)
+        )
+    ):
+        return PreAcquisitionDecision(None)
+    codex_capability = database_capability_for_provider(Provider.CODEX)
+    codex_member = codex_capability.member(path.name) if codex_capability is not None else None
+    if (
+        codex_member is not None
+        and codex_member.disposition != "out-of-scope"
+        and ((source_only and fallback_provider is Provider.CODEX) or codex_state.is_in_scope_codex_sqlite_path(path))
+    ):
+        return PreAcquisitionDecision(None)
+    if codex_member is not None:
+        return PreAcquisitionDecision("declared out-of-scope or structurally unverified state database")
+    if source_only:
+        return PreAcquisitionDecision(None)
+    origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
+    jsonl = is_jsonl_source_path(str(path))
+    if origin_artifact_rule is None and not jsonl:
+        strong = strong_path_classification(path, provider=fallback_provider)
+        if strong is not None and not strong.parse_as_session:
+            # Only definitive sidecar paths are excluded before retained
+            # acquisition. Weak locations reach the same parser at every
+            # size, where decoded evidence determines their disposition.
+            return PreAcquisitionDecision("path rule classifies this as non-session evidence")
+    if origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
+        return PreAcquisitionDecision(None, fallback_provider)
+    if jsonl:
+        provider, parse_as_session, crash = (
+            _jsonl_provider_and_session_artifact(path, fallback_provider)
+            if checkpoint is None
+            else _jsonl_provider_and_session_artifact(path, fallback_provider, checkpoint=checkpoint)
+        )
+        # An unknown JSONL cannot be safely excluded from acquire: the strict
+        # parse route persists typed terminal evidence for empty and
+        # malformed exports. Known-provider sidecars are excluded here
+        # because their classification is already authoritative.
+        if not parse_as_session and provider is not Provider.UNKNOWN:
+            return PreAcquisitionDecision("declared artifact rule: not parsed as a session", provider, crash)
+        return PreAcquisitionDecision(None, provider, crash)
+    if path.suffix.lower() == ".json":
+        return PreAcquisitionDecision(None, fallback_provider)
+    provider, crash = detect_provider_from_path_sample_evidence(path, fallback_provider)
+    if not _parse_path_as_session_artifact(path, provider=provider):
+        return PreAcquisitionDecision("path rule refuses session parsing", provider, crash)
+    return PreAcquisitionDecision(None, provider, crash)
 
 
 def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:

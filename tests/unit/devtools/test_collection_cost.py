@@ -8,6 +8,9 @@ broken collection as a budget verdict. Both are pinned here.
 
 from __future__ import annotations
 
+import resource
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +78,36 @@ def test_collection_cost_is_normalized_by_the_reported_count() -> None:
     assert collection_cost._cost_kib_per_item(22.3, None) is None
 
 
+def test_measurement_uses_a_fresh_child_high_water_mark(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An earlier larger child cannot hide the measured collection's RSS.
+
+    Anti-vacuity: subtracting two retained RUSAGE_CHILDREN maxima after this
+    24 MiB child makes the 8 MiB collection report zero cost.
+    """
+    subprocess.run(
+        [sys.executable, "-c", "import sys; x=bytearray(24*1024*1024); x[::4096]=b'x'*(len(x)//4096)"],
+        check=True,
+    )
+    prior_peak = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+    monkeypatch.setattr(
+        collection_cost,
+        "collection_argv",
+        lambda selection, *, root: [
+            sys.executable,
+            "-c",
+            "import sys; x=bytearray(8*1024*1024); x[::4096]=b'x'*(len(x)//4096); print('1 test collected')",
+        ],
+    )
+    monkeypatch.setattr(collection_cost, "collection_env", lambda: {})
+
+    measured = collection_cost.measure_collection([], root=_ROOT)
+
+    assert measured["returncode"] == 0
+    assert measured["peak_rss_mib"] > 0
+    assert measured["peak_rss_mib"] < prior_peak / 1024
+    assert measured["collection_cost_kib_per_item"] > 0
+
+
 def test_import_time_attribution_is_structured_and_keeps_rss_only_claims_invalid() -> None:
     output = """
     import time:       120 |        120 | tiny
@@ -118,7 +151,6 @@ def _measured(**overrides: Any) -> dict[str, Any]:
         "collected": 23547,
         "wall_clock_s": 92.78,
         "peak_rss_mib": 581.3,
-        "peak_rss_delta_mib": 545.1,
         "collection_cost_kib_per_item": 23.7,
         "returncode": 0,
         "tail": [],

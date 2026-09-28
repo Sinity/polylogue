@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 from collections.abc import Iterable, Mapping
+from dataclasses import replace
 from pathlib import Path
 
 _REPO_ROOT = str(Path(__file__).resolve().parents[1])
@@ -31,7 +32,11 @@ from polylogue.agent_integration.spec import (  # noqa: E402
     recipe_payload,
     tool_contract_payload,
 )
-from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest  # noqa: E402
+from polylogue.archive.query.transaction import (  # noqa: E402
+    QueryContinuation,
+    decode_query_units_continuation,
+    query_units_transaction_request,
+)
 from polylogue.mcp.declarations import TARGET_PROMPTS, TARGET_RESOURCES  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -63,21 +68,20 @@ def _pretty_json(value: object) -> str:
 def continuation_example_token() -> str:
     """Return a real deterministic token produced by the production codec."""
 
-    request = QueryTransactionRequest(
-        operation="query",
-        arguments={
-            "expression": "actions where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
-            "projection": "action-evidence",
-        },
-        page_size=20,
-        offset=20,
-        projection="action-evidence",
-        stable_order="time-desc",
+    request = replace(
+        query_units_transaction_request(
+            expression="actions where tool:shell | limit 20",
+            session_filters={},
+            page_size=20,
+            offset=20,
+        ),
         archive_epoch="archive:v1:index:v24:1:user:v9:1",
         issued_at=_EXAMPLE_CONTINUATION_ISSUED_AT,
         expires_at=_EXAMPLE_CONTINUATION_EXPIRES_AT,
     )
-    return QueryContinuation(request=request, result_ref="result:0123456789abcdef01234567").encode()
+    token = QueryContinuation(request=request, result_ref=request.result_ref).encode()
+    decode_query_units_continuation(token)
+    return token
 
 
 def _call_payload(tool: str, arguments: Mapping[str, object]) -> dict[str, object]:

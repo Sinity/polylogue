@@ -6245,6 +6245,7 @@ def _write_parent_links(
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
     source = messages.messages if isinstance(messages, _MessageTail) else messages
+    updates = _ParentLinkUpdates(conn)
     if isinstance(source, SqliteMessageSink):
         disk_index = _DiskMessageEventIndex(source.path.parent)
         try:
@@ -6267,19 +6268,17 @@ def _write_parent_links(
                 if parent_message_id is None and message.parent_message_position is not None:
                     parent_message_id = disk_index.boundary_message_id(message.parent_message_position)
                 if parent_message_id is not None:
-                    conn.execute(
-                        "UPDATE messages SET parent_message_id = ? WHERE message_id = ?",
-                        (
-                            parent_message_id,
-                            _message_id(
-                                session_id,
-                                message,
-                                fallback_position,
-                                content_identities=content_identities,
-                                duplicate_native_ids=duplicate_native_ids,
-                            ),
+                    updates.add(
+                        parent_message_id,
+                        _message_id(
+                            session_id,
+                            message,
+                            fallback_position,
+                            content_identities=content_identities,
+                            duplicate_native_ids=duplicate_native_ids,
                         ),
                     )
+            updates.flush()
         finally:
             disk_index.close()
         return
@@ -6313,23 +6312,43 @@ def _write_parent_links(
             parent_message_id = by_message_position.get(message.parent_message_position)
         if parent_message_id is None:
             continue
-        conn.execute(
-            """
-            UPDATE messages
-            SET parent_message_id = ?
-            WHERE message_id = ?
-            """,
-            (
-                parent_message_id,
-                _message_id(
-                    session_id,
-                    message,
-                    fallback_position,
-                    content_identities=content_identities,
-                    duplicate_native_ids=duplicate_native_ids,
-                ),
+        updates.add(
+            parent_message_id,
+            _message_id(
+                session_id,
+                message,
+                fallback_position,
+                content_identities=content_identities,
+                duplicate_native_ids=duplicate_native_ids,
             ),
         )
+    updates.flush()
+
+
+class _ParentLinkUpdates:
+    """Parent-link updates applied in bounded ``executemany`` batches.
+
+    One statement per message was a Python-to-SQLite round trip per row on
+    the writer; each message's update is independent of every other's, so
+    batching changes only the cost, and the batch bound keeps memory flat
+    for a whale session.
+    """
+
+    _BATCH = 4096
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self._rows: list[tuple[str, str]] = []
+
+    def add(self, parent_message_id: str, message_id: str) -> None:
+        self._rows.append((parent_message_id, message_id))
+        if len(self._rows) >= self._BATCH:
+            self.flush()
+
+    def flush(self) -> None:
+        if self._rows:
+            self._conn.executemany("UPDATE messages SET parent_message_id = ? WHERE message_id = ?", self._rows)
+            self._rows = []
 
 
 @dataclass(frozen=True, slots=True)

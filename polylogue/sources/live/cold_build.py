@@ -549,6 +549,11 @@ class ColdBuildGeneration:
                 prospective_material_bytes=prospective_material_bytes,
                 prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
                 prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
+                prospective_generation_baseline_bytes=len(
+                    json.dumps(
+                        {"generation_id": "gen-placeholder", "baseline": baseline.as_dict()}, indent=2, sort_keys=True
+                    ).encode()
+                ),
                 baseline_digest=baseline.digest,
                 material_byte_definition=MATERIAL_BYTE_DEFINITION,
             )
@@ -577,8 +582,6 @@ class ColdBuildGeneration:
         generation = store.create(owner_id=owner_id or _cold_build_owner_id(), source_snapshot=snapshot)
         baseline_path = Path(generation.index_path).parent / "source-baseline.json"
         with baseline_path.open("x", encoding="utf-8") as stream:
-            import json
-
             json.dump(
                 {"generation_id": generation.generation_id, "baseline": baseline.as_dict()},
                 stream,
@@ -857,6 +860,11 @@ class ColdBuildGeneration:
             prospective_material_bytes=prospective_material_bytes,
             prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
             prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
+            prospective_generation_baseline_bytes=len(
+                json.dumps(
+                    {"generation_id": self.generation_id, "baseline": merged.as_dict()}, indent=2, sort_keys=True
+                ).encode()
+            ),
             baseline_digest=merged.digest,
             material_byte_definition=MATERIAL_BYTE_DEFINITION,
         )

@@ -25,7 +25,9 @@
         }
       ],
       "stop_conditions": [
-        "all declared facts match"
+        "all declared facts match",
+        "all continuations are exhausted",
+        "all evidence refs are citable"
       ],
       "uncertainty": "medium"
     },
@@ -44,7 +46,9 @@
         }
       ],
       "stop_conditions": [
-        "all declared facts match"
+        "all declared facts match",
+        "all continuations are exhausted",
+        "all evidence refs are citable"
       ],
       "uncertainty": "medium"
     },
@@ -71,7 +75,9 @@
         }
       ],
       "stop_conditions": [
-        "all declared facts match"
+        "all declared facts match",
+        "all continuations are exhausted",
+        "all evidence refs are citable"
       ],
       "uncertainty": "medium"
     },
@@ -124,7 +130,9 @@
         }
       ],
       "stop_conditions": [
-        "all declared facts match"
+        "all declared facts match",
+        "all continuations are exhausted",
+        "all evidence refs are citable"
       ],
       "uncertainty": "medium"
     },
@@ -143,7 +151,9 @@
         }
       ],
       "stop_conditions": [
-        "all declared facts match"
+        "all declared facts match",
+        "all continuations are exhausted",
+        "all evidence refs are citable"
       ],
       "uncertainty": "medium"
     },
@@ -161,7 +171,9 @@
         }
       ],
       "stop_conditions": [
-        "all declared facts match"
+        "all declared facts match",
+        "all continuations are exhausted",
+        "all evidence refs are citable"
       ],
       "uncertainty": "medium"
     },
@@ -179,7 +191,9 @@
         }
       ],
       "stop_conditions": [
-        "all declared facts match"
+        "all declared facts match",
+        "all continuations are exhausted",
+        "all evidence refs are citable"
       ],
       "uncertainty": "medium"
     },
@@ -202,7 +216,9 @@
         }
       ],
       "stop_conditions": [
-        "all declared facts match"
+        "all declared facts match",
+        "all continuations are exhausted",
+        "all evidence refs are citable"
       ],
       "uncertainty": "medium"
     }

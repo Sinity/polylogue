@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import shutil
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -91,6 +92,19 @@ def test_a_datafile_missing_testmon_tables_is_unusable(tmp_path: Path) -> None:
     state = inspect_testmon_graph(tmp_path)
     assert state.status is TestmonGraphStatus.UNUSABLE
     assert "incompatible testmon version" in state.reason
+
+
+def test_a_foreign_file_with_testmon_table_names_but_wrong_columns_is_unusable(tmp_path: Path) -> None:
+    """Anti-vacuity: matching table names alone must not certify testmon compatibility."""
+    path = testmon_provision.testmon_datafile(tmp_path)
+    path.parent.mkdir(parents=True)
+    with sqlite3.connect(path) as connection:
+        connection.execute(f"PRAGMA user_version = {DATA_VERSION}")
+        for table in testmon_provision._REQUIRED_TABLES:
+            connection.execute(f"CREATE TABLE {table} (foreign_column TEXT)")
+    state = inspect_testmon_graph(tmp_path)
+    assert state.status is TestmonGraphStatus.UNUSABLE
+    assert "corrupt" in state.reason
 
 
 def test_a_package_change_is_reported_as_the_cause_of_a_full_rerun(tmp_path: Path) -> None:
@@ -209,11 +223,22 @@ def test_seeding_an_absent_or_unreadable_source_leaves_no_datafile(tmp_path: Pat
     destination = testmon_provision.testmon_datafile(tmp_path / "worktree")
     assert testmon_provision.snapshot_testmon_graph(tmp_path / "missing", destination) is False
     assert not destination.exists()
-
     junk = tmp_path / "junk"
     junk.write_bytes(b"not a database at all")
     assert testmon_provision.snapshot_testmon_graph(junk, destination) is False
     assert not destination.exists()
+
+
+def test_snapshot_encodes_uri_reserved_path_characters(tmp_path: Path) -> None:
+    """Anti-vacuity: '?' and '#' must name the database, not URI syntax."""
+    source = _seed_with_testmon(tmp_path / "ordinary-checkout")
+    reserved_root = tmp_path / "checkout?#name"
+    reserved_source = testmon_provision.testmon_datafile(reserved_root)
+    reserved_source.parent.mkdir(parents=True)
+    shutil.copyfile(source, reserved_source)
+    destination = testmon_provision.testmon_datafile(tmp_path / "destination")
+    assert testmon_provision.snapshot_testmon_graph(reserved_source, destination)
+    assert inspect_testmon_graph(tmp_path / "destination").usable
 
 
 def test_discard_removes_the_datafile_and_its_sidecars(tmp_path: Path) -> None:
