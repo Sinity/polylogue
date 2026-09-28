@@ -12,6 +12,8 @@ genuinely reported and billed a zero cost.
 
 from __future__ import annotations
 
+import pytest
+
 from polylogue.archive.semantic.cost_compute import (
     _per_model_from_messages,
     _per_model_from_model_usage,
@@ -452,3 +454,28 @@ def test_runtime_protocol_text_in_an_assistant_envelope_is_not_estimated_output(
     per_model = _per_model_from_messages(session)
 
     assert per_model == {}
+
+
+@pytest.mark.parametrize("role", ["system", "user"])
+def test_runtime_protocol_input_is_still_estimated(role: str) -> None:
+    """Protocol text sent to the model (a system prompt, a task notification) is input.
+
+    Anti-vacuity: skip every RUNTIME_PROTOCOL message regardless of role and
+    the session has no estimated input tokens.
+    """
+    session = make_conv(
+        id=f"runtime-protocol-{role}-session",
+        provider="claude-code",
+        messages=[
+            make_msg(
+                id="m1",
+                role=role,
+                text="You are a helpful assistant working in the operator's repository",
+                material_origin="runtime_protocol",
+            ),
+        ],
+    )
+
+    per_model = _per_model_from_messages(session)
+
+    assert sum(breakdown.input_tokens for breakdown in per_model.values()) > 0

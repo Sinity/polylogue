@@ -1011,7 +1011,7 @@ def test_claude_ai_compaction_summary_persists_as_event() -> None:
     assert [message.provider_message_id for message in session.messages].count("m2") == 2
     summaries = [event for event in session.session_events if event.event_type == "claude_ai_compaction_summary"]
     assert {event.source_message_provider_id for event in summaries} == {"m2"}
-    assert sorted(event.payload["summary"] for event in summaries) == [
+    assert sorted(str(event.payload["summary"]) for event in summaries) == [
         "Earlier we planned the parser work.",
         "Earlier.",
     ]
@@ -1036,4 +1036,43 @@ def test_claude_ai_id_less_compaction_summaries_stay_distinct() -> None:
     session = parse_ai(payload, "fallback")
 
     summaries = [event for event in session.session_events if event.event_type == "claude_ai_compaction_summary"]
-    assert sorted(event.payload["summary"] for event in summaries) == ["first", "second"]
+    assert sorted(str(event.payload["summary"]) for event in summaries) == ["first", "second"]
+
+
+def test_claude_ai_compaction_summaries_follow_canonical_message_order() -> None:
+    """Reordering ``chat_messages`` leaves the summary events and hash unchanged.
+
+    Anti-vacuity: emit the events in raw array order and the reversed export
+    lists them reversed, changing ``session_content_hash``.
+    """
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.sources.parsers.base import ParsedSession
+
+    chat_messages = [
+        {
+            "uuid": "m1",
+            "sender": "human",
+            "text": "first",
+            "created_at": "2026-01-01T00:00:00Z",
+            "compaction_summary": [{"type": "text", "text": "summary one"}],
+        },
+        {
+            "uuid": "m2",
+            "sender": "assistant",
+            "text": "second",
+            "created_at": "2026-01-01T00:01:00Z",
+            "compaction_summary": [{"type": "text", "text": "summary two"}],
+        },
+    ]
+    forward = parse_ai({"uuid": "claude-order", "chat_messages": chat_messages}, "fallback")
+    reverse = parse_ai({"uuid": "claude-order", "chat_messages": list(reversed(chat_messages))}, "fallback")
+
+    def summaries(session: ParsedSession) -> list[object]:
+        return [
+            event.payload["summary"]
+            for event in session.session_events
+            if event.event_type == "claude_ai_compaction_summary"
+        ]
+
+    assert summaries(forward) == summaries(reverse) == ["summary one", "summary two"]
+    assert session_content_hash(forward) == session_content_hash(reverse)

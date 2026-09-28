@@ -876,84 +876,6 @@ def _merge_session_attachments(
     return _merge_attachment_rows(attachments)
 
 
-def _compaction_summary_text(item: Mapping[str, object]) -> tuple[str, str | None, str | None] | None:
-    """Return ``(summary, start, stop)`` for a chat message carrying a compaction summary."""
-    summary_blocks = item.get("compaction_summary")
-    if not isinstance(summary_blocks, list):
-        return None
-    texts: list[str] = []
-    start_timestamp: str | None = None
-    stop_timestamp: str | None = None
-    for block in summary_blocks:
-        if not isinstance(block, Mapping):
-            continue
-        text = block.get("text")
-        if isinstance(text, str) and text:
-            texts.append(text)
-        start = block.get("start_timestamp")
-        stop = block.get("stop_timestamp")
-        if start_timestamp is None and isinstance(start, str) and start:
-            start_timestamp = start
-        if isinstance(stop, str) and stop:
-            stop_timestamp = stop
-    if not texts:
-        return None
-    return "\n\n".join(texts), start_timestamp, stop_timestamp
-
-
-def _compaction_summary_events(chat_messages: list[object], kept_message_ids: set[str]) -> list[ParsedSessionEvent]:
-    """One ``claude_ai_compaction_summary`` event per message carrying claude.ai's summary.
-
-    When claude.ai compacts a conversation it stores the summary it carries
-    forward on the message where compaction took effect (``compaction_summary``:
-    text blocks with start/stop timestamps). The text is kept, keyed to that
-    message. It is deliberately not a ``compaction`` event: those carry
-    boundaries and a materialized summary message that effective-context reads
-    apply, and placing a summary message into claude.ai's branched message tree
-    (variant and attachment-owner coordinates) is not done here.
-    """
-    # One event per retained message. normalize_chat_messages keeps a repeated
-    # native id as separate messages under occurrence-suffixed evidence keys,
-    # so each occurrence keeps its own summary; keying by native id alone
-    # would collapse them. An ID-less record is its own message (the
-    # normalizer keeps it under a content-derived identity), so it is keyed by
-    # its list index instead.
-    by_message: dict[str | int, tuple[str | None, Mapping[str, object], tuple[str, str | None, str | None]]] = {}
-    occurrences: dict[str, int] = {}
-    for index, item in enumerate(chat_messages):
-        if not isinstance(item, Mapping):
-            continue
-        message_id = _first_identity_field(item, "uuid", "id", "message_id", "messageId", "provider_message_id")
-        occurrence = 0
-        if message_id is not None:
-            occurrence = occurrences.get(message_id, 0)
-            occurrences[message_id] = occurrence + 1
-        found = _compaction_summary_text(item)
-        if found is None:
-            continue
-        if message_id is not None and message_id not in kept_message_ids:
-            continue
-        key: str | int = f"{message_id}:occurrence:{occurrence}" if message_id is not None else index
-        by_message[key] = (message_id, item, found)
-    events: list[ParsedSessionEvent] = []
-    for message_id, item, found in by_message.values():
-        summary_text, start_timestamp, stop_timestamp = found
-        payload: dict[str, object] = {"summary": summary_text}
-        if start_timestamp is not None:
-            payload["start_timestamp"] = start_timestamp
-        if stop_timestamp is not None:
-            payload["stop_timestamp"] = stop_timestamp
-        events.append(
-            ParsedSessionEvent(
-                event_type="claude_ai_compaction_summary",
-                timestamp=stop_timestamp or start_timestamp or _session_timestamp(item, "created_at", "updated_at"),
-                source_message_provider_id=message_id,
-                payload=payload,
-            )
-        )
-    return events
-
-
 @parser_admission("claude_ai")
 def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     # memories.json records arrive tagged Provider.CLAUDE_AI too (bd
@@ -1024,13 +946,6 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
                 payload={"summary": provider_summary},
             )
         )
-
-    session_events.extend(
-        _compaction_summary_events(
-            chat_messages,
-            {message.provider_message_id for message in normalized.messages if message.provider_message_id},
-        )
-    )
 
     conversation_id = _first_identity_field(payload, "uuid", "id", "conversation_id", "conversationId")
     resolved_session_id = conversation_id or fallback_id

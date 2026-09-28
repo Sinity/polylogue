@@ -358,11 +358,15 @@ def _per_model_from_messages(
 
     for message in session.messages:
         tokens = _get_message_token_counts(message)
-        if getattr(message, "material_origin", None) == MaterialOrigin.RUNTIME_PROTOCOL and (
-            tokens is None or getattr(tokens, "billable_tokens", 0) <= 0
+        if (
+            getattr(message, "role", None) == Role.ASSISTANT
+            and getattr(message, "material_origin", None) == MaterialOrigin.RUNTIME_PROTOCOL
+            and (tokens is None or getattr(tokens, "billable_tokens", 0) <= 0)
         ):
-            # Harness-written protocol text (e.g. an API-error notice in an
-            # assistant envelope) was neither sent to nor produced by a model.
+            # Harness-written text in an assistant envelope (e.g. an API-error
+            # notice) was not produced by a model. Protocol text on the input
+            # side -- a system prompt, a task notification -- was sent to the
+            # model and stays in the estimate.
             continue
         model_name = _get_message_model_name(message) or dominant_model_name
         norm_model = _normalize_model(model_name) if model_name else None

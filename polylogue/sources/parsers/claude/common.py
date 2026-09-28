@@ -1004,6 +1004,55 @@ def _pair_idless_tool_blocks(blocks: list[ParsedContentBlock], *, message_key: s
     ]
 
 
+def _compaction_summary_event(evidence: _ClaudeMessageEvidence) -> ParsedSessionEvent | None:
+    """The ``claude_ai_compaction_summary`` event of one message, when it carries one.
+
+    When claude.ai compacts a conversation it stores the summary it carries
+    forward on the message where compaction took effect (``compaction_summary``:
+    text blocks with start/stop timestamps). The text is kept, keyed to that
+    message. It is deliberately not a ``compaction`` event: those carry
+    boundaries and a materialized summary message that effective-context reads
+    apply, and placing a summary message into claude.ai's branched message tree
+    (variant and attachment-owner coordinates) is not done here.
+
+    One event per emitted message, in the normalizer's canonical message
+    order: a repeated native id is one message per occurrence and keeps its
+    own summary, and an export listing the same messages in another array
+    order yields the same events in the same order.
+    """
+    summary_blocks = evidence.raw.get("compaction_summary")
+    if not isinstance(summary_blocks, list):
+        return None
+    texts: list[str] = []
+    start_timestamp: str | None = None
+    stop_timestamp: str | None = None
+    for block in summary_blocks:
+        if not isinstance(block, Mapping):
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text:
+            texts.append(text)
+        start = block.get("start_timestamp")
+        stop = block.get("stop_timestamp")
+        if start_timestamp is None and isinstance(start, str) and start:
+            start_timestamp = start
+        if isinstance(stop, str) and stop:
+            stop_timestamp = stop
+    if not texts:
+        return None
+    payload: dict[str, object] = {"summary": "\n\n".join(texts)}
+    if start_timestamp is not None:
+        payload["start_timestamp"] = start_timestamp
+    if stop_timestamp is not None:
+        payload["stop_timestamp"] = stop_timestamp
+    return ParsedSessionEvent(
+        event_type="claude_ai_compaction_summary",
+        timestamp=stop_timestamp or start_timestamp or evidence.timestamp or evidence.updated_at,
+        source_message_provider_id=evidence.native_provider_message_id or None,
+        payload=payload,
+    )
+
+
 def normalize_chat_messages(
     chat_messages: list[object],
     *,
@@ -1301,6 +1350,8 @@ def normalize_chat_messages(
 
     for evidence in sorted(emitted, key=lambda row: order_key_by_id[row.evidence_key]):
         session_events.extend(_web_tool_evidence_events(evidence))
+        if (compaction_summary := _compaction_summary_event(evidence)) is not None:
+            session_events.append(compaction_summary)
         if evidence.thinking_configuration:
             payload: dict[str, object] = {"thinking": evidence.thinking_configuration}
             if evidence.model_name:
@@ -1342,6 +1393,16 @@ def normalize_chat_messages(
                     payload=update_payload,
                 )
             )
+    # A summary on a record with no other material, and so no message of its
+    # own, is still kept, after the messages, in evidence-key order.
+    session_events.extend(
+        event
+        for evidence in sorted(
+            (evidence for evidence in evidence_by_id.values() if evidence.evidence_key not in emitted_ids),
+            key=lambda row: row.evidence_key,
+        )
+        if (event := _compaction_summary_event(evidence)) is not None
+    )
 
     if duplicate_ids:
         session_events.append(
