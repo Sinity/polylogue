@@ -375,8 +375,14 @@ def project_search_hits(
         if resolved_lane == "hybrid":
             primary_rank, primary_contribution = primary_lane_evidence(components)
         else:
-            # A single-lane hit has no RRF contribution; its native rank is the lane rank.
-            primary_rank = min((int(value) for value in components.values()), default=None)
+            # A single-lane hit has no RRF contribution and no lane_ranks
+            # mapping: its native rank is the lane rank.
+            native_rank = getattr(native_hit, "rank", None)
+            primary_rank = (
+                int(native_rank)
+                if isinstance(native_rank, (int, float)) and not isinstance(native_rank, bool)
+                else min((int(value) for value in components.values()), default=None)
+            )
             primary_contribution = None
         hits.append(
             session_search_hit_from_summary(
