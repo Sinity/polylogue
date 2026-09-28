@@ -485,6 +485,34 @@ def test_optimized_python_is_refused_before_running_verification() -> None:
     assert json.loads(result.stdout)["diagnosis"] == "optimized_python"
 
 
+def test_incomplete_dependency_sync_is_refused_before_running_verification(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A devshell whose ``uv sync --frozen`` failed must not produce a verdict.
+
+    The hook keeps the previous ``.venv`` and exports
+    ``POLYLOGUE_DEVSHELL_DEPENDENCY_SYNC=incomplete``; verification of that
+    environment would be evidence about another lockfile.
+
+    Anti-vacuity: drop the refusal and ``_main`` proceeds to anchor paths and
+    record a run, which the sentinel below turns into a failure.
+    """
+
+    monkeypatch.setenv(verify.DEPENDENCY_SYNC_ENV, verify.DEPENDENCY_SYNC_INCOMPLETE)
+
+    def ran_past_preflight() -> None:
+        raise AssertionError("verification started on an unsynced environment")
+
+    monkeypatch.setattr(verify, "_anchor_verification_paths", ran_past_preflight)
+
+    exit_code = verify._main(["--quick", "--json"])
+
+    assert exit_code == 125
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "refused"
+    assert payload["diagnosis"] == "dependency_sync_incomplete"
+
+
 def test_interrupted_aggregate_keeps_completed_lane_outcomes() -> None:
     aggregate = verify._aggregate_pytest_results(
         [{"name": "pytest (parallel)", "statistics": {"outcomes": {"passed": 4}}}],
