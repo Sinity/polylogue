@@ -10,7 +10,7 @@ from functools import wraps
 from typing import Any, TypeVar, cast
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Provider, WebConstructType
+from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, WebConstructType
 from polylogue.core.hashing import hash_text
 from polylogue.core.types import AttachmentDirection
 from polylogue.sources.tool_result_reasons import unknown_reason
@@ -263,6 +263,12 @@ class AdmissionObserver:
             if isinstance(events, list):
                 events = list(events)
             self._append_unknown_events(events, existing_types, provider)
+            if provider == "claude_code":
+                # Claude declares its event order (missing timestamps first);
+                # the untimestamped admission events take their place in it.
+                from polylogue.sources.parsers.claude.code_parser import order_session_events
+
+                events = cast(list[ParsedSessionEvent], order_session_events(events))
         accounting = session.unit_accounting
         if accounting is None:
             self._ledger.expect(AdmissionUnit.OUTER_RECORD, self._count)
@@ -286,33 +292,27 @@ class AdmissionObserver:
 
 
 def admit_parsed_sessions(provider: str, payload: object, sessions: list[ParsedSession]) -> list[ParsedSession]:
-    """Apply the admission boundary to a dispatch route's single-session result.
+    """Apply the admission boundary to a dispatch route's result.
 
     For routes that reach an undecorated entry point. A session that already
-    carries its parser's own ledger keeps it; a multi-session result must be
-    admitted per session by its own route (see the Claude Code stream), since
-    one outer record belongs to exactly one session there.
+    carries its parser's own ledger keeps it (the Claude Code stream admits
+    each of its sessions against its own records). Every other session --
+    one of several conversations in an OTLP document, a Hermes parent and its
+    materialized subagent trajectories -- is proven against the whole
+    document it was drawn from, so no emitted session reaches the writer
+    without a conservation proof.
     """
     items = payload if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)) else [payload]
-    if provider == Provider.OTEL_GENAI.value:
-        # One OTLP document can carry several conversations; each emitted
-        # session is proven against the whole document it was drawn from.
-        admitted: list[ParsedSession] = []
-        for session in sessions:
-            if session.unit_accounting is not None:
-                admitted.append(session)
-                continue
-            observer = AdmissionObserver()
-            for item in items:
-                observer.observe(item)
-            admitted.append(observer.apply(session, provider))
-        return admitted
-    if len(sessions) != 1 or sessions[0].unit_accounting is not None:
-        return sessions
-    observer = AdmissionObserver()
-    for item in items:
-        observer.observe(item)
-    return [observer.apply(sessions[0], provider)]
+    admitted: list[ParsedSession] = []
+    for session in sessions:
+        if session.unit_accounting is not None:
+            admitted.append(session)
+            continue
+        observer = AdmissionObserver()
+        for item in items:
+            observer.observe(item)
+        admitted.append(observer.apply(session, provider))
+    return admitted
 
 
 def _payload_parameter(parser: Callable[..., ParsedSession]) -> tuple[int, str]:

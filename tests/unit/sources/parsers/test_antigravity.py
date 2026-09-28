@@ -323,6 +323,29 @@ def test_the_first_anonymous_trajectory_keeps_its_id_when_a_second_arrives(tmp_p
     assert len(set(after)) == 2
 
 
+def test_the_bare_fallback_is_not_taken_when_a_native_id_occupies_it(tmp_path: Path) -> None:
+    """An anonymous first row never takes a fallback another row already names.
+
+    Anti-vacuity (Codex P2, #5711): keep the bare fallback for the first
+    anonymous row unconditionally and it shares ``x`` with the row whose
+    native trajectory id is ``x``.
+    """
+    path = tmp_path / "conversation.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+            INSERT INTO trajectory_meta VALUES (NULL, NULL);
+            INSERT INTO trajectory_meta VALUES ('x', NULL);
+            """
+        )
+    ids = [session.provider_session_id for session in parse_trajectory_db(path, fallback_id="x")]
+
+    assert len(ids) == 2
+    assert len(set(ids)) == 2
+
+
 def test_trajectory_sqlite_parser_refuses_malformed_step_without_fabricating_text(tmp_path: Path) -> None:
     path = _trajectory_db(tmp_path / "conversation.db", malformed=True)
 

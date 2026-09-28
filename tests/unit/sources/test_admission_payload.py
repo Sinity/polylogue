@@ -289,7 +289,8 @@ def test_claude_code_tool_input_is_not_a_wire_type() -> None:
 
     future_block: dict[str, object] = {"type": "future_block_kind", "text": "neutral"}
     (session,) = parse_stream_payload(Provider.CLAUDE_CODE, iter([assistant("a-2", future_block)]), "cc-tool-input")
-    assert [event.payload["wire_type"] for event in session.session_events] == ["future_block_kind"]
+    admission = [event for event in session.session_events if event.event_type == "claude_code_unknown_input"]
+    assert [event.payload["wire_type"] for event in admission] == ["future_block_kind"]
 
 
 def test_codex_tool_arguments_are_not_wire_types() -> None:
@@ -321,3 +322,43 @@ def test_codex_tool_arguments_are_not_wire_types() -> None:
     (session,) = parse_stream_payload(Provider.CODEX, iter(records), "codex-args")
 
     assert "codex_unknown_input" not in [event.event_type for event in session.session_events]
+
+
+@pytest.mark.parametrize("provider", ["hermes", "otel_genai"])
+def test_every_unproven_session_of_a_multi_session_result_is_admitted(provider: str) -> None:
+    """A parent with its subagent trajectories, or several OTLP conversations, all carry a proof.
+
+    Anti-vacuity (Codex P2, #5711): exempt every non-OTel multi-session result
+    (or compare the OTel token un-normalized) and these sessions reach the
+    writer with ``unit_accounting=None``.
+    """
+    from polylogue.sources.parsers.base_models import ParsedSession
+
+    sessions = [
+        ParsedSession(source_name=Provider.HERMES, provider_session_id=name, messages=[])
+        for name in ("parent", "child")
+    ]
+    admitted = base_support.admit_parsed_sessions(provider, [{"type": "session"}], sessions)
+
+    assert [session.provider_session_id for session in admitted] == ["parent", "child"]
+    assert all(session.unit_accounting is not None for session in admitted)
+
+
+def test_a_claude_admission_event_takes_its_declared_place() -> None:
+    """An untimestamped admission event sorts before timestamped Claude events.
+
+    Anti-vacuity (Codex P2, #5711): append it after ``order_session_events``
+    ran and it lands last, violating Claude's missing-timestamps-first order.
+    """
+    from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
+
+    observer = base_support.AdmissionObserver(scan=lambda record: "future_record_kind")
+    observer.observe({"type": "future_record_kind"})
+    timed = ParsedSessionEvent(event_type="compaction", payload={}, timestamp="2026-01-01T00:00:00Z")
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_CODE, provider_session_id="s", messages=[], session_events=[timed]
+    )
+
+    admitted = observer.apply(session, "claude_code")
+
+    assert [event.event_type for event in admitted.session_events] == ["claude_code_unknown_input", "compaction"]

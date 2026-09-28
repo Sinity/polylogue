@@ -882,7 +882,9 @@ def parse_trajectory_db(
             # gets a stable row-specific identity.
             row_fallback_id = fallback_id
             if fallback_id and trajectory_id is None and cascade_id is None:
-                if first_anonymous_taken:
+                # The bare fallback is kept only while no native id or
+                # unmatched summary already occupies it.
+                if first_anonymous_taken or fallback_id in known_native_ids:
                     row_fallback_id = _unused_row_id(f"{fallback_id}:trajectory-{meta_index}", known_native_ids)
                 first_anonymous_taken = True
             native_id = trajectory_id or cascade_id or row_fallback_id

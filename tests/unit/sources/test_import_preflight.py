@@ -250,7 +250,7 @@ def test_unidentified_trajectory_rows_keep_distinct_identities(tmp_path: Path) -
     sessions = list(antigravity.parse_trajectory_db(source, fallback_id="unnamed"))
 
     assert [session.provider_session_id for session in sessions] == [
-        "unnamed:trajectory-0",
+        "unnamed",
         "unnamed:trajectory-1",
     ]
 
