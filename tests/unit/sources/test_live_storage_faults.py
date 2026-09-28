@@ -683,3 +683,49 @@ async def test_degradation_during_admission_marks_items_unattempted(
     assert outcomes
     assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
     assert all(result.unattempted and result.actual_cost == 0 for result in outcomes.values())
+
+
+@pytest.mark.asyncio
+async def test_degradation_before_an_all_empty_page_still_marks_it_unattempted(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A degraded skip of zero-byte files refuses no bytes but attempted nothing.
+
+    Anti-vacuity: derive the degraded skip from ``refused_bytes_by_reason``
+    again and this page, whose offered bytes total zero, is reported attempted:
+    ``unattempted`` is false and the retry position advances.
+    """
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    _archive, watcher, source_path = storage_env
+    source_path.write_bytes(b"")
+    real_ingest = watcher._ingest_files
+
+    async def degrade_then_ingest(*args: Any, **kwargs: Any) -> Any:
+        set_degraded(DegradedReason(code="database_layout_mismatch", message="structural error"))
+        return await real_ingest(*args, **kwargs)
+
+    monkeypatch.setattr(watcher, "_ingest_files", degrade_then_ingest)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=Path(watcher._polylogue.archive_root),
+            watcher=watcher,
+            sources=watcher._sources,
+        ),
+        watcher._sources[0],
+    )
+    page = await adapter.discover(limit=8)
+    assert page
+    assert all(Path(cast(Any, item.payload)).stat().st_size == 0 for item in page)
+    adapter._retry_page = True
+    adapter._retry_page_paths = tuple(Path(cast(Any, item.payload)) for item in page)
+    retry_after_before = adapter._retry_after
+    try:
+        outcomes = dict(await adapter.admit_page(page))
+    finally:
+        clear_degraded()
+
+    assert adapter._retry_after == retry_after_before
+    assert outcomes
+    assert all(result.unattempted and result.actual_cost == 0 for result in outcomes.values())

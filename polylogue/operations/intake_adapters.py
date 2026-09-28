@@ -47,7 +47,6 @@ from polylogue.sources.live.cold_build import (
 from polylogue.sources.live.discovery import _bounded_source_paths as _bounded_source_paths
 from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.metrics import (
-    REFUSED_DAEMON_DEGRADED,
     REFUSED_UNATTEMPTED,
     REFUSED_UNATTEMPTED_TIME_BUDGET,
 )
@@ -910,10 +909,10 @@ class FileIntakeAdapter(IntakeAdapter):
         # spend; distributing the measured total over the admitted items in
         # proportion to their estimates keeps the class budget denominated in
         # bytes actually read.
-        refused_reasons = dict(getattr(metrics, "refused_bytes_by_reason", {}) or {})
-        unattempted_is_retryable = bool(getattr(metrics, "time_budget_exceeded", False)) or (
-            REFUSED_DAEMON_DEGRADED in refused_reasons
-        )
+        # The degraded skip is a flag, not a refused-byte bucket: a batch of
+        # empty files refuses zero bytes and still attempted nothing.
+        degraded_skip = bool(getattr(metrics, "daemon_degraded_skip", False))
+        unattempted_is_retryable = bool(getattr(metrics, "time_budget_exceeded", False)) or degraded_skip
         read_bytes = int(getattr(metrics, "source_payload_read_bytes", 0) or 0)
         estimated_total = sum(max(1, int(item.estimated_cost)) for item in batch)
         for item in batch:
@@ -975,7 +974,7 @@ class FileIntakeAdapter(IntakeAdapter):
                 # file. Acknowledgeable, never progress.
                 outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=item_estimate)
 
-        if REFUSED_DAEMON_DEGRADED in refused_reasons:
+        if degraded_skip:
             self._retry_after = retry_after_before
             if offered_local_retries:
                 now = self._clock()

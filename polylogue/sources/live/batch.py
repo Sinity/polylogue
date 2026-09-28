@@ -1992,6 +1992,7 @@ class LiveBatchProcessor:
             stale_cursor_write_count=0,
             stage_timings_s={},
             failed_paths=[],
+            daemon_degraded_skip=True,
         )
 
     def _record_attempt_progress(self, attempt_id: str, **kwargs: Any) -> None:
