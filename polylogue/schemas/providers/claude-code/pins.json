@@ -36,6 +36,72 @@
       "role": "message_container",
       "action": "reject",
       "reason": "oldTodos is a todo list from tool results, not a message container"
+    },
+    {
+      "path": "$.timestamp",
+      "role": "session_title",
+      "action": "reject",
+      "reason": "Record timestamps are ISO instants, never session titles; the role inference mislabelled them."
+    },
+    {
+      "path": "$.entries[].created",
+      "role": "session_title",
+      "action": "reject",
+      "reason": "sessions-index entry creation instants are timestamps, not titles."
+    },
+    {
+      "path": "$.name",
+      "role": "session_title",
+      "action": "reject",
+      "reason": "Top-level name fields on Claude Code records name tools, agents or files, not the session; titles come from ai-title, custom-title and summary records."
+    },
+    {
+      "path": "$.title",
+      "role": "session_title",
+      "action": "reject",
+      "reason": "Top-level title fields belong to frame-link and artifact records; the session title comes from ai-title, custom-title and summary records."
+    },
+    {
+      "path": "$.title",
+      "role": "message_body",
+      "action": "reject",
+      "reason": "Top-level title fields label frame-link and artifact records; they are not conversational body text."
+    },
+    {
+      "path": "$.result.title",
+      "role": "session_title",
+      "action": "reject",
+      "reason": "Tool result titles label a tool's output, not the session."
+    },
+    {
+      "path": "$.result.ac_check",
+      "role": "message_body",
+      "action": "reject",
+      "reason": "Structured tool-result check output, retained with the raw record; not conversational body text."
+    },
+    {
+      "path": "$.toolUseResult.name",
+      "role": "session_title",
+      "action": "reject",
+      "reason": "Tool-result names identify tools, not sessions."
+    },
+    {
+      "path": "$.inheritedWorktreePath",
+      "role": "message_body",
+      "action": "reject",
+      "reason": "A filesystem path inherited from the parent session's worktree; metadata, not body text."
+    },
+    {
+      "path": "$.entries[].firstPrompt",
+      "role": "message_body",
+      "action": "reject",
+      "reason": "sessions-index firstPrompt is a preview of the transcript's first user message, which the transcript itself carries in full."
+    },
+    {
+      "path": "$.workflowProgress[].promptPreview",
+      "role": "message_body",
+      "action": "reject",
+      "reason": "Workflow progress carries a truncated preview of a prompt the transcript carries in full."
     }
   ]
 }

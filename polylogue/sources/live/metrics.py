@@ -135,6 +135,11 @@ class LiveBatchMetrics:
     #: pass that admits nothing is never reported as an idle one.
     excluded_file_count: int = 0
     excluded_reasons: dict[str, int] = field(default_factory=dict)
+    #: Admitted paths whose provider is the source fallback only because
+    #: detection crashed, mapped to the failure (polylogue-fkqxx). A crash
+    #: and a shape fallback store the same provider; only this tells them
+    #: apart.
+    detection_fallback_paths: dict[str, str] = field(default_factory=dict)
     #: The excluded paths themselves, mapped to their typed reason. The
     #: counts above aggregate by reason and so cannot say *which* file was
     #: refused; a page-shaped admitter reports one outcome per item and
@@ -228,6 +233,7 @@ class LiveBatchMetrics:
             # nothing had been offered.
             "excluded_file_count": self.excluded_file_count,
             "excluded_reasons": dict(self.excluded_reasons),
+            "detection_fallback_count": len(self.detection_fallback_paths),
             "source_group_count": self.source_group_count,
             "input_bytes": self.input_bytes,
             "ingested_bytes": self.ingested_bytes,

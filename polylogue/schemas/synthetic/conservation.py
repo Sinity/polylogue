@@ -46,6 +46,21 @@ ConservationVerdict: TypeAlias = Literal["loss", "duplication", "mutation"]
 
 _MAX_WALK_DEPTH = 12
 
+#: Key the coverage-witness generator invents to exercise a schema's
+#: ``additionalProperties``. It names no provider field, so no parser can be
+#: expected to carry a value planted beneath it. The generator prefixes
+#: underscores when a declared property already has this name.
+COVERAGE_EXTRA_KEY = "__polylogue_coverage_extra__"
+
+
+def _is_coverage_extra_key(key: object) -> bool:
+    """True for the generator's invented additional-property key.
+
+    Only undeclared keys reach this test, so a provider property that happens
+    to share the name is walked as declared and stays in scope.
+    """
+    return isinstance(key, str) and key.lstrip("_") == COVERAGE_EXTRA_KEY.lstrip("_")
+
 
 @dataclass(frozen=True, slots=True)
 class PlantedValue:
@@ -248,7 +263,7 @@ def collect_planted_values(
         if isinstance(additional_properties, Mapping) and isinstance(payload, Mapping):
             declared_properties = properties if isinstance(properties, Mapping) else {}
             for key, value in payload.items():
-                if key in declared_properties or key in visited_keys:
+                if key in declared_properties or key in visited_keys or _is_coverage_extra_key(key):
                     continue
                 visited_keys.add(key)
                 found.extend(
@@ -382,6 +397,22 @@ def _mutation_detail(value: str, observed: Counter[str]) -> str | None:
     return None
 
 
+def _wire_string_occurrences(payloads: Sequence[object]) -> Counter[str]:
+    """Count every non-empty string in the wire payloads, at any position."""
+    counter: Counter[str] = Counter()
+    stack: list[tuple[object, int]] = [(payload, 0) for payload in payloads]
+    while stack:
+        value, depth = stack.pop()
+        if isinstance(value, str):
+            if _normalise(value):
+                counter[_normalise(value)] += 1
+        elif depth < _MAX_WALK_DEPTH and isinstance(value, Mapping):
+            stack.extend((item, depth + 1) for item in value.values())
+        elif depth < _MAX_WALK_DEPTH and isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+            stack.extend((item, depth + 1) for item in value)
+    return counter
+
+
 def check_conservation(
     schema: Mapping[str, object],
     payloads: Sequence[object],
@@ -405,8 +436,14 @@ def check_conservation(
 
     block_texts = parsed_block_texts(sessions)
     titles = parsed_titles(sessions)
+    wire_strings = _wire_string_occurrences(payloads)
 
     findings: list[ConservationFinding] = []
+    roles = {item.role for item in planted}
+    # The distinct places parsed output is counted: titles, and block text
+    # (shared by every non-title role).
+    observation_sources = ([titles] if TITLE_ROLE in roles else []) + ([block_texts] if roles - {TITLE_ROLE} else [])
+    expected_total: Counter[str] = Counter(item.value for item in planted)
     for role in sorted({item.role for item in planted}):
         observed = titles if role == TITLE_ROLE else block_texts
         expected: Counter[str] = Counter(item.value for item in planted if item.role == role)
@@ -415,7 +452,13 @@ def check_conservation(
             if observed_count == expected_count:
                 continue
             path = next(item.path for item in planted if item.role == role and item.value == value)
-            if observed_count > expected_count:
+            # A value may also sit at wire positions outside the conserved
+            # roles (a tool result echoing a message, say). Emitting it once
+            # per wire occurrence is not duplication; exceeding every wire
+            # occurrence -- counted across all roles together, so two roles
+            # cannot each spend the same unannotated occurrence -- is.
+            emitted = sum(source.get(value, 0) for source in observation_sources)
+            if observed_count > expected_count and emitted > max(expected_total[value], wire_strings.get(value, 0)):
                 findings.append(
                     ConservationFinding(
                         path=path,
@@ -424,6 +467,8 @@ def check_conservation(
                         detail=f"appears {observed_count} times in parsed output, expected {expected_count}",
                     )
                 )
+                continue
+            if observed_count > expected_count:
                 continue
             mutation = _mutation_detail(value, observed) if observed_count == 0 else None
             if mutation is not None:
@@ -448,6 +493,7 @@ def check_conservation(
 __all__ = [
     "BODY_ROLE",
     "CONTENT_BEARING_ROLES",
+    "COVERAGE_EXTRA_KEY",
     "SEMANTIC_ROLE_KEY",
     "TITLE_ROLE",
     "ConservationFinding",

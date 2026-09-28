@@ -1219,7 +1219,7 @@ _CHATGPT_BUNDLE_DRIFT_MIN_CANDIDATES = 5
 
 
 def _looks_like_chatgpt_mapping_candidate(record: PayloadRecord) -> bool:
-    """True if ``record`` carries a non-empty ``mapping`` dict.
+    """True if ``record`` looks like a ChatGPT conversation record.
 
     This is deliberately looser than ``chatgpt.looks_like_fragment`` (which
     also validates every node's shape): it is the "near miss" test used to
@@ -1234,7 +1234,20 @@ def _looks_like_chatgpt_mapping_candidate(record: PayloadRecord) -> bool:
     as opposed to a large-but-irrelevant sibling array.
     """
     mapping = record.get("mapping")
-    return isinstance(mapping, dict) and bool(mapping)
+    if isinstance(mapping, dict) and bool(mapping):
+        return True
+    # A renamed or restructured tree key would leave no ``mapping`` at all
+    # and so never count, which is exactly the drift this warning exists for
+    # (polylogue-axkgy). The conversation envelope around the tree -- a
+    # ``current_node`` pointer beside ``create_time`` and ``title`` -- still
+    # marks the record as a conversation, and none of the export's sibling
+    # arrays carries that combination.
+    return all(key in record for key in _CHATGPT_CONVERSATION_ENVELOPE_KEYS)
+
+
+#: Conversation-level fields that surround the message tree in a ChatGPT
+#: export record, independent of what the tree key itself is called.
+_CHATGPT_CONVERSATION_ENVELOPE_KEYS = ("current_node", "create_time", "title")
 
 
 def _chatgpt_bundle_record_specs(
