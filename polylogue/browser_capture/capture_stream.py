@@ -20,6 +20,7 @@ import os
 import tempfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
+from decimal import Decimal
 from pathlib import Path
 from typing import IO, Literal
 
@@ -297,6 +298,19 @@ class _RawFold:
     shape: dict[str, object] | None = None
 
 
+def _json_events(handle: IO[bytes]) -> Iterator[_Event]:
+    """Parse events with numbers as the stdlib decoder reads them.
+
+    ijson's float mode goes through a native double and can overflow on a
+    valid integer token wider than 64 bits. The default mode yields exact
+    ``int`` for integer tokens and ``Decimal`` for the rest; each ``Decimal``
+    becomes the ``float`` ``json.loads`` would produce, so hashing and model
+    validation see the same values as before streaming.
+    """
+    for event, value in ijson.basic_parse(handle):
+        yield event, float(value) if isinstance(value, Decimal) else value
+
+
 def _build(events: Iterator[_Event], event: str, value: object) -> object:
     """Materialize one value (a turn, an attachment, a small field)."""
     if event not in _START:
@@ -342,6 +356,30 @@ def _object_digest(members: dict[str, bytes]) -> bytes:
     return digest.digest()
 
 
+#: Root scalars of ``raw_provider_payload`` that native-payload detection reads.
+_SHAPE_SCALAR_KEYS = frozenset({"polylogue_bridge_projection"})
+
+
+def _scalar_digest(value: object) -> bytes:
+    """Digest one scalar's canonical encoding.
+
+    A string is hashed as its JSON encoding piecewise (quote, escaped body,
+    quote), so a large string is not copied into one more encoded buffer.
+    """
+    if not isinstance(value, str):
+        return hashlib.sha256(b"s" + dumps_bytes(value)).digest()
+    digest = hashlib.sha256(b"s")
+    encoded = dumps_bytes(value[:0])
+    digest.update(encoded[:1])
+    for start in range(0, len(value), _SCALAR_DIGEST_CHUNK_CHARS):
+        digest.update(dumps_bytes(value[start : start + _SCALAR_DIGEST_CHUNK_CHARS])[1:-1])
+    digest.update(encoded[-1:])
+    return digest.digest()
+
+
+_SCALAR_DIGEST_CHUNK_CHARS = 1 << 20
+
+
 def _structural_digest(events: Iterator[_Event], event: str, value: object) -> bytes:
     """Digest one JSON value without materializing it.
 
@@ -370,7 +408,7 @@ def _structural_digest(events: Iterator[_Event], event: str, value: object) -> b
             assert not isinstance(frame, _MapFrame)
             result = frame.digest()
         else:
-            result = hashlib.sha256(b"s" + dumps_bytes(value)).digest()
+            result = _scalar_digest(value)
         if result is not None:
             if not stack:
                 return result
@@ -397,7 +435,15 @@ def _read_raw_payload(events: Iterator[_Event], event: str, value: object) -> _R
             break
         key = str(value)
         event, value = next(events)
-        shape[key] = {} if event == "start_map" else [] if event == "start_array" else value
+        # Native-payload detection reads only root keys, their container
+        # kinds, and the bridge-projection marker. Any other scalar is kept as
+        # ``None`` so a huge string is not retained beside its digest.
+        if event == "start_map":
+            shape[key] = {}
+        elif event == "start_array":
+            shape[key] = []
+        else:
+            shape[key] = value if key in _SHAPE_SCALAR_KEYS else None
         members[key] = _structural_digest(events, event, value)
     return _RawFold(digest=_object_digest(members), shape=shape)
 
@@ -441,7 +487,7 @@ def _read_session(events: Iterator[_Event], event: str) -> _SessionFold:
 
 def summarize_capture_stream(handle: IO[bytes]) -> CaptureSummary:
     """Validate and fold one capture envelope in a single streamed pass."""
-    events: Iterator[_Event] = iter(ijson.basic_parse(handle, use_float=True))
+    events: Iterator[_Event] = _json_events(handle)
     root: dict[str, object] = {}
     session: _SessionFold | None = None
     raw = _RawFold()
@@ -550,7 +596,7 @@ def read_capture_state_fields(path: Path) -> tuple[object, object]:
     capture_id: object = None
     updated_at: object = None
     with path.open("rb") as handle:
-        events: Iterator[_Event] = iter(ijson.basic_parse(handle, use_float=True))
+        events: Iterator[_Event] = _json_events(handle)
         try:
             event, value = next(events)
             if event != "start_map":
