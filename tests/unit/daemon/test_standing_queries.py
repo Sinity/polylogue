@@ -3,7 +3,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 from polylogue.archive.query.evaluator import QueryEvaluation, QueryEvaluationRequest
 from polylogue.archive.query.watch_definition import compile_watch_definition
@@ -24,6 +24,9 @@ from polylogue.storage.sqlite.query_objects import (
     put_query,
     put_query_name,
 )
+
+if TYPE_CHECKING:
+    from polylogue.core.query_identity import JsonValue
 
 
 class _Evaluator:
@@ -68,7 +71,7 @@ def _seed_watch(tmp_path: Path, *, watch: bool = True, plan: object | None = Non
     with sqlite3.connect(user_db) as conn:
         query = put_query(
             conn,
-            plan if plan is not None else {"field": "origin", "value": "codex-session"},
+            cast("dict[str, JsonValue]", plan) if plan is not None else {"field": "origin", "value": "codex-session"},
             grain="session",
             lane="dialogue",
             rank_policy="mixed",

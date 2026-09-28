@@ -31,6 +31,7 @@ from polylogue.storage.runtime import (
 from polylogue.storage.sqlite.archive_tiers.write import ArchiveAgentPolicy
 
 if TYPE_CHECKING:
+    from polylogue.archive.session.session_profile import SessionProfile
     from polylogue.core.types import SessionId
     from polylogue.storage.sqlite.queries.messages import MessageTypeName
     from polylogue.storage.sqlite.query_store import SQLiteQueryStore
@@ -40,6 +41,9 @@ class RepositoryArchiveSessionMixin:
     if TYPE_CHECKING:
         _backend: RepositoryBackendProtocol
         queries: SQLiteQueryStore
+
+        # Provided by RepositoryInsightProfileReadMixin in the composed repository.
+        async def get_session_profiles_batch(self, session_ids: list[str]) -> dict[str, SessionProfile]: ...
 
     async def _fetch_tags_by_session(self, session_ids: list[str]) -> dict[str, tuple[str, ...]]:
         """#1240: batch-fetch M2M tags for hydration of Session/SessionSummary."""

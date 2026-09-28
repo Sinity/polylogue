@@ -2652,7 +2652,7 @@ def list_assertion_claims(
 
     if schema is not None and not schema.replace("_", "").isalnum():
         raise ValueError(f"invalid SQLite schema name: {schema!r}")
-    if not _table_exists(conn, "assertions", schema=schema):
+    if not _table_exists(conn, "assertions", schema=schema if schema is not None else "main"):
         return []
 
     where: list[str] = []

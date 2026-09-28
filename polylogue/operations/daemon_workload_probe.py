@@ -1519,7 +1519,12 @@ def _cost_bearing_profile_count(conn: sqlite3.Connection) -> Evidence[int]:
     if not lanes:
         return Unavailable(reason="cost_evidence_unavailable", detail="session_model_usage cost lanes are absent")
     predicate = " OR ".join(f"{lane} IS NOT NULL" for lane in lanes)
-    return _scalar_int(conn, f"SELECT COUNT(DISTINCT session_id) FROM session_model_usage WHERE {predicate}")
+    per_model = f"SELECT session_id FROM session_model_usage WHERE {predicate}"
+    # A provider-reported session total with no model row is still cost
+    # evidence the cost projections expose; count that lane too.
+    if "reported_cost_usd" in _columns(conn, "sessions"):
+        per_model += " UNION SELECT session_id FROM sessions WHERE reported_cost_usd IS NOT NULL"
+    return _scalar_int(conn, f"SELECT COUNT(*) FROM ({per_model})")
 
 
 def _record_refusal(refusals: list[Unavailable], case: Unavailable) -> int:

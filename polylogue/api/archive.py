@@ -5373,6 +5373,33 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             projection="session-summary",
         )
 
+    async def get_session_summaries(self, session_ids: Sequence[str]) -> dict[str, SessionSummary]:
+        """Return summaries for a bounded set of sessions in one archive read.
+
+        Keys are the requested ids; ids that do not resolve are omitted.
+        """
+        requested = tuple(dict.fromkeys(session_ids))
+
+        def read(archive: ArchiveStore) -> dict[str, SessionSummary]:
+            summaries: dict[str, SessionSummary] = {}
+            for session_id in requested:
+                try:
+                    resolved_id = archive.resolve_session_id(session_id)
+                    summaries[session_id] = archive_summary_to_domain(archive.read_summary(resolved_id))
+                except KeyError:
+                    continue
+            return summaries
+
+        if not requested:
+            return {}
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session_summary.get_many",
+            arguments={"session_count": len(requested)},
+            work=read,
+            projection="session-summary",
+        )
+
     async def _get_attachment_library_page(
         self, *, limit: int, offset: int, mime_filter: str = "", session_filter: str = "", state_filter: str = ""
     ) -> Sequence[tuple[object, str, str | None]]:

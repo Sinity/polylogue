@@ -3011,6 +3011,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         )
         entries: list[LibraryEntry] = []
         canonical_titles: dict[str, str] = {}
+        # One archive read for the page's sessions, not one per session.
+        summaries = await poly.get_session_summaries([str(cast(_AttachmentRow, row[0]).session_id) for row in rows])
         for raw_att, _title, origin in rows:
             # The facade returns the attachment opaquely: polylogue/api may not
             # import polylogue/storage (gate layering), so the record type cannot
@@ -3022,7 +3024,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             # canonical display label used by session summaries before it
             # reaches the attachment library.
             if sid not in canonical_titles:
-                summary = await poly.get_session_summary(sid)
+                summary = summaries.get(sid)
                 canonical_titles[sid] = (
                     str(getattr(summary, "display_label", None) or getattr(summary, "title", None) or sid)
                     if summary is not None

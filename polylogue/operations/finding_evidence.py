@@ -287,6 +287,6 @@ def _incompatible_result_set_refs(
         if object_id is None:
             continue
         manifest = get_result_set(conn, object_id)
-        if manifest is not None and manifest.query_hash != definition_hash:
+        if manifest is not None and manifest.query_hash != definition_hash and ref is not None:
             incompatible.add(ref)
     return frozenset(incompatible)

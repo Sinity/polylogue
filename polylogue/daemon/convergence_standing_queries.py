@@ -241,12 +241,15 @@ def make_standing_query_stage(
                     continue
                 _materialize_watch_evaluation(conn, query.query_hash, evaluation, now_ms=now_ms)
             if promoted_due:
-                _materialize_promoted_finding_drifts(
+                unevaluated = _materialize_promoted_finding_drifts(
                     conn, evaluator, now_ms=now_ms, query_hashes=frozenset(promoted_due)
                 )
                 boundary = clock_boundary_start_ms(now_ms)
                 for query_hash in promoted_due:
-                    _PROMOTED_CLOCK_BOUNDARIES[(str(db_path), query_hash)] = boundary
+                    # A cache-only evaluation produced no answer; leave it due so
+                    # the next check retries instead of waiting a clock boundary.
+                    if query_hash not in unevaluated:
+                        _PROMOTED_CLOCK_BOUNDARIES[(str(db_path), query_hash)] = boundary
             conn.commit()
         finally:
             conn.close()
@@ -635,8 +638,13 @@ def _materialize_promoted_finding_drifts(
     *,
     now_ms: int,
     query_hashes: frozenset[str] | None = None,
-) -> None:
-    """Emit a new candidate when an accepted expected-count finding diverges."""
+) -> frozenset[str]:
+    """Emit a new candidate when an accepted expected-count finding diverges.
+
+    Returns the query hashes whose evaluation was cache-only (no usable
+    answer), so a caller does not record them as evaluated.
+    """
+    cache_only: set[str] = set()
     for finding in list_assertion_claims(
         conn,
         kinds=(AssertionKind.FINDING,),
@@ -662,6 +670,7 @@ def _materialize_promoted_finding_drifts(
             )
         )
         if evaluation.cache_only:
+            cache_only.add(query_hash)
             continue
         if evaluation.exactness != "exact":
             _materialize_unmeasured_finding_drift(
@@ -719,6 +728,7 @@ def _materialize_promoted_finding_drifts(
             ],
             now_ms=now_ms,
         )
+    return frozenset(cache_only)
 
 
 def _materialize_unmeasured_finding_drift(

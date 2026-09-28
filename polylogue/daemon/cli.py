@@ -2628,12 +2628,12 @@ async def _run_daemon_services_under_active_writer_lease(
                     write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
                     now=time.time,
                 )
-            from polylogue.daemon.embedding_owner import compose_embedding_convergence
+            from polylogue.daemon.embedding_owner import ComposedEmbeddingConvergence, compose_embedding_convergence
             from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
             from polylogue.operations.embedding_derivation import embedding_session_ids_for_paths
 
-            embedding_convergence = (
-                api_server.operation_runtime.embedding_convergence
+            embedding_convergence: ComposedEmbeddingConvergence = (
+                cast("ComposedEmbeddingConvergence", api_server.operation_runtime.embedding_convergence)
                 if api_server is not None and api_server.operation_runtime.embedding_convergence is not None
                 else compose_embedding_convergence(
                     archive_root_path / "index.db",

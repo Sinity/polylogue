@@ -132,6 +132,8 @@ def run_machine_entry(
         return
 
     command = extract_command(argv)
+    # A swallowed SystemExit(0) leaves no return value; start from "no code".
+    result = None
     try:
         result = cli(standalone_mode=False)
     except click.UsageError as exc:

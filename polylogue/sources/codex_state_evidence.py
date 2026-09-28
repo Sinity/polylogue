@@ -242,6 +242,18 @@ def materialize_codex_state_content(
     return receipt
 
 
+class CodexStateFinalizeError(RuntimeError):
+    """A retained Codex state candidate could not be finalized in the source tier."""
+
+
+def _record_snapshot_candidate(archive: Any, raw_id: str, **kwargs: Any) -> None:
+    """Finalize one candidate, typing SQLite failures at this seam."""
+    try:
+        record_codex_state_snapshot_terminal(archive, raw_id, **kwargs)
+    except sqlite3.Error as exc:
+        raise CodexStateFinalizeError(f"codex state candidate {raw_id} could not be finalized: {exc}") from exc
+
+
 def record_codex_state_snapshot_terminal(
     archive: Any,
     raw_id: str,
@@ -429,8 +441,12 @@ def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
             if state_kind not in codex_state.IN_SCOPE_KINDS:
                 continue
             observed_at_ms = archive.raw_revision_observed_at_ms(raw_id)
+            # Isolate each candidate: a finalize that fails after writing some
+            # material rows must not leave them for the next commit to publish.
+            source_conn = archive.source_connection
+            source_conn.execute("SAVEPOINT codex_state_candidate")
             try:
-                record_codex_state_snapshot_terminal(
+                _record_snapshot_candidate(
                     archive,
                     raw_id,
                     state_path=state_path,
@@ -440,7 +456,9 @@ def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
                     censused_at_ms=observed_at_ms,
                     blob_hash=blob_hash,
                 )
-            except (sqlite3.Error, OSError, ValueError) as exc:
+            except (CodexStateFinalizeError, OSError, ValueError) as exc:
+                source_conn.execute("ROLLBACK TO SAVEPOINT codex_state_candidate")
+                source_conn.execute("RELEASE SAVEPOINT codex_state_candidate")
                 emit(
                     "sources.codex_state.snapshot_finalize_refused",
                     outcome="degraded",
@@ -449,6 +467,7 @@ def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
                     error_type=type(exc).__name__,
                 )
                 continue
+            source_conn.execute("RELEASE SAVEPOINT codex_state_candidate")
             resolved += 1
         index_conn = archive.index_connection
         if index_conn is not None:

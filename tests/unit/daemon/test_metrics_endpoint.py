@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from email.message import Message
 from http import HTTPStatus
@@ -118,7 +119,7 @@ def test_independent_unmeasured_collectors_share_one_metric_header() -> None:
     lines: list[str] = []
     states: list[tuple[dict[str, str], int]] = []
 
-    def collector(probe: str):
+    def collector(probe: str) -> Callable[[list[str]], None]:
         def collect(pending: list[str]) -> None:
             _emit_unmeasured_probe(pending, probe)
 

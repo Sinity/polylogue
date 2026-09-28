@@ -13,6 +13,7 @@ import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -448,9 +449,9 @@ async def test_list_summaries_by_query_hydrates_session_profile_slice() -> None:
 
     class _Repo(RepositoryArchiveSessionMixin):
         def __init__(self) -> None:
-            self.queries = queries
-            self._fetch_tags_by_session = AsyncMock(return_value={})
-            self.get_session_profiles_batch = AsyncMock(return_value={session_id: profile})
+            self.queries = cast(Any, queries)
+            setattr(self, "_fetch_tags_by_session", AsyncMock(return_value={}))  # noqa: B010
+            setattr(self, "get_session_profiles_batch", AsyncMock(return_value={session_id: profile}))  # noqa: B010
 
     repo = _Repo()
     summaries = await repo.list_summaries_by_query(_record_query(origin="codex-session", limit=1))
@@ -458,7 +459,7 @@ async def test_list_summaries_by_query_hydrates_session_profile_slice() -> None:
     assert summaries[0].terminal_state == "refused"
     assert summaries[0].total_cost_usd == 1.75
     assert summaries[0].cost_provenance == "provider_reported"
-    repo.get_session_profiles_batch.assert_awaited_once_with([session_id])
+    cast(AsyncMock, repo.get_session_profiles_batch).assert_awaited_once_with([session_id])
 
 
 def test_actions_view_uses_blocks_without_session_payload_bloat(workspace_env: dict[str, Path]) -> None:

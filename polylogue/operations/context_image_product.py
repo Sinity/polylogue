@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast, get_args
 
 from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
 from polylogue.context.compiler import (
@@ -12,6 +12,7 @@ from polylogue.context.compiler import (
     DEFAULT_CONTEXT_IMAGE_MAX_MESSAGES_PER_SESSION,
     ContextImage,
     ContextOmission,
+    ContextSegmentProfile,
     ContextSpec,
 )
 from polylogue.context.product_image import compile_context_image
@@ -179,7 +180,7 @@ def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: Arc
         max_chars_per_message=payload.get("max_chars_per_message", DEFAULT_CONTEXT_IMAGE_MAX_CHARS_PER_MESSAGE),
         include_assertions=include_assertions,
         redaction_policy="default" if redact_paths else "raw-opt-in",
-        segment_profile=str(payload.get("segment_profile", "default")),
+        segment_profile=_segment_profile(payload.get("segment_profile", "default")),
     )
     if include_assertions:
         archive.require_user_tier()
@@ -209,3 +210,10 @@ def context_image_from_pinned_reader(payload: Mapping[str, Any], *, archive: Arc
 
 
 __all__ = ["context_image_from_pinned_reader"]
+
+
+def _segment_profile(value: object) -> ContextSegmentProfile:
+    """Refuse an undeclared segment profile instead of passing it through."""
+    if value not in get_args(ContextSegmentProfile):
+        raise ValueError(f"unsupported segment_profile: {value!r}")
+    return cast("ContextSegmentProfile", value)

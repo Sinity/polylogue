@@ -24,9 +24,12 @@ def unresolvable_raw_source_count(archive_root: Path) -> int:
     def reacquirable(source_path: object) -> bool:
         # ZIP rows address members as ``<container>:<member>``. The member
         # suffix is not a filesystem path; check the retained container.
+        # A loose file may itself contain a colon, so the literal path wins.
         text = str(source_path)
+        if Path(text).exists():
+            return True
         container, separator, member = text.partition(":")
-        return (Path(container) if separator and member else Path(text)).exists()
+        return bool(separator and member) and Path(container).exists()
 
     return sum(int(count) for source_path, count in rows if not reacquirable(source_path))
 

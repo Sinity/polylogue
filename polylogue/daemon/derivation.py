@@ -768,10 +768,17 @@ class _Pass:
             upstream = self.registry.get(name)
             cursor: str | None = None
             while True:
+                # The scan is bounded by the pass deadline and counted as
+                # prerequisite work; an exhausted deadline is not cached, so a
+                # later pass resumes the check instead of trusting a partial one.
+                if self.out_of_time():
+                    return f"prerequisite domain {name!r} inspection deadline exhausted"
                 page = _as_page(upstream.required_page(self.frame, cursor=cursor, limit=DEFAULT_PAGE))
+                self.pages += 1
                 if len(page.keys) > DEFAULT_PAGE:
                     raise ValueError(f"prerequisite domain {name!r} exceeded page limit")
                 statuses = _coerce_statuses(dict(upstream.inspect(self.frame, page.keys)))
+                self.prerequisites_inspected += len(page.keys)
                 for key in page.keys:
                     if statuses.get(key, KeyStatus.MISSING) is not KeyStatus.VALID:
                         reason = f"prerequisite domain {name!r} has unconverged key {key!r}"

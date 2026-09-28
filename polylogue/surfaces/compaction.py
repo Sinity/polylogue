@@ -118,9 +118,15 @@ def estimate_tokens(text: str) -> int:
 
 
 def _estimate_serialized_tokens(payload: str) -> int:
-    """Count JSON words so compact separators do not hide payload size."""
+    """Estimate JSON payload tokens with the same calibrated ratio as ``estimate_tokens``.
 
-    return len(re.findall(r"\w+", payload))
+    Words are extracted by regex so compact separators do not hide payload
+    size; an opaque identifier is split into its word runs rather than counted
+    as one token.
+    """
+
+    words = len(re.findall(r"[A-Za-z]+|\d+", payload))
+    return max(1, int(words * 1.3)) if words else 0
 
 
 def _get(value: object, name: str, default: object = None) -> object:

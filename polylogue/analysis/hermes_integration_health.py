@@ -311,9 +311,9 @@ def build_hermes_integration_health(
     caveats: list[str] = []
     unmeasured_reasons: list[str] = []
     if not convergence_debt_available:
+        # A stable structural reason: the raw error can carry absolute tier
+        # paths and SQLite detail, which this path-redacted payload must not.
         reason = "convergence-debt measurement unavailable"
-        if convergence_debt_error:
-            reason = f"{reason}: {convergence_debt_error}"
         caveats.append(reason)
         unmeasured_reasons.append(reason)
     sources_projected = 0
