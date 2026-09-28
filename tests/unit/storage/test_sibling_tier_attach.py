@@ -23,6 +23,7 @@ async def test_fresh_root_read_connection_attaches_embeddings_without_identity_r
     try:
         async with backend.read_connection() as conn:
             cursor = await conn.execute("SELECT COUNT(*) FROM embeddings.sqlite_master")
-            assert (await cursor.fetchone())[0] > 0
+            row = await cursor.fetchone()
+            assert row is not None and row[0] > 0
     finally:
         await backend.close()
