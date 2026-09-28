@@ -285,6 +285,41 @@ def test_projection_uses_stored_edges_and_excludes_inherited_calls() -> None:
     assert evidence.coverage["message_count"] == 1
 
 
+def test_topology_truncation_keeps_every_edge_endpoint() -> None:
+    """The bounded topology is still a graph over only retained nodes.
+
+    Anti-vacuity: the reported root-with-1,000-children shape used to retain
+    1,000 edges while omitting the final child node; every emitted edge now
+    has both endpoints in the emitted node set.
+    """
+    from polylogue.analysis.orchestration_evidence import build_session_orchestration
+    from polylogue.analysis.topology import SessionTopology, TopologyEdge, TopologyEdgeKind, TopologyNode
+    from polylogue.archive.message.messages import MessageCollection
+    from polylogue.archive.session.domain_models import Session
+    from polylogue.core.enums import Origin
+    from polylogue.core.types import SessionId
+
+    root = SessionId("codex-session:large-root")
+    children = [SessionId(f"codex-session:child-{index}") for index in range(1000)]
+    topology = SessionTopology(
+        target_id=root,
+        root_id=root,
+        nodes=(TopologyNode(session_id=root), *(TopologyNode(session_id=child) for child in children)),
+        edges=tuple(TopologyEdge(parent_id=root, child_id=child, kind=TopologyEdgeKind.SUBAGENT) for child in children),
+    )
+    session = Session(id=root, origin=Origin.CODEX_SESSION, messages=MessageCollection(messages=[]))
+
+    evidence = build_session_orchestration(session, topology)
+    payload = evidence.topology
+    assert payload is not None
+    nodes = cast(list[dict[str, object]], payload["nodes"])
+    edges = cast(list[dict[str, object]], payload["edges"])
+    retained = {node["session_id"] for node in nodes}
+    assert len(retained) == 1000
+    assert len(edges) == 999
+    assert all(edge["parent_id"] in retained and edge["child_id"] in retained for edge in edges)
+
+
 def test_unmeasured_token_lanes_are_a_distinct_bucket_from_measured_zero() -> None:
     """A nullable lane must neither crash the projection nor read as a measured zero.
 

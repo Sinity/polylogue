@@ -64,7 +64,7 @@ def project_payload(payload: dict[str, object], fields: str | None) -> dict[str,
     selected = selected_fields(fields)
     if selected is None:
         return dict(payload)
-    return {key: value for key, value in payload.items() if key in selected}
+    return {key: value for key, value in payload.items() if key in selected or key == "outcome"}
 
 
 def csv_text(items: list[dict[str, object]]) -> str:

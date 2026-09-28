@@ -395,7 +395,11 @@ class TestListFormatting:
             assert payload["items"][0]["origin"] == "claude-ai-export"
             assert payload["items"][0]["summary"] == "Summary text"
         elif output_format == "csv":
-            assert "id,date,origin,title,messages,tags,summary" in rendered
+            assert (
+                "id,date,origin,title,messages,tags,summary,outcome,cost_usd,relative_time,repo,cwd_display" in rendered
+            )
+            assert "outcome" in rendered and "cost_usd" in rendered and "relative_time" in rendered
+            assert "repo" in rendered and "cwd_display" in rendered
             assert "conv-summary-1" in rendered
             assert "alpha,beta" in rendered
         else:
@@ -480,7 +484,12 @@ class TestListFormatting:
             assert payload["items"][0]["session"]["origin"] == "claude-ai-export"
             assert payload["items"][0]["match"]["retrieval_lane"] == "dialogue"
         elif output_format == "csv":
-            assert "id,date,origin,title,messages,rank,retrieval_lane,match_surface,message_id,snippet" in rendered
+            assert (
+                "id,date,origin,title,messages,rank,retrieval_lane,match_surface,message_id,snippet,outcome,cost_usd,relative_time,repo,cwd_display"
+                in rendered
+            )
+            assert "outcome" in rendered and "cost_usd" in rendered and "relative_time" in rendered
+            assert "repo" in rendered and "cwd_display" in rendered
             assert "conv-hit-1" in rendered
             assert "msg-hit-1" in rendered
         else:
@@ -541,7 +550,7 @@ class TestListFormatting:
         elif output_format == "yaml":
             snippet = yaml.safe_load(rendered)["items"][0]["match"]["snippet"]
         elif output_format == "csv":
-            snippet = rendered.rsplit(",", maxsplit=1)[-1].strip()
+            snippet = next(csv.DictReader(io.StringIO(rendered)))["snippet"]
         else:
             snippet = rendered.split("needle", maxsplit=1)[1]
         assert len(snippet) <= DEFAULT_SEARCH_SNIPPET_MAX_CHARS + 64

@@ -258,6 +258,8 @@ def test_raw_authority_blockers_cli_lists_unresolved_and_classifies_kind(
         assert by_id["blocker-stale"]["kind"] == "stale_plan"
         assert by_id["blocker-frontier"]["kind"] == "frontier_obligation"
         assert by_id["blocker-obligation"]["kind"] == "frontier_obligation"
+        assert isinstance(by_id["blocker-stale"]["expected"], dict)
+        assert isinstance(by_id["blocker-stale"]["observed"], dict)
         assert payload["total_count"] == 3
         assert payload["truncated"] is False
         # Resolving one blocker removes it from the unresolved listing.
@@ -606,6 +608,30 @@ def test_blob_gc_cli_plain_preview_names_skip_counts(
     assert "Candidates: 1" in result.output
     assert "Result:     would delete 1 blob(s)" in result.output
     assert "referenced=0 reserved=0 missing=0 unlink_error=0" in result.output
+
+
+def test_blocked_blob_gc_preview_is_a_machine_and_process_failure(
+    cli_workspace: dict[str, Path], cli_runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.storage.blob_gc import BlobGCResult
+
+    monkeypatch.setattr(
+        "polylogue.storage.blob_gc.run_blob_gc_report",
+        lambda *_args, **_kwargs: BlobGCResult(
+            db_path="source.db", blob_dir="blob", dry_run=True, max_batch=100, blocked_reason="index unavailable"
+        ),
+    )
+    json_result = cli_runner.invoke(
+        cli,
+        ["--plain", "ops", "maintenance", "blob-gc", "--output-format", "json"],
+    )
+    plain_result = cli_runner.invoke(cli, ["--plain", "ops", "maintenance", "blob-gc"])
+
+    assert json_result.exit_code == 1
+    assert json.loads(json_result.stdout)["ok"] is False
+    assert "index unavailable" in json_result.stdout
+    assert plain_result.exit_code == 1
+    assert "Blocked:" in plain_result.stdout
 
 
 def test_blob_gc_cli_has_no_mutate_flag(
