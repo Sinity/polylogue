@@ -1031,7 +1031,7 @@ def test_affected_admission_refuses_without_launching_pytest(
     monkeypatch.setattr(
         verify,
         "_estimate_affected_selection",
-        lambda _root, _graph: (selected_count, 1.0, None, 0),
+        lambda _root, _graph, _forced=(): (selected_count, 1.0, None, 0),
     )
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
