@@ -1104,3 +1104,35 @@ def test_a_signature_on_a_non_thinking_part_survives_as_session_evidence() -> No
 
     assert "thoughtSignature" not in (blocks[0].metadata or {})
     assert [event.payload for event in events] == [{"block_index": 0, "thoughtSignature": "sig-text"}]
+
+
+def test_a_signature_only_change_leaves_the_session_hash_unchanged() -> None:
+    """Signatures stay as evidence but, like a block ``signature``, never move identity.
+
+    Anti-vacuity: hash the whole event payload again and ``sig-a`` versus
+    ``sig-b`` gives two session hashes.
+    """
+    from polylogue.core.enums import Provider, Role
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.sources.parsers.base_models import ParsedMessage, ParsedSession, ParsedSessionEvent
+
+    def session(signature: str, block_index: int = 0) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.GEMINI,
+            provider_session_id="s1",
+            title="t",
+            created_at=None,
+            updated_at=None,
+            messages=[ParsedMessage(provider_message_id="m1", role=Role.ASSISTANT, text="answer")],
+            session_events=[
+                ParsedSessionEvent(
+                    event_type="gemini_thinking_evidence",
+                    timestamp=None,
+                    source_message_provider_id="m1",
+                    payload={"block_index": block_index, "thoughtSignature": signature},
+                )
+            ],
+        )
+
+    assert session_content_hash(session("sig-a")) == session_content_hash(session("sig-b"))
+    assert session_content_hash(session("sig-a")) != session_content_hash(session("sig-a", block_index=1))

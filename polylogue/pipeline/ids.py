@@ -116,6 +116,27 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
     ),
 }
 
+#: Session-event payload keys kept as evidence but excluded from every event
+#: hash, by event type, with the reason. Gemini thought signatures leave the
+#: hashed block for session evidence (``drive_support_blocks``); they are
+#: provider attestations re-issued on replay, like a block ``signature``, so a
+#: signature-only change must not move the session or event identity.
+_EVENT_PAYLOAD_EXCLUDED_KEYS: dict[str, dict[str, str]] = {
+    "gemini_thinking_evidence": {
+        "thoughtSignature": "provider cryptographic signatures are re-issued on replay",
+        "thoughtSignatures": "provider cryptographic signatures are re-issued on replay",
+    },
+}
+
+
+def _hashed_event_payload(event_type: str, payload: Mapping[str, object]) -> object:
+    """Normalize an event payload for hashing, without its declared replay-volatile keys."""
+    excluded = _EVENT_PAYLOAD_EXCLUDED_KEYS.get(event_type)
+    if excluded:
+        payload = {key: value for key, value in payload.items() if key not in excluded}
+    return _normalize_nested_for_hash(payload)
+
+
 _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
     "ParsedContentBlock": {
         "signature": "provider cryptographic signatures are re-issued on replay",
@@ -1475,7 +1496,7 @@ def _event_content_payload(event: ParsedSessionEvent) -> dict[str, JSONValue]:
         "event_type": _normalize_for_hash(event.event_type),
         "timestamp": _normalize_for_hash(timestamp),
         "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
-        "payload": hash_payload(_normalize_nested_for_hash(payload)),
+        "payload": hash_payload(_hashed_event_payload(event.event_type, payload)),
     }
 
 
@@ -1602,7 +1623,7 @@ def _session_hash_components(
             "event_type": _normalize_for_hash(event.event_type),
             "timestamp": _normalize_for_hash(event.timestamp),
             "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
-            "payload": hash_payload(_normalize_nested_for_hash(event.payload)),
+            "payload": hash_payload(_hashed_event_payload(event.event_type, event.payload)),
         }
         for event_index, event in enumerate(convo.session_events)
     ]
@@ -1721,7 +1742,7 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
                 "event_type": _normalize_for_hash(event.event_type),
                 "timestamp": _normalize_for_hash(event.timestamp),
                 "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
-                "payload": hash_payload(_normalize_nested_for_hash(event.payload)),
+                "payload": hash_payload(_hashed_event_payload(event.event_type, event.payload)),
             }
         )
     literal('],"title":')
@@ -1801,7 +1822,7 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
                 "event_type": _normalize_for_hash(event.event_type),
                 "timestamp": _normalize_for_hash(event.timestamp),
                 "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
-                "payload": hash_payload(_normalize_nested_for_hash(event.payload)),
+                "payload": hash_payload(_hashed_event_payload(event.event_type, event.payload)),
             }
             conn.execute(
                 "INSERT INTO event_hash VALUES (?, ?)", (event_count - 1, bytes.fromhex(hash_payload(payload)))

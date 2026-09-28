@@ -116,7 +116,7 @@ def _split_statements(sql: str) -> list[str]:
     return statements
 
 
-_LEADING_KEYWORD = re.compile(r"(?:\s|--[^\n]*(?:\n|\Z)|/\*.*?(?:\*/|\Z))*([A-Za-z]+)", re.DOTALL)
+_LEADING_KEYWORD = re.compile(r"(?:[\s\ufeff]|--[^\n]*(?:\n|\Z)|/\*.*?(?:\*/|\Z))*([A-Za-z]+)", re.DOTALL)
 
 
 def _execute_sql(conn: sqlite3.Connection, sql: str, *, label: str) -> None:
@@ -125,7 +125,8 @@ def _execute_sql(conn: sqlite3.Connection, sql: str, *, label: str) -> None:
         # Refuse transaction control before executing it: a COMMIT or ROLLBACK
         # would end the engine's transaction before the escape could be noticed.
         # Trigger bodies are part of a CREATE TRIGGER statement and never lead.
-        # The keyword is found past whitespace and SQL comments, as SQLite does.
+        # The keyword is found past whitespace (SQLite also skips a U+FEFF BOM)
+        # and SQL comments, as SQLite does.
         match = _LEADING_KEYWORD.match(statement)
         leading = match.group(1).upper() if match else ""
         if leading in {"BEGIN", "COMMIT", "END", "ROLLBACK", "SAVEPOINT", "RELEASE"}:
