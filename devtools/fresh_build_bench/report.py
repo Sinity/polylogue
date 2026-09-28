@@ -367,13 +367,19 @@ def output_fingerprint(archive: Path, promoted_index: str, scratch: Path) -> dic
             spool.execute("CREATE TABLE facts (payload TEXT NOT NULL)")
             selected = ", ".join(f'"{column}"' for column in columns)
             batch: list[tuple[str]] = []
+            batch_bytes = 0
             rows = 0
             for row in read.execute(f'SELECT {selected} FROM "{table}"'):
-                batch.append((json.dumps(_fact_row(row), ensure_ascii=True, separators=(",", ":")),))
+                payload = json.dumps(_fact_row(row), ensure_ascii=True, separators=(",", ":"))
+                batch.append((payload,))
+                batch_bytes += len(payload)
                 rows += 1
-                if len(batch) >= 5000:
+                # Flushed by bytes as well as rows: a few thousand
+                # megabyte-sized rows must not all be resident at once.
+                if len(batch) >= 5000 or batch_bytes >= _FACT_BATCH_BYTES:
                     spool.executemany("INSERT INTO facts VALUES (?)", batch)
                     batch.clear()
+                    batch_bytes = 0
             if batch:
                 spool.executemany("INSERT INTO facts VALUES (?)", batch)
             digest = hashlib.sha256()
@@ -569,6 +575,13 @@ def thread_cpu_summary(document: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: Largest wall-versus-monotonic drift over one run still read as a steady
+#: clock (slewing NTP moves far less; a step moves far more).
+_MAX_CLOCK_STEP_S: Final = 1.0
+#: Serialized fact bytes buffered before one spool insert.
+_FACT_BATCH_BYTES: Final = 64 << 20
+
+
 def benchmark_implementation_sha256() -> str:
     """Identity of the driver and report code that produced a receipt.
 
@@ -662,6 +675,7 @@ def build_receipt(
     tree_samples: list[tuple[float, int, float, int, int, int]],
     daemon_rss_hwm_bytes: int = 0,
     corpus_unchanged: bool = True,
+    clock_step_s: float = 0.0,
 ) -> dict[str, Any]:
     events = analyse_events(paths["events"], origin_unix=started_wall)
     batches = analyse_batches(paths["archive"] / "ops.db")
@@ -699,6 +713,11 @@ def build_receipt(
         # pointer without the promotion event leaves them unmeasured.
         "milestones_recorded": promoted is not None,
         "corpus_unchanged": corpus_unchanged,
+        # Event milestones are wall-clock (the daemon's ``ts``), samples and
+        # terminal time monotonic. A wall clock stepped during the run (a VM
+        # or NTP step) moves the milestones against the samples, so the run
+        # does not qualify rather than report misaligned timings.
+        "wall_clock_steady": abs(clock_step_s) <= _MAX_CLOCK_STEP_S,
         # Receipt sections are reductions of the event log; a dropped or
         # undelivered event makes them understate.
         "events_lossless": delivery is not None
@@ -782,6 +801,7 @@ def build_receipt(
         "observation_count": len(observations),
         "progress": _progress_timeline(observations),
         "started_at_unix": round(started_wall, 3),
+        "clock_step_s": round(clock_step_s, 3),
     }
     _derive_dependents(receipt)
     if paths["stacks"].exists():

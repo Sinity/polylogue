@@ -948,3 +948,124 @@ def test_event_reduction_memory_does_not_grow_with_the_log(tmp_path: Path) -> No
     assert reduced["event_count"] == 100_001
     assert reduced["writer"]["queue_depth_max"] == 2
     assert peak < 8 << 20
+
+
+def _scripted_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    frames: list[dict[str, Any]],
+    *,
+    stall_timeout_s: float,
+    wall_jump: float = 0.0,
+) -> dict[str, Any]:
+    """Drive ``_measure_and_write_receipt`` through scripted observations, one per 600 s poll."""
+    from devtools.fresh_build_bench import report, run
+
+    clock = {"now": 0.0, "wall": 1_000.0}
+    index = {"i": 0}
+
+    def observe(_archive: Path, started: float) -> Observation:
+        clock["now"] += 600.0
+        clock["wall"] += 600.0 + (wall_jump if index["i"] == 0 else 0.0)
+        frame = frames[min(index["i"], len(frames) - 1)]
+        index["i"] += 1
+        return Observation(clock["now"] - started, cursor_rows=1, **frame)
+
+    class Process:
+        pid = 1
+
+        def poll(self) -> None:
+            return None
+
+    class Sampler:
+        samples: list[object] = []
+        daemon_rss_hwm_bytes = 0
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None: ...
+
+        def start(self) -> None: ...
+
+        def finish(self) -> None: ...
+
+    captured: dict[str, Any] = {}
+
+    def build_receipt(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"outcome": kwargs["outcome"]}
+
+    monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(time, "time", lambda: clock["wall"])
+    monkeypatch.setattr(time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(run, "TreeSampler", Sampler)
+    monkeypatch.setattr(run, "observe", observe)
+    monkeypatch.setattr(run, "_stop", lambda _process, _timeout: (0, 0.0))
+    monkeypatch.setattr(run, "verify_manifest", lambda *_args: None)
+    monkeypatch.setattr(run, "candidate_identity", lambda _candidate: {})
+    monkeypatch.setattr(report, "build_receipt", build_receipt)
+    config = RunConfig(
+        corpus=tmp_path, work=tmp_path, candidate=tmp_path, python="python", label="l", stall_timeout_s=stall_timeout_s
+    )
+    paths = {"daemon_log": tmp_path / "daemon.log", "archive": tmp_path, "receipt": tmp_path / "receipt.json"}
+    run._measure_and_write_receipt(
+        config,
+        manifest={},
+        paths=paths,
+        identity={"git_sha": None, "dirty": None, "tracked_diff_sha256": None},
+        env_summary={},
+        command=[],
+        daemon_env={},
+        interrupted=[],
+        progress=lambda _line: None,
+    )
+    captured["clock"] = clock
+    return captured
+
+
+def _terminal_frame() -> dict[str, Any]:
+    return {
+        "cursor_complete": 1,
+        "promoted_index": "/archive/.index-generations/gen/index.db",
+        "readiness": dict.fromkeys(REQUIRED_READINESS_DOMAINS, True),
+    }
+
+
+def test_debt_waiting_on_its_scheduled_retry_is_not_a_stall(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5678): ignore scheduled retries and debt
+    backing off past the stall window is stopped as ``stalled``."""
+    waiting = {"cursor_complete": 1, "open_debt": 1, "debt_by_stage": {"s": 1}, "debt_waiting_by_stage": {"s": 1}}
+    captured = _scripted_run(tmp_path, monkeypatch, [waiting] * 4 + [_terminal_frame()], stall_timeout_s=900.0)
+
+    assert captured["outcome"] == "terminal"
+
+
+def test_a_failed_retry_attempt_is_progress(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5678): leave attempts out of the progress key
+    and retries that keep failing are read as no progress."""
+    frames = [
+        {"cursor_complete": 1, "open_debt": 1, "debt_by_stage": {"s": 1}, "debt_attempts": attempt}
+        for attempt in range(1, 5)
+    ]
+    captured = _scripted_run(tmp_path, monkeypatch, [*frames, _terminal_frame()], stall_timeout_s=900.0)
+
+    assert captured["outcome"] == "terminal"
+
+
+def test_the_wall_clock_step_over_the_run_is_recorded(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P2, #5678): measure only one clock and a wall step
+    that misaligns event milestones with samples goes unnoticed."""
+    captured = _scripted_run(tmp_path, monkeypatch, [_terminal_frame()] * 3, stall_timeout_s=900.0, wall_jump=10.0)
+
+    assert captured["clock_step_s"] == pytest.approx(10.0)
+
+
+def test_run_work_under_the_corpus_is_refused(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5678): check only the checkouts and the work
+    directory is accepted beneath the corpus's watched source roots."""
+    from devtools.fresh_build_bench.cli import _refuse_work_inside_sources
+
+    corpus = tmp_path / "corpus"
+    (corpus / "home" / ".codex" / "sessions").mkdir(parents=True)
+    with pytest.raises(SystemExit, match="outside the corpus"):
+        _refuse_work_inside_sources(corpus / "home" / ".codex" / "sessions" / "bench", corpus)
+    _refuse_work_inside_sources(tmp_path / "work", corpus)

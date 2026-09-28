@@ -222,6 +222,9 @@ class Observation:
     #: Open debt rows whose retry time is still in the future (in backoff),
     #: by stage: a backlog that is waiting, not being worked.
     debt_waiting_by_stage: dict[str, int] = field(default_factory=dict)
+    #: Sum of retry attempts over open debt: a scheduled retry that fails
+    #: again still moves it.
+    debt_attempts: int = 0
     promoted_index: str | None = None
     readiness: dict[str, bool] = field(default_factory=dict)
     error: str | None = None
@@ -296,6 +299,9 @@ def observe(archive: Path, started: float) -> Observation:
                 for stage, count in conn.execute("SELECT stage, COUNT(*) FROM convergence_debt GROUP BY stage"):
                     observation.debt_by_stage[str(stage)] = int(count)
                 observation.open_debt = sum(observation.debt_by_stage.values())
+                observation.debt_attempts = int(
+                    conn.execute("SELECT COALESCE(SUM(attempts), 0) FROM convergence_debt").fetchone()[0]
+                )
                 now_iso = datetime.now(UTC).isoformat()
                 for stage, count in conn.execute(
                     "SELECT stage, COUNT(*) FROM convergence_debt "
@@ -651,6 +657,8 @@ def _measure_and_write_receipt(
                 # daemon is actively converging; the per-stage breakdown
                 # moves and must count as progress too.
                 tuple(sorted(observation.debt_by_stage.items())),
+                # Each scheduled retry attempt, even one that fails again.
+                observation.debt_attempts,
                 observation.promoted_index,
                 # Derived convergence after promotion may move nothing but
                 # readiness; each domain turning ready is progress.
@@ -658,6 +666,11 @@ def _measure_and_write_receipt(
             )
             if progress_key != last_progress_key:
                 last_progress_key, last_progress_at = progress_key, observation.t
+            elif observation.debt_waiting_by_stage:
+                # Debt waits on its scheduled retry (the production backoff
+                # reaches 960 s, beyond the stall window): waiting on the
+                # schedule is not a stall.
+                last_progress_at = observation.t
             elif observation.t - last_progress_at > config.stall_timeout_s:
                 # Nothing observable moved: a starved backlog or a refused
                 # promotion. Stop and report it rather than burning the
@@ -689,6 +702,7 @@ def _measure_and_write_receipt(
         sampler.finish()
         log_stream.close()
     finished = time.monotonic()
+    finished_wall = time.time()
     final = observe(paths["archive"], started)
     # The watcher may have read a file edited after the launch-time check.
     try:
@@ -721,6 +735,7 @@ def _measure_and_write_receipt(
         tree_samples=sampler.samples,
         daemon_rss_hwm_bytes=sampler.daemon_rss_hwm_bytes,
         corpus_unchanged=corpus_unchanged,
+        clock_step_s=(finished_wall - started_wall) - (finished - started),
     )
     # Atomic: a receipt is either absent or complete.
     staging = paths["receipt"].with_name(paths["receipt"].name + ".tmp")

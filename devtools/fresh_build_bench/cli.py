@@ -132,6 +132,19 @@ def _refuse_source_root_path(out: Path, home: Path) -> None:
                 raise SystemExit(f"--out must lie outside the watched source root {source.root}: {out}")
 
 
+def _refuse_work_inside_sources(work: Path, corpus: Path) -> None:
+    """Refuse a run's work directory inside the corpus or a watched source root.
+
+    The daemon watches the corpus's source roots and the manifest seals every
+    file under it: output written there would be read back as input and break
+    the final manifest check.
+    """
+    resolved, corpus_path = work.resolve(), corpus.resolve()
+    if resolved == corpus_path or corpus_path in resolved.parents:
+        raise SystemExit(f"--work must live outside the corpus ({corpus_path})")
+    _refuse_source_root_path(work, Path.home())
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "corpus":
@@ -179,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
             # copies and manifest are untracked repository content that can
             # be staged accidentally.
             raise SystemExit(f"--corpus must live outside the candidate checkout ({candidate_root})")
+        _refuse_work_inside_sources(args.work, args.corpus)
         manifest = load_manifest(args.corpus)
         verify_manifest(args.corpus, manifest)
         if not manifest["file_count"]:
