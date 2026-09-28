@@ -6893,6 +6893,7 @@ class ArchiveStore:
         message_type: str | None = None,
         material_origins: Sequence[str] = (),
         per_session_limit: int | None = None,
+        text_prefix_chars: int | None = None,
     ) -> list[ArchiveMessageQueryRow]:
         return _archive_query_reads.query_session_messages(
             self,
@@ -6904,6 +6905,7 @@ class ArchiveStore:
             message_type=message_type,
             material_origins=material_origins,
             per_session_limit=per_session_limit,
+            text_prefix_chars=text_prefix_chars,
         )
 
     def count_session_messages(
@@ -7032,6 +7034,7 @@ class ArchiveStore:
         offset: int = 0,
         sort_direction: Literal["asc", "desc"] = "asc",
         per_session_limit: int | None = None,
+        text_prefix_chars: int | None = None,
     ) -> list[ArchiveActionQueryRow]:
         return _archive_query_reads.query_session_actions(
             self,
@@ -7040,6 +7043,7 @@ class ArchiveStore:
             offset=offset,
             sort_direction=sort_direction,
             per_session_limit=per_session_limit,
+            text_prefix_chars=text_prefix_chars,
         )
 
     def query_session_action_occurrences(

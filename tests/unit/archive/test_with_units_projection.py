@@ -248,6 +248,58 @@ class TestAttachBehaviour:
         assert truncated_chars > 0
         assert attached.rows["file"][session_id][0]["path"] == "polylogue/archive/query/expression.py"
 
+    def test_attached_text_is_cut_in_sql_to_the_exact_prefix_of_the_whole_text(self, tmp_path: Path) -> None:
+        """polylogue-2fguj: the SQL-side cut returns exactly what cutting the whole text would.
+
+        Fails if the prefix skips or reorders a block, miscounts a separator,
+        stops before the bound, or reports a truncated count that disagrees
+        with the whole text read by the unbounded route.
+        """
+        from tests.infra.storage_records import SessionBuilder
+
+        (
+            SessionBuilder(tmp_path / "index.db", "whale")
+            .provider("claude-code")
+            .title("Whale text")
+            .add_message("m-short", role="user", text="short question")
+            .add_message(
+                "m-long",
+                role="assistant",
+                text="",
+                blocks=[
+                    {"type": "text", "text": "a" * 900},
+                    {"type": "text", "text": "b" * 900},
+                    {"type": "text", "text": "c" * 900},
+                    {"type": "text", "text": "d" * 900},
+                    {"type": "tool_use", "tool_name": "Bash", "tool_id": "t1", "input": {"command": "ls"}},
+                    {"type": "tool_result", "tool_id": "t1", "text": "x" * 1999 + "yz"},
+                ],
+            )
+            .save()
+        )
+        session_id = "claude-code-session:ext-whale"
+
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            whole_messages = {row.message_id: row.text for row in archive.query_session_messages([session_id])}
+            whole_outputs = [row.output_text for row in archive.query_session_actions([session_id])]
+            bounded = archive.query_session_messages([session_id], text_prefix_chars=2000)
+            attached = fetch_attached_units(archive, [session_id], ["message", "action"])
+
+        assert len(bounded) == 2
+        assert all(row.blocks == () for row in bounded)
+        long_id = archive_message_id(session_id, "m-long")
+        short_id = archive_message_id(session_id, "m-short")
+        assert len(whole_messages[long_id]) > 2000
+        by_id = {row["message_id"]: row for row in attached.rows["message"][session_id]}
+        assert by_id[long_id]["text"] == whole_messages[long_id][:2000]
+        assert by_id[long_id]["text_truncated_chars"] == len(whole_messages[long_id]) - 2000
+        assert by_id[short_id]["text"] == whole_messages[short_id]
+        assert "text_truncated_chars" not in by_id[short_id]
+        (action,) = attached.rows["action"][session_id]
+        assert whole_outputs == ["x" * 1999 + "yz"]
+        assert action["output_text"] == "x" * 1999 + "y"
+        assert action["output_text_truncated_chars"] == 1
+
     def test_fetch_attached_units_applies_payload_field_selection(self, tmp_path: Path) -> None:
         from tests.infra.storage_records import SessionBuilder
 

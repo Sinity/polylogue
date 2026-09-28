@@ -112,6 +112,9 @@ class ArchiveMessageQueryRow:
     is_active_path: bool | None = None
     is_active_leaf: bool = False
     blocks: tuple[ArchiveBlockRow, ...] = ()
+    #: Full character length of ``text`` when the read returned only its
+    #: leading prefix (``text_prefix_chars``); ``None`` when ``text`` is whole.
+    text_chars: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,6 +138,9 @@ class ArchiveActionQueryRow:
     result_state: ActionResultState
     followup_class: str | None
     followup_message_ref: str | None
+    #: Full character length of ``output_text`` when the read returned only
+    #: its leading prefix (``text_prefix_chars``); ``None`` when it is whole.
+    output_text_chars: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,7 +196,7 @@ def _archive_sequence_witness_row(row: sqlite3.Row, *, step_count: int) -> Archi
     )
 
 
-def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
+def _archive_action_query_row(row: sqlite3.Row, *, with_text_length: bool = False) -> ArchiveActionQueryRow:
     tool_result_block_id = str(row["tool_result_block_id"]) if row["tool_result_block_id"] is not None else None
     is_error = int(row["is_error"]) if row["is_error"] is not None else None
     exit_code = int(row["exit_code"]) if row["exit_code"] is not None else None
@@ -212,6 +218,9 @@ def _archive_action_query_row(row: sqlite3.Row) -> ArchiveActionQueryRow:
         result_state=ActionResultState(str(row["result_state"])),
         followup_class=str(row["followup_class"]) if row["followup_class"] is not None else None,
         followup_message_ref=str(row["followup_message_ref"]) if row["followup_message_ref"] is not None else None,
+        output_text_chars=(
+            int(row["output_text_chars"]) if with_text_length and row["output_text_chars"] is not None else None
+        ),
     )
 
 
@@ -1071,6 +1080,27 @@ _ARCHIVE_ACTION_QUERY_COLUMNS: tuple[tuple[str, str], ...] = (
 _ARCHIVE_ACTION_QUERY_SELECT_SQL = ",\n                ".join(
     expr if expr.endswith(f".{name}") else f"{expr} AS {name}" for name, expr in _ARCHIVE_ACTION_QUERY_COLUMNS
 )
+
+
+def _archive_action_query_select_sql(text_prefix_chars: int | None) -> str:
+    """Return the action select list, cutting ``output_text`` in SQL when asked.
+
+    With a prefix bound, only the leading ``text_prefix_chars`` characters of
+    each output leave SQLite, together with the output's full length, so a
+    bounded projection never materializes a whole tool output in Python.
+    """
+    if text_prefix_chars is None:
+        return _ARCHIVE_ACTION_QUERY_SELECT_SQL
+    bound = max(int(text_prefix_chars), 0)
+    columns = [
+        (name, f"substr(a.output_text, 1, {bound})" if name == "output_text" else expr)
+        for name, expr in _ARCHIVE_ACTION_QUERY_COLUMNS
+    ]
+    columns.append(("output_text_chars", "length(a.output_text)"))
+    return ",\n                ".join(
+        expr if expr.endswith(f".{name}") else f"{expr} AS {name}" for name, expr in columns
+    )
+
 
 _QUERY_UNIT_ROW_ALIAS: dict[str, str] = {
     "message": "m",
@@ -3070,6 +3100,7 @@ def query_session_messages(
     message_type: str | None = None,
     material_origins: Sequence[str] = (),
     per_session_limit: int | None = None,
+    text_prefix_chars: int | None = None,
 ) -> list[ArchiveMessageQueryRow]:
     """Return message rows for known sessions in transcript order.
 
@@ -3077,6 +3108,12 @@ def query_session_messages(
     letting ``limit`` decide how the page's rows are shared out; see
     ``_per_partition_rank_sql`` for what that changes. ``None`` leaves the
     single-window read exactly as it is for callers that page one session.
+
+    ``text_prefix_chars`` returns each message's text cut to that many
+    characters inside SQLite, with its full length in ``text_chars`` and no
+    ``blocks``, so a bounded projection never holds a whole message in
+    Python. Only blocks whose preceding joined text is shorter than the bound
+    are concatenated, so the prefix costs the bound, not the message.
     """
 
     normalized_session_ids = tuple(
@@ -3128,6 +3165,44 @@ def query_session_messages(
         source_sql = "messages m"
         row_clause = f"m.message_id IN ({id_placeholders})"
         query_params = [*page_ids, len(page_ids), 0]
+    if text_prefix_chars is None:
+        text_sql = """COALESCE((
+                SELECT group_concat(ordered.search_text, char(10))
+                FROM (
+                    SELECT b.search_text
+                    FROM blocks b
+                    WHERE b.message_id = m.message_id
+                      AND b.search_text IS NOT NULL
+                    ORDER BY b.position, b.block_id
+                ) AS ordered
+            ), '') AS text"""
+    else:
+        bound = max(int(text_prefix_chars), 0)
+        # ``preceding`` is the length of the joined text before this block
+        # (every earlier block plus its newline separator); a block starting
+        # at or past the bound contributes nothing to the prefix.
+        text_sql = f"""COALESCE((
+                SELECT substr(group_concat(ordered.head, char(10)), 1, {bound})
+                FROM (
+                    SELECT
+                        substr(b.search_text, 1, {bound}) AS head,
+                        COALESCE(SUM(length(b.search_text) + 1) OVER (
+                            ORDER BY b.position, b.block_id
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+                        ), 0) AS preceding
+                    FROM blocks b
+                    WHERE b.message_id = m.message_id
+                      AND b.search_text IS NOT NULL
+                    ORDER BY b.position, b.block_id
+                ) AS ordered
+                WHERE ordered.preceding < {bound}
+            ), '') AS text,
+            COALESCE((
+                SELECT SUM(length(b.search_text)) + COUNT(*) - 1
+                FROM blocks b
+                WHERE b.message_id = m.message_id
+                  AND b.search_text IS NOT NULL
+            ), 0) AS text_chars"""
     rows = self._conn.execute(
         f"""
         SELECT
@@ -3153,16 +3228,7 @@ def query_session_messages(
             m.is_active_path,
             m.is_active_leaf,
             m.word_count,
-            COALESCE((
-                SELECT group_concat(ordered.search_text, char(10))
-                FROM (
-                    SELECT b.search_text
-                    FROM blocks b
-                    WHERE b.message_id = m.message_id
-                      AND b.search_text IS NOT NULL
-                    ORDER BY b.position, b.block_id
-                ) AS ordered
-            ), '') AS text
+            {text_sql}
         FROM {source_sql}
         JOIN sessions s ON s.session_id = m.session_id
         WHERE {row_clause}
@@ -3172,7 +3238,11 @@ def query_session_messages(
         query_params,
     ).fetchall()
     message_ids = tuple(str(row["message_id"]) for row in rows)
-    blocks_by_message = _fetch_blocks_for_messages(self._conn, message_ids)
+    blocks_by_message = (
+        _fetch_blocks_for_messages(self._conn, message_ids)
+        if text_prefix_chars is None
+        else {message_id: [] for message_id in message_ids}
+    )
     return [
         ArchiveMessageQueryRow(
             message_id=str(row["message_id"]),
@@ -3192,6 +3262,7 @@ def query_session_messages(
             word_count=int(row["word_count"]),
             text=str(row["text"] or ""),
             blocks=tuple(blocks_by_message[str(row["message_id"])]),
+            text_chars=int(row["text_chars"]) if text_prefix_chars is not None else None,
         )
         for row in rows
     ]
@@ -3891,11 +3962,13 @@ def query_session_actions(
     offset: int = 0,
     sort_direction: Literal["asc", "desc"] = "asc",
     per_session_limit: int | None = None,
+    text_prefix_chars: int | None = None,
 ) -> list[ArchiveActionQueryRow]:
     """Return action rows for known sessions using the session-position block index.
 
     ``per_session_limit`` bounds each selected session separately; see
-    ``_per_partition_rank_sql``.
+    ``_per_partition_rank_sql``. ``text_prefix_chars`` cuts ``output_text``
+    inside SQLite and reports its full length in ``output_text_chars``.
     """
 
     normalized_session_ids = tuple(
@@ -3911,11 +3984,12 @@ def query_session_actions(
         session_ids=normalized_session_ids,
         include_followup=True,
     )
+    select_sql = _archive_action_query_select_sql(text_prefix_chars)
     if per_session_limit is None:
         query_sql = f"""
         {prefix_sql}
         SELECT
-            {_ARCHIVE_ACTION_QUERY_SELECT_SQL}
+            {select_sql}
         FROM {action_relation_name} a
         JOIN sessions s ON s.session_id = a.session_id
         JOIN messages m ON m.message_id = a.message_id
@@ -3936,7 +4010,7 @@ def query_session_actions(
             SELECT scanned.*, {_per_partition_rank_sql("scanned.session_id", ranked_order_by)}
             FROM (
                 SELECT
-                    {_ARCHIVE_ACTION_QUERY_SELECT_SQL},
+                    {select_sql},
                     COALESCE(m.occurred_at_ms, s.sort_key_ms) AS unit_sort_key
                 FROM {action_relation_name} a
                 JOIN sessions s ON s.session_id = a.session_id
@@ -3954,7 +4028,7 @@ def query_session_actions(
         query_sql,
         [*relation_params, *normalized_session_ids, *rank_params, normalized_limit, normalized_offset],
     ).fetchall()
-    return [_archive_action_query_row(row) for row in rows]
+    return [_archive_action_query_row(row, with_text_length=text_prefix_chars is not None) for row in rows]
 
 
 def query_session_action_occurrences(
