@@ -8,6 +8,7 @@ import pytest
 
 from polylogue.core.digest import IDENTITY, KeyCollisionError
 from polylogue.core.digest import canonical_bytes as profile_canonical_bytes
+from polylogue.core.json import JSONValue
 from polylogue.material_protocol.v1 import MaterialProtocolError
 from polylogue.material_protocol.v1.canonical import canonical_bytes, canonical_line, nfc_normalize
 
@@ -38,14 +39,14 @@ def test_material_encoding_rejects_nfc_key_collisions_before_overwrite(payload: 
 
 
 def test_material_encoding_keeps_v1_bytes_for_unambiguous_values() -> None:
-    payload = {"nested": {"cafe\u0301": ["e\u0301", 9007199254740993]}}
+    payload: JSONValue = {"nested": {"cafe\u0301": ["e\u0301", 9007199254740993]}}
     assert canonical_bytes(payload) == profile_canonical_bytes(payload, IDENTITY)
     assert nfc_normalize(payload) == {"nested": {"café": ["é", 9007199254740993]}}
 
 
 def test_actual_producer_helper_emits_shared_numeric_unicode_boundary_vector() -> None:
     expected = (Path(__file__).parents[3] / "fixtures/material_protocol/v1/canonical_boundaries.json").read_bytes()
-    payload = {
+    payload: JSONValue = {
         "decimal_float": 0.00001,
         "large_float": 1e30,
         "large_integer": 9007199254740993,
