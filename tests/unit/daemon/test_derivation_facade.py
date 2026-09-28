@@ -152,6 +152,22 @@ def test_a_required_key_that_disappears_after_discovery_is_binding_moved() -> No
     assert outcome[0].reason is PendingReason.BINDING_MOVED
 
 
+class _DemandVsAuditDerivation(StringStatusDerivation):
+    """Demand and audit read genuinely different keyspaces, as production does.
+
+    The demand-only sweep pages ``session_profile_demand`` -- only the
+    requested subset -- while an archive-wide audit pages every key. A fake
+    that served the same key set to both frames would mask a shared cursor:
+    consuming ``b`` for demand would also (accidentally, via the shared
+    required set) remove it from the audit's pending set, passing even
+    without separate cursors.
+    """
+
+    def required_page(self, frame: DerivationFrame, *, cursor: str | None, limit: int) -> KeyPage:
+        keys = ("a",) if frame.profile_demand_only else ("a", "b")
+        return _page(keys, cursor=cursor, limit=limit)
+
+
 @pytest.mark.asyncio
 async def test_a_demand_sweep_leaves_the_archive_audit_cursor_alone() -> None:
     """A demand-only pass pages its own keyspace from its own cursor.
@@ -161,7 +177,7 @@ async def test_a_demand_sweep_leaves_the_archive_audit_cursor_alone() -> None:
     terminal cursor, so the next audit slice wrapped to its first key and a
     large archive never reached its tail.
     """
-    adapter = StringStatusDerivation(("a", "b"))
+    adapter = _DemandVsAuditDerivation(("a", "b"))
     adapter.domain = "session_profile"
     converger = DaemonConverger([], derivations=[adapter])
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
