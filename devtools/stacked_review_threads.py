@@ -253,13 +253,18 @@ def _unresolved_urls(threads: list[dict[str, Any]]) -> list[str]:
 def main(argv: list[str] | None = None, transport: Transport = github_transport) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--repo", required=True, help="OWNER/NAME")
-    parser.add_argument("--pr", type=int, help="evaluate one PR instead of every open PR targeting master")
+    parser.add_argument(
+        "--pr",
+        type=int,
+        action="append",
+        help="evaluate this PR (repeatable; PRs not open against master are skipped) "
+        "instead of every open PR targeting master",
+    )
     args = parser.parse_args(argv)
     owner, name = args.repo.split("/", 1)
     gate = StackedThreadGate(transport, owner, name)
-    if args.pr is not None:
-        single = gate.root(args.pr)
-        roots = [single] if single is not None else []
+    if args.pr:
+        roots = [root for root in (gate.root(number) for number in dict.fromkeys(args.pr)) if root is not None]
     else:
         roots = list(gate.open_roots())
     verdicts = [gate.evaluate(root) for root in roots if not root.cross_repository]

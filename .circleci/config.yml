@@ -85,7 +85,7 @@ jobs:
       - run:
           name: Unresolved review threads on PRs stacked into this PR
           command: |
-            if [ -z "${CIRCLE_PULL_REQUEST:-}" ]; then
+            if [ -z "${CIRCLE_PULL_REQUESTS:-}" ]; then
               echo "Not a pull request build; nothing to evaluate."
               exit 0
             fi
@@ -95,9 +95,13 @@ jobs:
               echo "Fork pull request; no PR in this repository can merge into its head."
               exit 0
             fi
+            # Every PR on this head is evaluated; the gate skips any not
+            # targeting master, so a sibling PR cannot stand in for the root.
+            args=()
+            IFS=',' read -ra urls \<<< "$CIRCLE_PULL_REQUESTS"
+            for url in "${urls[@]}"; do args+=(--pr "${url##*/}"); done
             python -m devtools.stacked_review_threads \
-              --repo "$CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME" \
-              --pr "${CIRCLE_PULL_REQUEST##*/}"
+              --repo "$CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME" "${args[@]}"
 
   dependency-audit:
     docker:

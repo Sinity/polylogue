@@ -215,3 +215,12 @@ def test_cli_exit_status_reflects_offenders(capsys: pytest.CaptureFixture[str]) 
     assert "https://example.test/pull/61#discussion_r0" in out
     assert "#70 https://example.test/pull/70: success" in out
     assert main(["--repo", "owner/repo", "--pr", "70"], transport=fake) == 0
+
+
+def test_a_sibling_pr_off_master_on_the_same_head_does_not_mask_the_root() -> None:
+    sibling = {**_root(121, "feat"), "baseRefName": "other"}
+    fake = FakeGitHub(
+        roots=[sibling, _root(120, "feat")],
+        merged_into={"feat": [_merged(122, "feat2", "2026-01-03T00:00:00Z", False)]},
+    )
+    assert main(["--repo", "owner/repo", "--pr", "121", "--pr", "120"], transport=fake) == 1
