@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 from polylogue.core.enums import Provider
-from polylogue.logging import WARNING, emit, get_logger
+from polylogue.logging import WARNING, carry_context, emit, get_logger
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload, parse_stream_payload
 from polylogue.sources.parsers.base import ParsedSession
@@ -999,7 +999,7 @@ class LiveParseStage:
                     )
                 else:
                     future = self._executor.submit(
-                        live_parse_path_worker,
+                        carry_context(live_parse_path_worker),
                         provider.value,
                         source_path,
                         Path(source_path).stem,
@@ -1162,7 +1162,9 @@ class LiveParseStage:
         held: set[str] = set()
         claimed_sessions: set[str] = set()
         with ThreadPoolExecutor(max_workers=min(self._max_path_pending, len(pending))) as executor:
-            futures = {path: executor.submit(prepare_one, path, result) for path, result in pending.items()}
+            futures = {
+                path: executor.submit(carry_context(prepare_one), path, result) for path, result in pending.items()
+            }
             for path, future in futures.items():
                 prepared, session_ids = future.result()
                 overlaps = bool(session_ids & claimed_sessions)
@@ -1424,7 +1426,7 @@ class LiveParseStage:
         shard_directory = None if self._shard_directory is None else str(self._shard_directory)
         futures = {
             self._executor.submit(
-                live_parse_and_shard_worker,
+                carry_context(live_parse_and_shard_worker),
                 candidate.cache_key,
                 candidate.provider.value,
                 candidate.payload,

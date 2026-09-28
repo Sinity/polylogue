@@ -250,6 +250,39 @@ def test_why_names_the_killer_instead_of_sending_the_reader_to_the_journal() -> 
     assert "journalctl" not in output
 
 
+def test_why_names_the_killer_of_a_queued_pytest_step() -> None:
+    """An oomd-killed ``devtools test`` step carries its ending on the step.
+
+    Anti-vacuity: read the ending from the run payload only and this renders
+    no ``ended:`` line, though the explanation points the reader at it.
+    """
+    stream = io.StringIO()
+    _render(
+        {
+            "tier": "focused-test",
+            "status": "failed",
+            "exit_code": 137,
+            "diagnosis": "oom_killed",
+            "steps": [
+                {
+                    "step_id": "01-pytest-focused",
+                    "exit": 137,
+                    "diagnosis": "oom_killed",
+                    "termination_reason": "oom_killed",
+                    "termination_killer": "oom-kill",
+                    "termination_unit": "agentctl-pytest-quick-polylogue-pytest_focused-0badf00d.service",
+                }
+            ],
+        },
+        stream,
+    )
+    output = stream.getvalue()
+    assert (
+        "ended: oom_killed; systemd recorded oom-kill "
+        "(unit agentctl-pytest-quick-polylogue-pytest_focused-0badf00d.service)"
+    ) in output
+
+
 def test_why_does_not_invent_a_killer_for_a_clean_cancel() -> None:
     """Anti-vacuity: always printing a killer would attribute a cancel to systemd."""
     stream = io.StringIO()

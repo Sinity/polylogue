@@ -699,6 +699,8 @@ class AnnotationBatchImportOperationRequest(_OperationPayload):
     modules it names (polylogue-gjwto / polylogue-r29bv AC3).
     """
 
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True, protected_namespaces=())
+
     jsonl: str = Field(min_length=1, max_length=MAX_ANNOTATION_IMPORT_BYTES)
     batch_id: str = Field(min_length=1, max_length=256)
     schema_id: str = Field(min_length=1, max_length=256)

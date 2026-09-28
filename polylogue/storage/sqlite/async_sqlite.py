@@ -42,6 +42,7 @@ from polylogue.storage.sqlite.queries import (
 )
 from polylogue.storage.sqlite.query_store import SQLiteQueryStore
 from polylogue.storage.sqlite.schema import SCHEMA_DDL, ensure_schema_async
+from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec_async
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
 
@@ -105,6 +106,13 @@ async def _attach_sibling_tiers(conn: aiosqlite.Connection, *, read_only: bool =
             continue
         sibling = root / filename
         if sibling.exists():
+            if schema_name == "embeddings":
+                # ``message_embeddings`` is a vec0 virtual table: without the
+                # extension every read of it fails with "no such module: vec0"
+                # and embedding coverage reads as unmeasurable. Load it before
+                # the attach and before a reader's authorizer is installed.
+                # A failed load leaves that honest unmeasurable outcome.
+                await try_load_sqlite_vec_async(conn)
             target = f"file:{quote(str(sibling))}?mode=ro" if read_only else str(sibling)
             await conn.execute(f"ATTACH DATABASE ? AS {schema_name}", (target,))
             tier = _SIBLING_ARCHIVE_TIERS[schema_name]
@@ -114,7 +122,11 @@ async def _attach_sibling_tiers(conn: aiosqlite.Connection, *, read_only: bool =
             expected = ARCHIVE_VERSION_BY_TIER[tier]
             if found != expected:
                 raise SchemaSkew(tier.value, expected, found)
-            if tier in {ArchiveTier.INDEX, ArchiveTier.EMBEDDINGS, ArchiveTier.OPS}:
+            # Only the derived tiers carry a stamped schema identity
+            # (``DerivedTier``). ``embeddings.db`` is repurchased, never
+            # replayed, and has no identity row; its version check above is
+            # the whole contract.
+            if tier is ArchiveTier.OPS:
                 identity_cursor = await conn.execute(
                     f"SELECT identity FROM {schema_name}.schema_identity WHERE tier = ?", (tier.value,)
                 )

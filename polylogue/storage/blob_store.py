@@ -302,7 +302,12 @@ class BlobStore:
                 self.discard_staging_path(temporary_path)
             raise
 
-    def prepare_from_writer(self, write: Callable[[IO[bytes]], None]) -> PreparedBlob:
+    def prepare_from_writer(
+        self,
+        write: Callable[[IO[bytes]], None],
+        *,
+        heartbeat: Heartbeat | None = None,
+    ) -> PreparedBlob:
         """Stage the bytes a producer writes, then hash them in place.
 
         For a producer that can only write, such as a streaming download that
@@ -328,6 +333,9 @@ class BlobStore:
                 while chunk := handle.read(_CHUNK_SIZE):
                     hasher.update(chunk)
                     size += len(chunk)
+                    if heartbeat is not None:
+                        with suppress(Exception):
+                            heartbeat()
             os.chmod(temporary_path, 0o600)
             return PreparedBlob(hasher.hexdigest(), size, temporary_path)
         except BaseException:
@@ -484,6 +492,23 @@ class BlobStore:
         temporary file in one pass. Returns ``(sha256_hex, byte_count)``.
         """
         prepared = self.prepare_from_fileobj(source, heartbeat=heartbeat)
+        try:
+            return self.publish_prepared(prepared)
+        finally:
+            self.discard_prepared(prepared)
+
+    def write_from_writer(
+        self,
+        write: Callable[[IO[bytes]], None],
+        *,
+        heartbeat: Heartbeat | None = None,
+    ) -> tuple[str, int]:
+        """Publish the bytes a producer writes, staged once on disk.
+
+        Unlike exporting to a work file and then ``write_from_path``, no
+        second full-size staging copy ever coexists with the first.
+        """
+        prepared = self.prepare_from_writer(write, heartbeat=heartbeat)
         try:
             return self.publish_prepared(prepared)
         finally:

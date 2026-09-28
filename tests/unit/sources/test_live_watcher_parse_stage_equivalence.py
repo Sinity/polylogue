@@ -1787,9 +1787,10 @@ def test_path_stage_shutdown_terminates_stalled_process(tmp_path: Path) -> None:
     future = stage._executor.submit(_stalled_process_worker, str(marker))
     stage._path_futures["stalled"] = future  # type: ignore[assignment]
     try:
-        for _ in range(500):
-            if marker.exists():
-                break
+        # Spawned-worker start (interpreter plus this module's imports) is
+        # host-load dependent; only the shutdown below carries the bound.
+        start_deadline = time.monotonic() + 60
+        while not marker.exists() and time.monotonic() < start_deadline:
             time.sleep(0.01)
         assert marker.exists(), "process worker did not start"
         started = time.monotonic()
