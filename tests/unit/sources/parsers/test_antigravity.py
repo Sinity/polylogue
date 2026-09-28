@@ -255,6 +255,44 @@ def test_trajectory_sqlite_parser_retains_unmatched_summary_as_metadata(tmp_path
     assert event.payload["title"] == "Orphan title"
 
 
+def test_trajectory_sqlite_parser_reserves_summary_keys_against_row_fallback_ids(tmp_path: Path) -> None:
+    """A row-fallback id must not collide with an unmatched summary's key.
+
+    Anti-vacuity (Codex P2, #5711): an anonymous ``trajectory_meta`` row (no
+    ``trajectory_id``/``cascade_id``) mints its fallback id as
+    ``f"{fallback_id}:trajectory-{index}"``; an unrelated
+    ``conversation_summaries`` row happening to be keyed by that exact same
+    string is yielded as its own session under the unmatched-summary branch.
+    Without reserving summary keys, both land under one
+    ``provider_session_id`` -- two logical sessions, one identity.
+    """
+    path = tmp_path / "conversation.db"
+    with sqlite3.connect(path) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+            CREATE TABLE conversation_summaries (cascade_id TEXT, title TEXT, last_modified_time TEXT);
+            """
+        )
+        # One anonymous meta row: fallback_id="x" with a single row mints
+        # "x:trajectory-0" absent any collision.
+        connection.execute("INSERT INTO trajectory_meta VALUES (NULL, NULL)")
+        connection.execute(
+            "INSERT INTO conversation_summaries VALUES (?, ?, ?)",
+            ("x:trajectory-0", "Unrelated summary", "2026-03-06T04:21:34Z"),
+        )
+
+    sessions = list(parse_trajectory_db(path, fallback_id="x"))
+
+    provider_ids = [session.provider_session_id for session in sessions]
+    assert len(provider_ids) == len(set(provider_ids)), f"colliding provider_session_id: {provider_ids}"
+    orphan = next(session for session in sessions if session.ingest_flags == ["degraded:unmatched-trajectory-summary"])
+    assert orphan.provider_session_id == "x:trajectory-0"
+    meta_session = next(session for session in sessions if session is not orphan)
+    assert meta_session.provider_session_id != "x:trajectory-0"
+
+
 def test_trajectory_sqlite_parser_refuses_malformed_step_without_fabricating_text(tmp_path: Path) -> None:
     path = _trajectory_db(tmp_path / "conversation.db", malformed=True)
 

@@ -283,23 +283,38 @@ def _transcript_entry(raw_message: dict[str, object], default_role: Role) -> _Tr
 
 
 def _history_overlap(inputs: list[_TranscriptEntry], transcript: list[_TranscriptEntry]) -> int:
-    """Count leading ``inputs`` the conversation transcript already ends with.
+    """Count leading ``inputs`` the conversation transcript already covers.
 
     A GenAI request's ``gen_ai.input.messages`` is the history sent with that
     request, so the second turn of a chat carries ``[Q1, A1, Q2]`` after the
     first carried ``[Q1]`` and produced ``A1``. Only the unseen suffix is new
     material; re-emitting the prefix duplicated every earlier message once
     per later span.
+
+    A pinned prefix (typically a system prompt) survives context truncation
+    verbatim even once the middle of the history is dropped: transcript
+    ``[S, Q1, A1, Q2, A2]`` truncates to inputs ``[S, Q2, A2, Q3]``, where no
+    leading slice of ``inputs`` equals a trailing slice of ``transcript``
+    because ``S`` interrupts the suffix match. Match the stable leading
+    prefix first, then look for the retained-history suffix in what remains,
+    so the two overlaps compose instead of the pinned prefix defeating the
+    suffix match.
     """
     # A request carries at least one new message: the current turn. Only a
     # trailing tool entry (a result the tool span already recorded) may be
     # replayed whole; an identical input-only turn repeated by the user is a
     # second occurrence, not history.
     largest = len(inputs) if inputs and inputs[-1][2] else len(inputs) - 1
-    for size in range(min(largest, len(transcript)), 0, -1):
-        if inputs[:size] == transcript[-size:]:
-            return size
-    return 0
+    if largest <= 0:
+        return 0
+    pinned = 0
+    while pinned < largest and pinned < len(transcript) and inputs[pinned] == transcript[pinned]:
+        pinned += 1
+    remaining_inputs = inputs[pinned:largest]
+    for size in range(min(len(remaining_inputs), len(transcript)), 0, -1):
+        if remaining_inputs[:size] == transcript[-size:]:
+            return pinned + size
+    return pinned
 
 
 def _messages_for_span(

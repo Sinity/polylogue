@@ -159,12 +159,21 @@ class AdmissionObserver:
         self._count = 0
         self._unknowns: list[tuple[int, str]] = []
 
-    def observe(self, item: object, source_index: int | None = None) -> None:
+    def observe(self, item: object, source_index: int | None = None, *, recognized: bool = True) -> None:
         """Classify one record at dense ledger ordinal ``self._count``.
 
         ``source_index`` is the record's 1-based position in the source file
         when that differs from its position in this session (an interleaved
         multi-session stream); the typed unknown event names that position.
+
+        ``recognized=False`` is the caller's own admission signal: it already
+        folded (or tried to fold) this record through its parser and knows
+        the parser refused to classify it -- e.g. a Claude Code record with a
+        missing or non-string ``type`` that ``_fold_code_record`` silently
+        drops. The generic nested-sentinel scan below cannot see that: it
+        only recognizes a specially-prefixed unknown marker, so an
+        unrecognized record with no such marker would otherwise be counted
+        MATERIALIZED despite producing no evidence at all.
         """
         ordinal = self._count
         self._count += 1
@@ -174,6 +183,8 @@ class AdmissionObserver:
             )
             return
         wire_type = _unknown_wire_type(item)
+        if wire_type is None and not recognized:
+            wire_type = "unrecognized_record_type"
         if wire_type is None:
             self._ledger.materialized(AdmissionUnit.OUTER_RECORD, ordinal, "parsed")
         else:

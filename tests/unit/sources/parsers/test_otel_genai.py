@@ -484,6 +484,76 @@ def test_tool_exchange_replayed_in_next_request_is_emitted_once() -> None:
     assert [message.text for message in session.messages if message.text] == ["Q", "A"]
 
 
+def test_truncated_history_around_a_pinned_system_prompt_is_emitted_once() -> None:
+    """A retained system prompt must not defeat the suffix history match.
+
+    Anti-vacuity (Codex P2, #5711): transcript ``[S, Q1, A1, Q2, A2]``
+    truncates to a third request's inputs ``[S, Q2, A2, Q3]`` -- the
+    retained system prompt interrupts what would otherwise be a clean
+    suffix match, since no leading slice of the new inputs equals a
+    trailing slice of the transcript with ``S`` sitting at index 0. Before
+    matching the pinned prefix separately, this re-emitted ``S``, ``Q2``
+    and ``A2`` as duplicates; only ``Q3`` is genuinely new.
+    """
+    trace = "9" * 32
+    system = {"role": "system", "content": "S"}
+    first = _span(
+        trace,
+        "1" * 16,
+        1_000,
+        [
+            _attr("gen_ai.operation.name", "chat"),
+            _attr("gen_ai.conversation.id", "chat-1"),
+            _attr("gen_ai.input.messages", [system, {"role": "user", "content": "Q1"}]),
+            _attr("gen_ai.output.messages", [{"role": "assistant", "content": "A1"}]),
+        ],
+    )
+    second = _span(
+        trace,
+        "2" * 16,
+        2_000,
+        [
+            _attr("gen_ai.operation.name", "chat"),
+            _attr("gen_ai.conversation.id", "chat-1"),
+            _attr(
+                "gen_ai.input.messages",
+                [
+                    system,
+                    {"role": "user", "content": "Q1"},
+                    {"role": "assistant", "content": "A1"},
+                    {"role": "user", "content": "Q2"},
+                ],
+            ),
+            _attr("gen_ai.output.messages", [{"role": "assistant", "content": "A2"}]),
+        ],
+    )
+    # Context truncation drops Q1/A1 but keeps the pinned system prompt.
+    third = _span(
+        trace,
+        "3" * 16,
+        3_000,
+        [
+            _attr("gen_ai.operation.name", "chat"),
+            _attr("gen_ai.conversation.id", "chat-1"),
+            _attr(
+                "gen_ai.input.messages",
+                [
+                    system,
+                    {"role": "user", "content": "Q2"},
+                    {"role": "assistant", "content": "A2"},
+                    {"role": "user", "content": "Q3"},
+                ],
+            ),
+            _attr("gen_ai.output.messages", [{"role": "assistant", "content": "A3"}]),
+        ],
+    )
+    payload = _document(([_attr("service.name", "agent")], [first, second, third]))
+
+    (session,) = otel_genai.parse(payload, "ignored")
+
+    assert [message.text for message in session.messages] == ["S", "Q1", "A1", "Q2", "A2", "Q3", "A3"]
+
+
 def test_usage_only_span_attributes_usage_to_response_model() -> None:
     """A usage-only span without a request model uses its response model.
 

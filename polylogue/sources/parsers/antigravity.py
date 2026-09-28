@@ -853,6 +853,13 @@ def parse_trajectory_db(
             for value in (meta["trajectory_id"], meta["cascade_id"])
             if value not in (None, "")
         }
+        # A summary with no owning meta row is later yielded as its own
+        # session keyed by its summary_key (the unmatched-summary branch
+        # below), so that key occupies this parser's session-ID namespace
+        # too -- reserve it here or a row-fallback id minted for an
+        # anonymous meta row can collide with it and two logical sessions
+        # (one materialized, one unmatched-summary) land under one identity.
+        known_native_ids |= set(summaries)
         matched_summary_keys: set[str] = set()
         has_step_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
         for meta_index, meta in enumerate(meta_rows):

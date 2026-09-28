@@ -1095,7 +1095,11 @@ def _claude_code_multiway_parse_inner(
         observer = observers.get(group_id)
         if observer is None:
             observer = observers[group_id] = AdmissionObserver()
-        observer.observe(item, source_index=index)
+        # ``_fold_code_record`` silently drops a dict record whose ``type``
+        # is missing or not a string (logged, never folded into evidence);
+        # the admission ledger must not still count that as MATERIALIZED.
+        recognized = not (isinstance(item, dict) and not isinstance(item.get("type"), str))
+        observer.observe(item, source_index=index, recognized=recognized)
         if sidecar_accumulators is not None:
             sidecar_accumulators[group_id].observe(item)
         if record is not None and not is_agent_fallback and group_id == fallback_id:

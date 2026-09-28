@@ -146,6 +146,40 @@ def test_non_object_record_is_refused_not_materialized() -> None:
     assert [outcome.ordinal for outcome in refusals] == [1]
 
 
+def test_claude_code_record_with_missing_type_is_not_materialized() -> None:
+    """A dict record ``_fold_code_record`` silently drops must not count as parsed.
+
+    Anti-vacuity (Codex P1, #5711): ``{"sessionId": "s", "uuid": "lost"}``
+    has no ``type`` key at all, so ``_fold_code_record`` logs and returns
+    without folding any evidence, while the generic nested-sentinel scan in
+    ``AdmissionObserver.observe`` sees no specially-prefixed unknown marker
+    and would classify the record MATERIALIZED anyway -- claiming complete
+    materialization for a record that vanished. Assert the ledger.
+    """
+    from polylogue.sources.dispatch import parse_stream_payload
+
+    records = [
+        {
+            "type": "user",
+            "sessionId": "cc-missing-type",
+            "uuid": "u-1",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {"role": "user", "content": "hello"},
+        },
+        {"sessionId": "cc-missing-type", "uuid": "lost"},
+    ]
+
+    (session,) = parse_stream_payload(Provider.CLAUDE_CODE, iter(records), "cc-missing-type")
+
+    accounting = session.unit_accounting
+    assert accounting is not None
+    assert accounting.expected[AdmissionUnit.OUTER_RECORD] == 2
+    lost = [outcome for outcome in accounting.outcomes if outcome.ordinal == 1]
+    assert len(lost) == 1
+    assert lost[0].disposition is AdmissionDisposition.TYPED_UNKNOWN
+    assert "claude_code_unknown_input" in [event.event_type for event in session.session_events]
+
+
 def test_disk_backed_event_sink_is_kept_not_copied() -> None:
     """Admission appends to a mutable event sink in place and keeps its identity.
 
