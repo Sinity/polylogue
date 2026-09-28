@@ -66,6 +66,25 @@ def test_an_unleased_write_open_is_refused_where_enforcement_is_armed(db_path: P
             open_isolated_write_connection(db_path, purpose="probe")
 
 
+def test_overlapping_process_wide_arming_remains_until_last_exit() -> None:
+    """One overlapping invocation cannot disarm another active invocation.
+
+    Anti-vacuity: restore a saved process-global boolean and exit the first
+    context before the second; enforcement becomes false while still held.
+    """
+    was_enforced = write_lease_enforced()
+    first = arm_write_lease_enforcement(process_wide=True)
+    second = arm_write_lease_enforcement(process_wide=True)
+    first.__enter__()
+    second.__enter__()
+    try:
+        first.__exit__(None, None, None)
+        assert write_lease_enforced()
+    finally:
+        second.__exit__(None, None, None)
+    assert write_lease_enforced() is was_enforced
+
+
 def test_a_leased_write_open_succeeds(db_path: Path) -> None:
     """The lease authorizes; it does not merely record."""
     with arm_write_lease_enforcement(), write_lease("test.writer"):

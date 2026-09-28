@@ -81,7 +81,7 @@ entire package tree:
 | Change query semantics | `archive/query/` | SQL lowering and in-memory parity, discovery/reference regeneration, public result tests | bespoke CLI- or MCP-only filtering |
 | Add a reusable operator workflow | `operations/` | operation declaration, ownership/authorization, thin CLI/API/MCP adapters | a large command handler that owns domain logic |
 | Detect or repair violated invariants | `maintenance/` over typed `storage/` primitives | dry-run-first behavior, backup/ownership boundary, immutable receipt, red twin | the primary ingest/write path |
-| Add a materialized derived read model | `insights/` plus `storage/derived/` | convergence stage, staleness model, rebuild and public-read tests | an ad hoc table queried only by one surface |
+| Add a materialized derived read model | `analysis/` plus `storage/derived/` | convergence stage, staleness model, rebuild and public-read tests | an ad hoc table queried only by one surface |
 | Add a public payload or affordance | the owning surface package, such as `mcp/payloads.py`, then the relevant adapter | CLI/API/MCP/HTTP parity or an explicit structured exclusion | provider-specific dicts assembled independently per surface |
 | Add a daemon loop | `daemon/` | ownership, bounded work, backoff, health/status evidence, interruption test | an unbounded background task with no convergence state |
 | Add a cross-cutting shared type | `core/` only when it has no I/O and three or more otherwise-unrelated packages consume it | import-layer check and focused type tests | a new top-level package or loose module |
@@ -125,7 +125,7 @@ enforced boundary authority.
 
 ### Derived products
 
-- `insights/` — materialized, rebuildable read models and their semantics.
+- `analysis/` — materialized, rebuildable read models and their semantics.
 - `context/` — context-oriented read views and evidence correlation.
 - `cost/` — typed cost and subscription-plan computation.
 - `readiness/` — consolidated capability and claim-readiness predicates.

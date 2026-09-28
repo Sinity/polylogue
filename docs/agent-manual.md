@@ -52,7 +52,7 @@ Every declared tool is listed. A tool requiring a capability is registered only 
 | `record_work_event` | Record one typed live-agent work event against a session so later sessions can retrieve it as evidence. | `write` | `mutation` |
 | `emit_decision` | Record a typed decision with its evidence references, using the shared work-event vocabulary. | `write` | `mutation` |
 | `judge` | Accept, reject, defer, or supersede an assertion candidate while preserving candidate and judgment provenance. | `judge` | `mutation` |
-| `run` | Execute a saved query or governed recipe ref; any nested mutation inherits its own capability and confirmation policy. | `write` | `exhaustive_page`, `mutation` |
+| `run` | Execute a saved query or saved view; any nested mutation inherits its own capability and confirmation policy. | `write` | `exhaustive_page`, `mutation` |
 | `maintenance` | Rebuild session insights; there is no generic maintenance or repair umbrella. | `maintenance` | `maintenance` |
 
 ## Normal invocations
@@ -68,7 +68,7 @@ Result semantics declared by the t46.8 source rows: `exhaustive_page, top_k, sam
   "arguments": {
     "expression": "actions where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
     "limit": 20,
-    "projection": "action-evidence"
+    "projection": "default"
   },
   "name": "query"
 }
@@ -76,7 +76,7 @@ Result semantics declared by the t46.8 source rows: `exhaustive_page, top_k, sam
 
 Expected discipline: An exhaustive page of action rows with object/evidence refs, one result_ref, and a continuation when more rows exist.
 
-### `read` — Read a session chronicle
+### `read` — Read a session message page
 
 Read a stable URI/object/evidence ref through a declared view, including topology and evidence projections.
 
@@ -87,13 +87,13 @@ Result semantics declared by the t46.8 source rows: `single_object, exhaustive_p
   "arguments": {
     "limit": 20,
     "ref": "polylogue://session/codex-session:demo-lineage-fork",
-    "view": "chronicle"
+    "view": "messages"
   },
   "name": "read"
 }
 ```
 
-Expected discipline: A bounded chronicle page retaining message/block evidence refs and the same result_ref across continuation pages.
+Expected discipline: A bounded messages page; use its returned offset for the next page.
 
 ### `get` — Resolve the exact evidence block behind a claim
 
@@ -131,7 +131,7 @@ Result semantics declared by the t46.8 source rows: `single_object`.
 
 Expected discipline: Parser-owned AST/lowering metadata, selected unit, result semantics, and correction guidance without executing the query.
 
-### `context` — Compile a resume packet
+### `context` — Compile a context snapshot
 
 Compile a bounded, policy-gated context image with receipts and evidence refs for resumption or investigation.
 
@@ -141,7 +141,7 @@ Result semantics declared by the t46.8 source rows: `bounded_context`.
 {
   "arguments": {
     "budget_tokens": 4000,
-    "intent": "resume",
+    "intent": "coordination",
     "query": "sessions where repo:polylogue AND NOT tag:complete"
   },
   "name": "context"
@@ -182,7 +182,7 @@ For `exhaustive_page`, resume the same logical result by calling the same tool w
 ```json
 {
   "arguments": {
-    "continuation": "q2.eyJjaGVja3N1bSI6ImIzYTA1Y2JiOTlkMTJhZTI2NmUwYjE0YmRlZWZiMWJiNTE4NjQzYzM5M2RkMmEyYzNlODc4NTU3MTRlNzI4MmQiLCJleHBpcmVzX2F0IjoxODkzNDU5NjAwLCJpc3N1ZWRfYXQiOjE4OTM0NTYwMDAsInJlcXVlc3QiOnsiYXJjaGl2ZV9lcG9jaCI6ImFyY2hpdmU6djE6aW5kZXg6djI0OjE6dXNlcjp2OToxIiwiYXJndW1lbnRzIjp7ImV4cHJlc3Npb24iOiJhY3Rpb25zIHdoZXJlIGFjdGlvbjpmaWxlX2VkaXQgQU5EIHBhdGg6cG9seWxvZ3VlL2FyY2hpdmUvcXVlcnkgfCBzb3J0IGJ5IHRpbWUgZGVzYyB8IGxpbWl0IDIwIiwicHJvamVjdGlvbiI6ImFjdGlvbi1ldmlkZW5jZSJ9LCJvZmZzZXQiOjIwLCJvcGVyYXRpb24iOiJxdWVyeSIsInBhZ2Vfc2l6ZSI6MjAsInByb2plY3Rpb24iOiJhY3Rpb24tZXZpZGVuY2UiLCJzdGFibGVfb3JkZXIiOiJ0aW1lLWRlc2MifSwicmVzdWx0X3JlZiI6InJlc3VsdDowMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1NjciLCJ2IjoyfQ"
+    "continuation": "q2.eyJjaGVja3N1bSI6ImUyMjNkODI1MTU2NmRhYmRiNmUxOTA5ZDBhZjAyYzZmOTg1MTBhNTEwMTNmNTg4YWJjYjIyNjIyNGJmODI0MWMiLCJleHBpcmVzX2F0IjoxODkzNDU5NjAwLCJpc3N1ZWRfYXQiOjE4OTM0NTYwMDAsInJlcXVlc3QiOnsiYXJjaGl2ZV9lcG9jaCI6ImFyY2hpdmU6djE6aW5kZXg6djI0OjE6dXNlcjp2OToxIiwiYXJndW1lbnRzIjp7ImV4cHJlc3Npb24iOiJhY3Rpb25zIHdoZXJlIHRvb2w6c2hlbGwgfCBsaW1pdCAyMCIsInNlc3Npb25fZmlsdGVycyI6e319LCJvZmZzZXQiOjIwLCJvcGVyYXRpb24iOiJxdWVyeV91bml0cyIsInBhZ2Vfc2l6ZSI6MjAsInByb2plY3Rpb24iOiJ0ZXJtaW5hbC11bml0LWVudmVsb3BlIiwic3RhYmxlX29yZGVyIjoiY2Fub25pY2FsIn0sInJlc3VsdF9yZWYiOiJyZXN1bHQ6MzdiMGJiODA4Yjg4N2ExZDJkZTFlNGVkIiwidiI6Mn0"
   },
   "name": "query"
 }
@@ -279,27 +279,27 @@ Canonical maintenance flow: `maintenance` accepts exactly these declared operati
 Recover current work, failed effects, open loops, and a bounded next-step context without trusting a stale summary.
 
 1. `{"arguments":{"include":["identity","coverage","freshness","readiness"],"scope":"archive"},"name":"status"}` — Establish which archive and source generations can support the answer.
-2. `{"arguments":{"expression":"repo:example-repo AND NOT tag:stale","limit":20,"projection":"session-summary"},"name":"query"}` — Find likely unfinished sessions. Capture `candidate_result_ref`.
-3. `{"arguments":{"expression":"actions where session.repo:example-repo AND session.since:7d AND output:failed","limit":20,"projection":"action-evidence"},"name":"query"}` — Find recent failed effects that may invalidate an optimistic handoff. Capture `failure_result_ref`.
-4. `{"arguments":{"limit":20,"ref":"polylogue://session/codex-session:demo-lineage-fork","view":"chronicle"},"name":"read"}` — Read the strongest candidate with evidence refs; continue until the needed boundary is reached.
-5. `{"arguments":{"budget_tokens":4000,"intent":"resume","result_ref":"result:0123456789abcdef01234567"},"name":"context"}` — Compile a bounded resume packet from the selected result set and retain its receipt.
+2. `{"arguments":{"expression":"repo:example-repo AND NOT tag:stale","limit":20,"projection":"sessions"},"name":"query"}` — Find likely unfinished sessions. Capture `candidate_result_ref`.
+3. `{"arguments":{"expression":"actions where session.repo:example-repo AND session.since:7d AND output:failed","limit":20,"projection":"default"},"name":"query"}` — Find recent failed effects that may invalidate an optimistic handoff. Capture `failure_result_ref`.
+4. `{"arguments":{"limit":20,"ref":"polylogue://session/codex-session:demo-lineage-fork","view":"messages"},"name":"read"}` — Read the strongest candidate with evidence refs; continue until the needed boundary is reached.
+5. `{"arguments":{"budget_tokens":4000,"intent":"coordination","query":"sessions where repo:polylogue AND NOT tag:complete"},"name":"context"}` — Compile a bounded context image from the selected cohort and retain its receipt.
 
 ### Perform a forensic lookup (`forensic-lookup`)
 
 Reconstruct a failure from parser-valid row evidence, exact objects, surrounding transcript, and authority status.
 
 1. `{"arguments":{"expression":"observed-events where kind:tool_finished | group by status | count","subject":"query"},"name":"explain"}` — Confirm grammar, group field, selected unit, and aggregate semantics before execution.
-2. `{"arguments":{"expression":"observed-events where kind:tool_finished | group by status | count","limit":20,"projection":"aggregate-with-evidence"},"name":"query"}` — Measure failed versus successful tool-finished events. Capture `aggregate_result_ref`.
-3. `{"arguments":{"expression":"actions where session.repo:example-repo AND session.since:7d AND output:failed","limit":20,"projection":"action-evidence"},"name":"query"}` — Locate exact failed action refs. Capture `failure_result_ref`.
+2. `{"arguments":{"expression":"observed-events where kind:tool_finished | group by status | count","limit":20,"projection":"default"},"name":"query"}` — Measure failed versus successful tool-finished events. Capture `aggregate_result_ref`.
+3. `{"arguments":{"expression":"actions where session.repo:example-repo AND session.since:7d AND output:failed","limit":20,"projection":"default"},"name":"query"}` — Locate exact failed action refs. Capture `failure_result_ref`.
 4. `{"arguments":{"projection":"evidence","ref":"block:codex-session:demo-receipts:call-receipts-test-fail:0"},"name":"get"}` — Resolve the exact cited failure block rather than quoting a search snippet.
-5. `{"arguments":{"limit":20,"ref":"polylogue://session/codex-session:demo-receipts","view":"chronicle"},"name":"read"}` — Read the surrounding chronology and any recovery verification.
+5. `{"arguments":{"limit":20,"ref":"polylogue://session/codex-session:demo-receipts","view":"messages"},"name":"read"}` — Read the surrounding chronology and any recovery verification.
 
 ### Search prior art before changing a subsystem (`prior-art-search`)
 
 Combine semantic retrieval with file-touch history, then inspect exact prior rationale and outcomes.
 
 1. `{"arguments":{"expression":"sessions where semantic:\"query compiler failure\"","subject":"query"},"name":"explain"}` — Verify semantic lowering and any readiness dependency.
-2. `{"arguments":{"expression":"sessions where semantic:\"query compiler failure\"","limit":20,"projection":"session-summary"},"name":"query"}` — Find conceptually related sessions even when vocabulary differs. Capture `semantic_result_ref`.
+2. `{"arguments":{"expression":"sessions where semantic:\"query compiler failure\"","limit":20,"projection":"sessions"},"name":"query"}` — Find conceptually related sessions even when vocabulary differs. Capture `semantic_result_ref`.
 3. `{"arguments":{"expression":"files where session.repo:example-repo AND path:src/mcp/server.py","limit":20,"projection":"file-evidence"},"name":"query"}` — Find concrete edits under the relevant subsystem. Capture `file_result_ref`.
 4. `{"arguments":{"limit":20,"ref":"result:0123456789abcdef01234567","view":"ranked-evidence"},"name":"read"}` — Read the retained result set rather than rerunning a changed query.
 5. `{"arguments":{"projection":"evidence","ref":"message:codex-session:demo-lineage-fork:fork-a3"},"name":"get"}` — Resolve the exact message containing the rationale selected from the result set.
@@ -309,7 +309,7 @@ Combine semantic retrieval with file-touch history, then inspect exact prior rat
 Measure the declared cohort without mixing exact counters, estimates, missing coverage, or logical and physical grains.
 
 1. `{"arguments":{"include":["coverage","freshness","usage-counter-support"],"scope":"sources"},"name":"status"}` — Establish which origins have exact, partial, estimated, or absent usage evidence.
-2. `{"arguments":{"expression":"sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01","limit":50,"projection":"cost-rollup"},"name":"query"}` — Compute the requested cohort using declared cost semantics. Capture `cost_result_ref`.
+2. `{"arguments":{"expression":"sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01","limit":50,"projection":"sessions"},"name":"query"}` — Select the requested cohort for cost analysis; the result remains bounded and coverage-aware. Capture `cost_result_ref`.
 3. `{"arguments":{"ref":"result:0123456789abcdef01234567","subject":"result"},"name":"explain"}` — Inspect denominator, physical/logical grain, missing counts, estimate policy, and continuation state.
 4. `{"arguments":{"limit":50,"ref":"result:0123456789abcdef01234567","view":"cost-evidence"},"name":"read"}` — Read per-session evidence and continue through every exhaustive page required by the claim.
 5. `{"arguments":{"projection":"usage-provenance","ref":"session:codex-session:demo-receipts"},"name":"get"}` — Resolve a representative source record when a counter or estimate is disputed.

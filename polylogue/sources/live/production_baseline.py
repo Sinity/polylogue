@@ -29,6 +29,7 @@ from polylogue.sources.decoder_zip import (
     is_declared_artifact_path,
     provider_detection_path,
 )
+from polylogue.sources.live.batch_support import classify_pre_acquisition
 from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
@@ -340,8 +341,20 @@ def merge_pending_production_baseline(
     current_by_coordinate = {(row.source, row.path): row for row in current.decisions}
     rows = list(current.decisions)
     keys = {(row.source, row.path, row.disposition, row.source_index, row.revision) for row in rows}
+    intake_excluded = {
+        (row.source, row.path)
+        for row in current.decisions
+        if row.disposition == "excluded" and row.reason.startswith("intake_excluded:")
+    }
     for row in previous.decisions:
         if row.disposition == "accepted":
+            if (row.source, row.path) in intake_excluded and _unchanged_revision(row):
+                # Intake never retains these exact bytes, so an earlier
+                # observation that accepted them is not a revision promotion
+                # can demand. A revision the path no longer holds stays
+                # demanded: the file may have been rewritten after a valid
+                # session was observed.
+                continue
             key = (row.source, row.path, row.disposition, row.source_index, row.revision)
             if key not in keys:
                 rows.append(row)
@@ -361,6 +374,30 @@ def merge_pending_production_baseline(
 
 BaselineProgress = Callable[..., None]
 """``progress(phase, *, inspected=0, revisions=0, hashed_bytes=0)``: cheap counters, no I/O."""
+
+
+def _probe_sqlite_readable(path: Path) -> None:
+    """Raise the read fault of a database the baseline is about to exclude, if any."""
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
+    try:
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    finally:
+        conn.close()
+
+
+def _unchanged_revision(row: SourceDecision) -> bool:
+    """Whether an earlier accepted revision is still the path's current content.
+
+    A database's logical revision is not re-derived here: an earlier accepted
+    database revision stays demanded.
+    """
+    path = Path(row.path)
+    if is_sqlite_path(path):
+        return False
+    try:
+        return _revision(path)[0] == row.revision
+    except OSError:
+        return False
 
 
 def _revision(path: Path, *, cancelled: Callable[[], bool] | None = None) -> tuple[str, int]:
@@ -567,16 +604,46 @@ def capture_production_source_baseline(
             # take long enough that status must not still say ``baseline_walk``.
             if progress is not None:
                 progress("baseline_hash")
+            intake_exclusion: str | None = None
             try:
                 if path.suffix.lower() == ".zip":
                     members = _archive_members(path, source_name, cancelled=cancelled, progress=progress)
                     decisions.append(SourceDecision(source_name, str(path), "excluded", "expanded_to_members"))
                     decisions.extend(members)
                     continue
+                # Intake's own pre-acquisition decision: a file it excludes
+                # with a typed reason is never retained, so the baseline
+                # records that exclusion instead of requiring a raw row. A
+                # cold build writes derived tiers, so the ordinary route (not
+                # the source-only acquisition route) is the one it runs.
+                admission = classify_pre_acquisition(
+                    path,
+                    fallback_provider=Provider.from_string(
+                        canonical_acquisition_provider(source_name, source_name=source_name)
+                    ),
+                    source_only=False,
+                    size_bytes=path.stat().st_size,
+                    checkpoint=lambda: _check_observation_cancelled(cancelled),
+                )
+                if admission.excluded_reason is not None:
+                    intake_exclusion = f"intake_excluded:{admission.excluded_reason}"
+                    if is_sqlite_path(path):
+                        # A structural recognizer reads an unreadable database
+                        # as "not ours". A retryable read fault stays a fault
+                        # (handled below), not a terminal exclusion that drops
+                        # a valid database from the promotion demand.
+                        _probe_sqlite_readable(path)
+                    decisions.append(SourceDecision(source_name, str(path), "excluded", intake_exclusion))
+                    continue
                 revision, material_bytes = _revision(path, cancelled=cancelled)
                 if progress is not None:
                     progress("baseline_hash", revisions=1, hashed_bytes=material_bytes)
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
+                if intake_exclusion is not None and not _retryable_read_fault(exc):
+                    # Bytes that are not a readable database are excluded by
+                    # intake for good; only a retryable fault is retried.
+                    decisions.append(SourceDecision(source_name, str(path), "excluded", intake_exclusion))
+                    continue
                 reason = "revision_io_unavailable" if _retryable_read_fault(exc) else "revision_unreadable"
                 decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))
                 continue

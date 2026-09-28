@@ -170,7 +170,7 @@ def run_machine_entry(
             str(exc),
             command=command,
             operation=exc.operation,
-            archive_root=None,
+            archive_root=exc.archive_root,
         ).emit(exit_code=2)
     except click.ClickException as exc:
         error_runtime(

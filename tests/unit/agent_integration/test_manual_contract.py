@@ -15,7 +15,6 @@ from polylogue.agent_integration.spec import (
 )
 from polylogue.archive.query.discovery import QUERY_DISCOVERY_EXAMPLES
 from polylogue.archive.query.expression import compile_expression, explain_expression, parse_unit_source_expression
-from polylogue.archive.query.transaction import QueryContinuation
 from polylogue.cli.query_group import _looks_like_query_expression, _split_query_mode_args
 from polylogue.core.enums import Origin
 from polylogue.mcp.declarations import PRIVILEGED_ALGEBRA, TARGET_DEFAULT_READ_ALGEBRA
@@ -105,17 +104,16 @@ def test_generated_continuation_token_decodes_to_the_bound_result() -> None:
     from devtools.render_agent_manual import continuation_example_token
 
     token = continuation_example_token()
-    decoded = QueryContinuation.decode(token)
+    from polylogue.archive.query.transaction import decode_query_units_continuation
+
+    decoded = decode_query_units_continuation(token)
 
     assert token.startswith("q2.")
-    assert decoded.request.operation == "query"
+    assert decoded.request.operation == "query_units"
     assert decoded.request.offset == 20
     assert decoded.request.page_size == 20
-    assert decoded.request.arguments == {
-        "expression": "actions where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
-        "projection": "action-evidence",
-    }
-    assert decoded.result_ref == "result:0123456789abcdef01234567"
+    assert set(decoded.request.arguments) == {"expression", "session_filters"}
+    assert decoded.result_ref == decoded.request.result_ref
 
 
 def test_origin_teaching_follows_authoritative_enum() -> None:
@@ -180,6 +178,42 @@ def test_generated_contract_arguments_match_the_live_mcp_signatures() -> None:
             )
 
     assert not problems, problems
+
+
+def test_published_examples_use_live_operation_vocabularies_and_preconditions() -> None:
+    """Anti-vacuity: restoring any rejected projection, view, write op, or ref form fails here."""
+    import typing
+
+    from polylogue.mcp.declarations import MCPCapabilities
+    from polylogue.mcp.server import build_server
+    from polylogue.mcp.server_cutover import mcp_query_projection_names
+
+    server = build_server(capabilities=MCPCapabilities(write=True, judge=True, maintenance=True))
+    live_tools = server._tool_manager._tools
+    query_projections = set(mcp_query_projection_names())
+    for example in TOOL_CONTRACT_BY_NAME["query"].examples:
+        projection = example.arguments_dict().get("projection")
+        assert projection in query_projections
+
+    read = TOOL_CONTRACT_BY_NAME["read"]
+    read_example = read.examples[0].arguments_dict()
+    read_views = set(typing.get_args(typing.get_type_hints(live_tools["read"].fn)["view"]))
+    assert read_example["view"] in read_views
+    around_description = next(arg.description for arg in read.arguments if arg.name == "around")
+    assert "Raw message ID" in around_description
+    assert "view=messages" in around_description
+    assert "without offset or continuation" in around_description
+
+    for name, argument in (("explain", "subject"), ("write", "operation")):
+        vocabulary = set(typing.get_args(typing.get_type_hints(live_tools[name].fn)[argument]))
+        for example in TOOL_CONTRACT_BY_NAME[name].examples:
+            assert example.arguments_dict()[argument] in vocabulary
+
+    run_ref = TOOL_CONTRACT_BY_NAME["run"].examples[0].arguments_dict()["ref"]
+    assert isinstance(run_ref, str)
+    assert run_ref.startswith(("saved-query:", "saved-view:"))
+    run_ref_description = next(arg.description for arg in TOOL_CONTRACT_BY_NAME["run"].arguments if arg.name == "ref")
+    assert "recipe" not in run_ref_description
 
 
 def _live_maintenance_signature() -> tuple[frozenset[str], frozenset[str]]:

@@ -4,6 +4,10 @@ import argparse
 import importlib
 import shlex
 
+import pytest
+from click.testing import CliRunner
+
+from devtools.click_dispatch import cli
 from devtools.command_catalog import (
     CATEGORY_ORDER,
     COMMAND_SPECS,
@@ -57,6 +61,43 @@ def test_featured_command_specs_are_actionable() -> None:
 def test_catalog_uses_command_ownership_categories() -> None:
     assert "verification lab" not in {spec.category for spec in COMMAND_SPECS}
     assert {"gate", "bench pipeline", "schema commit"} <= set(COMMANDS)
+
+
+def test_wrapped_schema_help_reaches_native_argparse_options() -> None:
+    """Click must not replace an argparse command's complete help.
+
+    Anti-vacuity: restoring Click's wrapper help hides the native required
+    --provider and --schema-inference-receipt arguments.
+    """
+    from devtools.click_dispatch import _make_command
+
+    spec = next(item for item in COMMAND_SPECS if item.name == "schema generate")
+    result = CliRunner().invoke(_make_command(spec), ["--help"])
+    assert result.exit_code == 0
+    assert "--provider" in result.output
+    assert "--receipt" in result.output
+
+
+def test_value_bearing_catalog_option_passes_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A number after an undeclared boolean flag stays paired with its option.
+
+    Anti-vacuity: declaring --budget-mib as a Click flag swallows it and
+    forwards a bare option, causing argparse to report a missing value.
+    """
+    from devtools import collection_cost
+    from devtools.click_dispatch import _make_command
+
+    spec = next(item for item in COMMAND_SPECS if item.name == "bench collection")
+    received: list[str] = []
+
+    def fake_main(argv: list[str] | None = None) -> int:
+        received.extend(argv or [])
+        return 0
+
+    monkeypatch.setattr(collection_cost, "main", fake_main)
+    result = CliRunner().invoke(_make_command(spec), ["--budget-mib", "430"])
+    assert result.exit_code == 0
+    assert received == ["--budget-mib", "430"]
 
 
 def test_top_level_command_surface_is_the_folded_twelve() -> None:
@@ -115,3 +156,10 @@ def test_documented_examples_parse_against_their_own_command_parser() -> None:
         except SystemExit as exit_code:
             failures.append((name, example, f"SystemExit {exit_code.code}"))
     assert not failures, f"documented examples their own parser refuses: {failures}"
+
+
+def test_tool_outcome_help_declares_required_candidate_root() -> None:
+    """Anti-vacuity: removing the value option hides the required root from generated help."""
+    result = CliRunner().invoke(cli, ["archive", "tool-outcome-census", "--help"])
+    assert result.exit_code == 0
+    assert "--archive-root PATH" in result.output

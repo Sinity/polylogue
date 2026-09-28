@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -53,6 +54,20 @@ def test_fable_packet_is_available_under_ops_insights() -> None:
     assert result.exit_code == 0
     assert "Cold-regenerate the private, descriptive Fable delegation packet." in result.output
     assert "--seed TEXT" in result.output
+
+
+def test_packet_json_projection_converts_nested_tuples_to_lists() -> None:
+    from polylogue.cli.commands.insights import _packet_json_document
+
+    @dataclass
+    class Packet:
+        selected_refs: tuple[str, ...]
+        manifest: tuple[tuple[str, int], ...]
+
+    assert _packet_json_document(Packet(("session:x",), (("count", 1),))) == {
+        "selected_refs": ["session:x"],
+        "manifest": [["count", 1]],
+    }
 
 
 def _rebuild_insights(db_path: Path, **kwargs: Any) -> SessionInsightCounts:
@@ -595,6 +610,29 @@ def test_insights_status_plain(cli_workspace: CliWorkspace) -> None:
     # expected denominator gated on the product table. A reader that stopped
     # reporting either would print a bare name.
     assert "session_profiles: rows=2 expected=2" in result.output
+
+
+def test_plain_insight_status_shows_fallback_degradation(capsys: pytest.CaptureFixture[str]) -> None:
+    from polylogue.analysis.readiness import InsightReadinessEntry, InsightReadinessReport
+    from polylogue.cli.commands.insights import _render_status_plain
+
+    report = InsightReadinessReport(
+        checked_at="now",
+        converged=True,
+        insights=(
+            InsightReadinessEntry(
+                insight_name="session_profiles",
+                display_name="Session Profiles",
+                row_count=3,
+                degraded_count=2,
+                fallback_reason_counts={"legacy_evidence": 2},
+            ),
+        ),
+    )
+    _render_status_plain(report)
+    rendered = capsys.readouterr().out
+    assert "degraded=2" in rendered
+    assert "legacy_evidence=2" in rendered
 
 
 def test_insights_hermes_health_json_reports_disabled_without_a_hermes_root(
