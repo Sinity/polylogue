@@ -250,6 +250,57 @@ def test_schema_generate_cluster_preview_keeps_declared_source_manifest_in_memor
     assert not manifest_path.exists()
 
 
+def test_schema_generate_retained_clusters_are_promotable(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``generate --cluster --retain-clusters`` is the producer ``promote`` reads.
+
+    Anti-vacuity: wiring ``--retain-clusters`` back to
+    ``persist_cluster_manifest=False`` leaves the registry without a manifest,
+    and the promotion below raises ``No cluster manifest found``.
+    """
+    from polylogue.schemas.operator.workflow import promote_schema_cluster
+
+    source = Path(__file__).parents[2] / "fixtures" / "origin-capability" / "codex-session.jsonl"
+
+    assert (
+        schema_generate.main(
+            [
+                "--provider",
+                "codex",
+                "--source",
+                f"codex={source}",
+                "--source-cache",
+                str(tmp_path / "source-cache.sqlite3"),
+                "--source-workers",
+                "1",
+                "--cluster",
+                "--retain-clusters",
+                "--json",
+            ]
+        )
+        == 0
+    )
+    payload = json.loads(capsys.readouterr().out)["result"]
+    cluster_id = payload["manifest"]["clusters"][0]["cluster_id"]
+
+    promoted = promote_schema_cluster(
+        SchemaPromoteRequest(provider="codex", cluster_id=cluster_id, db_path=tmp_path / "index.db")
+    )
+
+    assert promoted.cluster_id == cluster_id
+    assert promoted.package_version
+
+
+def test_schema_generate_refuses_retain_clusters_without_cluster(workspace_env: dict[str, Path]) -> None:
+    """Retaining is meaningless without clustering; the flag is refused, not ignored."""
+    with pytest.raises(SystemExit) as exit_info:
+        schema_generate.main(["--provider", "codex", "--retain-clusters"])
+    assert exit_info.value.code == 2
+
+
 def test_schema_generate_writes_aggregate_progress_receipt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

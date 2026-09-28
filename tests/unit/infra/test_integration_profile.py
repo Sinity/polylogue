@@ -21,6 +21,12 @@ from tests.infra.workload_artifacts import CorpusArtifactManifest, seeded_archiv
 
 
 def test_selection_derives_constraints_from_witness_recipes() -> None:
+    """The default selection's origins and identities come from its witness recipes.
+
+    Anti-vacuity: have ``IntegrationSelection.corpus_specs`` regenerate native
+    ids instead of carrying ``witness.session_native_ids``, or drop a witness
+    whose origin the profile requires, and the zip or origin set goes red.
+    """
     selection = default_integration_selection()
 
     assert selection.profile.required_origins == ("chatgpt-export", "codex-session")
@@ -33,6 +39,12 @@ def test_selection_derives_constraints_from_witness_recipes() -> None:
 
 
 def test_selection_digest_and_generated_shape_follow_recipe() -> None:
+    """Profile and recipe changes move the selection digest and generated specs.
+
+    Anti-vacuity: omit the profile digest or a witness ``recipe_digest`` from
+    ``IntegrationSelection.digest``, or let ``corpus_spec`` ignore the recipe
+    seed, and a changed selection keeps the old digest or corpus shape.
+    """
     selection = default_integration_selection()
     changed_profile = replace(selection.profile, scale="smoke")
     changed_recipe = replace(selection.witnesses[0].recipe, seed=71)
@@ -46,6 +58,13 @@ def test_selection_digest_and_generated_shape_follow_recipe() -> None:
 
 
 def test_selection_rejects_unrealizable_constraints_and_semantic_metadata() -> None:
+    """Every constraint no witness set can realize is refused at construction.
+
+    Anti-vacuity: delete any one check in ``IntegrationSelection.__post_init__``
+    or ``IntegrationWitness.__post_init__`` (multiple witnesses, repeated
+    recipe, registry mix, seed, provider token, semantic metadata) and its
+    ``pytest.raises`` block stops raising.
+    """
     recipe = CorpusSpec.for_provider("chatgpt", count=1, messages_min=2, messages_max=2, seed=42)
     coexistence = IntegrationProfile(name="bounded", required_origins=("chatgpt-export",))
     with pytest.raises(ValueError, match="multiple witnesses"):
@@ -93,6 +112,12 @@ def test_selection_rejects_unrealizable_constraints_and_semantic_metadata() -> N
 
 
 def test_selection_enforces_scale_against_guaranteed_message_population() -> None:
+    """Scale is checked against the guaranteed minimum, not the generated maximum.
+
+    Anti-vacuity: compute the population from ``messages_max`` or skip the
+    ``_SCALE_MINIMUM_MESSAGES`` check, and the two-message-per-witness default
+    is accepted as ``archive-shaped``.
+    """
     selection = default_integration_selection()
 
     with pytest.raises(ValueError, match="archive-shaped.*16 messages"):
@@ -107,6 +132,11 @@ def test_selection_enforces_scale_against_guaranteed_message_population() -> Non
 
 
 def test_selection_preserves_law_owned_session_native_ids() -> None:
+    """A recipe that pins native ids keeps them through ``corpus_spec``.
+
+    Anti-vacuity: have ``IntegrationWitness.session_native_ids`` always derive
+    ``integration-<digest>`` ids and the pinned id is replaced.
+    """
     recipe = CorpusSpec.for_provider(
         "chatgpt",
         count=1,
@@ -122,6 +152,13 @@ def test_selection_preserves_law_owned_session_native_ids() -> None:
 
 
 def test_same_provider_witnesses_receive_distinct_session_identities(tmp_path: Path) -> None:
+    """Two same-provider witnesses materialize as two archived sessions.
+
+    Anti-vacuity: derive generated native ids from the index alone rather
+    than the recipe digest, and both witnesses collapse onto one identity:
+    the selection refuses to construct, and without that guard the archive's
+    facts lose a session.
+    """
     recipe = CorpusSpec.for_provider("codex", count=1, messages_min=2, messages_max=2, seed=42)
     profile = IntegrationProfile(
         name="identity",
@@ -148,6 +185,12 @@ def test_same_provider_witnesses_receive_distinct_session_identities(tmp_path: P
 
 
 def test_archive_publishes_selected_heterogeneous_contents(tmp_path: Path) -> None:
+    """The published archive holds exactly the selected witnesses' sessions.
+
+    Anti-vacuity: bypass ``selection.corpus_specs()`` in
+    ``build_integration_archive`` (for example, fall back to the default C03
+    corpus) and the manifest key, facts and stored origins all diverge.
+    """
     selection = default_integration_selection()
     artifact = build_integration_archive(selection, cache_root=tmp_path / "cache")
 

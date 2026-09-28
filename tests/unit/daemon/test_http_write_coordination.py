@@ -707,6 +707,15 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
 def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    """A delete that fails after two committed chunks reports what it applied.
+
+    Anti-vacuity: surface the failure as a refusal without applied counts
+    (the original behaviour, where only a fully successful ``sum(...)`` over
+    chunks reported any), stop accumulating ``completed``/``affected`` across
+    parts in ``machine_lifecycle.machine_request_state``, or settle the
+    failed part as ``failed`` rather than ``indeterminate``, and the reported
+    counts or outcome here go red.
+    """
     from polylogue.operations.audit import AuditRepository
     from polylogue.operations.machine_lifecycle import machine_request_state
     from polylogue.operations.mutation_actuators import SessionDeleteActuator, SessionDeleteArgs

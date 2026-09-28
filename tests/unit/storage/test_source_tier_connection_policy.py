@@ -9,7 +9,11 @@ import pytest
 
 from polylogue.storage.blob_publication import BlobPublicationReceipt, BlobPublicationReservationStore
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE, write_connection_pragma_statements
+from polylogue.storage.sqlite.connection_profile import (
+    SCRATCH_SYNCHRONOUS_ENV,
+    WRITE_CONNECTION_PROFILE,
+    write_connection_pragma_statements,
+)
 
 # The reviewed durability contract for the DURABLE source tier, written as
 # literals on purpose. ``docs/durability-by-tier.md`` publishes source.db as
@@ -23,6 +27,17 @@ from polylogue.storage.sqlite.connection_profile import WRITE_CONNECTION_PROFILE
 # document with it.
 _DURABLE_SOURCE_JOURNAL_MODE = "wal"
 _DURABLE_SOURCE_SYNCHRONOUS = 1  # NORMAL
+
+
+@pytest.fixture(autouse=True)
+def _production_synchronous_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Assert the production profile, not the harness's scratch override.
+
+    The managed pytest step sets ``POLYLOGUE_SQLITE_SYNCHRONOUS=OFF`` for every
+    scratch archive, and the override is read each time statements are built,
+    so without this every handle here reports ``OFF`` under ``devtools test``.
+    """
+    monkeypatch.delenv(SCRATCH_SYNCHRONOUS_ENV, raising=False)
 
 
 def test_durable_source_tier_profile_declares_its_reviewed_durability_contract() -> None:
