@@ -181,7 +181,7 @@ async def test_accepted_generation_materializes_after_restart_without_its_input(
             )
             path = str(source.resolve())
             envelope = await asyncio.to_thread(
-                client.operation,
+                client.operation_to_completion,
                 "ingest",
                 {"path": path, "source_path": path, "source_name": "redrive", "idempotency_key": None},
                 archive_root=str(archive_root),
