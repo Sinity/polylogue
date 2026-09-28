@@ -3444,3 +3444,24 @@ def test_replacement_candidates_hold_their_text_once_under_fixed_size_keys() -> 
     texts_bytes, keys_bytes, contexts_bytes = scratch
     assert texts_bytes < len(large.encode()) + 1024
     assert keys_bytes == 4 * 32 and contexts_bytes == 32
+
+
+def test_replacement_context_annotations_keep_a_lone_surrogate() -> None:
+    """Anti-vacuity: bind the annotations as scratch TEXT again and a lone
+    surrogate raises ``UnicodeEncodeError`` before the event is built."""
+    import sqlite3
+
+    from polylogue.sources.parsers.base import ParsedSessionEvent
+    from polylogue.sources.parsers.codex import _CodexLookaheadIndex, _CodexTextConservation
+
+    conservation = _CodexTextConservation(_CodexLookaheadIndex(sqlite3.connect(":memory:")))
+    key, _new = conservation.add("replacement value")
+    assert key is not None
+    conservation.add_context(
+        key, insert_at=1, timestamp=None, source_index=0, entry_type="t\ud800", role="r\ud800", phase=None
+    )
+    events = [ParsedSessionEvent(event_type="compaction", payload={})]
+    conservation.finish_replacement_contexts(events)
+
+    (context,) = [event for event in events if event.event_type == "codex_replacement_context"]
+    assert (context.payload["entry_type"], context.payload["role"]) == ("t\ud800", "r\ud800")

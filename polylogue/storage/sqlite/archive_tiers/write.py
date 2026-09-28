@@ -6790,7 +6790,9 @@ def _bind_asserted_branch_point(
     """
     if not parent_session_id or not native_id or not native_id.strip():
         return None
-    candidate = archive_message_id(parent_session_id, native_id.strip())
+    # The same surrogate substitution ``messages.native_id`` stores, so a
+    # lone-surrogate provider id names the row it was stored as.
+    candidate = archive_message_id(parent_session_id, _sqlite_text(native_id.strip()))
     row = conn.execute("SELECT 1 FROM messages WHERE message_id = ? LIMIT 1", (candidate,)).fetchone()
     return candidate if row is not None else None
 
@@ -6806,17 +6808,20 @@ def _refill_inbound_asserted_branch_points(conn: sqlite3.Connection, parent_sess
     rows = conn.execute(
         f"""
         SELECT src_session_id, dst_origin, dst_native_id, link_type,
-               json_extract(evidence_json, '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}')
+               evidence_json -> '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}'
           FROM session_links
          WHERE resolved_dst_session_id = ?
            AND branch_point_message_id IS NULL
            AND json_valid(evidence_json)
            AND json_type(evidence_json) = 'object'
-           AND json_extract(evidence_json, '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}') IS NOT NULL
+           AND COALESCE(json_type(evidence_json, '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}'), 'null') != 'null'
         """,
         (parent_session_id,),
     ).fetchall()
-    for src_session_id, dst_origin, dst_native_id, link_type, asserted_native_id in rows:
+    for src_session_id, dst_origin, dst_native_id, link_type, asserted_json in rows:
+        # Read in its JSON spelling and decoded here: a stored lone-surrogate
+        # escape would make ``json_extract`` materialize text that is not UTF-8.
+        asserted_native_id = json.loads(asserted_json)
         bound = _bind_asserted_branch_point(conn, parent_session_id, str(asserted_native_id))
         if bound is None:
             continue

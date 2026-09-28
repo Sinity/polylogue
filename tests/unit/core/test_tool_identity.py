@@ -77,3 +77,17 @@ def test_a_lone_surrogate_projection_keeps_noncharacters_and_decodes_controls() 
     connection.execute("INSERT INTO t (tool_input) VALUES (?)", (stored,))
     (command,) = connection.execute("SELECT tool_command FROM t").fetchone()
     assert command == "a￿b \x00 \x1f \\ \\uDFFF"
+
+
+def test_delegation_instruction_projection_reads_a_lone_surrogate() -> None:
+    """Anti-vacuity: extract the instruction candidates with bare
+    ``json_extract`` again and the read raises ``Could not decode to UTF-8``."""
+    import sqlite3
+
+    from polylogue.storage.sqlite.archive_tiers.archive_query_reads import _delegation_instruction_sql_expression
+
+    connection = sqlite3.connect(":memory:")
+    connection.execute("CREATE TABLE d (instruction_payload TEXT)")
+    connection.execute("INSERT INTO d VALUES (?)", ('{"prompt":"review \\ud800 this"}',))
+    (instruction,) = connection.execute(f"SELECT {_delegation_instruction_sql_expression('d')} FROM d").fetchone()
+    assert instruction == "review \\ud800 this"

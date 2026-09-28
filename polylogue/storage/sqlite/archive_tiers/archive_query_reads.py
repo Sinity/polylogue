@@ -1930,8 +1930,11 @@ def _run_field_predicate_clause(run_alias: str, predicate: QueryFieldPredicate) 
 
 def _delegation_instruction_sql_expression(delegation_alias: str) -> str:
     payload = f"{delegation_alias}.instruction_payload"
+    # The surrogate-safe projection: a stored lone-surrogate escape must not
+    # decode into text that is not UTF-8.
     candidates = ", ".join(
-        f"NULLIF(CASE WHEN json_type({payload}, '$.{key}') = 'text' THEN json_extract({payload}, '$.{key}') END, '')"
+        f"NULLIF(CASE WHEN json_type({payload}, '$.{key}') = 'text' "
+        f"THEN {sql_coalesced_json_extract(payload, (key,))} END, '')"
         for key in ("prompt", "description", "instruction", "task")
     )
     return (

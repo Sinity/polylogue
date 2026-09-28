@@ -175,7 +175,7 @@ class _CodexLookaheadIndex:
             CREATE TABLE IF NOT EXISTS codex_replacement_contexts (
                 ordinal INTEGER PRIMARY KEY, insert_at INTEGER NOT NULL, key BLOB NOT NULL,
                 timestamp TEXT, source_index INTEGER NOT NULL,
-                entry_type TEXT, role TEXT, phase TEXT
+                entry_type BLOB, role BLOB, phase BLOB
             );
             """
         )
@@ -1606,7 +1606,18 @@ class _CodexTextConservation:
         """Record where a new candidate is stored if the session keeps it nowhere else."""
         self._index.connection.execute(
             "INSERT INTO codex_replacement_contexts VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (self._contexts, insert_at, key, timestamp, source_index, entry_type, role, phase),
+            # Annotations may hold a lone surrogate the scratch TEXT binding
+            # cannot encode; they are held pickled and decoded on read.
+            (
+                self._contexts,
+                insert_at,
+                key,
+                timestamp,
+                source_index,
+                _sql_key(entry_type),
+                _sql_key(role),
+                _sql_key(phase),
+            ),
         )
         self._contexts += 1
 
@@ -1638,7 +1649,8 @@ class _CodexTextConservation:
         )
 
         def insertions() -> Iterator[tuple[int, ParsedSessionEvent]]:
-            for insert_at, timestamp, source_index, entry_type, role, phase, text, occurrences in rows:
+            for insert_at, timestamp, source_index, entry_blob, role_blob, phase_blob, text, occurrences in rows:
+                entry_type, role, phase = (pickle.loads(blob) for blob in (entry_blob, role_blob, phase_blob))
                 content = pickle.loads(text)
                 payload: dict[str, object] = {
                     "source_index": source_index,

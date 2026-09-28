@@ -3348,3 +3348,30 @@ def test_stranded_lookup_uses_the_branch_index(tmp_path: Path) -> None:
     assert "idx_session_links_branch_point" in detail, detail
     assert "SCAN" not in detail, detail
     conn.close()
+
+
+def test_deferred_asserted_branch_point_with_a_lone_surrogate_binds_on_parent_save(tmp_path: Path) -> None:
+    """A child saved before its parent binds its surrogate-bearing branch point later.
+
+    Anti-vacuity: read the asserted id back with bare ``json_extract`` and the
+    parent's save raises ``Could not decode to UTF-8`` and rolls back.
+    """
+    state_db = tmp_path / "state.db"
+    _hermes_chain_state_db(state_db, links=2, messages_per_session=2)
+    parent, child = sorted(parse_state_db(state_db), key=lambda session: session.provider_session_id)
+    surrogate_id = "m\ud800"
+    last = parent.messages[-1].model_copy(update={"provider_message_id": surrogate_id})
+    parent = parent.model_copy(update={"messages": [*parent.messages[:-1], last]})
+    child = child.model_copy(update={"branch_point_provider_message_id": surrogate_id})
+    conn = _connect(tmp_path / "index.db")
+
+    child_id = write_parsed_session_to_archive(conn, child)
+    conn.commit()
+    write_parsed_session_to_archive(conn, parent)
+    conn.commit()
+
+    bound = conn.execute(
+        "SELECT branch_point_message_id FROM session_links WHERE src_session_id = ?", (child_id,)
+    ).fetchone()
+    assert bound is not None and bound[0] is not None
+    conn.close()
