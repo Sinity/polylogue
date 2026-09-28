@@ -15,7 +15,7 @@ from polylogue.cli.command_inventory import iter_command_paths
 from polylogue.core.enums import Provider
 from polylogue.storage.blob_gc import read_gc_history
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.blob_store import BlobStore, PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary, ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session_blob_ref
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
@@ -724,7 +724,6 @@ def test_blob_publications_cli_abandons_through_the_resident_daemon(
             (receipt_id,),
         ).fetchone()[0]
     assert store.exists(bytes(blob_hash).hex())
-
     with cli_daemon_archive(archive_root, monkeypatch):
         abandoned = cli_runner.invoke(
             cli,
@@ -758,6 +757,38 @@ def test_blob_publications_cli_abandons_through_the_resident_daemon(
             "WHERE run.operation_name = ?",
             ("mutate-abandon-blob-publication-receipts",),
         ).fetchone() == (1,)
+
+
+def test_publish_many_persists_prior_shard_when_a_later_placement_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: removing the exceptional-path shard fsync leaves zero persisted shard names."""
+    store = BlobStore(tmp_path / "blob")
+    staged = tmp_path / "staged"
+    staged.mkdir()
+    payloads = (b"first shard", b"later shard")
+    prepared = []
+    for index, payload in enumerate(payloads):
+        path = staged / str(index)
+        path.write_bytes(payload)
+        prepared.append(PreparedBlob(hashlib.sha256(payload).hexdigest(), len(payload), path))
+    original_place = store._place_prepared
+    calls = 0
+
+    def fail_second(item: PreparedBlob) -> tuple[tuple[str, int], Path | None, bool]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("simulated ENOSPC after first rename")
+        return original_place(item)
+
+    synced: list[Path] = []
+    monkeypatch.setattr(store, "_place_prepared", fail_second)
+    monkeypatch.setattr(store, "_fsync_directory", synced.append)
+    with pytest.raises(OSError, match="simulated ENOSPC"):
+        store.publish_many(prepared)
+    assert store.blob_path(prepared[0].hash_hex).is_file()
+    assert store.blob_path(prepared[0].hash_hex).parent in synced
 
 
 def test_blob_reference_debt_cli_classifies_missing_refs(

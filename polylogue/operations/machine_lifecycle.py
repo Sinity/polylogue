@@ -58,9 +58,14 @@ def _embedding_terminal_receipt(raw: object) -> dict[str, object] | None:
         return None
     for field in ("computed", "failed", "done", "pending"):
         container = progress if field in {"computed", "failed"} else result
-        if type(container.get(field)) is not int or container[field] < 0:
+        counter = container.get(field)
+        if counter is None and value.get("outcome") == "failed":
+            continue
+        if type(counter) is not int or counter < 0:
             return None
     cost = progress.get("estimated_cost_usd")
+    if cost is None and value.get("outcome") == "failed":
+        return value
     if not isinstance(cost, (int, float)) or isinstance(cost, bool):
         return None
     if not math.isfinite(float(cost)) or cost < 0:
@@ -170,7 +175,14 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
         and record.get("stop_reason")
         and outcome in {"completed", "failed"}
     ):
-        outcome = "cancelled" if record["stop_reason"] == "cancelled" else "interrupted"
+        # A durable terminal failure receipt is authoritative even though
+        # acceptance records the execution's refusal as the stop reason.
+        durable_embedding_result = None
+        if attempted:
+            run = audit.get_operation(str(attempted[0]["operation_id"])) if attempted[0]["operation_id"] else None
+            durable_embedding_result = None if run is None else _embedding_terminal_receipt(run.get("error_summary"))
+        if not (durable_embedding_result is not None and durable_embedding_result.get("outcome") == "failed"):
+            outcome = "cancelled" if record["stop_reason"] == "cancelled" else "interrupted"
     result: dict[str, object] | None = None
     error: dict[str, object] | None = None
     if kind == "source-generation" and len(attempted) == 1 and attempted[0]["outcome"] == "completed":

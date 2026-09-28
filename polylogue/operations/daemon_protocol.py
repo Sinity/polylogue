@@ -1146,27 +1146,33 @@ class MutationResult(_OperationPayload):
 
 
 class EmbeddingBackfillProgress(_OperationPayload):
-    state: Literal["stopped", "complete"]
-    computed: int = Field(ge=0)
-    failed: int = Field(ge=0)
-    estimated_cost_usd: float = Field(ge=0)
+    state: Literal["stopped", "complete", "unknown"]
+    computed: int | None = Field(default=None, ge=0)
+    failed: int | None = Field(default=None, ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
 
 
 class EmbeddingBackfillCounts(_OperationPayload):
-    done: int = Field(ge=0)
-    pending: int = Field(ge=0)
-    failed: int = Field(ge=0)
+    done: int | None = Field(default=None, ge=0)
+    pending: int | None = Field(default=None, ge=0)
+    failed: int | None = Field(default=None, ge=0)
+
+
+class EmbeddingBackfillFailure(_OperationPayload):
+    code: str = Field(min_length=1, max_length=64)
+    message: str = Field(min_length=1, max_length=512)
 
 
 class EmbeddingBackfillResult(_OperationPayload):
     operation: Literal["maintenance.embeddings.backfill"]
     outcome: Literal["completed", "stopped", "cancelled", "failed"]
     sequence: int = Field(ge=1)
-    effect: Literal["committed", "no-effect"]
-    affected_count: int = Field(ge=0)
+    effect: Literal["committed", "no-effect", "indeterminate"]
+    affected_count: int | None = Field(default=None, ge=0)
     stop_reason: str | None = None
     progress: EmbeddingBackfillProgress
     result: EmbeddingBackfillCounts
+    error: EmbeddingBackfillFailure | None = None
 
 
 class AcceptedOperationReference(_OperationPayload):
