@@ -260,7 +260,7 @@ def test_no_rerun_without_fresh_scratch(tmp_path: Path, monkeypatch: pytest.Monk
     def no_space(*_args: Any, **_kwargs: Any) -> str:
         raise OSError("read-only scratch")
 
-    monkeypatch.setattr(pytest_slot.tempfile, "mkdtemp", no_space)
+    monkeypatch.setattr("devtools.pytest_slot.tempfile.mkdtemp", no_space)
     environment = {
         RERUN_IN_SLOT_ENV: json.dumps({"report_path": str(report), "step_dir": str(step), "root": str(tmp_path)}),
         "TMPDIR": str(tmp_path),
