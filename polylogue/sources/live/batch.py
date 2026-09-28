@@ -1463,8 +1463,6 @@ class LiveBatchProcessor:
             held_pending: list[Path] = []
             while progress_groups:
                 source_paths = progress_groups.pop(0)
-                if held_pending and source_paths is held_pending:
-                    held_pending = []
                 if self._stop_requested():
                     break
                 if is_fully_degraded():
@@ -1476,6 +1474,9 @@ class LiveBatchProcessor:
                 ):
                     full_ingest_time_budget_exceeded = True
                     break
+                if held_pending and source_paths is held_pending:
+                    # The held group is starting; its own result accounts for it.
+                    held_pending = []
                 t0 = time.perf_counter()
                 try:
                     await self._record_attempt_progress_admitted(

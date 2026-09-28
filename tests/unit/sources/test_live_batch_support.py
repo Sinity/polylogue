@@ -9602,16 +9602,19 @@ def test_deferred_cursor_records_when_the_tail_cannot_be_reopened(
     assert after.byte_offset == before.byte_offset
 
 
+@pytest.mark.parametrize("halt", ["write_hold_spent", "stop_requested"])
 @pytest.mark.asyncio
-async def test_an_ordering_held_revision_stays_retryable_when_the_hold_is_spent(
+async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    halt: str,
 ) -> None:
     """A held same-session revision the batch never reaches is deferred, not settled.
 
-    Anti-vacuity: end the unit on a spent writer hold without accounting for
-    the held group and the later revision is in no outcome collection, so it
-    is neither deferred nor retried.
+    Anti-vacuity: end the unit (spent writer hold, or a stop seen at the held
+    group's halt checks) without accounting for the held group and the later
+    revision is in no outcome collection, so it is neither deferred nor
+    retried.
     """
     root = tmp_path / "sessions"
     root.mkdir()
@@ -9636,7 +9639,7 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_hold_is_spent(
             source_payload_read_bytes=0,
             raw_fingerprints={first: "raw-first"},
             ordering_held=[second],
-            write_hold_exhausted=True,
+            write_hold_exhausted=halt == "write_hold_spent",
         )
 
     def fake_append_plan(_path: Path, **_kwargs: object) -> None:
@@ -9648,6 +9651,8 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_hold_is_spent(
     monkeypatch.setattr(processor, "_record_full_cursor", lambda *_args, **_kwargs: 0)
     monkeypatch.setattr(processor, "_compact_superseded_raw_snapshots", lambda _paths: None)
     monkeypatch.setattr(processor, "_defer_full_cursor_retry", lambda path, **_kwargs: deferred.append(path))
+    if halt == "stop_requested":
+        monkeypatch.setattr(processor, "_stop_requested", lambda: bool(published))
 
     metrics = await processor.ingest_files([first, second], emit_event=False)
 
