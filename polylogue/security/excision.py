@@ -1498,8 +1498,11 @@ def _apply_single_session_excision(
             conn.close()
         from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-        with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
-            deleted_sessions = archive.delete_sessions((session_id,))
+        if target.session_exists:
+            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                deleted_sessions = archive.delete_sessions((session_id,))
+        else:
+            deleted_sessions = 0
         if existing_receipt is None:
             counts["index_sessions"] = deleted_sessions
 

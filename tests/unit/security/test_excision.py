@@ -420,12 +420,12 @@ class TestApplySessionExcision:
         original_connect = excision_module._connect_rw
         failed = False
 
-        def fail_user_commit(path: Path) -> sqlite3.Connection:
+        def fail_user_commit(path: Path, *, archive_root: Path) -> sqlite3.Connection:
             nonlocal failed
             if path.name == "user.db" and not failed:
                 failed = True
                 raise RuntimeError("simulated crash after source commit")
-            return original_connect(path)
+            return original_connect(path, archive_root=archive_root)
 
         monkeypatch.setattr(excision_module, "_connect_rw", fail_user_commit)
         with pytest.raises(RuntimeError, match="simulated crash"):
@@ -457,12 +457,12 @@ class TestApplySessionExcision:
         original_connect = excision_module._connect_rw
         failed = False
 
-        def fail_user_open(path: Path) -> sqlite3.Connection:
+        def fail_user_open(path: Path, *, archive_root: Path) -> sqlite3.Connection:
             nonlocal failed
             if path.name == "user.db" and not failed:
                 failed = True
                 raise RuntimeError("simulated source-first crash")
-            return original_connect(path)
+            return original_connect(path, archive_root=archive_root)
 
         monkeypatch.setattr(excision_module, "_connect_rw", fail_user_open)
         with pytest.raises(RuntimeError, match="source-first crash"):
@@ -516,12 +516,12 @@ class TestApplySessionExcision:
         original_connect = excision_module._connect_rw
         failed = False
 
-        def fail_index_commit(path: Path) -> sqlite3.Connection:
+        def fail_index_commit(path: Path, *, archive_root: Path) -> sqlite3.Connection:
             nonlocal failed
             if path.name == "index.db" and not failed:
                 failed = True
                 raise RuntimeError("simulated crash after receipt commit")
-            return original_connect(path)
+            return original_connect(path, archive_root=archive_root)
 
         monkeypatch.setattr(excision_module, "_connect_rw", fail_index_commit)
         with pytest.raises(RuntimeError, match="simulated crash"):
@@ -622,8 +622,6 @@ class TestApplySessionExcision:
         from polylogue.schemas.synthetic import SyntheticCorpus
 
         archive_root = tmp_path / "archive"
-        initialize_active_archive_root(archive_root)
-
         specs = build_default_corpus_specs(providers=["codex"], count=1, messages_min=2, messages_max=3, seed=11)
         corpus_dir = tmp_path / "corpus"
         written = SyntheticCorpus.write_spec_artifacts(specs[0], corpus_dir, prefix="corpus")
