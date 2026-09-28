@@ -204,6 +204,10 @@ def test_release_smoke_matrices_can_install_the_wheel_they_smoke() -> None:
             f"requires-python floor {'.'.join(str(part) for part in main_floor)}"
         )
 
+    # The MCP wrapper pins the main wheel, so it cannot install below the
+    # main floor; advertising a lower one publishes an unresolvable wheel.
+    assert _floor("packaging/polylogue-mcp/pyproject.toml") == main_floor
+
     hooks_floor = _floor("packaging/polylogue-hooks/pyproject.toml")
     assert hooks_floor < main_floor, "this test only says something while the two floors differ"
     hooks_versions = _matrix("installed-smoke-hooks")
