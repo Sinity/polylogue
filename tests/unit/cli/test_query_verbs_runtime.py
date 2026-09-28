@@ -1935,12 +1935,14 @@ def test_delete_dry_run_marks_a_truncated_candidate_prefix_bounded() -> None:
     Anti-vacuity: treating the bounded probe as complete tells users the
     displayed candidates are the full ambiguous selection.
     """
+    from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
+
     _, child = _context_pair(query_terms=("alpha",))
     wrapped = getattr(query_verbs.delete_verb.callback, "__wrapped__", None)
     assert callable(wrapped)
     with patch(
         "polylogue.cli.verb_cardinality.probe_session_ids_for_verb",
-        return_value=[f"session-{index}" for index in range(query_verbs.AMBIGUITY_CANDIDATE_LIMIT + 1)],
+        return_value=[f"session-{index}" for index in range(AMBIGUITY_CANDIDATE_LIMIT + 1)],
     ):
         with pytest.raises(AmbiguousSelectionError) as exc_info:
             wrapped(child, True, False, False, "json")
