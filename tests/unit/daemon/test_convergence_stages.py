@@ -366,3 +366,30 @@ def test_readiness_refuses_a_failed_claude_workflow_receipt(tmp_path: Path) -> N
 
     assert failed.status is OutcomeStatus.ERROR, failed.summary
     assert "materializer exploded" in failed.summary
+
+
+def test_an_older_failed_pass_cannot_overwrite_a_newer_clean_receipt(tmp_path: Path) -> None:
+    """A failure write queued behind a newer clean pass is dropped as stale.
+
+    Anti-vacuity: without the start-time comparison in
+    ``_write_claude_workflow_stage_event`` the older failure replaces the
+    single ``claude_workflow:current`` row and readiness reports ERROR for a
+    graph the newer pass rebuilt cleanly. The last step pins the other
+    direction: a failure from a later pass still replaces the clean receipt.
+    """
+    from polylogue.core.outcomes import OutcomeStatus
+    from polylogue.readiness import _claude_workflow_materialization_check
+
+    initialize_active_archive_root(tmp_path)
+    clean = SimpleNamespace(
+        run_count=1, call_count=1, attempt_count=1, linked_session_count=1, unresolved_call_count=0, gaps=()
+    )
+
+    stages._record_claude_workflow_stage_event(tmp_path, clean, started_at_ms=2_000)
+    stages._record_claude_workflow_failure_event(tmp_path, RuntimeError("stale failure"), started_at_ms=1_000)
+    assert _claude_workflow_materialization_check(tmp_path).status is OutcomeStatus.OK
+
+    stages._record_claude_workflow_failure_event(tmp_path, RuntimeError("newer failure"), started_at_ms=3_000)
+    newer = _claude_workflow_materialization_check(tmp_path)
+    assert newer.status is OutcomeStatus.ERROR
+    assert "newer failure" in newer.summary

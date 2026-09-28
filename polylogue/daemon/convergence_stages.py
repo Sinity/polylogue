@@ -141,7 +141,9 @@ def _open_archive_insight_write_connection(db_path: Path, *, archive_root: Path)
 _CLAUDE_WORKFLOW_RECORDED_GAP_LIMIT = 20
 
 
-def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> None:
+def _record_claude_workflow_stage_event(
+    archive_root: Path, summary: object, *, started_at_ms: int | None = None
+) -> None:
     """Persist the materialization summary so a readiness surface can read it.
 
     ``materialize_claude_workflow_archive`` returns a fresh
@@ -161,10 +163,14 @@ def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> 
         "gap_count": len(gaps),
         "gaps": list(gaps[:_CLAUDE_WORKFLOW_RECORDED_GAP_LIMIT]),
     }
-    _write_claude_workflow_stage_event(archive_root, status="gaps" if gaps else "clean", payload=payload)
+    _write_claude_workflow_stage_event(
+        archive_root, status="gaps" if gaps else "clean", payload=payload, started_at_ms=started_at_ms
+    )
 
 
-def _record_claude_workflow_failure_event(archive_root: Path, exc: BaseException) -> None:
+def _record_claude_workflow_failure_event(
+    archive_root: Path, exc: BaseException, *, started_at_ms: int | None = None
+) -> None:
     """Invalidate the recorded receipt when rematerialization itself failed.
 
     The receipt carries the stable id ``claude_workflow:current``, so a clean
@@ -187,11 +193,35 @@ def _record_claude_workflow_failure_event(archive_root: Path, exc: BaseException
             # from treating a missing key as "zero gaps".
             "gap_count": None,
         },
+        started_at_ms=started_at_ms,
     )
 
 
-def _write_claude_workflow_stage_event(archive_root: Path, *, status: str, payload: dict[str, object]) -> None:
-    """Replace the claude_workflow stage receipt with this pass's outcome."""
+def _newer_claude_workflow_receipt(conn: sqlite3.Connection, event_id: str, attempt_started_at_ms: int) -> bool:
+    """Whether the stored receipt comes from a pass that started after this one."""
+    from polylogue.core.json import loads
+
+    row = conn.execute("SELECT payload_json FROM daemon_stage_events WHERE event_id = ?", (event_id,)).fetchone()
+    if row is None or not row[0]:
+        return False
+    stored = loads(row[0])
+    stored_started = stored.get("attempt_started_at_ms") if isinstance(stored, dict) else None
+    return isinstance(stored_started, int) and stored_started > attempt_started_at_ms
+
+
+def _write_claude_workflow_stage_event(
+    archive_root: Path, *, status: str, payload: dict[str, object], started_at_ms: int | None = None
+) -> None:
+    """Replace the claude_workflow stage receipt with this pass's outcome.
+
+    The receipt is one row, and a write can be queued behind the writer lease
+    while a later pass completes. Each receipt records when its pass started;
+    a write from a pass that started before the current receipt's pass is
+    stale and is dropped, so an older failure cannot overwrite a newer clean
+    rematerialization.
+    """
+    attempt_started_at_ms = int(time.time() * 1000) if started_at_ms is None else started_at_ms
+    payload = {**payload, "attempt_started_at_ms": attempt_started_at_ms}
     try:
         from polylogue.core.stage_admission import admit_stage_write
         from polylogue.storage.archive_readiness import CLAUDE_WORKFLOW_STAGE_NAME
@@ -204,6 +234,8 @@ def _write_claude_workflow_stage_event(archive_root: Path, *, status: str, paylo
 
         def record() -> None:
             with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
+                if _newer_claude_workflow_receipt(conn, f"{CLAUDE_WORKFLOW_STAGE_NAME}:current", attempt_started_at_ms):
+                    return
                 record_daemon_stage_event(
                     conn,
                     stage=CLAUDE_WORKFLOW_STAGE_NAME,
@@ -271,6 +303,7 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
         if not relevant(path):
             return True
         with span("daemon.stage.execute", stage="claude_workflow", path=path) as work:
+            started_at_ms = int(time.time() * 1000)
             try:
                 from polylogue.analysis.claude_workflow_materializer import materialize_claude_workflow_archive
 
@@ -280,7 +313,7 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
                 # is still the latest event otherwise, and readiness would keep
                 # reporting OK while convergence fails (see
                 # ``_record_claude_workflow_failure_event``).
-                _record_claude_workflow_failure_event(archive_root(), exc)
+                _record_claude_workflow_failure_event(archive_root(), exc, started_at_ms=started_at_ms)
                 work.degraded(
                     "materialization_failed",
                     error_type=type(exc).__name__,
@@ -294,7 +327,7 @@ def make_claude_workflow_stage(db_path: Path) -> ConvergenceStage:
                 "attempts": summary.attempt_count,
                 "gaps": gaps,
             }
-            _record_claude_workflow_stage_event(archive_root(), summary)
+            _record_claude_workflow_stage_event(archive_root(), summary, started_at_ms=started_at_ms)
             if gaps:
                 work.degraded("unresolved_workflow_gaps", **fields)
             else:
