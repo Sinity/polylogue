@@ -22,13 +22,15 @@ import ast
 import json
 import re
 import sys
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from devtools import ast_cache
+from devtools import derived_sweep_census as derived_sweep
+from devtools import durable_write_census as durable_write
 from devtools import repo_root as _get_root
-from devtools.ast_cache import parse_path, walk_module
-from devtools.derived_sweep_census import collect_violations as collect_derived_sweep_violations
-from devtools.durable_write_census import collect_violations as collect_durable_write_violations
+from devtools.ast_cache import parse_path, parse_source, walk_module
 from devtools.manifest_models import validate_layering_manifest
 from devtools.required_gate import (
     AUDIT_GROUP_SYNC_COMMAND,
@@ -36,9 +38,11 @@ from devtools.required_gate import (
     missing_analysis_dependency_gate_result,
 )
 from devtools.sqlite_degradation import (
+    DegradationAnchor,
     anchor_text,
     census_sqlite_degradation_anchors,
     load_sqlite_degradation_baseline,
+    module_degradation_anchors,
 )
 from polylogue.core.json import dumps
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
@@ -273,30 +277,172 @@ def _top_level_package_docstring_violations(repo_root: Path) -> list[dict[str, o
     return violations
 
 
-def _collect_imports(package_dir: Path, *, repo_root: Path) -> tuple[dict[str, set[str]], tuple[str, ...]]:
-    imports: dict[str, set[str]] = {}
-    unreadable: list[str] = []
-    try:
-        candidates = tuple(package_dir.rglob("*.py"))
-    except OSError as exc:
-        return imports, (f"{package_dir.relative_to(repo_root).as_posix()}: {exc}",)
-    for py_file in candidates:
+def _module_imports(tree: ast.Module) -> set[str]:
+    imports: set[str] = set()
+    for node in walk_module(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.add(alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            imports.add(node.module)
+    return imports
+
+
+@dataclass
+class PackagePass:
+    """Every whole-package census, taken from one parse of each module.
+
+    Each census used to walk the package on its own and the parse cache kept
+    every tree for the next one, so the gate held the parse of the whole
+    package at once. The pass visits each module once, in path order, hands
+    the tree to every census that reads that module, and releases it.
+    """
+
+    #: declared root -> (module -> imported names, unreadable details)
+    imports_by_root: dict[str, tuple[dict[str, set[str]], tuple[str, ...]]] = field(default_factory=dict)
+    #: DML-bearing modules outside the writer inventory, with their tiers
+    census_mutation_files: dict[str, frozenset[str]] | None = None
+    durable_write: durable_write.CensusObservation | None = None
+    derived_sweep: derived_sweep.CensusObservation | None = None
+    sqlite_degradation: Counter[DegradationAnchor] | None = None
+
+
+def _python_files(root: Path, *, ordered: bool = True) -> list[Path]:
+    files = list(root.rglob("*.py"))
+    return sorted(files) if ordered else files
+
+
+def _package_pass(
+    repo_root: Path,
+    *,
+    import_roots: list[str],
+    writer_modules: WriterModulePolicy | None,
+    manifest: dict[str, object],
+) -> PackagePass:
+    """Run every whole-package census over one parse of each module.
+
+    Each census sees its own modules in path order and handles a module that
+    does not parse exactly as it did when it read the package itself.
+    """
+    result = PackagePass()
+    wanted: dict[Path, None] = {}
+
+    import_files: dict[str, list[Path]] = {}
+    import_errors: dict[str, str] = {}
+    for target in import_roots:
         try:
-            tree = parse_path(py_file)
-        except (OSError, UnicodeError) as exc:
-            unreadable.append(f"{py_file.relative_to(repo_root).as_posix()}: {exc}")
+            import_files[target] = _python_files(repo_root / target, ordered=False)
+        except OSError as exc:
+            import_errors[target] = f"{(repo_root / target).relative_to(repo_root).as_posix()}: {exc}"
             continue
-        except SyntaxError:
+        wanted.update(dict.fromkeys(import_files[target]))
+    import_wanted = {path for files in import_files.values() for path in files}
+    #: module -> its imports, or its unreadable detail, or ``None`` when it
+    #: does not parse.
+    file_imports: dict[Path, set[str] | str | None] = {}
+
+    census_files: set[Path] = set()
+    if writer_modules is not None and writer_modules.census_roots and writer_modules.census_baseline is not None:
+        result.census_mutation_files = {}
+        inventoried = {spec.path for spec in writer_modules.modules}
+        in_root = tuple(root.rstrip("/") + "/" for root in writer_modules.mutation_roots)
+        for root in writer_modules.census_roots:
+            root_path = repo_root / root
+            if not root_path.is_dir():
+                continue
+            for py_file in _python_files(root_path):
+                rel = py_file.relative_to(repo_root).as_posix()
+                if rel not in inventoried and not rel.startswith(in_root):
+                    census_files.add(py_file)
+        wanted.update(dict.fromkeys(census_files))
+
+    durable: durable_write.DurableWriteCensus | None = None
+    durable_files: set[Path] = set()
+    durable_declaration = repo_root / durable_write.DECLARATION_PATH
+    if durable_declaration.is_file():
+        durable = durable_write.DurableWriteCensus()
+        paths = _python_files(repo_root / durable_write.load_declaration(durable_declaration).package)
+        for path in paths:
+            relative = path.relative_to(repo_root).as_posix()
+            if durable.reads_runtime_ddl(relative):
+                try:
+                    tree = parse_path(path)
+                except (SyntaxError, UnicodeDecodeError):
+                    continue
+                durable.observe_runtime_ddl(tree, relative=relative)
+        durable_files = set(paths)
+        wanted.update(dict.fromkeys(paths))
+
+    derived: derived_sweep.DerivedSweepCensus | None = None
+    derived_files: set[Path] = set()
+    derived_declaration = repo_root / derived_sweep.DECLARATION_PATH
+    if derived_declaration.is_file():
+        package = derived_sweep.load_declaration(derived_declaration).package
+        if package == "polylogue" and (repo_root / package).is_dir():
+            derived = derived_sweep.DerivedSweepCensus()
+            derived_files = set(_python_files(repo_root / package))
+            wanted.update(dict.fromkeys(derived_files))
+
+    sqlite_roots: list[Path] = []
+    policy = manifest.get("sqlite_degradation")
+    if isinstance(policy, dict) and isinstance(policy.get("baseline"), str) and isinstance(policy.get("roots"), list):
+        for root in policy["roots"]:
+            root_path = repo_root / str(root)
+            if root_path.is_dir():
+                sqlite_roots.append(root_path)
+    sqlite_files: list[list[Path]] = [_python_files(root) for root in sqlite_roots]
+    sqlite_wanted = {path for files in sqlite_files for path in files}
+    wanted.update(dict.fromkeys(sqlite_wanted))
+    module_anchors: dict[Path, list[DegradationAnchor]] = {}
+
+    for path in sorted(wanted):
+        relative = path.relative_to(repo_root).as_posix()
+        try:
+            source, tree = parse_source(path)
+        except (OSError, UnicodeError, SyntaxError) as exc:
+            if path in import_wanted:
+                file_imports[path] = None if isinstance(exc, SyntaxError) else f"{relative}: {exc}"
+            if not isinstance(exc, SyntaxError | UnicodeDecodeError) and (
+                path in census_files or path in durable_files or path in derived_files
+            ):
+                raise
             continue
-        rel = py_file.relative_to(repo_root).as_posix()
-        imports.setdefault(rel, set())
-        for node in walk_module(tree):
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    imports[rel].add(alias.name)
-            elif isinstance(node, ast.ImportFrom) and node.module is not None:
-                imports[rel].add(node.module)
-    return imports, tuple(unreadable)
+        if path in import_wanted:
+            file_imports[path] = _module_imports(tree)
+        if path in census_files and result.census_mutation_files is not None and _mutation_calls(tree):
+            result.census_mutation_files[relative] = _mutation_tiers(tree)
+        if durable is not None and path in durable_files:
+            durable.observe(tree, path=path, relative=relative)
+        if derived is not None and path in derived_files:
+            derived.observe(tree, relative=relative)
+        if path in sqlite_wanted:
+            module_anchors[path] = module_degradation_anchors(source, tree, file_rel=relative)
+        ast_cache.release(path)
+
+    for target in import_roots:
+        if target in import_errors:
+            result.imports_by_root[target] = ({}, (import_errors[target],))
+            continue
+        imports: dict[str, set[str]] = {}
+        unreadable: list[str] = []
+        for py_file in import_files[target]:
+            outcome = file_imports.get(py_file)
+            if isinstance(outcome, str):
+                unreadable.append(outcome)
+            elif outcome is not None:
+                imports[py_file.relative_to(repo_root).as_posix()] = set(outcome)
+        result.imports_by_root[target] = (imports, tuple(unreadable))
+    if durable is not None:
+        result.durable_write = durable.finish()
+    if derived is not None:
+        result.derived_sweep = derived.finish()
+    if isinstance(policy, dict) and isinstance(policy.get("baseline"), str) and isinstance(policy.get("roots"), list):
+        anchors: Counter[DegradationAnchor] = Counter()
+        for files in sqlite_files:
+            for path in files:
+                anchors.update(module_anchors.get(path, ()))
+        result.sqlite_degradation = anchors
+    return result
 
 
 def audit_checker_unavailable() -> str | None:
@@ -808,12 +954,13 @@ def _census_mutation_files(repo_root: Path, policy: WriterModulePolicy) -> dict[
 
 
 def _collect_writer_module_census_violations(
-    repo_root: Path, policy: WriterModulePolicy | None
+    repo_root: Path, policy: WriterModulePolicy | None, *, observed: dict[str, frozenset[str]] | None = None
 ) -> list[dict[str, object]]:
     if policy is None or not policy.census_roots or policy.census_baseline is None:
         return []
     baseline = _load_writer_module_census_baseline(repo_root / policy.census_baseline)
-    observed = _census_mutation_files(repo_root, policy)
+    if observed is None:
+        observed = _census_mutation_files(repo_root, policy)
     violations: list[dict[str, object]] = []
     for rel, declaration in sorted(baseline.items()):
         if declaration.validation_error is not None:
@@ -1054,7 +1201,7 @@ def _collect_writer_module_violations(repo_root: Path, policy: WriterModulePolic
 
 
 def _sqlite_degradation_findings(
-    repo_root: Path, manifest: dict[str, object]
+    repo_root: Path, manifest: dict[str, object], *, observed: Counter[DegradationAnchor] | None = None
 ) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     """Return (violations, ratchet-down opportunities) for improvised sqlite policy.
 
@@ -1076,7 +1223,8 @@ def _sqlite_degradation_findings(
         return [], []
     roots = tuple(str(root) for root in raw_roots)
     baseline = load_sqlite_degradation_baseline(repo_root / baseline_ref)
-    observed = census_sqlite_degradation_anchors(repo_root, roots)
+    if observed is None:
+        observed = census_sqlite_degradation_anchors(repo_root, roots)
 
     violations: list[dict[str, object]] = [
         {
@@ -1299,6 +1447,7 @@ def main(argv: list[str] | None = None) -> int:
     imports_by_root: dict[str, dict[str, set[str]]] = {}
     violations: list[dict[str, object]] = []
     baselined: list[dict[str, object]] = []
+    import_roots: list[str] = []
     for target in sorted(declared_roots):
         target_dir = repo_root / target
         if not target_dir.is_dir():
@@ -1306,8 +1455,16 @@ def main(argv: list[str] | None = None) -> int:
             input_details.append(target)
             violations.append({"file": target, "rule": "declared_root_missing"})
             continue
+        import_roots.append(target)
+    package_pass = _package_pass(
+        repo_root,
+        import_roots=import_roots,
+        writer_modules=writer_modules,
+        manifest=manifest,
+    )
+    for target in import_roots:
         inspected_count += 1
-        imports, unreadable = _collect_imports(target_dir, repo_root=repo_root)
+        imports, unreadable = package_pass.imports_by_root[target]
         imports_by_root[target] = imports
         for detail in unreadable:
             unreadable_count += 1
@@ -1379,14 +1536,19 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     violations.extend(_collect_writer_module_violations(repo_root, writer_modules))
-    violations.extend(_collect_writer_module_census_violations(repo_root, writer_modules))
+    # The writer-module census parses only its own mutation roots; nothing
+    # after it reads those trees.
+    ast_cache.clear()
+    violations.extend(
+        _collect_writer_module_census_violations(repo_root, writer_modules, observed=package_pass.census_mutation_files)
+    )
     # polylogue-6kur AC4: the file-grain writer-module census above proves WHICH
     # modules execute DML; it cannot see new DML added inside a module it already
     # lists. This statement-grain census is the other half -- it names every route
     # that can rewrite an already-durable row, including the shapes a grep for
     # ``UPDATE <table>`` structurally cannot see (``INSERT OR REPLACE``,
     # ``ON CONFLICT ... DO UPDATE``, and delete-then-reinsert).
-    violations.extend(collect_durable_write_violations(repo_root=repo_root))
+    violations.extend(durable_write.collect_violations(repo_root=repo_root, observation=package_pass.durable_write))
     # polylogue-6kur AC4, gaps G2 and G3: the writer-module censuses above are
     # file-grain and are about *who* executes DML. This one is about *where the
     # rows come from* -- a derived-tier rewrite whose subject set is archive
@@ -1394,9 +1556,11 @@ def main(argv: list[str] | None = None) -> int:
     # value for a stored field it found absent. Neither is visible to a search
     # over routine names, which is how the only two instances the campaign ever
     # found were found.
-    violations.extend(collect_derived_sweep_violations(repo_root=repo_root))
+    violations.extend(derived_sweep.collect_violations(repo_root=repo_root, observation=package_pass.derived_sweep))
     violations.extend(_top_level_package_docstring_violations(repo_root))
-    sqlite_violations, sqlite_shrunk = _sqlite_degradation_findings(repo_root, manifest)
+    sqlite_violations, sqlite_shrunk = _sqlite_degradation_findings(
+        repo_root, manifest, observed=package_pass.sqlite_degradation
+    )
     violations.extend(sqlite_violations)
 
     baseline_refs: set[str] = set()
@@ -1459,7 +1623,11 @@ def main(argv: list[str] | None = None) -> int:
         sqlite_baseline_ref = sqlite_policy.get("baseline")
         sqlite_roots = sqlite_policy.get("roots")
         if isinstance(sqlite_baseline_ref, str) and isinstance(sqlite_roots, list) and sqlite_shrunk:
-            sqlite_observed = census_sqlite_degradation_anchors(repo_root, tuple(str(root) for root in sqlite_roots))
+            sqlite_observed = package_pass.sqlite_degradation
+            if sqlite_observed is None:
+                sqlite_observed = census_sqlite_degradation_anchors(
+                    repo_root, tuple(str(root) for root in sqlite_roots)
+                )
             shrink_counts: dict[tuple[str, str], int] = {}
             for entry in sqlite_shrunk:
                 file_name = entry.get("file")
