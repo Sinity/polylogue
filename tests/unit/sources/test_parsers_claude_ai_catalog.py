@@ -1099,3 +1099,31 @@ def test_claude_ai_summary_only_records_order_by_content() -> None:
 
     assert summaries(forward.session_events) == summaries(reverse.session_events) == ["alpha", "beta"]
     assert session_content_hash(forward) == session_content_hash(reverse)
+
+
+def test_claude_ai_repeated_id_summaries_order_by_content() -> None:
+    """Identical repeated-id carriers keep one summary order under any array order.
+
+    Anti-vacuity: emit summaries in occurrence order, which follows array
+    order for otherwise identical records, and the reversed export swaps them.
+    """
+    from polylogue.pipeline.ids import session_content_hash
+
+    def carrier(summary: str) -> dict[str, object]:
+        return {
+            "uuid": "m1",
+            "sender": "assistant",
+            "text": "same",
+            "created_at": "2026-01-01T00:00:00Z",
+            "compaction_summary": [{"type": "text", "text": summary}],
+        }
+
+    chat_messages = [carrier("alpha"), carrier("beta")]
+    forward = parse_ai({"uuid": "claude-repeated", "chat_messages": chat_messages}, "fallback")
+    reverse = parse_ai({"uuid": "claude-repeated", "chat_messages": list(reversed(chat_messages))}, "fallback")
+
+    def summaries(events: list[Any]) -> list[object]:
+        return [event.payload["summary"] for event in events if event.event_type == "claude_ai_compaction_summary"]
+
+    assert summaries(forward.session_events) == summaries(reverse.session_events) == ["alpha", "beta"]
+    assert session_content_hash(forward) == session_content_hash(reverse)

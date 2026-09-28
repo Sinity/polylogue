@@ -1004,6 +1004,11 @@ def _pair_idless_tool_blocks(blocks: list[ParsedContentBlock], *, message_key: s
     ]
 
 
+def _occurrence_base(evidence_key: str) -> str:
+    """The identity an occurrence-suffixed evidence key repeats."""
+    return evidence_key.split(":occurrence:", 1)[0]
+
+
 def _compaction_summary_event(evidence: _ClaudeMessageEvidence) -> ParsedSessionEvent | None:
     """The ``claude_ai_compaction_summary`` event of one message, when it carries one.
 
@@ -1348,10 +1353,13 @@ def normalize_chat_messages(
             )
         )
 
+    positioned_summaries: list[tuple[str, int, ParsedSessionEvent]] = []
     for evidence in sorted(emitted, key=lambda row: order_key_by_id[row.evidence_key]):
         session_events.extend(_web_tool_evidence_events(evidence))
         if (compaction_summary := _compaction_summary_event(evidence)) is not None:
-            session_events.append(compaction_summary)
+            positioned_summaries.append(
+                (_occurrence_base(evidence.evidence_key), position_by_id[evidence.evidence_key], compaction_summary)
+            )
         if evidence.thinking_configuration:
             payload: dict[str, object] = {"thinking": evidence.thinking_configuration}
             if evidence.model_name:
@@ -1393,22 +1401,30 @@ def normalize_chat_messages(
                     payload=update_payload,
                 )
             )
-    # A summary on a record with no other material, and so no message of its
-    # own, is still kept, after the messages. These carriers have no
-    # canonical position (an ID-less one's occurrence suffix follows array
-    # order), so they are ordered by their own content.
+    # Compaction summaries follow the messages. The occurrences of one
+    # repeated identity (a native id, or an ID-less record's synthetic key)
+    # get their suffixes, and so their positions and variants, in array
+    # order, so they are grouped at the identity's first position and ordered
+    # by their own content. A summary on a record with no other material, and
+    # so no message of its own, comes after them.
+    positioned_summaries.extend(
+        (_occurrence_base(evidence.evidence_key), 2**31, event)
+        for evidence in evidence_by_id.values()
+        if evidence.evidence_key not in emitted_ids
+        if (event := _compaction_summary_event(evidence)) is not None
+    )
+    first_position: dict[str, int] = {}
+    for base, position, _event in positioned_summaries:
+        first_position[base] = min(position, first_position.get(base, position))
     session_events.extend(
-        sorted(
-            (
-                event
-                for evidence in evidence_by_id.values()
-                if evidence.evidence_key not in emitted_ids
-                if (event := _compaction_summary_event(evidence)) is not None
-            ),
-            key=lambda event: (
-                event.source_message_provider_id or "",
-                json.dumps(event.payload, sort_keys=True),
-                event.timestamp or "",
+        event
+        for _base, _position, event in sorted(
+            positioned_summaries,
+            key=lambda item: (
+                first_position[item[0]],
+                item[0],
+                json.dumps(item[2].payload, sort_keys=True),
+                item[2].timestamp or "",
             ),
         )
     )
