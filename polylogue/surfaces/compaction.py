@@ -8,6 +8,7 @@ pack whose omissions are part of the public result.
 from __future__ import annotations
 
 import json
+import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from hashlib import sha256
@@ -114,6 +115,12 @@ def estimate_tokens(text: str) -> int:
     """Stable proxy used by both context and compact renderers."""
 
     return max(1, int(len(text.split()) * 1.3)) if text.strip() else 0
+
+
+def _estimate_serialized_tokens(payload: str) -> int:
+    """Count JSON words so compact separators do not hide payload size."""
+
+    return len(re.findall(r"\w+", payload))
 
 
 def _get(value: object, name: str, default: object = None) -> object:
@@ -314,7 +321,7 @@ def compact_sessions(
                 "dropped_tokens_by_session": manifest_dropped,
             },
         }
-        serialized_tokens = estimate_tokens(json.dumps(probe, sort_keys=True, separators=(",", ":")))
+        serialized_tokens = _estimate_serialized_tokens(json.dumps(probe, sort_keys=True, separators=(",", ":")))
         if serialized_tokens <= budget:
             break
         if omissions:
