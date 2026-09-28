@@ -584,9 +584,7 @@ def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provid
         if not is_jsonl_source_path(str(path)):
             continue
         try:
-            provider, parse_as_session, _detection_crash = _jsonl_provider_and_session_artifact(
-                path, fallback_provider
-            )
+            provider, parse_as_session, _detection_crash = _jsonl_provider_and_session_artifact(path, fallback_provider)
         except ForeignOriginContentError:
             continue  # the acquisition pass records the typed refusal
         if not parse_as_session:

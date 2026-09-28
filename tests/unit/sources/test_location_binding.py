@@ -123,7 +123,7 @@ def test_live_sniff_refuses_a_codex_rollout_in_claude_codes_directory(tmp_path: 
 
     with pytest.raises(ForeignOriginContentError):
         _jsonl_provider_and_session_artifact(rollout, Provider.CLAUDE_CODE)
-    assert _jsonl_provider_and_session_artifact(transcript, Provider.CLAUDE_CODE) == (Provider.CLAUDE_CODE, True)
+    assert _jsonl_provider_and_session_artifact(transcript, Provider.CLAUDE_CODE) == (Provider.CLAUDE_CODE, True, None)
 
 
 def test_gemini_cli_prompt_log_with_claude_code_shape_is_refused(tmp_path: Path) -> None:
@@ -215,7 +215,7 @@ def test_raw_only_paths_are_classified_by_location_before_any_probe(tmp_path: Pa
     """
     history = tmp_path / "history.jsonl"
     history.write_bytes(_jsonl(_CODEX_ROLLOUT))
-    assert _jsonl_provider_and_session_artifact(history, Provider.CLAUDE_CODE) == (Provider.CLAUDE_CODE, False)
+    assert _jsonl_provider_and_session_artifact(history, Provider.CLAUDE_CODE) == (Provider.CLAUDE_CODE, False, None)
 
 
 def test_archive_members_at_a_bound_location_are_validated() -> None:
