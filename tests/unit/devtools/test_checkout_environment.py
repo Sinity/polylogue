@@ -196,3 +196,17 @@ def test_virtual_env_names_the_running_interpreter(tmp_path: Path, monkeypatch: 
     normalize_checkout_environment(worktree)
 
     assert os.environ["VIRTUAL_ENV"] == str(worktree / ".venv")
+
+
+def test_virtual_env_is_set_when_the_venv_runs_directly(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: leave an unset VIRTUAL_ENV unset and the receipt falls back
+    to the resolved store interpreter instead of naming the checkout venv."""
+    worktree = _checkout(tmp_path / "worktree").resolve()
+    monkeypatch.setattr(sys, "prefix", str(worktree / ".venv"))
+    monkeypatch.setattr(sys, "base_prefix", "/nix/store/python")
+    monkeypatch.setattr(os, "environ", {"PATH": "/usr/bin"})
+    monkeypatch.setattr(sys, "path", [str(worktree)])
+
+    normalize_checkout_environment(worktree)
+
+    assert os.environ["VIRTUAL_ENV"] == str(worktree / ".venv")

@@ -180,7 +180,11 @@ def normalize_checkout_environment(root: Path, environ: dict[str, str] | None = 
     if running_venv is not None and _polylogue_checkout_ancestor(running_venv) == resolved_root:
         own_venv = running_venv
     virtual_env = env.get("VIRTUAL_ENV")
-    if virtual_env and (
+    if not virtual_env and running_venv is not None and own_venv == running_venv:
+        # The wrapper executes the venv interpreter directly, so nothing set
+        # this; receipts read it to name the environment that ran.
+        env["VIRTUAL_ENV"] = str(running_venv)
+    elif virtual_env and (
         _polylogue_checkout_ancestor(Path(virtual_env)) != resolved_root
         or (running_venv is not None and Path(virtual_env).resolve() != own_venv)
     ):

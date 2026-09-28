@@ -226,7 +226,7 @@ def _fake_nix(bin_dir: Path, log: Path, *, provision: bool = True) -> None:
     assert python is not None
     body = f'#!/usr/bin/env bash\necho "$PWD $*" >> {log}\n'
     if provision:
-        body += f"mkdir -p .venv/bin\nln -sf {python} .venv/bin/python\n"
+        body += f"mkdir -p .venv/bin\nln -sf {python} .venv/bin/python\ntouch .venv/.uv-sync-fingerprint\n"
     script = bin_dir / "nix"
     script.write_text(body)
     script.chmod(0o755)
@@ -269,3 +269,26 @@ def test_an_unprovisionable_flake_checkout_is_refused_not_run_on_path_python(tmp
 
     assert result.returncode == 1
     assert "could not be provisioned" in result.stderr
+
+
+def test_an_incompletely_synced_venv_is_provisioned_again(tmp_path: Path) -> None:
+    """A venv whose sync never completed (no fingerprint) is not treated as provisioned.
+
+    Anti-vacuity: test only for the interpreter and the fake ``nix`` is never
+    called for this half-built venv.
+    """
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _make_fake_checkout(checkout)
+    (checkout / "flake.nix").write_text("{}\n")
+    (checkout / ".venv" / "bin").mkdir(parents=True)
+    python = shutil.which("python3") or shutil.which("python")
+    assert python is not None
+    (checkout / ".venv" / "bin" / "python").symlink_to(python)
+    log = tmp_path / "nix.log"
+    _fake_nix(tmp_path / "bin", log)
+
+    result = _run_wrapper(cwd=checkout, env={"PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"})
+
+    assert result.returncode == 0, result.stderr
+    assert log.exists() and len(log.read_text().splitlines()) == 1

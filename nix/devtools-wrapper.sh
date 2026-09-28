@@ -54,10 +54,15 @@ fi
 # on first use: the devshell's own shellHook creates .venv and runs the frozen,
 # fingerprinted `uv sync`, so the lockfile and environment guards are exactly
 # the devshell's. Set POLYLOGUE_DEVTOOLS_NO_PROVISION=1 to skip it.
-if [ ! -x "$resolved/.venv/bin/python" ] && [ -f "$resolved/flake.nix" ] \
+# Complete means the shellHook's sync fingerprint exists: it is written only
+# after a proven-complete `uv sync`, so a venv whose sync failed is retried.
+provisioned() { [ -x "$resolved/.venv/bin/python" ] && [ -f "$resolved/.venv/.uv-sync-fingerprint" ]; }
+if ! provisioned && [ -f "$resolved/flake.nix" ] \
     && [ -z "${POLYLOGUE_DEVTOOLS_NO_PROVISION:-}" ] && command -v nix >/dev/null 2>&1; then
-  echo "devtools: provisioning $resolved/.venv through its devshell (first use)" >&2
-  (cd "$resolved" && nix develop --accept-flake-config "$resolved" --command true) >&2 \
+  echo "devtools: provisioning $resolved/.venv through its devshell" >&2
+  # PYTHONPATH is unset here too: the shellHook starts Python while
+  # provisioning, and an inherited entry could run a foreign sitecustomize.
+  (cd "$resolved" && env -u PYTHONPATH nix develop --accept-flake-config "$resolved" --command true) >&2 \
     || echo "devtools: devshell provisioning failed" >&2
 fi
 
@@ -65,7 +70,7 @@ fi
 # can name another checkout, and a sitecustomize there would run during
 # interpreter start-up, before devtools can rebind anything. The venv needs no
 # PYTHONPATH; the agentctl job environment already unsets it.
-if [ -x "$resolved/.venv/bin/python" ]; then
+if [ -x "$resolved/.venv/bin/python" ] && { provisioned || [ ! -f "$resolved/flake.nix" ]; }; then
   exec env -u PYTHONPATH "$resolved/.venv/bin/python" "$resolved/devtools/__main__.py" "$@"
 fi
 # A flake checkout that still has no venv would otherwise run whatever
@@ -73,7 +78,7 @@ fi
 # through a symlink that resolves into the Nix store -- so it is refused. The
 # bare-`python` fall-through remains for a checkout without a devshell.
 if [ -f "$resolved/flake.nix" ]; then
-  echo "devtools: $resolved has no .venv and could not be provisioned; enter its devshell once, then rerun" >&2
+  echo "devtools: $resolved has no completely provisioned .venv and could not be provisioned; enter its devshell once, then rerun" >&2
   exit 1
 fi
 exec env -u PYTHONPATH python "$resolved/devtools/__main__.py" "$@"
