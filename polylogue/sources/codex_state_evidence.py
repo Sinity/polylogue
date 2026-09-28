@@ -429,16 +429,26 @@ def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
             if state_kind not in codex_state.IN_SCOPE_KINDS:
                 continue
             observed_at_ms = archive.raw_revision_observed_at_ms(raw_id)
-            record_codex_state_snapshot_terminal(
-                archive,
-                raw_id,
-                state_path=state_path,
-                state_kind=state_kind,
-                source_path=source_path,
-                acquired_at_ms=observed_at_ms,
-                censused_at_ms=observed_at_ms,
-                blob_hash=blob_hash,
-            )
+            try:
+                record_codex_state_snapshot_terminal(
+                    archive,
+                    raw_id,
+                    state_path=state_path,
+                    state_kind=state_kind,
+                    source_path=source_path,
+                    acquired_at_ms=observed_at_ms,
+                    censused_at_ms=observed_at_ms,
+                    blob_hash=blob_hash,
+                )
+            except (sqlite3.Error, OSError, ValueError) as exc:
+                emit(
+                    "sources.codex_state.snapshot_finalize_refused",
+                    outcome="degraded",
+                    reason="retained_snapshot_finalize_failed",
+                    raw_id=raw_id,
+                    error_type=type(exc).__name__,
+                )
+                continue
             resolved += 1
         index_conn = archive.index_connection
         if index_conn is not None:

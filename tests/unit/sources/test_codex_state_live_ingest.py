@@ -76,12 +76,12 @@ def _write_codex_rollout(path: Path) -> None:
     path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
 
 
-def _write_state_5_sqlite(path: Path, *, wal_mode: bool = False) -> None:
+def _write_state_5_sqlite(path: Path, *, wal_mode: bool = False, include_agent_role: bool = True) -> None:
     with sqlite3.connect(path) as conn:
         if wal_mode:
             conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(
-            """
+            f"""
             CREATE TABLE threads (
                 id TEXT PRIMARY KEY,
                 title TEXT,
@@ -91,7 +91,7 @@ def _write_state_5_sqlite(path: Path, *, wal_mode: bool = False) -> None:
                 source TEXT,
                 model TEXT,
                 agent_nickname TEXT,
-                agent_role TEXT,
+                {"agent_role TEXT," if include_agent_role else ""}
                 archived INTEGER
             );
             CREATE TABLE thread_spawn_edges (
@@ -101,10 +101,13 @@ def _write_state_5_sqlite(path: Path, *, wal_mode: bool = False) -> None:
             );
             """
         )
+        role_columns = "agent_nickname, agent_role, " if include_agent_role else "agent_nickname, "
+        role_values = "?, ?, " if include_agent_role else "?, "
+        role_args = (None, None) if include_agent_role else (None,)
         conn.execute(
             "INSERT INTO threads (id, title, cwd, created_at_ms, updated_at_ms, source, model, "
-            "agent_nickname, agent_role, archived) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (_THREAD_ID, "Synthetic curated title", "/repo", 1000, 2000, "cli", "gpt-synthetic", None, None, 0),
+            f"{role_columns}archived) VALUES (?, ?, ?, ?, ?, ?, ?, {role_values}?)",
+            (_THREAD_ID, "Synthetic curated title", "/repo", 1000, 2000, "cli", "gpt-synthetic", *role_args, 0),
         )
         conn.execute(
             "INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) VALUES (?, ?, ?)",
@@ -744,6 +747,67 @@ def test_historical_codex_page_image_is_not_finalized_as_current_state(
     assert resolve_retained_codex_state_receipts(archive_root) == 0
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
+
+
+@pytest.mark.asyncio
+async def test_schema_drift_candidate_does_not_block_other_retained_state_receipts(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A malformed thread-state schema is isolated while valid candidates finalize.
+
+    Anti-vacuity: removing the resolver's per-candidate finalization guard
+    raises OperationalError for the missing ``agent_role`` column before the
+    valid goals snapshot receives its terminal receipt.
+    """
+    from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
+
+    archive, codex_root, codex_state_root = _make_processor(
+        workspace_env, "codex-home-schema-drift", "codex-state-schema-drift.db"
+    )
+    processor = LiveBatchProcessor(
+        archive,
+        (
+            WatchSource(name="codex", root=codex_root),
+            WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
+        ),
+        cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    bad_path = codex_state_root / "state_5.sqlite"
+    good_path = codex_state_root / "goals_1.sqlite"
+    _write_state_5_sqlite(bad_path, include_agent_role=False)
+    _write_goals_1_sqlite(good_path)
+    try:
+        await processor.ingest_files([bad_path, good_path], emit_event=False)
+    finally:
+        await archive.close()
+
+    with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+        rows = conn.execute(
+            "SELECT raw_id, source_path FROM raw_sessions WHERE source_path IN (?, ?) ORDER BY source_path",
+            (str(bad_path), str(good_path)),
+        ).fetchall()
+        assert len(rows) == 2
+        raw_ids = [str(row[0]) for row in rows]
+        placeholders = ",".join("?" for _ in raw_ids)
+        conn.execute(f"DELETE FROM raw_membership_census WHERE raw_id IN ({placeholders})", raw_ids)
+        conn.execute(f"DELETE FROM raw_authority_parser_census WHERE raw_id IN ({placeholders})", raw_ids)
+        conn.execute(
+            f"UPDATE raw_sessions SET parsed_at_ms = NULL, parse_error = NULL WHERE raw_id IN ({placeholders})", raw_ids
+        )
+        conn.commit()
+
+    assert resolve_retained_codex_state_receipts(workspace_env["archive_root"]) == 1
+    with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+        states = dict(
+            conn.execute(
+                "SELECT r.source_path, c.status FROM raw_sessions AS r "
+                "LEFT JOIN raw_membership_census AS c USING (raw_id) WHERE r.source_path IN (?, ?)",
+                (str(bad_path), str(good_path)),
+            ).fetchall()
+        )
+    assert states[str(bad_path)] is None
+    assert states[str(good_path)] == "non_session"
 
 
 @pytest.mark.asyncio
