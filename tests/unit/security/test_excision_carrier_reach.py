@@ -38,7 +38,7 @@ from polylogue.storage.accepted_marker_inputs import (
     prepare_accepted_marker_input,
 )
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.schema_inventory import canonical_schema_objects
 from polylogue.storage.sqlite.archive_tiers.source import RETIRED_SOURCE_SCHEMA_OBJECTS
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
@@ -53,6 +53,7 @@ _OTHER_PAYLOAD = b'{"conversation": "someone else in the same export"}'
 
 def _seed_archive(tmp_path: Path) -> tuple[str, str]:
     """Two sessions acquired from one container export, plus an index row each."""
+    initialize_active_archive_root(tmp_path)
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
@@ -185,6 +186,7 @@ def test_every_session_keyed_relation_in_the_live_schema_is_declared(tmp_path: P
     # The detection actually found the known carriers, so "ok" is not vacuous.
     assert {
         "raw_sessions",
+        "raw_existence_changes",
         "raw_hook_events",
         "source_items",
         "pending_accepted_marker_inputs",
@@ -492,13 +494,47 @@ def test_container_membership_is_excised_per_member(tmp_path: Path) -> None:
     assert second.counts["source_container_items"] == 1
     assert second.retained_source_containers == ()
     assert second.complete
-
     conn = _source_conn(tmp_path)
     try:
         assert int(conn.execute("SELECT COUNT(*) FROM source_items").fetchone()[0]) == 0
         assert int(conn.execute("SELECT COUNT(*) FROM source_item_raw_members").fetchone()[0]) == 0
     finally:
         conn.close()
+
+
+def test_lineage_cascade_releases_container_shared_only_by_cascade_targets(tmp_path: Path) -> None:
+    """Container liveness is resolved against the complete lineage cascade.
+
+    Anti-vacuity: resolving each session independently leaves the shared item
+    retained because the other cascade member still appears live at preflight.
+    """
+    from polylogue.security.excision import apply_session_excision, plan_session_excision
+
+    parent_id, child_id = _seed_archive(tmp_path)
+    _seed_container(tmp_path)
+    index = sqlite3.connect(tmp_path / "index.db")
+    try:
+        index.execute(
+            "INSERT INTO session_links (src_session_id, dst_origin, dst_native_id, link_type, "
+            "resolved_dst_session_id, branch_point_message_id, inheritance, status, method, confidence, "
+            "evidence_json, observed_at_ms, resolved_at_ms) "
+            "VALUES (?, 'chatgpt-export', ?, 'branch', ?, NULL, 'prefix-sharing', NULL, NULL, 1.0, '[]', 1, NULL)",
+            (child_id, _NATIVE_ID, parent_id),
+        )
+        index.commit()
+    finally:
+        index.close()
+
+    plan = plan_session_excision(tmp_path, parent_id, cascade_lineage=True)
+    assert plan.source_container_items == 1
+    assert plan.retained_source_containers == ()
+    receipt = apply_session_excision(tmp_path, parent_id, reason="lineage", actor="user:local", cascade_lineage=True)
+    assert receipt.counts["source_container_items"] == 1
+    source = _source_conn(tmp_path)
+    try:
+        assert source.execute("SELECT COUNT(*) FROM source_items").fetchone() == (0,)
+    finally:
+        source.close()
 
 
 def test_excision_drops_publication_reservations_for_removed_blobs(tmp_path: Path) -> None:

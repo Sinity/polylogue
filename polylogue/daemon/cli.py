@@ -1629,12 +1629,15 @@ def _acquire_pidfile(pidfile: Path) -> int:
     Returns the open fd. The lock is held until process exit or explicit close.
     """
     pidfile.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(pidfile, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+    fd = os.open(pidfile, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as err:
         os.close(fd)
-        raise RuntimeError(f"Could not acquire lock on {pidfile} — another daemon may be running") from err
+        raise RuntimeError(
+            f"Could not acquire lock on {pidfile}; another daemon or offline archive writer may own this archive"
+        ) from err
+    os.ftruncate(fd, 0)
     os.write(fd, str(os.getpid()).encode())
     os.fsync(fd)
     return fd

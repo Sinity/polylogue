@@ -100,8 +100,8 @@ SESSION_CARRIERS: Final[dict[str, SessionCarrier]] = _carriers(
     ),
     SessionCarrier(
         "raw_existence_changes",
-        CarrierReach.RETIRED,
-        "content-free raw-key deletion journal; retained for frontier readers and pruned by its watermark",
+        CarrierReach.EXCISED,
+        "frontier history is scrubbed for every raw id deleted by session excision",
     ),
     SessionCarrier(
         "pending_accepted_marker_inputs",

@@ -1486,7 +1486,7 @@ class ArchiveStore:
             )
         if initialize:
             initialize_archive_database(self.user_db_path, ArchiveTier.USER)
-        return open_connection(self.user_db_path)
+        return open_connection(self.user_db_path, archive_root=self._write_lease_archive_root)
 
     def commit(self) -> None:
         """Commit index.db and any source transaction left by other callers.

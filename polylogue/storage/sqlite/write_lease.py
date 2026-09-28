@@ -284,6 +284,10 @@ def require_write_lease(purpose: str, *, archive_root: str | Path | None = None)
                 raise UnleasedWriteError(f"{purpose} uses a write lease inherited by a child task")
         elif not lease.current_thread_is_authorized():
             raise UnleasedWriteError(f"{purpose} uses a write lease from an unauthorized thread")
+        if lease.archive_root is not None and archive_root is None:
+            raise UnleasedWriteError(
+                f"{purpose} omitted archive identity for writer {lease.actor} bound to {lease.archive_root}"
+            )
         if archive_root is not None and lease.archive_root is not None:
             expected = Path(archive_root).resolve()
             actual = lease.archive_root.resolve()
@@ -335,7 +339,11 @@ def grant_write_lease_thread() -> WriteLeaseThreadGrant:
     authority the caller does not have. The owner mints this *before* starting
     the worker thread; the worker calls :func:`bind_write_lease_thread` with it.
     """
-    lease = require_write_lease("granting a write lease thread binding")
+    active_lease = _ACTIVE.get()
+    lease = require_write_lease(
+        "granting a write lease thread binding",
+        archive_root=active_lease.archive_root if active_lease is not None else None,
+    )
     if lease is None:
         raise UnleasedWriteError(
             "cannot grant a write lease thread binding without holding the lease; "
@@ -370,7 +378,11 @@ def delegate_write_lease() -> WriteLeaseDelegation:
     check runs through :func:`require_write_lease`, so delegation can never
     manufacture authority that the caller does not already have.
     """
-    lease = require_write_lease("delegating the daemon write lease")
+    active_lease = _ACTIVE.get()
+    lease = require_write_lease(
+        "delegating the daemon write lease",
+        archive_root=active_lease.archive_root if active_lease is not None else None,
+    )
     if lease is None:
         raise UnleasedWriteError(
             "cannot delegate the write lease without holding it; mint the delegation "
