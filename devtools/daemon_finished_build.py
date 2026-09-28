@@ -484,6 +484,15 @@ def _verify_args(args: argparse.Namespace) -> tuple[Path, Path, str]:
             "input must sit under a canonical provider directory of the source root: "
             + ", ".join(str(directory) for directory in _CANONICAL_INPUT_DIRECTORIES)
         )
+    from polylogue.sources.dispatch import is_jsonl_source_path
+
+    if not is_jsonl_source_path(source.name):
+        # The canonical watcher only admits .jsonl (or a declared
+        # path-scoped artifact) from these directories; an unrecognized
+        # suffix sits in a directory the containment check accepts but
+        # produces no cursor/raw evidence, so qualification would otherwise
+        # run its full timeout before failing.
+        raise ValueError(f"input must be a .jsonl file the canonical watcher admits, not {source.name!r}")
     if not source.is_file() or source.stat().st_size != args.expected_bytes:
         raise ValueError("input size does not match --expected-bytes")
     digest = _sha256(source)

@@ -82,7 +82,15 @@ def render_starter_toml(detected: tuple[DetectedSource, ...]) -> str:
     canonical location. The detected directories are listed as comments so
     the operator can see what will be acquired, and every emitted setting is
     one the loader reads (an unread key is refused at load).
+
+    Hermes is the one source whose root is an explicit config key rather
+    than a fixed canonical path (``sources.hermes.root`` /
+    ``POLYLOGUE_HERMES_ROOT``): when that override is what ``init`` detected
+    it under, it is persisted, not just listed as a comment, so it survives
+    past the one-shot environment that produced this file.
     """
+    import os
+
     from polylogue.paths import archive_root
 
     lines: list[str] = [
@@ -99,6 +107,11 @@ def render_starter_toml(detected: tuple[DetectedSource, ...]) -> str:
         lines.append(f"#   {d.family}: {d.path} ({state}) — {d.description}")
     lines.append("# Account exports are imported with `polylogue import <path>`.")
     lines.append("")
+    hermes_override = os.environ.get("POLYLOGUE_HERMES_ROOT")
+    if hermes_override:
+        lines.append("[sources.hermes]")
+        lines.append(f'root = "{hermes_override}"')
+        lines.append("")
     lines.append("[daemon.api]")
     lines.append('host = "127.0.0.1"')
     lines.append("port = 8766")

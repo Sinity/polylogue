@@ -73,6 +73,38 @@ def test_render_starter_toml_lists_present_and_comments_absent(isolated_home: Pa
     load_polylogue_config(config_path=config)
 
 
+def test_render_starter_toml_persists_a_hermes_root_override(
+    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A detected ``POLYLOGUE_HERMES_ROOT`` override survives past init.
+
+    ``detect_chat_sources`` reports the override's path as present, but the
+    renderer only listed it in a comment: once the one-shot environment
+    variable that produced the starter file is gone, ``polylogued run`` fell
+    back to ``~/.hermes`` and never watched the source ``init`` claimed to
+    detect and record.
+
+    Anti-vacuity: rendering only the comment line (the old behavior) makes
+    the ``sources.hermes.root`` assertions below fail.
+    """
+    from polylogue.config import load_polylogue_config
+
+    hermes_root = isolated_home / "srv-hermes"
+    hermes_root.mkdir()
+    monkeypatch.setenv("POLYLOGUE_HERMES_ROOT", str(hermes_root))
+
+    detected = detect_chat_sources()
+    body = render_starter_toml(detected)
+    assert "[sources.hermes]" in body
+    assert f'root = "{hermes_root}"' in body
+
+    config = isolated_home / "polylogue.toml"
+    config.write_text(body, encoding="utf-8")
+    monkeypatch.delenv("POLYLOGUE_HERMES_ROOT", raising=False)
+    settings = load_polylogue_config(config_path=config)
+    assert settings.hermes_root == str(hermes_root)
+
+
 def test_init_command_writes_starter_config(isolated_home: Path) -> None:
     (isolated_home / ".claude" / "projects").mkdir(parents=True)
     runner = CliRunner()

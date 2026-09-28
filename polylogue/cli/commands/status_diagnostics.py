@@ -264,7 +264,14 @@ def _probe_no_sources() -> StatusDiagnostic | None:
     detected = [source for source in detect_chat_sources() if source.family != "hooks"]
     if any(source.present for source in detected):
         return None
-    if _has_staged_import(resolve_runtime_config().source_paths.inbox):
+    runtime_config = resolve_runtime_config()
+    if _has_staged_import(runtime_config.source_paths.inbox):
+        return None
+    # detect_chat_sources() only walks local provider directories; Drive is
+    # configured through credential/token files, not a watched directory,
+    # so a Drive-only setup is a source resolve_runtime_config() already
+    # recognizes (it appends "aistudio" to .sources when those files exist).
+    if any(source.name == "aistudio" for source in runtime_config.sources):
         return None
     return StatusDiagnostic(
         kind="no_sources",

@@ -208,6 +208,26 @@ class TestDiagnoseNoSources:
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "no_daemon"
 
+    def test_configured_drive_credentials_are_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Drive is configured through credential files, not a watched directory.
+
+        ``detect_chat_sources()`` only walks local provider directories, so a
+        Drive-only machine (valid credentials, no local tool installed) has
+        nothing present there; ``resolve_runtime_config().sources`` still adds
+        an "aistudio" entry when the credential file exists.
+
+        Anti-vacuity: check only ``detect_chat_sources()`` and a Drive-only
+        machine reports ``no_sources`` and tells the operator to import a
+        file, instead of the correct ``no_daemon`` (the source is configured,
+        the daemon is simply not running to catch it up).
+        """
+        data_home, config_home = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        config_home.mkdir(parents=True, exist_ok=True)
+        (config_home / "polylogue-credentials.json").write_text("{}", encoding="utf-8")
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_daemon"
+
     def test_a_staged_inbox_import_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Anti-vacuity: ignore the archive inbox and a staged export with no
         provider directory reports ``no_sources`` and asks for another import."""
