@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import json
+import unicodedata
 from hashlib import sha256
 from pathlib import Path
 
@@ -380,7 +381,7 @@ def test_mixed_nesting_matches_the_decoded_identity() -> None:
 
 def test_a_key_too_long_for_a_scratch_row_keeps_its_place(monkeypatch: pytest.MonkeyPatch) -> None:
     """A spilled object's key that fits one value but not a row beside the
-    key hash and digest stays in memory and is merged in order.
+    key hash and digest is spooled to its own scratch file and merged in order.
 
     Anti-vacuity: store every spilled key in the scratch table and the row
     for the long key exceeds the (pinned) SQLite length limit, raising
@@ -527,3 +528,49 @@ def test_the_refusal_raised_is_the_one_that_survived(monkeypatch: pytest.MonkeyP
     with pytest.raises(content_identity.ContentIdentityRefusal) as refusal:
         payload_content_identity(document)
     assert refusal.value.token == "object key"
+
+
+def test_keys_too_long_for_a_row_are_spooled_not_held(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: keep such keys in the object's memory map and none are
+    spooled, so a member with many of them holds them all at once."""
+    from polylogue.core import content_identity
+
+    spooled: list[int] = []
+    real_init = content_identity._SpooledKey.__init__
+
+    def counting(self: object, normalized: bytes) -> None:
+        spooled.append(len(normalized))
+        real_init(self, normalized)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(content_identity._SpooledKey, "__init__", counting)
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 300)
+    monkeypatch.setattr(content_identity, "_ENTRY_MEMORY_BYTES", 4 * (content_identity._ENTRY_OVERHEAD_BYTES + 4))
+    value: dict[str, object] = {f"k{index}": index for index in range(12)}
+    for letter in "abcdef":
+        value[letter + "x" * 279] = letter
+    value["b" + "x" * 279] = "replaced"
+    assert payload_content_identity(json.dumps(value).encode()) == structural_content_identity(value)
+    assert len(spooled) >= 6
+
+
+def test_values_are_measured_by_their_nfc_form(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A key or string whose decomposed spelling exceeds the limit but whose NFC
+    form fits is accepted, with the identity of its precomposed spelling.
+
+    Anti-vacuity: measure a key before normalization, or treat every
+    composition follower as an unsafe split, and these members are refused.
+    """
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
+    decomposed_key = "e\u0301" * 12
+    assert len(decomposed_key.encode()) > 32 >= len(unicodedata.normalize("NFC", decomposed_key).encode())
+    assert payload_content_identity(json.dumps({decomposed_key: 1}, ensure_ascii=False).encode()) == (
+        payload_content_identity(json.dumps({"\u00e9" * 12: 1}, ensure_ascii=False).encode())
+    )
+    followers = chr(0x113C2) * 12
+    assert len(followers.encode()) > 32 >= len(unicodedata.normalize("NFC", followers).encode())
+    payload = json.dumps([followers], ensure_ascii=False).encode()
+    assert payload_content_identity(payload) == structural_content_identity([followers])

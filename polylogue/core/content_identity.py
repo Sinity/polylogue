@@ -554,16 +554,31 @@ class _TokenReader:
         self._awaiting_role = False
         if is_key:
             # A key decides member order, so it is held whole -- but it is
-            # measured decoded, not by its escaped spelling.
+            # measured as stored: decoded and NFC-normalized, not by its
+            # escaped or decomposed spelling. The raw key is what identifies
+            # the member (two spellings are two keys), so it is kept, up to
+            # the most its NFC form can shrink.
             spill.seek(0)
+            limit = physical_value_limit()
             pieces: list[str] = []
+            raw_size = 0
             size = 0
+            over = False
+            stream = _StreamingNfc()
             for piece in _iter_decoded_windows(spill):
-                size += len(piece.encode("utf-8", "surrogatepass"))
-                if size <= physical_value_limit():
-                    pieces.append(piece)
+                if over:
+                    continue
+                raw_size += len(piece.encode("utf-8", "surrogatepass"))
+                pieces.append(piece)
+                size += len(stream.feed(piece).encode("utf-8", "surrogatepass"))
+                over = raw_size > _NFC_MAX_SHRINK * limit or size + stream.pending_bytes > limit
             spill.close()
-            if size > physical_value_limit():
+            if not over:
+                size += len(stream.finish().encode("utf-8", "surrogatepass"))
+            else:
+                size = max(size + stream.pending_bytes, raw_size // _NFC_MAX_SHRINK)
+                pieces.clear()
+            if over or size > limit:
                 out += self._spills.refuse_key(size)
             else:
                 # Held decoded and handed on as a marker: re-escaping it for
@@ -620,32 +635,44 @@ class _TokenReader:
 _ESCAPE_TOKEN = re.compile(rb'\\(?:u([0-9a-fA-F]{4})|["\\/bfnrt])')
 
 
-@lru_cache(maxsize=1)
-def _composition_followers() -> frozenset[str]:
-    """Characters that can be the second element of a canonical composition."""
-    followers = {chr(code) for code in range(0x1161, 0x1176)} | {chr(code) for code in range(0x11A8, 0x11C3)}
-    for code in range(0x110000):
-        decomposition = unicodedata.decomposition(chr(code))
-        if decomposition and not decomposition.startswith("<"):
-            parts = decomposition.split()
-            if len(parts) == 2:
-                followers.add(chr(int(parts[1], 16)))
-    return frozenset(followers)
+#: At most how many times longer a text's UTF-8 is than its NFC form: one
+#: canonical composition joins at most three characters (a Hangul L+V+T
+#: jamo run, nine bytes) into one (three bytes).
+_NFC_MAX_SHRINK = 3
 
 
-def _stable_split(text: str, start: int = 0) -> int:
-    """Largest index before which NFC of ``text`` may be split without effect.
+class _StreamingNfc:
+    """NFC of a text fed in pieces, each part emitted once it is final.
 
-    ``text[:start]`` holds no split point past index 0, so only the rest is
-    searched: an unbroken composition sequence costs one pass, not one per
-    window.
+    Normalization never changes text before the last starter (a character of
+    canonical combining class 0) of what it has produced: later input can only
+    compose with that starter or reorder the marks after it. So the output up
+    to the last starter is final and only the rest is held. A piece with no
+    starter at all is held unnormalized, so a long run of marks costs one
+    normalization, not one per piece.
     """
-    followers = _composition_followers()
-    for index in range(len(text) - 1, max(start, 1) - 1, -1):
-        char = text[index]
-        if unicodedata.combining(char) == 0 and char not in followers and unicodedata.is_normalized("NFC", char):
-            return index
-    return 0
+
+    def __init__(self) -> None:
+        self._pending = ""
+        #: UTF-8 bytes held back, not yet final.
+        self.pending_bytes = 0
+
+    def feed(self, piece: str) -> str:
+        if not any(unicodedata.combining(char) == 0 for char in piece):
+            self._pending += piece
+            self.pending_bytes += len(piece.encode("utf-8", "surrogatepass"))
+            return ""
+        normalized = nfc(self._pending + piece)
+        index = len(normalized) - 1
+        while index > 0 and unicodedata.combining(normalized[index]) != 0:
+            index -= 1
+        final, self._pending = normalized[:index], normalized[index:]
+        self.pending_bytes = len(self._pending.encode("utf-8", "surrogatepass"))
+        return final
+
+    def finish(self) -> str:
+        final, self._pending, self.pending_bytes = nfc(self._pending), "", 0
+        return final
 
 
 def _utf8_boundary(data: bytes, cut: int) -> int:
@@ -714,31 +741,22 @@ def _encode_spilled_text(raw: IO[bytes], sink: _Sink, spills: _SpilledStrings) -
     limit = physical_value_limit()
     with tempfile.TemporaryFile() as normalized:
         length = 0
-        pending_text = ""
-        pending_bytes = 0
+        stream = _StreamingNfc()
         draining = False
         windows = _iter_decoded_windows(raw)
         for piece in windows:
             if draining:
                 continue
-            text = pending_text + piece
-            split = _stable_split(text, len(pending_text))
-            encoded = nfc(text[:split]).encode("utf-8", errors="surrogatepass")
+            encoded = stream.feed(piece).encode("utf-8", errors="surrogatepass")
             normalized.write(encoded)
             length += len(encoded)
-            if split == 0:
-                pending_bytes += len(piece.encode("utf-8", "surrogatepass"))
-            else:
-                pending_bytes = len(text[split:].encode("utf-8", "surrogatepass"))
-            pending_text = text[split:]
-            if pending_bytes > limit:
-                spills.refuse_value("combining character sequence", pending_bytes)
-                pending_text = ""
+            if stream.pending_bytes > limit:
+                spills.refuse_value("combining character sequence", stream.pending_bytes)
                 draining = True
         if draining:
             sink.update(b"s0:;")
             return
-        encoded = nfc(pending_text).encode("utf-8", errors="surrogatepass")
+        encoded = stream.finish().encode("utf-8", errors="surrogatepass")
         normalized.write(encoded)
         length += len(encoded)
         sink.update(b"s%d:" % length)
@@ -805,6 +823,65 @@ class _EntryStore:
 _REFUSED_DIGEST = b""
 
 
+class _SpooledKey:
+    """A normalized key too long for a scratch row, held in a scratch file.
+
+    Only a bounded prefix stays in memory; ordering against another key reads
+    both from the start, so memory stays bounded however many such keys one
+    object holds. Compares with ``bytes`` keys as their byte order does.
+    """
+
+    _PREFIX_BYTES = 4096
+
+    def __init__(self, normalized: bytes) -> None:
+        self._file = tempfile.TemporaryFile()  # noqa: SIM115 -- owned by the key, closed with its object
+        self._file.write(normalized)
+        self.length = len(normalized)
+        self._prefix = normalized[: self._PREFIX_BYTES]
+
+    def chunks(self) -> Iterator[bytes]:
+        self._file.seek(0)
+        while chunk := self._file.read(_STREAM_READ_BYTES):
+            yield chunk
+
+    def _compare(self, other: bytes | _SpooledKey) -> int:
+        other_prefix = other._prefix if isinstance(other, _SpooledKey) else other
+        head = min(len(self._prefix), len(other_prefix))
+        if self._prefix[:head] != other_prefix[:head]:
+            return -1 if self._prefix[:head] < other_prefix[:head] else 1
+        left = self.chunks()
+        right: Iterator[bytes] = other.chunks() if isinstance(other, _SpooledKey) else iter((other,))
+        left_buffer = right_buffer = b""
+        while True:
+            if not left_buffer:
+                left_buffer = next(left, b"")
+            if not right_buffer:
+                right_buffer = next(right, b"")
+            if not left_buffer or not right_buffer:
+                return (len(left_buffer) > 0) - (len(right_buffer) > 0)
+            step = min(len(left_buffer), len(right_buffer))
+            if left_buffer[:step] != right_buffer[:step]:
+                return -1 if left_buffer[:step] < right_buffer[:step] else 1
+            left_buffer, right_buffer = left_buffer[step:], right_buffer[step:]
+
+    def __lt__(self, other: bytes | _SpooledKey) -> bool:
+        return self._compare(other) < 0
+
+    def __gt__(self, other: bytes | _SpooledKey) -> bool:
+        return self._compare(other) > 0
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, bytes | _SpooledKey):
+            return NotImplemented
+        return self._compare(other) == 0
+
+    def __hash__(self) -> int:
+        return hash(self._prefix)
+
+    def close(self) -> None:
+        self._file.close()
+
+
 class _Entries:
     """One object's members: raw key -> value digest, ``None`` for no identity,
     :data:`_REFUSED_DIGEST` for a refused value.
@@ -826,6 +903,9 @@ class _Entries:
         #: Refused members by key; a later duplicate key removes its entry.
         #: Each refused token is past the value limit, so these are few.
         self._refusals: dict[str, ContentIdentityRefusal] = {}
+        #: Keys too long for a scratch row after a spill, by raw-key hash:
+        #: the normalized key in a scratch file and its digest.
+        self._spooled: dict[bytes, tuple[_SpooledKey, bytes | None]] = {}
 
     def __setitem__(self, key: str, digest: bytes | None) -> None:
         if self._refusals:
@@ -852,20 +932,17 @@ class _Entries:
 
     def _put(self, key: str, digest: bytes | None) -> None:
         normalized = nfc(key).encode("utf-8", "surrogatepass")
-        if len(normalized) + _SCRATCH_ROW_OVERHEAD > physical_value_limit():
-            # A raw key always normalizes to the same text, so its repeats
-            # land here too and last-key-wins still holds. Charged to the
-            # shared budget like every other retained entry -- this object
-            # already spilled and cannot spill an oversized key again, but
-            # the document's other objects still read this budget, so an
-            # uncharged pile here would let them stay unspilled too.
-            if key not in self._memory:
-                cost = len(key) + _ENTRY_OVERHEAD_BYTES
-                self._retained += cost
-                self._budget.retained += cost
-            self._memory[key] = digest
-            return
         key_hash = sha256(key.encode("utf-8", "surrogatepass")).digest()
+        if len(normalized) + _SCRATCH_ROW_OVERHEAD > physical_value_limit():
+            # Too long for a row beside its hash and digest: the normalized key
+            # goes to its own scratch file, keyed by the raw key's hash, so a
+            # repeat still replaces it (last-key-wins) and memory holds only
+            # a bounded prefix per key.
+            previous = self._spooled.pop(key_hash, None)
+            if previous is not None:
+                previous[0].close()
+            self._spooled[key_hash] = (_SpooledKey(normalized), digest)
+            return
         self._budget.connection().execute(
             "INSERT OR REPLACE INTO entries VALUES (?, ?, ?, ?)", (self._id, key_hash, normalized, digest)
         )
@@ -880,6 +957,8 @@ class _Entries:
 
     def poisoned(self) -> bool:
         if any(digest is None for digest in self._memory.values()):
+            return True
+        if any(digest is None for _key, digest in self._spooled.values()):
             return True
         if self._id is None:
             return False
@@ -896,23 +975,33 @@ class _Entries:
             return
         connection = self._budget.connection()
         count = connection.execute("SELECT COUNT(*) FROM entries WHERE obj = ?", (self._id,)).fetchone()[0]
-        sink.update(b"o%d;" % (count + len(self._memory)))
+        sink.update(b"o%d;" % (count + len(self._memory) + len(self._spooled)))
         # Keys are compared as UTF-8 (surrogates passed through), whose byte
         # order is code-point order, so this matches the in-memory sort.
-        held = sorted(
+        held: list[tuple[bytes | _SpooledKey, bytes]] = sorted(
             (nfc(key).encode("utf-8", "surrogatepass"), digest) for key, digest in self._memory.items() if digest
         )
+        spooled = sorted(((key, digest) for key, digest in self._spooled.values() if digest), key=lambda item: item[0])
         rows = (
             (bytes(normalized), bytes(digest))
             for normalized, digest in connection.execute(
                 "SELECT normalized, digest FROM entries WHERE obj = ? ORDER BY normalized, digest", (self._id,)
             )
         )
-        for normalized, digest in heapq.merge(rows, held):
-            _encode_text(b"k", normalized.decode("utf-8", "surrogatepass"), sink)
+        for normalized, digest in heapq.merge(rows, held, spooled, key=lambda item: item[0]):
+            if isinstance(normalized, _SpooledKey):
+                sink.update(b"k%d:" % normalized.length)
+                for chunk in normalized.chunks():
+                    sink.update(chunk)
+                sink.update(b";")
+            else:
+                _encode_text(b"k", normalized.decode("utf-8", "surrogatepass"), sink)
             sink.update(digest)
 
     def close(self) -> None:
+        for spooled_key, _digest in self._spooled.values():
+            spooled_key.close()
+        self._spooled.clear()
         if self._id is None:
             self._budget.retained -= self._retained
         else:
