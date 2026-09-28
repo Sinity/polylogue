@@ -105,7 +105,8 @@ def test_converging_archive_surfaces_share_materialization_counts(tmp_path: Path
     assert no_results_payload["items"] == []
 
     analyze = run_cli(["--plain", "analyze", "--format", "json"], env=env, timeout=30)
-    assert analyze.exit_code == 0, analyze.output
+    # Converging totals are degraded, which exits 1 like every other read.
+    assert analyze.exit_code == 1, analyze.output
     analyze_payload = _load_stdout_json(analyze.stdout)
     assert analyze_payload["archive_converging"] is True
     assert analyze_payload["convergence_warning"] == expected_warning

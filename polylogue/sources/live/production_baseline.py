@@ -28,7 +28,11 @@ from polylogue.sources.decoder_zip import (
     is_declared_artifact_path,
     provider_detection_path,
 )
-from polylogue.sources.live.batch_support import classify_pre_acquisition, retryable_read_fault
+from polylogue.sources.live.batch_support import (
+    RetryableSourceReadError,
+    classify_pre_acquisition,
+    retryable_read_fault,
+)
 from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
@@ -597,6 +601,11 @@ def capture_production_source_baseline(
                 revision, material_bytes = _revision(path, cancelled=cancelled)
                 if progress is not None:
                     progress("baseline_hash", revisions=1, hashed_bytes=material_bytes)
+            except RetryableSourceReadError as exc:
+                decisions.append(
+                    SourceDecision(source_name, str(path), "fault", f"revision_io_unavailable:{exc.cause}")
+                )
+                continue
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
                 reason = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
                 decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))

@@ -72,3 +72,24 @@ def test_run_machine_entry_reraises_nonzero_system_exit_for_json_mode() -> None:
         run_machine_entry(exits_with_code, ["analyze", "--format", "json"])
 
     assert exc_info.value.code == 7
+
+
+def test_run_machine_entry_daemon_absence_exits_as_a_failure(capsys: pytest.CaptureFixture[str]) -> None:
+    """A daemon-absent refusal produced no answer, so it must not exit ``empty``.
+
+    Anti-vacuity: restore ``emit(exit_code=2)`` in the ``OperationUnavailableError``
+    branch and this exits 2, the status reserved for an ``empty`` outcome.
+    """
+    from polylogue.cli.operation_kernel import OperationUnavailableError
+    from polylogue.cli.render.outcome import FAILED_READ_EXIT_CODE
+
+    def unavailable(*, standalone_mode: bool = False) -> None:
+        del standalone_mode
+        raise OperationUnavailableError("start the daemon with polylogued run", operation="facets")
+
+    with pytest.raises(SystemExit) as exc_info:
+        run_machine_entry(unavailable, ["--format", "json", "facets"])
+
+    assert exc_info.value.code == FAILED_READ_EXIT_CODE
+    assert FAILED_READ_EXIT_CODE != 2
+    assert "daemon_required" in capsys.readouterr().out

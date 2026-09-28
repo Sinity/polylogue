@@ -171,12 +171,6 @@ if TYPE_CHECKING:
     )
 
 
-def _require_archive_write_authority(config: Config, purpose: str) -> None:
-    from polylogue.operations.archive_mutation import require_archive_write_authority
-
-    require_archive_write_authority(config, purpose)
-
-
 _FACET_CORE_FAMILIES = (
     "total_counts",
     "origins",
