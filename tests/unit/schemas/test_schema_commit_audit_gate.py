@@ -150,3 +150,24 @@ def test_commit_carries_the_live_providers_history_through_staging(
     assert prior_seen == [True]
     versions = output_dir / "chatgpt" / "versions"
     assert sorted(path.name for path in versions.iterdir()) == ["v1", "v2"]
+
+
+def test_an_audited_commit_retires_the_live_legacy_schema(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The live ``<provider>.schema.json`` is removed once the audited tree is published.
+
+    Anti-vacuity (Codex P2, #5704): leave legacy cleanup to the persistence
+    step, which runs in the staging root, and the live legacy file survives.
+    """
+    output_dir = tmp_path / "providers"
+    output_dir.mkdir()
+    legacy = output_dir / "chatgpt.schema.json"
+    legacy.write_text("{}", encoding="utf-8")
+
+    def clean_persist(root: Path, provider: str, _bundle: object) -> None:
+        _write_tree(root / provider, "updated_at")
+
+    monkeypatch.setattr(commit, "persist_generated_provider_bundle", clean_persist)
+
+    commit._persist_audited(output_dir, "chatgpt", object())  # type: ignore[arg-type]
+
+    assert not legacy.exists()

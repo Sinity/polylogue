@@ -596,3 +596,56 @@ def test_the_browser_proxy_forwards_the_cookie_only_for_an_owned_peer(monkeypatc
 
     assert "cookie" not in {name.lower() for name in foreign}
     assert owned.get("cookie") == "polylogue_web=secret"
+
+
+def test_the_procfs_lookup_reads_ipv6_peers_from_tcp6(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A daemon on ``::1`` finds its peer's entry in ``/proc/net/tcp6``.
+
+    Anti-vacuity (Codex P1, #5704): parse only IPv4 endpoints from
+    ``/proc/net/tcp`` and every IPv6 peer is unowned, discarding every cookie.
+    """
+    import os
+
+    from polylogue.daemon import peer_identity
+
+    loopback = "00000000000000000000000001000000"
+    table = tmp_path / "tcp6"
+    # local [::1]:52345 -> remote [::1]:8765, owned by our uid.
+    table.write_text(
+        "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid\n"
+        f"   0: {loopback}:CC79 {loopback}:223D 01 00000000:00000000 00:00000000 00000000  {os.getuid()}\n",
+        encoding="ascii",
+    )
+    monkeypatch.setattr(peer_identity, "_PROC_NET_TCP6", table)
+
+    assert (
+        peer_identity.tcp_socket_owner_uid(local_ip="::1", local_port=8765, remote_ip="::1", remote_port=52345)
+        == os.getuid()
+    )
+
+
+def test_the_peer_lookup_runs_once_per_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reading the cookie twice for one request asks the kernel once.
+
+    Anti-vacuity (Codex P2, #5704): look the peer up on every credential read
+    and each cookie request runs the lookup (``lsof`` on macOS) twice.
+    """
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from polylogue.daemon import http
+
+    calls: list[int] = []
+
+    def owned(**_kwargs: object) -> bool:
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(http, "peer_socket_owned_by_current_uid", owned)
+    handler = object.__new__(http.DaemonAPIHandler)
+    handler.client_address = ("127.0.0.1", 52345)
+    handler.server = cast(Any, SimpleNamespace(server_address=("127.0.0.1", 8765)))
+
+    assert handler._peer_is_owner() is True
+    assert handler._peer_is_owner() is True
+    assert calls == [1]

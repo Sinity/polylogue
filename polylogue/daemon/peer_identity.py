@@ -20,14 +20,26 @@ from pathlib import Path
 
 #: The kernel's IPv4 TCP connection table.
 _PROC_NET_TCP = Path("/proc/net/tcp")
+#: The kernel's IPv6 TCP connection table (``--api-host ::1``).
+_PROC_NET_TCP6 = Path("/proc/net/tcp6")
 
 
-def _procfs_endpoint(ip: str, port: int) -> str | None:
+def _procfs_endpoint(ip: str, port: int) -> tuple[Path, str] | None:
+    """The connection table and key for one endpoint, as the kernel prints them.
+
+    IPv4 addresses are one little-endian 32-bit word; IPv6 addresses are four
+    such words, each in host (little-endian) order.
+    """
     try:
-        address = ipaddress.IPv4Address(ip)
+        address = ipaddress.ip_address(ip.strip("[]"))
     except ValueError:
         return None
-    return f"{bytes(reversed(address.packed)).hex().upper()}:{port:04X}"
+    packed = address.packed
+    if isinstance(address, ipaddress.IPv6Address):
+        # IPv4-mapped peers of a dual-stack socket are listed in tcp6 too.
+        words = "".join(bytes(reversed(packed[index : index + 4])).hex() for index in range(0, 16, 4))
+        return _PROC_NET_TCP6, f"{words.upper()}:{port:04X}"
+    return _PROC_NET_TCP, f"{bytes(reversed(packed)).hex().upper()}:{port:04X}"
 
 
 def tcp_socket_owner_uid(*, local_ip: str, local_port: int, remote_ip: str, remote_port: int) -> int | None:
@@ -38,12 +50,13 @@ def tcp_socket_owner_uid(*, local_ip: str, local_port: int, remote_ip: str, remo
     loopback address the daemon is bound to. ``None`` when the entry or the
     table is unavailable.
     """
-    remote_key = _procfs_endpoint(remote_ip, remote_port)
-    local_key = _procfs_endpoint(local_ip, local_port)
-    if remote_key is None or local_key is None:
+    remote = _procfs_endpoint(remote_ip, remote_port)
+    local = _procfs_endpoint(local_ip, local_port)
+    if remote is None or local is None or remote[0] != local[0]:
         return None
+    (table, remote_key), (_table, local_key) = remote, local
     try:
-        text = _PROC_NET_TCP.read_text(encoding="ascii", errors="replace")
+        text = table.read_text(encoding="ascii", errors="replace")
     except OSError:
         return None
     for line in text.splitlines()[1:]:

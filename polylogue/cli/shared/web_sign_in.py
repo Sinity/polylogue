@@ -25,9 +25,11 @@ import json
 import os
 import tempfile
 from html import escape as _html_escape
+from pathlib import Path
+from typing import Any
 from urllib.error import URLError
 from urllib.parse import quote, urlsplit, urlunsplit
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from polylogue.cli.shared.types import AppEnv
 
@@ -45,7 +47,17 @@ def _local_redirect_url(target: str) -> str:
     except BaseException:
         os.unlink(path)
         raise
-    return f"file://{path}"
+    # Percent-encoded: a ``#`` or ``%`` in TMPDIR is part of the path.
+    return Path(path).as_uri()
+
+
+def _open_loopback(request: Request) -> Any:
+    """Open a loopback request directly, never through an environment proxy.
+
+    It carries the owner bearer, and ``HTTP_PROXY`` does not bypass
+    ``127.0.0.1``, ``localhost`` or ``[::1]`` on its own.
+    """
+    return build_opener(ProxyHandler({})).open(request)
 
 
 def _api_token(env: AppEnv) -> str | None:
@@ -81,7 +93,7 @@ def signed_in_web_url(env: AppEnv, daemon_url: str, web_url: str) -> str:
         # No deadline: a daemon that is merely slow to mint the ticket (CPU
         # starved) is waited for, since a deadline would turn slowness into an
         # unsigned URL and a sign-in page. An absent daemon refuses at once.
-        with urlopen(request) as response:
+        with _open_loopback(request) as response:
             payload = json.load(response)
     except (URLError, OSError, ValueError):
         return web_url

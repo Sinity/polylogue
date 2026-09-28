@@ -1443,18 +1443,27 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         since there is no kernel connection-table entry for a fabricated
         ``client_address``.
         """
+        # One connection has one peer: the kernel lookup (an ``lsof`` run on
+        # macOS) is made once per connection, not once per credential read.
+        cached = self.__dict__.get("_peer_owner_decision")
+        if isinstance(cached, bool):
+            return cached
         client_address: object = self.client_address
-        if not isinstance(client_address, tuple) or len(client_address) < 2:
-            return False
         server_address = getattr(self.server, "server_address", None)
-        if not isinstance(server_address, tuple) or len(server_address) < 2:
-            return False
-        return peer_socket_owned_by_current_uid(
-            local_ip=str(server_address[0]),
-            local_port=int(server_address[1]),
-            remote_ip=str(client_address[0]),
-            remote_port=int(client_address[1]),
+        decision = (
+            isinstance(client_address, tuple)
+            and len(client_address) >= 2
+            and isinstance(server_address, tuple)
+            and len(server_address) >= 2
+            and peer_socket_owned_by_current_uid(
+                local_ip=str(server_address[0]),
+                local_port=int(server_address[1]),
+                remote_ip=str(client_address[0]),
+                remote_port=int(client_address[1]),
+            )
         )
+        self.__dict__["_peer_owner_decision"] = decision
+        return decision
 
     def _web_credential_decision(self, required_scope: WebCredentialScope) -> WebCredentialDecision:
         return self._web_credentials.validate(

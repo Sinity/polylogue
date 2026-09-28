@@ -34,7 +34,7 @@ def test_opened_url_carries_a_ticket_fragment_minted_with_the_bearer(monkeypatch
         return _Response(json.dumps({"ok": True, "ticket": "t/1", "expires_at": "2026-01-01T00:00:00Z"}).encode())
 
     monkeypatch.setattr(web_sign_in, "_api_token", lambda _env: "owner-token")
-    monkeypatch.setattr(web_sign_in, "urlopen", fake_urlopen)
+    monkeypatch.setattr(web_sign_in, "_open_loopback", fake_urlopen)
 
     url = web_sign_in.signed_in_web_url(object(), "http://127.0.0.1:8766/", "http://127.0.0.1:8766/s/abc")  # type: ignore[arg-type]
 
@@ -42,7 +42,9 @@ def test_opened_url_carries_a_ticket_fragment_minted_with_the_bearer(monkeypatch
     # owner-only redirect file's path is returned, and the ticketed URL lives
     # solely in that file's content.
     assert url.startswith("file://")
-    redirect_path = url.removeprefix("file://")
+    from urllib.parse import unquote, urlsplit
+
+    redirect_path = unquote(urlsplit(url).path)
     assert oct(os.stat(redirect_path).st_mode & 0o777) == oct(0o600)
     content = Path(redirect_path).read_text(encoding="utf-8")
     assert "http://127.0.0.1:8766/web-auth/sign-in?next=/s/abc#polylogue-ticket=t%2F1" in content
@@ -55,7 +57,7 @@ def test_unreachable_daemon_falls_back_to_the_plain_url(monkeypatch: pytest.Monk
         raise URLError("connection refused")
 
     monkeypatch.setattr(web_sign_in, "_api_token", lambda _env: "owner-token")
-    monkeypatch.setattr(web_sign_in, "urlopen", refuse)
+    monkeypatch.setattr(web_sign_in, "_open_loopback", refuse)
 
     assert web_sign_in.signed_in_web_url(object(), "http://127.0.0.1:8766", "http://127.0.0.1:8766/") == (  # type: ignore[arg-type]
         "http://127.0.0.1:8766/"
@@ -65,3 +67,45 @@ def test_unreachable_daemon_falls_back_to_the_plain_url(monkeypatch: pytest.Monk
 def test_no_token_deployment_opens_the_plain_url(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(web_sign_in, "_api_token", lambda _env: None)
     assert web_sign_in.signed_in_web_url(object(), "http://x", "http://x/") == "http://x/"  # type: ignore[arg-type]
+
+
+def test_the_redirect_url_encodes_uri_significant_path_characters(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity (Codex P2, #5704): concatenate ``file://`` and the path and a
+    ``#`` in TMPDIR turns the rest of the path into a fragment."""
+    from urllib.parse import unquote, urlsplit
+
+    tmp = tmp_path / "tmp#private"
+    tmp.mkdir()
+    monkeypatch.setattr("tempfile.tempdir", str(tmp))
+    url = web_sign_in._local_redirect_url("http://127.0.0.1:8766/")
+
+    parts = urlsplit(url)
+    assert parts.fragment == ""
+    assert Path(unquote(parts.path)).exists()
+
+
+def test_the_ticket_exchange_bypasses_environment_proxies(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5704): open with the default opener and a set
+    ``HTTP_PROXY`` receives the owner bearer."""
+    import urllib.request
+
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:3128")
+    opened: list[tuple[object, ...]] = []
+
+    class Opener:
+        def __init__(self, handlers: tuple[object, ...]) -> None:
+            self.handlers = handlers
+
+        def open(self, request: object) -> object:
+            opened.append(self.handlers)
+            raise URLError("stop")
+
+    monkeypatch.setattr(web_sign_in, "build_opener", lambda *handlers: Opener(handlers))
+    with pytest.raises(URLError):
+        web_sign_in._open_loopback(urllib.request.Request("http://127.0.0.1:8766/api/web-auth/ticket"))
+
+    (handlers,) = opened
+    proxies = [handler for handler in handlers if isinstance(handler, urllib.request.ProxyHandler)]
+    assert proxies and getattr(proxies[0], "proxies", None) == {}

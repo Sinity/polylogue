@@ -145,6 +145,11 @@ def _persist_audited(output_dir: Path, provider_token: str, bundle: _ProviderBun
         if report.blockers:
             raise SchemaCommitAuditError(provider_token, report.blockers)
         publish_provider_tree(staged_dir, provider_dir, expected_snapshot=live_snapshot)
+        # Persistence retires the provider's legacy single-file schema; in the
+        # stage that happened beside the staged tree, so the live copy is
+        # retired here, once the audited tree is published.
+        for legacy_name in (f"{provider_token}.schema.json.gz", f"{provider_token}.schema.json"):
+            (output_dir / legacy_name).unlink(missing_ok=True)
 
 
 def _refuse_private_retained_values(provider: str, bundle: _ProviderBundle) -> None:
