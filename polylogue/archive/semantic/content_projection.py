@@ -271,9 +271,11 @@ def _segments_from_blocks(
                 # its own structure and keeps it.  Fenced code inside the
                 # reasoning body stays reasoning too, so this does not route
                 # through _text_block_segments' prose/code split.
-                reasoning = _typed_thinking_text(_block_text(block))
+                reasoning = _typed_thinking_text(_block_text(block) or "")
                 if reasoning:
-                    segments.append(_Segment(ContentKind.REASONING, reasoning, block=block))
+                    segments.append(
+                        _Segment(ContentKind.REASONING, reasoning, block=_block_with_text(block, reasoning))
+                    )
                 continue
             segments.extend(_text_block_segments(block))
             continue

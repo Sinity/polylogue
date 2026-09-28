@@ -363,6 +363,7 @@ def test_projection_classifies_text_blocks_tools_attachments_and_system_noise() 
     [
         ("private chain of thought", "private chain of thought"),
         ("<thinking>private chain</thinking>", "private chain"),
+        ("before <thinking>secret</thinking> after", "secret"),
     ],
 )
 def test_reasoning_projection_suppresses_the_writer_fallback_text_block(text: str, reasoning: str) -> None:
@@ -416,6 +417,8 @@ def test_reasoning_projection_suppresses_the_writer_fallback_text_block(text: st
     assert project_message_content([after_write], hide) == []
     assert project_message_content([before_write], hide) == []
     assert [message.text for message in project_message_content([after_write], show)] == [reasoning]
+    # The retained block carries the projected text, not the wrapper.
+    assert [block.get("text") for block in project_message_content([after_write], show)[0].blocks] == [reasoning]
     assert [message.text for message in project_message_content([before_write], show)] == [reasoning]
 
 
