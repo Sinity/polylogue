@@ -95,7 +95,12 @@ apply everywhere.
 6. **Removed symbols.** When the diff removes or renames a function,
    attribute, or keyword, check the tests and stubs that name it
    (`monkeypatch.setattr` targets, fakes with fixed signatures).
-7. **Outcome.** Row-bearing operations decide one `outcome` in
+7. **Origin versus Provider.** Flag a reverse lookup from Origin to Provider
+   that picks one of several matches without independent evidence; the AI
+   Studio and Drive mapping is non-injective. Safe path: refuse, or use a
+   declared hint such as the `family_hint` of `provider_from_origin` in
+   `core/sources.py`.
+8. **Outcome.** Row-bearing operations decide one `outcome` in
    `surfaces/outcome.py`. `ok` over zero returned rows, over an unmeasured
    component, or while convergence is incomplete is wrong (`degraded` or
    `empty`). Exit codes follow the outcome.
