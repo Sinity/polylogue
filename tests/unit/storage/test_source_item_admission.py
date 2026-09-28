@@ -93,6 +93,31 @@ def test_duplicate_admission_is_one_raw_row_and_one_membership_edge(tmp_path: Pa
     conn.close()
 
 
+def test_zip_member_content_identity_reaches_retained_coordinate(tmp_path: Path) -> None:
+    """Admission retains the digest needed to reacquire a reserialized member.
+
+    Anti-vacuity: omit ``content_identity`` from the admission request or its
+    call to ``record_raw_container_coordinate`` and the retained value is NULL.
+    """
+    conn, _generation, item_id, plan = _archive(tmp_path)
+    conn.execute("BEGIN")
+    member = SourceItemAdmission(
+        source_generation_id="synthetic-generation",
+        source_item_id=item_id,
+        record_coordinate="zip:0:0",
+        entry_ordinal=0,
+        split_index=0,
+        addressing_mode="whole_member",
+        content_identity="d" * 64,
+    )
+    result = execute_source_item_admission(conn, plan, member)
+    conn.commit()
+    assert conn.execute(
+        "SELECT content_identity FROM raw_container_coordinates WHERE raw_id=?", (result.raw_id,)
+    ).fetchone() == ("d" * 64,)
+    conn.close()
+
+
 def test_retired_raw_membership_cannot_be_readmitted(tmp_path: Path) -> None:
     conn, _generation, item_id, plan = _archive(tmp_path)
     conn.execute("BEGIN")

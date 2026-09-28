@@ -19,6 +19,7 @@ from polylogue.operations.mutation_transaction import (
     OperationExecutor,
     recover_interrupted_operations,
 )
+from polylogue.pipeline.services.ingest_batch._core import _delete_sessions_without_fk_cascade
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
 from polylogue.storage.sqlite.archive_tiers.source_items import (
     FrozenSourceInput,
@@ -30,6 +31,33 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
 from polylogue.storage.sqlite.audit_continuity import AuditContinuityCoordinator, AuditMutation
 from tests.infra.archive_templates import bootstrap_archive_root
 from tests.infra.frozen_clock import FrozenClock
+
+
+def test_bulk_session_cleanup_deletes_compound_message_owner_rows() -> None:
+    """Manual FK-off cleanup follows message ownership through the session.
+
+    Anti-vacuity: omit the transitive message-owner cleanup and the row remains
+    orphaned; the final foreign-key check also reports the violation.
+    """
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        PRAGMA foreign_keys=OFF;
+        CREATE TABLE sessions(session_id TEXT PRIMARY KEY);
+        CREATE TABLE messages(message_id TEXT UNIQUE, session_id TEXT NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE, UNIQUE(message_id, session_id));
+        CREATE TABLE attachment_refs(message_id TEXT NOT NULL, session_id TEXT NOT NULL,
+          FOREIGN KEY(message_id, session_id) REFERENCES messages(message_id, session_id) ON DELETE CASCADE);
+        INSERT INTO sessions VALUES ('stale');
+        INSERT INTO messages VALUES ('m1', 'stale');
+        INSERT INTO attachment_refs VALUES ('m1', 'stale');
+        """
+    )
+
+    _delete_sessions_without_fk_cascade(conn, ("stale",))
+
+    assert conn.execute("SELECT COUNT(*) FROM attachment_refs").fetchone() == (0,)
+    assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+    conn.close()
 
 
 def _authorize(plan: MutationPlan, actuator: IngestActuator, principal: MutationPrincipal) -> MutationAuthorization:

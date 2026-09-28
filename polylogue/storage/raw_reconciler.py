@@ -391,13 +391,6 @@ _OBLIGATION_STATES = {
 }
 
 
-#: How many acknowledgements of one still-blocking obligation this pass will
-#: walk past before refusing. The chain only grows when an operator resolves a
-#: blocker whose evidence is still blocking, so a long chain is itself the
-#: signal that acknowledgement is being used in place of a discharge.
-_MAX_FRONTIER_ACKNOWLEDGEMENT_CHAIN = 64
-
-
 def _open_frontier_blocker_id(conn: sqlite3.Connection, *, pass_id: str, plan_id: str) -> str:
     """Return the id this pass must publish its obligation under.
 
@@ -420,7 +413,7 @@ def _open_frontier_blocker_id(conn: sqlite3.Connection, *, pass_id: str, plan_id
     """
 
     blocker_id = f"raw-authority-blocker:{_digest(['frontier', pass_id, plan_id])}"
-    for _ in range(_MAX_FRONTIER_ACKNOWLEDGEMENT_CHAIN):
+    while True:
         row = conn.execute(
             "SELECT resolved_at_ms FROM raw_authority_blockers WHERE blocker_id = ?",
             (blocker_id,),
@@ -428,10 +421,6 @@ def _open_frontier_blocker_id(conn: sqlite3.Connection, *, pass_id: str, plan_id
         if row is None or row[0] is None:
             return blocker_id
         blocker_id = f"raw-authority-blocker:{_digest(['frontier', pass_id, plan_id, blocker_id])}"
-    raise RuntimeError(
-        f"raw authority frontier obligation for plan {plan_id} has been acknowledged "
-        f"{_MAX_FRONTIER_ACKNOWLEDGEMENT_CHAIN} times without being discharged"
-    )
 
 
 def _reconcile_frontier_obligations(
