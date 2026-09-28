@@ -915,6 +915,19 @@ class TestQueryFirstGroupParseArgs:
         assert result.exit_code == 0
         assert "Search the archive, then optionally run an action." in result.output
 
+    def test_option_value_find_does_not_trigger_query_workflow_help(self, cli_runner: CliRunner) -> None:
+        """Option values are skipped while looking for the explicit marker.
+
+        Anti-vacuity: searching raw argv for ``find`` mistakes this repository
+        value for the marker and suppresses the requested command help.
+        """
+        from polylogue.cli.click_app import cli
+
+        result = cli_runner.invoke(cli, ["note", "--repo", "find", "--help"], catch_exceptions=False)
+        assert result.exit_code == 0
+        assert "Search the archive, then optionally run an action." not in result.output
+        assert "Usage:" in result.output
+
     def test_find_with_a_query_keeps_ordinary_help(self, cli_runner: CliRunner) -> None:
         """``--help`` after a query term is not a request for marker help."""
         from polylogue.cli.click_app import cli

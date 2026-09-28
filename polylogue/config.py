@@ -850,7 +850,7 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         env_var="POLYLOGUE_DAEMON",
         owner_class="deployment-policy",
         reload_behavior="per-invocation-client",
-        description="Daemon client routing mode; 'off' forces direct archive access.",
+        description="Daemon client routing mode; 'off' refuses daemon-served operations.",
     ),
     ConfigInventoryEntry(
         "no_daemon",
@@ -859,7 +859,7 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         cli_override="polylogue --no-daemon",
         owner_class="deployment-policy",
         reload_behavior="per-invocation-client",
-        description="Disable daemon client routing for one resolved invocation.",
+        description="Refuse daemon-served operations for one resolved invocation.",
     ),
     ConfigInventoryEntry(
         "api_host",

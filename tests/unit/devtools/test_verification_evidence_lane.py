@@ -38,7 +38,8 @@ def test_canonical_receipt_is_bounded_and_foreground_has_no_agentctl_ids(
     history_row = json.loads(history.read_text(encoding="utf-8"))
     receipt = read_verification_evidence(evidence)[0]
     assert receipt["run_id"] == payload["run_id"]
-    assert receipt["source_revision"] == "sha:def"
+    assert receipt["source_revision"] is None
+    assert receipt["git_dirty"] is True
     assert receipt["status"] == "passed"
     assert "agentctl" not in receipt
     assert "argv" not in history_row

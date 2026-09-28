@@ -160,6 +160,7 @@ from polylogue.sources.live.batch_support import (
     jsonl_complete_prefix,
     jsonl_complete_prefix_path,
     last_complete_newline_from_tail,
+    retryable_read_fault,
     sha256_range_from_path,
     tail_hash_from_path,
 )
@@ -3170,7 +3171,11 @@ class LiveBatchProcessor:
                 admission = classify_pre_acquisition(
                     path, fallback_provider=fallback_provider, source_only=source_only, size_bytes=stat.st_size
                 )
-            except OSError:
+            except (OSError, sqlite3.Error) as exc:
+                if not retryable_read_fault(exc):
+                    raise
+                # A database that could not be read now is retried on a
+                # later pass, never excluded as not-ours.
                 failed.append(path)
                 continue
             if admission.refused:

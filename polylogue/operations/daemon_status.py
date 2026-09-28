@@ -369,6 +369,18 @@ def produce_operation_status(
     )
     if runtime_status is None:
         return pinned
+    runtime_components = runtime_status.get("component_readiness")
+    pinned_components = pinned.get("component_readiness")
+    if isinstance(runtime_components, Mapping) and isinstance(pinned_components, Mapping):
+        composed_components = {
+            key: dict(value) for key, value in pinned_components.items() if isinstance(value, Mapping)
+        }
+        for key, runtime_entry in runtime_components.items():
+            pinned_entry = composed_components.get(key)
+            collection = runtime_entry.get("collection") if isinstance(runtime_entry, Mapping) else None
+            if pinned_entry is not None and isinstance(collection, Mapping):
+                pinned_entry["collection"] = dict(collection)
+        pinned["component_readiness"] = composed_components
     runtime_only = {
         "daemon_liveness",
         "sinex_publication",

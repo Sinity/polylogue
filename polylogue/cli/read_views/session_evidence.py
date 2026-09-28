@@ -167,6 +167,12 @@ def _read_evidence_window(
     if limit is None:
         limit = default_limit
     offset = cast(int, getattr(options, "offset", 0) or 0)
+    projection = invocation.projection_spec.projection if invocation.projection_spec is not None else None
+    if projection is not None:
+        if projection.body_limit is not None:
+            limit = projection.body_limit
+        if projection.body_offset is not None:
+            offset = projection.body_offset
 
     try:
         payload, served_by = dispatch_read(

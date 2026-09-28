@@ -262,6 +262,26 @@ def compile_prose_with_refs_context_segment(
             rendered = render(mutable)
             if _estimate_tokens(rendered) <= prose_budget:
                 break
+        # Protected rows are preferences; the declared budget is a hard cap.
+        # Recap/truncate the remaining rows, then omit rows if even markers do
+        # not fit (the fixed header itself is bounded).
+        for index in range(len(mutable)):
+            if _estimate_tokens(render(mutable)) <= prose_budget:
+                break
+            role, text, is_prose, ref = mutable[index]
+            if not text:
+                continue
+            mutable[index] = (role, "[omitted]" if ref is None else f"<ref:{ref}>", is_prose, ref)
+            recapped = True
+        while mutable and _estimate_tokens(render(mutable)) > prose_budget:
+            mutable.pop(0)
+            recapped = True
+        rendered = render(mutable)
+        if _estimate_tokens(rendered) > prose_budget:
+            # At tiny budgets even the heading/instructions cost more than
+            # the allowance. Keep a prefix whose estimate is within budget.
+            rendered = ""
+            recapped = True
 
     segment = ContextSegment(
         segment_id=f"read-view:{session_id}:prose-with-refs",
@@ -269,7 +289,10 @@ def compile_prose_with_refs_context_segment(
         title="Messages (prose with refs)",
         markdown=rendered,
         payload_kind="prose_with_refs",
-        object_refs=(ObjectRef(kind="session", object_id=session_id),),
+        object_refs=(
+            ObjectRef(kind="session", object_id=session_id),
+            *tuple(ObjectRef.parse(ref) for _role, _text, _prose, ref in rows if ref is not None),
+        ),
         evidence_refs=tuple(evidence_refs) or (EvidenceRef(session_id=session_id),),
         token_estimate=_estimate_tokens(rendered),
         lossiness="budget_recapped_prose" if recapped else "tool_content_as_refs",

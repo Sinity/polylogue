@@ -328,9 +328,8 @@ full permission audit trail (PermissionRequest/PermissionDenied).
 
 ## Embedding Pipeline
 
-Vector embeddings for semantic search, powered by the configured embedding
-recipe (provider/model/dimensions live in configuration, not here) via
-SQLite-vec (`vec0` virtual table):
+Vector embeddings for semantic search use the Voyage provider with a
+configured model and dimensions, stored via SQLite-vec (`vec0` virtual table):
 
 - **Storage**: `message_embeddings` (vec0) and `message_embeddings_meta` are
   content-addressed, keyed by `embedding_input_hash = SHA-256(model,
@@ -349,9 +348,9 @@ SQLite-vec (`vec0` virtual table):
 ### Activation flow
 
 The `polylogue ops embed` group is the operator-facing onboarding surface
-(preflight, enable, backfill, disable, status — see the generated CLI
-reference for the exact commands). The activation invariant: enabling is
-explicit and cost-previewed; disabling never drops existing embeddings; the
+(preflight, enable, backfill, disable, status; see
+[Search](search.md#embedding-activation) for their exact commands). The
+activation invariant: enabling is explicit and cost-previewed; disabling never drops existing embeddings; the
 CLI orchestrates substrate primitives under `polylogue.storage.embeddings`.
 
 ### Search defaults (#1217)
@@ -509,7 +508,7 @@ This distinction must be decided **before** `polylogue/analytics/` is
 created (it does not exist yet; this rule is written pre-emptively per
 polylogue-c9y so the first PR that adds it has somewhere to look):
 
-- **`insights/`** = materialized derived **read models** — storage-backed,
+- **`analysis/`** = materialized derived **read models** — storage-backed,
   rebuildable rows written by a convergence stage or write-effect
   (`storage/derived/session/profiles.py`, `timeline/`, `storage/derived/topology/derivation.py`).
   An insight has a table (or a view) and a staleness/rebuild story.
@@ -521,7 +520,7 @@ polylogue-c9y so the first PR that adds it has somewhere to look):
   analytic (a convergence stage calls an `analytics/` measure and stores
   the result as an `insights/` row), but an analytic must never reach back
   into `storage/` to fetch its own inputs — it receives them as arguments.
-  This keeps analytics testable in isolation and keeps `insights/` the
+  This keeps analytics testable in isolation and keeps `analysis/` the
   single place that knows about staleness/rebuild.
 
 ### Presentation ownership
@@ -546,7 +545,7 @@ payloads and response contracts.
 
 ### Key rules
 - Surfaces may not import substrate internals directly (see layering.yaml).
-- New semantics go into substrate (`archive/`/`storage/`) or `insights/`
+- New semantics go into substrate (`archive/`/`storage/`) or `analysis/`
   first, then surfaces adapt.
 - A module that doesn't clearly satisfy one of the eight numbered questions
   above joins an existing package's most-specific matching submodule; it is

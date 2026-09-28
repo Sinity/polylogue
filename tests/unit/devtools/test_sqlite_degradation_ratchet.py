@@ -80,6 +80,20 @@ def test_census_ignores_explicit_failure_boundaries(tmp_path: Path) -> None:
     assert sum(anchors.values()) == 1
 
 
+def test_census_includes_continue_and_fallback_handlers(tmp_path: Path) -> None:
+    """Anti-vacuity: a handler without Return still degrades if control continues."""
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "reader.py").write_text(
+        "import sqlite3\ndef read(rows):\n    fallback = 0\n    for row in rows:\n"
+        "        try:\n            pass\n        except sqlite3.Error:\n            continue\n"
+        "    try:\n        pass\n    except sqlite3.Error:\n        fallback = 1\n    return fallback\n",
+        encoding="utf-8",
+    )
+    anchors = census_sqlite_degradation_anchors(tmp_path, ("pkg",))
+    assert sum(anchors.values()) == 2
+
+
 def test_census_counts_only_sqlite_handlers(tmp_path: Path) -> None:
     package = tmp_path / "pkg"
     package.mkdir()

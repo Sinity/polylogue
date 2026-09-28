@@ -621,7 +621,7 @@ def test_an_unreadable_state_database_is_a_retryable_fault_not_an_exclusion(tmp_
     The structural recognizer cannot open the file and reads it as "not
     Codex state", which would otherwise record a terminal intake exclusion.
 
-    Anti-vacuity: dropping the ``_probe_sqlite_readable`` call records
+    Anti-vacuity: dropping the probe in ``classify_pre_acquisition`` records
     ``intake_excluded:...`` and the database silently leaves the demand.
     """
     root = tmp_path / "codex"

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import re
+import sqlite3
 import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
@@ -37,6 +39,7 @@ from polylogue.sources.dispatch import (
     is_jsonl_source_path,
 )
 from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
+from polylogue.sources.sqlite_snapshot import is_sqlite_path
 from polylogue.storage.runtime import RawSessionRecord
 
 _FULL_PARSE_PROGRESS_MAX_BYTES = 64 * 1024 * 1024
@@ -1081,6 +1084,47 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
     return classify_artifact(document, provider=provider, source_path=path).parse_as_session
 
 
+_RETRYABLE_READ_ERRNOS = frozenset(
+    {
+        errno.EIO,
+        errno.EACCES,
+        errno.EPERM,
+        errno.ESTALE,
+        errno.ETIMEDOUT,
+        errno.EAGAIN,
+        errno.EBUSY,
+        errno.ENOSPC,
+        errno.EDQUOT,
+    }
+)
+
+
+def retryable_read_fault(exc: BaseException) -> bool:
+    """Whether a source read failed for a reason a later read can clear."""
+    sqlite_code = getattr(exc, "sqlite_errorcode", None)
+    return (isinstance(exc, OSError) and exc.errno in _RETRYABLE_READ_ERRNOS) or (
+        isinstance(exc, sqlite3.Error)
+        and isinstance(sqlite_code, int)
+        and sqlite_code & 0xFF
+        in {
+            sqlite3.SQLITE_IOERR,
+            sqlite3.SQLITE_BUSY,
+            sqlite3.SQLITE_LOCKED,
+            sqlite3.SQLITE_CANTOPEN,
+            sqlite3.SQLITE_PERM,
+        }
+    )
+
+
+def probe_sqlite_readable(path: Path) -> None:
+    """Raise the read fault of a database about to be excluded, if any."""
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
+    try:
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    finally:
+        conn.close()
+
+
 @dataclass(frozen=True, slots=True)
 class PreAcquisitionDecision:
     """Whether full intake retains a discovered file, and the sniff it used.
@@ -1123,7 +1167,36 @@ def classify_pre_acquisition(
     baseline requires is always one intake retains. The branch order mirrors
     the batch's acquisition branches: an earlier retaining branch wins over a
     later exclusion rule.
+
+    The structural SQLite recognizers read an unreadable database as "not
+    ours". Before a database is excluded, a retryable read fault is raised
+    instead, so the caller retries the file rather than excluding a valid
+    database for good; bytes that are not a readable database stay excluded.
     """
+    decision = _classify_pre_acquisition(
+        path,
+        fallback_provider=fallback_provider,
+        source_only=source_only,
+        size_bytes=size_bytes,
+        checkpoint=checkpoint,
+    )
+    if decision.excluded_reason is not None and is_sqlite_path(path):
+        try:
+            probe_sqlite_readable(path)
+        except (OSError, sqlite3.Error) as exc:
+            if retryable_read_fault(exc):
+                raise
+    return decision
+
+
+def _classify_pre_acquisition(
+    path: Path,
+    *,
+    fallback_provider: Provider,
+    source_only: bool,
+    size_bytes: int,
+    checkpoint: Callable[[], None] | None,
+) -> PreAcquisitionDecision:
     from polylogue.sources.origin_specs import (
         artifact_rule_for_path,
         database_capability_for_provider,

@@ -72,6 +72,7 @@ def test_an_instance_without_explicit_actions_inherits_its_class_defaults() -> N
     rendered = error.format_message()
     assert "Next:" in rendered
     assert rendered.count("\n  - ") >= 1
+    assert "polylogue --why find <QUERY>" in rendered
 
 
 def test_explicit_actions_override_the_class_defaults() -> None:
