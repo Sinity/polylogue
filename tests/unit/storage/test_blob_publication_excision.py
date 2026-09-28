@@ -49,3 +49,50 @@ def test_an_excised_payload_is_never_published(tmp_path: Path) -> None:
             bytes(row[0]).hex() for row in source.execute("SELECT blob_hash FROM blob_publication_reservations")
         }
     assert reserved == {kept_hex}
+
+
+def test_an_excised_sqlite_snapshot_is_a_typed_excision_not_a_parse_failure(tmp_path: Path) -> None:
+    """A parse route that reads its snapshot back after flushing stops typed.
+
+    Anti-vacuity: drop ``require_published`` after the Hermes state-db flush
+    and ``parse_state_db`` opens the discarded snapshot path, so the call
+    raises ``FileNotFoundError`` and the walk records a cursor failure.
+    """
+    import pytest
+
+    from polylogue.sources.source_parsing import parse_one_source_path
+    from polylogue.sources.sqlite_snapshot import snapshot_sqlite_to_blob
+    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+    from tests.unit.sources.test_hermes_import_explain import _write_state_db
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    state_db = tmp_path / "state.db"
+    _write_state_db(state_db)
+    probe = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    snapshot_hash = snapshot_sqlite_to_blob(state_db, probe).blob_hash
+    probe.discard_pending()
+    with sqlite3.connect(root / "source.db") as source:
+        record_excised_blob_hash(
+            source,
+            blob_hash=bytes.fromhex(snapshot_hash),
+            reason="synthetic excision",
+            actor="test",
+            excised_at_ms=1,
+        )
+
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    with pytest.raises(ContentExcisedError) as refused:
+        list(
+            parse_one_source_path(
+                str(state_db),
+                file_mtime=None,
+                source_name="hermes",
+                sidecar_data={},
+                capture_raw=True,
+                blob_store=publisher,
+            )
+        )
+    assert refused.value.blob_hash.hex() == snapshot_hash
+    assert not publisher.exists(snapshot_hash)

@@ -192,6 +192,7 @@ class ArchiveBlobPublisher(BlobStore):
         self._pending: list[tuple[BlobPublicationReceipt, PreparedBlob]] = []
         self._latest_receipt_by_hash: dict[str, str] = {}
         self._pending_by_hash: dict[str, PreparedBlob] = {}
+        self._refused_as_excised: set[str] = set()
 
     def _queue(self, prepared: PreparedBlob) -> tuple[str, int]:
         receipt = BlobPublicationReceipt(
@@ -256,9 +257,14 @@ class ArchiveBlobPublisher(BlobStore):
                     self._store.discard_prepared(prepared)
                     self._latest_receipt_by_hash.pop(receipt.blob_hash, None)
             self._store.publish_many(prepared for receipt, prepared in pending if receipt.blob_hash not in excised)
+        self._refused_as_excised.update(excised)
         self._pending.clear()
         self._pending_by_hash.clear()
         return tuple(receipt for receipt in receipts if receipt.blob_hash not in excised)
+
+    def refused_as_excised(self, blob_hash: str) -> bool:
+        """Whether a flush() refused *blob_hash* because it is excised."""
+        return blob_hash in self._refused_as_excised
 
     def discard_pending(self) -> None:
         for _receipt, prepared in self._pending:
@@ -294,6 +300,21 @@ def publication_receipt_id(blob_store: BlobStore, blob_hash: str) -> str | None:
         return None
     receipt_id = receipt_getter(blob_hash)
     return str(receipt_id) if receipt_id is not None else None
+
+
+def require_published(blob_store: BlobStore, blob_hash: str, *, source_path: str) -> None:
+    """Raise ContentExcisedError when a flush refused *blob_hash* as excised.
+
+    A caller that reads its snapshot back from the store after flushing must
+    stop here: the refused bytes were discarded, so the path it would open
+    does not exist, and the outcome is the typed excision, not a parse
+    failure.
+    """
+    refused = getattr(blob_store, "refused_as_excised", None)
+    if callable(refused) and refused(blob_hash):
+        from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+        raise ContentExcisedError(blob_hash=bytes.fromhex(blob_hash), source_path=source_path)
 
 
 def flush_blob_publications(blob_store: BlobStore) -> tuple[BlobPublicationReceipt, ...]:

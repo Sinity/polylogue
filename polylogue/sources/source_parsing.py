@@ -16,6 +16,7 @@ from polylogue.logging import get_logger
 from polylogue.sources.assembly import SidecarData
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
+from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 
 from . import cursor as _cursor
 from . import decoders as _decoders
@@ -288,9 +289,10 @@ def parse_one_source_path(
             blob_root = blob_store_root()
         resolved_store = blob_store or BlobStore(blob_root)
         snapshot = snapshot_sqlite_to_blob(path, resolved_store)
-        from polylogue.storage.blob_publication import flush_blob_publications
+        from polylogue.storage.blob_publication import flush_blob_publications, require_published
 
         flush_blob_publications(resolved_store)
+        require_published(resolved_store, snapshot.blob_hash, source_path=str(path))
         retained_path = resolved_store.blob_path(snapshot.blob_hash)
         raw_data = None
         if capture_raw:
@@ -354,9 +356,10 @@ def parse_one_source_path(
             blob_root = blob_store_root()
         resolved_store = blob_store or BlobStore(blob_root)
         snapshot = snapshot_sqlite_to_blob(path, resolved_store)
-        from polylogue.storage.blob_publication import flush_blob_publications
+        from polylogue.storage.blob_publication import flush_blob_publications, require_published
 
         flush_blob_publications(resolved_store)
+        require_published(resolved_store, snapshot.blob_hash, source_path=str(path))
         retained_path = resolved_store.blob_path(snapshot.blob_hash)
         raw_data = None
         if capture_raw:
@@ -388,9 +391,10 @@ def parse_one_source_path(
             blob_root = blob_store_root()
         resolved_store = blob_store or BlobStore(blob_root)
         snapshot = snapshot_sqlite_to_blob(path, resolved_store)
-        from polylogue.storage.blob_publication import flush_blob_publications
+        from polylogue.storage.blob_publication import flush_blob_publications, require_published
 
         flush_blob_publications(resolved_store)
+        require_published(resolved_store, snapshot.blob_hash, source_path=str(path))
         retained_path = resolved_store.blob_path(snapshot.blob_hash)
         raw_data = None
         if capture_raw:
@@ -521,6 +525,10 @@ def iter_source_sessions_with_raw(
                 blob_root=blob_root,
                 blob_store=blob_store,
             )
+        except ContentExcisedError as exc:
+            # Deliberately forgotten content: a typed permanent outcome, not a
+            # parse failure to retry.
+            logger.info("source_content_excised", source_path=str(path), blob_hash=exc.blob_hash.hex())
         except FileNotFoundError as exc:
             failed_count += 1
             logger.warning("File disappeared during processing (TOCTOU race): %s", path)
