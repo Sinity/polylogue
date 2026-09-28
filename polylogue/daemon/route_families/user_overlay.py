@@ -8,7 +8,7 @@ from http import HTTPStatus
 from typing import Any, cast
 from uuid import uuid4
 
-from polylogue.daemon.route_types import AuthPolicy, RouteMethod, RouteSpec
+from polylogue.daemon.route_types import AuthPolicy, NonReplayable, RouteMethod, RouteSpec
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -28,6 +28,7 @@ def _route(
     symbol: str,
     request: str,
     parameterized: bool = False,
+    example: ExampleSpec | None = None,
 ) -> RouteSpec:
     producer = f"polylogue.daemon.http.DaemonAPIHandler.{symbol}"
     binding = f"{method} {path}"
@@ -52,7 +53,7 @@ def _route(
             repair_command="devtools render openapi",
             handlers=(HandlerBinding("daemon-http", "polylogue/daemon/http.py", symbol, binding),),
             outputs=(OutputSpec("response", "json", response, path),),
-            examples=(ExampleSpec("route", f"Call {binding}", ()),),
+            examples=(example or ExampleSpec("default", f"Call {binding}", ()),),
             completeness_edges=(
                 CompletenessEdge(producer, "daemon-http", "route", "polylogue/daemon/http.py"),
                 CompletenessEdge(producer, "openapi-schema", "generated-document", "docs/openapi/search.yaml"),
@@ -69,7 +70,19 @@ def _route(
         write_gate=False,
         kind="user_overlay",
         stability="stable",
+        non_replayable=_non_replayable(method, parameterized),
     )
+
+
+def _non_replayable(method: RouteMethod, parameterized: bool) -> NonReplayable | None:
+    if method != "GET":
+        return NonReplayable("mutation", "User-overlay writes change durable user.db state.")
+    if parameterized:
+        return NonReplayable(
+            "requires-prior-mutation",
+            "The item id is minted by the matching user-overlay POST; no static id names an existing item.",
+        )
+    return None
 
 
 _LIST = "OverlayListPayload"
@@ -83,6 +96,7 @@ ROUTES: tuple[RouteSpec, ...] = (
         "AssertionClaimListPayload",
         symbol="_handle_assertions",
         request="AssertionClaimQuery",
+        example=ExampleSpec("active", "List active and candidate assertion claims", (("limit", 20),)),
     ),
     _route(
         "GET", "/api/user/marks", "user.marks.list", _LIST, symbol="_handle_user_overlay_get", request="MarkListQuery"

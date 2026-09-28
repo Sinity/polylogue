@@ -147,37 +147,6 @@ class PytestSlotUnavailableError(RuntimeError):
     runtime_evidence: dict[str, Any] | None = None
 
 
-class PytestSlotObservationUnavailableError(PytestSlotUnavailableError):
-    """The submitted job could not be observed after bounded read retries."""
-
-    def __init__(
-        self,
-        job_id: int,
-        errors: Sequence[str],
-        *,
-        log_path: Path,
-        receipt: dict[str, Any] | None,
-        cancellation_attempted: bool,
-        cancellation_succeeded: bool,
-    ) -> None:
-        diagnostics = [error[:300] for error in errors[-3:]]
-        super().__init__(
-            REFUSAL.format(
-                reason=(
-                    f"status for {AGENTCTL} job {job_id} was unavailable after "
-                    f"{len(diagnostics)} consecutive read failures; owned cancellation "
-                    f"was {'attempted' if cancellation_attempted else 'not attempted'}: {diagnostics}"
-                )
-            )
-        )
-        self.job_id = job_id
-        self.log_path = log_path
-        self.observation_errors = diagnostics
-        self.receipt = receipt
-        self.cancellation_attempted = cancellation_attempted
-        self.cancellation_succeeded = cancellation_succeeded
-
-
 @dataclass(frozen=True)
 class SlotOutcome:
     returncode: int
@@ -496,9 +465,11 @@ def _document(completed: subprocess.CompletedProcess[str], *, verb: str) -> dict
     return document
 
 
-def _cancel_job(job_id: int, *, env: Mapping[str, str]) -> bool:
+def _cancel_job(job_id: int, *, env: Mapping[str, str], reference: str | None = None) -> bool:
     """Cancel through the owner that also stops the job's transient unit."""
-    completed = _agentctl(["--json", "job", "cancel", str(job_id)], env=env)
+    completed = _agentctl(
+        ["--json", "job", "cancel", str(job_id), *(["--reference", reference] if reference else [])], env=env
+    )
     document = _document(completed, verb="job cancel")
     # A zero process exit only means the cancel request was handled. In
     # particular, state=unresolved means agentctl could not establish that the
@@ -506,40 +477,59 @@ def _cancel_job(job_id: int, *, env: Mapping[str, str]) -> bool:
     return document.get("state") in {"removed", "stopped", "terminal"}
 
 
-OBSERVATION_ERROR_LIMIT: Final = 3
+#: Longest pause between reads while the job cannot be observed.
+OBSERVATION_BACKOFF_MAX_S: Final = 60.0
+#: How often an unobservable job is reported as stalled.
+STALL_REPORT_INTERVAL_S: Final = 300.0
 
 
-class _JobObservationExhaustedError(RuntimeError):
-    def __init__(self, errors: Sequence[str]) -> None:
-        self.errors = tuple(errors)
+def _wait_for(job_id: int, *, reference: str | None, env: Mapping[str, str]) -> dict[str, Any]:
+    """The job's terminal view. The queue wait has no deadline; the job itself has one.
 
-
-def _wait_for(job_id: int, *, env: Mapping[str, str]) -> dict[str, Any]:
-    """The job's terminal view. The queue wait has no deadline; the job itself has one."""
-    observation_errors: list[str] = []
+    Only a terminal view ends the wait. A read that fails -- the runtime being
+    re-activated, a secret briefly unreadable -- is transient: the job is
+    still queued or running, and giving up would abandon a slot it may have
+    waited an hour for. Reads back off and the stall is reported instead. The
+    launch reference addresses the job even after pueue drops its entry.
+    """
+    command = ["--json", "job", "get", str(job_id), *(["--reference", reference] if reference else [])]
+    failures = 0
+    stalled_since: float | None = None
+    last_report = 0.0
     while True:
+        problem: str | None = None
+        view: dict[str, Any] = {}
         try:
-            view = _document(_agentctl(["--json", "job", "get", str(job_id)], env=env), verb="job get")
+            view = _document(_agentctl(command, env=env), verb="job get")
         except PytestSlotUnavailableError as exc:
-            observation_errors.append(str(exc))
-            if len(observation_errors) >= OBSERVATION_ERROR_LIMIT:
-                raise _JobObservationExhaustedError(observation_errors) from exc
-            time.sleep(POLL_INTERVAL_S)
-            continue
-        if (
+            problem = str(exc)
+        if problem is None and (
             view.get("job_id") != job_id
             or not isinstance(view.get("terminal"), bool)
             or not isinstance(view.get("phase"), str)
         ):
-            observation_errors.append(f"`{AGENTCTL} job get` returned an invalid view for job {job_id}")
-            if len(observation_errors) >= OBSERVATION_ERROR_LIMIT:
-                raise _JobObservationExhaustedError(observation_errors)
+            problem = f"`{AGENTCTL} job get` returned an invalid view for job {job_id}"
+        if problem is None:
+            if stalled_since is not None:
+                sys.stderr.write(f"  {AGENTCTL} job {job_id} observable again\n")
+                sys.stderr.flush()
+            failures, stalled_since = 0, None
+            if view.get("terminal"):
+                return view
             time.sleep(POLL_INTERVAL_S)
             continue
-        observation_errors.clear()
-        if view.get("terminal"):
-            return view
-        time.sleep(POLL_INTERVAL_S)
+        failures += 1
+        now = time.monotonic()
+        if stalled_since is None:
+            stalled_since = now
+        if now - last_report >= STALL_REPORT_INTERVAL_S or failures == 1:
+            last_report = now
+            sys.stderr.write(
+                f"  cannot observe {AGENTCTL} job {job_id} for {now - stalled_since:.0f}s "
+                f"(still waiting; it is not cancelled): {problem[:300]}\n"
+            )
+            sys.stderr.flush()
+        time.sleep(min(POLL_INTERVAL_S * 2 ** min(failures, 16), OBSERVATION_BACKOFF_MAX_S))
 
 
 #: Terminal phases ``agentctl job get`` reports for a job that never ran its
@@ -572,7 +562,9 @@ def _job_exit_status(view: Mapping[str, Any], *, receipt: Mapping[str, Any] | No
     raise PytestSlotUnavailableError(REFUSAL.format(reason=detail))
 
 
-def _reap_job(job_id: int, *, env: Mapping[str, str], launch_path: Path | None = None) -> bool:
+def _reap_job(
+    job_id: int, *, env: Mapping[str, str], launch_path: Path | None = None, reference: str | None = None
+) -> bool:
     """End a job this process owns and stop its transient unit.
 
     Best effort by construction: the reason we are here is that the waiter is
@@ -585,7 +577,7 @@ def _reap_job(job_id: int, *, env: Mapping[str, str], launch_path: Path | None =
     """
     cancelled = False
     with contextlib.suppress(PytestSlotUnavailableError):
-        cancelled = _cancel_job(job_id, env=env)
+        cancelled = _cancel_job(job_id, env=env, reference=reference)
     if cancelled and launch_path is not None:
         with contextlib.suppress(OSError):
             launch_path.unlink(missing_ok=True)
@@ -695,7 +687,10 @@ def _submit(
             ],
             env=client,
         )
-        job_id = _document(started, verb="job start").get("job_id")
+        started_document = _document(started, verb="job start")
+        job_id = started_document.get("job_id")
+        reference = started_document.get("reference")
+        reference = reference if isinstance(reference, str) and reference else None
         if not isinstance(job_id, int) or isinstance(job_id, bool):
             raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`{AGENTCTL} job start` returned no job id"))
     except PytestSlotUnavailableError:
@@ -703,27 +698,15 @@ def _submit(
         raise
     sys.stderr.write(f"  waiting for the host pytest slot ({AGENTCTL} job {job_id}, pool {PYTEST_POOL}) ...\n")
     sys.stderr.flush()
-    cancellation_attempted = False
-    cancellation_succeeded = False
 
     def reap_owned_job() -> None:
-        nonlocal cancellation_attempted, cancellation_succeeded
-        cancellation_attempted = True
-        cancellation_succeeded = _reap_job(job_id, env=client, launch_path=launch_path)
+        # Only on this waiter's own death (a signal or interpreter exit): the
+        # job is then cancelled, by reference so it is found even if the queue
+        # dropped its entry.
+        _reap_job(job_id, reference=reference, env=client, launch_path=launch_path)
 
-    try:
-        with _on_exit(reap_owned_job, on_exit):
-            view = _wait_for(job_id, env=client)
-    except _JobObservationExhaustedError as exc:
-        receipt = _read_slot_result(log_path)
-        raise PytestSlotObservationUnavailableError(
-            job_id,
-            exc.errors,
-            log_path=log_path,
-            receipt=receipt,
-            cancellation_attempted=cancellation_attempted,
-            cancellation_succeeded=cancellation_succeeded,
-        ) from exc
+    with _on_exit(reap_owned_job, on_exit):
+        view = _wait_for(job_id, reference=reference, env=client)
     receipt = _read_slot_result(log_path)
     try:
         returncode = _job_exit_status(view, receipt=receipt)

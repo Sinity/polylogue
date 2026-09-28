@@ -20,6 +20,7 @@ from polylogue.archive.artifact_taxonomy import (
 )
 from polylogue.archive.raw_payload.decode import (
     JSONL_RECORD_INSPECTION_BYTES,
+    EmptyJsonlStreamError,
     _sample_jsonl_payload_with_detail,
     jsonl_session_artifact,
 )
@@ -28,7 +29,11 @@ from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
 from polylogue.core.write_hold import check_write_hold_budget
 from polylogue.pipeline.services.process_pool import select_ingest_worker_count
-from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider, is_jsonl_source_path
+from polylogue.sources.dispatch import (
+    detect_provider,
+    detect_provider_from_raw_bytes_evidence,
+    is_jsonl_source_path,
+)
 from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
 from polylogue.storage.runtime import RawSessionRecord
 
@@ -295,6 +300,9 @@ class _FullIngestResult:
     #: succeeded, failed, preparation_deferred, or here: one that lands in none is
     #: indistinguishable from an idle source (polylogue-6q16u).
     excluded: dict[Path, str] = field(default_factory=dict)
+    #: Admitted paths whose provider is the source fallback only because
+    #: detection crashed, with the failure. A shape fallback is not listed.
+    detection_fallbacks: dict[Path, str] = field(default_factory=dict)
     raw_fingerprints: dict[Path, str] = field(default_factory=dict)
     raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
     raw_frontier_sizes: dict[Path, int] = field(default_factory=dict)
@@ -333,6 +341,7 @@ def _full_ingest_result_from_summary(
     raw_deferred: list[Path] | None = None,
     source_payload_read_bytes: int,
     excluded: dict[Path, str] | None = None,
+    detection_fallbacks: dict[Path, str] | None = None,
     raw_fingerprints: dict[Path, str],
     raw_byte_sizes: dict[Path, int],
     raw_frontier_sizes: dict[Path, int] | None = None,
@@ -353,6 +362,7 @@ def _full_ingest_result_from_summary(
         raw_deferred=list(raw_deferred or ()),
         source_payload_read_bytes=source_payload_read_bytes,
         excluded=dict(excluded or {}),
+        detection_fallbacks=dict(detection_fallbacks or {}),
         raw_fingerprints=raw_fingerprints,
         raw_byte_sizes=raw_byte_sizes,
         raw_frontier_sizes=raw_frontier_sizes or {},
@@ -847,6 +857,11 @@ def _browser_capture_provider_from_path(path: Path) -> Provider | None:
 
 
 def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONValue]:
+    return _jsonl_sample_with_failure(path, max_records=max_records)[0]
+
+
+def _jsonl_sample_with_failure(path: Path, *, max_records: int = 32) -> tuple[list[JSONValue], str | None]:
+    """Sample a JSONL file's leading records; the second value names a decode failure."""
     try:
         records, _malformed_lines, _malformed_detail = _sample_jsonl_payload_with_detail(
             path,
@@ -854,14 +869,31 @@ def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONVa
             scan_full=False,
             max_record_bytes=JSONL_RECORD_INSPECTION_BYTES,
         )
-    except ValueError:
-        return []
-    return records
+    except EmptyJsonlStreamError:
+        # An empty capture is a shape fallback, not a detection crash.
+        return [], None
+    except ValueError as exc:
+        return [], _crash(exc)
+    return records, None
 
 
 def _detect_provider_from_path_sample(
     path: Path, fallback_provider: Provider, *, json_document: bool = False
 ) -> Provider:
+    return detect_provider_from_path_sample_evidence(path, fallback_provider, json_document=json_document)[0]
+
+
+def detect_provider_from_path_sample_evidence(
+    path: Path, fallback_provider: Provider, *, json_document: bool = False
+) -> tuple[Provider, str | None]:
+    """Detect a path's provider; the second value names a detection crash.
+
+    ``fallback_provider`` is returned both when no detector claims the sample
+    (a shape outcome) and when reading or decoding the sample failed. The
+    second value is ``None`` for the former and describes the failure for the
+    latter, so a batch can count payloads whose provider is the fallback only
+    because detection crashed (polylogue-fkqxx).
+    """
     if fallback_provider is Provider.HERMES and (json_document or path.suffix.lower() == ".json"):
         # Hermes snapshots have a streaming envelope recognizer. Avoid routing
         # them through the generic document sampler, whose fallback builds the
@@ -871,32 +903,32 @@ def _detect_provider_from_path_sample(
         try:
             with path.open("rb") as handle:
                 if hermes_snapshot_envelope(handle) is not None:
-                    return Provider.HERMES
-        except OSError:
-            return fallback_provider
+                    return Provider.HERMES, None
+        except OSError as exc:
+            return fallback_provider, _crash(exc)
     if fallback_provider is Provider.ANTIGRAVITY and antigravity.looks_like_trajectory_db_path(path):
-        return Provider.ANTIGRAVITY
+        return Provider.ANTIGRAVITY, None
     if hermes_state.looks_like_state_db_path(path) or hermes_verification.looks_like_verification_evidence_db_path(
         path
     ):
-        return Provider.HERMES
+        return Provider.HERMES, None
     if is_jsonl_source_path(str(path)):
-        records = _jsonl_sample_from_path(path)
+        records, failure = _jsonl_sample_with_failure(path)
         if records:
-            return detect_provider(records) or fallback_provider
-        return fallback_provider
+            return detect_provider(records) or fallback_provider, None
+        return fallback_provider, failure
     if json_document or path.suffix.lower() == ".json":
         browser_capture, capture_provider = _browser_capture_prefix_probe(path)
         if browser_capture and capture_provider is not None:
-            return capture_provider
+            return capture_provider, None
         from polylogue.sources.decoder_json import grok_export_item_count
 
         try:
             with path.open("rb") as handle:
                 if grok_export_item_count(handle) is not None:
-                    return Provider.GROK
-        except OSError:
-            return fallback_provider
+                    return Provider.GROK, None
+        except OSError as exc:
+            return fallback_provider, _crash(exc)
         from polylogue.sources.decoders import _iter_json_stream
 
         sample: list[JSONValue] = []
@@ -905,43 +937,56 @@ def _detect_provider_from_path_sample(
                 for record in _iter_json_stream(handle, path.name):
                     detected = detect_provider(record)
                     if detected is not None:
-                        return detected
+                        return detected, None
                     sample.append(record)
                     if len(sample) >= 32:
                         break
-        except (OSError, ValueError):
-            return fallback_provider
-        return detect_provider(sample) or fallback_provider
+        except (OSError, ValueError) as exc:
+            return fallback_provider, _crash(exc)
+        return detect_provider(sample) or fallback_provider, None
     try:
         with path.open("rb") as handle:
             payload = handle.read(_NON_JSON_PROBE_BYTES + 1)
-    except OSError:
-        return fallback_provider
+    except OSError as exc:
+        return fallback_provider, _crash(exc)
     if len(payload) > _NON_JSON_PROBE_BYTES:
-        return fallback_provider
-    return _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
+        return fallback_provider, None
+    provider, evidence = detect_provider_from_raw_bytes_evidence(payload, path.name, fallback_provider)
+    return provider, evidence if evidence.startswith("stream decode error") else None
+
+
+def _crash(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
 
 
 def _jsonl_provider_and_session_artifact(
     path: Path,
     fallback_provider: Provider,
-) -> tuple[Provider, bool]:
+) -> tuple[Provider, bool, str | None]:
+    """Classify a JSONL path from one sample.
+
+    Returns the provider, whether to session-parse the path, and -- when the
+    provider is the fallback because the sample failed to decode -- that
+    failure (polylogue-fkqxx). All three come from the same sample.
+    """
     from polylogue.sources.origin_specs import path_declaration_refuses_session
 
-    records = _jsonl_sample_from_path(path)
-    provider = (detect_provider(records) if records else None) or fallback_provider
+    records, failure = _jsonl_sample_with_failure(path)
+    detected = detect_provider(records) if records else None
+    provider = detected or fallback_provider
+    detection_failure = failure if detected is None else None
     # A ``raw-only`` declaration is terminal: its bytes are evidence and the
     # record shape cannot decide otherwise (polylogue-ximhz). Checked before
     # the content probe so a prompt-history log -- whose rows carry the same
     # ``sessionId`` keys a transcript does -- is never session-parsed.
     if path_declaration_refuses_session(provider, path):
-        return provider, False
+        return provider, False, detection_failure
     if jsonl_session_artifact(path, provider=provider) is not None:
-        return provider, True
+        return provider, True, detection_failure
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
-        return provider, path_classification.parse_as_session
-    return provider, False
+        return provider, path_classification.parse_as_session, detection_failure
+    return provider, False, detection_failure
 
 
 def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Protocol, TypeAlias
 
 from polylogue.archive.raw_payload.decode import JSONValue
 from polylogue.schemas.synthetic.build_wire_formats import normalize_browser_capture_attachments, validate_wire_payload
+from polylogue.schemas.synthetic.conservation import COVERAGE_EXTRA_KEY
 from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.semantic_values import SemanticValueGenerator, _text_for_role
 from polylogue.schemas.synthetic.wire_formats import WireFormat
@@ -369,7 +370,7 @@ def _generate_object(
 
     additional_schema = _schema_record(schema.get("additionalProperties"))
     if self._coverage_witness_mode and additional_schema:
-        extra_name = "__polylogue_coverage_extra__"
+        extra_name = COVERAGE_EXTRA_KEY
         while extra_name in properties:
             extra_name = f"_{extra_name}"
         extra_value = self._generate_from_schema(

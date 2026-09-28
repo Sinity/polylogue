@@ -35,7 +35,6 @@ import pytest
 from devtools import cloud_sentinels, pytest_slot
 from devtools.pytest_slot import (
     BASETEMP_ROOT_ENV,
-    PytestSlotObservationUnavailableError,
     PytestSlotUnavailableError,
     basetemp_root,
     holds_pytest_slot,
@@ -110,6 +109,7 @@ def _install_fake_agentctl(
     # the test installed, never from whatever the workstation has deployed.
     monkeypatch.setenv("PATH", str(directory))
     monkeypatch.setattr(pytest_slot, "POLL_INTERVAL_S", 0.0)
+    monkeypatch.setattr(pytest_slot, "OBSERVATION_BACKOFF_MAX_S", 0.0)
     return Path(str(script) + ".calls.jsonl")
 
 
@@ -131,7 +131,7 @@ if verb == "job start":
     if {receipt!r} is not None:
         with open(sys.argv[-1][:-len(".json")] + ".result.json", "w", encoding="utf-8") as handle:
             handle.write(json.dumps({receipt!r}))
-    print(json.dumps({"job_id": 23, "phase": "queued", "terminal": False}))
+    print(json.dumps({"job_id": 23, "reference": "ref-23", "phase": "queued", "terminal": False}))
 elif verb == "job get":
     index_path = sys.argv[0] + ".get-count"
     try:
@@ -154,6 +154,7 @@ sys.exit(0)
     script = _install_executable(tmp_path / "fakebin", "agentctl", source)
     monkeypatch.setenv("PATH", str(script.parent))
     monkeypatch.setattr(pytest_slot, "POLL_INTERVAL_S", 0.0)
+    monkeypatch.setattr(pytest_slot, "OBSERVATION_BACKOFF_MAX_S", 0.0)
     return Path(str(script) + ".calls.jsonl")
 
 
@@ -389,55 +390,52 @@ def test_transient_get_failure_keeps_waiting_on_the_submitted_job(
     assert _verbs(record) == ["job start", "job get 23", "job get 23", "job get 23"]
 
 
-def test_persistent_get_failures_are_bounded_and_keep_run_evidence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    receipt = {"kind": "polylogue.pytest-slot-result", "status": "success", "exit_code": 0}
-    record = _install_scripted_agentctl(tmp_path, monkeypatch, ["error"], receipt=receipt)
+def test_read_failures_never_abandon_the_job(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run of failed reads is a stall to report, not a reason to cancel.
 
-    with pytest.raises(PytestSlotObservationUnavailableError) as failure:
-        run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
-
-    error = failure.value
-    assert "status for agentctl job 23 was unavailable" in str(error)
-    assert error.cancellation_attempted is True
-    assert error.cancellation_succeeded is True
-    assert error.receipt == receipt
-    assert error.log_path is not None
-    assert len(error.observation_errors) == 3
-    assert _verbs(record) == ["job start", "job get 23", "job get 23", "job get 23", "job cancel 23"]
-    assert not error.log_path.with_suffix(".json").exists(), "successful cancellation removes the launch file"
-    assert error.log_path.with_suffix(".result.json").read_text(encoding="utf-8") == json.dumps(receipt)
-
-
-def test_unresolved_cancel_keeps_launch_file_for_a_possible_queued_start(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+    Anti-vacuity: restore a failure limit and the ten failed reads below end
+    in a cancelled job instead of the terminal result.
+    """
     record = _install_scripted_agentctl(
         tmp_path,
         monkeypatch,
-        ["error"],
-        cancel_state="unresolved",
+        ["error"] * 10 + [{"job_id": 23, "phase": "succeeded", "terminal": True, "exit_code": 0}],
     )
 
-    with pytest.raises(PytestSlotObservationUnavailableError) as failure:
-        run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+    outcome = run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
 
-    error = failure.value
-    assert error.cancellation_attempted is True
-    assert error.cancellation_succeeded is False
-    assert error.log_path.with_suffix(".json").exists(), "unresolved jobs may still read their launch file"
-    assert _verbs(record) == ["job start", "job get 23", "job get 23", "job get 23", "job cancel 23"]
+    assert outcome.returncode == 0
+    assert "job cancel 23" not in _verbs(record)
+    assert _verbs(record).count("job get 23") == 11
 
 
-def test_invalid_get_view_counts_as_an_observation_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    record = _install_scripted_agentctl(tmp_path, monkeypatch, [{"job_id": 99, "terminal": True}])
+def test_reads_address_the_job_by_its_launch_reference(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``job get`` passes the reference ``job start`` returned.
 
-    with pytest.raises(PytestSlotObservationUnavailableError) as failure:
-        run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+    Anti-vacuity: read by bare id and a job whose pueue entry was cleaned is
+    unreadable ("pueue has no task"), so the wait could never end.
+    """
+    record = _install_scripted_agentctl(
+        tmp_path, monkeypatch, [{"job_id": 23, "phase": "succeeded", "terminal": True, "exit_code": 0}]
+    )
 
-    assert "invalid view" in str(failure.value)
-    assert len(_calls(record)) == 5
+    run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+
+    gets = [call["argv"] for call in _calls(record) if "get" in call["argv"]]
+    assert gets and all(call[-2:] == ["--reference", "ref-23"] for call in gets)
+
+
+def test_an_invalid_view_is_waited_through(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    record = _install_scripted_agentctl(
+        tmp_path,
+        monkeypatch,
+        [{"job_id": 99, "terminal": True}, {"job_id": 23, "phase": "succeeded", "terminal": True, "exit_code": 0}],
+    )
+
+    outcome = run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+
+    assert outcome.returncode == 0
+    assert "job cancel 23" not in _verbs(record)
 
 
 @pytest.mark.parametrize(

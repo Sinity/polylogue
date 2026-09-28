@@ -273,18 +273,24 @@ durable evidence.
 ### Interrupted mutations
 
 An executor-routed mutation that is interrupted before audit finalization
-leaves a nonterminal `operation_runs` row. The daemon classifies these once,
-explicitly, at startup under its own writer lease (`polylogued run` ->
-`recover_interrupted_operations`); it is not a side effect of constructing an
-`OperationExecutor`, so a request handler never reclassifies anything.
+leaves a nonterminal `operation_runs` row. The daemon resolves these at
+startup under its own writer lease (`polylogued run` ->
+`recover_interrupted_operations`). A later mutation request first resolves
+every dead run whose family its process has loaded; it refuses while dead work
+it cannot route overlaps its targets or would delete archive files, and asks
+for a retry after recovering a file reset under its already-open handles.
 
-Only `mutate-delete-session` is classifiable from committed target state: a
-session either exists or does not. Every other routed family, and any
-operation version this build no longer recognizes, fails closed as an
-operator-blocking `unknown` (`terminal_reason = 'recovery_unknown'`) that
-keeps later overlapping mutations refused rather than racing an effect nobody
-has proved. There is no adjudication route; deciding every family's outcome
-from durable evidence is tracked as `polylogue-aw070`.
+Every mutation family declares a recovery route
+(`polylogue/operations/mutation_replay.py`). Most re-apply the recorded plan:
+their `apply` converges from any state an interrupted apply of the same plan
+can leave. The annotation batch import commits in one transaction, so its
+batch row shows whether it landed. An interrupted ingest is terminalized as
+not replayable; its accepted source generation stays retained but is not yet
+re-driven. The outcome is terminal and never `unknown`:
+`recovered_complete`, `recovered_absent`, `recovery_not_replayable` (a family
+or version this runtime no longer declares), or `recovery_replay_failed` with
+the error. None of them blocks a later mutation of the same targets, and there
+is no operator adjudication route.
 
 ### Measuring Codex UUID-title coverage
 

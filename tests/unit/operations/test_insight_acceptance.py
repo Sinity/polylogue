@@ -414,3 +414,70 @@ def test_staged_preview_replay_retains_its_frozen_predecessor_ref(
 
     assert recovered.machine_parts(machine)[0]["preview_ref"] == preview_ref
     assert recovered.preview_for_principal(preview_ref, principal).plan.plan_hash == plan.plan_hash
+
+
+@pytest.mark.parametrize("crash", ["before-apply", "after-apply"])
+def test_killed_sealed_insight_page_is_terminal_at_restart_not_unknown(tmp_path: Path, crash: str) -> None:
+    """A page killed after its sealed start is terminalized at restart, never left ``unknown``.
+
+    Recovery does not re-derive the page: its completion is a historical part
+    receipt only the staged owner writes, and replaying a ``full``-scope page
+    would rebuild outside its targets.
+
+    Anti-vacuity: re-derive through ``InsightsRebuildActuator.apply`` in its
+    ``recover`` and the run ends ``recovered_complete`` with no part receipt.
+    """
+    from polylogue.operations.mutation_replay import recover_interrupted_operations
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from tests.unit.operations.test_mutation_actuators import _seed_archive_session
+
+    bootstrap_archive_root(tmp_path)
+    session_id = _seed_archive_session(tmp_path, native_id="killed-page")
+    audit = AuditRepository.for_archive_root(tmp_path)
+    principal = _principal()
+    targets = (AcceptedInsightTarget(f"session:{session_id}", "required"),)
+    provisional = AcceptedInsightPart(
+        "pending:one",
+        "pending-auth:one",
+        "0" * 64,
+        0,
+        1,
+        "0" * 64,
+        None,
+        "explicit",
+        "index-generation:/archive/fixture/index.db",
+        "2",
+        targets,
+    )
+    digest = insight_manifest_digest((provisional,))
+    plan = _page(scope_kind="explicit", ordinal=0, count=1, digest=digest, previous_preview_ref=None, targets=targets)
+    binding = runtime_operation_binding(InsightsRebuildActuator())
+    machine = MachineRequestBinding(
+        "a" * 64, "request:killed-page", principal.actor_ref, "f" * 64, "maintenance.insights.rebuild"
+    )
+    acceptance = InsightAcceptance(audit, machine, principal)
+    preview = acceptance.stage_preview(plan)
+    authorization = acceptance.ensure_staged_authorization(OperationExecutor(audit=audit), binding, preview)
+    accepted = acceptance.seal(
+        head_preview_ref=preview.preview_ref,
+        page_count=1,
+        manifest_digest=digest,
+        deadline_unix_ms=9_999_999_999_999,
+    )
+    with audit.bind_machine_request(machine, transition="consume_authorization_and_start", part=accepted[0].ordinal):
+        operation_id = audit.consume_authorization_and_start(preview, authorization)
+    if crash == "after-apply":
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            InsightsRebuildActuator().apply(preview.plan, InsightsRebuildArgs(archive))
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        conn.execute(
+            "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
+        )
+        conn.commit()
+
+    recover_interrupted_operations(tmp_path)
+
+    with sqlite3.connect(tmp_path / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone() == ("failed", "recovery_not_replayable")

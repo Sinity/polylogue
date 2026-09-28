@@ -2304,7 +2304,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 )
             )
         else:
-            from polylogue.operations.mutation_transaction import recover_interrupted_operations
+            from polylogue.operations.mutation_replay import recover_interrupted_operations
 
             await write_coordinator.run_sync(
                 "daemon.operation_recovery.startup", recover_interrupted_operations, archive_root_path

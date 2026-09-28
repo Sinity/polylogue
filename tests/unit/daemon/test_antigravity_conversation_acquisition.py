@@ -187,6 +187,44 @@ def test_common_live_batch_admits_conversation_through_vendor_route(
     assert result.failed == []
 
 
+def test_failed_conversion_still_records_the_attempted_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A conversion that raises must still capture the .pb revision it tried.
+
+    Without the observation, the failed-cursor record keeps the old exclusion
+    observation and the watcher re-runs the failing conversion every poll.
+
+    Anti-vacuity: move the observation capture back after conversion and the
+    failed path carries no captured observation here.
+    """
+    from polylogue.sources import source_parsing
+
+    root = tmp_path / "antigravity"
+    conversation = root / "conversations" / "cascade.pb"
+    conversation.parent.mkdir(parents=True)
+    conversation.write_bytes(b"opaque protobuf")
+
+    def raising(*_args: object, **_kwargs: object) -> Iterator[object]:
+        raise RuntimeError("language server unavailable")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(source_parsing, "iter_antigravity_language_server_sessions", raising)
+    index_db = tmp_path / "cursor.db"
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="antigravity", root=root),),
+        cursor=CursorStore(index_db),
+        parser_fingerprint="test-parser",
+    )
+
+    result = processor._ingest_full_paths_sync([conversation], source_name="antigravity")
+
+    assert result.failed == [conversation]
+    assert conversation in result.captured_file_observations
+
+
 def test_common_live_batch_retries_a_failed_vendor_conversion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

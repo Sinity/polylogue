@@ -682,3 +682,19 @@ class TestScoreSessionTitle:
             depth = _evidence_float(title.evidence, "depth")
             assert depth is not None
             assert depth > 4
+
+
+def test_reject_pin_matches_both_array_path_spellings() -> None:
+    """A pin written as ``$.a[].b`` rejects the ``$.a[*].b`` candidate.
+
+    Anti-vacuity: compare pin paths without ``normalize_array_path`` and the
+    rejected candidate is selected.
+    """
+    candidates = [
+        SemanticCandidate(path="$.entries[*].created", role="session_title", confidence=0.9),
+        SemanticCandidate(path="$.entries[*].summary", role="session_title", confidence=0.5),
+    ]
+
+    best = select_best_roles(candidates, pins={"$.entries[].created": {"session_title"}})
+
+    assert best["session_title"].path == "$.entries[*].summary"

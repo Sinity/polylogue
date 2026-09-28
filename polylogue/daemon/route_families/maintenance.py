@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.daemon.route_types import RouteMethod, RouteSpec, RouteStability
+from polylogue.daemon.route_types import NonReplayable, RouteMethod, RouteSpec, RouteStability
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -80,6 +80,7 @@ def _maintenance_route(
         migration_reason=migration_reason,
         kind="maintenance",
         stability=stability,
+        non_replayable=NonReplayable("mutation", "Maintenance and intake POSTs submit work to the daemon write owner."),
     )
 
 

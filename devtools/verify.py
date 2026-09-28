@@ -43,7 +43,6 @@ from devtools.pytest_invocation import (
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
     WORKTREE_PROVENANCE_ENV,
-    PytestSlotObservationUnavailableError,
     PytestSlotUnavailableError,
     run_pytest,
     run_pytest_isolated,
@@ -759,15 +758,6 @@ def _run(
             outcome = executor(command, cwd=str(ROOT), env=env, root=ROOT, stdout=sys.stderr)
         except PytestSlotUnavailableError as exc:
             early_metadata = {"diagnosis": "pytest_slot_unavailable", "error": str(exc)}
-            if isinstance(exc, PytestSlotObservationUnavailableError):
-                early_metadata["pytest_slot_observation"] = {
-                    "job_id": exc.job_id,
-                    "errors": exc.observation_errors,
-                    "cancellation_attempted": exc.cancellation_attempted,
-                    "cancellation_succeeded": exc.cancellation_succeeded,
-                    "pytest_slot_receipt": exc.receipt,
-                    "pytest_slot_log": str(exc.log_path),
-                }
             runtime_evidence = getattr(exc, "runtime_evidence", None)
             if runtime_evidence is not None:
                 early_metadata["pytest_slot_terminal"] = runtime_evidence

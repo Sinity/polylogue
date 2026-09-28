@@ -8,7 +8,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from polylogue.config import Config
-from polylogue.pipeline.services.indexing import IndexService, ensure_index
+from polylogue.pipeline.services.indexing import IndexService
+from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_async
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.storage_records import make_content_block, make_message, make_session, save_session_to_archive
 
@@ -220,7 +221,8 @@ class TestIndexService:
         service = IndexService(_config(), backend=sqlite_backend)
 
         # Ensure FTS table exists via this backend
-        await ensure_index(sqlite_backend)
+        async with sqlite_backend.connection() as conn:
+            await ensure_fts_index_async(conn)
 
         # get_index_status should use the same backend and find the table
         status = await service.get_index_status()

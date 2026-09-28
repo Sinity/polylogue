@@ -459,11 +459,9 @@ def test_upsert_closes_connection_on_embedding_error(mock_provider: MutableSqlit
     ("method_name", "provider", "embedding_result"),
     [
         ("query", None, [[0.1, 0.2]]),
-        ("query_by_provider", "claude-ai", [[0.1, 0.2]]),
         ("query", None, []),
-        ("query_by_provider", "claude-ai", []),
     ],
-    ids=["query", "query-by-provider", "query-empty", "query-by-provider-empty"],
+    ids=["query", "query-empty"],
 )
 def test_query_route_contract(
     mock_provider: MutableSqliteVecProvider,
@@ -494,21 +492,13 @@ def test_query_route_contract(
     connection.close = MagicMock()
     mock_provider._get_connection = MagicMock(return_value=connection)
 
-    if method_name == "query":
-        result = mock_provider.query("search text", limit=10)
-    else:
-        assert provider is not None
-        result = mock_provider.query_by_provider("search text", provider=provider, limit=10)
+    result = mock_provider.query("search text", limit=10)
 
     assert embedding_calls == [(["search text"], "query")]
     if embedding_result:
         assert result == [("msg-1", 0.5), ("msg-2", 0.7)]
         assert connection.close.called
-        if provider is None:
-            assert all("r.origin = ?" not in sql for sql, _ in executed_queries)
-        else:
-            assert any("r.origin = ?" in sql for sql, _ in executed_queries)
-            assert any(provider in str(params) for _, params in executed_queries)
+        assert all("r.origin = ?" not in sql for sql, _ in executed_queries)
     else:
         assert result == []
         # Provider may open a connection for early existence check before
@@ -516,50 +506,6 @@ def test_query_route_contract(
         # should have been closed by the caller.
         if mock_provider._get_connection.called:
             assert connection.close.called
-
-
-@pytest.mark.parametrize(
-    ("msg_count", "pending", "operational_error"),
-    [(42, 5, False), (0, 0, False), (0, 0, True)],
-    ids=["counts", "zeros", "missing-tables"],
-)
-def test_get_embedding_stats_contract(
-    mock_provider: MutableSqliteVecProvider,
-    msg_count: int,
-    pending: int,
-    operational_error: bool,
-) -> None:
-    """Stats queries must tolerate absent tables and always close the connection."""
-    connection = MagicMock()
-
-    def execute(sql: str, params: tuple[object, ...] | None = None) -> MagicMock:
-        if operational_error:
-            raise sqlite3.OperationalError("Table not found")
-        inspected_table = params[0] if "sqlite_master" in sql and params else None
-        if inspected_table == "sessions":
-            return MagicMock(fetchone=MagicMock(return_value=None))
-        # embedded_message_count_sync (polylogue-q88p) checks
-        # message_embedding_refs, then message_embeddings_meta, then
-        # message_embeddings_rowids before falling back to the raw vec0
-        # table this fixture pins its count against -- report the first
-        # three as absent so the count query lands on the same
-        # "message_embeddings" branch this fixture always exercised.
-        if inspected_table in {"message_embedding_refs", "message_embeddings_meta", "message_embeddings_rowids"}:
-            return MagicMock(fetchone=MagicMock(return_value=None))
-        if "message_embeddings" in sql:
-            return MagicMock(fetchone=MagicMock(return_value=[msg_count]))
-        if "embedding_status" in sql:
-            return MagicMock(fetchone=MagicMock(return_value=[pending]))
-        return MagicMock()
-
-    connection.execute = execute
-    connection.close = MagicMock()
-    mock_provider._get_connection = MagicMock(return_value=connection)
-
-    stats = mock_provider.get_embedding_stats()
-
-    assert stats == {"embedded_messages": msg_count, "pending_sessions": pending}
-    assert connection.close.called
 
 
 @pytest.mark.parametrize(
