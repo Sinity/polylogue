@@ -28,6 +28,7 @@ from polylogue.storage.sqlite.archive_tiers import (
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ARCHIVE_FORMAT_LINEAGE
 from polylogue.storage.sqlite.archive_tiers.index_convergence import INDEX_BENIGN_DDL_REGISTRY
 from polylogue.storage.sqlite.archive_tiers.ops import OPS_BENIGN_DDL_CONVERGENCE_PLAN
+from polylogue.storage.sqlite.archive_tiers.schema_identity import _normalize_schema_sql
 from polylogue.storage.sqlite.archive_tiers.schema_inventory import _objects_from_connection
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.schema_manifest import SchemaManifest, canonical_schema_manifest, schema_manifest_diff
@@ -323,6 +324,19 @@ def _ddl_objects(ddl: str, tier: ArchiveTier) -> dict[str, str] | None:
         connection.close()
 
 
+def _semantic_ddl_objects(ddl: str, tier: ArchiveTier) -> dict[tuple[str, str], str] | None:
+    """Render the normalized schema manifest projection for arbitrary DDL."""
+    connection = sqlite3.connect(":memory:")
+    try:
+        connection.executescript(ddl)
+        manifest = SchemaManifest.from_connection(connection, tier)
+        return {(kind, name): definition for kind, name, definition in manifest.objects}
+    except sqlite3.Error:
+        return None
+    finally:
+        connection.close()
+
+
 def _is_retirement_only(old_ddl: str, new_ddl: str, tier: ArchiveTier) -> bool:
     """True when the rendered DDL differs solely by declared retired removals.
 
@@ -373,7 +387,54 @@ def _is_retirement_only(old_ddl: str, new_ddl: str, tier: ArchiveTier) -> bool:
             if column_ref.startswith(prefix)
         ):
             return False
+        # Removing a retired column necessarily changes sqlite_schema.sql.
+        # Recreate the old table, apply precisely the declared DROP COLUMN
+        # operation(s), and require SQLite's resulting definition to match
+        # the candidate. This includes CHECKs, foreign keys and table options.
+        old_table_sql = _table_sql(old_ddl, name)
+        new_table_sql = _table_sql(new_ddl, name)
+        if old_table_sql is None or new_table_sql is None:
+            return False
+        retired_columns = [
+            ref.split(":", 1)[1].split(".", 1)[1]
+            for ref in retired
+            if ref.startswith(f"column:{name}.")
+            and f"{tier.value}:{ref}" in old_objects
+            and f"{tier.value}:{ref}" not in new_objects
+        ]
+        try:
+            conn = sqlite3.connect(":memory:")
+            conn.execute(old_table_sql)
+            for column in retired_columns:
+                quoted_table = name.replace('"', '""')
+                quoted_column = column.replace('"', '""')
+                conn.execute(f'ALTER TABLE "{quoted_table}" DROP COLUMN "{quoted_column}"')
+            expected_row = conn.execute(
+                "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?", (name,)
+            ).fetchone()
+            expected_sql = expected_row[0] if expected_row else None
+        except sqlite3.Error:
+            return False
+        finally:
+            if "conn" in locals():
+                conn.close()
+        if not isinstance(expected_sql, str):
+            return False
+        if _normalize_schema_sql(expected_sql) != _normalize_schema_sql(new_table_sql):
+            return False
     return True
+
+
+def _table_sql(ddl: str, name: str) -> str | None:
+    conn = sqlite3.connect(":memory:")
+    try:
+        conn.executescript(ddl)
+        row = conn.execute("SELECT sql FROM sqlite_schema WHERE type='table' AND name=?", (name,)).fetchone()
+        return str(row[0]) if row else None
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
 
 
 def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[str]:
@@ -455,8 +516,15 @@ def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[
                 f"{tier.value}: added durable migrations without a schema-version bump: {sorted(added_versions)}"
             )
 
+        old_manifest = _semantic_ddl_objects(old_ddl, tier)
+        new_manifest = _semantic_ddl_objects(new_ddl, tier)
+        schema_changed = (
+            old_manifest != new_manifest
+            if old_manifest is not None and new_manifest is not None
+            else old_ddl != new_ddl
+        )
         if (
-            old_ddl != new_ddl
+            schema_changed
             and old_version == new_version
             and not new_fresh_lineage
             and not _is_retirement_only(old_ddl, new_ddl, tier)

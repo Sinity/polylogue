@@ -132,7 +132,13 @@ def test_durable_evolution_compares_rendered_ddl_transformations(
     monkeypatch.setattr(
         verify_schema_manifest,
         "_render_schema_state",
-        lambda ref: _schema_state(source_ddl="before" if ref == "base" else "after"),
+        lambda ref: _schema_state(
+            source_ddl=(
+                "CREATE TABLE sample (value TEXT NOT NULL) STRICT;"
+                if ref == "base"
+                else "CREATE TABLE sample (value TEXT) STRICT;"
+            )
+        ),
     )
     monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
 
@@ -269,6 +275,56 @@ def test_durable_evolution_accepts_a_declared_retired_column_of_a_surviving_tabl
     monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
 
     assert verify_schema_manifest._durable_ddl_evolution_violations() == []
+
+
+def test_durable_evolution_ignores_standalone_ddl_comments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: a raw-DDL comparison would reject an unchanged schema."""
+    before = "CREATE TABLE keeper (a TEXT PRIMARY KEY) STRICT;"
+    after = "-- metadata-only note\nCREATE TABLE keeper (a TEXT PRIMARY KEY) STRICT;"
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(source_ddl=before if ref == "base" else after),
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+    assert verify_schema_manifest._durable_ddl_evolution_violations() == []
+
+
+def test_durable_evolution_fails_closed_when_schema_manifest_cannot_render(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity: two invalid DDL states must not collapse to equal None manifests."""
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(source_ddl="CREATE TABLE sample (value TEXT" if ref == "base" else "nonsense DDL"),
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+    assert (
+        "source: rendered DDL changed without a schema-version bump"
+        in verify_schema_manifest._durable_ddl_evolution_violations()
+    )
+
+
+def test_retired_column_does_not_hide_a_table_check_edit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: changing a CHECK beside a retired field must require evolution."""
+    before = _RETIRED_COLUMN_DDL
+    after = _AFTER_COLUMN_RETIREMENT_DDL.replace(
+        "detail TEXT NOT NULL DEFAULT ''", "detail TEXT NOT NULL DEFAULT '' CHECK(length(detail) < 20)"
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(source_ddl=before if ref == "base" else after),
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+    assert (
+        "source: rendered DDL changed without a schema-version bump"
+        in verify_schema_manifest._durable_ddl_evolution_violations()
+    )
 
 
 def test_durable_evolution_rejects_a_redefined_column_beside_a_retired_one(
