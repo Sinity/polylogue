@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from devtools.schema_workload_profile import _stream_families, main, measure
+from devtools.schema_workload_profile import _stream_families, default_source_root, main, measure
 from polylogue.schemas.synthetic.workload import generate_workload_corpus
 
 
@@ -56,3 +56,9 @@ def test_write_refuses_when_no_streams_were_measured(tmp_path: Path, monkeypatch
     empty.mkdir()
     assert main(["--origin", "claude-code", "--source", str(empty), "--write"]) == 1
     assert target.read_text(encoding="utf-8") == "committed"
+
+
+def test_default_roots_come_from_the_source_registry() -> None:
+    """Anti-vacuity: a hard-coded root that disagrees with Polylogue's own source registry measures nothing."""
+    assert default_source_root("claude-code") == Path("~/.claude/projects").expanduser()
+    assert default_source_root("codex") == Path("~/.codex/sessions").expanduser()

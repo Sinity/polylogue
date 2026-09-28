@@ -4,12 +4,12 @@
  "non_ascii_by_kind": {
   "assistant_message": 0.9082,
   "custom_tool_call": 0.0207,
-  "custom_tool_call_output": 0.0032,
-  "developer_message": 0.0817,
+  "custom_tool_call_output": 0.0816,
+  "developer_message": 0.1315,
   "function_call": 0.0059,
-  "function_call_output": 0.1253,
-  "record:response_item:agent_message": 0.0517,
-  "user_message": 0.1748
+  "function_call_output": 0.1266,
+  "reasoning": 0.0,
+  "user_message": 0.1697
  },
  "origin": "codex",
  "shares": {
@@ -19,7 +19,7 @@
   "codex_exec_envelope_share": 0.6149,
   "codex_exec_error_share": 0.0783,
   "nested_subagents_per_subagent": 0.0073,
-  "non_ascii_text_share": 0.1577,
+  "non_ascii_text_share": 0.1167,
   "orphan_subagents_per_session": 0.0027,
   "sidecar_share_of_large": 0.0,
   "tool_error_share": 0.03
@@ -106,7 +106,7 @@
      "14": 25000.0,
      "15": 21000.0,
      "16": 22000.0,
-     "17": 84.0,
+     "17": 18.0,
      "18": 39.0,
      "19": 45.0,
      "20": 51.0,
@@ -622,7 +622,7 @@
      "14": 17000.0,
      "15": 16000.0,
      "16": 19000.0,
-     "17": 22.0,
+     "17": 9.3,
      "5": 78.0,
      "6": 7300.0,
      "7": 28000.0,
@@ -1011,16 +1011,16 @@
   }
  },
  "subagents_per_session": {
-  "0": 4300,
-  "1": 72,
-  "2": 65,
-  "3": 46,
-  "4": 16,
-  "5": 13,
-  "6": 10,
-  "7": 11,
-  "8": 5,
-  "9": 4
+  "0": 4300.0,
+  "1": 72.0,
+  "2": 65.0,
+  "3": 46.0,
+  "4": 16.0,
+  "5": 13.0,
+  "6": 10.0,
+  "7": 11.0,
+  "8": 5.0,
+  "9": 4.0
  },
  "template_strings": {
   "record:compacted": {
@@ -1352,6 +1352,19 @@
      "type": "str"
     },
     "weight": 49000.0
+   },
+   {
+    "skeleton": {
+     "payload": {
+      "memory_citation": "null",
+      "message": "str",
+      "phase": "str",
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 9.0
    }
   ],
   "record:event_msg:context_compacted": [
@@ -1869,6 +1882,22 @@
      "type": "str"
     },
     "weight": 1700.0
+   },
+   {
+    "skeleton": {
+     "payload": {
+      "audio": [],
+      "images": [],
+      "local_audio": [],
+      "local_images": [],
+      "message": "str",
+      "text_elements": [],
+      "type": "str"
+     },
+     "timestamp": "str",
+     "type": "str"
+    },
+    "weight": 3.0
    }
   ],
   "record:inter_agent_communication_metadata": [
@@ -2402,5 +2431,6 @@
    }
   ]
  },
+ "tool_names": {},
  "version": 1
 }

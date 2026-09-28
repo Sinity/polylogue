@@ -81,6 +81,36 @@ def _safe_token(value: object) -> str | None:
     return value if isinstance(value, str) and _IDENTIFIER.match(value) else None
 
 
+_SOURCES_ROOT = Path(__file__).resolve().parents[2] / "sources"
+
+
+@cache
+def published_kind_tokens() -> frozenset[str]:
+    """Record-type vocabulary already public in Polylogue's own source adapters.
+
+    A record ``type``/subtype value is published into a profile only when it
+    appears as a string literal in ``polylogue/sources``; any other value is
+    source data, not vocabulary, and is folded away.
+    """
+    import ast
+
+    tokens: set[str] = set()
+    for path in sorted(_SOURCES_ROOT.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and _IDENTIFIER.match(node.value):
+                tokens.add(node.value)
+    return frozenset(tokens)
+
+
+def _kind(base: object, subtype: object) -> str:
+    vocabulary = published_kind_tokens()
+    base_token = _safe_token(base)
+    if base_token is None or base_token not in vocabulary:
+        return "record:other"
+    subtype_token = _safe_token(subtype)
+    return f"record:{base_token}:{subtype_token}" if subtype_token in vocabulary else f"record:{base_token}"
+
+
 def classify_claude_code_record(record: Mapping[str, object]) -> str:
     """Return the workload kind of one Claude Code transcript record."""
     record_type = record.get("type")
@@ -101,17 +131,14 @@ def classify_claude_code_record(record: Mapping[str, object]) -> str:
         if "thinking" in block_types:
             return "assistant_thinking"
         return "assistant_text"
-    base = _safe_token(record_type)
-    if base is None:
-        return "record:other"
     data = record.get("data")
     attachment = record.get("attachment")
-    subtype = _safe_token(
+    subtype = (
         (data.get("type") if isinstance(data, Mapping) else None)
         or (attachment.get("type") if isinstance(attachment, Mapping) else None)
         or record.get("subtype")
     )
-    return f"record:{base}:{subtype}" if subtype else f"record:{base}"
+    return _kind(record_type, subtype)
 
 
 def classify_codex_record(record: Mapping[str, object]) -> str:
@@ -142,11 +169,88 @@ def classify_codex_record(record: Mapping[str, object]) -> str:
             return str(payload_type)
     if record_type == "event_msg" and payload_type == "token_count":
         return "event_token_count"
-    base = _safe_token(record_type)
-    if base is None:
-        return "record:other"
-    subtype = _safe_token(payload_type)
-    return f"record:{base}:{subtype}" if subtype else f"record:{base}"
+    return _kind(record_type, payload_type)
+
+
+#: Claude Code's persisted-output wrapper, which names the full size of the
+#: result it moved into a tool-results sidecar.
+PERSISTED_OUTPUT = "<persisted-output>"
+_PERSISTED_SIZE = re.compile(r"Output too large \(([0-9.]+)\s*(B|KB|MB|GB)\)")
+_SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
+
+
+def persisted_output_size(body: str) -> int | None:
+    """Full size, in characters, of a result moved into a sidecar, or None."""
+    if not body.startswith(PERSISTED_OUTPUT):
+        return None
+    match = _PERSISTED_SIZE.search(body[:400])
+    return int(float(match.group(1)) * _SIZE_UNITS[match.group(2)]) if match else None
+
+
+def _compact(value: object) -> str:
+    return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
+def measured_text(origin: str, kind: str, record: Mapping[str, object]) -> str | None:
+    """The dominant variable-size text of a relational record, or None.
+
+    This is the field whose length and character class the profile measures
+    and the renderer reproduces: the classified block's text, thinking, tool
+    input or result body (Claude Code); the message text, call arguments or
+    input, output, or reasoning content (Codex).
+    """
+    if kind.startswith("record:") or kind == "legacy":
+        return None
+    if origin == "claude-code":
+        message = record.get("message")
+        content = message.get("content") if isinstance(message, Mapping) else None
+        if isinstance(content, str):
+            return content
+        wanted = {"assistant_tool_use": "tool_use", "user_tool_result": "tool_result", "assistant_thinking": "thinking"}
+        blocks = [block for block in content if isinstance(block, Mapping)] if isinstance(content, list) else []
+        block = next((item for item in blocks if item.get("type") == wanted.get(kind)), blocks[0] if blocks else None)
+        if not isinstance(block, Mapping):
+            return None
+        if kind == "assistant_tool_use":
+            return _compact(block.get("input"))
+        if kind == "user_tool_result":
+            return _compact(block.get("content") or "")
+        if kind == "assistant_thinking":
+            return str(block.get("thinking") or "")
+        return str(block.get("text") or "")
+    payload = record.get("payload")
+    if not isinstance(payload, Mapping):
+        return None
+    if kind.endswith("_message"):
+        content = payload.get("content")
+        if isinstance(content, list):
+            return "".join(str(item.get("text") or "") for item in content if isinstance(item, Mapping))
+        return None
+    if kind == "function_call":
+        return str(payload.get("arguments") or "")
+    if kind == "custom_tool_call":
+        return str(payload.get("input") or "")
+    if kind in {"function_call_output", "custom_tool_call_output"}:
+        return _compact(payload.get("output") or "")
+    if kind == "reasoning":
+        return str(payload.get("encrypted_content") or "")
+    return None
+
+
+def text_measure(origin: str, kind: str, record: Mapping[str, object]) -> int | None:
+    """Length of a relational record's dominant text, or None.
+
+    A Claude Code result moved into a sidecar counts at its full size, so the
+    large-result tail and the sidecar share are measured on one population.
+    """
+    text = measured_text(origin, kind, record)
+    if text is None:
+        return None
+    if origin == "claude-code" and kind == "user_tool_result":
+        persisted = persisted_output_size(text)
+        if persisted is not None:
+            return persisted
+    return len(text)
 
 
 # ---------------------------------------------------------------------------
@@ -217,50 +321,6 @@ def published_field_names(origin: str) -> frozenset[str]:
     return frozenset(names)
 
 
-def text_measure(origin: str, kind: str, record: Mapping[str, object]) -> int | None:
-    """Length of a relational kind's dominant variable-size field, or None."""
-    if kind.startswith("record:") or kind == "legacy":
-        return None
-    if origin == "claude-code":
-        message = record.get("message")
-        content = message.get("content") if isinstance(message, Mapping) else None
-        if isinstance(content, str):
-            return len(content)
-        wanted = {"assistant_tool_use": "tool_use", "user_tool_result": "tool_result", "assistant_thinking": "thinking"}
-        blocks = [block for block in content if isinstance(block, Mapping)] if isinstance(content, list) else []
-        first = next(
-            (block for block in blocks if block.get("type") == wanted.get(kind)), blocks[0] if blocks else None
-        )
-        if not isinstance(first, Mapping):
-            return None
-        if kind == "assistant_tool_use":
-            return len(json.dumps(first.get("input"), separators=(",", ":")))
-        if kind == "user_tool_result":
-            body = first.get("content")
-            return len(body) if isinstance(body, str) else len(json.dumps(body, separators=(",", ":")))
-        if kind == "assistant_thinking":
-            return len(str(first.get("thinking") or ""))
-        return len(str(first.get("text") or ""))
-    payload = record.get("payload")
-    if not isinstance(payload, Mapping):
-        return None
-    if kind.endswith("_message"):
-        content = payload.get("content")
-        if isinstance(content, list):
-            return sum(len(str(item.get("text") or "")) for item in content if isinstance(item, Mapping))
-        return None
-    if kind == "function_call":
-        return len(str(payload.get("arguments") or ""))
-    if kind == "custom_tool_call":
-        return len(str(payload.get("input") or ""))
-    if kind in {"function_call_output", "custom_tool_call_output"}:
-        output = payload.get("output")
-        return len(output) if isinstance(output, str) else len(json.dumps(output, separators=(",", ":")))
-    if kind == "reasoning":
-        return len(str(payload.get("encrypted_content") or ""))
-    return None
-
-
 def string_lengths(value: object, depth: int = 0) -> Iterator[int]:
     """Lengths of the string leaves of a record (template kinds)."""
     if depth > _SKELETON_DEPTH:
@@ -304,7 +364,7 @@ class Histogram:
     def from_payload(cls, payload: Mapping[str, object] | None) -> Histogram:
         if not payload:
             return cls((0,), (1.0,))
-        items = sorted((int(key), float(value)) for key, value in payload.items() if float(value) > 0)
+        items = sorted((int(key), _number(value)) for key, value in payload.items() if _number(value) > 0)
         return cls(tuple(item[0] for item in items), tuple(item[1] for item in items))
 
     @property
@@ -347,9 +407,9 @@ class StreamProfile:
         start = raw_start if isinstance(raw_start, Mapping) else {}
         return cls(
             records=Histogram.from_payload(_mapping(payload.get("records"))),
-            start={str(k): float(v) for k, v in start.items()},
+            start={str(k): _number(v) for k, v in start.items()},
             transitions={
-                str(k): {str(k2): float(v2) for k2, v2 in _mapping(v).items()} for k, v in transitions.items()
+                str(k): {str(k2): _number(v2) for k2, v2 in _mapping(v).items()} for k, v in transitions.items()
             },
             lengths={str(k): Histogram.from_payload(_mapping(v)) for k, v in lengths.items()},
             gap_ms=Histogram.from_payload(_mapping(payload.get("gap_ms"))),
@@ -373,6 +433,11 @@ def _mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
 
 
+def _number(value: object) -> float:
+    """A profile number; anything else (a malformed entry) weighs nothing."""
+    return float(value) if isinstance(value, int | float) and not isinstance(value, bool) else 0.0
+
+
 def _weighted(rng: random.Random, weights: Mapping[str, float]) -> str:
     keys = tuple(weights)
     values = tuple(weights[key] for key in keys)
@@ -386,7 +451,7 @@ class WorkloadProfile:
     streams: Mapping[str, StreamProfile]
     #: Subagent transcripts per main session.
     subagents_per_session: Histogram
-    #: Share of main sessions that have at least one subagent transcript.
+    #: Named rates and conditional shares (see ``devtools schema workload-profile``).
     shares: Mapping[str, float]
     #: Byte share of this origin in the measured source set.
     source_bytes: int
@@ -398,6 +463,8 @@ class WorkloadProfile:
     templates: Mapping[str, tuple[tuple[object, float], ...]] = field(default_factory=dict)
     #: String-leaf lengths per template kind.
     template_strings: Mapping[str, Histogram] = field(default_factory=dict)
+    #: Tool-call names (modelled tools only; others fold into ``other``).
+    tool_names: Mapping[str, float] = field(default_factory=dict)
 
     @classmethod
     def from_payload(cls, payload: Mapping[str, object]) -> WorkloadProfile:
@@ -408,8 +475,9 @@ class WorkloadProfile:
             streams={str(name): StreamProfile.from_payload(_mapping(value)) for name, value in streams.items()},
             subagents_per_session=Histogram.from_payload(_mapping(payload.get("subagents_per_session"))),
             shares={str(k): float(v) for k, v in shares.items() if isinstance(v, int | float)},
-            source_bytes=int(payload.get("source_bytes") or 0),
-            main_sessions=int(payload.get("main_sessions") or 0),
+            source_bytes=int(_number(payload.get("source_bytes"))),
+            main_sessions=int(_number(payload.get("main_sessions"))),
+            tool_names={str(k): _number(v) for k, v in _mapping(payload.get("tool_names")).items() if _number(v) > 0},
             non_ascii_by_kind={
                 str(k): float(v)
                 for k, v in _mapping(payload.get("non_ascii_by_kind")).items()
@@ -417,7 +485,7 @@ class WorkloadProfile:
             },
             templates={
                 str(kind): tuple(
-                    (entry["skeleton"], float(entry["weight"]))
+                    (entry["skeleton"], _number(entry.get("weight")))
                     for entry in entries
                     if isinstance(entry, Mapping) and "skeleton" in entry
                 )
@@ -632,7 +700,43 @@ class _Clock:
 # Claude Code
 # ---------------------------------------------------------------------------
 
-_CC_TOOLS = ("Bash", "Read", "Edit", "Grep", "Glob", "Write", "TodoWrite", "WebFetch", "Agent")
+#: Claude Code tools whose input shape is modelled; any other measured tool
+#: name folds into ``other`` and renders with a generic input.
+CLAUDE_CODE_TOOLS = ("Bash", "Read", "Edit", "Grep", "Glob", "Write", "TodoWrite", "WebFetch", "Agent", "Task")
+_CC_OTHER_TOOLS = ("WebSearch", "NotebookEdit", "Skill")
+_TODO_STATUSES = ("pending", "in_progress", "completed")
+
+
+def _claude_code_tool_input(rng: random.Random, name: str, cwd: str, body: str) -> dict[str, object]:
+    """The input object a tool of this name takes, carrying ``body`` as its variable text."""
+    path = f"{cwd}/src/{synthetic_text(rng, rng.randint(4, 12), non_ascii=False).replace(' ', '_').strip('._') or 'mod'}.py"
+    if name == "Bash":
+        return {"command": body, "description": synthetic_text(rng, rng.randint(12, 40), non_ascii=False)}
+    if name == "Read":
+        return {"file_path": path}
+    if name == "Edit":
+        cut = len(body) // 2
+        return {"file_path": path, "old_string": body[:cut], "new_string": body[cut:]}
+    if name == "Write":
+        return {"file_path": path, "content": body}
+    if name == "Grep":
+        return {"pattern": body[:80] or "x", "path": cwd}
+    if name == "Glob":
+        return {"pattern": "**/*.py", "path": cwd}
+    if name == "TodoWrite":
+        todos = [
+            {"content": part, "status": rng.choice(_TODO_STATUSES), "activeForm": part}
+            for part in (body[i : i + 120] for i in range(0, max(1, len(body)), 120))
+            if part
+        ] or [{"content": "x", "status": "pending", "activeForm": "x"}]
+        return {"todos": todos}
+    if name == "WebFetch":
+        return {"url": f"https://example.invalid/{rng.getrandbits(32):08x}", "prompt": body}
+    if name in {"Agent", "Task"}:
+        return {"description": body[:60] or "x", "prompt": body, "subagent_type": "general-purpose"}
+    return {"query": body}
+
+
 _CC_MODEL = "claude-synthetic-1"
 _CC_SIDECAR_THRESHOLD = 30_000
 
@@ -680,12 +784,14 @@ def _claude_code_stream(
         if kind.startswith("assistant_"):
             if kind == "assistant_tool_use":
                 call_id = _token(rng, "toolu_", 24)
-                name = rng.choice(_CC_TOOLS)
+                name = _weighted(rng, profile.tool_names) if profile.tool_names else rng.choice(CLAUDE_CODE_TOOLS)
+                if name == "other":
+                    name = rng.choice(_CC_OTHER_TOOLS)
                 block: dict[str, object] = {
                     "type": "tool_use",
                     "id": call_id,
                     "name": name,
-                    "input": {"command": text(kind)},
+                    "input": _claude_code_tool_input(rng, name, cwd, text(kind)),
                 }
                 open_calls.append((call_id, record_uuid))
                 tool_calls += 1
@@ -822,7 +928,7 @@ def _claude_code_session(
             clock=sub_clock, sidecars=sidecars,
         )  # fmt: skip
         item = WorkloadFile("claude-code", f"claude-code/projects/{project_dir}/{owner}/subagents/agent-{agent_id}.jsonl",
-                            data, "subagent", f"{owner}:{agent_id}", owner)  # fmt: skip
+                            data, "subagent", f"{owner}:agent-{agent_id}", owner)  # fmt: skip
         files.append(item)
         stats.add(item, records)
         stats.tool_calls += calls
@@ -1011,14 +1117,16 @@ def _codex_session(
     sub_stream = profile.streams.get("subagent")
     if sub_stream is not None:
         # Spawn edges: main → subagents, subagent → nested subagents (at the
-        # measured rate), and orphans whose parent was never retained.
-        pending = [main.session_id] * profile.subagents_per_session.sample(rng)
-        pending += [_uuid(rng) for _ in range(profile.orphan_subagents(rng))]
+        # measured rate), and orphans whose parent was never retained. A child
+        # starts inside its direct parent's lifetime, never before it.
+        pending = [(main.session_id, start, end)] * profile.subagents_per_session.sample(rng)
+        pending += [(_uuid(rng), start, end) for _ in range(profile.orphan_subagents(rng))]
         while pending:
-            parent = pending.pop()
-            item, _ = rollout(sub_stream, parent, start + (end - start) * rng.random())
+            parent, parent_start, parent_end = pending.pop()
+            child_start = parent_start + (parent_end - parent_start) * rng.random()
+            item, child_end = rollout(sub_stream, parent, child_start)
             files.append(item)
-            pending += [item.session_id] * profile.nested_subagents(rng)
+            pending += [(item.session_id, child_start, child_end)] * profile.nested_subagents(rng)
     return files, stats
 
 
@@ -1071,6 +1179,14 @@ class WorkloadCorpus:
                 yield _resolve_sidecar_refs(item, projects_root)
 
     def write(self, root: Path) -> WorkloadStats:
+        """Write the corpus under ``root``, which must hold no earlier workload.
+
+        A daemon watching ``root`` ingests whatever is there, so writing over a
+        previous generation would silently mix two corpora.
+        """
+        for tree in (root / "claude-code", root / "codex"):
+            if tree.exists() and any(tree.iterdir()):
+                raise FileExistsError(f"{tree} already holds a workload; write into an empty root")
         total = WorkloadStats()
         projects_root = str((root / "claude-code" / "projects").resolve())
         for files, stats in self.iter_sessions():

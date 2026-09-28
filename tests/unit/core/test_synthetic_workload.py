@@ -19,6 +19,7 @@ from polylogue.schemas.synthetic.workload import (
     default_origin_weights,
     generate_workload_corpus,
     load_workload_profile,
+    measured_text,
     published_field_names,
     record_skeleton,
     synthetic_text,
@@ -119,10 +120,10 @@ def test_every_tool_result_answers_an_earlier_call_in_its_stream(origin: str) ->
 def test_record_kind_mix_follows_the_committed_profile(origin: str) -> None:
     """Anti-vacuity: sampling kinds uniformly, or from a fixed role cycle, misses the profile by far more."""
     profile = load_workload_profile(origin)
-    expected: Counter[str] = Counter()
+    expected: dict[str, float] = {}
     for stream in profile.streams.values():
         for source, row in stream.transitions.items():
-            expected[source] += sum(row.values())
+            expected[source] = expected.get(source, 0.0) + sum(row.values())
     total = sum(expected.values())
     classify = classify_claude_code_record if origin == "claude-code" else classify_codex_record
     observed: Counter[str] = Counter()
@@ -130,7 +131,7 @@ def test_record_kind_mix_follows_the_committed_profile(origin: str) -> None:
         if item.role in {"transcript", "subagent"}:
             observed.update(classify(record) for record in _records(item.data))
     observed_total = sum(observed.values())
-    top = [kind for kind, _ in expected.most_common(6)]
+    top = sorted(expected, key=lambda kind: -expected[kind])[:6]
     distance = sum(abs(expected[kind] / total - observed[kind] / observed_total) for kind in top)
     assert distance < 0.25, {kind: (expected[kind] / total, observed[kind] / observed_total) for kind in top}
 
@@ -178,6 +179,7 @@ def test_skeletons_keep_structure_but_no_values_or_data_keys() -> None:
         "tool": {"input_schema": {"properties": {"private_argument": {"type": "string"}}}},
     }
     skeleton = record_skeleton(record)
+    assert isinstance(skeleton, dict)
     rendered = json.dumps(skeleton)
     for leaked in ("secret", "private_field", "/home/someone", "src/private.py", "private_argument"):
         assert leaked not in rendered
@@ -221,6 +223,7 @@ def test_skeleton_keeps_only_published_field_names() -> None:
     """Anti-vacuity: without the allowlist an unpublished source field name reaches the tracked profile."""
     record = {"type": "attachment", "attachment": {"type": "x", "customer_codename": "y", "hookEvent": "z"}}
     skeleton = record_skeleton(record, allowed=published_field_names("claude-code"))
+    assert isinstance(skeleton, dict)
     assert "customer_codename" not in json.dumps(skeleton)
     assert skeleton["attachment"]["hookEvent"] == "str"
 
@@ -263,7 +266,102 @@ def test_codex_nested_subagents_keep_their_subagent_parent() -> None:
     )
     files, _ = _codex_session(random.Random(1), profile, index=0)
     parents = {item.session_id: item.parent_session_id for item in files}
+    starts = {item.session_id: _records(item.data)[0]["timestamp"] for item in files}
     main = next(item.session_id for item in files if item.parent_session_id is None)
     subagents = {thread for thread, parent in parents.items() if parent is not None}
     assert all(parent == main or parent in subagents for parent in parents.values() if parent is not None)
     assert any(parent in subagents for parent in parents.values())
+    # A nested child never starts before its direct parent.
+    for thread, parent in parents.items():
+        if parent in starts:
+            assert str(starts[thread]) >= str(starts[parent])
+
+
+def test_record_type_values_outside_public_vocabulary_are_not_published() -> None:
+    """Anti-vacuity: accepting any identifier-like type value publishes private record kinds."""
+    assert classify_claude_code_record({"type": "customer_codename"}) == "record:other"
+    assert classify_claude_code_record({"type": "system", "subtype": "customer_codename"}) == "record:system"
+    assert classify_claude_code_record({"type": "relocated"}) == "record:relocated"
+    assert classify_codex_record({"type": "event_msg", "payload": {"type": "customer_codename"}}) == "record:event_msg"
+
+
+@pytest.mark.parametrize("origin", ["claude-code", "codex"])
+def test_every_profiled_kind_has_a_template(origin: str) -> None:
+    """Anti-vacuity: a publication threshold that drops a sampled kind's template renders it as an empty record."""
+    profile = load_workload_profile(origin)
+    kinds = {
+        kind
+        for stream in profile.streams.values()
+        for row in (stream.start, *stream.transitions.values())
+        for kind in row
+        if kind.startswith("record:")
+    }
+    assert kinds
+    assert kinds <= set(profile.templates)
+
+
+def test_generated_relocation_carries_its_cwd() -> None:
+    """Anti-vacuity: an empty relocation template yields ``type`` alone, which the parser ignores."""
+    profile = load_workload_profile("claude-code")
+    record = profile.template_record(random.Random(1), "record:relocated", {"type": "relocated"})
+    assert "relocatedCwd" in record
+
+
+def test_claude_tool_inputs_follow_the_tool() -> None:
+    """Anti-vacuity: Bash-shaped ``{command}`` inputs for every tool lose paths, edits and dispatch fields."""
+    inputs: dict[str, set[str]] = {}
+    for item in generate_workload_corpus(seed=8, target_sessions=30, origins={"claude-code": 1.0}).iter_files():
+        if item.role == "sidecar":
+            continue
+        for record in _records(item.data):
+            message = record.get("message")
+            blocks = message.get("content") if isinstance(message, dict) else None
+            for block in blocks if isinstance(blocks, list) else []:
+                if block.get("type") == "tool_use":
+                    inputs.setdefault(block["name"], set()).update(block["input"])
+    assert inputs["Read"] == {"file_path"}
+    assert {"file_path", "old_string", "new_string"} <= inputs["Edit"]
+    assert {"command"} <= inputs["Bash"]
+
+
+def test_non_ascii_and_length_are_measured_on_the_classified_block() -> None:
+    """Anti-vacuity: reading only ``text``/``content`` fields skips thinking, tool inputs and persisted results."""
+    thinking = {"type": "assistant", "message": {"content": [{"type": "thinking", "thinking": "é" * 5}]}}
+    assert measured_text("claude-code", "assistant_thinking", thinking) == "ééééé"
+    call = {
+        "type": "assistant",
+        "message": {"content": [{"type": "text", "text": "x"}, {"type": "tool_use", "input": {"a": "ż"}}]},
+    }
+    assert measured_text("claude-code", "assistant_tool_use", call) == '{"a":"ż"}'
+    persisted = {
+        "type": "user",
+        "message": {
+            "content": [
+                {"type": "tool_result", "content": "<persisted-output>\nOutput too large (22.6KB). Full output"}
+            ]
+        },
+    }
+    assert text_measure("claude-code", "user_tool_result", persisted) == int(22.6 * 1024)
+
+
+def test_write_refuses_a_root_holding_an_earlier_workload(tmp_path: Path) -> None:
+    """Anti-vacuity: writing over a previous generation leaves its stale files for the daemon to ingest."""
+    generate_workload_corpus(seed=1, target_sessions=2, origins={"codex": 1.0}).write(tmp_path)
+    with pytest.raises(FileExistsError):
+        generate_workload_corpus(seed=2, target_sessions=2, origins={"codex": 1.0}).write(tmp_path)
+
+
+def test_claude_subagent_ids_match_the_parsed_session_id(tmp_path: Path) -> None:
+    """Anti-vacuity: reporting ``owner:a…`` instead of the parsed ``owner:agent-a…`` breaks keyed joins."""
+    corpus = generate_workload_corpus(seed=6, target_sessions=40, origins={"claude-code": 1.0})
+    corpus.write(tmp_path)
+    checked = 0
+    for item in corpus.iter_files(projects_root=str((tmp_path / "claude-code" / "projects").resolve())):
+        if item.role != "subagent":
+            continue
+        path = tmp_path / item.relpath
+        # Production acquisition passes the file stem as the fallback id.
+        parsed = parse_payload("claude-code", _records(path.read_bytes()), path.stem, source_path=str(path))
+        assert item.session_id in {session.provider_session_id for session in parsed}
+        checked += 1
+    assert checked
