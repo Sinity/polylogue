@@ -662,8 +662,15 @@ def _search_payload(
     # the helper's own no-total rule -- a page that filled its bound continues,
     # a short page terminates -- rather than by a denominator in the wrong
     # unit.
+    # The continuation must track what this response actually emitted: the
+    # cursor page's own effective offset (``cursor.r``, not the caller's
+    # original ``spec.offset``) plus the *emitted* page after the cursor
+    # trims stragglers and the limit truncates it -- not the raw fetch.
     envelope["next_offset"] = page_next_offset(
-        offset=spec.offset, returned=len(hit_payloads), total=None, limit=display_limit
+        offset=cursor.r if cursor is not None else spec.offset,
+        returned=len(emitted_hits),
+        total=None,
+        limit=display_limit,
     )
     return envelope
 

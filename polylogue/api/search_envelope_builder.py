@@ -134,7 +134,7 @@ async def build_search_envelope_for_spec(
         SessionSearchHitPayload.from_search_hit(hit, message_count=hit.summary.message_count) for hit in hits
     ]
     resolved_lane = hits[0].retrieval_lane if hits else spec.retrieval_lane
-    return build_search_envelope(
+    envelope = build_search_envelope(
         hit_payloads,
         total=total,
         limit=display_limit,
@@ -155,13 +155,22 @@ async def build_search_envelope_for_spec(
             started_at=started_at,
         ).model_copy(
             update={
-                "matched": len(hits),
+                "matched": len(hit_payloads),
                 "analyzed": total,
                 "request_scope_fingerprint": request_scope_fingerprint,
                 "result_scope_fingerprint": result_scope_fingerprint,
             }
         ),
     )
+    # ``matched`` must name what this envelope actually emitted: the cursor
+    # trim and the limit truncation happen inside the builder, so an
+    # authority built from the raw (overfetched) hit list before that point
+    # can disagree with the page the caller receives.
+    if envelope.authority is not None:
+        envelope = envelope.model_copy(
+            update={"authority": envelope.authority.model_copy(update={"matched": len(envelope.hits)})}
+        )
+    return envelope
 
 
 async def build_archive_search_envelope(

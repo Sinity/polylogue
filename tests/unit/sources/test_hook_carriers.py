@@ -475,10 +475,16 @@ def test_compact_folds_the_retired_spool_into_carriers(tmp_path: Path, monkeypat
         assert conn.execute("SELECT COUNT(DISTINCT session_native_id) FROM raw_hook_events").fetchone()[0] == 3
 
 
-def test_compact_quiesces_carrier_producer_and_defers_mid_drain_arrival(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A producer racing the drain is blocked, then admitted on the next pass."""
+def test_compact_does_not_block_a_producer_during_the_scan(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The exclusive lock is scoped to a checkpoint's seal+retire, not the scan.
+
+    Anti-vacuity (Codex P2, #5700): holding the drain lock across the whole
+    fold -- proportional to the legacy spool's size, hundreds of thousands of
+    files -- can outlast a hook handler's fixed timeout and drop an event.
+    Pausing the scan (``_CompactionSink.append``, unlocked) must not block a
+    racing producer; only pausing inside the checkpoint's retirement step
+    (locked) may.
+    """
 
     archive_root, spool_root = _scratch(tmp_path, monkeypatch)
     pending = spool_root / "pending" / "2026-09-14"
@@ -505,7 +511,7 @@ def test_compact_quiesces_carrier_producer_and_defers_mid_drain_arrival(
 
     appended = threading.Event()
 
-    def append_during_drain() -> None:
+    def append_during_scan() -> None:
         append_hook_event(
             event_type="PostToolUse",
             session_id="live-session",
@@ -517,21 +523,78 @@ def test_compact_quiesces_carrier_producer_and_defers_mid_drain_arrival(
         )
         appended.set()
 
-    producer = threading.Thread(target=append_during_drain)
+    producer = threading.Thread(target=append_during_scan)
+    producer.start()
+    # The scan holds no lock, so a producer racing it is never blocked.
+    assert appended.wait(timeout=5)
+    producer.join(timeout=5)
+    release.set()
+    drain.join(timeout=5)
+
+    assert result["carrier_quiesced"] is True
+    assert result["carrier_arrivals_during_drain"] == 0
+    policy = result["carrier_arrival_policy"]
+    assert policy == (
+        "producer blocked only during each checkpoint's seal+retire step; "
+        "other arrivals land in their own carrier, untouched by this drain"
+    )
+    assert result["conservation_reconciliation"] == (
+        "event_id basename; acknowledged day shard is destination metadata"
+    )
+    assert materialize_hook_carriers(archive_root) == 2
+
+
+def test_compact_blocks_a_producer_only_during_checkpoint_retirement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A producer racing one checkpoint's retirement step blocks, then resumes."""
+
+    archive_root, spool_root = _scratch(tmp_path, monkeypatch)
+    pending = spool_root / "pending" / "2026-09-14"
+    pending.mkdir(parents=True)
+    (pending / f"{0:032x}.json").write_text(_envelope(0), encoding="utf-8")
+
+    from polylogue.sources import hook_producer as hook_producer_module
+
+    entered = threading.Event()
+    release = threading.Event()
+    original_retire = hook_producer_module._retire
+
+    def pause_once(path: Path, root: Path, bucket: str) -> None:
+        entered.set()
+        release.wait(timeout=5)
+        original_retire(path, root, bucket)
+
+    monkeypatch.setattr(hook_producer_module, "_retire", pause_once)
+    result: dict[str, object] = {}
+
+    drain = threading.Thread(target=lambda: result.update(compact_legacy_spool(spool_root)))
+    drain.start()
+    assert entered.wait(timeout=5)
+
+    appended = threading.Event()
+
+    def append_during_retirement() -> None:
+        append_hook_event(
+            event_type="PostToolUse",
+            session_id="live-session",
+            provider="codex",
+            timestamp=_TIMESTAMP,
+            payload={},
+            root=spool_root,
+            event_id="f" * 32,
+        )
+        appended.set()
+
+    producer = threading.Thread(target=append_during_retirement)
     producer.start()
     assert not appended.wait(timeout=0.1)
     release.set()
     drain.join(timeout=5)
     producer.join(timeout=5)
 
-    assert result["carrier_quiesced"] is True
-    assert result["carrier_arrivals_during_drain"] == 0
-    policy = result["carrier_arrival_policy"]
-    assert policy == "producer blocked by exclusive drain lock; post-release arrivals deferred"
-    assert result["conservation_reconciliation"] == (
-        "event_id basename; acknowledged day shard is destination metadata"
-    )
     assert appended.is_set()
+    assert result["retired"] == 1
     assert materialize_hook_carriers(archive_root) == 2
 
 

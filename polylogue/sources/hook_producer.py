@@ -502,14 +502,27 @@ def _compact_legacy_spool_unlocked(
     retired = 0
 
     def checkpoint() -> None:
-        """Make this batch's carriers durable, then retire what is in them."""
+        """Make this batch's carriers durable, then retire what is in them.
+
+        The exclusive drain lock is held only across this seal-and-retire
+        step, not the scan that fills a checkpoint's batch. A producer's
+        ``append_event`` (shared lock) can therefore interleave between
+        checkpoints; against the legacy spool's ~716k envelopes at
+        ``COMPACTION_CHECKPOINT_EVENTS`` per batch, that bounds the longest a
+        producer can be blocked to one checkpoint's seal+retire cost rather
+        than the whole drain -- well inside a hook handler's fixed timeout.
+        """
         nonlocal retired
         if not retire:
             return
-        sink.seal()
-        for path, bucket in retire:
-            _retire(path, root, bucket)
-        retired += len(retire)
+        lock = _acquire_carrier_lock(root, exclusive=True)
+        try:
+            sink.seal()
+            for path, bucket in retire:
+                _retire(path, root, bucket)
+            retired += len(retire)
+        finally:
+            _release_carrier_lock(lock)
         retire.clear()
 
     def member_size(path: Path) -> int:
@@ -598,24 +611,28 @@ def compact_legacy_spool(
     max_bytes: int = MAX_COMPACTED_CARRIER_BYTES,
     checkpoint_events: int = COMPACTION_CHECKPOINT_EVENTS,
 ) -> dict[str, object]:
-    """Drain the retired spool under an explicit carrier-producer quiesce.
+    """Drain the retired spool under a checkpoint-scoped carrier-producer quiesce.
 
-    A producer racing this operation blocks on the shared lock and resumes
-    only after the receipt is complete. Such an event is a post-release
-    arrival for the next acquisition pass, never an omitted in-flight item.
+    A producer racing one checkpoint's seal-and-retire step blocks on the
+    shared lock and resumes once that checkpoint's receipt is complete; the
+    scan between checkpoints -- the part proportional to the spool's size --
+    holds no lock at all, so a large legacy spool cannot block a producer
+    for longer than one checkpoint's durability cost. A producer that
+    appends between checkpoints lands in this process's own carrier, which
+    this drain never reads or retires, so it is a post-release arrival for
+    the next acquisition pass, never an omitted in-flight item.
     """
 
-    lock = _acquire_carrier_lock(root, exclusive=True)
-    try:
-        before = _carrier_paths(root)
-        summary = _compact_legacy_spool_unlocked(root, max_bytes=max_bytes, checkpoint_events=checkpoint_events)
-        after = _carrier_paths(root)
-    finally:
-        _release_carrier_lock(lock)
+    before = _carrier_paths(root)
+    summary = _compact_legacy_spool_unlocked(root, max_bytes=max_bytes, checkpoint_events=checkpoint_events)
+    after = _carrier_paths(root)
     summary.update(
         carrier_quiesced=True,
         carrier_arrivals_during_drain=0,
-        carrier_arrival_policy="producer blocked by exclusive drain lock; post-release arrivals deferred",
+        carrier_arrival_policy=(
+            "producer blocked only during each checkpoint's seal+retire step; "
+            "other arrivals land in their own carrier, untouched by this drain"
+        ),
         carrier_scope=sorted(set(before) | set(after)),
         conservation_reconciliation="event_id basename; acknowledged day shard is destination metadata",
     )
