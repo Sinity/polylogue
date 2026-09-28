@@ -1268,10 +1268,12 @@ from devtools.pytest_slot import _run_held
 
 telemetry = pathlib.Path({telemetry!r})
 result = pathlib.Path({result!r})
+keep = [False]
 
 
 def dispose():
-    telemetry.unlink(missing_ok=True)
+    if not keep[0]:
+        telemetry.unlink(missing_ok=True)
 
 
 child = (
@@ -1287,6 +1289,7 @@ _run_held(
     on_exit=dispose,
     telemetry_path=telemetry,
     result_path=result,
+    on_interrupt=lambda: keep.__setitem__(0, True),
 )
 """
 

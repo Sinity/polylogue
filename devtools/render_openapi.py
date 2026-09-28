@@ -878,7 +878,11 @@ def _build_openapi_document() -> dict[str, Any]:
             path_item[declaration.method.lower()] = operation
         words = re.findall(r"[A-Za-z0-9]+", declaration.kernel.public_name)
         operation.setdefault("operationId", "route" + "".join(word.title() for word in words))
-        operation["security"] = _route_security(declaration.auth_policy)
+        operation["security"] = (
+            [{"webCredentialCookie": []}]
+            if declaration.method == "DELETE" and declaration.path == "/api/web-auth/session"
+            else _route_security(declaration.auth_policy)
+        )
         operation["x-polylogue-declaration"] = {
             "declaration_id": declaration.kernel.declaration_id,
             "method": declaration.method,

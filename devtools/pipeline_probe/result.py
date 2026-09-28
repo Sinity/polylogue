@@ -22,7 +22,7 @@ from polylogue.scenarios import (
     WorkloadRunStatus,
 )
 from polylogue.storage.sqlite.connection import open_connection
-from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -154,7 +154,7 @@ def _archive_file_set_raw_fanout(source_db: Path, index_db: Path) -> list[RawFan
         if not _table_exists(conn, "raw_sessions"):
             return []
         if index_db.exists():
-            conn.execute("ATTACH DATABASE ? AS index_tier", (f"file:{index_db}?mode=ro",))
+            attach_readonly_database(conn, index_db, alias="index_tier")
             has_sessions = True
         else:
             has_sessions = False

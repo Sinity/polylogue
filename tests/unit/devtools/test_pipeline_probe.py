@@ -110,8 +110,8 @@ def test_partial_rss_components_are_both_unavailable() -> None:
     report = _build_budget_report(summary, PipelineProbeRequest(max_peak_rss_mb=20.0))
     assert report is not None
     phase = _require_json_object(_require_json_array(_require_json_object(report["workload_receipt"])["phases"])[0])
-    assert phase["peak_rss_self_bytes"] is None
-    assert phase["peak_rss_children_bytes"] is None
+    assert "peak_rss_self_bytes" not in phase
+    assert "peak_rss_children_bytes" not in phase
     assert {"peak_rss_self_bytes", "peak_rss_children_bytes"}.issubset(phase["unavailable"])
 
 

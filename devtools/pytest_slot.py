@@ -663,6 +663,7 @@ def _submit(
     root: Path,
     on_exit: Callable[[], None],
     resource_state: dict[str, bool] | None = None,
+    preserve_guard: Callable[[], None] | None = None,
 ) -> SlotOutcome:
     """Run ``command`` as the declared pytest-pool operation and wait for it."""
     identity = f"{os.getpid()}-{time.time_ns():x}"
@@ -709,6 +710,8 @@ def _submit(
             on_exit()
         elif resource_state is not None:
             resource_state["preserve"] = True
+            if preserve_guard is not None:
+                preserve_guard()
 
     with _on_exit(reap_owned_job):
         view = _wait_for(job_id, reference=reference, env=client)
@@ -1185,7 +1188,15 @@ def run_pytest(
             )
             outcome = SlotOutcome(returncode=returncode, slot=SLOT_HELD, receipt=receipt)
         else:
-            outcome = _submit(argv, cwd=cwd, env=contained, root=root, on_exit=dispose, resource_state=resource_state)
+            outcome = _submit(
+                argv,
+                cwd=cwd,
+                env=contained,
+                root=root,
+                on_exit=dispose,
+                resource_state=resource_state,
+                preserve_guard=guard.cancel,
+            )
         keep = outcome.returncode != 0
         return outcome
     finally:
