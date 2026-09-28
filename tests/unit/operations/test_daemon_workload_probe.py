@@ -1421,6 +1421,7 @@ def test_an_unavailable_debt_ledger_is_not_zero_debt() -> None:
 
     assert backlog["retry_debt_available"] is False
     assert backlog["counts"]["retry_debt_unresolved"] is None
+    assert backlog["state"] == "unknown"
 
     diff = workload_probe.compare(
         {"report_version": workload_probe.REPORT_VERSION, "ok": True, "convergence_debt": unavailable},
@@ -1431,8 +1432,38 @@ def test_an_unavailable_debt_ledger_is_not_zero_debt() -> None:
         },
     )
     debt = diff["convergence_debt"]
+    assert diff["ok"] is False
     assert debt["available_before"] is False
     assert debt["unresolved_count"] == {"before": None, "after": 4, "delta": None, "measured": False}
+
+
+def test_unavailable_debt_is_rendered_unknown_and_cli_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The human command cannot turn an unreadable debt ledger into healthy zero.
+
+    Anti-vacuity: reverting the unavailable branch to printing numeric sentinels
+    and returning success makes both assertions fail.
+    """
+    payload = {
+        "ok": True,
+        "db_path": "synthetic/index.db",
+        "captured_at": "synthetic",
+        "attempt_counts": {"total": 0, "running": 0, "failed": 0},
+        "recent_attempts": [],
+        "convergence_stage_timings": {},
+        "convergence_debt": {"available": False, "error": "ops unreadable", "failed_count": 0},
+        "automatic_convergence_backlog": {"checked": True, "state": "unknown", "counts": {}},
+        "query_plans": {},
+    }
+    monkeypatch.setattr(workload_probe, "probe", lambda *_args, **_kwargs: payload)
+    monkeypatch.setattr(workload_probe, "archive_root", lambda: Path("synthetic"))
+    monkeypatch.setattr(workload_probe, "resolve_active_index_path", lambda _root: Path("synthetic/index.db"))
+
+    assert workload_probe.main([]) == 1
+    output = capsys.readouterr().out
+    assert "convergence debt: unavailable" in output
+    assert "0 failed" not in output
 
 
 def test_two_available_debt_ledgers_still_diff() -> None:

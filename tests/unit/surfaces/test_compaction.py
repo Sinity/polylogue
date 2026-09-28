@@ -103,3 +103,51 @@ def test_compaction_pack_is_not_context_image() -> None:
     )
     assert not isinstance(pack, ContextImage)
     assert pack.pack_ref.startswith("compact:")
+
+
+def test_compaction_uses_canonical_lineage_and_message_refs() -> None:
+    """Archive links deduplicate inherited prefixes and anchors name messages.
+
+    Anti-vacuity: swapping src/resolved-dst back to parent/child direction
+    retains the child's inherited prefix; passing the enumeration position to
+    EvidenceRef makes the first ref contain a bogus block suffix.
+    """
+    sessions = [
+        {"id": "parent", "messages": [{"id": "m0", "text": "shared", "material_origin": "human_authored"}]},
+        {
+            "id": "child",
+            "messages": [
+                {"id": "m0", "text": "shared", "material_origin": "human_authored"},
+                {"id": "m1", "text": "new", "material_origin": "human_authored"},
+            ],
+        },
+    ]
+    pack = compact_sessions(
+        sessions,
+        session_links=[
+            {"src_session_id": "child", "resolved_dst_session_id": "parent", "branch_point_message_id": "m0"}
+        ],
+    )
+    child_refs = {item.anchor.ref.format() for item in pack.items if item.session_id == "child"}
+    assert child_refs == {"child::m1"}
+    assert all("::0" not in ref and "::1" not in ref for ref in child_refs)
+
+
+def test_compaction_budget_counts_serialized_omissions() -> None:
+    """Omission metadata is included in the advertised payload budget.
+
+    Anti-vacuity: accounting only retained body text leaves hundreds of
+    filtered anchors in the serialized pack while reporting zero tokens.
+    """
+    sessions = [
+        {
+            "id": "s",
+            "messages": [
+                {"id": str(i), "text": "private protocol details " * 10, "material_origin": "runtime_protocol"}
+                for i in range(100)
+            ],
+        }
+    ]
+    pack = compact_sessions(sessions, spec=CompactProjectionSpec(max_tokens=60))
+    assert pack.token_estimate <= 60
+    assert len(pack.omissions) < 100

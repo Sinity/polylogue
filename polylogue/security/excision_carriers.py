@@ -99,6 +99,11 @@ SESSION_CARRIERS: Final[dict[str, SessionCarrier]] = _carriers(
         "the acquisition itself; deleted with its blob_refs and an excised_content marker",
     ),
     SessionCarrier(
+        "raw_existence_changes",
+        CarrierReach.EXCISED,
+        "frontier history is scrubbed for every raw id deleted by session excision",
+    ),
+    SessionCarrier(
         "pending_accepted_marker_inputs",
         CarrierReach.EXCISED,
         "sealed pending marker bytes are explicitly erased by session excision",

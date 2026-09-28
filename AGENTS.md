@@ -178,19 +178,24 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
   daemon → lifecycle, cancellation, restart; MCP → registry and the shared
   product route.
 
-## Review guidelines
+## Code Review Rules
 
+Read and apply `docs/review/codex-review-guide.md` (checks, severity, noise)
+and the nested `AGENTS.md` beside each changed file.
+- A change to an interface, command, config key, schema, route, or file format
+  updates every consumer (callers, CLI/MCP, tests, docs, generated references,
+  configs, hooks) and deletes the predecessor in the same change; name a
+  missed consumer, P1 when a caller breaks.
+- A compatibility path in a diff (shim, alias, fallback, dual read/write,
+  deprecated wrapper) is a defect. A finding whose remedy keeps the old path,
+  or migrates prior archive state into fresh v1, is noise.
+- A cap, timeout, or truncation that refuses or cuts valid input is a defect;
+  ask for paging or streaming, never a new limit.
 - A finding names a concrete input at the reviewed head and the wrong
-  observable outcome. A scenario that needs the environment corrupted below
-  its own integrity contract (lockfile, provision stamp, environment digest)
-  is out of scope.
-- Receipts and caches are keyed on declared inputs; do not ask for filesystem
-  enumeration as a cache key.
-- A thread answered by a commit or a stated refutation is closed unless the
-  answer is wrong; do not restate it in a later round.
-- Judge a test by the anti-vacuity condition it names, not by whether it could
-  be stricter.
-- Publication text and task metadata are not review targets.
+  observable outcome; environment corruption below its integrity contract is
+  out of scope.
+- A thread answered by a commit or refutation is closed unless the answer is
+  wrong. Publication text and task metadata are not review targets.
 
 ## Commits and PRs
 

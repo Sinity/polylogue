@@ -466,10 +466,22 @@ source_compaction_snapshots AS (
                 (
                     SELECT json_group_array(ref)
                     FROM (
-                        SELECT se.session_id || '::' || m.message_id AS ref
+                        SELECT m.session_id || '::' || m.message_id AS ref
                         FROM messages m
-                        WHERE m.session_id = se.session_id
-                          AND m.position BETWEEN se.boundary_start_position AND se.boundary_end_position
+                        WHERE m.position BETWEEN se.boundary_start_position AND se.boundary_end_position
+                          AND (
+                              m.session_id = se.session_id
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM session_links lineage
+                                  JOIN messages branch_point
+                                    ON branch_point.session_id = lineage.resolved_dst_session_id
+                                   AND branch_point.message_id = lineage.branch_point_message_id
+                                  WHERE lineage.src_session_id = se.session_id
+                                    AND m.session_id = lineage.resolved_dst_session_id
+                                    AND m.position <= branch_point.position
+                              )
+                          )
                         ORDER BY m.position, m.variant_index
                         LIMIT {MAX_COMPACTION_EVIDENCE_REFS}
                     )

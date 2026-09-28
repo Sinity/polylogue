@@ -25,7 +25,9 @@ def _submit_abandonment(config: Config, publication_ids: tuple[str, ...]) -> dic
 
     operation = "maintenance.blob-publications.abandon"
     try:
-        return configured_mutation_operation(config, operation, {"publication_ids": list(publication_ids)})
+        return configured_mutation_operation(
+            config, operation, {"publication_ids": list(publication_ids), "confirm": True}
+        )
     except OperationKernelError as exc:
         raise mutation_refusal(exc, operation) from exc
 

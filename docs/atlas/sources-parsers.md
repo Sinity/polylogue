@@ -42,6 +42,7 @@ Lower number runs first. Tightness must be unique among executable
 | 82 | `claude-design-session` |
 | 85 | `grok-export` |
 | 90 | `aistudio-drive` |
+| 95 | `otel-genai` |
 
 `beads-issue` (reserved) and `unknown-export` (compatibility-only) carry no
 tightness and are not executable detectors. A new detector inserted looser
