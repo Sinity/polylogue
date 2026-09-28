@@ -96,6 +96,25 @@ def test_build_budget_report_accounts_for_recorded_child_rss() -> None:
     assert _require_json_object(budget_result)["verdict"] == "exceeded"
 
 
+def test_partial_rss_components_are_both_unavailable() -> None:
+    """A lone component cannot satisfy the paired process-tree measurement contract."""
+    summary: ProbeSummary = {
+        "run_payload": {"metrics": {"peak_rss_mb": 12.0, "peak_rss_self_mb": 7.0}},
+        "result": {},
+        "probe": {},
+        "paths": {},
+        "provenance": {},
+        "db_stats": {},
+        "raw_fanout": [],
+    }
+    report = _build_budget_report(summary, PipelineProbeRequest(max_peak_rss_mb=20.0))
+    assert report is not None
+    phase = _require_json_object(_require_json_array(_require_json_object(report["workload_receipt"])["phases"])[0])
+    assert "peak_rss_self_bytes" not in phase
+    assert "peak_rss_children_bytes" not in phase
+    assert {"peak_rss_self_bytes", "peak_rss_children_bytes"}.issubset(phase["unavailable"])
+
+
 def test_pipeline_probe_db_stats_and_fanout_read_archive_file_set(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
