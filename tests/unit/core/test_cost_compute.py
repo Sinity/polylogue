@@ -107,6 +107,17 @@ def test_exact_provider_money_does_not_replace_canonical_model_usage_tokens() ->
     assert sum(item.api_cost_usd for item in summary.per_model) == summary.total_api_cost_usd
 
 
+def test_routed_names_with_their_own_rates_keep_separate_buckets() -> None:
+    """Anti-vacuity: merging routed names by normalized model prices all tokens at the last route's rate."""
+    routed = ("amazon.nova-pro-v1:0", "bedrock/us-gov-east-1/amazon.nova-pro-v1:0")
+    session = make_conv(id="two-routes", provider="chatgpt", messages=[])
+    rows = [ModelUsageTotals(model_name=name, input_tokens=1000, output_tokens=100) for name in routed]
+    forward = compute_session_cost(session, model_usage=rows)
+    backward = compute_session_cost(session, model_usage=list(reversed(rows)))
+    assert len(forward.per_model) == 2
+    assert forward.total_api_cost_usd == backward.total_api_cost_usd
+
+
 def test_exact_session_total_is_not_attributed_to_an_arbitrary_unpriced_model() -> None:
     """Anti-vacuity: assigning the whole total to the first sorted model fabricates a per-model exact cost."""
     session = make_conv(id="exact-provider-two-unpriced", provider="chatgpt", messages=[])

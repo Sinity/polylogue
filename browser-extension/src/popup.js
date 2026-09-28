@@ -716,7 +716,11 @@ async function render() {
   const conversationTimeline = mission?.timeline || stored.polylogueConversationTimeline?.[conversationKey(activeProvider, activeSessionId)] || [];
   const recentActionOutcomes = currentBrowserActions.filter((action) => {
     if (action?.operation === "conversation.create") {
-      return !activeSessionId && action?.provider === activeProvider && action?.target?.conversation_id === "new";
+      if (action?.provider !== activeProvider || action?.target?.conversation_id !== "new") return false;
+      // A completed create names its new conversation in the receipt; match
+      // that, keeping the no-session fallback only while it is still pending.
+      const createdId = action?.receipt?.provider_conversation_id;
+      return createdId ? createdId === activeSessionId : !activeSessionId;
     }
     return action?.operation === "conversation.reply" && action?.target?.conversation_id === activeSessionId;
   }).map((action) => ({

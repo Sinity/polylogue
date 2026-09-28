@@ -1687,7 +1687,7 @@ def _format_ops_only_metrics(lines: list[str], ops_db: Path) -> bool | None:
         # Bounded openability probe: reading the schema cookie touches only the
         # header page and raises DatabaseError for a file that is not a
         # database. Full integrity checks belong to diagnostics, not scrapes.
-        probe = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
+        probe = sqlite3.connect(f"{Path(ops_db).absolute().as_uri()}?mode=ro", uri=True)
         try:
             probe.execute("PRAGMA schema_version").fetchone()
         finally:

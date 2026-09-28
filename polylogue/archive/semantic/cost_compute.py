@@ -317,7 +317,11 @@ def _per_model_from_model_usage(model_usage: Sequence[ModelUsageTotals]) -> dict
     for row in model_usage:
         model_name = row.model_name or None
         norm_model = _normalize_model(model_name) if model_name else None
-        key = norm_model or "unknown"
+        # Routed names with their own catalog rate keep their own bucket:
+        # merging them into the normalized model would price every token at
+        # whichever route's name happened to come last.
+        raw_key = (model_name or "").strip().casefold()
+        key = raw_key if raw_key in PRICING else (norm_model or "unknown")
         existing = per_model.get(key)
         base_input = existing.input_tokens if existing else 0
         base_output = existing.output_tokens if existing else 0
