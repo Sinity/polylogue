@@ -633,9 +633,15 @@ class LiveParseStage:
         for source_path, submitted_at in tuple(self._speculative.items()):
             if self._stage_calls - submitted_at < _SPECULATIVE_LIFETIME_CALLS:
                 continue
-            if source_path in self._path_futures:
-                # Still running: its result is dropped when a later warm
-                # collects it and finds it expired.
+            future = self._path_futures.get(source_path)
+            if future is not None:
+                if future.done():
+                    # Finished but unclaimed: no warm will collect it, so its
+                    # scratch and slot would otherwise live until shutdown.
+                    # An expired collection skips the full verification.
+                    self._collect_path_future(source_path, future)
+                # Still running: its result is dropped when a later warm or
+                # read-ahead collects it and finds it expired.
                 continue
             self._speculative.pop(source_path, None)
             result = self._path_results.pop(source_path, None)
@@ -884,6 +890,15 @@ class LiveParseStage:
                 # shutdown may reclaim it later after a verified reap.
                 if not self._cleanup_blocked:
                     self._remove_attempt_directory(attempt_directory)
+        if expired:
+            # No warm claimed this read-ahead within its lifetime, so nothing
+            # will publish it: drop it without paying the full byte scan.
+            self._speculative.pop(source_path, None)
+            old = self._path_results.pop(source_path, None)
+            if old is not None:
+                old.discard()
+            result.discard()
+            return
         if result.error is None:
             try:
                 # A full byte scan belongs at the prefetch boundary, before
@@ -902,10 +917,6 @@ class LiveParseStage:
         old = self._path_results.pop(source_path, None)
         if old is not None:
             old.discard()
-        if expired:
-            self._speculative.pop(source_path, None)
-            result.discard()
-            return
         self._path_results[source_path] = result
 
     def _new_attempt_directory(self) -> Path:

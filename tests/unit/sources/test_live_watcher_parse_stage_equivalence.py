@@ -1021,6 +1021,31 @@ def test_a_prefetch_only_walk_does_not_accumulate_results(tmp_path: Path) -> Non
         stage.shutdown()
 
 
+def test_a_finished_unclaimed_prefetch_expires_without_a_warm(tmp_path: Path) -> None:
+    """A read-ahead that finished but was never claimed is dropped on expiry.
+
+    Anti-vacuity: keep skipping every path still in ``_path_futures`` in
+    ``_drop_stale_speculation`` and the finished future, with its sealed
+    attempt directory, stays held because read-ahead calls never collect.
+    """
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    (skipped,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
+    try:
+        assert stage.prefetch_paths([(str(skipped), Provider.CODEX, True)]) == 1
+        stage._path_futures[str(skipped)].result(timeout=30)
+        for _ in range(parse_prefetch._SPECULATIVE_LIFETIME_CALLS):
+            stage.prefetch_paths([])
+        assert str(skipped) not in stage._path_futures
+        assert str(skipped) not in stage._path_results
+        assert str(skipped) not in stage._speculative
+        attempts = tmp_path / "parse-shards" / ".live-parse-attempts"
+        assert [path for path in attempts.iterdir() if path.name.startswith("attempt-")] == []
+    finally:
+        stage.shutdown()
+
+
 def test_a_speculative_failure_finishing_during_the_warm_is_retried(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
