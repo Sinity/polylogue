@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -299,13 +298,12 @@ def record_codex_state_snapshot_terminal(
     archive.mark_raw_parse_succeeded(raw_id, provider=Provider.CODEX)
 
 
-def _unreceipted_codex_state_raw_ids(source_db: Path, raw_ids: Sequence[str] | None = None) -> list[str]:
+def _unreceipted_codex_state_raw_ids(source_db: Path) -> list[str]:
     origin = Origin.CODEX_SESSION.value
-    selected = "" if raw_ids is None else f"AND r.raw_id IN ({', '.join('?' for _ in raw_ids)})"
     with read_frame(source_db, timeout_class="background-read", tier=ArchiveTier.SOURCE) as frame:
         conn = frame.connection
         rows = conn.execute(
-            f"""
+            """
             SELECT r.raw_id
             FROM raw_sessions AS r
             WHERE r.origin = ?
@@ -316,10 +314,9 @@ def _unreceipted_codex_state_raw_ids(source_db: Path, raw_ids: Sequence[str] | N
                   OR lower(r.source_path) GLOB '*.sqlite3'
                   OR lower(r.source_path) GLOB '*.db'
               )
-              {selected}
             ORDER BY r.acquired_at_ms, r.raw_id
             """,
-            (origin, *(raw_ids or ())),
+            (origin,),
         ).fetchall()
         candidates = [str(row[0]) for row in rows]
         if not candidates:
@@ -387,48 +384,29 @@ def _thread_state_projection_is_current(archive_root: Path) -> bool:
     return True
 
 
-def unreceipted_codex_state_raw_ids(archive_root: Path, raw_ids: Sequence[str]) -> tuple[str, ...]:
-    """Return which of ``raw_ids`` are admitted Codex state exports without a receipt.
-
-    Read-only, so a caller can decide whether a writer pass is needed before
-    it asks for one.
-    """
-    source_db = archive_root / "source.db"
-    if not raw_ids or not source_db.is_file():
-        return ()
-    return tuple(_unreceipted_codex_state_raw_ids(source_db, raw_ids))
-
-
-def resolve_retained_codex_state_receipts(archive_root: Path, *, raw_ids: Sequence[str] | None = None) -> int:
+def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
     """Finalize admitted Codex state exports that carry no terminal receipt.
 
     Runs before the raw-materialization source-selection gate: the gate
     counts such a raw as an incomparable cursor row, and every route that
     could finalize it is behind the same gate. The receipt is derived from
     the immutable retained export only. Returns the number of raws finalized.
-    ``raw_ids`` restricts the pass to those raws; ``None`` covers the archive.
 
     The same pass reconciles the index-tier thread-state projection against
     the newest retained export, so a reindex that applied the export before
     the sessions it describes converges without depending on replay order.
-    A restricted pass reconciles it only when it finalized a raw.
     """
     source_db = archive_root / "source.db"
     if not source_db.is_file():
         return 0
-    if raw_ids is not None:
-        pending = _unreceipted_codex_state_raw_ids(source_db, raw_ids) if raw_ids else []
-        if not pending:
-            return 0
-    else:
-        pending = _unreceipted_codex_state_raw_ids(source_db)
-        if not pending and _thread_state_projection_is_current(archive_root):
-            return 0
+    raw_ids = _unreceipted_codex_state_raw_ids(source_db)
+    if not raw_ids and _thread_state_projection_is_current(archive_root):
+        return 0
     from polylogue.sources.live.archive_open import _open_archive_for_live_write
 
     resolved = 0
     with _open_archive_for_live_write(archive_root) as archive:
-        for raw_id in pending:
+        for raw_id in raw_ids:
             provider, blob_hash, source_path, _kind, _payload_size = archive.raw_revision_descriptor(raw_id)
             if provider is not Provider.CODEX:
                 continue
@@ -488,5 +466,4 @@ __all__ = [
     "materialize_codex_state_content",
     "record_codex_state_snapshot_terminal",
     "resolve_retained_codex_state_receipts",
-    "unreceipted_codex_state_raw_ids",
 ]

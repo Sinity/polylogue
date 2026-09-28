@@ -64,20 +64,6 @@ def make_raw_observation_derivation(archive_root: Path) -> RawObservationDerivat
     return RawObservationDerivation(archive_root, prepare_non_json_artifact=prepare_retained_non_json_artifact_worker)
 
 
-def raw_needs_codex_state_receipt(archive_root: Path, raw_id: str) -> bool:
-    """Return whether ``raw_id`` is a retained Codex state export without its terminal receipt."""
-    from polylogue.sources.codex_state_evidence import unreceipted_codex_state_raw_ids
-
-    return bool(unreceipted_codex_state_raw_ids(archive_root, (raw_id,)))
-
-
-def finalize_codex_state_raw(archive_root: Path, raw_id: str) -> int:
-    """Write the terminal receipt of one retained Codex state export; caller holds the writer."""
-    from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
-
-    return resolve_retained_codex_state_receipts(archive_root, raw_ids=(raw_id,))
-
-
 def raw_observation_output_session_ids(archive_root: Path, raw_id: str) -> tuple[str, ...]:
     """Read every active session output in the seed raw's replay component."""
     from polylogue.operations.operation_context import open_operation_read

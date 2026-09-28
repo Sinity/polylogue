@@ -736,14 +736,16 @@ async def test_retained_codex_state_raw_without_receipt_is_resolved_from_the_blo
 async def test_raw_observation_owner_finalizes_an_unreceipted_codex_state_export(
     workspace_env: dict[str, Path],
 ) -> None:
-    """The daemon's exact-raw owner writes the missing terminal receipt before
-    its source-selection gate, so fair intake settles the export.
+    """Fair intake's exact-raw owner settles a Codex state export admitted
+    without its terminal receipt.
 
-    Anti-vacuity: without the finalization step in
-    ``RawObservationConvergenceOwner.converge_raw_id`` the ``state_5`` raw keeps
-    ``parsed_at_ms`` NULL and its ``source_raws_without_accepted_head`` gap.
-    The finalization is exact: the ``goals_1`` raw it was not asked about keeps
-    its gap.
+    The owner's per-raw source-selection gate admits the missing accepted
+    head as an authority gap, and the canonical derivation's replay writes
+    the receipt (``_replay_retained_codex_state_evidence``). Anti-vacuity: a
+    gate that refused the gap, or a replay that skipped retained Codex state,
+    leaves the ``state_5`` raw unfinalized with its
+    ``source_raws_without_accepted_head`` gap. The ``goals_1`` raw the owner
+    was not asked about keeps its gap, so the pass is exact.
     """
     import asyncio
 
