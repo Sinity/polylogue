@@ -28,6 +28,7 @@ from polylogue.daemon.derivation import (
     DerivationKey,
     DerivationRegistry,
     DerivationReport,
+    KeyOutcome,
     KeyPage,
     KeyStatus,
     Outcome,
@@ -611,6 +612,27 @@ def test_a_report_can_be_bounded_without_losing_its_totals() -> None:
     assert report.pending == 95
     assert len(report.outcomes) == 3
     assert report.truncated
+
+
+def test_direct_report_construction_derives_counts_from_outcomes() -> None:
+    """The exported positional report constructor keeps outcome properties truthful.
+
+    Anti-vacuity: remove DerivationReport.__post_init__ and this completed
+    outcome is exposed as zero done work.
+    """
+    report = DerivationReport(FRAME, (KeyOutcome(DerivationKey("demo", "one"), Outcome.DONE),))
+    assert report.done == 1
+    assert report.pending == 0
+
+
+def test_outer_deadline_tightens_an_existing_budget_deadline() -> None:
+    """Both relative deadlines constrain the pass to the earlier deadline.
+
+    Anti-vacuity: ignore deadline_s when a Budget already has one and the
+    returned budget keeps the later 100-second allowance.
+    """
+    limits = Budget.coerce(Budget(deadline_s=100), deadline_s=1)
+    assert limits.deadline_s == 1
 
 
 def test_repeated_bounded_passes_visit_every_key() -> None:

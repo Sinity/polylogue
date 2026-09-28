@@ -2330,7 +2330,14 @@ async def _run_daemon_services_under_active_writer_lease(
         # Ensure all configured source roots exist so health checks don't flag
         # never-yet-used sources (e.g. hooks sidecar dir) as missing.
         for src in sources:
-            src.root.mkdir(parents=True, exist_ok=True)
+            try:
+                src.root.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                # Optional provider roots are allowed to be absent (and may
+                # live below a read-only home). Explicit roots and other
+                # required sources remain startup requirements.
+                if src.required:
+                    raise
 
         if lifecycle_events_enabled:
             await _emit_daemon_lifecycle_event(

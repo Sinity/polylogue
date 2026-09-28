@@ -137,6 +137,7 @@ class ComposedEmbeddingConvergence:
     """One retained owner and adapter for the daemon's shared compute capacity."""
 
     callback: EmbeddingConvergenceCallback
+    deferred_reason: str | None = None
 
     async def __call__(self, scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
         return await self.callback(scope)
@@ -209,6 +210,10 @@ class _EmbeddingBackfillExecution:
                 return binding, scope, scope_limited, existing
 
         binding, scope, scope_limited, existing = await self.runtime.compute_phase(prepare)
+        if existing is not None and str(existing.get("archive_identity")) != binding.archive_identity:
+            # A rebuilt index changes the live archive identity digest while
+            # the durable request and parts remain keyed by the prior digest.
+            binding = replace(binding, archive_identity=str(existing["archive_identity"]))
         self.binding, self.scope, self.scope_limited, self.record = binding, scope, scope_limited, existing
         if existing is not None:
             self.operation_id = str(self.audit.machine_parts(binding)[0]["operation_id"])
@@ -361,14 +366,14 @@ def compose_embedding_convergence(
         async def disabled(_scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
             return EmbeddingConvergenceResult(None, "disabled")
 
-        return ComposedEmbeddingConvergence(disabled)
+        return ComposedEmbeddingConvergence(disabled, "disabled")
     voyage_key = cfg.get("voyage_api_key")
     if not voyage_key:
 
         async def no_key(_scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
             return EmbeddingConvergenceResult(None, "provider_unavailable")
 
-        return ComposedEmbeddingConvergence(no_key)
+        return ComposedEmbeddingConvergence(no_key, "provider_unavailable")
     monthly_cap = float(str(cfg.get("embedding_max_cost_usd", 0.0)))
     estimated_cost_per_message = estimated_embedding_message_cost()
     pass_lock = asyncio.Lock()
@@ -425,14 +430,16 @@ def compose_embedding_convergence(
         archive_root=archive_root,
         reserve=reserve,
         quiet=quiet,
-        progress_callback=observe_progress,
+        # The derivation adapter performs per-key attribution only when a
+        # progress consumer exists. Do not pay for discarded events.
+        progress_callback=observe_progress if progress_callback is not None else None,
     )
     if adapter is None:
 
         async def unavailable(_scope: Sequence[str] | None) -> EmbeddingConvergenceResult:
             return EmbeddingConvergenceResult(None, "provider_unavailable")
 
-        return ComposedEmbeddingConvergence(unavailable)
+        return ComposedEmbeddingConvergence(unavailable, "provider_unavailable")
     from polylogue.daemon.convergence_stages import configured_derivation_barrier
 
     owner = DerivationConvergenceOwner(
@@ -454,6 +461,8 @@ def compose_embedding_convergence(
                 compute_budget = min(compute_budget, max_messages)
             if max_cost_usd is not None:
                 compute_budget = min(compute_budget, max(0, int(max_cost_usd / estimated_cost_per_message)))
+                if compute_budget <= 0:
+                    return EmbeddingConvergenceResult(None, "cost_cap_exceeded")
             if monthly_cap > 0.0:
                 from polylogue.daemon.embedding_backlog import _archive_embedding_catchup_estimated_cost_this_month
 
@@ -462,10 +471,17 @@ def compose_embedding_convergence(
                 compute_budget = min(compute_budget, max(0, int(remaining / estimated_cost_per_message)))
                 if compute_budget <= 0:
                     return EmbeddingConvergenceResult(None, "monthly_cost_cap")
+            if scope is None:
+                from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+                with open_readonly_connection(index_db_path, validate_schema=False) as conn:
+                    scanned_sessions = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
+            else:
+                scanned_sessions = len(scope)
             receipt: _PassReceipt = {
                 "run_id": None,
                 "started_at_ms": int(time.time() * 1000),
-                "scanned_sessions": len(tuple(scope or ())),
+                "scanned_sessions": scanned_sessions,
                 # An interrupted pass keeps this conservative reserve, so a
                 # restart cannot spend beyond the configured monthly cap.
                 "reserved_cost_usd": compute_budget * estimated_cost_per_message,
@@ -497,6 +513,23 @@ def compose_embedding_convergence(
                 # bound only on the receipt path raised NameError whenever a
                 # pass ran without a receipt run id.
                 failures = report.count(Outcome.FAILED)
+                completed_message_ids = tuple(
+                    item.key.key.removeprefix("message:")
+                    for item in report.by_outcome(Outcome.DONE)
+                    if item.key.domain == adapter.domain and item.key.key.startswith("message:")
+                )
+                embedded_sessions = 0
+                if completed_message_ids:
+                    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+                    placeholders = ", ".join("?" for _ in completed_message_ids)
+                    with open_readonly_connection(index_db_path, validate_schema=False) as conn:
+                        embedded_sessions = int(
+                            conn.execute(
+                                f"SELECT COUNT(DISTINCT session_id) FROM messages WHERE message_id IN ({placeholders})",
+                                completed_message_ids,
+                            ).fetchone()[0]
+                        )
                 if run_id is not None:
                     # Attempt rows are telemetry only.  This final estimate is
                     # deliberately conservative: a failed provider call can
@@ -527,6 +560,7 @@ def compose_embedding_convergence(
                             started_at_ms=int(receipt["started_at_ms"]),
                             finished_at_ms=int(time.time() * 1000),
                             scanned_sessions=int(receipt["scanned_sessions"]),
+                            embedded_sessions=embedded_sessions,
                             error_count=failures,
                             embedded_messages=computed,
                             estimated_cost_usd=computed * estimated_cost_per_message,
@@ -589,15 +623,6 @@ async def execute_embedding_backfill_operation(
                 result=state.get("result", state),
             )
         payload = request.payload
-        if bool(payload.get("rebuild")) and execution.record is not None:
-            from polylogue.operations.embedding_derivation import mark_embedding_sessions_needs_reindex
-
-            await runtime.write_phase(
-                "embedding.rebuild-mark",
-                lambda: mark_embedding_sessions_needs_reindex(
-                    root / "index.db", embeddings_db_path=root / "embeddings.db"
-                ),
-            )
 
         def _bound(key: str) -> int | None:
             value = payload.get(key)
@@ -621,6 +646,15 @@ async def execute_embedding_backfill_operation(
             scope_limited=execution.scope_limited,
             progress_callback=lambda event: runtime.emit_progress(request, event),
         )
+        if bool(payload.get("rebuild")) and execution.record is not None and owner.deferred_reason is None:
+            from polylogue.operations.embedding_derivation import mark_embedding_sessions_needs_reindex
+
+            await runtime.write_phase(
+                "embedding.rebuild-mark",
+                lambda: mark_embedding_sessions_needs_reindex(
+                    root / "index.db", embeddings_db_path=root / "embeddings.db"
+                ),
+            )
         result = await owner(execution.scope)
         report = result.report
         stop_reason = runtime.stop_reason(request) or result.deferred_reason

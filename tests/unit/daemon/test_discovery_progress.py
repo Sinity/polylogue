@@ -11,6 +11,7 @@ from typing import Any, cast
 import pytest
 
 from polylogue.daemon.discovery_progress import (
+    abandon_discovery,
     active_discovery_payload,
     advance_discovery,
     begin_discovery,
@@ -26,6 +27,28 @@ from polylogue.daemon.status_snapshot import (
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live import discovery as discovery_module
+
+
+def test_halted_owner_can_abandon_its_parked_discovery_progress() -> None:
+    """A halted adapter no longer keeps stale pending progress in status.
+
+    Anti-vacuity: remove abandon_discovery and the pending source remains
+    projected despite the owner being permanently unschedulable.
+    """
+    reset_discovery_progress()
+
+    class Owner:
+        pass
+
+    owner = Owner()
+    token = begin_discovery("halted", owner=owner)
+    end_discovery(token, pending=True)
+    assert active_discovery_payload() is not None
+
+    abandon_discovery(owner)
+
+    assert active_discovery_payload() is None
+    reset_discovery_progress()
 
 
 @pytest.mark.asyncio

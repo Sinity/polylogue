@@ -1445,6 +1445,7 @@ class DaemonConverger:
                             success, extra_stage_timings_s = _coerce_execute_result(execute_result)
                             remaining_needs_work: set[Path] | None = None
                             if not success and stage.false_means_pending:
+                                t_recheck = time.perf_counter()
                                 try:
                                     remaining_needs_work = set(stage.check_many(ordered_needs_work)).intersection(
                                         batch_needs_work
@@ -1458,6 +1459,13 @@ class DaemonConverger:
                                         reason="batch_recheck_raised",
                                         error_type=type(exc).__name__,
                                         error_detail=str(exc),
+                                    )
+                                finally:
+                                    _record_stage_times(
+                                        batch_stage_times,
+                                        f"{stage_name}.check",
+                                        time.perf_counter() - t_recheck,
+                                        {},
                                     )
                             _record_stage_times(
                                 batch_stage_times,
