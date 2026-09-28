@@ -190,19 +190,40 @@ def _span_variant_key(item: tuple[dict[str, object], str | None]) -> tuple[int, 
     )
 
 
+#: Resource attributes that name one running instance (a process, host,
+#: container or SDK build) rather than the resource. They change on every
+#: restart or upgrade, so they never contribute to a session's identity.
+_INSTANCE_RESOURCE_PREFIXES = (
+    "process.",
+    "host.",
+    "container.",
+    "k8s.pod.",
+    "k8s.container.",
+    "os.",
+    "telemetry.",
+    "service.instance.",
+)
+
+
 def _resource_id(resource_attrs: dict[str, object]) -> str:
-    """Name one OTLP resource by its service, or by its whole attribute set.
+    """Name one OTLP resource by its service, or by its stable attributes.
 
     Two ``resourceSpans`` entries without ``service.name`` are still distinct
-    resources when their other attributes differ; collapsing both onto one
-    shared fallback grouped their spans into a single provider session.
+    resources when their configured attributes differ; collapsing both onto
+    one shared fallback grouped their spans into a single provider session.
+    Per-instance attributes (``process.pid``, ``service.instance.id`` ...)
+    are left out, so a restarted process exports the same conversation under
+    the same identity.
     """
     service_name = optional_string(resource_attrs.get("service.name"))
     if service_name:
         return service_name
-    canonical = json.dumps(
-        {key: _json_value(value) for key, value in resource_attrs.items()}, sort_keys=True, separators=(",", ":")
-    )
+    stable = {
+        key: _json_value(value)
+        for key, value in resource_attrs.items()
+        if not key.startswith(_INSTANCE_RESOURCE_PREFIXES)
+    }
+    canonical = json.dumps(stable, sort_keys=True, separators=(",", ":"))
     return f"resource-{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
 
 
@@ -347,9 +368,10 @@ def _messages_for_span(
     # ``gen_ai.input.messages`` replays the call and its result, and the
     # overlap check must recognise them. A chat span whose output already
     # carried this call recorded the call entry; only the result is new then.
-    call_entry: _TranscriptEntry = (Role.ASSISTANT.value, None, (tool_id,))
-    if call_entry not in transcript:
-        transcript.append(call_entry)
+    # Matched by tool-call id alone: an output message may carry text beside
+    # the call.
+    if not any(entry[0] == Role.ASSISTANT.value and tool_id in entry[2] for entry in reversed(transcript)):
+        transcript.append((Role.ASSISTANT.value, None, (tool_id,)))
     transcript.append((Role.TOOL.value, None, (tool_id,)))
     messages.extend(
         (

@@ -776,6 +776,16 @@ def _trajectory_message(
     )
 
 
+def _unused_row_id(candidate: str, native_ids: set[str]) -> str:
+    """Return ``candidate``, suffixed until no provider-native id uses it."""
+    identity = candidate
+    attempt = 0
+    while identity in native_ids:
+        attempt += 1
+        identity = f"{candidate}~{attempt}"
+    return identity
+
+
 def parse_trajectory_db(
     path: Path,
     fallback_id: str | None = None,
@@ -860,7 +870,9 @@ def parse_trajectory_db(
             # fallback and address a single archive session repeatedly; each
             # row gets a stable row-specific identity instead.
             row_fallback_id = (
-                f"{fallback_id}:trajectory-{meta_index}" if fallback_id and len(meta_rows) > 1 else fallback_id
+                _unused_row_id(f"{fallback_id}:trajectory-{meta_index}", known_native_ids)
+                if fallback_id and len(meta_rows) > 1
+                else fallback_id
             )
             native_id = trajectory_id or cascade_id or row_fallback_id
             if not native_id:

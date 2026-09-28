@@ -26,7 +26,7 @@ from polylogue.sources.decoder_zip import (
     open_bounded_zip_entry,
 )
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
-from polylogue.sources.dispatch import detect_provider
+from polylogue.sources.dispatch import detect_provider, require_positive_conversational_evidence
 from polylogue.sources.parsers import antigravity
 
 _JSON_SUFFIXES = frozenset({".json", ".jsonl", ".ndjson"})
@@ -229,21 +229,19 @@ def _preflight_sqlite(path: Path, acc: _PreflightAccumulator, *, label: str) -> 
                     f"{label}: classified from the first {_MAX_SQLITE_PROBE_SESSIONS} trajectories; "
                     "the remainder was not inspected"
                 )
-            # A verified trajectory schema is this origin's material even when
-            # its steps produce no message: an empty trajectory, one of only
-            # unsupported step formats, or a schema with zero ``trajectory_meta``
-            # rows yields attributable typed evidence that acquisition must
-            # retain. The import routes pass the same path-derived
-            # ``fallback_id``, so a zero-row schema imports as one attributable
-            # empty session there too; preflight reports what import will do.
-            if sessions:
+            # Preflight promises what production import does, so the probed
+            # sessions pass the same evidence gate every production write path
+            # applies. An empty trajectory, or one of only unsupported step
+            # formats, is refused there, and so it is refused here.
+            admitted = require_positive_conversational_evidence(
+                sessions, provider=Provider.ANTIGRAVITY, source_path=str(path)
+            )
+            if admitted:
                 acc.supported(label, Provider.ANTIGRAVITY)
-                if any(session.ingest_flags for session in sessions):
-                    acc._caveat(f"{label}: trajectory contains unsupported or degraded steps")
-                if not any(session.messages for session in sessions):
-                    acc._caveat(f"{label}: trajectory produces typed evidence but no messages")
+                if any(session.ingest_flags for session in sessions) or len(admitted) < len(sessions):
+                    acc._caveat(f"{label}: trajectory contains unsupported, degraded or empty steps")
             else:
-                acc.unsupported(label, "Antigravity trajectory schema contains no trajectories")
+                acc.unsupported(label, "Antigravity trajectory schema contains no materialized messages")
             return
     except Exception as exc:
         # The parser adapter classifies SQLite read failures at its storage

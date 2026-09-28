@@ -1092,7 +1092,10 @@ def _claude_code_multiway_parse_inner(
         # ``record`` is the caller's already-coerced view of ``item``. Coercing
         # walks the whole decoded record, so it happens once per record here,
         # not once per read of a field.
-        observers.setdefault(group_id, AdmissionObserver()).observe(item, source_index=index)
+        observer = observers.get(group_id)
+        if observer is None:
+            observer = observers[group_id] = AdmissionObserver()
+        observer.observe(item, source_index=index)
         if sidecar_accumulators is not None:
             sidecar_accumulators[group_id].observe(item)
         if record is not None and not is_agent_fallback and group_id == fallback_id:

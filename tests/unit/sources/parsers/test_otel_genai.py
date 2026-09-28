@@ -551,3 +551,78 @@ def test_genai_trace_found_only_in_a_conflicting_copy_is_kept() -> None:
 
     assert len(sessions) == 1
     assert "otel_conflicting_span_id" in [event.event_type for event in sessions[0].session_events]
+
+
+def test_tool_call_beside_text_is_recognised_in_replayed_history() -> None:
+    """An output message with text and a tool call is matched by its call id.
+
+    Anti-vacuity: require the recorded call entry to carry no text and the
+    tool span records a second call, so the replayed history is emitted again.
+    """
+    trace = "c" * 32
+    call = {
+        "role": "assistant",
+        "parts": [
+            {"type": "text", "content": "Searching."},
+            {"type": "tool_call", "id": "call-2", "name": "search", "arguments": {}},
+        ],
+    }
+    result = {"role": "tool", "parts": [{"type": "tool_call_response", "id": "call-2", "response": "found"}]}
+    first = _span(
+        trace,
+        "1" * 16,
+        1_000,
+        [
+            _attr("gen_ai.operation.name", "chat"),
+            _attr("gen_ai.conversation.id", "chat-1"),
+            _attr("gen_ai.input.messages", [{"role": "user", "content": "Q"}]),
+            _attr("gen_ai.output.messages", [call]),
+        ],
+    )
+    tool = _span(
+        trace,
+        "2" * 16,
+        2_000,
+        [
+            _attr("gen_ai.operation.name", "execute_tool"),
+            _attr("gen_ai.conversation.id", "chat-1"),
+            _attr("gen_ai.tool.name", "search"),
+            _attr("gen_ai.tool.call.id", "call-2"),
+        ],
+    )
+    second = _span(
+        trace,
+        "3" * 16,
+        3_000,
+        [
+            _attr("gen_ai.operation.name", "chat"),
+            _attr("gen_ai.conversation.id", "chat-1"),
+            _attr("gen_ai.input.messages", [{"role": "user", "content": "Q"}, call, result]),
+            _attr("gen_ai.output.messages", [{"role": "assistant", "content": "A"}]),
+        ],
+    )
+    payload = _document(([_attr("service.name", "agent")], [first, tool, second]))
+
+    (session,) = otel_genai.parse(payload, "ignored")
+
+    assert not [message for message in session.messages if f"{trace}:{'3' * 16}:input" in message.provider_message_id]
+
+
+def test_unnamed_resource_identity_ignores_instance_attributes() -> None:
+    """A restarted process exports the same conversation under the same id.
+
+    Anti-vacuity: hash every resource attribute and the changed
+    ``process.pid`` gives the second export a different session id.
+    """
+
+    def export(pid: int) -> str:
+        payload = _document(
+            (
+                [_attr("deployment.environment", "prod"), _attr("process.pid", pid)],
+                [_chat("d" * 32, "4" * 16, 1_000, ["Q"], "A")],
+            )
+        )
+        (session,) = otel_genai.parse(payload, "ignored")
+        return session.provider_session_id
+
+    assert export(100) == export(200)

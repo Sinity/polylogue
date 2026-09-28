@@ -76,13 +76,16 @@ def test_preflight_accepts_antigravity_trajectory_sqlite(tmp_path: Path) -> None
     ],
     ids=["empty-trajectory", "only-unsupported-steps"],
 )
-def test_preflight_admits_verified_trajectory_without_messages(tmp_path: Path, steps_sql: str) -> None:
-    """A verified trajectory schema whose steps yield no message stays admissible.
+def test_preflight_refuses_what_the_production_evidence_gate_refuses(tmp_path: Path, steps_sql: str) -> None:
+    """A trajectory whose steps yield no message is refused as production refuses it.
 
-    Anti-vacuity: require a materialized message again and both inputs are
-    refused as unsupported, so the typed ``antigravity_trajectory_empty`` /
-    ``antigravity_unsupported_step`` evidence can never reach acquisition.
+    Anti-vacuity: report an event-only trajectory as supported and preflight
+    promises an import that ``require_positive_conversational_evidence``
+    removes on every production write path.
     """
+    from polylogue.sources.dispatch import require_positive_conversational_evidence
+    from polylogue.sources.parsers import antigravity
+
     source = tmp_path / "quiet-trajectory.sqlite"
     with sqlite3.connect(source) as connection:
         connection.executescript(
@@ -93,12 +96,12 @@ def test_preflight_admits_verified_trajectory_without_messages(tmp_path: Path, s
             {steps_sql}
             """
         )
+    sessions = list(antigravity.parse_trajectory_db(source, fallback_id=source.stem))
 
     result = preflight_import_source(source)
 
-    assert result.admissible is True
-    assert result.providers == (Provider.ANTIGRAVITY,)
-    assert any("no messages" in caveat for caveat in result.caveats)
+    assert require_positive_conversational_evidence(sessions, provider=Provider.ANTIGRAVITY, source_path=None) == []
+    assert result.admissible is False
 
 
 def test_preflight_rejects_unknown_json_shape(tmp_path: Path) -> None:
@@ -250,3 +253,29 @@ def test_unidentified_trajectory_rows_keep_distinct_identities(tmp_path: Path) -
         "unnamed:trajectory-0",
         "unnamed:trajectory-1",
     ]
+
+
+def test_generated_trajectory_id_avoids_a_native_id(tmp_path: Path) -> None:
+    """A generated row id never reuses a provider-native trajectory id.
+
+    Anti-vacuity: take ``<fallback>:trajectory-0`` without checking the native
+    ids and both rows share one ``provider_session_id``.
+    """
+    from polylogue.sources.parsers import antigravity
+
+    source = tmp_path / "x.sqlite"
+    with sqlite3.connect(source) as connection:
+        connection.executescript(
+            """
+            CREATE TABLE trajectory_meta (trajectory_id TEXT, cascade_id TEXT);
+            CREATE TABLE steps (idx INTEGER, step_type TEXT, step_format TEXT, step_payload TEXT);
+            INSERT INTO trajectory_meta VALUES (NULL, NULL);
+            INSERT INTO trajectory_meta VALUES ('x:trajectory-0', NULL);
+            """
+        )
+
+    sessions = list(antigravity.parse_trajectory_db(source, fallback_id="x"))
+
+    identities = [session.provider_session_id for session in sessions]
+    assert len(identities) == 2
+    assert len(set(identities)) == 2
