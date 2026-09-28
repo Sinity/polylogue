@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -18,7 +17,7 @@ from polylogue.archive.artifact_taxonomy.support import is_subagent_path
 from polylogue.archive.raw_payload.streams import raw_line_stream
 from polylogue.core.binary_signatures import detect_binary_signature
 from polylogue.core.enums import Provider
-from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_json_value, loads
+from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, decode_provider_utf8, is_json_value, loads
 from polylogue.sources.dispatch import detect_provider
 
 _BINARY_ARTIFACT_MARKER = "unrecognized_binary_artifact"
@@ -38,34 +37,8 @@ class EmptyJsonlStreamError(ValueError):
 
 
 def _decode_provider_utf8(raw: bytes) -> str:
-    """Decode provider bytes while preserving UTF-8-encoded surrogate code units.
-
-    Some historical exports contain a lone UTF-16 surrogate encoded directly
-    as its three-byte UTF-8 sequence. This is invalid Unicode scalar UTF-8,
-    so the active JSON backend correctly rejects it, but Python can preserve the original
-    code unit with ``surrogatepass``. Arbitrary malformed byte sequences still
-    raise and retain the ordinary malformed-JSONL behavior.
-    """
-    try:
-        return raw.decode("utf-8")
-    except UnicodeDecodeError as error:
-        try:
-            decoded = raw.decode("utf-8", errors="surrogatepass")
-        except UnicodeDecodeError:
-            raise error from None
-        # A CESU-8 pair (a high and a low surrogate each encoded directly) is
-        # one character; kept as two code units it would be stored as two
-        # adjacent escapes, which every JSON reader combines, so the stored
-        # value would differ from the hashed one.
-        return _SURROGATE_PAIR.sub(_combined_pair, decoded)
-
-
-_SURROGATE_PAIR = re.compile("[\ud800-\udbff][\udc00-\udfff]")
-
-
-def _combined_pair(match: re.Match[str]) -> str:
-    high, low = (ord(char) for char in match.group())
-    return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
+    """Decode provider bytes as every provider reader does (``core.json.decode_provider_utf8``)."""
+    return decode_provider_utf8(raw)
 
 
 def _load_json_record(line: str) -> JSONValue:

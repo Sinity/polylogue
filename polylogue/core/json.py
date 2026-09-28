@@ -49,6 +49,7 @@ from __future__ import annotations
 import json as _stdlib_json
 import re
 from collections.abc import Callable
+from contextlib import suppress
 from decimal import Decimal
 from typing import TypeAlias, TypeGuard, cast
 
@@ -472,8 +473,15 @@ def loads(obj: str | bytes | bytearray) -> JSONValue:
     try:
         return _loaded_json_value(_raw_loads(obj))
     except JSONDecodeError as exc:
+        second: str | bytes | bytearray = obj
+        if isinstance(obj, bytes | bytearray):
+            # Provider bytes decode as every provider reader decodes them:
+            # directly encoded surrogates kept, CESU-8 pairs joined. Other
+            # encodings are left to the stdlib's own detection.
+            with suppress(UnicodeDecodeError):
+                second = decode_provider_utf8(bytes(obj))
         try:
-            return _loaded_json_value(_stdlib_json.loads(obj, parse_constant=_reject_non_finite_token))
+            return _loaded_json_value(_stdlib_json.loads(second, parse_constant=_reject_non_finite_token))
         except (_stdlib_json.JSONDecodeError, ValueError):
             raise exc from None
 
@@ -496,3 +504,38 @@ __all__ = [
     "require_json_document",
     "require_json_value",
 ]
+
+
+_SURROGATE_PAIR = re.compile("[\ud800-\udbff][\udc00-\udfff]")
+
+
+def combine_surrogate_pairs(text: str) -> str:
+    """Join each adjacent high/low surrogate code-unit pair into its character.
+
+    A CESU-8 pair (each half encoded directly) decodes under ``surrogatepass``
+    to two code units; kept apart they would be stored as two adjacent JSON
+    escapes, which every JSON reader combines. A lone surrogate is kept.
+    """
+    if text.isascii():
+        return text
+    return _SURROGATE_PAIR.sub(
+        lambda match: chr(0x10000 + ((ord(match.group()[0]) - 0xD800) << 10) + (ord(match.group()[1]) - 0xDC00)),
+        text,
+    )
+
+
+def decode_provider_utf8(raw: bytes) -> str:
+    """Decode provider bytes, keeping directly encoded surrogates and pairing CESU-8.
+
+    Strict UTF-8 first; bytes that only decode with ``surrogatepass`` keep
+    their lone code units, and any encoded pair becomes its character.
+    Arbitrary malformed bytes still raise.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        try:
+            decoded = raw.decode("utf-8", errors="surrogatepass")
+        except UnicodeDecodeError:
+            raise error from None
+        return combine_surrogate_pairs(decoded)

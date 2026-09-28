@@ -3509,7 +3509,12 @@ def test_candidate_lookup_normalizes_only_after_the_exact_probe_misses(monkeypat
         assert value != decomposed, "normalized a text whose exact digest matches"
         return real(form, value)
 
-    monkeypatch.setattr(unicodedata, "normalize", guarded)
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(
+        "polylogue.sources.parsers.codex.unicodedata",
+        SimpleNamespace(normalize=guarded, combining=unicodedata.combining),
+    )
     assert conservation._candidate(decomposed) == key
 
 
@@ -3544,3 +3549,38 @@ def test_a_cesu8_pair_in_provider_bytes_decodes_to_one_character() -> None:
     from polylogue.archive.raw_payload.decode import _decode_provider_utf8
 
     assert _decode_provider_utf8(b"a\xed\xa0\xbd\xed\xb8\x80 \xed\xa0\x80") == "a\U0001f600 \ud800"
+
+
+def test_nfc_candidate_digest_streams_without_a_full_normalized_copy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: normalize the whole candidate to hash its NFC form and the
+    guarded ``normalize`` sees a window larger than the digest window."""
+    import unicodedata
+
+    from polylogue.sources.parsers import codex as codex_module
+
+    monkeypatch.setattr(codex_module, "_DIGEST_WINDOW_CHARS", 7)
+    text = "é" * 40
+    expected = codex_module._text_digest(unicodedata.normalize("NFC", text))
+    real = unicodedata.normalize
+
+    def bounded(form: Any, value: str) -> str:
+        assert len(value) <= 16, "normalized more than one window at once"
+        return real(form, value)
+
+    from types import SimpleNamespace
+
+    proxy = SimpleNamespace(normalize=bounded, combining=unicodedata.combining)
+    monkeypatch.setattr("polylogue.sources.parsers.codex.unicodedata", proxy)
+    assert codex_module._nfc_text_digest(text) == expected
+
+
+def test_streamed_jsonl_decoder_reads_a_cesu8_pair_as_one_character() -> None:
+    """Anti-vacuity: leave the streamed decoder on the lenient guess and the
+    record is skipped or its pair split."""
+    import io
+
+    from polylogue.sources.decoders import _iter_json_stream
+
+    line = b'{"type": "note", "text": "a\xed\xa0\xbd\xed\xb8\x80 \xed\xa0\x80"}\n'
+    (record,) = list(_iter_json_stream(io.BytesIO(line), "rollout.jsonl"))
+    assert record["text"] == "a\U0001f600 \ud800"  # type: ignore[index,call-overload]

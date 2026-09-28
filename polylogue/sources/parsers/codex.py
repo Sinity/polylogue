@@ -23,6 +23,7 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.provider.semantics import extract_codex_text
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+from polylogue.core.json import combine_surrogate_pairs
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.logging import DEBUG, WARNING, emit, get_logger
 from polylogue.sources.providers.codex import CodexRecord
@@ -335,6 +336,29 @@ def _sql_key(value: object) -> bytes:
 
 
 _DIGEST_WINDOW_CHARS = 1 << 20
+
+
+def _nfc_text_digest(text: str) -> bytes:
+    """``_text_digest`` of the NFC form of ``text``, without building that form.
+
+    Normalization streams: output before the last starter of what is produced
+    is final (later input can only compose with that starter), so each window
+    is hashed as it settles and only its unsettled tail is held.
+    """
+    if text.isascii():
+        return _text_digest(text)
+    digest = hashlib.sha256()
+    pending = ""
+    for start in range(0, len(text), _DIGEST_WINDOW_CHARS):
+        piece = pending + text[start : start + _DIGEST_WINDOW_CHARS]
+        normalized = unicodedata.normalize("NFC", piece)
+        index = len(normalized) - 1
+        while index > 0 and unicodedata.combining(normalized[index]) != 0:
+            index -= 1
+        digest.update(normalized[:index].encode("utf-8", "surrogatepass"))
+        pending = normalized[index:]
+    digest.update(unicodedata.normalize("NFC", pending).encode("utf-8", "surrogatepass"))
+    return digest.digest()
 
 
 def _text_digest(text: str) -> bytes:
@@ -1506,7 +1530,7 @@ class _CodexTextConservation:
         row = connection.execute(query, (_text_digest(text),)).fetchone()
         # The NFC copy is built only when the exact probe misses.
         if row is None and normalize and not text.isascii():
-            row = connection.execute(query, (_text_digest(unicodedata.normalize("NFC", text)),)).fetchone()
+            row = connection.execute(query, (_nfc_text_digest(text),)).fetchone()
         return bytes(row[0]) if row is not None else None
 
     def _candidate(self, text: str, *, normalize: bool = True) -> bytes | None:
@@ -1522,12 +1546,9 @@ class _CodexTextConservation:
             key = _text_digest(text)
             connection.execute("INSERT INTO codex_task_texts(key, text) VALUES (?, ?)", (key, _sql_key(text)))
             connection.execute("INSERT INTO codex_task_keys VALUES (?, ?)", (key, key))
-            normalized = unicodedata.normalize("NFC", text)
-            if normalized != text:
-                connection.execute(
-                    "INSERT OR IGNORE INTO codex_task_keys VALUES (?, ?)",
-                    (_text_digest(normalized), key),
-                )
+            normalized_key = _nfc_text_digest(text)
+            if normalized_key != key:
+                connection.execute("INSERT OR IGNORE INTO codex_task_keys VALUES (?, ?)", (normalized_key, key))
             self._task_unresolved += 1
         connection.execute("INSERT INTO codex_task_events VALUES (?, ?, ?)", (event_index, key, len(text)))
 
@@ -1588,11 +1609,9 @@ class _CodexTextConservation:
         # as absent and be stored a second time. Only the candidates are
         # normalized; retained text is looked up as written, then normalized
         # only when it is not pure ASCII.
-        normalized = unicodedata.normalize("NFC", text)
-        if normalized != text:
-            connection.execute(
-                "INSERT OR IGNORE INTO codex_replacement_keys VALUES (?, ?)", (_text_digest(normalized), key)
-            )
+        normalized_key = _nfc_text_digest(text)
+        if normalized_key != key:
+            connection.execute("INSERT OR IGNORE INTO codex_replacement_keys VALUES (?, ?)", (normalized_key, key))
         self._unresolved += 1
         return key, True
 
@@ -1789,14 +1808,6 @@ def _is_js_identifier_part(char: str) -> bool:
     return _is_js_identifier_start(char) or char.isdigit()
 
 
-_SURROGATE_PAIR = re.compile("[\ud800-\udbff][\udc00-\udfff]")
-
-
-def _combined_pair(match: re.Match[str]) -> str:
-    high, low = (ord(char) for char in match.group())
-    return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00))
-
-
 class _JsLiteralParser:
     """Conservative parser for the JSON-like argument literals used by Code Mode.
 
@@ -1944,7 +1955,7 @@ class _JsLiteralParser:
                 # as \uD83D\uDE00 is one character. Combining it here keeps
                 # the value equal to what any JSON reader of the stored,
                 # escaped payload decodes; a lone surrogate stays as it is.
-                return _SURROGATE_PAIR.sub(_combined_pair, "".join(parts))
+                return combine_surrogate_pairs("".join(parts))
             if quote == "`" and char == "$" and self._peek() == "{":
                 raise _JsLiteralError("template interpolation is not a literal")
             if char != "\\":
