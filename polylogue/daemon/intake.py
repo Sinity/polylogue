@@ -98,6 +98,9 @@ class AdmissionResult:
     outcome: AdmissionOutcome
     reason: str | None = None
     actual_cost: int | None = None
+    #: A RETRYABLE item the adapter never attempted (e.g. the daemon is
+    #: degraded): it counts toward no attempt budget or cooldown.
+    unattempted: bool = False
 
     @property
     def acknowledgeable(self) -> bool:
@@ -511,6 +514,9 @@ class FairIntakeDispatcher:
             item_actual_cost = item_cost if result.actual_cost is None else max(0, int(result.actual_cost))
             actual_cost += item_actual_cost
             runtime.deficit -= item_actual_cost - item_cost
+            if result.unattempted:
+                retried += 1
+                continue
             attempts = runtime.attempts.get(item.item_id, 0) + 1
             runtime.attempts[item.item_id] = attempts
             retried += 1

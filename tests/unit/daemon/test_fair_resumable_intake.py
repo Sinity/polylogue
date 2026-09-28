@@ -3567,3 +3567,19 @@ async def test_a_pass_that_degrades_the_daemon_runs_no_post_pass_callback() -> N
         clear_degraded()
     assert files.admitted == ["file-00"]
     assert completed == []
+
+
+@pytest.mark.asyncio
+async def test_unattempted_retryable_results_count_no_attempt() -> None:
+    """Anti-vacuity: count an unattempted result as an attempt and a
+    ``max_attempts=1`` class puts the item into cooldown."""
+    files = FakeAdapter(
+        "configured_local",
+        ["file-00"],
+        outcome_for=lambda _item: AdmissionResult(AdmissionOutcome.RETRYABLE, actual_cost=0, unattempted=True),
+    )
+    dispatcher = FairIntakeDispatcher((IntakeClassSpec("configured_local", files, page_size=1, max_attempts=1),))
+    await dispatcher.run_once()
+    runtime = dispatcher._runtime["configured_local"]
+    assert runtime.attempts == {}
+    assert runtime.retry_after == {}

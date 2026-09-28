@@ -704,11 +704,21 @@ class FileIntakeAdapter(IntakeAdapter):
             # Forget the offered durable-retry page without rotating past it:
             # the retry position did not advance, so the next discovery after
             # recovery re-offers the same due items, tail included.
+            if self._local_retry_page:
+                # Offering a local retry page pushed its deadlines forward;
+                # nothing was attempted, so the items are due again at once.
+                now = self._clock()
+                with self._retry_state_lock:
+                    for offered in self._retry_page_paths:
+                        if offered in self._fresh_retry_debt:
+                            self._fresh_retry_debt[offered] = now
             self._retry_page_pending = False
             self._retry_page_paths = ()
             self._local_retry_page = False
             return {
-                item.item_id: AdmissionResult(AdmissionOutcome.RETRYABLE, reason=detail, actual_cost=0)
+                item.item_id: AdmissionResult(
+                    AdmissionOutcome.RETRYABLE, reason=detail, actual_cost=0, unattempted=True
+                )
                 for item in items
             }
         for item in items:
@@ -960,7 +970,9 @@ class FileIntakeAdapter(IntakeAdapter):
                 outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=item_estimate)
 
         admitted_paths = [path for path in paths if str(path) in succeeded]
-        if admitted_paths:
+        if admitted_paths and not is_fully_degraded():
+            # A later file in this batch may have degraded the daemon; derived
+            # follow-up converges from durable evidence once it recovers.
             converge_embeddings = getattr(self.context.watcher, "_converge_embeddings_off_writer", None)
             if callable(converge_embeddings):
                 await converge_embeddings(admitted_paths)

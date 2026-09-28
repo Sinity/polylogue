@@ -603,5 +603,38 @@ async def test_degraded_admission_keeps_a_due_retry_page_for_re_offer(
         clear_degraded()
 
     assert adapter._retry_page_pending is False
-    assert adapter._retry_page_paths == ()
+    assert not adapter._retry_page_paths
     assert adapter._retry_skip_after is None
+
+
+@pytest.mark.asyncio
+async def test_degraded_admission_restores_due_local_retries(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+) -> None:
+    """Anti-vacuity: keep the offer's pushed-forward deadline and the carrier
+    reports a cooldown after recovery although nothing was attempted."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    _archive, watcher, source_path = storage_env
+    clock = {"now": 100.0}
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=Path(watcher._polylogue.archive_root),
+            watcher=watcher,
+            sources=watcher._sources,
+        ),
+        watcher._sources[0],
+        clock=lambda: clock["now"],
+    )
+    adapter._fresh_retry_debt[source_path] = 105.0  # pushed forward by the offer
+    adapter._retry_page = True
+    adapter._retry_page_pending = True
+    adapter._local_retry_page = True
+    adapter._retry_page_paths = (source_path,)
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="v12 vs v9"))
+    try:
+        await adapter.admit_page(())
+    finally:
+        clear_degraded()
+
+    assert adapter._fresh_retry_debt[source_path] == 100.0
