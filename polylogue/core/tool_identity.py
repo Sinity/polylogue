@@ -68,23 +68,26 @@ def _sql_text_projection(column: str, key: str) -> str:
     )
 
 
-#: The spelling of every lone-surrogate escape prefix, ``\uD800``-``\uDFFF``
-#: in either hex case.
-_SURROGATE_ESCAPE_PREFIXES = tuple(f"\\u{d}{h}" for d in "dD" for h in "89abcdefABCDEF")
-
-
 def _sql_escape_surrogate_escapes(json_string: str) -> str:
     """Rewrite a JSON string literal so decoding it keeps surrogates spelled out.
 
     SQLite's own JSON decoder then handles every other escape (short forms,
-    ``\\u00XX`` controls, any other ``\\uXXXX``) and leaves every literal
-    character, U+FFFF included, untouched. Escaped backslashes are first
-    respelled as ``\\u005c`` so each remaining backslash starts a real escape;
-    each surrogate escape then gains an escaped backslash, which decodes to
-    the literal text ``\\uD8xx`` instead of text that is not valid UTF-8.
+    ``\\u00XX`` controls) and leaves every literal character, U+FFFF
+    included, untouched. Escaped backslashes are first respelled as
+    ``\\u005c`` so each remaining backslash starts a real escape; each
+    ``\\uD`` escape then gains an escaped backslash, which decodes to the
+    literal text ``\\uDxxx`` instead of text that is not valid UTF-8.
+
+    Three flat ``replace`` calls, not one per surrogate prefix: a deeply
+    nested expression overflows the parser stack of older SQLite builds
+    (3.45), which would make the generated columns uncreatable. Matching
+    ``\\uD`` rather than only ``\\uD800``-``\\uDFFF`` is exact for the
+    archive's JSON: ``_json_dumps`` writes non-ASCII text literally
+    (``ensure_ascii=False``) and escapes only lone surrogates, so no stored
+    ``\\uD000``-``\\uD7FF`` escape exists to be left spelled out.
     """
     rewritten = f"replace({json_string}, '\\\\', '\\u005c')"
-    for prefix in _SURROGATE_ESCAPE_PREFIXES:
+    for prefix in ("\\ud", "\\uD"):
         rewritten = f"replace({rewritten}, '{prefix}', '\\\\{prefix[1:]}')"
     return rewritten
 
