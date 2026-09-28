@@ -679,10 +679,11 @@ def test_enrichment_frames_rebind_and_refuse_moved_evidence(tmp_path: Path, monk
     """
     from polylogue.sources.revision_backfill import EnrichmentEvidenceMovedError, _RebindingEvidenceFrames
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from tests.infra.archive_templates import bootstrap_archive_root
 
+    bootstrap_archive_root(tmp_path)
     source, index = tmp_path / "source.db", tmp_path / "index.db"
     _evidence_db(source, "a")
-    _evidence_db(index, "a")
     monkeypatch.setattr("polylogue.sources.revision_backfill._EVIDENCE_FRAME_REBIND_S", 0.0)
     frames = _RebindingEvidenceFrames(source_db_path=source, index_db_path=index)
 
