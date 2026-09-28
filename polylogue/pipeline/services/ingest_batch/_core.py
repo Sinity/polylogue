@@ -1989,7 +1989,13 @@ def _write_session_entry(
         if batch_owns_transaction:
             conn.execute(f"ROLLBACK TO {_SESSION_WRITE_SAVEPOINT}")
             conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
-        logger.info("Session refused as excised content: %s", exc)
+        emit(
+            "ingest.batch.session_excised",
+            outcome="refused",
+            raw_id=raw_id,
+            reason="content_excised",
+            error_detail=str(exc)[:512],
+        )
         summary.excised_skips += 1
         summary.skipped_raw_ids.add(raw_id)
         outcome = summary.outcomes.get(raw_id)
@@ -3654,12 +3660,19 @@ def _skipped_raw_state_update(
     parsed_at: str,
     validation_mode: str,
 ) -> RawSessionStateUpdate:
+    # A deliberate refusal carries its own durable reason (``content_excised:
+    # ...``); an ordinary skip the generic one.
+    diagnostic = outcome.diagnostic if outcome is not None else None
     return RawSessionStateUpdate(
         parsed_at=parsed_at,
         parse_error=None,
         payload_provider=outcome.payload_provider if outcome is not None else None,
         validation_status="skipped",
-        validation_error="parsed raw payload produced no new materialized sessions",
+        validation_error=(
+            diagnostic
+            if diagnostic is not None and diagnostic.startswith("content_excised")
+            else "parsed raw payload produced no new materialized sessions"
+        ),
         validation_mode=validation_mode,
     )
 

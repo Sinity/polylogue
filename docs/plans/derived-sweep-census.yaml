@@ -702,27 +702,6 @@ sites:
     scope: "state_predicate"
     classification: declared_retention
     reason: "DELETE FROM attachments WHERE ref_count <= 0 after the refs this session dropped were recounted; it removes rows nothing references and never rewrites a retained one"
-  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
-    function: "_drop_refused_sidecar_blob_hashes"
-    subject: "payload"
-    kind: "read_path_substitution"
-    scope: "writing_module"
-    classification: producer_scoped_transaction
-    reason: "runs inside the same flush that is publishing this session's own sidecar events/blocks; when the blob store refuses a matched sidecar's bytes as already-excised, this drops that event's blob_hash and redacts the matching TOOL_RESULT block's text before either reaches the write this call is itself performing -- it substitutes the session's own in-flight payload, never a previously-committed row"
-  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
-    function: "_drop_refused_sidecar_blob_hashes"
-    subject: "blocks"
-    kind: "read_path_substitution"
-    scope: "writing_module"
-    classification: producer_scoped_transaction
-    reason: "runs inside the same flush that is publishing this session's own sidecar events/blocks; when the blob store refuses a matched sidecar's bytes as already-excised, this drops that event's blob_hash and redacts the matching TOOL_RESULT block's text before either reaches the write this call is itself performing -- it substitutes the session's own in-flight payload, never a previously-committed row"
-  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
-    function: "_drop_refused_sidecar_blob_hashes"
-    subject: "text"
-    kind: "read_path_substitution"
-    scope: "writing_module"
-    classification: producer_scoped_transaction
-    reason: "runs inside the same flush that is publishing this session's own sidecar events/blocks; when the blob store refuses a matched sidecar's bytes as already-excised, this drops that event's blob_hash and redacts the matching TOOL_RESULT block's text before either reaches the write this call is itself performing -- it substitutes the session's own in-flight payload, never a previously-committed row"
   - file: "polylogue/storage/sqlite/schema_bootstrap.py"
     function: "ensure_derived_schema_identity_async"
     subject: "schema_identity"

@@ -479,11 +479,18 @@ class IngestExecution:
                         refused: list[FrozenSourceInput] = page_refused,
                     ) -> int:
                         # ``source_write`` flushed the page's publications first.
-                        # An input whose bytes are excised was refused there and
-                        # has no reservation: it is a permanent skip, not a
-                        # manifest member.
+                        # An input whose bytes are excised -- refused by that
+                        # flush, or excised after it succeeded, as the ledger
+                        # read in this source transaction shows -- has no
+                        # reservation: it is a permanent skip, not a manifest
+                        # member.
+                        from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
                         admitted = tuple(
-                            item for item in batch if not publication_refused(self.publisher, item.blob_hash)
+                            item
+                            for item in batch
+                            if not publication_refused(self.publisher, item.blob_hash)
+                            and not is_blob_hash_excised(conn, bytes.fromhex(item.blob_hash))
                         )
                         refused[:] = [item for item in batch if item not in admitted]
                         if admitted:

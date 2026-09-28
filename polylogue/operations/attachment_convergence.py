@@ -463,10 +463,14 @@ def converge_drive_attachments(
             # Their rows end ``unavailable`` like any excised payload, and
             # their references are never written (``write_source_blob_refs``
             # would refuse the excised hash and abort the pass).
+            # An excision committed after a successful flush is read from the
+            # ledger on this source connection before any reference is written.
+            from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
             refused_hashes = {
                 blob_hash
                 for _attachment_id, blob_hash, _size in acquired_rows
-                if publication_refused(publisher, blob_hash.hex())
+                if publication_refused(publisher, blob_hash.hex()) or is_blob_hash_excised(source_conn, blob_hash)
             }
             if refused_hashes:
                 excised_ids.extend(

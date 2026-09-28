@@ -5055,3 +5055,17 @@ def test_a_prepared_excision_refusal_is_a_typed_permanent_outcome(
     result = ParseResult()
     apply_ingest_batch_summary(result, summary)
     assert result.excised_skips == 1
+
+
+def test_a_skipped_excised_raw_keeps_its_refusal_reason() -> None:
+    """The durable raw state names the excision, not a generic empty parse.
+
+    Anti-vacuity (Codex P2, #5696): write the generic skip reason for every
+    skipped raw and nothing durable records the typed refusal after restart.
+    """
+    from polylogue.pipeline.services.ingest_batch._core import _skipped_raw_state_update
+
+    outcome = SimpleNamespace(payload_provider=None, diagnostic="content_excised: sidecar hash excised")
+    update = _skipped_raw_state_update(outcome=outcome, parsed_at="2026-01-01T00:00:00Z", validation_mode="advisory")  # type: ignore[arg-type]
+
+    assert str(update.validation_error).startswith("content_excised")
