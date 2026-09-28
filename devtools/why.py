@@ -118,6 +118,12 @@ _EXPLANATIONS: dict[str, Explanation] = {
         "If an 'ended:' line is present, use its recorded cause. If no ending was attributed, check the run and AgentCTL job records "
         "for its cause. Rerun the tier once the cause is addressed.",
     ),
+    "oom_killed": Explanation(
+        "systemd-oomd killed the queued pytest unit because its pool stayed under memory pressure. "
+        "oomd chooses by pressure, not size, so the killed run need not be the one that used the memory; "
+        "the step's termination_unit names the unit.",
+        "Check the pool's other runs at that time, then rerun. If this run grows, narrow the selection or its -n.",
+    ),
     "checkout_import_mismatch": Explanation(
         "The resolved polylogue package was outside the checkout being verified.",
         "Run with an environment that imports polylogue from the invoked checkout.",

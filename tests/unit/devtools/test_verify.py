@@ -1191,11 +1191,11 @@ def test_verify_pytest_step_uses_the_explicit_runner(
 
     def managed(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         called.append("managed")
-        return SimpleNamespace(returncode=0, slot="managed", receipt=None)
+        return SimpleNamespace(returncode=0, slot="managed", receipt=None, termination=None)
 
     def isolated(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         called.append("isolated")
-        return SimpleNamespace(returncode=0, slot="isolated", receipt=None)
+        return SimpleNamespace(returncode=0, slot="isolated", receipt=None, termination=None)
 
     monkeypatch.setattr(verify, "run_pytest", managed)
     monkeypatch.setattr(verify, "run_pytest_isolated", isolated)

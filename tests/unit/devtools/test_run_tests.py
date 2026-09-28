@@ -1051,3 +1051,58 @@ def test_an_unfinishable_focused_run_is_never_adjudicated(monkeypatch: pytest.Mo
 
     assert exit_code == 3
     assert "rerun" not in metadata
+
+
+def test_an_oomd_killed_queued_run_is_typed_oom_killed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A unit systemd-oomd killed reads as ``oom_killed``, not a missing receipt.
+
+    The kill takes the in-unit receipt writer, so without the termination the
+    run would be ``worktree_provenance_unavailable`` at exit 125.
+
+    Anti-vacuity: drop the ``systemd_result`` read from the job's AgentCTL
+    outcome, or the ``oom_killed`` early return, and the diagnosis reverts to
+    the missing receipt.
+    """
+    state = tmp_path / "jobs"
+    state.mkdir()
+    reference = "polylogue-pytest_focused-0badf00d"
+    (state / f"{reference}.outcome").write_text(
+        json.dumps({"exit_code": 137, "outcome": "failed", "systemd_result": "oom-kill", "unit": "unit.service"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("devtools.verify_runs._agentctl_state_root", lambda env=None: state)
+    termination = pytest_slot._job_termination(reference)
+    assert termination == {"killer": "oom-kill", "unit": "unit.service"}
+    assert pytest_slot._job_termination("polylogue-pytest_focused-absent") is None
+
+    killed = SlotOutcome(returncode=137, slot="agentctl job 9", termination=termination)
+    monkeypatch.setattr(run_tests, "run_pytest", lambda *_a, **_k: killed)
+    rc, _elapsed, metadata = run_tests._run(
+        "pytest focused",
+        ["pytest"],
+        cwd=str(tmp_path),
+        env={},
+        run=cast(Any, None),
+        artifacts=cast(Any, None),
+        report_path=tmp_path / "report.json",
+    )
+    assert rc == 137
+    assert metadata["diagnosis"] == "oom_killed"
+    assert metadata["termination_killer"] == "oom-kill"
+    assert metadata["termination_unit"] == "unit.service"
+
+
+def test_an_oom_killed_step_keeps_its_diagnosis_over_the_missing_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: without the ``oom_killed`` terminal carve-out in
+    ``finish_step`` the receipt reports ``pytest_no_report`` instead."""
+    history = _focused_run(
+        monkeypatch,
+        tmp_path,
+        result=(137, 0.01, {"diagnosis": "oom_killed", "termination_killer": "oom-kill"}),
+        write_evidence=False,
+    )
+    assert history["exit"] == 137
+    assert history["diagnosis"] == "oom_killed"
+    assert history["steps"][0]["termination_killer"] == "oom-kill"

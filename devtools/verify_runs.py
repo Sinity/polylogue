@@ -455,6 +455,7 @@ class VerifyRun:
                 # the evidence verdict would restate the absence and lose the
                 # reason for it. The reason is what the receipt is read for.
                 explicit_terminal = result.get("diagnosis") in {
+                    "oom_killed",
                     "focused_test_runner_exception",
                     "pytest_interrupted",
                     "pytest_slot_unavailable",

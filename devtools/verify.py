@@ -46,6 +46,7 @@ from devtools.pytest_slot import (
     PytestSlotUnavailableError,
     run_pytest,
     run_pytest_isolated,
+    termination_metadata,
 )
 from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument, spool_paths
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
@@ -822,6 +823,7 @@ def _run(
     hypothesis_profile_source: str | None = None
     completed: subprocess.CompletedProcess[Any]
     rerun: dict[str, Any] | None = None
+    termination: dict[str, Any] = {}
     executable_result = executable_gate_result(command, gate=label, env=env)
     if not executable_result.ok:
         early_metadata = {
@@ -866,6 +868,7 @@ def _run(
             _write_step_result(label, pytest_step, f"FAILED ({exc})")
             return 125, time.monotonic() - started, early_metadata
         slot = outcome.slot
+        termination = termination_metadata(outcome)
         completed = subprocess.CompletedProcess(command, outcome.returncode)
         metadata_receipt = outcome.receipt
         # Exit 1 is "tests failed", the only outcome a rerun can speak to.
@@ -903,6 +906,7 @@ def _run(
     }
     if pytest_step:
         metadata["pytest_slot"] = slot
+        metadata.update(termination)
         metadata["hypothesis_profile"] = hypothesis_profile
         metadata["hypothesis_profile_source"] = hypothesis_profile_source
         metadata["runner"] = runner

@@ -52,6 +52,7 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
+    OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
     PytestSlotUnavailableError,
     basetemp_root,
@@ -60,6 +61,7 @@ from devtools.pytest_slot import (
     run_pytest,
     run_pytest_isolated,
     sweep_stale_temp_trees,
+    termination_metadata,
 )
 from devtools.pytest_stream_report import report_file_argument, spool_paths
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
@@ -439,6 +441,19 @@ def _run(
             },
         )
     returncode = outcome.returncode
+    killed = termination_metadata(outcome)
+    if killed.get("diagnosis") == OOM_KILLED_DIAGNOSIS:
+        # The kill took the unit's receipt writer with it, so the provenance
+        # check below would name the missing receipt instead of the cause.
+        return (
+            returncode or 137,
+            time.monotonic() - started,
+            {
+                **killed,
+                "pytest_slot": outcome.slot,
+                **({"pytest_slot_log": str(outcome.log_path)} if outcome.log_path is not None else {}),
+            },
+        )
     if outcome.slot.startswith("agentctl job") and (
         not isinstance(outcome.receipt, dict) or not isinstance(outcome.receipt.get("worktree_provenance"), dict)
     ):
