@@ -360,6 +360,15 @@ async def test_a_redrive_after_partial_publication_is_indeterminate(
 
     _run, state = _run_and_state(archive_root)
     assert state["outcome"] == "indeterminate", state
+    # Fenced: a later start neither re-drives nor reclaims it (Codex P1, #5717).
+    with sqlite3.connect(archive_root / "audit.db") as audit:
+        assert audit.execute("SELECT stop_reason FROM machine_requests").fetchone()[0] is not None
+        attempts = audit.execute("SELECT COUNT(*) FROM operation_attempts").fetchone()[0]
+    await _restart_and_settle(archive_root)
+    with sqlite3.connect(archive_root / "audit.db") as audit:
+        assert audit.execute("SELECT COUNT(*) FROM operation_attempts").fetchone()[0] == attempts
+    _run, state = _run_and_state(archive_root)
+    assert state["outcome"] == "indeterminate", state
 
 
 @pytest.mark.timeout(300)
@@ -679,3 +688,182 @@ async def test_an_identity_moved_between_reads_retries(tmp_path: Path, monkeypat
     run, state = _run_and_state(archive_root)
     assert run is not None and run["status"] == "completed", run
     assert state["outcome"] in {"completed", "degraded"}, state
+
+
+@pytest.mark.timeout(300)
+async def test_a_failed_claim_phase_releases_earlier_claims(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A claim that raises hands the claims taken before it back.
+
+    Anti-vacuity (Codex P1, #5717): unwind the claim loop without releasing
+    and the first run keeps a ``running`` attempt owned by this live process.
+    """
+    from polylogue.operations import daemon_ingest
+
+    archive_root = await _two_interrupted_ingests(tmp_path, monkeypatch)
+    original_claim = daemon_ingest.claim_interrupted_ingest
+    claims = {"n": 0}
+
+    async def fail_second(runtime: Any, audit: Any, operation_id: str) -> bool:
+        claims["n"] += 1
+        if claims["n"] == 2:
+            raise sqlite3.OperationalError("disk I/O error")
+        return await original_claim(runtime, audit, operation_id)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(daemon_ingest, "claim_interrupted_ingest", fail_second)
+        await _restart_and_settle(archive_root)
+    with sqlite3.connect(archive_root / "audit.db") as audit:
+        assert audit.execute("SELECT COUNT(*) FROM operation_attempts WHERE state = 'running'").fetchone() == (0,)
+
+    await _restart_and_settle(archive_root)
+
+    assert _session_titles(archive_root) == ["Retained Redrive", "Second Redrive"]
+
+
+@pytest.mark.timeout(300)
+async def test_a_transient_storage_fault_retries_the_redrive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A locked database during a re-drive is retried, not settled as failed.
+
+    Anti-vacuity (Codex P1, #5717): retry only the three typed transients and
+    ``database is locked`` permanently fails the accepted generation.
+    """
+    archive_root, source = _archive(tmp_path)
+    await _die_after_acceptance(archive_root, source, monkeypatch)
+    original = IngestExecution.input_page
+    faults = {"left": 1}
+
+    async def locked_once(self: IngestExecution, *args: Any, **kwargs: Any) -> Any:
+        if faults["left"]:
+            faults["left"] -= 1
+            raise sqlite3.OperationalError("database is locked")
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(IngestExecution, "input_page", locked_once)
+    await _restart_and_settle(archive_root)
+
+    run, state = _run_and_state(archive_root)
+    assert run is not None and run["status"] == "completed", run
+    assert state["outcome"] in {"completed", "degraded"}, state
+
+
+@pytest.mark.timeout(300)
+async def test_an_accepted_deadline_passing_before_finalization_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deadline passing after the last stop check still refuses the applied receipt.
+
+    Anti-vacuity (Codex P1, #5717): recheck only a recorded ``stop_reason`` in
+    the final writer and the expired request completes.
+    """
+    archive_root, source = _archive(tmp_path)
+    await _die_after_acceptance(archive_root, source, monkeypatch)
+    original = IngestExecution.historical_receipt
+
+    async def expire_then_receipt(self: IngestExecution, *args: Any, **kwargs: Any) -> Any:
+        assert self.record is not None
+        self.record = {**self.record, "accepted_deadline_unix_ms": 1}
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(IngestExecution, "historical_receipt", expire_then_receipt)
+    await _restart_and_settle(archive_root)
+
+    run, state = _run_and_state(archive_root)
+    assert run is not None and run["status"] != "completed", run
+    assert state["outcome"] not in {"completed", "degraded"}, state
+
+
+@pytest.mark.timeout(300)
+async def test_profile_receipts_survive_a_transient_retry(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A retry after profiles converged reuses their receipts instead of converging again.
+
+    Anti-vacuity (Codex P1, #5717): reconverge on the retry and the published
+    profiles come back ``already_satisfied``, conflicting with persisted pages.
+    """
+    from polylogue.daemon.execution import DaemonBackpressureError
+
+    archive_root, source = _archive(tmp_path)
+    await _die_after_acceptance(archive_root, source, monkeypatch)
+    original_converge = IngestExecution.converge_profiles
+    original_receipt = IngestExecution.historical_receipt
+    converged = {"n": 0}
+    refusals = {"left": 1}
+
+    async def counting(self: IngestExecution, receipt: Any) -> Any:
+        converged["n"] += 1
+        return await original_converge(self, receipt)
+
+    async def refuse_once(self: IngestExecution, *args: Any, **kwargs: Any) -> Any:
+        if refusals["left"]:
+            refusals["left"] -= 1
+            raise DaemonBackpressureError("control admission is full")
+        return await original_receipt(self, *args, **kwargs)
+
+    monkeypatch.setattr(IngestExecution, "converge_profiles", counting)
+    monkeypatch.setattr(IngestExecution, "historical_receipt", refuse_once)
+    await _restart_and_settle(archive_root)
+
+    assert refusals["left"] == 0
+    assert converged["n"] == 1
+    run, _state = _run_and_state(archive_root)
+    assert run is not None and run["status"] == "completed", run
+
+
+def test_a_refusal_seen_by_two_drives_is_one_refusal(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5717): append refusals without a key and a
+    retried drive reports the same refused membership twice."""
+    from typing import cast
+
+    from polylogue.storage.ingest_governance import CohortMembershipRefusalError
+
+    execution = IngestExecution.__new__(IngestExecution)
+    execution._setup(cast(Any, None), tmp_path, cast(Any, None))
+    refusal = CohortMembershipRefusalError("key", "raw-1", "ambiguous")
+    execution.record_refusal(refusal)
+    execution.record_refusal(refusal)
+    with sqlite3.connect(execution.state_path) as state:
+        assert state.execute("SELECT COUNT(*) FROM refusals").fetchone() == (1,)
+    execution.state_path.unlink(missing_ok=True)
+
+
+@pytest.mark.timeout(300)
+async def test_a_refusal_before_authority_loads_leaves_no_running_attempt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Backpressure right after acceptance settles the attempt, then a restart re-drives it.
+
+    Anti-vacuity (Codex P1, #5717): ``mark_unknown`` returning while the
+    authority is unloaded leaves the attempt ``running`` under this live
+    process, which no owner reclaims.
+    """
+    from polylogue.daemon.execution import DaemonBackpressureError
+    from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+
+    archive_root, source = _archive(tmp_path)
+    original_compute = DaemonOperationRuntime.compute_phase
+    refusals = {"left": 1}
+
+    async def refuse_authority_load(self: DaemonOperationRuntime, work: Any) -> Any:
+        if refusals["left"] and getattr(work, "__name__", "") == "load_started":
+            refusals["left"] -= 1
+            raise DaemonBackpressureError("control admission is full")
+        return await original_compute(self, work)
+
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    with monkeypatch.context() as patch:
+        patch.setattr(DaemonOperationRuntime, "compute_phase", refuse_authority_load)
+        with _serving(archive_root) as (harness, _api_server):
+            try:
+                with pytest.raises(Exception):  # noqa: B017 - the surface's error type is not this contract
+                    await archive.parse_file(source, source_name="redrive")
+            finally:
+                try:
+                    await harness.close()
+                finally:
+                    await archive.close()
+    assert refusals["left"] == 0
+    with sqlite3.connect(archive_root / "audit.db") as audit:
+        assert audit.execute("SELECT COUNT(*) FROM operation_attempts WHERE state = 'running'").fetchone() == (0,)
+
+    await _restart_and_settle(archive_root)
+
+    assert _session_titles(archive_root) == ["Retained Redrive"]

@@ -929,21 +929,35 @@ class DaemonOperationRuntime:
                     # never from this exchange's own flag: a resend of an
                     # accepted request reads its record and never sets it.
                     live_exchange = True
+                    acceptance_in_flight = exchange.acceptance_started
                 else:
                     live_exchange = False
+                    acceptance_in_flight = False
             # A live exchange with no durable request was cancelled before
             # acceptance: nothing is committed, so no writer fence is queued.
             # Read without the writer, so a busy writer cannot turn that
             # cancellation into an indeterminate answer.
-            cancelled_before_acceptance = live_exchange and (
-                audit.machine_request_for_principal(archive_identity, target, principal.actor_ref) is None
+            # Once acceptance has started, its durable write may be in flight
+            # (source prepared, audit not yet committed): absence is then
+            # decided under the writer, after that write, never by a plain read.
+            cancelled_before_acceptance = (
+                live_exchange
+                and not acceptance_in_flight
+                and audit.machine_request_for_principal(archive_identity, target, principal.actor_ref) is None
             )
             if not cancelled_before_acceptance:
                 # Queue the durable fence through the same writer owner, never
                 # under the waiter lock.
+                absent_after_serialization = [False]
+
                 def fence() -> None:
                     record = audit.machine_request_for_principal(archive_identity, target, principal.actor_ref)
                     if record is None:
+                        if live_exchange:
+                            # Serialized after any in-flight acceptance: the
+                            # cancellation won, and nothing was accepted.
+                            absent_after_serialization[0] = True
+                            return
                         raise ValueError("operation_reference_unknown")
                     if record["artifact_kind"] in {"execution-batch", "source-generation"}:
                         binding = MachineRequestBinding(
@@ -968,6 +982,7 @@ class DaemonOperationRuntime:
 
                 try:
                     self._bridge.run_sync_with_timeout("operation.cancel", 2.0, fence)
+                    cancelled_before_acceptance = absent_after_serialization[0]
                     with self._condition:
                         # A running re-drive of this request observes the
                         # fence at its next stop check.

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import errno
 import hashlib
 import json
 import os
@@ -283,7 +285,7 @@ class IngestExecution:
         with sqlite3.connect(self.state_path) as state:
             state.executescript(
                 "CREATE TABLE refusals(ordinal INTEGER PRIMARY KEY, logical_key TEXT NOT NULL, raw_id TEXT NOT NULL, "
-                "reason TEXT NOT NULL);"
+                "reason TEXT NOT NULL, UNIQUE(logical_key, raw_id, reason));"
                 "CREATE TABLE changed_sessions(session_id TEXT PRIMARY KEY, message_count INTEGER NOT NULL) WITHOUT ROWID;"
             )
         self.session_id_pages_ref: str | None = None
@@ -305,12 +307,18 @@ class IngestExecution:
         self.insight_page_count = 0
         self.insight_pages_digest: str | None = None
         self.profile_convergence_complete = False
+        #: The profile receipts of this execution's first convergence: a
+        #: retry after its insight pages were persisted reuses them, since a
+        #: second convergence reports those profiles ``already_satisfied``.
+        self.retained_profile_parts: tuple[SessionInsightPartReceipt, ...] | None = None
         self.publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
 
     def record_refusal(self, refusal: CohortMembershipRefusalError) -> None:
         with sqlite3.connect(self.state_path) as state:
             state.execute(
-                "INSERT INTO refusals(logical_key, raw_id, reason) VALUES (?, ?, ?)",
+                # A transient retry drives the generation again from the start:
+                # one refused membership is one refusal, however many drives saw it.
+                "INSERT OR IGNORE INTO refusals(logical_key, raw_id, reason) VALUES (?, ?, ?)",
                 (refusal.logical_source_key, refusal.raw_id, refusal.reason[:512]),
             )
 
@@ -1212,6 +1220,11 @@ class IngestExecution:
             record = self.audit.machine_request(binding) if binding is not None else None
             if record is not None and record.get("stop_reason"):
                 raise IngestStoppedError(str(record["stop_reason"]))
+            # The accepted deadline and authorization expiry are never written
+            # into ``stop_reason``: they are evaluated here, now, as well.
+            expired = self.durable_stop_reason(None)
+            if expired is not None:
+                raise IngestStoppedError(expired)
             self.executor.finalize_bound(started, receipt=final)
 
         await self.runtime.write_phase("ingest.finalize", finalize_unless_stopped)
@@ -1219,7 +1232,21 @@ class IngestExecution:
         return history
 
     async def mark_unknown(self, reason: str) -> None:
-        if self.started_mutation is None or self.terminalized:
+        if self.terminalized:
+            return
+        if self.started_mutation is None:
+            # Accepted, but the authority load failed (a transient admission
+            # refusal right after ``accept_ingest`` committed): the durable
+            # attempt is settled by its operation id, never left running
+            # under this live process.
+            operation_id = await self._accepted_operation_id()
+            if operation_id is None:
+                return
+            await self.runtime.write_phase(
+                "ingest.unknown",
+                lambda: self.audit.finalize_attempt(operation_id, status="unknown", unknown_reason=reason[:512]),
+            )
+            self.terminalized = True
             return
         started = self.started_mutation
         await self.runtime.write_phase(
@@ -1227,6 +1254,19 @@ class IngestExecution:
             lambda: self.executor.finalize_bound(started, unknown_reason=reason[:512]),
         )
         self.terminalized = True
+
+    async def _accepted_operation_id(self) -> str | None:
+        binding = self.binding
+        if binding is None:
+            return None
+
+        def read() -> str | None:
+            with self.audit.settled_machine_read():
+                parts = self.audit.machine_parts(binding)
+            operation_id = parts[0].get("operation_id") if len(parts) == 1 else None
+            return str(operation_id) if operation_id else None
+
+        return await asyncio.to_thread(read)
 
     async def fence(self, reason: str) -> None:
         if self.binding is not None:
@@ -1291,6 +1331,10 @@ class IngestRedrive(IngestExecution):
             # The interrupted attempt may have published some of these, and
             # its changed-session projection died with it; an applied receipt
             # would under-report what this request wrote.
+            # Fenced as well as settled: the outcome is decided (indeterminate),
+            # so no later start re-drives the whole generation only to reach
+            # this same verdict.
+            await self.fence("refused")
             await self.mark_unknown(
                 "the interrupted attempt's changed-session projection is not recoverable: "
                 "generation content was already materialized when the re-drive began"
@@ -1356,6 +1400,18 @@ class IngestRedrive(IngestExecution):
         self.terminalized = True
 
 
+def transient_storage_fault(exc: BaseException) -> bool:
+    """A storage read that may succeed on retry: a busy or locked database, a
+    file momentarily unopenable or unreadable. A full disk, corruption or a
+    read-only archive are not transient."""
+    if isinstance(exc, sqlite3.OperationalError):
+        message = str(exc).lower()
+        return any(token in message for token in ("database is locked", "database is busy", "unable to open"))
+    if isinstance(exc, OSError):
+        return exc.errno in {errno.EACCES, errno.EAGAIN, errno.EBUSY, errno.EINTR}
+    return False
+
+
 async def claim_interrupted_ingest(runtime: OperationRuntime, audit: AuditRepository, operation_id: str) -> bool:
     """Take an interrupted run under a new attempt owned by this process, if still unowned."""
     return await runtime.write_phase("ingest.redrive", lambda: audit.resume_interrupted_ingest(operation_id))
@@ -1412,15 +1468,24 @@ async def redrive_accepted_ingests(
             with audit.settled_machine_read():
                 return audit.interrupted_ingest_requests()
 
-        for operation_id, record in await runtime.compute_phase(discover):
-            if stop_requested(str(record["request_id"])) == "shutdown":
-                # Claims already taken go back too: their attempts name this
-                # live process, which a recreated server could never reclaim.
-                for claimed_id, _record in claimed:
-                    await release_redrive_claim(runtime, audit, claimed_id, released)
-                return
-            if await claim_interrupted_ingest(runtime, audit, operation_id):
-                claimed.append((operation_id, record))
+        try:
+            for operation_id, record in await runtime.compute_phase(discover):
+                if stop_requested(str(record["request_id"])) == "shutdown":
+                    # Claims already taken go back too: their attempts name
+                    # this live process, which a recreated server could
+                    # never reclaim.
+                    for claimed_id, _record in claimed:
+                        await release_redrive_claim(runtime, audit, claimed_id, released)
+                    return
+                if await claim_interrupted_ingest(runtime, audit, operation_id):
+                    claimed.append((operation_id, record))
+        except BaseException:
+            # A claim phase that fails midway hands back what it took, for
+            # the same reason.
+            for claimed_id, _record in claimed:
+                with contextlib.suppress(Exception):
+                    await release_redrive_claim(runtime, audit, claimed_id, "the claim phase failed")
+            raise
     finally:
         if on_claimed is not None:
             on_claimed()
@@ -1442,7 +1507,14 @@ async def redrive_accepted_ingests(
                 try:
                     generation = await execution.resume()
                     history = await drive_accepted_generation(execution, generation)
-                except (IngestReprepareRequiredError, ArchiveIdentityStaleError, DaemonBackpressureError) as exc:
+                except Exception as exc:
+                    if not (
+                        isinstance(
+                            exc, (IngestReprepareRequiredError, ArchiveIdentityStaleError, DaemonBackpressureError)
+                        )
+                        or transient_storage_fault(exc)
+                    ):
+                        raise
                     # Transient: the claim stays with this owner and the same
                     # run is driven again; every phase settles by content hash.
                     emit(
@@ -1553,7 +1625,9 @@ async def drive_accepted_generation(
         raise ValueError("accepted source generation has an incomplete manifest")
     receipt = await execution.materialize(generation.source_generation_id)
     try:
-        profile_parts = await execution.converge_profiles(receipt)
+        if execution.retained_profile_parts is None:
+            execution.retained_profile_parts = await execution.converge_profiles(receipt)
+        profile_parts = execution.retained_profile_parts
         execution.check_stop()
         return await execution.finalize(generation, receipt, profile_parts)
     finally:
