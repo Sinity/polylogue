@@ -231,7 +231,9 @@ def evaluate_evidence(
             # that does not parse is an unresolved witness, not a crash.
             try:
                 node_instant = _parse_as_of(node.as_of)
-            except ValueError:
+            except (ValueError, OverflowError, OSError):
+                # OverflowError/OSError: an epoch-N value outside the
+                # platform's representable range.
                 add("unparseable_as_of", (*path, ref), "node as_of is not a timezone-aware instant")
             else:
                 if node_instant > _parse_as_of(as_of):

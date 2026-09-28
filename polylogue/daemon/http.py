@@ -510,7 +510,7 @@ def _stable_status_identity(value: object) -> object:
         return {
             str(key): _stable_status_identity(item)
             for key, item in value.items()
-            if str(key) not in {"age_s", "evaluated_at"}
+            if str(key) not in {"age_s", "evaluated_at", "quick_check_age_s"}
         }
     if isinstance(value, list):
         return [_stable_status_identity(item) for item in value]

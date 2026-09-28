@@ -1146,3 +1146,24 @@ def test_report_retention_does_not_change_prerequisite_verdicts() -> None:
     assert report.done == 2
     assert report.work.prerequisites_inspected == 0
     assert dependant.output == {"d": "b0"}
+
+
+def test_prerequisite_reads_do_not_starve_a_full_page_of_dependants() -> None:
+    """A full page must still converge when each dependant names upstream keys.
+
+    Anti-vacuity: meter prerequisite enumeration or inspection against the
+    pass's discovery/inspection budgets and a page that fills both leaves every
+    dependant blocked, pass after pass.
+    """
+    upstream = RecordingDerivation("up", required=("u0", "u1"))
+    upstream.output.update({"u0": "b0", "u1": "b0"})
+    both = (("up", "u0"), ("up", "u1"))
+    dependant = RecordingDerivation(
+        "down", required=("d0", "d1"), prerequisites=("up",), bindings={"d0": both, "d1": both}
+    )
+    registry = DerivationRegistry([upstream, dependant])
+
+    report = converge(registry, FRAME, budget=Budget(page=2, discovery=2, inspection=2), domains=("down",))
+
+    assert report.done == 2
+    assert dependant.output == {"d0": "b0", "d1": "b0"}

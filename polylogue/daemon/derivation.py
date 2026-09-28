@@ -752,33 +752,12 @@ class _Pass:
         for a domain that does not: it can only be evaluated at whole-domain
         granularity, which is coarse but never optimistic.
         """
+        # Prerequisite enumeration is not metered against the pass's
+        # discovery/inspection budgets: a full page would otherwise consume
+        # them before any dependant could name its inputs, and every pass
+        # would record the page as blocked without progress.
         try:
-            from itertools import islice
-
-            mapping = iter(adapter.prerequisite_keys(self.frame, key))
-            remaining = (
-                min(
-                    limit - used
-                    for limit, used in (
-                        (self.budget.inspection, self.inspected + self.prerequisites_inspected),
-                        (self.budget.discovery, self.discovered),
-                    )
-                    if limit is not None
-                )
-                if self.budget.inspection is not None or self.budget.discovery is not None
-                else None
-            )
-            if remaining is not None and remaining <= 0:
-                first = next(mapping, None)
-                if first is not None:
-                    return "prerequisite inspection budget exhausted"
-                raw: tuple[DerivationKey | tuple[str, str], ...] = ()
-            else:
-                raw = tuple(islice(mapping, None if remaining is None else remaining + 1))
-            if remaining is not None and len(raw) > remaining:
-                return "prerequisite enumeration budget exhausted"
-            self.discovered += len(raw)
-            bindings = tuple(_as_key(item) for item in raw)
+            bindings = tuple(_as_key(item) for item in adapter.prerequisite_keys(self.frame, key))
         except Exception as exc:
             return f"prerequisite mapping failed: {exc}"
         if bindings:
@@ -812,11 +791,6 @@ class _Pass:
         """Read one upstream key's authority, whatever this pass selected."""
         if self.out_of_time():
             return "prerequisite inspection deadline exhausted"
-        if (
-            self.budget.inspection is not None
-            and self.inspected + self.prerequisites_inspected >= self.budget.inspection
-        ):
-            return "prerequisite inspection budget exhausted"
         try:
             upstream = self.registry.get(binding.domain)
         except KeyError:
