@@ -1,18 +1,23 @@
 version: 2
+# One grouped PR per ecosystem per week. The installed package resolves its
+# Python dependencies from nixpkgs (flake.nix), so uv updates move only the
+# development and CI lockfile; `lockfile-only` leaves pyproject.toml's
+# supported ranges alone. Security updates are not grouped here and still
+# arrive as their own PRs.
 updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     groups:
-      actions-patch:
-        update-types: ["patch"]
+      actions:
+        patterns: ["*"]
 
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
-    open-pull-requests-limit: 5
+    versioning-strategy: lockfile-only
     groups:
-      python-patch:
-        update-types: ["patch"]
+      python:
+        patterns: ["*"]
