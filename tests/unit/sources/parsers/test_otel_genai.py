@@ -718,3 +718,20 @@ def test_unnamed_resource_identity_ignores_instance_attributes() -> None:
         return session.provider_session_id
 
     assert export(100) == export(200)
+
+
+def test_every_session_of_a_multi_conversation_document_is_admitted() -> None:
+    """Each session drawn from one OTLP document carries an admission proof.
+
+    Anti-vacuity (Codex P2, #5711): exempt multi-session results from the
+    admission boundary and both sessions reach the writer with
+    ``unit_accounting=None``, skipping its conservation check.
+    """
+    payload = _document(
+        ([_attr("service.name", "alpha")], [_chat("a" * 32, "1" * 16, 1_000, ["Q1"], "A1")]),
+        ([_attr("service.name", "beta")], [_chat("b" * 32, "2" * 16, 2_000, ["Q2"], "A2")]),
+    )
+    sessions = parse_payload(Provider.OTEL_GENAI, payload, "ignored-file-stem")
+
+    assert len(sessions) == 2
+    assert all(session.unit_accounting is not None for session in sessions)

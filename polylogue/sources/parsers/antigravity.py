@@ -862,6 +862,7 @@ def parse_trajectory_db(
         known_native_ids |= set(summaries)
         matched_summary_keys: set[str] = set()
         has_step_identity = bool({"trajectory_id", "cascade_id"}.intersection(step_columns))
+        first_anonymous_taken = False
         for meta_index, meta in enumerate(meta_rows):
             trajectory_id = (
                 str(meta["trajectory_id"])
@@ -874,13 +875,16 @@ def parse_trajectory_db(
                 else None
             )
             # Several unidentified rows would all take the one path-derived
-            # fallback and address a single archive session repeatedly; each
-            # row gets a stable row-specific identity instead.
-            row_fallback_id = (
-                _unused_row_id(f"{fallback_id}:trajectory-{meta_index}", known_native_ids)
-                if fallback_id and len(meta_rows) > 1
-                else fallback_id
-            )
+            # fallback and address a single archive session repeatedly. The
+            # first unidentified row keeps the path-derived fallback -- the
+            # identity it had while it was the only row, so an export that
+            # grows a second row does not rename it -- and each later one
+            # gets a stable row-specific identity.
+            row_fallback_id = fallback_id
+            if fallback_id and trajectory_id is None and cascade_id is None:
+                if first_anonymous_taken:
+                    row_fallback_id = _unused_row_id(f"{fallback_id}:trajectory-{meta_index}", known_native_ids)
+                first_anonymous_taken = True
             native_id = trajectory_id or cascade_id or row_fallback_id
             if not native_id:
                 continue

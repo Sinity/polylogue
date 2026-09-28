@@ -290,3 +290,34 @@ def test_claude_code_tool_input_is_not_a_wire_type() -> None:
     future_block: dict[str, object] = {"type": "future_block_kind", "text": "neutral"}
     (session,) = parse_stream_payload(Provider.CLAUDE_CODE, iter([assistant("a-2", future_block)]), "cc-tool-input")
     assert [event.payload["wire_type"] for event in session.session_events] == ["future_block_kind"]
+
+
+def test_codex_tool_arguments_are_not_wire_types() -> None:
+    """Nested MCP invocation arguments are user data, not Codex discriminators.
+
+    Anti-vacuity (Codex P2, #5711): scan the whole record on the Codex stream
+    route and an argument ``{"type": "unknown"}`` becomes a false
+    ``codex_unknown_input`` event.
+    """
+    from polylogue.sources.dispatch import parse_stream_payload
+
+    records: list[object] = [
+        {
+            "timestamp": "2026-01-01T00:00:00Z",
+            "type": "session_meta",
+            "payload": {"id": "codex-args", "timestamp": "2026-01-01T00:00:00Z", "cwd": "/w"},
+        },
+        {
+            "timestamp": "2026-01-01T00:00:01Z",
+            "type": "response_item",
+            "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+        },
+        {
+            "timestamp": "2026-01-01T00:00:02Z",
+            "type": "event_msg",
+            "payload": {"type": "mcp_tool_call_end", "invocation": {"arguments": {"type": "unknown"}}},
+        },
+    ]
+    (session,) = parse_stream_payload(Provider.CODEX, iter(records), "codex-args")
+
+    assert "codex_unknown_input" not in [event.event_type for event in session.session_events]

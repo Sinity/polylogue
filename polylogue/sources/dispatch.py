@@ -56,6 +56,7 @@ from .parsers.base_support import (
     AdmissionObserver,
     admit_parsed_sessions,
     claude_code_unknown_wire_type,
+    codex_unknown_wire_type,
     iter_messages_from_list,
 )
 from .parsers.claude import code_parser as claude_code_parser
@@ -2260,7 +2261,7 @@ def parse_stream_payload(
             )
         )
     if runtime_provider is Provider.CODEX:
-        observer = AdmissionObserver()
+        observer = AdmissionObserver(codex_unknown_wire_type)
         session = codex.parse_stream(
             observer.observing(payloads),
             fallback_id,

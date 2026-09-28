@@ -10,7 +10,7 @@ from functools import wraps
 from typing import Any, TypeVar, cast
 
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, WebConstructType
+from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, Provider, WebConstructType
 from polylogue.core.hashing import hash_text
 from polylogue.core.types import AttachmentDirection
 from polylogue.sources.tool_result_reasons import unknown_reason
@@ -145,6 +145,26 @@ def claude_code_unknown_wire_type(value: object) -> str | None:
     return None
 
 
+def codex_unknown_wire_type(value: object) -> str | None:
+    """Return an unknown Codex wire type read only from its discriminators.
+
+    A Codex rollout record's discriminators are its envelope ``type`` and its
+    payload's ``type``. Everything beneath -- tool-call arguments, MCP
+    invocation inputs, outputs -- is user-controlled data, so an argument
+    ``{"type": "unknown"}`` is not a provider wire type.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    record_type = value.get("type")
+    if _is_unknown_sentinel(record_type):
+        return cast(str, record_type)
+    payload = value.get("payload")
+    payload_type = payload.get("type") if isinstance(payload, Mapping) else None
+    if _is_unknown_sentinel(payload_type):
+        return cast(str, payload_type)
+    return None
+
+
 def _unknown_wire_type(value: object) -> str | None:
     """Return a deliberately future-shaped wire type, if one is visible.
 
@@ -273,10 +293,23 @@ def admit_parsed_sessions(provider: str, payload: object, sessions: list[ParsedS
     admitted per session by its own route (see the Claude Code stream), since
     one outer record belongs to exactly one session there.
     """
+    items = payload if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)) else [payload]
+    if provider == Provider.OTEL_GENAI.value:
+        # One OTLP document can carry several conversations; each emitted
+        # session is proven against the whole document it was drawn from.
+        admitted: list[ParsedSession] = []
+        for session in sessions:
+            if session.unit_accounting is not None:
+                admitted.append(session)
+                continue
+            observer = AdmissionObserver()
+            for item in items:
+                observer.observe(item)
+            admitted.append(observer.apply(session, provider))
+        return admitted
     if len(sessions) != 1 or sessions[0].unit_accounting is not None:
         return sessions
     observer = AdmissionObserver()
-    items = payload if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)) else [payload]
     for item in items:
         observer.observe(item)
     return [observer.apply(sessions[0], provider)]
