@@ -423,6 +423,33 @@ def test_around_window_uses_the_requested_page_size() -> None:
     assert request.payload["around"] == "message:anchor"
 
 
+def test_composed_message_read_refuses_mixed_executor_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A composed response never claims one executor for mixed windows.
+
+    Anti-vacuity: combining daemon and direct windows would label the complete
+    JSON document with only the final window's authority.
+    """
+    from polylogue.cli.messages import _MessageWindow
+
+    first = _MessageWindow({}, [{"id": "daemon-message"}], 2, 0, 1, "next", True, None, ServedBy("daemon", None))
+    second = _MessageWindow({}, [{"id": "direct-message"}], 2, 1, None, None, True, None, ServedBy("direct", None))
+    monkeypatch.setattr("polylogue.cli.messages.read_message_windows", lambda *_args, **_kwargs: iter((first, second)))
+
+    with pytest.raises(SystemExit):
+        run_messages(
+            _env(),
+            _seeded_request(tmp_path),
+            session_id="session:x",
+            full=True,
+            output_format="json",
+        )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "executor changed" in captured.err
+
+
 def test_run_messages_json_names_the_executor_that_answered(
     tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

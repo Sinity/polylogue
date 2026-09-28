@@ -214,6 +214,7 @@ def run_messages(
     daemon_disabled = daemon_route_disabled(flag=bool(request.params.get("no_daemon")))
 
     windows: list[_MessageWindow] = []
+    executor_identity: str | None = None
     try:
         for window in read_message_windows(
             config,
@@ -225,6 +226,12 @@ def run_messages(
             daemon_disabled=daemon_disabled,
             around=around,
         ):
+            if executor_identity is not None and window.served_by.identity != executor_identity:
+                raise OperationFailedError(
+                    "executor_changed",
+                    "The read executor changed while composing message windows; retry the read.",
+                )
+            executor_identity = window.served_by.identity
             windows.append(window)
     except OperationKernelError as exc:
         message_read_failure(env, exc, session_id=session_id)
