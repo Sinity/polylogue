@@ -10,6 +10,7 @@ import tempfile
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import asdict, dataclass, replace
+from functools import partial
 from pathlib import Path
 from time import monotonic, time
 from typing import TypeVar
@@ -1297,7 +1298,7 @@ async def redrive_accepted_ingests(
             audit,
             operation_id=operation_id,
             record=record,
-            stop_requested=lambda request_id=request_id: stop_requested(request_id),
+            stop_requested=partial(stop_requested, request_id),
         )
         try:
             if not await execution.claim():
