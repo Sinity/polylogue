@@ -24,7 +24,7 @@ from polylogue.sources.live.convergence_debt import (
     is_deferred_stage_state,
 )
 from polylogue.sources.live.convergence_debt_retry import convergence_debt_source_path
-from polylogue.sources.live.convergence_outcome import record_convergence_outcome, record_convergence_outcomes
+from polylogue.sources.live.convergence_outcome import record_convergence_outcomes
 from polylogue.sources.live.cursor import ConvergenceDebtBatchEntry, ConvergenceDebtWrite, CursorStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -64,7 +64,7 @@ def test_convergence_debt_lookups_follow_the_active_index_generation(tmp_path: P
     cursor = CursorStore(tmp_path / "ops.db")
     debt = ConvergenceDebt(path=source_path, stage="fts", error="deferred", deferred=True)
 
-    record_convergence_outcome(cursor, source_path, (debt,), archive_root=tmp_path)
+    record_convergence_outcomes(cursor, ((source_path, (debt,)),), archive_root=tmp_path)
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         session_debts = conn.execute(
             "SELECT target_id FROM convergence_debt WHERE target_type = 'session_id'"
@@ -159,7 +159,7 @@ def test_record_convergence_outcome_persists_deferred_and_failed_statuses(tmp_pa
     """The post-ingest route must preserve classification in the ops ledger.
 
     This exercises the production bridge from ``FileState`` classification
-    through ``record_convergence_outcome`` and ``CursorStore``. A test that
+    through ``record_convergence_outcomes`` and ``CursorStore``. A test that
     only checks the dataclass flag would pass even if the writer silently
     converted every row back to ``status = 'failed'``.
     """
@@ -183,8 +183,8 @@ def test_record_convergence_outcome_persists_deferred_and_failed_statuses(tmp_pa
     )
     cursor = CursorStore(tmp_path / "live.sqlite")
 
-    record_convergence_outcome(cursor, deferred_path, deferred_debts)
-    record_convergence_outcome(cursor, failed_path, failed_debts)
+    record_convergence_outcomes(cursor, ((deferred_path, deferred_debts),))
+    record_convergence_outcomes(cursor, ((failed_path, failed_debts),))
 
     with sqlite3.connect(tmp_path / "ops.db") as conn:
         rows = dict(
@@ -314,16 +314,8 @@ def test_real_converger_outcomes_reach_status_and_read_surfaces(tmp_path: Path) 
 
     index_db = tmp_path / "index.db"
     cursor = CursorStore(index_db)
-    record_convergence_outcome(
-        cursor,
-        deferred_path,
-        convergence_debt_from_states((deferred_path,), states),
-    )
-    record_convergence_outcome(
-        cursor,
-        failed_path,
-        convergence_debt_from_states((failed_path,), states),
-    )
+    record_convergence_outcomes(cursor, ((deferred_path, convergence_debt_from_states((deferred_path,), states)),))
+    record_convergence_outcomes(cursor, ((failed_path, convergence_debt_from_states((failed_path,), states)),))
 
     summary = convergence_debt_summary_info(index_db)
     assert summary.failed_count == 1

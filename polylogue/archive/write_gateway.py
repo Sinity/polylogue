@@ -8,7 +8,6 @@ index-only FTS or cache work.
 
 from __future__ import annotations
 
-import asyncio
 import sqlite3
 from dataclasses import dataclass
 from enum import Enum
@@ -96,26 +95,7 @@ class ArchiveWriteGateway:
 
     def __init__(self, db_path: str | Path) -> None:
         self._db_path = str(db_path)
-        self._write_lock = asyncio.Lock()
         self._sync_write_lock = RLock()
-
-    async def commit_write(self, op: WriteOperation, payload: dict[str, Any]) -> WriteResult:
-        """Commit write side effects asynchronously.
-
-        Parameters
-        ----------
-        op:
-            The write operation type.
-        payload:
-            Operation payload. If a ``_connection`` key is present with an
-            open ``sqlite3.Connection`` value, the gateway will use that
-            connection (the caller owns its lifecycle). Otherwise the gateway
-            opens and closes its own connection.
-        """
-        async with self._write_lock:
-            if "_connection" in payload:
-                return self.commit_write_sync(op, payload)
-            return await asyncio.to_thread(self.commit_write_sync, op, payload)
 
     def commit_write_sync(self, op: WriteOperation, payload: dict[str, Any]) -> WriteResult:
         """Commit write side effects synchronously."""

@@ -85,27 +85,6 @@ def generate_provider_schema(
     ).result
 
 
-def generate_provider_schema_from_sources(
-    provider: str,
-    *,
-    source_inputs: tuple[SchemaSourceInput, ...],
-    cache_path: Path | None,
-    max_workers: int,
-    privacy_config: SchemaPrivacyConfig | None,
-    progress_callback: GenerationProgressCallback | None = None,
-) -> GenerationResult:
-    """Preview the same package bundle used by source commit."""
-    return build_provider_bundle_from_sources(
-        provider,
-        source_inputs=source_inputs,
-        cache_path=cache_path,
-        max_workers=max_workers,
-        privacy_config=privacy_config,
-        prior_catalog=None,
-        progress_callback=progress_callback,
-    ).result
-
-
 def build_provider_bundle_from_sources(
     provider: str,
     *,

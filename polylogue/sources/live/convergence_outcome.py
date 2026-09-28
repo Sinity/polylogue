@@ -15,16 +15,6 @@ from polylogue.sources.live.cursor import (
 )
 
 
-def record_convergence_outcome(
-    cursor: CursorStore,
-    path: Path,
-    debts: Iterable[ConvergenceDebt],
-    *,
-    archive_root: Path | None = None,
-) -> None:
-    record_convergence_outcomes(cursor, ((path, debts),), archive_root=archive_root)
-
-
 def record_convergence_outcomes(
     cursor: CursorStore,
     outcomes: Iterable[tuple[Path, Iterable[ConvergenceDebt]]],
