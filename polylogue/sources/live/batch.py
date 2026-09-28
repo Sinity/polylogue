@@ -833,6 +833,7 @@ class LiveBatchProcessor:
         # The watcher supplies a parse stage for JSON/JSONL preparation before
         # the writer hold. Direct callers may pass None for baseline parity.
         self._parse_stage = parse_stage
+        self._parse_lookahead: asyncio.Future[list[tuple[str, Provider, bool]]] | None = None
         self._read_snapshot = read_snapshot
 
     def cursor_authority_block_reason(self) -> str | None:
@@ -2822,32 +2823,75 @@ class LiveBatchProcessor:
         backend = getattr(self._polylogue, "backend", None)
         return isinstance(getattr(backend, "db_path", None), Path)
 
-    async def prefetch_full_paths(self, paths: Sequence[Path], *, source_name: str) -> int:
-        """Submit upcoming full-ingest paths to the parse stage without waiting.
+    def offer_parse_lookahead(self, select: Callable[[], Sequence[Path]], *, source_name: str) -> None:
+        """Sample the paths a later batch will ingest in full, off the event loop.
 
-        The same candidates ``_ingest_full_paths`` warms for itself; submitting
-        them early lets a later group's or page's parsing overlap the current
-        writer publication. The warm that needs them claims and verifies the
-        results exactly as it would its own.
+        ``select`` and the provider sampling read the source, so they run on a
+        worker thread and never delay the batch in flight. The stage is not
+        touched here: ``_submit_ready_lookahead`` submits the candidates from
+        inside a full ingest, which owns the stage.
         """
-        if self._parse_stage is None or not paths or _source_tier_acquisition_required():
-            return 0
+        self.drop_parse_lookahead()
+        if self._parse_stage is None or _source_tier_acquisition_required():
+            return
         fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
-        candidates = await asyncio.to_thread(
-            _live_parse_stage_path_candidates, list(paths), fallback_provider=fallback_provider
-        )
+
+        def sample() -> list[tuple[str, Provider, bool]]:
+            paths = list(select())
+            return _live_parse_stage_path_candidates(paths, fallback_provider=fallback_provider) if paths else []
+
+        self._parse_lookahead = asyncio.ensure_future(asyncio.to_thread(sample))
+
+    def drop_parse_lookahead(self) -> None:
+        """Forget an unconsumed lookahead; a still-running sample is left to finish unused."""
+        lookahead, self._parse_lookahead = self._parse_lookahead, None
+        if lookahead is not None and not lookahead.done():
+            lookahead.cancel()
+
+    async def _submit_ready_lookahead(self) -> None:
+        """Submit an already-sampled lookahead to the parse stage, never waiting on it.
+
+        Called between a full ingest's warm and its publication, so the next
+        batch's parsing overlaps this one's writer-held publication. The
+        submission mutates the stage's bookkeeping; if the caller is
+        cancelled, it settles before the ingest lock is released.
+        """
+        lookahead = self._parse_lookahead
+        if lookahead is None or not lookahead.done() or self._parse_stage is None:
+            return
+        self._parse_lookahead = None
+        if lookahead.cancelled():
+            return
+        error = lookahead.exception()
+        if error is not None:
+            emit(
+                "live.parse_prefetch.lookahead_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="lookahead_sampling_failed",
+                error_type=type(error).__name__,
+            )
+            return
+        candidates = lookahead.result()
         if not candidates:
-            return 0
-        # The offloaded call mutates the stage's bookkeeping. If the caller is
-        # cancelled, settle the thread before the ingest lock is released, so
-        # no warm or shutdown can run beside it.
+            return
         submission = asyncio.ensure_future(asyncio.to_thread(self._parse_stage.prefetch_paths, candidates))
         try:
-            return await asyncio.shield(submission)
+            await asyncio.shield(submission)
         except asyncio.CancelledError:
             with suppress(Exception):
                 await submission
             raise
+        except Exception as exc:
+            # Read-ahead costs only the overlap when it fails; the batch that
+            # needs these paths warms them itself.
+            emit(
+                "live.parse_prefetch.lookahead_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="lookahead_submission_failed",
+                error_type=type(exc).__name__,
+            )
 
     async def _ingest_full_paths(
         self,
@@ -2906,6 +2950,9 @@ class LiveBatchProcessor:
                     "live.watcher: parse-stage prefetch failed; falling back to in-hold parse",
                     exc_info=True,
                 )
+            # This page's warm is settled; the next batch's parsing can now
+            # overlap this page's publication.
+            await self._submit_ready_lookahead()
         return await self._run_sync(
             "watcher.live_ingest.full",
             self._ingest_full_paths_sync_in_ops_scope,

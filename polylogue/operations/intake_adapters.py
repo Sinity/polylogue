@@ -804,9 +804,9 @@ class FileIntakeAdapter(IntakeAdapter):
                 return outcomes
             paths = [Path(cast(Any, item.payload)) for item in batch]
             page = set(paths)
-            await self._prefetch_fresh_paths(
-                [*paths, *(path for path in self._fresh_pending if path not in page)][: 2 * len(paths)]
-            )
+            # The current page is warmed by its own ingest. What overlaps its
+            # publication is the next page, sampled off the admission path.
+            self._offer_parse_lookahead([path for path in self._fresh_pending if path not in page][: len(paths)])
             metrics = await self.context.watcher._ingest_files(
                 paths,
                 queued_file_count=len(paths) + len(skipped),
@@ -958,17 +958,23 @@ class FileIntakeAdapter(IntakeAdapter):
                 await converge_profiles(tuple(getattr(metrics, "changed_session_ids", ()) or ()))
         return outcomes
 
-    async def _prefetch_fresh_paths(self, paths: Sequence[Path]) -> None:
-        """Hand files with no cursor yet to the parse stage, ahead of their batch.
+    def _offer_parse_lookahead(self, paths: Sequence[Path]) -> None:
+        """Offer the next page's cursorless files for read-ahead parsing.
 
         Only a file with no cursor row is certain to be ingested in full, so
-        only those are prepared early; an append or an unchanged file would be
-        parse work nobody claims. A failure here costs the overlap, never the
-        admission: the batch's own warm prepares whatever is missing.
+        only those are prepared early. Selection and provider sampling read
+        the source, so they run off the admission path: a slow or unavailable
+        lookahead file never delays the page being admitted, and a lookahead
+        not sampled by the time that page's warm finishes is simply unused.
         """
-        prefetch = getattr(self.context.watcher, "prefetch_parse_paths", None)
-        if not callable(prefetch) or not paths:
+        offer = getattr(self.context.watcher, "offer_parse_lookahead", None)
+        if not callable(offer) or not paths:
             return
+        offered = tuple(paths)
+        offer(lambda: self._fresh_lookahead_paths(offered), source_name=self.source.name)
+
+    def _fresh_lookahead_paths(self, paths: Sequence[Path]) -> list[Path]:
+        """The still-owned, cursorless subset of ``paths``; runs on a worker thread."""
 
         def still_owned(path: Path) -> bool:
             # The same carrier checks admission applies, re-read now: a path
@@ -983,26 +989,13 @@ class FileIntakeAdapter(IntakeAdapter):
                 and self.source.accepts(path)
             )
 
-        paths = [path for path in paths if still_owned(path)]
-        if not paths:
-            return
+        owned = [path for path in paths if still_owned(path)]
+        if not owned:
+            return []
         cursor = getattr(self.context.watcher, "_cursor", None)
         get_records = getattr(cursor, "get_records", None)
-        try:
-            records = await asyncio.to_thread(get_records, tuple(paths)) if callable(get_records) else {}
-            fresh = [path for path in paths if records.get(path) is None]
-            if fresh:
-                await prefetch(fresh, source_name=self.source.name)
-        except Exception as exc:
-            emit(
-                "daemon.intake.prefetch_failed",
-                level=WARNING,
-                outcome="degraded",
-                reason="prefetch_failed",
-                component=self.class_name,
-                error_type=type(exc).__name__,
-                error_detail=str(exc),
-            )
+        records = get_records(tuple(owned)) if callable(get_records) else {}
+        return [path for path in owned if records.get(path) is None]
 
     async def acknowledge(self, item: IntakeItem) -> None:
         # Files remain retained source carriers.  The live batch's durable

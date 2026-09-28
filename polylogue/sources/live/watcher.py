@@ -1196,14 +1196,14 @@ class LiveWatcher:
         logger.info("live.watcher: reconciled cursor from archive source row for %s", path)
         return _ArchivedCursorReconciliation.RECONCILED
 
-    async def prefetch_parse_paths(self, paths: Sequence[Path], *, source_name: str) -> int:
-        """Start off-writer preparation of paths an upcoming batch will ingest in full.
+    def offer_parse_lookahead(self, select: Callable[[], Sequence[Path]], *, source_name: str) -> None:
+        """Offer the paths a later batch will ingest in full for read-ahead parsing.
 
-        Taken under the ingest lock: the parse stage's bookkeeping is owned by
-        one caller at a time, and a batch's own warm must never run beside it.
+        ``select`` runs on a worker thread. Nothing here touches the parse
+        stage: the next ingest submits the sampled candidates while it owns
+        the stage under the ingest lock.
         """
-        async with self._ingest_lock:
-            return await self._batch_processor.prefetch_full_paths(paths, source_name=source_name)
+        self._batch_processor.offer_parse_lookahead(select, source_name=source_name)
 
     async def _ingest_files(
         self,
@@ -1224,13 +1224,17 @@ class LiveWatcher:
         """
         self._batch_processor.require_cursor_authority(paths)
         async with self._ingest_lock:
-            return await self._batch_processor.ingest_files(
-                paths,
-                queued_file_count=queued_file_count,
-                skipped_file_count=skipped_file_count,
-                max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
-                whole_archive_convergence=whole_archive_convergence,
-            )
+            try:
+                return await self._batch_processor.ingest_files(
+                    paths,
+                    queued_file_count=queued_file_count,
+                    skipped_file_count=skipped_file_count,
+                    max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
+                    whole_archive_convergence=whole_archive_convergence,
+                )
+            finally:
+                # A lookahead belongs to the batch it was offered beside.
+                self._batch_processor.drop_parse_lookahead()
 
     async def _converge_embeddings_off_writer(self, paths: Sequence[Path]) -> None:
         """Converge this batch's embeddings after the ingest lease is released."""

@@ -546,6 +546,7 @@ class LiveParseStage:
                 capture_mode=capture_mode,
                 source_index=source_index,
                 paths={source_path for source_path, _provider, _is_stream in candidates},
+                cancelled=cancelled,
             )
         self._drop_stale_speculation()
         return len(candidates)
@@ -764,8 +765,14 @@ class LiveParseStage:
         capture_mode: Provider | None,
         source_index: int,
         paths: set[str],
+        cancelled: threading.Event | None = None,
     ) -> None:
         """Reconcile prior acquisitions on a read-only index before admission.
+
+        A reconciliation finished after ``cancelled`` is set is closed rather
+        than installed: its snapshot may predate a publication that runs once
+        the ingest lock is released, and the unreconciled result stays for a
+        later warm to reconcile against a fresh snapshot.
 
         Only the paths this warm is about to publish are reconciled. A
         prefetched result for a later group would be reconciled against the
@@ -799,6 +806,8 @@ class LiveParseStage:
             # Each task owns its read transaction. Sharing one SQLite
             # connection across threads would also share its snapshot state.
             writes: list[PreparedSessionWrite] = []
+            if cancelled is not None and cancelled.is_set():
+                return result
             opened_snapshot = False
             try:
                 with read_snapshot(archive_root) as pinned:
@@ -867,7 +876,12 @@ class LiveParseStage:
         with ThreadPoolExecutor(max_workers=min(self._max_path_pending, len(pending))) as executor:
             futures = {path: executor.submit(prepare_one, path, result) for path, result in pending.items()}
             for path, future in futures.items():
-                self._path_results[path] = future.result()
+                prepared = future.result()
+                if cancelled is not None and cancelled.is_set() and prepared.error is None:
+                    for write in prepared.prepared_writes:
+                        write.close()
+                    continue
+                self._path_results[path] = prepared
 
     def _collect_path_future(self, source_path: str, future: Future[LivePathPreparation]) -> None:
         if self._path_futures.get(source_path) is not future:

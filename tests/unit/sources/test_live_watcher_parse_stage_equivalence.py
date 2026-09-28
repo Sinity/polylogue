@@ -965,6 +965,52 @@ async def test_fresh_discovery_keeps_a_page_of_lookahead_for_prefetch(tmp_path: 
     assert set(adapter._fresh_pending) - set(second)
 
 
+@pytest.mark.asyncio
+async def test_lookahead_sampling_never_blocks_the_batch_in_flight(tmp_path: Path) -> None:
+    """A lookahead whose source read is stuck is skipped, not waited on.
+
+    Anti-vacuity: await the lookahead sample inside ``_submit_ready_lookahead``
+    (or sample on the admission path) and the first submission blocks on the
+    held selection instead of returning with nothing submitted.
+    """
+    (path,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    submitted: list[list[tuple[str, Provider, bool]]] = []
+
+    class RecordingStage:
+        def prefetch_paths(self, candidates: list[tuple[str, Provider, bool]]) -> int:
+            submitted.append(list(candidates))
+            return len(candidates)
+
+    processor = LiveBatchProcessor(
+        Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
+        (WatchSource(name="codex", root=path.parent),),
+        cursor=CursorStore(archive_root / "index.db"),
+        parser_fingerprint=_PARSER_FINGERPRINT,
+        parse_stage=RecordingStage(),  # type: ignore[arg-type]
+        read_snapshot=open_operation_read,
+    )
+    released = threading.Event()
+
+    def held_selection() -> list[Path]:
+        released.wait(timeout=30)
+        return [path]
+
+    processor.offer_parse_lookahead(held_selection, source_name="codex")
+    try:
+        await processor._submit_ready_lookahead()
+        assert submitted == []
+    finally:
+        released.set()
+    lookahead = processor._parse_lookahead
+    assert lookahead is not None
+    await lookahead
+    await processor._submit_ready_lookahead()
+    assert [[candidate[0] for candidate in batch] for batch in submitted] == [[str(path)]]
+    assert processor._parse_lookahead is None
+
+
 def test_a_cancelled_warm_stops_waiting_and_installs_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Cancellation ends an unbounded warm promptly and leaves no stale install.
 
@@ -977,9 +1023,11 @@ def test_a_cancelled_warm_stops_waiting_and_installs_nothing(tmp_path: Path, mon
 
     (path,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
     released = threading.Event()
+    started = threading.Event()
     original_worker = parse_prefetch.live_parse_path_worker
 
     def held_worker(provider_value: str, source_path: str, *args: object, **kwargs: object) -> object:
+        started.set()
         released.wait(timeout=30)
         return original_worker(provider_value, source_path, *args, **kwargs)  # type: ignore[arg-type]
 
@@ -996,9 +1044,7 @@ def test_a_cancelled_warm_stops_waiting_and_installs_nothing(tmp_path: Path, mon
     )
     try:
         warm.start()
-        deadline = time.monotonic() + 10
-        while str(path) not in stage._path_futures and time.monotonic() < deadline:
-            time.sleep(0.01)
+        assert started.wait(timeout=10)
         assert str(path) in stage._path_futures
         cancelled.set()
         warm.join(timeout=5)
@@ -1478,6 +1524,40 @@ def test_path_preparation_refuses_source_changed_after_worker_seal(tmp_path: Pat
     finally:
         stage.shutdown()
     assert list(directory.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_a_warm_cancelled_during_reconciliation_installs_no_prepared_write(tmp_path: Path) -> None:
+    """A reconciliation that finishes after cancellation is closed, not installed.
+
+    Anti-vacuity: install every finished reconciliation regardless of the
+    event and the result carries the prepared write built from the snapshot
+    the cancelled warm pinned.
+    """
+    archive_root = tmp_path / "archive"
+    path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
+    await _ingest(archive_root, [path], parse_stage=None)
+    path.write_bytes(_codex_session_bytes("session-0", (("user", "revised question"), ("assistant", "revised answer"))))
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    cancelled = threading.Event()
+
+    def cancelling_read(root: Path) -> AbstractContextManager[PinnedOperationRead]:
+        # The caller is cancelled while this reconciliation reads.
+        cancelled.set()
+        return open_operation_read(root)
+
+    try:
+        stage.warm_paths(
+            [(str(path), Provider.CODEX, True)],
+            archive_root=archive_root,
+            read_snapshot=cancelling_read,
+            cancelled=cancelled,
+        )
+        kept = stage._path_results[str(path)]
+        assert kept.error is None
+        assert kept.prepared_writes == ()
+    finally:
+        stage.shutdown()
 
 
 @pytest.mark.asyncio
