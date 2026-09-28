@@ -221,7 +221,7 @@ def test_outliers_aggregate_phases_and_report_test_and_file_shares(
     assert "tests/unit/storage_scale.py::test_scale" in output
     assert "Top 5 slowest tests (100.0% of serial time):" in output
     assert "tests/unit/slow.py::test_a" in output
-    assert "Top 5 slowest files (100.0% of serial time):" in output
+    assert "Top 4 slowest files (100.0% of serial time):" in output
     assert "tests/unit/slow.py" in output
 
 
