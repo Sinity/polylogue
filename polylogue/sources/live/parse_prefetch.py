@@ -8,18 +8,18 @@ captured blob hash before consuming a carrier.
 
 from __future__ import annotations
 
+import os
 import shutil
 import threading
 import time
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import (
     FIRST_COMPLETED,
     Executor,
     Future,
     ProcessPoolExecutor,
     ThreadPoolExecutor,
-    as_completed,
     wait,
 )
 from concurrent.futures.process import BrokenProcessPool
@@ -27,7 +27,7 @@ from contextlib import AbstractContextManager, suppress
 from dataclasses import dataclass, replace
 from io import BytesIO
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from polylogue.core.enums import Provider
 from polylogue.logging import WARNING, emit, get_logger
@@ -63,6 +63,8 @@ _DEFAULT_PROCESS_WORKER_CAP = 8
 #: cursor reconciliation) from accumulating results.
 _SPECULATIVE_LIFETIME_CALLS = 8
 _DEFAULT_WARM_TIMEOUT_SECONDS = 60.0
+#: How often a waiting warm re-reads its preparations' progress.
+_PROGRESS_POLL_SECONDS = 5.0
 
 # The dispatcher's per-pass byte budget already caps one admitted page at
 # 64 MiB, so the adaptive budget below only needs to cover one page's worth
@@ -116,7 +118,11 @@ def live_watcher_parse_stage_max_inflight_bytes() -> int:
 
 
 def live_watcher_parse_stage_warm_timeout_seconds() -> float:
-    """Bound on how long a watcher prefetch warm() pass waits for its workers.
+    """Seconds without forward progress before a preparation is reported stalled.
+
+    Not a deadline: a warm waits for its preparations to finish, however long
+    a large file takes, and this window only decides when a worker that has
+    stopped advancing is reported (``live.parse_prefetch.preparation_stalled``).
 
     Override with ``POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS``.
     """
@@ -126,6 +132,28 @@ def live_watcher_parse_stage_warm_timeout_seconds() -> float:
     if configured is not None and configured > 0:
         return configured
     return _DEFAULT_WARM_TIMEOUT_SECONDS
+
+
+def _completed_reporting_stalls(futures: Iterable[Future[Any]], *, stall_window: float) -> Iterator[Future[Any]]:
+    """Yield futures as they complete, never giving up on the rest.
+
+    A window with no completion is reported as a stall and waiting continues:
+    abandoning finished-in-a-moment work and reparsing it under the writer
+    lease is the livelock this replaces.
+    """
+    pending = set(futures)
+    while pending:
+        done, pending = wait(pending, timeout=stall_window, return_when=FIRST_COMPLETED)
+        if not done:
+            emit(
+                "live.parse_prefetch.preparation_stalled",
+                level=WARNING,
+                outcome="degraded",
+                reason="no_completion_in_window",
+                paths=len(pending),
+                stalled_s=stall_window,
+            )
+        yield from done
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,26 +262,6 @@ def live_parse_path_worker(
         parse_prefix_size=parse_prefix_size,
         prepare_session=lambda session: session,
     )
-
-
-def _discard_orphaned_shard(
-    future: Future[tuple[str, list[ParsedSession] | None, BaseException | None, str | None]],
-) -> None:
-    """Discard the shard sealed by a worker nobody is waiting on any more.
-
-    Runs on the worker's own thread once it finishes. A worker abandoned by a
-    ``warm()`` timeout still seals a shard, and its ``shard_name`` is never
-    returned to a consumer, so without this the file survives until the stage
-    shuts down. Failure to parse, or to remove, is not the caller's problem:
-    the shard is already unreferenced either way.
-    """
-    if future.cancelled():
-        return
-    if future.exception() is not None:
-        return
-    shard_name = future.result()[3]
-    if shard_name is not None:
-        discard_session_shard(Path(shard_name))
 
 
 def live_parse_and_shard_worker(
@@ -426,10 +434,6 @@ class LiveParseStage:
         #: unclaimed guess is dropped after ``_SPECULATIVE_LIFETIME_CALLS``
         #: stage calls rather than held, with its scratch, until shutdown.
         self._speculative: dict[str, int] = {}
-        #: Claimed read-ahead still running when its warm ended. A retryable
-        #: failure it produces later is dropped at collection, so the next
-        #: warm prepares the path again instead of publishing the failure.
-        self._reprepare_on_failure: set[str] = set()
         self._stage_calls = 0
         self._path_sizes: dict[str, int] = {}
         self._path_attempt_dirs: dict[str, Path] = {}
@@ -505,7 +509,6 @@ class LiveParseStage:
         if self._shard_directory is None:
             return 0
         self._stage_calls += 1
-        deadline = time.monotonic() + self._warm_timeout_seconds
         # Read-ahead this warm now claims. A retryable failure it produced
         # (the source moved while it was read ahead) is not this warm's
         # answer: it is prepared again, whether it finished before the warm
@@ -521,11 +524,10 @@ class LiveParseStage:
                         None, None, None, "worker stop could not be verified; scratch cleanup is blocked", deferred=True
                     )
             return len(candidates)
-        self._warm_until(list(candidates), deadline)
+        self._warm_until(list(candidates))
         retry = self._discard_retryable(claimed)
-        if retry and deadline > time.monotonic():
-            self._warm_until([candidate for candidate in candidates if candidate[0] in retry], deadline)
-        self._reprepare_on_failure.update(path for path in claimed if path in self._path_futures)
+        if retry:
+            self._warm_until([candidate for candidate in candidates if candidate[0] in retry])
         if archive_root is not None:
             self._prepare_existing_session_writes(
                 archive_root,
@@ -547,46 +549,77 @@ class LiveParseStage:
                 dropped.add(source_path)
         return dropped
 
-    def _warm_until(self, candidates: list[tuple[str, Provider, bool]], deadline: float) -> None:
-        """Submit ``candidates`` as capacity allows and wait for them until ``deadline``."""
+    def _warm_until(self, candidates: list[tuple[str, Provider, bool]]) -> None:
+        """Submit ``candidates`` as capacity allows and wait until each is prepared.
+
+        There is no deadline. A large file's preparation is real progress
+        toward the only ingest that file will get; giving up on it at a fixed
+        wall time deferred the file, re-acquired it on the next pass and never
+        finished it. What a clock may decide is only whether to *report* a
+        worker that has stopped advancing: preparation writes its sealed
+        carrier as it goes, so the attempt directory's size is the forward
+        progress signal. Worker death still ends a wait (``BrokenProcessPool``
+        at collection), and shutdown terminates stragglers.
+        """
         remaining = list(candidates)
-        while remaining:
+        wanted = {source_path for source_path, _provider, _is_stream in candidates}
+        progress = -1
+        last_progress = time.monotonic()
+        reported_at = last_progress
+        while True:
             remaining = self._submit_path_candidates(remaining)
-            if not remaining:
+            selected = [future for path, future in self._path_futures.items() if path in wanted]
+            if not remaining and not selected:
                 break
-            available = max(0.0, deadline - time.monotonic())
-            if not self._path_futures or available == 0:
+            # Capacity may be held by other work; wait on it too, since its
+            # completion is what frees a slot for what remains.
+            waiting = tuple(self._path_futures.values()) if remaining else tuple(selected)
+            if not waiting:
                 break
-            done, _pending = wait(tuple(self._path_futures.values()), timeout=available, return_when=FIRST_COMPLETED)
-            if not done:
-                break
-        for source_path, _provider, _is_stream in remaining:
-            if source_path in self._path_results or source_path in self._path_futures:
-                continue
-            reason = (
-                "worker preparation capacity is busy"
-                if len(self._path_futures) >= self._max_path_pending
-                else "worker preparation byte capacity is busy"
-            )
-            self._path_results[source_path] = LivePathPreparation(None, None, None, reason, deferred=True)
-        selected_futures = {
-            self._path_futures[source_path]
-            for source_path, _provider, _is_stream in candidates
-            if source_path in self._path_futures
-        }
-        if selected_futures:
-            _done, _pending = wait(selected_futures, timeout=max(0.0, deadline - time.monotonic()))
+            done, _pending = wait(waiting, timeout=_PROGRESS_POLL_SECONDS, return_when=FIRST_COMPLETED)
             for source_path, future in tuple(self._path_futures.items()):
                 if future.done():
                     self._collect_path_future(source_path, future)
-            # A slow worker is still the owner of its captured source. Keep
-            # its future so a later pass can consume the sealed artifact;
-            # restarting the pool here killed every whale at the same warm
-            # deadline on each retry. BrokenProcessPool is handled when the
-            # finished future is collected, and shutdown terminates stragglers.
+            now = time.monotonic()
+            advanced = self._attempt_bytes(wanted)
+            if done or advanced > progress:
+                progress = advanced
+                last_progress = reported_at = now
+            elif now - reported_at >= self._warm_timeout_seconds:
+                reported_at = now
+                emit(
+                    "live.parse_prefetch.preparation_stalled",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="no_forward_progress",
+                    paths=len([path for path in wanted if path in self._path_futures]),
+                    stalled_s=round(now - last_progress, 1),
+                    attempt_bytes=advanced,
+                )
+        for source_path, _provider, _is_stream in remaining:
+            if source_path in self._path_results or source_path in self._path_futures:
+                continue
+            self._path_results[source_path] = LivePathPreparation(
+                None, None, None, "worker preparation capacity is unavailable", deferred=True
+            )
         for source_path, future in tuple(self._path_futures.items()):
             if future.done():
                 self._collect_path_future(source_path, future)
+
+    def _attempt_bytes(self, paths: set[str]) -> int:
+        """Bytes the running preparations of ``paths`` have written so far."""
+        total = 0
+        for source_path in paths:
+            directory = self._path_attempt_dirs.get(source_path)
+            if directory is None:
+                continue
+            try:
+                for entry in os.scandir(directory):
+                    with suppress(OSError):
+                        total += entry.stat(follow_symlinks=False).st_size
+            except OSError:
+                continue
+        return total
 
     def _expired_speculative_futures(self) -> list[str]:
         return [
@@ -873,11 +906,6 @@ class LiveParseStage:
             self._speculative.pop(source_path, None)
             result.discard()
             return
-        if source_path in self._reprepare_on_failure:
-            self._reprepare_on_failure.discard(source_path)
-            if result.error is not None and result.deferred:
-                result.discard()
-                return
         self._path_results[source_path] = result
 
     def _new_attempt_directory(self) -> Path:
@@ -1044,69 +1072,32 @@ class LiveParseStage:
         completed = 0
         shard_build_failures = 0
         consumed: set[Future[tuple[str, list[ParsedSession] | None, BaseException | None, str | None]]] = set()
-        try:
-            for future in as_completed(futures, timeout=self._warm_timeout_seconds):
-                completed += 1
-                consumed.add(future)
-                candidate = futures[future]
-                try:
-                    result = future.result()
-                except Exception:
-                    logger.warning(
-                        "live watcher parse-stage prefetch: worker failed for %s",
-                        candidate.source_path,
-                        exc_info=True,
-                    )
-                    continue
-                cache_key, sessions, error, shard_name = result
-                shard_path = None if shard_name is None else Path(shard_name)
-                if error is not None or sessions is None:
-                    # Parse failures are intentionally NOT cached: the
-                    # writer-held pass reparses (and correctly records) this
-                    # file exactly as it would with no prewarm at all.
-                    if shard_path is not None:
-                        discard_session_shard(shard_path)
-                    continue
-                if shard_directory is not None and sessions and shard_path is None:
-                    shard_build_failures += 1
-                if self.cache.try_admit(cache_key, sessions, payload=candidate.payload, shard_path=shard_path):
-                    warmed += 1
-        except TimeoutError:
-            pending_count = len(futures) - completed
-            # Leaving the futures alone kept unstarted work queued behind the
-            # next warm() and let a late worker's shard sit unreferenced on
-            # disk (polylogue-3r36h). Cancel what has not started, discard the
-            # shards of what finished unread, and attach the discard to what
-            # is still running so the worker cleans up after itself as soon
-            # as it finishes (polylogue-nfr2u): a thread cannot be preempted,
-            # and nobody consumes its ``shard_name`` after the timeout.
-            cancelled = 0
-            drained = 0
-            for future in futures:
-                if future in consumed:
-                    continue
-                if future.cancel():
-                    cancelled += 1
-                    continue
-                if not future.done():
-                    future.add_done_callback(_discard_orphaned_shard)
-                    continue
-                if future.exception() is not None:
-                    continue
-                _cache_key, _sessions, _error, shard_name = future.result()
-                if shard_name is not None:
-                    discard_session_shard(Path(shard_name))
-                    drained += 1
-            logger.warning(
-                "live watcher parse-stage prefetch: warm() timed out after %.0fs waiting on %d of %d file(s); "
-                "cancelled %d unstarted worker(s), discarded %d unread shard(s); "
-                "leaving unfinished file(s) uncached for the writer-held pass to reparse normally",
-                self._warm_timeout_seconds,
-                pending_count,
-                len(futures),
-                cancelled,
-                drained,
-            )
+        for future in _completed_reporting_stalls(futures, stall_window=self._warm_timeout_seconds):
+            completed += 1
+            consumed.add(future)
+            candidate = futures[future]
+            try:
+                result = future.result()
+            except Exception:
+                logger.warning(
+                    "live watcher parse-stage prefetch: worker failed for %s",
+                    candidate.source_path,
+                    exc_info=True,
+                )
+                continue
+            cache_key, sessions, error, shard_name = result
+            shard_path = None if shard_name is None else Path(shard_name)
+            if error is not None or sessions is None:
+                # Parse failures are intentionally NOT cached: the
+                # writer-held pass reparses (and correctly records) this
+                # file exactly as it would with no prewarm at all.
+                if shard_path is not None:
+                    discard_session_shard(shard_path)
+                continue
+            if shard_directory is not None and sessions and shard_path is None:
+                shard_build_failures += 1
+            if self.cache.try_admit(cache_key, sessions, payload=candidate.payload, shard_path=shard_path):
+                warmed += 1
         if shard_build_failures:
             self.shard_build_failure_count += shard_build_failures
             emit(

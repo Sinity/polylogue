@@ -410,47 +410,6 @@ def test_submit_failure_cleans_every_admitted_future_and_reservation(
         stage.shutdown()
 
 
-def test_consecutive_timeout_retries_share_global_payload_admission(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A timed-out raw remains admitted globally until its worker completes."""
-    from polylogue.archive.revision_authority import RawRevisionKind
-    from polylogue.sources import census_parse_stage, revision_backfill
-
-    bootstrap_archive_root(tmp_path)
-    descriptor = (Provider.CODEX, "hash", "capture.jsonl", RawRevisionKind.FULL, 67)
-    monkeypatch.setattr(
-        census_parse_stage,
-        "_readonly_descriptors",
-        lambda *_args: {"raw-67": descriptor},
-    )
-    started = threading.Event()
-    release = threading.Event()
-    submitted: list[str] = []
-
-    def blocked_worker(raw_id: str, *args: object) -> object:
-        submitted.append(raw_id)
-        started.set()
-        release.wait(timeout=5)
-        return raw_id, [], None
-
-    monkeypatch.setattr(revision_backfill, "census_parse_worker", blocked_worker)
-    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=100, warm_timeout_seconds=0.01)
-    try:
-        assert stage.warm_raw_ids(_config(tmp_path), raw_ids=["raw-67"], max_payload_bytes=100) == 0
-        assert started.wait(timeout=2)
-        assert stage.writer_admission_ready() is False
-        # The second call sees the timed-out worker's 67-byte reservation;
-        # it cannot enqueue a duplicate despite the cache still being empty.
-        assert stage.warm_raw_ids(_config(tmp_path), raw_ids=["raw-67"], max_payload_bytes=100) == 0
-        assert submitted == ["raw-67"]
-    finally:
-        release.set()
-        assert stage.wait_until_idle(timeout=5)
-        assert stage.writer_admission_ready()
-        stage.shutdown()
-
-
 def test_warm_parses_indexed_raw_with_missing_parser_receipt(tmp_path: Path) -> None:
     """The daemon warmer includes all-raw census debt, not only replay debt.
 
@@ -645,43 +604,38 @@ def test_warm_returns_zero_when_no_candidates_pending(tmp_path: Path) -> None:
     assert len(stage.cache) == 0
 
 
-def test_warm_times_out_on_a_hung_worker_and_leaves_it_uncached(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """CodeRabbit (PR #3168): a worker that never returns (e.g. an
-    unresponsive filesystem read) must not block ``warm()`` forever -- since
-    ``warm()`` is awaited directly ahead of ``run_sync`` in the periodic
-    conveyor loop, an unbounded wait here would stall every subsequent drain
-    pass indefinitely. The hung raw is simply left uncached; a real
-    writer-held pass would reparse it normally, identical to any other
-    prefetch miss."""
+def test_a_slow_worker_is_awaited_and_reported_not_abandoned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """polylogue-slc55: a worker slower than the window is waited for.
+
+    The window only reports a stall; abandoning the worker made the writer
+    parse the same raw again from scratch. Anti-vacuity: a deadline returns
+    before the worker finishes, so its result is never cached and no stall
+    event is emitted.
+    """
     _seed_raws(tmp_path, {"a.jsonl": _codex_payload("session-a", "hello")})
 
-    from polylogue.sources import revision_backfill
+    from polylogue.sources import census_parse_stage, revision_backfill
 
-    dispatched = threading.Event()
+    real_worker = revision_backfill.census_parse_worker
+    stalls: list[object] = []
 
-    def hanging_worker(*args: object, **kwargs: object) -> object:
-        dispatched.set()
-        time.sleep(5.0)  # far longer than the test's tiny warm timeout below
-        pytest.fail("hung worker must not be awaited past the warm() timeout")
+    def slow_worker(*args: object, **kwargs: object) -> object:
+        time.sleep(0.4)
+        return real_worker(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(revision_backfill, "census_parse_worker", hanging_worker)
+    def record(event: str, /, **fields: object) -> None:
+        if event == "daemon.parse_prefetch.preparation_stalled":
+            stalls.append(fields)
 
-    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=10_000_000, warm_timeout_seconds=0.02)
+    monkeypatch.setattr(revision_backfill, "census_parse_worker", slow_worker)
+    monkeypatch.setattr(census_parse_stage, "emit", record)
+    stage = DaemonParseStage(max_workers=1, max_inflight_bytes=10_000_000, warm_timeout_seconds=0.05)
     try:
-        started = time.monotonic()
         warmed = stage.warm(_config(tmp_path), limit=10, max_payload_bytes=10_000_000)
-        elapsed = time.monotonic() - started
     finally:
         stage.shutdown()
-
-    assert dispatched.wait(timeout=1.0)
-    assert warmed == 0
-    assert len(stage.cache) == 0
-    # warm() returned close to its own timeout, not after the hung worker's
-    # 5s sleep -- proving the wait is genuinely bounded, not merely reordered.
-    assert elapsed < 0.02 * 10
+    assert warmed == 1
+    assert stalls
 
 
 def test_max_inflight_bytes_default_is_adaptive_and_clamped(monkeypatch: pytest.MonkeyPatch) -> None:

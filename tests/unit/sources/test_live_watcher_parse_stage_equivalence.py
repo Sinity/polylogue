@@ -673,9 +673,7 @@ async def test_identical_json_paths_keep_distinct_prepared_fallback_ids(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_identical_json_paths_keep_independent_pending_outcomes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_a_slow_json_preparation_is_awaited_not_deferred(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """One pending worker cannot make its equal-byte sibling's cursor settle."""
     import threading
 
@@ -716,10 +714,14 @@ async def test_identical_json_paths_keep_independent_pending_outcomes(
             released.wait(timeout=30)
         return original_worker(*args, **kwargs)  # type: ignore[arg-type]
 
+    # The slow preparation finishes well after the stall window; the warm
+    # waits for it instead of deferring the file (polylogue-slc55).
+    threading.Timer(0.5, released.set).start()
+
     monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
-    stage = LiveParseStage(max_workers=2, warm_timeout_seconds=2, shard_directory=tmp_path / "shards")
+    stage = LiveParseStage(max_workers=2, warm_timeout_seconds=0.05, shard_directory=tmp_path / "shards")
     processor = LiveBatchProcessor(
         Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
         (WatchSource(name="inbox", root=source_root),),
@@ -730,90 +732,17 @@ async def test_identical_json_paths_keep_independent_pending_outcomes(
     )
     try:
         result = await processor.ingest_files([pending_path, ready_path], emit_event=False)
-        assert str(pending_path) in result.deferred_paths
-        assert result.succeeded_file_count == 1
-        with _connect(archive_root / "index.db") as conn:
-            assert [row["native_id"] for row in conn.execute("SELECT native_id FROM sessions")] == ["b-0"]
+        assert not result.deferred_paths
+        assert result.succeeded_file_count == 2
         cursors = CursorStore(archive_root / "index.db")
-        pending_cursor = cursors.get_record(pending_path)
-        ready_cursor = cursors.get_record(ready_path)
-        assert pending_cursor is None or pending_cursor.content_fingerprint is None
-        assert ready_cursor is not None and ready_cursor.content_fingerprint is not None
+        for path in (pending_path, ready_path):
+            cursor = cursors.get_record(path)
+            assert cursor is not None and cursor.content_fingerprint is not None
         with _connect(archive_root / "source.db") as conn:
             assert {row["source_path"] for row in conn.execute("SELECT source_path FROM raw_sessions")} == {
                 str(pending_path),
                 str(ready_path),
             }
-    finally:
-        released.set()
-        stage.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_pending_json_worker_retains_bytes_before_source_disappears(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A slow worker defers parsing after durable acquisition of the observed JSON."""
-    import threading
-
-    import polylogue.sources.live.parse_prefetch as parse_prefetch
-    from polylogue.storage.blob_store import BlobStore
-
-    source = tmp_path / "inbox" / "session.json"
-    source.parent.mkdir()
-    payload = json.dumps(
-        [
-            {
-                "id": "retained-while-pending",
-                "title": "retained while pending",
-                "create_time": 1,
-                "current_node": "m",
-                "mapping": {
-                    "m": {
-                        "id": "m",
-                        "parent": None,
-                        "children": [],
-                        "message": {
-                            "id": "m",
-                            "author": {"role": "user"},
-                            "create_time": 1,
-                            "content": {"content_type": "text", "parts": ["preserved content"]},
-                        },
-                    }
-                },
-            }
-        ]
-    ).encode()
-    source.write_bytes(payload)
-    released = threading.Event()
-    original_worker = parse_prefetch.live_parse_path_worker
-
-    def delayed_worker(*args: object, **kwargs: object) -> object:
-        released.wait(timeout=30)
-        return original_worker(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    stage = LiveParseStage(max_workers=1, warm_timeout_seconds=0.01, shard_directory=tmp_path / "shards")
-    processor = LiveBatchProcessor(
-        Polylogue(archive_root=archive_root, db_path=archive_root / "index.db"),
-        (WatchSource(name="inbox", root=source.parent),),
-        cursor=CursorStore(archive_root / "index.db"),
-        parser_fingerprint=_PARSER_FINGERPRINT,
-        parse_stage=stage,
-        read_snapshot=open_operation_read,
-    )
-    try:
-        result = await processor.ingest_files([source], emit_event=False)
-        assert str(source) in result.deferred_paths
-        source.unlink()
-        blob_hash = hashlib.sha256(payload).hexdigest()
-        assert BlobStore(archive_root / "blob").read_all(blob_hash) == payload
-        with _connect(archive_root / "source.db") as conn:
-            assert [row["origin"] for row in conn.execute("SELECT origin FROM raw_sessions")] == [
-                origin_from_provider(Provider.CHATGPT).value
-            ]
     finally:
         released.set()
         stage.shutdown()
@@ -896,7 +825,7 @@ async def test_incomplete_jsonl_uses_sealed_prefix_without_large_inline_read(
 
 
 @pytest.mark.asyncio
-async def test_pending_preparation_does_not_spend_cursor_failure_budget(
+async def test_deferred_preparation_does_not_spend_cursor_failure_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import threading
@@ -911,16 +840,18 @@ async def test_pending_preparation_does_not_spend_cursor_failure_budget(
     released = threading.Event()
     original_worker = parse_prefetch.live_parse_path_worker
 
-    def delayed_worker(*args: object, **kwargs: object) -> object:
-        released.wait(timeout=30)
+    def failing_worker(*args: object, **kwargs: object) -> object:
+        # A retryable worker failure (e.g. worker death) defers the file.
+        if not released.is_set():
+            raise RuntimeError("synthetic worker failure")
         return original_worker(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", failing_worker)
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     polylogue = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     cursor = CursorStore(archive_root / "index.db")
-    stage = LiveParseStage(max_workers=1, warm_timeout_seconds=0.01, shard_directory=tmp_path / "parse-shards")
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
     processor = LiveBatchProcessor(
         polylogue,
         (WatchSource(name="codex", root=path.parent),),
@@ -938,7 +869,6 @@ async def test_pending_preparation_does_not_spend_cursor_failure_budget(
         with _connect(archive_root / "source.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] >= 1
         released.set()
-        stage._warm_timeout_seconds = 5
         metrics = await processor.ingest_files([path], emit_event=False)
         assert metrics.succeeded_file_count == 1
     finally:
@@ -961,18 +891,18 @@ async def test_unchanged_preparation_defer_retries_through_fair_intake(
     released = threading.Event()
     original_worker = parse_prefetch.live_parse_path_worker
 
-    def delayed_worker(*args: object, **kwargs: object) -> object:
-        if str(args[1]) == str(deferred_path):
-            released.wait(timeout=30)
+    def failing_worker(*args: object, **kwargs: object) -> object:
+        if str(args[1]) == str(deferred_path) and not released.is_set():
+            raise RuntimeError("synthetic worker failure")
         return original_worker(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", failing_worker)
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     source = WatchSource(name="codex", root=deferred_path.parent)
     polylogue = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     cursor = CursorStore(archive_root / "index.db")
-    stage = LiveParseStage(max_workers=2, warm_timeout_seconds=0.01, shard_directory=tmp_path / "parse-shards")
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards")
     watcher = LiveWatcher(polylogue, (source,), cursor=cursor, parse_stage=stage, read_snapshot=open_operation_read)
     adapter = FileIntakeAdapter(DaemonIntakeContext(archive_root, watcher, (source,)), source)
     dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="codex", adapter=adapter, page_size=1)])
@@ -986,7 +916,6 @@ async def test_unchanged_preparation_defer_retries_through_fair_intake(
         assert pending.content_fingerprint is None and pending.failure_count == 0
 
         released.set()
-        stage._warm_timeout_seconds = 5
         for _ in range(6):
             await dispatcher.run_once()
             with _connect(archive_root / "index.db") as conn:
@@ -1143,53 +1072,6 @@ def test_a_single_worker_stage_reads_nothing_ahead(tmp_path: Path) -> None:
         stage.shutdown()
 
 
-def test_a_claimed_failure_finishing_after_the_warm_is_prepared_again(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Anti-vacuity: forgetting the claim when the warm times out publishes
-    the late retryable failure on the next warm instead of re-preparing."""
-    import hashlib
-    import threading
-
-    import polylogue.sources.live.parse_prefetch as parse_prefetch
-    from polylogue.sources.prepared_jsonl import PreparedJsonl
-
-    [path] = _write_fixture_corpus(tmp_path / "sessions", count=1)
-    released = threading.Event()
-    finished = threading.Event()
-    original_worker = parse_prefetch.live_parse_path_worker
-    calls = 0
-
-    def flaky_worker(*args: object, **kwargs: object) -> object:
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            released.wait(timeout=5)
-            finished.set()
-            return PreparedJsonl(None, None, None, "source changed", deferred=True)
-        return original_worker(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", flaky_worker)
-    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards", warm_timeout_seconds=0.05)
-    candidate = [(str(path), Provider.CODEX, True)]
-    try:
-        assert stage.prefetch_paths(candidate) == 1
-        stage.warm_paths(candidate)
-        released.set()
-        assert finished.wait(timeout=5)
-        stage._path_futures[str(path)].result(timeout=5)
-        stage.warm_paths(candidate)
-        if str(path) in stage._path_futures:
-            stage._path_futures[str(path)].result(timeout=10)
-        stage.warm_paths(candidate)
-        result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
-        assert result is not None and result.error is None
-        assert calls == 2
-    finally:
-        released.set()
-        stage.shutdown()
-
-
 def test_a_failed_prefetch_stat_is_retried_by_the_warm(tmp_path: Path) -> None:
     """Anti-vacuity: caching the speculative stat failure makes the warm
     return that failure for a file that exists by the time it is needed."""
@@ -1223,11 +1105,16 @@ def test_default_process_pool_is_sized_for_the_writer(tmp_path: Path, monkeypatc
         stage.shutdown()
 
 
-@pytest.mark.uses_real_clock("measures concurrent worker wait against the configured timeout")
-def test_path_workers_share_one_wait_and_reuse_late_results(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.uses_real_clock("workers outlast the stall window, which only reports")
+def test_a_warm_waits_for_every_path_through_limited_capacity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Three paths through two workers all come back prepared from one warm.
+
+    Anti-vacuity: a warm that stops at the stall window returns "pending" for
+    the running paths and "capacity is busy" for the third (the livelock of
+    polylogue-slc55: each later pass re-acquired and deferred the file).
+    """
     import hashlib
     import threading
-    import time
 
     import polylogue.sources.live.parse_prefetch as parse_prefetch
 
@@ -1242,34 +1129,17 @@ def test_path_workers_share_one_wait_and_reuse_late_results(tmp_path: Path, monk
         return original_worker(*args, **kwargs)  # type: ignore[arg-type]
 
     monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", delayed_worker)
-    stage = LiveParseStage(
-        max_workers=2,
-        warm_timeout_seconds=0.05,
-        shard_directory=tmp_path / "parse-shards",
-    )
+    monkeypatch.setattr(parse_prefetch, "_PROGRESS_POLL_SECONDS", 0.02)
+    stage = LiveParseStage(max_workers=2, warm_timeout_seconds=0.05, shard_directory=tmp_path / "parse-shards")
     candidates = [(str(path), Provider.CODEX, True) for path in paths]
     try:
-        started = time.monotonic()
+        threading.Timer(0.3, released.set).start()
         assert stage.warm_paths(candidates) == 3
-        assert time.monotonic() - started < 0.5
-        for path in paths[:2]:
-            pending = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
-            assert pending is not None and pending.error == "worker preparation pending"
-        capacity = stage.pop_path(str(paths[2]), blob_hash=hashlib.sha256(paths[2].read_bytes()).hexdigest())
-        assert capacity is not None and capacity.error == "worker preparation capacity is busy"
-        released.set()
-        stage._warm_timeout_seconds = 5
-        assert stage.warm_paths(candidates[:2]) == 2
-        assert len(calls) == 2
-        for path in paths[:2]:
+        assert len(calls) == 3
+        for path in paths:
             result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
             assert result is not None and result.error is None
             result.discard()
-        assert stage.warm_paths(candidates[2:]) == 1
-        assert len(calls) == 3
-        result = stage.pop_path(str(paths[2]), blob_hash=hashlib.sha256(paths[2].read_bytes()).hexdigest())
-        assert result is not None and result.error is None
-        result.discard()
     finally:
         released.set()
         stage.shutdown()
@@ -1298,8 +1168,15 @@ def test_path_stage_shutdown_terminates_stalled_process(tmp_path: Path) -> None:
             stage.shutdown()
 
 
-@pytest.mark.uses_real_clock("proves a healthy process result survives the warm deadline")
-def test_path_worker_timeout_preserves_late_process_result(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.uses_real_clock("a process worker outlasts the stall window, which only reports")
+def test_a_slow_process_worker_is_awaited_and_verified_off_the_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The warm waits for a slow process worker and does its full digest there.
+
+    Anti-vacuity: a deadline returns "worker preparation pending" to the
+    writer, which then defers the file and verifies nothing.
+    """
     import hashlib
 
     import polylogue.sources.live.parse_prefetch as parse_prefetch
@@ -1307,6 +1184,7 @@ def test_path_worker_timeout_preserves_late_process_result(tmp_path: Path, monke
 
     path = _write_fixture_corpus(tmp_path / "sessions", count=1)[0]
     directory = tmp_path / "parse-shards"
+    monkeypatch.setattr(parse_prefetch, "_PROGRESS_POLL_SECONDS", 0.02)
     stage = LiveParseStage(max_workers=1, warm_timeout_seconds=0.02, shard_directory=directory, use_processes=True)
     monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", _delayed_path_worker)
     candidate = (str(path), Provider.CODEX, True)
@@ -1324,22 +1202,11 @@ def test_path_worker_timeout_preserves_late_process_result(tmp_path: Path, monke
     monkeypatch.setattr(PreparedJsonl, "verify_files", verify_outside_writer)
     try:
         assert stage.warm_paths([candidate]) == 1
-        future = stage._path_futures[str(path)]
-        live_attempt = stage._path_attempt_dirs[str(path)]
-        assert live_attempt.exists()
-        assert not future.done(), "the timed-out worker completed before the custody assertion"
-        assert live_attempt.exists(), "warm timeout reclaimed scratch while its worker was still live"
-        future.result(timeout=10)
-        inside_writer = True
-        pending = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
-        inside_writer = False
-        assert pending is not None and pending.deferred and pending.error == "worker preparation pending"
-        assert full_verifications == 0
-        stage._warm_timeout_seconds = 10
-        assert stage.warm_paths([candidate]) == 1
-        assert future.done()
+        assert stage._path_futures == {}
         assert full_verifications == 1
+        inside_writer = True
         result = stage.pop_path(str(path), blob_hash=hashlib.sha256(path.read_bytes()).hexdigest())
+        inside_writer = False
         assert result is not None and result.error is None
         assert len(list(result.iter_sessions())) == 1
         result.discard()
@@ -1811,49 +1678,39 @@ async def test_unknown_mixed_jsonl_prefetch_falls_back_to_strict_decode(tmp_path
     assert lifecycle.unexplained == 0
 
 
-@pytest.mark.uses_real_clock("a real ThreadPoolExecutor worker must outlast warm()'s real timeout")
-def test_a_timed_out_prefetch_worker_discards_its_own_shard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """polylogue-nfr2u: a worker abandoned by warm()'s timeout cleans up its shard.
+@pytest.mark.uses_real_clock("a real worker outlasts the stall window, which only reports")
+def test_a_slow_in_memory_prefetch_is_awaited_and_reported(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A worker slower than the stall window is waited for and its shard used.
 
-    Anti-vacuity: the sealed shard path is captured from the worker itself, so
-    the assertion cannot pass by observing the directory before the worker got
-    there. A shard file surviving a forced timeout is the red condition --
-    remove the done-callback the timeout path attaches and this shard stays on
-    disk until ``shutdown()`` sweeps it, which runs only after the assertion.
+    Anti-vacuity: a warm that gives up at the window caches nothing (and
+    the writer reparses the file under its lease); no stall is reported.
     """
     from polylogue.sources.live import parse_prefetch
 
     paths = _write_fixture_corpus(tmp_path / "sessions", count=1)
-    shard_directory = tmp_path / "parse-shards"
     real_worker = parse_prefetch.live_parse_and_shard_worker
-    sealed: list[Path] = []
+    stalls: list[dict[str, object]] = []
 
     def slow_worker(*args: Any, **kwargs: Any) -> Any:
-        # Outlast warm()'s timeout, then seal a real shard exactly as production does.
-        time.sleep(0.5)
-        result = real_worker(*args, **kwargs)
-        shard_name = result[3]
-        assert shard_name is not None
-        sealed.append(Path(shard_name))
-        return result
+        time.sleep(0.3)
+        return real_worker(*args, **kwargs)
+
+    def record(event: str, /, **fields: object) -> None:
+        if event == "live.parse_prefetch.preparation_stalled":
+            stalls.append(fields)
 
     monkeypatch.setattr(parse_prefetch, "live_parse_and_shard_worker", slow_worker)
+    monkeypatch.setattr(parse_prefetch, "emit", record)
     stage = LiveParseStage(
-        max_workers=1, max_inflight_bytes=10_000_000, shard_directory=shard_directory, warm_timeout_seconds=0.05
+        max_workers=1,
+        max_inflight_bytes=10_000_000,
+        shard_directory=tmp_path / "parse-shards",
+        warm_timeout_seconds=0.05,
     )
     try:
         candidates = _live_parse_stage_candidates(paths, fallback_provider=Provider.CODEX)
-        # The timeout fires before the worker finishes: nothing is cached.
-        assert stage.warm(candidates) == 0
-
-        deadline = time.monotonic() + 15.0
-        while time.monotonic() < deadline and not sealed:
-            time.sleep(0.02)
-        assert sealed, "the abandoned worker never sealed a shard; the test would be vacuous"
-        orphan = sealed[0]
-        while time.monotonic() < deadline and orphan.exists():
-            time.sleep(0.02)
-        assert not orphan.exists(), f"timed-out worker orphaned its shard: {orphan}"
+        assert stage.warm(candidates) == 1
+        assert stalls
     finally:
         stage.shutdown()
 
@@ -1885,42 +1742,6 @@ def test_shard_build_failure_is_counted_not_only_logged_per_file(
         stage.shutdown()
 
     assert stage.shard_build_failure_count == len(paths)
-
-
-def test_warm_timeout_cancels_the_workers_it_stopped_waiting_for(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
-    """A timed-out warm() must not leave its unstarted work queued.
-
-    ``warm()`` used to return on timeout without cancelling or draining its
-    futures, so unstarted workers still ran later against a cache nobody was
-    waiting for (polylogue-3r36h). Removing the cancellation turns this red:
-    the log reports ``cancelled 0 unstarted worker(s)``.
-    """
-    import threading
-
-    import polylogue.sources.live.parse_prefetch as parse_prefetch
-
-    release = threading.Event()
-    real_worker = parse_prefetch.live_parse_and_shard_worker
-
-    def blocking_worker(*args: object, **kwargs: object) -> object:
-        release.wait(30.0)
-        return real_worker(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(parse_prefetch, "live_parse_and_shard_worker", blocking_worker)
-
-    paths = _write_fixture_corpus(tmp_path / "sessions", count=3)
-    stage = LiveParseStage(max_workers=1, max_inflight_bytes=10_000_000, warm_timeout_seconds=0.2)
-    try:
-        candidates = _live_parse_stage_candidates(paths, fallback_provider=Provider.CODEX)
-        with caplog.at_level("WARNING"):
-            assert stage.warm(candidates) == 0
-    finally:
-        release.set()
-        stage.shutdown()
-
-    assert "cancelled 2 unstarted worker(s)" in caplog.text
 
 
 @pytest.mark.asyncio

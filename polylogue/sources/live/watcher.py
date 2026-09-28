@@ -311,6 +311,23 @@ def _is_retryable_lock_error(exc: sqlite3.OperationalError) -> bool:
     return "database is locked" in message or "database table is locked" in message or "busy" in message
 
 
+def _published_index_path(archive_root: Path) -> Path:
+    """The index this watcher's writes publish into.
+
+    Cursor corroboration asks whether a file's raw is materialized in the
+    index. During a cold build that is the inactive candidate generation the
+    writer is filling, not the still-active (empty or old) index: checking
+    the active one demoted every cursor the build had just written and
+    re-ingested the file from scratch.
+    """
+    from polylogue.sources.live.cold_build import active_cold_build_generation
+
+    generation = active_cold_build_generation(archive_root)
+    if generation is not None:
+        return Path(generation.generation.index_path)
+    return resolve_active_index_path(archive_root)
+
+
 class LiveWatcher:
     """Filesystem watch that wakes the fair-intake dispatcher.
 
@@ -916,7 +933,7 @@ class LiveWatcher:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
         try:
-            index_db = resolve_active_index_path(archive_root)
+            index_db = _published_index_path(archive_root)
         except (ArchiveLocationError, OSError, UnicodeError):
             self._archived_cursor_conns = None
             yield
@@ -1050,7 +1067,7 @@ class LiveWatcher:
                 return self._path_corroborated_by_index(path, source_conn=shared[0], index_conn=shared[1])
             archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
             source_db = archive_root / "source.db"
-            index_db = resolve_active_index_path(archive_root)
+            index_db = _published_index_path(archive_root)
             if not source_db.exists() or not index_db.exists():
                 return True
             with (
@@ -1093,7 +1110,7 @@ class LiveWatcher:
                 ) or self._decided_unresolved_cursor_row(path, source_conn=shared[0])
             else:
                 source_db = archive_root / "source.db"
-                index_db = resolve_active_index_path(archive_root)
+                index_db = _published_index_path(archive_root)
                 if not source_db.exists() or not index_db.exists():
                     return _ArchivedCursorReconciliation.UNAVAILABLE
                 with (

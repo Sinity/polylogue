@@ -13,13 +13,13 @@ import sqlite3
 import tempfile
 import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar
 
 from polylogue.archive.revision_authority import (
     RAW_AUTHORITY_PARSER_FINGERPRINT,
@@ -33,7 +33,7 @@ from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
     RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS,
 )
-from polylogue.pipeline.services.process_pool import terminate_process_pool
+from polylogue.logging import WARNING, emit
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.raw_authority import (
@@ -649,7 +649,7 @@ class RawObservationDerivation:
                                         raise RetainedPreparationRetryableError(
                                             "non-JSON retained preparation requires an operations worker"
                                         )
-                                    artifact = pool.submit(
+                                    submitted = pool.submit(
                                         worker,
                                         raw_id,
                                         provider.value,
@@ -662,12 +662,8 @@ class RawObservationDerivation:
                                         frame.source_revision,
                                         str(scratch),
                                         fallback_timestamp,
-                                    ).result(timeout=600)
-                                except TimeoutError as exc:
-                                    terminate_process_pool(pool)
-                                    raise RetainedPreparationRetryableError(
-                                        f"retained preparation timed out for raw {raw_id}"
-                                    ) from exc
+                                    )
+                                    artifact = _await_reporting_stalls(submitted, subject=f"raw {raw_id}")
                                 except BrokenProcessPool as exc:
                                     raise RetainedPreparationRetryableError(
                                         f"retained worker exited before preparing raw {raw_id}"
@@ -756,14 +752,10 @@ class RawObservationDerivation:
                             if len(ordered) != len(accepted_raw_ids):
                                 continue
                             try:
-                                aggregate = pool.submit(prepare_retained_cohort_artifact, ordered, scratch).result(
-                                    timeout=600
+                                aggregate = _await_reporting_stalls(
+                                    pool.submit(prepare_retained_cohort_artifact, ordered, scratch),
+                                    subject=f"cohort {logical_key}",
                                 )
-                            except TimeoutError as exc:
-                                terminate_process_pool(pool)
-                                raise RetainedPreparationRetryableError(
-                                    f"retained cohort preparation timed out for {logical_key}"
-                                ) from exc
                             except BrokenProcessPool as exc:
                                 raise RetainedPreparationRetryableError(
                                     f"retained cohort worker exited before preparing {logical_key}"
@@ -1014,3 +1006,30 @@ def _cleanup_scratch(scratch_owner: tempfile.TemporaryDirectory[str]) -> None:
 
     discard_decoded_sessions_under(Path(scratch_owner.name))
     scratch_owner.cleanup()
+
+
+T = TypeVar("T")
+
+#: Seconds without a result before a retained preparation is reported
+#: stalled. A report, not a deadline (polylogue-slc55): terminating the pool
+#: at a fixed time discarded a large raw's preparation and retried it from
+#: scratch, so it never finished.
+_RETAINED_PREPARATION_STALL_REPORT_SECONDS = 600.0
+
+
+def _await_reporting_stalls(future: Future[T], *, subject: str) -> T:
+    """Wait for ``future``; report every window it runs without finishing."""
+    waited = 0.0
+    while True:
+        try:
+            return future.result(timeout=_RETAINED_PREPARATION_STALL_REPORT_SECONDS)
+        except TimeoutError:
+            waited += _RETAINED_PREPARATION_STALL_REPORT_SECONDS
+            emit(
+                "storage.raw_observation.preparation_stalled",
+                level=WARNING,
+                outcome="degraded",
+                reason="no_result_in_window",
+                subject_kind=subject.split(" ", 1)[0],
+                stalled_s=waited,
+            )
