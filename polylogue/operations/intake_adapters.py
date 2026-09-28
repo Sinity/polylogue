@@ -721,6 +721,10 @@ class FileIntakeAdapter(IntakeAdapter):
                 )
                 for item in items
             }
+        # Bookkeeping below assumes the page is attempted; a late degradation
+        # (after this entry check) must restore it, since nothing was.
+        retry_after_before = self._retry_after
+        offered_local_retries = self._retry_page_paths if self._local_retry_page else ()
         for item in items:
             self._consume_retry_item(item)
             if not self._retry_page and isinstance(item.payload, (str, Path)):
@@ -971,6 +975,14 @@ class FileIntakeAdapter(IntakeAdapter):
                 # file. Acknowledgeable, never progress.
                 outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=item_estimate)
 
+        if REFUSED_DAEMON_DEGRADED in refused_reasons:
+            self._retry_after = retry_after_before
+            if offered_local_retries:
+                now = self._clock()
+                with self._retry_state_lock:
+                    for offered in offered_local_retries:
+                        if offered in self._fresh_retry_debt:
+                            self._fresh_retry_debt[offered] = now
         admitted_paths = [path for path in paths if str(path) in succeeded]
         if admitted_paths and not is_fully_degraded():
             # A later file in this batch may have degraded the daemon; derived
@@ -1548,7 +1560,12 @@ class DaemonIntakeService:
             result = await self.dispatcher.run_once(budget=self.budget)
             if is_fully_degraded():
                 # The pass itself degraded the daemon; park before any
-                # post-pass callback touches the archive (next iteration).
+                # post-pass callback touches the archive (next iteration),
+                # but keep the progress it did commit, which later cold-build
+                # settlement depends on.
+                if result.progressed:
+                    self._progressed_once = True
+                    self._progress_since_blocked = True
                 continue
             schedulable = self.dispatcher.schedulable_classes()
             discovery_pending = any(bool(getattr(spec.adapter, "discovery_pending", False)) for spec in schedulable)

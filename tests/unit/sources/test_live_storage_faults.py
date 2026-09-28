@@ -13,7 +13,7 @@ import errno
 import json
 import sqlite3
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -660,10 +660,25 @@ async def test_degradation_during_admission_marks_items_unattempted(
         return await real_ingest(*args, **kwargs)
 
     monkeypatch.setattr(watcher, "_ingest_files", degrade_then_ingest)
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(
+            archive_root=Path(watcher._polylogue.archive_root),
+            watcher=watcher,
+            sources=watcher._sources,
+        ),
+        watcher._sources[0],
+    )
+    page = await adapter.discover(limit=8)
+    # Offer the page as a durable retry page so the retry position would move.
+    adapter._retry_page = True
+    adapter._retry_page_paths = tuple(Path(cast(Any, item.payload)) for item in page)
+    retry_after_before = adapter._retry_after
     try:
-        outcomes = await _admit(watcher)
+        outcomes = dict(await adapter.admit_page(page))
     finally:
         clear_degraded()
+    # Nothing was attempted, so the retry position does not advance.
+    assert adapter._retry_after == retry_after_before
 
     assert outcomes
     assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}

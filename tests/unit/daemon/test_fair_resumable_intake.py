@@ -3567,6 +3567,8 @@ async def test_a_pass_that_degrades_the_daemon_runs_no_post_pass_callback() -> N
         clear_degraded()
     assert files.admitted == ["file-00"]
     assert completed == []
+    # The committed progress is still recorded for later cold-build settlement.
+    assert service._progressed_once is True
 
 
 @pytest.mark.asyncio
