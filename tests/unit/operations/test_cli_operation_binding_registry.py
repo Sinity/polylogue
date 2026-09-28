@@ -155,8 +155,12 @@ class TestSeamALowerings:
             lower_query_aggregate(RootModeRequest(params={}, query_terms=()), mode="stats_by")
 
     def test_session_read_lowering_refuses_a_continuation_with_a_window(self) -> None:
-        """Mutation: accept both and the supplied offset is silently ignored in
-        favour of the token's, or worse, applied to it."""
+        """A continuation carries its own offset, so an explicit one is refused.
+
+        A limit is forwarded beside the token: it may narrow the next page, and
+        the daemon refuses one that widens it. Mutation: accept an offset with
+        a continuation and it is silently ignored in favour of the token's, or
+        worse, applied to it."""
 
         import click
 
@@ -171,8 +175,13 @@ class TestSeamALowerings:
             "ref": "session:x",
             "continuation": "q2.token",
         }
+        assert lower_session_read("session:x", limit=10, continuation="q2.token").payload == {
+            "ref": "session:x",
+            "limit": 10,
+            "continuation": "q2.token",
+        }
         with pytest.raises(click.UsageError):
-            lower_session_read("session:x", limit=10, continuation="q2.token")
+            lower_session_read("session:x", offset=4, continuation="q2.token")
 
     def test_session_reference_lowering_carries_only_a_positive_bound(self) -> None:
         """Mutation: forward a negative ``--limit`` and the handler is asked for
