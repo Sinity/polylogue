@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import io
 import json
@@ -47,3 +49,30 @@ def test_a_string_digest_is_its_whole_encoding_hashed_piecewise(monkeypatch: pyt
     value = 'a"b\\c\n\t日本語\U0001f600\x01end' * 5
     assert capture_stream._scalar_digest(value) == hashlib.sha256(b"s" + dumps_bytes(value)).digest()
     assert capture_stream._scalar_digest("") == hashlib.sha256(b"s" + dumps_bytes("")).digest()
+
+
+@pytest.mark.parametrize(
+    "carrier",
+    [
+        base64.b64encode(bytes(range(256)) * 3).decode(),
+        "data:image/png;base64," + base64.b64encode(b"png bytes!").decode(),
+        base64.b64encode(b"ab").decode(),
+        "QQ==QQ==",
+        "not base64!",
+        "QUJD" + "Q",
+        "data:text/plain,QUJD",
+    ],
+)
+def test_a_carrier_digest_matches_a_one_shot_decode(monkeypatch: pytest.MonkeyPatch, carrier: str) -> None:
+    """Chunked decoding accepts, refuses and hashes exactly as one ``b64decode`` call.
+
+    Anti-vacuity: decoding without the 4-aligned step, or letting mid-carrier
+    padding through a chunk boundary, changes the digest or the verdict.
+    """
+    monkeypatch.setattr(capture_stream, "_CARRIER_DECODE_CHUNK_CHARS", 8)
+    data = carrier.split(";base64,", 1)[1] if carrier.startswith("data:") and ";base64," in carrier else carrier
+    try:
+        expected: bytes | None = hashlib.sha256(base64.b64decode(data, validate=True)).digest()
+    except (ValueError, binascii.Error):
+        expected = None
+    assert capture_stream.carrier_digest(carrier) == expected

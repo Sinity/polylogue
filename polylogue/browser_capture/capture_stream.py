@@ -193,15 +193,34 @@ def semantic_provider_meta(provider_meta: dict[str, object]) -> dict[str, object
     return semantic_meta
 
 
-def decode_capture_carrier(value: str) -> bytes | None:
-    """Decode a ``content_base64`` carrier; ``None`` when it is malformed."""
-    data = value
-    if value.startswith("data:") and ";base64," in value:
-        _, data = value.split(";base64,", 1)
+#: Base64 characters decoded per step when hashing a carrier (a multiple of 4).
+_CARRIER_DECODE_CHUNK_CHARS = 1 << 22
+
+
+def carrier_digest(value: str) -> bytes | None:
+    """SHA-256 of a ``content_base64`` carrier's decoded bytes; ``None`` when malformed.
+
+    Decoded in 4-aligned chunks, so the decoded payload never exists as one
+    buffer beside the encoded string. Padding may only end the carrier; a
+    carrier with ``=`` elsewhere is decoded whole so it is accepted or
+    refused exactly as a one-shot ``b64decode(validate=True)`` would.
+    """
+    start = 0
+    if value.startswith("data:"):
+        marker = value.find(";base64,")
+        if marker >= 0:
+            start = marker + len(";base64,")
+    digest = hashlib.sha256()
     try:
-        return base64.b64decode(data, validate=True)
+        if "=" in value[start : max(start, len(value) - 2)]:
+            digest.update(base64.b64decode(value[start:], validate=True))
+            return digest.digest()
+        step = _CARRIER_DECODE_CHUNK_CHARS
+        for offset in range(start, len(value), step):
+            digest.update(base64.b64decode(value[offset : offset + step], validate=True))
     except (ValueError, binascii.Error):
         return None
+    return digest.digest()
 
 
 def _attachment_fact(attachment: BrowserCaptureAttachment) -> AttachmentFact:
@@ -224,9 +243,9 @@ def _attachment_fact(attachment: BrowserCaptureAttachment) -> AttachmentFact:
     carrier: bytes | None = None
     valid = True
     if attachment.content_base64 is not None:
-        decoded = decode_capture_carrier(attachment.content_base64)
-        valid = decoded is not None
-        carrier = hashlib.sha256(decoded if decoded is not None else b"").digest()
+        decoded_digest = carrier_digest(attachment.content_base64)
+        valid = decoded_digest is not None
+        carrier = decoded_digest if decoded_digest is not None else hashlib.sha256(b"").digest()
     return AttachmentFact(identity=hashlib.sha256(identity).digest(), carrier=carrier, carrier_valid=valid)
 
 
@@ -641,7 +660,7 @@ __all__ = [
     "CaptureEnvelopeError",
     "CaptureSummary",
     "StagedCapture",
-    "decode_capture_carrier",
+    "carrier_digest",
     "is_storage_exhausted",
     "read_capture_state_fields",
     "semantic_provider_meta",
