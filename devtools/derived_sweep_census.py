@@ -453,8 +453,9 @@ def _substitution_sites(
                 for op, value in zip(node.test.ops, node.test.comparators, strict=False)
             )
             absent_in_true |= isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not)
+            body: list[ast.AST]
             if isinstance(node, ast.If):
-                body = node.body if absent_in_true else node.orelse
+                body = list(node.body if absent_in_true else node.orelse)
             else:
                 body = [node.body if absent_in_true else node.orelse]
             for statement in body:
@@ -478,7 +479,7 @@ def _substitution_sites(
                 if isinstance(node.func, ast.Attribute)
                 else node.func.id == "replace"
             ):
-                updates = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg and keyword.value}
+                updates = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg}
             for field, value in updates.items():
                 is_or_fallback = isinstance(value, ast.BoolOp) and isinstance(value.op, ast.Or)
                 if is_or_fallback and field in _attribute_names(value):

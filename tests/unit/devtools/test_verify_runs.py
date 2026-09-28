@@ -178,7 +178,7 @@ def test_failure_retention_allows_newest_plus_configured_additional_failures(tmp
     result = prune_successful_verify_runs(
         root=tmp_path, history_path=history, max_failed=12, max_failed_bytes=10**9, now=_TEST_NOW
     )
-    assert len(result["retained_failure_run_ids"]) == 13
+    assert len(cast(list[str], result["retained_failure_run_ids"])) == 13
 
 
 def test_history_path_preserves_environment_and_xdg_cross_worktree_defaults(tmp_path: Path) -> None:
@@ -412,14 +412,14 @@ def test_reused_pid_started_after_receipt_is_not_treated_as_owner(monkeypatch: p
     """Anti-vacuity: PID existence alone must not keep an old receipt running."""
     real_read = Path.read_text
 
-    def fake_read(path: Path, *args: object, **kwargs: object) -> str:
+    def fake_read(path: Path, encoding: str | None = None, errors: str | None = None) -> str:
         if str(path) == "/proc/4242/stat":
             fields = ["0"] * 19
             fields[18] = "2000"
             return "4242 (unrelated) S " + " ".join(fields)
         if str(path) == "/proc/stat":
             return "btime 1000\n"
-        return real_read(path, *args, **kwargs)
+        return real_read(path, encoding=encoding, errors=errors)
 
     monkeypatch.setattr(Path, "read_text", fake_read)
     monkeypatch.setattr(verify_runs.os, "sysconf", lambda _name: 100)
@@ -476,12 +476,12 @@ def test_abandoned_agentctl_run_waits_for_late_outcome_then_reconciles_mirror_an
         )
         == []
     )
-    assert verify_runs._read_json(run_path)["status"] == "running"
+    assert cast(dict[str, object], verify_runs._read_json(run_path))["status"] == "running"
     (state_root / "late-job.outcome").write_text('{"exit_code": 1, "outcome": "failed"}', encoding="utf-8")
     first = verify_runs.reconcile_and_record_abandoned_verify_runs(
         runs_root=runs_root, state_root=state_root, evidence_path=override_evidence
     )
-    assert first and verify_runs._read_json(current)["status"] == "failed"
+    assert first and cast(dict[str, object], verify_runs._read_json(current))["status"] == "failed"
     assert verify_runs._read_history_pinned(history)[0]["run_id"] == run_path.parent.name
     assert len(verify_runs.read_verification_evidence(override_evidence)) == 1
     assert not configured_evidence.exists()

@@ -167,7 +167,10 @@ def _collect_durable_tier_violations() -> list[EnumCheckViolation]:
         # generated helper call is a policy violation even if it renders the
         # same historical column and member set.
         module = __import__(f"polylogue.storage.sqlite.archive_tiers.{tier}", fromlist=["__file__"])
-        with open(module.__file__, encoding="utf-8") as source_file:
+        module_file = module.__file__
+        if module_file is None:
+            raise RuntimeError(f"module polylogue.storage.sqlite.archive_tiers.{tier} has no __file__")
+        with open(module_file, encoding="utf-8") as source_file:
             source = source_file.read()
         for _waived_tier, column, _members in GRANDFATHERED:
             if _waived_tier == tier and re.search(rf"\b(?:nullable_)?check\(\s*['\"]{re.escape(column)}['\"]", source):

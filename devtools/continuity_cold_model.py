@@ -672,6 +672,12 @@ class ColdModelAxisGrade:
         return {"axis": self.axis, "status": self.status, "detail": self.detail}
 
 
+def _json_object_field(document: Mapping[str, JSONValue], key: str) -> Mapping[str, JSONValue]:
+    """The value at ``key`` when it is itself a JSON object, else empty."""
+    value = document.get(key, {})
+    return value if isinstance(value, dict) else {}
+
+
 def _citable_field(path: Sequence[str | int]) -> str | None:
     """The last named field in an evidence path, ignoring wildcards and indices."""
     for segment in reversed(tuple(path)):
@@ -693,11 +699,21 @@ def grade_formulation(
     missing_arguments = {
         requirement.tool: sorted(
             set(requirement.required_arguments)
-            - set(capture.tool_schemas.get(requirement.tool, {}).get("input_schema", {}).get("properties", {}))
+            - set(
+                _json_object_field(
+                    _json_object_field(_json_object_field(capture.tool_schemas, requirement.tool), "input_schema"),
+                    "properties",
+                )
+            )
         )
         for requirement in scenario.discovery_requirements
         if set(requirement.required_arguments)
-        - set(capture.tool_schemas.get(requirement.tool, {}).get("input_schema", {}).get("properties", {}))
+        - set(
+            _json_object_field(
+                _json_object_field(_json_object_field(capture.tool_schemas, requirement.tool), "input_schema"),
+                "properties",
+            )
+        )
     }
     grades.append(
         ColdModelAxisGrade(

@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -424,7 +425,9 @@ def test_setup_error_counts_one_test(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     recorder = suite_cost.SuiteCostRecorder(tmp_path, "gw0", None)
     monkeypatch.setattr(suite_cost, "_RECORDER", recorder)
-    suite_cost.pytest_runtest_logreport(SimpleNamespace(when="setup", failed=True, nodeid="test_fixture"))
+    suite_cost.pytest_runtest_logreport(
+        cast(pytest.TestReport, SimpleNamespace(when="setup", failed=True, nodeid="test_fixture"))
+    )
     assert recorder.payload()["tests"] == 1
 
 
@@ -438,7 +441,9 @@ def test_controller_clears_stale_worker_receipts_before_aggregation(
     (tmp_path / "run.json").write_text("{}")
     monkeypatch.setenv(suite_cost.SUITE_COST_DIR_ENV, str(tmp_path))
     monkeypatch.setattr(suite_cost, "_RECORDER", None)
-    suite_cost.pytest_configure(SimpleNamespace(workerinput={}, option=SimpleNamespace(numprocesses=0)))
+    suite_cost.pytest_configure(
+        cast(pytest.Config, SimpleNamespace(workerinput={}, option=SimpleNamespace(numprocesses=0)))
+    )
     assert not (tmp_path / "gw2.json").exists()
     assert (tmp_path / "run.json").exists()
     monkeypatch.setattr(suite_cost, "_RECORDER", None)

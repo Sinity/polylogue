@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
-from polylogue.storage.archive_identity import ArchiveLocation
+from polylogue.storage.archive_identity import ArchiveLocation as ArchiveLocation
 from polylogue.storage.sqlite.archive_tiers import (
     ARCHIVE_DDL_BY_TIER,
     ARCHIVE_FORMAT_FLOOR_VERSION,
@@ -402,6 +402,7 @@ def _is_retirement_only(old_ddl: str, new_ddl: str, tier: ArchiveTier) -> bool:
             and f"{tier.value}:{ref}" in old_objects
             and f"{tier.value}:{ref}" not in new_objects
         ]
+        conn: sqlite3.Connection | None = None
         try:
             conn = sqlite3.connect(":memory:")
             conn.execute(old_table_sql)
@@ -416,7 +417,7 @@ def _is_retirement_only(old_ddl: str, new_ddl: str, tier: ArchiveTier) -> bool:
         except sqlite3.Error:
             return False
         finally:
-            if "conn" in locals():
+            if conn is not None:
                 conn.close()
         if not isinstance(expected_sql, str):
             return False

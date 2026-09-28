@@ -75,7 +75,8 @@ paths:
     delete:
       summary: Revoke the current first-party web credential
       operationId: revokeWebCredential
-      security: []
+      security:
+      - webCredentialCookie: []
       responses:
         '200':
           description: Credential revoked and browser cookie expired.

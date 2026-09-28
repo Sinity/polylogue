@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -76,8 +77,6 @@ def _slo_workload_receipt(
     catalog_digest = hashlib.sha256(catalog_text.encode("utf-8")).hexdigest()
     tiers = ",".join(sorted(active_tiers)) if active_tiers is not None else "all"
     try:
-        import subprocess
-
         build = subprocess.run(
             ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True, timeout=2
         )

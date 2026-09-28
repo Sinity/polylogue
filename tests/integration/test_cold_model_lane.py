@@ -150,13 +150,13 @@ class TestColdLane:
         assert report["scenario_count"] == len(CONTINUITY_SCENARIOS)
         assert report["status"] == "pass", [
             {
-                "scenario": row.get("scenario"),
-                "disposition": row.get("disposition"),
-                "attempt": row.get("attempts"),
-                "execution_grades": row.get("execution_grades"),
+                "scenario": _doc(row).get("scenario"),
+                "disposition": _doc(row).get("disposition"),
+                "attempt": _doc(row).get("attempts"),
+                "execution_grades": _doc(row).get("execution_grades"),
             }
             for row in _rows(report["results"])
-            if row.get("disposition") != "pass"
+            if _doc(row).get("disposition") != "pass"
         ]
 
         receipt = _doc(report["discovery_receipt"])

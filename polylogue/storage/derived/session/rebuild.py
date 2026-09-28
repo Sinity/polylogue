@@ -13,9 +13,12 @@ from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import aiosqlite
+
+if TYPE_CHECKING:
+    from polylogue.storage.derived.session.repo_observations import RepoObservation
 
 from polylogue.analysis.archive_models import (
     SessionEnrichmentPayload,
@@ -2071,7 +2074,9 @@ async def rebuild_session_insights_async(
         for bundle in record_bundles:
             await replace_session_profile(conn, bundle.profile_record, transaction_depth)
             await replace_session_latency_profile(conn, bundle.latency_profile_record, transaction_depth)
-            await refresh_session_repos(conn, str(bundle.session_id), bundle.repo_observations)
+            await refresh_session_repos(
+                conn, str(bundle.session_id), cast("Sequence[RepoObservation]", bundle.repo_observations)
+            )
             # Run-projection cache tables are no longer materialized (polylogue-dab).
             # Reads fall back to source-derived CTEs when the tables are absent.
 

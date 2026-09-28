@@ -141,9 +141,8 @@ def test_a_receipt_recording_another_run_id_is_refused(tmp_path: Path, capsys: p
 
 def test_a_missing_final_tree_sha_is_refused() -> None:
     """Anti-vacuity: matching only the starting SHA does not prove the ending tree."""
-    assert "no ending tree SHA" in verify_receipt_check.candidate_tree_refusal(
-        {"git_head": _CANDIDATE, "final_git_head": None}, _CANDIDATE
-    )
+    refusal = verify_receipt_check.candidate_tree_refusal({"git_head": _CANDIDATE, "final_git_head": None}, _CANDIDATE)
+    assert refusal is not None and "no ending tree SHA" in refusal
 
 
 def test_main_refuses_without_a_current_run_or_receipt(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

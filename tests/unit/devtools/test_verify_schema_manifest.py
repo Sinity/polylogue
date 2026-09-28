@@ -57,11 +57,12 @@ def test_schema_manifest_uses_the_resolved_active_index_generation(
         lambda _root: type("Location", (), {"active_index_path": active})(),
     )
     checked: dict[str, Path | None] = {}
-    monkeypatch.setattr(
-        verify_schema_manifest,
-        "_check_tier",
-        lambda tier, path: checked.__setitem__(tier.value, path) or {"tier": tier.value, "ok": True, "version": 1},
-    )
+
+    def fake_check_tier(tier: ArchiveTier, path: Path | None) -> dict[str, object]:
+        checked[tier.value] = path
+        return {"tier": tier.value, "ok": True, "version": 1}
+
+    monkeypatch.setattr(verify_schema_manifest, "_check_tier", fake_check_tier)
     monkeypatch.setattr(verify_schema_manifest, "_benign_ddl_violations", lambda: [])
     monkeypatch.setattr(verify_schema_manifest, "_provider_named_index_objects", lambda: [])
     assert verify_schema_manifest.main(["--archive-root", str(tmp_path)]) == 0

@@ -4,6 +4,7 @@ import argparse
 import importlib
 import shlex
 
+import pytest
 from click.testing import CliRunner
 
 from devtools.click_dispatch import cli
@@ -77,7 +78,7 @@ def test_wrapped_schema_help_reaches_native_argparse_options() -> None:
     assert "--receipt" in result.output
 
 
-def test_value_bearing_catalog_option_passes_through(monkeypatch) -> None:
+def test_value_bearing_catalog_option_passes_through(monkeypatch: pytest.MonkeyPatch) -> None:
     """A number after an undeclared boolean flag stays paired with its option.
 
     Anti-vacuity: declaring --budget-mib as a Click flag swallows it and
@@ -88,7 +89,12 @@ def test_value_bearing_catalog_option_passes_through(monkeypatch) -> None:
 
     spec = next(item for item in COMMAND_SPECS if item.name == "bench collection")
     received: list[str] = []
-    monkeypatch.setattr(collection_cost, "main", lambda argv=None: received.extend(argv or []) or 0)
+
+    def fake_main(argv: list[str] | None = None) -> int:
+        received.extend(argv or [])
+        return 0
+
+    monkeypatch.setattr(collection_cost, "main", fake_main)
     result = CliRunner().invoke(_make_command(spec), ["--budget-mib", "430"])
     assert result.exit_code == 0
     assert received == ["--budget-mib", "430"]

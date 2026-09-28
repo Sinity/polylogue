@@ -12,7 +12,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
-import os
+import os as os
 import platform
 import re
 import shutil

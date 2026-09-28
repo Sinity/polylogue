@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -105,7 +106,7 @@ def test_engine_rejects_caller_owned_transaction_without_committing_it() -> None
     conn.rollback()
 
 
-def test_begin_lock_failure_uses_engine_error_type(tmp_path) -> None:
+def test_begin_lock_failure_uses_engine_error_type(tmp_path: Path) -> None:
     path = tmp_path / "locked.sqlite"
     writer = sqlite3.connect(path, timeout=0)
     reader = sqlite3.connect(path, timeout=0)

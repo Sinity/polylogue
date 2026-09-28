@@ -342,8 +342,9 @@ def _history_rows(hours: float) -> list[dict[str, Any]]:
 
 def _render_history_json(hours: float, stream: Any) -> int:
     """Emit one stable JSON document suitable for rerunnable measurements."""
-    if not VERIFY_HISTORY_PATH.exists():
-        print(f"why: no run history at {VERIFY_HISTORY_PATH}", file=sys.stderr)
+    history_path = verify_history_path()
+    if not history_path.exists():
+        print(f"why: no run history at {history_path}", file=sys.stderr)
         return 1
     rows = _history_rows(hours)
     json.dump([_history_projection(entry) for entry in rows], stream, indent=2, sort_keys=True)

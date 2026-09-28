@@ -154,7 +154,7 @@ def admit_affected_selection(
             unrecorded_tests=unrecorded_tests,
             reason="affected selection runtime estimate is unknown; refusing an unbounded pytest launch",
         )
-    if estimated_seconds is not None and estimated_seconds > AFFECTED_MAX_ESTIMATED_SECONDS:
+    if estimated_seconds > AFFECTED_MAX_ESTIMATED_SECONDS:
         return AffectedAdmission(
             status="refused",
             selected_count=selected_count,

@@ -29,13 +29,14 @@ from devtools.continuity_cold_model import (
     reconcile_registry_coverage,
 )
 from devtools.continuity_scenarios import CONTINUITY_SCENARIOS, continuity_scenario
+from polylogue.core.json import JSONDocument
 
 _MODULE = Path(__file__).resolve().parents[3] / "devtools" / "continuity_cold_model.py"
 _AUTHOR_PLANS = Path(__file__).resolve().parents[2] / "data" / "continuity" / "author-recorded-plans.json"
 
 
 def _capture(tools: tuple[str, ...] = ("query", "status", "explain", "read", "get", "context")) -> WireDiscoveryCapture:
-    schemas = {}
+    schemas: JSONDocument = {}
     for name in tools:
         required = {
             argument

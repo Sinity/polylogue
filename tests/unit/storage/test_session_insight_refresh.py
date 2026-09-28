@@ -2106,18 +2106,39 @@ async def test_async_rebuild_publishes_bundle_repo_observations(
         )
         conn.commit()
 
+    from collections.abc import Callable, Iterable, Mapping
+
+    from polylogue.archive.semantic.cost_records import ModelUsageTotals
+    from polylogue.archive.session.domain_models import Session
+    from polylogue.storage.derived.session.rebuild import SessionInsightRecordBundle
+
     original_builder = rebuild_mod.build_session_insight_record_bundles
 
-    def build_with_repo(*args: object, **kwargs: object) -> list[object]:
-        bundles = original_builder(*args, **kwargs)
+    def build_with_repo(
+        sessions: Iterable[Session],
+        *,
+        compaction_counts_by_session: dict[str, int] | None = None,
+        logical_session_ids_by_session: dict[str, str] | None = None,
+        model_usage_by_session: dict[str, list[ModelUsageTotals]] | None = None,
+        input_content_hash_by_session: Mapping[str, str] | None = None,
+        stage_timing_add: Callable[[str, float], None] | None = None,
+    ) -> list[SessionInsightRecordBundle]:
+        bundles = original_builder(
+            sessions,
+            compaction_counts_by_session=compaction_counts_by_session,
+            logical_session_ids_by_session=logical_session_ids_by_session,
+            model_usage_by_session=model_usage_by_session,
+            input_content_hash_by_session=input_content_hash_by_session,
+            stage_timing_add=stage_timing_add,
+        )
         observation = RepoObservation("https://example.invalid/repo", "/repo/worktree", "repo", "main")
         return [replace(bundle, repo_observations=(observation,)) for bundle in bundles]
 
     monkeypatch.setattr(rebuild_mod, "build_session_insight_record_bundles", build_with_repo)
     backend = SQLiteBackend(db_path=db_path)
-    async with backend.connection() as conn:
-        await rebuild_mod.rebuild_session_insights_async(conn, session_ids=[session_id])
-        await conn.commit()
+    async with backend.connection() as async_conn:
+        await rebuild_mod.rebuild_session_insights_async(async_conn, session_ids=[session_id])
+        await async_conn.commit()
 
     with open_connection(db_path) as conn:
         rows = conn.execute(

@@ -103,7 +103,7 @@ def test_partial_rss_components_are_both_unavailable() -> None:
         "result": {},
         "probe": {},
         "paths": {},
-        "provenance": {},
+        "provenance": {"git_commit": None, "worktree_dirty": None},
         "db_stats": {},
         "raw_fanout": [],
     }
@@ -112,7 +112,7 @@ def test_partial_rss_components_are_both_unavailable() -> None:
     phase = _require_json_object(_require_json_array(_require_json_object(report["workload_receipt"])["phases"])[0])
     assert "peak_rss_self_bytes" not in phase
     assert "peak_rss_children_bytes" not in phase
-    assert {"peak_rss_self_bytes", "peak_rss_children_bytes"}.issubset(phase["unavailable"])
+    assert {"peak_rss_self_bytes", "peak_rss_children_bytes"}.issubset(_require_json_array(phase["unavailable"]))
 
 
 def test_pipeline_probe_db_stats_and_fanout_read_archive_file_set(tmp_path: Path) -> None:
