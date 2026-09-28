@@ -206,6 +206,63 @@ def test_generation_metadata_must_match_published_database_contract(tmp_path: Pa
         store.collect()
 
 
+def test_index_promotion_leaves_published_generations_readable(tmp_path: Path) -> None:
+    """Index promotion swaps index.db while embeddings.db stays in place.
+
+    Anti-vacuity: binding the generation contract to the current index.db
+    inode makes the next lifecycle admission reject the active and retained
+    generations after the swap.
+    """
+    index = tmp_path / "index.db"
+    _sqlite(index, "index-before")
+    store = EmbeddingGenerationStore(tmp_path)
+    for number in range(2):
+        candidate = tmp_path / f"candidate-{number}.db"
+        _sqlite(candidate, str(number))
+        store.replace(candidate, owner_id=f"owner-{number}")
+
+    promoted = tmp_path / "index-promoted.db"
+    _sqlite(promoted, "index-after")
+    before = index.stat().st_ino
+    os.replace(promoted, index)
+    assert index.stat().st_ino != before
+
+    with store.writer_lock() as binding:
+        assert Path(binding.database_path).parent.parent == tmp_path / ".embeddings-generations"
+    store.collect()
+
+
+def test_generation_contract_is_derived_from_the_candidate_alone(tmp_path: Path) -> None:
+    """Publication records no provenance the candidate bytes cannot prove.
+
+    Anti-vacuity: labelling the candidate with the destination archive's
+    source.db or index.db identity makes two archives publish different
+    contracts for byte-identical candidates.
+    """
+    contracts = []
+    for name in ("first", "second"):
+        archive = tmp_path / name
+        archive.mkdir()
+        _sqlite(archive / "source.db", f"source-{name}")
+        _sqlite(archive / "index.db", f"index-{name}")
+        candidate = archive / "candidate.db"
+        _sqlite(candidate, "same")
+        EmbeddingGenerationStore(archive).replace(candidate, owner_id="owner")
+        payload = json.loads(next((archive / ".embeddings-generations").glob("gen-*/generation.json")).read_text())
+        for locating in (
+            "generation_id",
+            "archive_root",
+            "database_path",
+            "physical_root",
+            "created_at_ns",
+            "promoted_at_ns",
+        ):
+            payload.pop(locating)
+        contracts.append(payload)
+
+    assert contracts[0] == contracts[1]
+
+
 def test_collection_preserves_accepted_and_in_progress_inventory_members(tmp_path: Path) -> None:
     """Retention cannot reclaim candidates protected by lifecycle state."""
     store = EmbeddingGenerationStore(tmp_path)
