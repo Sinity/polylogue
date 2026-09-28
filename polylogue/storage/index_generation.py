@@ -100,6 +100,26 @@ def _ensure_lifecycle_directory(path: Path, *, label: str) -> Path:
     return absolute
 
 
+def _remove_created_generation(
+    parent: Path, name: str, parent_identity: tuple[int, int], created_identity: tuple[int, int]
+) -> None:
+    """Remove only the directory created by this call, through its pinned parent."""
+    descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parent_stat = os.fstat(descriptor)
+        if (parent_stat.st_dev, parent_stat.st_ino) != parent_identity:
+            return
+        try:
+            target_stat = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if not stat.S_ISDIR(target_stat.st_mode) or (target_stat.st_dev, target_stat.st_ino) != created_identity:
+            return
+        shutil.rmtree(name, dir_fd=descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def _read_json_nofollow(path: Path, *, label: str) -> dict[str, object]:
     """Read one lifecycle record without following a replacement symlink."""
     _assert_no_symlink_ancestry(path.parent, label=f"{label} parent")
@@ -713,10 +733,14 @@ class IndexGenerationStore:
         self._validate_lifecycle_id(generation_id, "generation")
         root = self.generations_root / generation_id
         _assert_no_symlink_ancestry(self.generations_root, label="generation root")
+        parent_stat = self.generations_root.stat()
+        parent_identity = (parent_stat.st_dev, parent_stat.st_ino)
         try:
             root.mkdir(parents=False, exist_ok=False)
         except FileExistsError:
             raise RuntimeError(f"generation already exists: {generation_id}") from None
+        created_stat = root.lstat()
+        created_identity = (created_stat.st_dev, created_stat.st_ino)
         try:
             _assert_no_symlink_ancestry(root, label="generation directory")
             for filename in _GENERATION_READ_THROUGH_MEMBERS:
@@ -760,7 +784,7 @@ class IndexGenerationStore:
             # The metadata is the enumeration record.  Never leave a partially
             # materialized directory that cannot be loaded or reclaimed.
             with suppress(OSError):
-                shutil.rmtree(root)
+                _remove_created_generation(self.generations_root, generation_id, parent_identity, created_identity)
             raise
 
     def load(self, generation_id: str) -> IndexGeneration:
@@ -823,20 +847,25 @@ class IndexGenerationStore:
         prior_identity = (prior_pointer.st_dev, prior_pointer.st_ino) if prior_pointer is not None else None
         rollback = self._metadata_path(current.generation_id).with_name("generation.rollback.json")
         pointer_proof = self._rollback_pointer_proof_path(current.generation_id)
-        for path, payload, label in (
-            (
+        try:
+            _atomic_json_write(
                 pointer_proof,
                 self._rollback_pointer_proof(current, prior_identity, tuple(sidecars), retired.name),
-                "prior pointer proof",
-            ),
-            (rollback, asdict(current), "generation rollback"),
-        ):
+                label="prior pointer proof",
+            )
             try:
-                _atomic_json_write(path, payload, label=label)
-            except RuntimeError as exc:
-                if isinstance(exc.__cause__, OSError):
-                    raise exc.__cause__ from exc
+                _atomic_json_write(rollback, asdict(current), label="generation rollback")
+            except BaseException:
+                # Setup is a pair: a lone pointer proof makes a later retry
+                # fail O_EXCL before it can reproduce the rollback record.
+                with suppress(OSError):
+                    pointer_proof.unlink(missing_ok=True)
+                    _fsync_directory(pointer_proof.parent)
                 raise
+        except RuntimeError as exc:
+            if isinstance(exc.__cause__, OSError):
+                raise exc.__cause__ from exc
+            raise
         try:
             self._write(promoting)
             retired.mkdir(parents=True, exist_ok=False)
