@@ -1758,7 +1758,7 @@ def test_run_daemon_services_parks_operation_recovery_on_audit_schema_mismatch(
 
     with (
         patch(
-            "polylogue.operations.mutation_transaction.recover_interrupted_operations",
+            "polylogue.operations.mutation_replay.recover_interrupted_operations",
             recover_mock,
         ),
         pytest.raises(TimeoutError),
@@ -2363,7 +2363,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         stack.enter_context(patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup))
         stack.enter_context(patch.object(daemon_cli, "_configure_fts_automerge", fake_configure_fts_automerge))
         stack.enter_context(
-            patch("polylogue.operations.mutation_transaction.recover_interrupted_operations", fake_operation_recovery)
+            patch("polylogue.operations.mutation_replay.recover_interrupted_operations", fake_operation_recovery)
         )
         stack.enter_context(patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_fts_merge", lambda: fake_loop("fts-merge")))
@@ -3942,7 +3942,7 @@ def _daemon_startup_stubs(
     stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", _noop))
     stack.enter_context(patch.object(daemon_cli, "_configure_fts_automerge", _noop))
     stack.enter_context(
-        patch("polylogue.operations.mutation_transaction.recover_interrupted_operations", lambda _root: None)
+        patch("polylogue.operations.mutation_replay.recover_interrupted_operations", lambda _root: None)
     )
     stack.enter_context(patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown"))
     stack.enter_context(patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()))

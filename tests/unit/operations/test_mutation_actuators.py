@@ -90,6 +90,7 @@ from polylogue.operations.mutation_actuators import (
     WorkspaceSaveActuator,
     WorkspaceSaveArgs,
 )
+from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.mutation_transaction import (
     ConfirmationRequiredError,
     MutationAuthorization,
@@ -100,7 +101,6 @@ from polylogue.operations.mutation_transaction import (
     MutationTransactionError,
     OperationExecutor,
     PlanStaleError,
-    recover_interrupted_operations,
 )
 from polylogue.storage.accepted_marker_inputs import persist_pending_marker_input_sync, prepare_accepted_marker_input
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -289,8 +289,12 @@ class TestSessionDeleteActuator:
             assert conn.execute("SELECT state FROM operation_previews").fetchone()[0] == "consumed"
             assert conn.execute("SELECT status FROM operation_runs").fetchone()[0] == "completed"
 
-    def test_startup_inspects_a_dead_delete_attempt_before_any_later_apply(self, tmp_path: Path) -> None:
-        """Recovery startup reads the delete target, not the audit target state."""
+    def test_startup_replays_a_dead_delete_attempt_to_completion(self, tmp_path: Path) -> None:
+        """Recovery startup re-applies the interrupted delete; nothing is left unknown.
+
+        Anti-vacuity: skip resolution in ``recover_interrupted_operations`` and
+        the run stays ``interrupted`` with the session still indexed.
+        """
 
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
@@ -316,12 +320,14 @@ class TestSessionDeleteActuator:
 
         with sqlite3.connect(archive_root / "audit.db") as conn:
             assert conn.execute(
-                "SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)
-            ).fetchone() == ("failed",)
+                "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
+            ).fetchone() == ("completed", "recovered_complete")
             assert conn.execute(
                 "SELECT event_type FROM operation_events WHERE operation_id = ? ORDER BY sequence DESC LIMIT 1",
                 (operation_id,),
-            ).fetchone() == ("recovery_classified",)
+            ).fetchone() == ("recovery_resolved",)
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
     def test_startup_recovery_never_steals_an_attempt_a_live_owner_still_holds(self, tmp_path: Path) -> None:
         """Daemon startup is not a cross-process exclusion bypass.
@@ -354,7 +360,7 @@ class TestSessionDeleteActuator:
                 "SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)
             ).fetchone() == ("running",)
             assert conn.execute(
-                "SELECT COUNT(*) FROM operation_events WHERE operation_id = ? AND event_type = 'recovery_classified'",
+                "SELECT COUNT(*) FROM operation_events WHERE operation_id = ? AND event_type = 'recovery_resolved'",
                 (operation_id,),
             ).fetchone() == (0,)
         with sqlite3.connect(archive_root / "index.db") as conn:
@@ -374,12 +380,12 @@ class TestSessionDeleteActuator:
         with sqlite3.connect(archive_root / "audit.db") as conn:
             assert conn.execute("SELECT COUNT(*) FROM operation_events").fetchone() == (0,)
 
-    def test_missing_or_partial_preview_target_evidence_blocks_delete_recovery(self, tmp_path: Path) -> None:
-        """Recovery must retain the target-count mismatch, not inner-join it away.
+    def test_delete_recovery_replays_the_recorded_plan_not_preview_target_rows(self, tmp_path: Path) -> None:
+        """Recovery re-applies the authorized plan, whatever the target index rows say.
 
-        Anti-vacuity: deleting one preview target while both durable target rows
-        and sessions survive used to reconstruct an empty/short set and claim
-        the delete had applied.
+        Anti-vacuity: rebuilding the replay plan from ``operation_preview_targets``
+        instead of the recorded plan drops the second session, which then
+        survives the recovered delete.
         """
 
         archive_root = tmp_path / "archive"
@@ -415,19 +421,15 @@ class TestSessionDeleteActuator:
         with sqlite3.connect(archive_root / "audit.db") as conn:
             assert conn.execute(
                 "SELECT status, unknown_count FROM operation_runs WHERE operation_id = ?", (operation_id,)
-            ).fetchone() == (
-                "failed",
-                2,
-            )
+            ).fetchone() == ("completed", 0)
         with sqlite3.connect(archive_root / "index.db") as conn:
-            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (2,)
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
 
-    def test_zero_target_interruption_is_unknown_once_and_does_not_poison_later_noop(self, tmp_path: Path) -> None:
-        """A real empty delete plan has no target evidence and cannot install a barrier.
+    def test_zero_target_interruption_completes_once_and_does_not_poison_later_noop(self, tmp_path: Path) -> None:
+        """An interrupted empty delete plan resolves once and leaves no barrier.
 
-        Anti-vacuity: changing recovery completeness back to ``0 == 0`` makes
-        this terminalize as recovered-applied; removing the target-count barrier
-        guard then blocks the final production-shaped no-op execution.
+        Anti-vacuity: resolving it twice appends a second ``recovery_resolved``
+        event; leaving it nonterminal refuses the final no-op execution.
         """
 
         archive_root = tmp_path / "archive"
@@ -459,9 +461,9 @@ class TestSessionDeleteActuator:
             assert conn.execute(
                 "SELECT status, terminal_reason, target_count FROM operation_runs WHERE operation_id = ?",
                 (operation_id,),
-            ).fetchone() == ("failed", "recovery_unknown", 0)
+            ).fetchone() == ("completed", "recovered_complete", 0)
             assert conn.execute(
-                "SELECT COUNT(*) FROM operation_events WHERE operation_id = ? AND event_type = 'recovery_classified'",
+                "SELECT COUNT(*) FROM operation_events WHERE operation_id = ? AND event_type = 'recovery_resolved'",
                 (operation_id,),
             ).fetchone() == (1,)
         with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
@@ -474,8 +476,12 @@ class TestSessionDeleteActuator:
                 == "already_satisfied"
             )
 
-    def test_version_drift_is_terminal_unknown_and_does_not_repeat_at_restart(self, tmp_path: Path) -> None:
-        """An old operation version is blocked once for bounded adjudication."""
+    def test_version_drift_is_terminal_not_replayable_and_does_not_repeat_at_restart(self, tmp_path: Path) -> None:
+        """A retired operation version is terminalized once and never replayed.
+
+        Anti-vacuity: drop the version check and today's actuator replays the
+        v99 plan, deleting the session.
+        """
 
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
@@ -504,11 +510,13 @@ class TestSessionDeleteActuator:
         with sqlite3.connect(archive_root / "audit.db") as conn:
             assert conn.execute(
                 "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
-            ).fetchone() == ("failed", "recovery_unknown")
+            ).fetchone() == ("failed", "recovery_not_replayable")
             assert conn.execute(
-                "SELECT COUNT(*) FROM operation_events WHERE operation_id = ? AND event_type = 'recovery_classified'",
+                "SELECT COUNT(*) FROM operation_events WHERE operation_id = ? AND event_type = 'recovery_resolved'",
                 (operation_id,),
             ).fetchone() == (1,)
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
 
     def test_execute_without_authorization_confirm_flag_refuses(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"

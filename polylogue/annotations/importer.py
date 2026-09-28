@@ -7,6 +7,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
@@ -30,8 +31,10 @@ from polylogue.operations.mutation_transaction import (
     MutationPrincipal,
     MutationReceipt,
     OperationExecutor,
-    _FailClosedRecovery,
+    RecoveryResolution,
+    ReplayHandles,
     build_plan,
+    register_recovery_route,
 )
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -221,7 +224,7 @@ def _persist_annotation_batch(
 
 
 @dataclass(frozen=True, slots=True)
-class AnnotationBatchImportActuator(_FailClosedRecovery):
+class AnnotationBatchImportActuator:
     """Executor actuator for the atomic, provenance-bearing annotation import."""
 
     operation: str = "mutate-import-annotation-batch"
@@ -262,6 +265,37 @@ class AnnotationBatchImportActuator(_FailClosedRecovery):
             receipt_ref=batch.batch_ref,
             applied_at=plan.prepared_at,
             domain_receipt={"batch": batch, "imported_outcomes": imported_outcomes},
+        )
+
+    def recover(self, handles: ReplayHandles, plan: MutationPlan) -> RecoveryResolution:
+        """Resolve an interrupted import from its one atomic transaction.
+
+        The rows are not in the plan -- only their provenance digest -- so the
+        import cannot be re-applied. It does not need to be: the schema, batch
+        row and every assertion commit together, so the batch row is present
+        exactly when the whole import is.
+        """
+        with closing(open_readonly_connection(handles.archive_root / "user.db")) as conn:
+            conn.row_factory = sqlite3.Row
+            stored = read_annotation_batch(conn, str(plan.context["batch_id"]))
+        # The batch id alone is not this import: a different batch reusing
+        # the id is refused at persistence by its provenance, so only a stored
+        # batch with this plan's provenance digest is this import's commit.
+        if stored is None or _annotation_batch_provenance_digest(stored) != plan.context["provenance_sha256"]:
+            return RecoveryResolution("absent", "this batch import never committed")
+        return RecoveryResolution(
+            "complete",
+            "the atomic batch import committed",
+            MutationReceipt(
+                operation=self.operation,
+                plan_hash=plan.plan_hash,
+                status="applied",
+                target_refs=plan.target_refs,
+                affected_count=int(cast(int, plan.context["valid_count"])) + 1,
+                detail=None,
+                receipt_ref=plan.target_refs[0],
+                applied_at=plan.prepared_at,
+            ),
         )
 
 
@@ -512,6 +546,8 @@ async def import_annotation_batch(
         rows=all_outcomes,
     )
 
+
+register_recovery_route(AnnotationBatchImportActuator())
 
 __all__ = [
     "AnnotationBatchImportError",

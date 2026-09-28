@@ -5569,7 +5569,7 @@ class _StandaloneWriteRuntime:
             raise RuntimeError("standalone daemon HTTP writer loop failed to start")
         assert self.coordinator is not None
         self.bridge: DaemonWriteThreadBridge = DaemonWriteThreadBridge(self.coordinator, self.loop)
-        from polylogue.operations.mutation_transaction import recover_interrupted_operations
+        from polylogue.operations.mutation_replay import recover_interrupted_operations
         from polylogue.operations.operation_context import prepare_operation_journals
 
         try:

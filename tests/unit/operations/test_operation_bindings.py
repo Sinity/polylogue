@@ -15,7 +15,8 @@ from polylogue.operations.mutation_transaction import (
     DestructiveClass,
     MutationPlan,
     MutationReceipt,
-    RecoveryDisposition,
+    RecoveryResolution,
+    ReplayHandles,
     TargetAuthorityPolicy,
     build_plan,
 )
@@ -50,8 +51,8 @@ class _Actuator:
             applied_at="now",
         )
 
-    def inspect_recovery(self, _operation: object, _args: object) -> RecoveryDisposition:
-        return RecoveryDisposition("unknown", "operator-blocking", "synthetic inspector")
+    def recover(self, _handles: ReplayHandles, _plan: MutationPlan) -> RecoveryResolution:
+        return RecoveryResolution("absent", "synthetic recovery route")
 
 
 @dataclass
@@ -142,7 +143,7 @@ def test_binding_rejects_version_mismatch_and_duplicate_catalog_entries() -> Non
 
 
 def test_binding_rejects_an_actuator_without_a_recovery_contract() -> None:
-    with pytest.raises(BindingValidationError, match="no recovery inspector"):
+    with pytest.raises(BindingValidationError, match="declares no recovery route"):
         OperationBinding(_spec(), _UnclassifiedActuator()).validate()
 
 
