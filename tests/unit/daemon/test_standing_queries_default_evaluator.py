@@ -217,6 +217,41 @@ async def test_saved_view_marked_watched_is_picked_up_by_the_next_convergence_ti
 
 
 @pytest.mark.asyncio
+async def test_first_session_change_after_watch_creation_reports_a_delta(tmp_path: Path) -> None:
+    """Creating a watch measures its baseline, so the next change is a delta.
+
+    One matching session exists when the watch is created and a second is
+    ingested before any convergence tick. Anti-vacuity: drop the
+    ``establish_watch_baselines`` call from ``SavedViewSaveActuator.apply``
+    and the tick that sees the second session silently baselines both, so
+    no ``query-delta`` finding appears.
+    """
+    archive_root = tmp_path / "archive"
+    _seed_archive_with_one_codex_session(archive_root)
+
+    with _saved_view_writer(archive_root) as write:
+        saved = await write(
+            name="codex sessions",
+            query_json=json.dumps({"query": "sessions where origin:codex-session"}),
+            watch=True,
+        )
+    assert saved.get("is_error") is not True, saved
+    with sqlite3.connect(archive_root / "user.db") as conn:
+        members = conn.execute("SELECT member_count FROM result_sets WHERE persistence_class = 'watch'").fetchall()
+        assert members == [(1,)]
+
+    second_id = _seed_second_codex_session(archive_root)
+    _converge(archive_root, (second_id,))
+    with sqlite3.connect(archive_root / "user.db") as conn:
+        rows = conn.execute(
+            "SELECT value_json FROM assertions WHERE kind = ?", (AssertionKind.FINDING.value,)
+        ).fetchall()
+    assert len(rows) == 1
+    assert '"finding_kind":"query-delta"' in str(rows[0][0])
+    assert '"value":2' in str(rows[0][0])
+
+
+@pytest.mark.asyncio
 async def test_saving_the_same_view_unwatched_stops_the_next_tick_evaluating_it(tmp_path: Path) -> None:
     """A watch must not outlive the definition its name denotes."""
     archive_root = tmp_path / "archive"
@@ -229,10 +264,17 @@ async def test_saving_the_same_view_unwatched_stops_the_next_tick_evaluating_it(
         unsaved = await write(name="codex sessions", query_json=query_json, view_id=str(saved["key"]), watch=False)
     assert unsaved.get("is_error") is not True, unsaved
 
+    def receipts() -> int:
+        with sqlite3.connect(archive_root / "user.db") as conn:
+            return int(conn.execute("SELECT COUNT(*) FROM query_evaluation_receipts").fetchone()[0])
+
+    # Creation measured the baseline once; the unwatched name must not be
+    # evaluated again by the tick.
+    before = receipts()
     _converge(archive_root, (session_id,))
+    assert receipts() == before
     with sqlite3.connect(archive_root / "user.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM query_names WHERE watch = 1").fetchone()[0] == 0
-        assert conn.execute("SELECT COUNT(*) FROM result_sets WHERE persistence_class = 'watch'").fetchone()[0] == 0
 
 
 @pytest.mark.asyncio
