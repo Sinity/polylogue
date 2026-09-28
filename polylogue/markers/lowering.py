@@ -9,7 +9,11 @@ from collections.abc import Iterable
 from polylogue.core.enums import AssertionStatus, AssertionVisibility
 from polylogue.markers.models import MarkerCandidate, marker_provenance
 from polylogue.markers.registry import MARKER_REGISTRY, MarkerRegistry
-from polylogue.storage.sqlite.archive_tiers.user_write import mark_assertion_status, upsert_assertion
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    mark_assertion_status,
+    record_retired_marker_assertion,
+    upsert_assertion,
+)
 
 
 def candidates_for_block(
@@ -110,10 +114,7 @@ def retire_marker_assertions(
     timestamp = _now_ms() if now_ms is None else now_ms
     retired: list[str] = []
     for assertion_id in assertion_ids:
-        conn.execute(
-            "INSERT OR IGNORE INTO retired_marker_assertions(assertion_id, retired_at_ms) VALUES (?, ?)",
-            (assertion_id, timestamp),
-        )
+        record_retired_marker_assertion(conn, assertion_id, now_ms=timestamp)
         existing = conn.execute(
             "SELECT author_kind, status FROM assertions WHERE assertion_id = ?",
             (assertion_id,),
