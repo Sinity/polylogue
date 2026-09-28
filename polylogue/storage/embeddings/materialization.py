@@ -354,6 +354,8 @@ def select_pending_session_window(
     rebuild: bool = False,
     max_sessions: int | None = None,
     max_messages: int | None = None,
+    min_messages: int | None = None,
+    limit_reached: list[bool] | None = None,
 ) -> list[PendingSession]:
     """Return one bounded, resumable pending-session window.
 
@@ -374,6 +376,11 @@ def select_pending_session_window(
         placeholders = ", ".join("?" for _ in unique_ids)
         id_filter = f"AND c.session_id IN ({placeholders})"
         params.extend(unique_ids)
+
+    # Filter in SQL before the session or message window is applied.
+    if min_messages is not None and min_messages > 0:
+        id_filter += " AND c.message_count >= ?"
+        params.append(min_messages)
 
     status_exists = _table_exists(conn, "embedding_status")
     where_clause = "1 = 1" if rebuild or not status_exists else "(e.session_id IS NULL OR e.needs_reindex = 1)"
@@ -419,10 +426,16 @@ def select_pending_session_window(
             title = None if title_value is None else str(title_value)
             message_count = _row_int(row, 2, "message_count")
             if max_sessions is not None and len(pending) >= max_sessions:
+                if limit_reached is not None:
+                    limit_reached.append(True)
                 return pending
             if max_messages is not None and message_count > max_messages:
+                if limit_reached is not None:
+                    limit_reached.append(True)
                 continue
             if max_messages is not None and pending and message_total + message_count > max_messages:
+                if limit_reached is not None:
+                    limit_reached.append(True)
                 return pending
             pending.append(
                 PendingSession(
@@ -432,8 +445,6 @@ def select_pending_session_window(
                 )
             )
             message_total += message_count
-            if max_messages is not None and message_total >= max_messages:
-                return pending
     return pending
 
 

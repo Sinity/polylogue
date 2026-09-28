@@ -175,6 +175,11 @@ def build_finding_evidence_adapter(
         for item in items:
             ref = item.ref
             resolvable = item.resolvable
+            if len(nodes) >= max_nodes:
+                # One boundary edge is the evaluator's exhaustion witness. It
+                # is bounded overhead and avoids materializing the siblings.
+                edges.append(EvidenceGraphEdge(src_ref=parent_ref, dst_ref=ref, purpose="supports"))
+                break
             edges.append(EvidenceGraphEdge(src_ref=parent_ref, dst_ref=ref, purpose="supports"))
             if ref not in nodes:
                 nodes[ref] = EvidenceGraphNode(
@@ -214,24 +219,30 @@ def build_finding_evidence_adapter(
             pending.append(
                 (
                     ref,
-                    tuple(_cited(str(child)) for child in envelope.evidence_refs),
+                    tuple(_cited(conn, str(child)) for child in envelope.evidence_refs),
                 )
             )
 
     return FindingEvidenceAdapter(graph_nodes=tuple(nodes.values()), graph_edges=tuple(edges))
 
 
-def _cited(ref: str) -> FindingEvidenceResolution:
+def _cited(conn: sqlite3.Connection, ref: str) -> FindingEvidenceResolution:
     """One ref discovered during ancestry expansion.
 
-    Resolvability of a *transitively* cited ref is deliberately not re-measured
-    here: this module does not re-run the storage resolution for every
-    ancestor, and an ancestor that does not exist becomes a ``missing_ref``
-    witness from the evaluator's own node lookup instead.
+    Assertion ancestry is checked at discovery so a missing transitive target
+    is represented by a missing node in the graph.
     """
+    from polylogue.storage.sqlite.archive_tiers.user_write import read_assertion_envelope
     from polylogue.storage.sqlite.finding_provenance import FindingEvidenceResolution
 
-    return FindingEvidenceResolution(ref=ref, resolvable=True)
+    try:
+        parsed = ObjectRef.parse(ref)
+    except ValueError:
+        return FindingEvidenceResolution(ref=ref, resolvable=False)
+    if parsed.kind != "assertion":
+        return FindingEvidenceResolution(ref=ref, resolvable=True)
+    exists = read_assertion_envelope(conn, parsed.object_id) is not None
+    return FindingEvidenceResolution(ref=ref, resolvable=exists)
 
 
 def _ref_kind(ref: str) -> str:

@@ -303,7 +303,26 @@ def _cacheable_read(name: str, payload: Mapping[str, object]) -> bool:
     if name == "facets":
         return True
     if name == "cli.query":
-        return not requires_vector_snapshot(name, payload)
+        params = _params(payload)
+        spec = _cli_query_spec(params)
+        return (
+            not requires_vector_snapshot(name, payload)
+            and spec.sample is None
+            and spec.sort != "random"
+            and not any(_is_relative_date_bound(getattr(spec, field)) for field in ("since", "until"))
+        )
+    return False
+
+
+def _is_relative_date_bound(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    from datetime import datetime
+
+    try:
+        datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return True
     return False
 
 
@@ -1443,10 +1462,15 @@ def _session_messages_payload(
             ),
         )
 
-    window = read_transcript_window_sync(archive, request, read=read)
+    window = read_transcript_window_sync(
+        archive,
+        request,
+        read=read,
+        extra_arguments={"projection": dict(raw_projection) if raw_projection else {}},
+    )
     result: dict[str, object] = {
         "outcome": lineage_page_outcome(
-            matched=window.total,
+            matched=len(window.rows),
             complete=window.lineage_complete,
             truncation_reason=window.lineage_truncation_reason,
         ).to_dict(),

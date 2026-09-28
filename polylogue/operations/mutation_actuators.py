@@ -745,8 +745,9 @@ class BlobPublicationAbandonActuator(ConvergentReplay):
             args.archive_root / "source.db",
             args.archive_root / "blob",
             index_db_path=_index_db_path(args.archive_root),
+            publication_ids=tuple(args.publication_ids),
         )
-        present = {item.publication_id: item for item in receipts if item.publication_id in requested}
+        present = {item.publication_id: item for item in receipts}
         unreferenced = sorted(pid for pid, item in present.items() if not item.referenced)
         referenced = sorted(pid for pid, item in present.items() if item.referenced)
         return build_plan(

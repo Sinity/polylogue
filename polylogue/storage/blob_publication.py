@@ -357,6 +357,7 @@ def inspect_blob_publication_receipts(
     index_db_path: Path | None = None,
     max_count: int | None = None,
     after_publication_id: str | None = None,
+    publication_ids: tuple[str, ...] | None = None,
 ) -> tuple[BlobPublicationInspection, ...]:
     """Return receipt evidence, optionally bounded by a stable ID cursor."""
     from polylogue.storage.archive_identity import ArchiveLocation
@@ -379,7 +380,19 @@ def inspect_blob_publication_receipts(
         store = BlobStore(blob_root)
         if not _table_exists(source_conn, "blob_publication_reservations"):
             return ()
-        if max_count is None and after_publication_id is None:
+        if publication_ids is not None:
+            if not publication_ids:
+                return ()
+            rows = source_conn.execute(
+                f"""
+                SELECT publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
+                FROM blob_publication_reservations
+                WHERE publication_id IN ({",".join("?" for _ in publication_ids)})
+                ORDER BY publication_id
+                """,
+                publication_ids,
+            ).fetchall()
+        elif max_count is None and after_publication_id is None:
             rows = source_conn.execute(
                 """
                 SELECT publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms

@@ -879,14 +879,16 @@ def _archive_facet_buckets(
     from polylogue.archive.query.facets import FacetBuckets
 
     if spec is None:
-        summaries = cast(list[ArchiveSessionSummary], archive.list_summaries(limit=FACET_SCOPE_SESSION_CAP))
+        summaries = cast(list[ArchiveSessionSummary], archive.list_summaries(limit=FACET_SCOPE_SESSION_CAP + 1))
     else:
         from dataclasses import replace
 
         summaries = _archive_list_summaries_for_spec(
-            archive, replace(spec, limit=None, offset=0), default_limit=FACET_SCOPE_SESSION_CAP
+            archive, replace(spec, limit=None, offset=0), default_limit=FACET_SCOPE_SESSION_CAP + 1
         )
-    if scope_gaps is not None and len(summaries) >= FACET_SCOPE_SESSION_CAP:
+    truncated = len(summaries) > FACET_SCOPE_SESSION_CAP
+    summaries = summaries[:FACET_SCOPE_SESSION_CAP]
+    if scope_gaps is not None and truncated:
         gap = f"facet_scope_truncated:{FACET_SCOPE_SESSION_CAP}"
         if gap not in scope_gaps:
             scope_gaps.append(gap)

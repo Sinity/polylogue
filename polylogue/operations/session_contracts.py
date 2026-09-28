@@ -61,7 +61,7 @@ class SessionRead(Request):
     message_role: tuple[Role, ...] = ()
     message_type: MessageTypeFilter | None = None
     material_origin: tuple[MaterialOrigin, ...] = ()
-    limit: Bound = 50
+    limit: int = Field(default=50, ge=1, le=2000)
     offset: Offset = 0
     continuation: Continuation | None = None
 

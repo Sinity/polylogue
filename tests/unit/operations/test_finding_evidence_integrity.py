@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.core.evidence_integrity import EvidenceIntegrityStatus
+from polylogue.core.evidence_integrity import EvidenceIntegrityStatus, evaluate_adapter
 from polylogue.operations.finding_evidence import (
     build_finding_evidence_adapter,
     evaluate_finding_evidence,
@@ -210,9 +210,14 @@ def test_closed_loop_on_the_detectors_own_output(tmp_path: Path) -> None:
 
 
 def test_ancestry_expansion_is_bounded(tmp_path: Path) -> None:
-    """The graph population honours the evaluator's own node budget."""
+    """A wide assertion stops at the budget and leaves an exhaustion witness.
+
+    Anti-vacuity: appending every sibling before the guard allocates one node
+    and edge per cited ref, and this synthetic 20-ref envelope makes that
+    growth visible even with a budget of one.
+    """
     with sqlite3.connect(_user_db(tmp_path)) as conn:
-        assertion_id = _grounded_finding(conn)
+        assertion_id = _grounded_finding(conn, evidence_refs=tuple(f"agent:wide-{i}" for i in range(20)))
         conn.commit()
         provenance = compute_finding_provenance(conn, assertion_id)
         assert provenance is not None
@@ -223,9 +228,17 @@ def test_ancestry_expansion_is_bounded(tmp_path: Path) -> None:
             definition_hash="definition",
             max_nodes=1,
         )
+        verdict = evaluate_adapter(
+            f"assertion:{assertion_id}",
+            adapter,
+            frame_hash="index:g1",
+            definition_hash="definition",
+            max_nodes=1,
+        )
 
-    assert len(adapter.nodes()) >= 1
-    assert len(adapter.nodes()) <= 3
+    assert len(adapter.nodes()) == 1
+    assert len(adapter.edges()) == 1
+    assert "evaluation_budget_exhausted" in verdict.reason_codes
 
 
 @pytest.mark.asyncio
