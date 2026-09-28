@@ -385,11 +385,14 @@ def test_an_older_failed_pass_cannot_overwrite_a_newer_clean_receipt(tmp_path: P
         run_count=1, call_count=1, attempt_count=1, linked_session_count=1, unresolved_call_count=0, gaps=()
     )
 
-    stages._record_claude_workflow_stage_event(tmp_path, clean, started_at_ms=2_000)
-    stages._record_claude_workflow_failure_event(tmp_path, RuntimeError("stale failure"), started_at_ms=1_000)
+    stages._record_claude_workflow_stage_event(tmp_path, clean, started_at_ns=2_000)
+    stages._record_claude_workflow_failure_event(tmp_path, RuntimeError("stale failure"), started_at_ns=1_000)
+    assert _claude_workflow_materialization_check(tmp_path).status is OutcomeStatus.OK
+    # A failure that started in the same instant cannot prove it is newer.
+    stages._record_claude_workflow_failure_event(tmp_path, RuntimeError("tied failure"), started_at_ns=2_000)
     assert _claude_workflow_materialization_check(tmp_path).status is OutcomeStatus.OK
 
-    stages._record_claude_workflow_failure_event(tmp_path, RuntimeError("newer failure"), started_at_ms=3_000)
+    stages._record_claude_workflow_failure_event(tmp_path, RuntimeError("newer failure"), started_at_ns=3_000)
     newer = _claude_workflow_materialization_check(tmp_path)
     assert newer.status is OutcomeStatus.ERROR
     assert "newer failure" in newer.summary
@@ -399,5 +402,5 @@ def test_an_older_failed_pass_cannot_overwrite_a_newer_clean_receipt(tmp_path: P
     gapped = SimpleNamespace(
         run_count=1, call_count=1, attempt_count=1, linked_session_count=1, unresolved_call_count=1, gaps=("gap",)
     )
-    stages._record_claude_workflow_stage_event(tmp_path, gapped, started_at_ms=500)
+    stages._record_claude_workflow_stage_event(tmp_path, gapped, started_at_ns=500)
     assert _claude_workflow_materialization_check(tmp_path).status is OutcomeStatus.WARNING
