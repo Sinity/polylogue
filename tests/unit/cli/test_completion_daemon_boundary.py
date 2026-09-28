@@ -189,8 +189,59 @@ def test_daemon_off_completion_uses_recent_values_from_same_archive(
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive-b"))
     assert [item.value for item in completion_values("tag", "rel", limit=5)] == [DAEMON_REQUIRED_COMPLETION_MESSAGE]
     monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive-a"))
+    assert [item.value for item in completion_values("tag", "rel", limit=5)] == ["release-tag"]
     frozen_clock.advance(24 * 60 * 60 + 1)
     assert [item.value for item in completion_values("tag", "rel", limit=5)] == [DAEMON_REQUIRED_COMPLETION_MESSAGE]
+
+
+def test_authoritative_empty_refresh_removes_old_cached_prefix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An empty daemon answer invalidates stale prefix matches immediately.
+
+    Anti-vacuity: first seed a real cache entry, then return a successful empty
+    response and take the daemon offline; the removed value must stay absent.
+    """
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path / "archive-a"))
+    from polylogue.cli import operation_kernel
+    from polylogue.cli.shell_completion_values import completion_values
+
+    monkeypatch.setattr(
+        operation_kernel,
+        "dispatch",
+        lambda *_a, **_k: SimpleNamespace(value={"value_completions": {"values": [{"value": "release-tag"}]}}),
+    )
+    completion_values("tag", "rel", limit=5)
+    monkeypatch.setattr(
+        operation_kernel, "dispatch", lambda *_a, **_k: SimpleNamespace(value={"value_completions": {"values": []}})
+    )
+    completion_values("tag", "rel", limit=5)
+
+    def unavailable(*_a: object, **_k: object) -> None:
+        raise OperationUnavailableError("daemon unavailable")
+
+    monkeypatch.setattr(operation_kernel, "dispatch", unavailable)
+    assert [item.value for item in completion_values("tag", "rel", limit=5)] == [DAEMON_REQUIRED_COMPLETION_MESSAGE]
+
+
+def test_completion_cache_global_serialization_stays_under_byte_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The published multi-archive cache remains readable and within its cap.
+
+    Anti-vacuity: populate enough maximum-sized help strings across archives
+    to exceed the cap without global eviction, then parse the published file.
+    """
+    from polylogue.cli import shell_completion_values as cache
+
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+    rows = [{"value": f"value-{index:04d}", "help": "é" * 512} for index in range(256)]
+    for archive in range(6):
+        cache._remember_completion_values(
+            "tag", {"value_completions": {"values": rows}}, archive_root=f"root-{archive}"
+        )
+    path = cache._completion_cache_path()
+    assert path.stat().st_size <= cache._COMPLETION_CACHE_MAX_BYTES
+    assert cache._read_completion_cache("tag", "value-", limit=10, archive_root="root-5")
 
 
 def test_a_declared_vocabulary_still_completes_without_a_daemon(monkeypatch: pytest.MonkeyPatch) -> None:

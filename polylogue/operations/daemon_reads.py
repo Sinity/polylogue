@@ -1194,6 +1194,7 @@ def _session_identity_projection(
                         "text": block.text,
                         "tool_name": block.tool_name,
                         "tool_id": block.tool_id,
+                        "tool_input": block.tool_input,
                         "semantic_type": block.semantic_type,
                     }
                     for block in message.blocks

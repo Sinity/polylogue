@@ -9,7 +9,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from polylogue.cli.messages import run_messages
+from polylogue.cli.messages import read_message_windows, run_messages
+from polylogue.cli.operation_kernel import OperationFailedError
+from polylogue.cli.read_dispatch import ServedBy
 from polylogue.cli.read_views.base import ReadViewInvocation
 from polylogue.cli.read_views.messages import _write_messages_file
 from polylogue.cli.read_views.session_evidence import run_read_hooks
@@ -345,6 +347,109 @@ def test_run_messages_emits_json_and_passes_pagination(
     assert payload["total"] == 4
 
 
+def test_read_message_windows_reduces_an_oversized_initial_export() -> None:
+    """A full export retries a too-large first window at half size.
+
+    Anti-vacuity: retaining the fixed 200-row request raises the typed size
+    refusal instead of yielding the valid smaller page.
+    """
+    payload = {"messages": [{"id": "m1", "text": "ok"}], "session": {}, "total": 1, "offset": 0}
+    seen: list[int] = []
+
+    def dispatch(_config: object, request: object, **_kwargs: object) -> tuple[dict[str, object], ServedBy]:
+        limit = request.payload["limit"]  # type: ignore[attr-defined]
+        seen.append(int(limit))
+        if len(seen) == 1:
+            raise OperationFailedError("result_too_large", "bounded envelope")
+        return payload, ServedBy("daemon", None)
+
+    with patch("polylogue.cli.messages.dispatch_read", side_effect=dispatch):
+        windows = list(
+            read_message_windows(
+                Config(archive_root=Path("/archive"), render_root=Path("/archive/render"), sources=[]),
+                "session:x",
+                limit=200,
+                offset=0,
+                full=True,
+                continuation=None,
+                daemon_disabled=False,
+            )
+        )
+    assert seen == [200, 100]
+    assert [row["id"] for row in windows[0].rows] == ["m1"]
+
+
+def test_run_messages_rejects_ambiguous_anchor_coordinates(tmp_path: Path) -> None:
+    """An explicit anchor cannot be silently dropped by the continuation path.
+
+    Anti-vacuity: choosing the continuation branch before validating the
+    combination would execute a different window from the one requested.
+    """
+    import click
+
+    with pytest.raises(click.UsageError, match="--around cannot be combined"):
+        run_messages(
+            _env(),
+            _seeded_request(tmp_path),
+            session_id="session:x",
+            continuation="opaque-token",
+            around="message:anchor",
+        )
+
+
+def test_around_window_uses_the_requested_page_size() -> None:
+    """Anchor resolution uses the caller's page size before transport chunking.
+
+    Anti-vacuity: resolving with the internal 200-row chunk produces a
+    different offset for anchors near the beginning of a 500-row page.
+    """
+    payload = {"messages": [{"id": "m1", "text": "ok"}], "session": {}, "total": 1, "offset": 0}
+    config = Config(archive_root=Path("/archive"), render_root=Path("/archive/render"), sources=[])
+    with patch("polylogue.cli.messages.dispatch_read", return_value=(payload, ServedBy("daemon", None))) as dispatch:
+        list(
+            read_message_windows(
+                config,
+                "session:x",
+                limit=500,
+                offset=0,
+                full=False,
+                continuation=None,
+                daemon_disabled=False,
+                around="message:anchor",
+            )
+        )
+    request = dispatch.call_args.args[1]
+    assert request.payload["limit"] == 500
+    assert request.payload["around"] == "message:anchor"
+
+
+def test_composed_message_read_refuses_mixed_executor_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A composed response never claims one executor for mixed windows.
+
+    Anti-vacuity: combining daemon and direct windows would label the complete
+    JSON document with only the final window's authority.
+    """
+    from polylogue.cli.messages import _MessageWindow
+
+    first = _MessageWindow({}, [{"id": "daemon-message"}], 2, 0, 1, "next", True, None, ServedBy("daemon", None))
+    second = _MessageWindow({}, [{"id": "direct-message"}], 2, 1, None, None, True, None, ServedBy("direct", None))
+    monkeypatch.setattr("polylogue.cli.messages.read_message_windows", lambda *_args, **_kwargs: iter((first, second)))
+
+    with pytest.raises(SystemExit):
+        run_messages(
+            _env(),
+            _seeded_request(tmp_path),
+            session_id="session:x",
+            full=True,
+            output_format="json",
+        )
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert "executor changed" in captured.err
+
+
 def test_run_messages_json_names_the_executor_that_answered(
     tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -561,6 +666,33 @@ def test_write_messages_file_replaces_the_destination_on_success(tmp_path: Path,
     assert payload["session_id"] == session_id
     assert [message["text"] for message in payload["messages"]] == ["first"]
     assert sorted(child.name for child in tmp_path.iterdir() if child.name.startswith(".messages.json")) == []
+
+
+def test_write_messages_file_follows_symlink_destination(tmp_path: Path, daemon_archive: Path) -> None:
+    """Atomic export preserves an existing symlink and updates its target.
+
+    Anti-vacuity: replacing the link pathname directly leaves the target stale
+    and turns the requested symlink into a regular file.
+    """
+    target = tmp_path / "target.json"
+    target.write_text('{"old": true}', encoding="utf-8")
+    link = tmp_path / "messages.json"
+    link.symlink_to(target)
+    session_id = _seed_messages(tmp_path, {"id": "m1", "role": "user", "text": "first"})
+
+    _write_messages_file(
+        _env(),
+        _seeded_request(tmp_path),
+        session_id=session_id,
+        limit=10,
+        offset=0,
+        full=False,
+        output_format="json",
+        out_path=link,
+    )
+
+    assert link.is_symlink()
+    assert json.loads(target.read_text(encoding="utf-8"))["session_id"] == session_id
 
 
 def test_run_messages_ndjson_emits_one_json_document_per_line(

@@ -739,7 +739,9 @@
             current_fingerprint="$(cat "$sync_fingerprint_file")"
           fi
 
-          if [ "$sync_fingerprint" != "$current_fingerprint" ]; then
+          if [ "$sync_fingerprint" != "$current_fingerprint" ] \
+             || ! .venv/bin/python -c "import pytest" 2>/dev/null \
+             || [ ! -x .venv/bin/ruff ]; then
             echo "devshell: syncing Python dependencies (fingerprint changed)" >&2
             # Record the fingerprint ONLY after a proven-complete sync: a
             # failed/interrupted sync that still stamped the fingerprint made
@@ -790,6 +792,7 @@
             {
               nativeBuildInputs = [
                 polylogue
+                python
               ];
             }
             ''

@@ -282,6 +282,7 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
     default="text",
     help="Output format.",
 )
+@click.option("--json", "output_format", flag_value="json", default=None, help="Alias for --format json.")
 @click.pass_context
 def usage_command(
     ctx: click.Context,
@@ -972,6 +973,13 @@ def latency_command(
 
     if not buckets:
         env.ui.console.print(f"[yellow]No route observations in the last {since_hours:g}h.[/yellow]")
+        if not report.drops.accounting_complete:
+            reasons = ", ".join(f"{name}={count}" for name, count in sorted(report.drops.by_reason.items()))
+            detail = f" (counted here: {reasons})" if reasons else ""
+            env.ui.console.print(
+                f"[yellow]dropped observations: not fully countable from this process{detail}; "
+                "the empty result may have lost observations.[/yellow]"
+            )
         return
     header = (
         f"{'surface':10s}  {'route':32s}  {'n':>6s}  {'p50 ms':>8s}  {'p95 ms':>8s}  {'errors':>7s}  {'dropped':>8s}"

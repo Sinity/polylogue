@@ -136,11 +136,11 @@ the archived object.
 
 A live database that goes A → B → A re-mints A's content-derived raw id, so
 `raw_sessions.acquired_at_ms` is the *first* time those bytes were seen, not
-the latest. The durable receipt log is the authority: newest `raw_payload`
-receipt first, ordered `(blob_refs.acquired_at_ms, blob_refs.rowid)`. This is
-already implemented and documented at
-`sources/codex_state_projection.py:56`; it is hereby the rule for every
-latest-value projection, not a Codex-local trick.
+the latest. The durable receipt log is the authority, ordered by a monotonically increasing
+observation sequence; wall-clock acquisition time is diagnostic only. The
+current `(acquired_at_ms, rowid)` ordering remains vulnerable to clock rollback
+and does not satisfy this rule. Update the receipt schema and every
+latest-value projection before relying on it.
 
 ### R6 — Disappearance is an observation, never a delete
 

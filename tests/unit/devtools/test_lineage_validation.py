@@ -868,7 +868,9 @@ def test_lineage_validation_reports_integrity_gaps(tmp_path: Path) -> None:
     assert report["lineage"]["missing_profile_samples"][0]["session_id"] == "fresh"
     sample = report["lineage"]["prefix_sharing_read_sample"]
     assert sample["rows"][0]["composed_messages"] == 1
-    assert sample["rows"][0]["served_exceeds_stored"] is False
+    assert sample["rows"][0]["composition_status"] == "incomplete"
+    assert sample["complete"] is False
+    assert sample["semantic_prefix_share_ratio"] is None
 
 
 def test_lineage_validation_writes_demo_artifacts(tmp_path: Path) -> None:

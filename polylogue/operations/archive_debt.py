@@ -45,12 +45,13 @@ def archive_debt_list(
     only_actionable: bool = False,
     limit: int | None = None,
     exact_fts: bool = False,
+    index_db_path: Path | None = None,
 ) -> ArchiveDebtListPayload:
     """Return a unified archive debt report across current readiness providers."""
     generated_at = datetime.now(UTC).isoformat()
     selected_kinds = _selected_kinds(kinds)
     selected_statuses = _selected_statuses(statuses)
-    index_db = archive_root / "index.db"
+    index_db = index_db_path or archive_root / "index.db"
     rows: list[ArchiveDebtRowPayload] = []
 
     if _include("archive-tier", selected_kinds):
@@ -58,7 +59,7 @@ def archive_debt_list(
     if _include("assertion-candidate", selected_kinds):
         rows.extend(_assertion_candidate_rows(archive_root / "user.db"))
     if _include("raw-materialization", selected_kinds):
-        rows.extend(_raw_materialization_rows(archive_root))
+        rows.extend(_raw_materialization_rows(archive_root, index_db=index_db))
     if _include("provider-usage", selected_kinds):
         rows.extend(_provider_usage_rows(index_db))
     if _include("convergence", selected_kinds):
@@ -233,9 +234,9 @@ def _read_user_version(path: Path) -> int | None:
         conn.close()
 
 
-def _raw_materialization_rows(archive_root: Path) -> list[ArchiveDebtRowPayload]:
+def _raw_materialization_rows(archive_root: Path, *, index_db: Path | None = None) -> list[ArchiveDebtRowPayload]:
     source_db = archive_root / "source.db"
-    index_db = archive_root / "index.db"
+    index_db = index_db or archive_root / "index.db"
     if not source_db.exists() or not index_db.exists():
         return []
     conn = open_readonly_connection(source_db, timeout_class="background-read")

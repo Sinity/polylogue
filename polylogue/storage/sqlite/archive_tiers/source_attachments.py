@@ -110,6 +110,15 @@ def record_source_attachments(
     """
     normalized = _preflight_source_attachments(attachments)
 
+    generation = conn.execute(
+        "SELECT sealed_at_ms FROM source_generations WHERE source_generation_id=?",
+        (source_generation_id,),
+    ).fetchone()
+    if generation is None:
+        raise KeyError(f"unknown source generation: {source_generation_id}")
+    if generation[0] is not None:
+        raise ValueError(f"source generation is already sealed: {source_generation_id}")
+
     for attachment, origin, disposition in normalized:
         # Reachability is deliberately storage-local and derived from the
         # disposition, so there is no second independently extendable list:

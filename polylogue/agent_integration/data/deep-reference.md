@@ -25,7 +25,7 @@ Arguments:
 |---|---|---:|---|
 | `expression` | `string` | no | Parser-owned DSL expression; omit when resuming with continuation. |
 | `limit` | `integer` | no | Requested page size, subject to server and transport bounds. |
-| `projection` | `string` | no | Declared result projection such as session-summary or cost-rollup. |
+| `projection` | `string` | no | Declared result projection such as sessions or personal-state kinds. |
 | `session_operation` | `string` | no | Declared session operation; required by the session-operations projection. |
 | `continuation` | `string` | no | Opaque token from the preceding response; send alone. |
 | `offset` | `integer` | no | Offset for projections that use decimal offset pagination. |
@@ -46,7 +46,7 @@ Example — Find recent edits under the query subsystem:
   "arguments": {
     "expression": "actions where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
     "limit": 20,
-    "projection": "action-evidence"
+    "projection": "default"
   },
   "name": "query"
 }
@@ -61,13 +61,13 @@ Example — Select a recent provider cohort for a cost audit:
   "arguments": {
     "expression": "sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
     "limit": 50,
-    "projection": "cost-rollup"
+    "projection": "sessions"
   },
   "name": "query"
 }
 ```
 
-A session result set suitable for a declared cost-rollup projection; coverage still governs completeness.
+A filtered session result set for a later cost audit; coverage still governs completeness.
 
 ### `read`
 
@@ -87,23 +87,23 @@ Arguments:
 | `view` | `string` | no | Declared projection/view for the referenced object. |
 | `limit` | `integer` | no | Page size for collection-like or recursive reads. |
 | `offset` | `integer` | no | Offset into collection-like reads that use decimal offset pagination. |
-| `around` | `string` | no | Message reference whose surrounding window should be read. |
+| `around` | `string` | no | Raw message ID (not a message: ref); only with view=messages and without offset or continuation. |
 | `continuation` | `string` | no | Opaque token from the preceding read response; send alone. |
 
-Example — Read a session chronicle:
+Example — Read a session message page:
 
 ```json
 {
   "arguments": {
     "limit": 20,
     "ref": "polylogue://session/codex-session:demo-lineage-fork",
-    "view": "chronicle"
+    "view": "messages"
   },
   "name": "read"
 }
 ```
 
-A bounded chronicle page retaining message/block evidence refs and the same result_ref across continuation pages.
+A bounded messages page; use its returned offset for the next page.
 
 ### `get`
 
@@ -150,7 +150,7 @@ Arguments:
 
 | Name | Kind | Required initially | Meaning |
 |---|---|---:|---|
-| `subject` | `string` | yes | Declared explanation subject: query, field, value, ref, capability, completions, result, or recovery. |
+| `subject` | `string` | yes | Declared explanation subject: query, completions, ref, capability, result, or recovery. |
 | `expression` | `string` | no | Query expression to parse and lower when subject=query. |
 | `ref` | `string` | no | Object/ref whose authority or addressing needs explanation. |
 | `offset` | `integer` | no | Offset into paged explanation results. |
@@ -201,13 +201,13 @@ Arguments:
 | `recipient_ref` | `string` | no | Recipient identity for delivery receipts. |
 | `assertion_ref` | `string` | no | Assertion identity to include in context. |
 
-Example — Compile a resume packet:
+Example — Compile a context snapshot:
 
 ```json
 {
   "arguments": {
     "budget_tokens": 4000,
-    "intent": "resume",
+    "intent": "coordination",
     "query": "sessions where repo:polylogue AND NOT tag:complete"
   },
   "name": "context"
@@ -282,9 +282,9 @@ Example — Add a review tag through the governed write chokepoint:
 ```json
 {
   "arguments": {
-    "operation": "tag.add",
+    "operation": "add_tag",
     "session_id": "codex-session:demo-lineage-fork",
-    "value": "review"
+    "tag": "review"
   },
   "name": "write"
 }
@@ -415,28 +415,28 @@ A judgment receipt that leaves candidate history intact and reports conflicts ex
 - result semantics: `exhaustive_page`, `mutation`
 - continuation: `none`
 - emits result ref: `yes`
-- purpose: Execute a saved query or governed recipe ref; any nested mutation inherits its own capability and confirmation policy.
+- purpose: Execute a saved query or saved view; any nested mutation inherits its own capability and confirmation policy.
 
 Arguments:
 
 | Name | Kind | Required initially | Meaning |
 |---|---|---:|---|
-| `ref` | `string` | yes | Saved-query or recipe ref. |
+| `ref` | `string` | yes | Saved-query or saved-view ref. |
 | `limit` | `integer` | no | Bound on saved-query results. |
 
-Example — Run a saved read-only cost audit:
+Example — Run a saved read-only cost view:
 
 ```json
 {
   "arguments": {
     "limit": 20,
-    "ref": "recipe:cost-audit"
+    "ref": "saved-view:cost-audit"
   },
   "name": "run"
 }
 ```
 
-A result_ref and receipt for the declared recipe; mutation authority is never gained from the recipe wrapper.
+A result_ref and receipt for the saved view; mutation authority is never gained from the wrapper.
 
 ### `maintenance`
 
@@ -476,7 +476,7 @@ The continuation request is the same tool plus exactly one `continuation` argume
 ```json
 {
   "arguments": {
-    "continuation": "q2.eyJjaGVja3N1bSI6ImIzYTA1Y2JiOTlkMTJhZTI2NmUwYjE0YmRlZWZiMWJiNTE4NjQzYzM5M2RkMmEyYzNlODc4NTU3MTRlNzI4MmQiLCJleHBpcmVzX2F0IjoxODkzNDU5NjAwLCJpc3N1ZWRfYXQiOjE4OTM0NTYwMDAsInJlcXVlc3QiOnsiYXJjaGl2ZV9lcG9jaCI6ImFyY2hpdmU6djE6aW5kZXg6djI0OjE6dXNlcjp2OToxIiwiYXJndW1lbnRzIjp7ImV4cHJlc3Npb24iOiJhY3Rpb25zIHdoZXJlIGFjdGlvbjpmaWxlX2VkaXQgQU5EIHBhdGg6cG9seWxvZ3VlL2FyY2hpdmUvcXVlcnkgfCBzb3J0IGJ5IHRpbWUgZGVzYyB8IGxpbWl0IDIwIiwicHJvamVjdGlvbiI6ImFjdGlvbi1ldmlkZW5jZSJ9LCJvZmZzZXQiOjIwLCJvcGVyYXRpb24iOiJxdWVyeSIsInBhZ2Vfc2l6ZSI6MjAsInByb2plY3Rpb24iOiJhY3Rpb24tZXZpZGVuY2UiLCJzdGFibGVfb3JkZXIiOiJ0aW1lLWRlc2MifSwicmVzdWx0X3JlZiI6InJlc3VsdDowMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1NjciLCJ2IjoyfQ"
+    "continuation": "q2.eyJjaGVja3N1bSI6ImUyMjNkODI1MTU2NmRhYmRiNmUxOTA5ZDBhZjAyYzZmOTg1MTBhNTEwMTNmNTg4YWJjYjIyNjIyNGJmODI0MWMiLCJleHBpcmVzX2F0IjoxODkzNDU5NjAwLCJpc3N1ZWRfYXQiOjE4OTM0NTYwMDAsInJlcXVlc3QiOnsiYXJjaGl2ZV9lcG9jaCI6ImFyY2hpdmU6djE6aW5kZXg6djI0OjE6dXNlcjp2OToxIiwiYXJndW1lbnRzIjp7ImV4cHJlc3Npb24iOiJhY3Rpb25zIHdoZXJlIHRvb2w6c2hlbGwgfCBsaW1pdCAyMCIsInNlc3Npb25fZmlsdGVycyI6e319LCJvZmZzZXQiOjIwLCJvcGVyYXRpb24iOiJxdWVyeV91bml0cyIsInBhZ2Vfc2l6ZSI6MjAsInByb2plY3Rpb24iOiJ0ZXJtaW5hbC11bml0LWVudmVsb3BlIiwic3RhYmxlX29yZGVyIjoiY2Fub25pY2FsIn0sInJlc3VsdF9yZWYiOiJyZXN1bHQ6MzdiMGJiODA4Yjg4N2ExZDJkZTFlNGVkIiwidiI6Mn0"
   },
   "name": "query"
 }
@@ -609,7 +609,7 @@ Recover current work, failed effects, open loops, and a bounded next-step contex
   "arguments": {
     "expression": "repo:example-repo AND NOT tag:stale",
     "limit": 20,
-    "projection": "session-summary"
+    "projection": "sessions"
   },
   "name": "query"
 }
@@ -622,7 +622,7 @@ Recover current work, failed effects, open loops, and a bounded next-step contex
   "arguments": {
     "expression": "actions where session.repo:example-repo AND session.since:7d AND output:failed",
     "limit": 20,
-    "projection": "action-evidence"
+    "projection": "default"
   },
   "name": "query"
 }
@@ -635,20 +635,20 @@ Recover current work, failed effects, open loops, and a bounded next-step contex
   "arguments": {
     "limit": 20,
     "ref": "polylogue://session/codex-session:demo-lineage-fork",
-    "view": "chronicle"
+    "view": "messages"
   },
   "name": "read"
 }
 ```
 
-5. `context` — Compile a bounded resume packet from the selected result set and retain its receipt.
+5. `context` — Compile a bounded context image from the selected cohort and retain its receipt.
 
 ```json
 {
   "arguments": {
     "budget_tokens": 4000,
-    "intent": "resume",
-    "result_ref": "result:0123456789abcdef01234567"
+    "intent": "coordination",
+    "query": "sessions where repo:polylogue AND NOT tag:complete"
   },
   "name": "context"
 }
@@ -680,7 +680,7 @@ Reconstruct a failure from parser-valid row evidence, exact objects, surrounding
   "arguments": {
     "expression": "observed-events where kind:tool_finished | group by status | count",
     "limit": 20,
-    "projection": "aggregate-with-evidence"
+    "projection": "default"
   },
   "name": "query"
 }
@@ -693,7 +693,7 @@ Reconstruct a failure from parser-valid row evidence, exact objects, surrounding
   "arguments": {
     "expression": "actions where session.repo:example-repo AND session.since:7d AND output:failed",
     "limit": 20,
-    "projection": "action-evidence"
+    "projection": "default"
   },
   "name": "query"
 }
@@ -718,7 +718,7 @@ Reconstruct a failure from parser-valid row evidence, exact objects, surrounding
   "arguments": {
     "limit": 20,
     "ref": "polylogue://session/codex-session:demo-receipts",
-    "view": "chronicle"
+    "view": "messages"
   },
   "name": "read"
 }
@@ -750,7 +750,7 @@ Combine semantic retrieval with file-touch history, then inspect exact prior rat
   "arguments": {
     "expression": "sessions where semantic:\"query compiler failure\"",
     "limit": 20,
-    "projection": "session-summary"
+    "projection": "sessions"
   },
   "name": "query"
 }
@@ -817,14 +817,14 @@ Measure the declared cohort without mixing exact counters, estimates, missing co
 }
 ```
 
-2. `query` — Compute the requested cohort using declared cost semantics.
+2. `query` — Select the requested cohort for cost analysis; the result remains bounded and coverage-aware.
 
 ```json
 {
   "arguments": {
     "expression": "sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01",
     "limit": 50,
-    "projection": "cost-rollup"
+    "projection": "sessions"
   },
   "name": "query"
 }

@@ -230,7 +230,12 @@ def error_archive_writer_ownership(
     does" call for different operator action, and collapsing them would report
     a resident writer that was never observed.
     """
-    details: JSONDocument = {"remedy": "route the write through the resident polylogued, or stop it"}
+    remedy = (
+        "check archive-writer ownership and retry when it can be determined"
+        if code == "archive_writer_ownership_undecidable"
+        else "route the write through the resident polylogued, or stop it"
+    )
+    details: JSONDocument = {"remedy": remedy}
     if archive_root:
         details["archive_root"] = archive_root
     if resident_writer:
@@ -342,6 +347,7 @@ def extract_command(argv: list[str]) -> list[str]:
         "--sample",
         "--output",
         "--format",
+        "--output-format",
         "--set",
         "--add-tag",
         "--source",

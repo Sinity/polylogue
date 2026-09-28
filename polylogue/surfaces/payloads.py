@@ -1270,8 +1270,10 @@ def session_summary_envelope_from_domain(session: Session) -> SessionSummaryEnve
         title_is_synthesized=session.display_title_is_synthesized,
         message_count=len(session.messages),
         terminal_state=_session_terminal_state(session),
-        total_cost_usd=session.total_cost_usd,
-        cost_provenance=getattr(session, "cost_provenance", None),
+        # Domain Session deliberately carries no typed usage-cost evidence.
+        # Do not expose its legacy zero placeholder as an authoritative cost.
+        total_cost_usd=None,
+        cost_provenance=None,
         target_ref=TargetRefPayload.session(session_id),
         anchor=reader_anchor("session", session_id),
         actions=reader_session_actions(),
@@ -1354,8 +1356,9 @@ def session_list_envelope_from_domain(
         actions=reader_session_actions(),
         message_count=len(session.messages),
         terminal_state=_session_terminal_state(session),
-        total_cost_usd=session.total_cost_usd,
-        cost_provenance=getattr(session, "cost_provenance", None),
+        # Domain Session deliberately carries no typed usage-cost evidence.
+        total_cost_usd=None,
+        cost_provenance=None,
         tags=tuple(session.tags),
         summary=session.summary,
         words=sum(message.word_count for message in session.messages),
@@ -1587,6 +1590,16 @@ class QueryErrorPayload(SurfacePayloadModel):
     error: str
     detail: str | None = None
     field: str | None = None
+
+
+class QueryFailurePayload(QueryErrorPayload):
+    """An unexpected failure answered at a request boundary, with its terminal outcome.
+
+    Only the daemon HTTP boundary's 500 answer carries ``outcome``; every other
+    error keeps the four-field :class:`QueryErrorPayload` envelope.
+    """
+
+    outcome: OutcomeEnvelope
 
 
 class QueryMissReasonPayload(SurfacePayloadModel):
@@ -4540,6 +4553,7 @@ __all__ = [
     "DelegationSubtreePayload",
     "MutationResultPayload",
     "QueryErrorPayload",
+    "QueryFailurePayload",
     "QueryUnitAggregateEnvelope",
     "QueryUnitAggregateRowPayload",
     "QueryUnitEnvelope",
