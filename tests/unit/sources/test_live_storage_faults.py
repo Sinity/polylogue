@@ -525,3 +525,33 @@ async def test_a_raw_fault_from_the_publication_flush_discards_staged_blobs(
     finally:
         watcher.stop()
         await archive.close()
+
+
+@pytest.mark.asyncio
+async def test_degraded_daemon_admits_nothing_and_reads_no_authority(
+    storage_env: tuple[Polylogue, LiveWatcher, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The production intake route short-circuits a structurally degraded daemon.
+
+    Anti-vacuity: drop the degraded check from ``FileIntakeAdapter.admit_page``
+    and the page reaches ``require_cursor_authority`` (which reads the archive's
+    existence journals) and cursor initialization before any batch-level check.
+    """
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    _archive, watcher, _source_path = storage_env
+
+    def authority_must_not_run(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("a degraded daemon must not run the source-selection gate")
+
+    monkeypatch.setattr(watcher._batch_processor, "require_cursor_authority", authority_must_not_run)
+    set_degraded(DegradedReason(code="schema_version_mismatch", message="v12 vs v9"))
+    try:
+        outcomes = await _admit(watcher)
+    finally:
+        clear_degraded()
+
+    assert outcomes
+    assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
+    assert all("degraded" in (result.reason or "") for result in outcomes.values())

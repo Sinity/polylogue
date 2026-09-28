@@ -687,6 +687,16 @@ class FileIntakeAdapter(IntakeAdapter):
                 fresh_path = Path(item.payload)
                 if fresh_path in self._fresh_page_paths:
                     self._fresh_attempted_paths.add(fresh_path)
+        from polylogue.core.degraded import degraded_reason, is_fully_degraded
+
+        if is_fully_degraded():
+            # A structurally degraded daemon admits nothing and touches nothing:
+            # no authority gate (it reads the archive's existence journals), no
+            # cursor initialization, no selection. Every item stays retryable,
+            # so nothing is lost once the degradation is cleared (#1003).
+            reason = degraded_reason()
+            detail = f"archive ingest is degraded: {reason.code if reason is not None else 'unknown'}"
+            return {item.item_id: AdmissionResult(AdmissionOutcome.RETRYABLE, reason=detail) for item in items}
         outcomes: dict[str, AdmissionResult] = {}
         batch: list[IntakeItem] = []
         nonregular_paths: list[Path] = []
