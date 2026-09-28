@@ -344,6 +344,7 @@ def _full_ingest_result_from_summary(
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
     summary: object | None,
     excised_skips: int = 0,
+    excised_paths: tuple[Path, ...] = (),
     time_budget_exceeded: bool = False,
     write_hold_exhausted: bool = False,
 ) -> _FullIngestResult:
@@ -367,6 +368,7 @@ def _full_ingest_result_from_summary(
         ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
         changed_session_count=len(getattr(summary, "changed_session_ids", ())) if summary is not None else 0,
         excised_skips=excised_skips,
+        excised_paths=excised_paths,
         changed_session_ids=tuple(getattr(summary, "changed_session_ids", ()) or ()) if summary is not None else (),
         stage_timings_s=dict(getattr(summary, "stage_timings_s", {})) if summary is not None else {},
         time_budget_exceeded=time_budget_exceeded,
