@@ -142,6 +142,9 @@ physical limit is acceptable, and its refusal is typed.
   or `_PARSER_FINGERPRINT` in `sources/live/watcher.py`) that a change
   requires but leaves unchanged is a finding.
 - New caps, smaller timeouts, or truncation as a remedy.
+- Filesystem enumeration (installed trees, example databases, executables) as
+  a cache or receipt key, in devtools or test infrastructure; receipts and
+  caches are keyed on declared inputs.
 - Test strictness beyond the anti-vacuity condition the test names.
 - Scenarios that need the environment corrupted below its own integrity
   contract (lockfile, provision stamp, environment digest).
