@@ -50,7 +50,7 @@
           "arguments": {
             "expression": "repo:example-repo AND NOT tag:stale",
             "limit": 20,
-            "projection": "session-summary"
+            "projection": "sessions"
           },
           "capture": "candidate_result_ref",
           "example_key": "session-negated-tag",
@@ -61,7 +61,7 @@
           "arguments": {
             "expression": "actions where session.repo:example-repo AND session.since:7d AND output:failed",
             "limit": 20,
-            "projection": "action-evidence"
+            "projection": "default"
           },
           "capture": "failure_result_ref",
           "example_key": "actions-unacknowledged-failures",
@@ -72,7 +72,7 @@
           "arguments": {
             "limit": 20,
             "ref": "polylogue://session/codex-session:demo-lineage-fork",
-            "view": "chronicle"
+            "view": "messages"
           },
           "capture": null,
           "example_key": null,
@@ -82,12 +82,12 @@
         {
           "arguments": {
             "budget_tokens": 4000,
-            "intent": "resume",
-            "result_ref": "result:0123456789abcdef01234567"
+            "intent": "coordination",
+            "query": "sessions where repo:polylogue AND NOT tag:complete"
           },
           "capture": null,
           "example_key": null,
-          "purpose": "Compile a bounded resume packet from the selected result set and retain its receipt.",
+          "purpose": "Compile a bounded context image from the selected cohort and retain its receipt.",
           "tool": "context"
         }
       ],
@@ -138,7 +138,7 @@
           "arguments": {
             "expression": "observed-events where kind:tool_finished | group by status | count",
             "limit": 20,
-            "projection": "aggregate-with-evidence"
+            "projection": "default"
           },
           "capture": "aggregate_result_ref",
           "example_key": "aggregate-events-by-status",
@@ -149,7 +149,7 @@
           "arguments": {
             "expression": "actions where session.repo:example-repo AND session.since:7d AND output:failed",
             "limit": 20,
-            "projection": "action-evidence"
+            "projection": "default"
           },
           "capture": "failure_result_ref",
           "example_key": "actions-unacknowledged-failures",
@@ -170,7 +170,7 @@
           "arguments": {
             "limit": 20,
             "ref": "polylogue://session/codex-session:demo-receipts",
-            "view": "chronicle"
+            "view": "messages"
           },
           "capture": null,
           "example_key": null,
@@ -226,7 +226,7 @@
           "arguments": {
             "expression": "sessions where semantic:\"query compiler failure\"",
             "limit": 20,
-            "projection": "session-summary"
+            "projection": "sessions"
           },
           "capture": "semantic_result_ref",
           "example_key": "ranked-boolean-semantic",
@@ -309,7 +309,7 @@
           "arguments": {
             "expression": "sessions where origin:(antigravity-session|hermes-session) AND date >= 2026-06-01",
             "limit": 50,
-            "projection": "cost-rollup"
+            "projection": "cost-rollups"
           },
           "capture": "cost_result_ref",
           "example_key": "sample-origin-cohort-window",
