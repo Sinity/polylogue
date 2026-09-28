@@ -7262,7 +7262,7 @@ def rederive_codex_spawn_parent_links(conn: sqlite3.Connection, child_native_ids
         for row in conn.execute(
             """
             WITH RECURSIVE below(session_id) AS (
-                SELECT session_id FROM sessions WHERE session_id IN (SELECT value FROM json_each(?))
+                SELECT value FROM json_each(?)
                 UNION
                 SELECT s.session_id FROM sessions AS s JOIN below ON s.parent_session_id = below.session_id
             )

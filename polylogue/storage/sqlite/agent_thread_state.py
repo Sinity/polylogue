@@ -453,33 +453,24 @@ def read_spawn_parents(conn: sqlite3.Connection, child_thread_ids: Iterable[str]
     the same recency order across every scope. Comparing this per child before
     and after a snapshot revision is what says whose projected parent moved;
     the set of edges ever seen cannot, because superseded edges are retained
-    and a parent that returns (A, then B, then A) adds no new edge.
+    and a parent that returns (A, then B, then A) adds no new edge. A read
+    failure propagates: the caller is mid-write and must not re-derive from a
+    graph it could not read.
     """
     wanted = {child for child in child_thread_ids if child}
     if not wanted:
         return {}
     predicate, parameters = _scope_predicate(None)
-    try:
-        rows = conn.execute(
-            f"""
-            SELECT e.source_ref, e.target_ref
-            FROM work_evidence_edges AS e
-            JOIN work_evidence_graphs AS g ON g.graph_id = e.graph_id
-            WHERE {predicate} AND e.edge_kind = 'invoked'
-            {_RECENCY.format(alias="e")}, e.source_ref
-            """,
-            parameters,
-        ).fetchall()
-    except sqlite3.Error as exc:
-        emit(
-            "storage.agent_thread_state.spawn_parents_unreadable",
-            level=DEBUG,
-            outcome="unmeasured",
-            reason="the index tier is unreadable, so the graph is treated as silent about these children",
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
-        )
-        return {}
+    rows = conn.execute(
+        f"""
+        SELECT e.source_ref, e.target_ref
+        FROM work_evidence_edges AS e
+        JOIN work_evidence_graphs AS g ON g.graph_id = e.graph_id
+        WHERE {predicate} AND e.edge_kind = 'invoked'
+        {_RECENCY.format(alias="e")}, e.source_ref
+        """,
+        parameters,
+    ).fetchall()
     parents: dict[str, str] = {}
     for row in rows:
         child = thread_id_from_context_ref(str(row[1]))
