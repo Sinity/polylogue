@@ -135,7 +135,9 @@ def bench_parse(
             shutil.rmtree(attempt, ignore_errors=True)
 
     rows, wall, counts = _timed_map(work, files, workers)
-    return _summarise(rows, wall, {"component": "parse", "workers": workers, "counts": counts})
+    # Threads, not the daemon's process pool: this isolates one file's
+    # preparation cost; pool start-up and IPC belong to the end-to-end run.
+    return _summarise(rows, wall, {"component": "parse", "workers": workers, "executor": "threads", "counts": counts})
 
 
 def bench_blob(
@@ -154,12 +156,19 @@ def bench_blob(
     return _summarise(rows, wall, {"component": "blob", "workers": workers, "counts": counts})
 
 
+def _at_least_one(value: str) -> int:
+    count = int(value)
+    if count < 1:
+        raise argparse.ArgumentTypeError("must be at least 1")
+    return count
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("component", choices=("parse", "blob"))
     parser.add_argument("--corpus", type=Path, required=True)
     parser.add_argument("--scratch", type=Path, required=True, help="empty directory for component output")
-    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--workers", type=_at_least_one, default=1)
     parser.add_argument("--origin", action="append", default=None)
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args(argv)
@@ -172,7 +181,9 @@ def main(argv: list[str] | None = None) -> int:
     bench = bench_parse if args.component == "parse" else bench_blob
     result = bench(args.corpus, args.scratch, workers=args.workers, origins=args.origin, limit=args.limit)
     print(json.dumps(result, indent=1))
-    return 0
+    # A worker that failed shortened the measured work; the timing is not a
+    # result for this corpus.
+    return 1 if (result.get("counts") or {}).get("errors") else 0
 
 
 if __name__ == "__main__":

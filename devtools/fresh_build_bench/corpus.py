@@ -323,13 +323,25 @@ def sample_real(
     )
 
 
-def corpus_from_files(out: Path, files: Sequence[Path], *, home: Path) -> dict[str, Any]:
+#: Export origins a corpus may stage under ``exports/<name>/``.
+EXPORT_ORIGINS: Final = ("chatgpt", "claude-ai")
+
+
+def corpus_from_files(
+    out: Path,
+    files: Sequence[Path],
+    *,
+    home: Path,
+    exports: Sequence[tuple[str, Path]] = (),
+) -> dict[str, Any]:
     """Seal a private corpus of exactly the named real files.
 
     Each file keeps its position under ``home`` (so a Claude Code transcript
     stays under ``.claude/projects/...``) and must lie under one of the typed
     default source roots. This is how a single large source -- a whale -- is
-    measured through the same benchmark as a stratified sample.
+    measured through the same benchmark as a stratified sample. ``exports``
+    stages export files (``(origin, path)``) under ``exports/<origin>/``,
+    the additional roots the run configures.
     """
     if out.exists() and any(out.iterdir()):
         raise ValueError(f"corpus directory must be absent or empty: {out}")
@@ -346,4 +358,9 @@ def corpus_from_files(out: Path, files: Sequence[Path], *, home: Path) -> dict[s
         if resolved.suffix.lower() not in admitted[0]:
             raise ValueError(f"{file} is not a transcript its source root admits ({', '.join(admitted[0])})")
         _copy_private(resolved, out / "home" / resolved.relative_to(home))
-    return seal(out, kind="files", parameters={"selection": "explicit", "files": len(files)})
+    for origin, file in exports:
+        if origin not in EXPORT_ORIGINS:
+            raise ValueError(f"unknown export origin {origin!r}; known: {', '.join(EXPORT_ORIGINS)}")
+        resolved = file.resolve(strict=True)
+        _copy_private(resolved, out / "exports" / origin / resolved.name)
+    return seal(out, kind="files", parameters={"selection": "explicit", "files": len(files), "exports": len(exports)})

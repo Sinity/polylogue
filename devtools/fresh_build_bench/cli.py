@@ -59,7 +59,14 @@ def _parser() -> argparse.ArgumentParser:
     explicit = corpus_kinds.add_parser("files", help="copy the named real files (e.g. one whale) into a corpus")
     explicit.add_argument("--out", type=Path, required=True)
     explicit.add_argument("--home", type=Path, default=Path.home())
-    explicit.add_argument("files", nargs="+", type=Path)
+    explicit.add_argument(
+        "--export",
+        action="append",
+        default=[],
+        metavar="ORIGIN=PATH",
+        help="stage an export file under exports/ORIGIN/ (chatgpt, claude-ai)",
+    )
+    explicit.add_argument("files", nargs="*", type=Path)
 
     run = commands.add_parser("run", help="run one measured fresh build through polylogued run")
     run.add_argument("--corpus", type=Path, required=True)
@@ -127,7 +134,13 @@ def main(argv: list[str] | None = None) -> int:
         else:
             from devtools.fresh_build_bench.corpus import corpus_from_files
 
-            manifest = corpus_from_files(args.out, args.files, home=args.home)
+            exports = []
+            for item in args.export:
+                origin, _, path = item.partition("=")
+                exports.append((origin, Path(path)))
+            if not args.files and not exports:
+                raise SystemExit("name at least one transcript or --export")
+            manifest = corpus_from_files(args.out, args.files, home=args.home, exports=exports)
         print(json.dumps({k: v for k, v in manifest.items() if k != "files"}, indent=1))
         return 0
     if args.command == "run":
@@ -136,6 +149,10 @@ def main(argv: list[str] | None = None) -> int:
         from devtools.fresh_build_bench.run import RunConfig, run_build
 
         _refuse_repo_path(args.work, "--work")
+        candidate_root = args.candidate.resolve()
+        work = args.work.resolve()
+        if work == candidate_root or candidate_root in work.parents:
+            raise SystemExit(f"--work must live outside the candidate checkout ({candidate_root})")
         manifest = load_manifest(args.corpus)
         verify_manifest(args.corpus, manifest)
         if not manifest["file_count"]:

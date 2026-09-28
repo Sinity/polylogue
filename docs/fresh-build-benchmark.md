@@ -19,7 +19,7 @@ only when their corpus digests match.
 | Kind | Command | Use |
 | --- | --- | --- |
 | sample | `corpus sample --out DIR --seed N --fraction F` | A seeded byte-fraction of each (origin, size bucket) stratum of real sources. Private. |
-| files | `corpus files --out DIR FILE...` | Exactly the named real transcripts, e.g. one whale; each must be a file its source root's watcher admits. Private. |
+| files | `corpus files --out DIR [--export ORIGIN=PATH] FILE...` | Exactly the named real transcripts, e.g. one whale; each must be a file its source root's watcher admits. `--export` stages a ChatGPT or Claude.ai export under `exports/`. Private. |
 
 Both are private: corpora, manifests and receipts stay outside the checkout
 (the command refuses a path inside it), and only aggregate numbers leave the
@@ -88,8 +88,10 @@ comparable receipts.
 
 `components parse|blob --corpus DIR --scratch DIR [--workers N]` times one
 production stage over the corpus's files: the off-writer parse and
-preparation a worker runs per file, or blob acquisition. They iterate in
-seconds; the end-to-end run proves the total.
+preparation a worker runs per file, or blob acquisition. Parse runs on
+threads, so it isolates per-file cost; process-pool start-up and IPC belong to
+the end-to-end run. Any worker error exits non-zero. They iterate in seconds;
+the end-to-end run proves the total.
 
 ## Reading the numbers
 

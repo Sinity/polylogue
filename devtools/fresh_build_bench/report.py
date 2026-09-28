@@ -278,7 +278,7 @@ def archive_census(archive: Path, promoted_index: str | None) -> dict[str, Any]:
     return result
 
 
-_PROBE_TOKEN = re.compile(r"[^\W_]{4,}")
+_PROBE_TOKEN = re.compile(r"[^\W_]{2,}")
 
 
 def _fts_probe(read: sqlite3.Connection, *, probes: int = 64) -> dict[str, Any]:
