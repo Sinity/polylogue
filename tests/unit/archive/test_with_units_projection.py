@@ -674,3 +674,41 @@ class TestPageWiderThanTheBudgetIsRefused:
         session_count = _MAX_ROWS_PER_PAGE // 2
         assert _per_session_allowance(session_count) == 1
         assert session_count * (_per_session_allowance(session_count) + 1) == _MAX_ROWS_PER_PAGE
+
+
+def test_legacy_execution_arguments_with_a_lone_surrogate_stay_readable(tmp_path: Path) -> None:
+    """An arguments-only execution action reads through the surrogate-safe projection.
+
+    Anti-vacuity: read the ``$.arguments`` fallback with bare ``json_extract``
+    and the action read raises ``Could not decode to UTF-8``.
+    """
+    from tests.infra.live_ingest import write_index_session
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as archive:
+        session_id = write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="legacy-exec",
+                title="Legacy exec",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m-exec",
+                        role=Role.ASSISTANT,
+                        text="",
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="exec_command",
+                                tool_id="t1",
+                                tool_input={"arguments": "x\ud800"},
+                            ),
+                        ],
+                    )
+                ],
+            ),
+        )
+        (action,) = archive.query_session_actions([session_id])
+
+    assert action.tool_command == "x\\ud800"

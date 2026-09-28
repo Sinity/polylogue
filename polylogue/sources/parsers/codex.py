@@ -334,6 +334,15 @@ def _sql_key(value: object) -> bytes:
     return pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
 
 
+def _text_digest(text: str) -> bytes:
+    """Fixed-size scratch key of a candidate text.
+
+    A candidate can be arbitrarily large, so it is keyed by digest and its
+    text held in one scratch column; every lookup confirms the stored text.
+    """
+    return hashlib.sha256(_sql_key(text)).digest()
+
+
 def _reduced_code_mode_item(item: dict[str, object]) -> dict[str, object]:
     """Reduce one ``item_completed`` payload to the evidence the parser reads.
 
@@ -1478,45 +1487,42 @@ class _CodexTextConservation:
         self._task_unresolved = 0
         self._contexts = 0
 
-    def _candidate(self, text: str, *, normalize: bool = True) -> bytes | None:
+    def _lookup(self, keys_table: str, texts_table: str, text: str, *, normalize: bool) -> bytes | None:
+        """The candidate key registered for ``text`` (or its NFC form), confirmed by content."""
+        probes = [text]
+        if normalize and not text.isascii():
+            probes.append(unicodedata.normalize("NFC", text))
         connection = self._index.connection
-        row = connection.execute(
-            "SELECT candidate_key FROM codex_replacement_keys WHERE value = ?", (_sql_key(text),)
-        ).fetchone()
-        if row is None and normalize and not text.isascii():
+        for probe in probes:
             row = connection.execute(
-                "SELECT candidate_key FROM codex_replacement_keys WHERE value = ?",
-                (_sql_key(unicodedata.normalize("NFC", text)),),
+                f"SELECT candidate_key FROM {keys_table} WHERE value = ?", (_text_digest(probe),)
             ).fetchone()
-        return row[0] if row is not None else None
+            if row is None:
+                continue
+            stored_row = connection.execute(f"SELECT text FROM {texts_table} WHERE key = ?", (row[0],)).fetchone()
+            stored = pickle.loads(stored_row[0]) if stored_row is not None else None
+            if isinstance(stored, str) and probe in (stored, unicodedata.normalize("NFC", stored)):
+                return bytes(row[0])
+        return None
 
-    def _task_key(self, text: str) -> bytes:
-        return _sql_key(text)
+    def _candidate(self, text: str, *, normalize: bool = True) -> bytes | None:
+        return self._lookup("codex_replacement_keys", "codex_replacement_texts", text, normalize=normalize)
 
     def _task_lookup(self, text: str, *, normalize: bool) -> bytes | None:
-        connection = self._index.connection
-        row = connection.execute(
-            "SELECT candidate_key FROM codex_task_keys WHERE value = ?", (self._task_key(text),)
-        ).fetchone()
-        if row is None and normalize and not text.isascii():
-            row = connection.execute(
-                "SELECT candidate_key FROM codex_task_keys WHERE value = ?",
-                (self._task_key(unicodedata.normalize("NFC", text)),),
-            ).fetchone()
-        return row[0] if row is not None else None
+        return self._lookup("codex_task_keys", "codex_task_texts", text, normalize=normalize)
 
     def add_task_completion(self, text: str, event_index: int) -> None:
         key = self._task_lookup(text, normalize=False)
         connection = self._index.connection
         if key is None:
-            key = self._task_key(text)
+            key = _text_digest(text)
             connection.execute("INSERT INTO codex_task_texts(key, text) VALUES (?, ?)", (key, _sql_key(text)))
             connection.execute("INSERT INTO codex_task_keys VALUES (?, ?)", (key, key))
             normalized = unicodedata.normalize("NFC", text)
             if normalized != text:
                 connection.execute(
                     "INSERT OR IGNORE INTO codex_task_keys VALUES (?, ?)",
-                    (self._task_key(normalized), key),
+                    (_text_digest(normalized), key),
                 )
             self._task_unresolved += 1
         connection.execute("INSERT INTO codex_task_events VALUES (?, ?, ?)", (event_index, key, len(text)))
@@ -1566,9 +1572,12 @@ class _CodexTextConservation:
             return existing, False
         if self._task_lookup(text, normalize=False) is not None:
             return None, False
-        key = _sql_key(text)
+        # The text is held once, in ``codex_replacement_texts.text``; every
+        # other scratch column carries its fixed-size digest.
+        key = _text_digest(text)
         connection.execute(
-            "INSERT INTO codex_replacement_texts(key, text, text_chars) VALUES (?, ?, ?)", (key, key, len(text))
+            "INSERT INTO codex_replacement_texts(key, text, text_chars) VALUES (?, ?, ?)",
+            (key, _sql_key(text), len(text)),
         )
         connection.execute("INSERT INTO codex_replacement_keys VALUES (?, ?)", (key, key))
         # A value normalized differently on the two sides would otherwise read
@@ -1578,7 +1587,7 @@ class _CodexTextConservation:
         normalized = unicodedata.normalize("NFC", text)
         if normalized != text:
             connection.execute(
-                "INSERT OR IGNORE INTO codex_replacement_keys VALUES (?, ?)", (_sql_key(normalized), key)
+                "INSERT OR IGNORE INTO codex_replacement_keys VALUES (?, ?)", (_text_digest(normalized), key)
             )
         self._unresolved += 1
         return key, True

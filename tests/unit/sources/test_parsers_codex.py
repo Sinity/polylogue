@@ -3412,3 +3412,35 @@ def test_world_state_state_keys_are_stored_or_declared_exempt() -> None:
     assert stored | _WORLD_STATE_INSTRUCTION_TEXT_KEYS >= set(state)
     assert stored & _WORLD_STATE_INSTRUCTION_TEXT_KEYS == set()
     assert {"environments", "permissions", "collaboration_mode"} <= stored
+
+
+def test_replacement_candidates_hold_their_text_once_under_fixed_size_keys() -> None:
+    """A large replacement-only value costs one scratch copy, keyed by digest.
+
+    Anti-vacuity: key the scratch tables by the pickled text again and the
+    key, lookup-value and context columns each hold another full copy.
+    """
+    import sqlite3
+    import unicodedata
+
+    from polylogue.sources.parsers.codex import _CodexLookaheadIndex, _CodexTextConservation
+
+    connection = sqlite3.connect(":memory:")
+    conservation = _CodexTextConservation(_CodexLookaheadIndex(connection))
+    large = "é" + "x" * 200_000
+    key, new = conservation.add(large)
+    assert new and key is not None and len(key) == 32
+    conservation.add_context(key, insert_at=1, timestamp=None, source_index=0, entry_type=None, role=None, phase=None)
+    assert conservation.add(large) == (key, False)
+    assert conservation._candidate(unicodedata.normalize("NFC", large)) == key
+    assert conservation._candidate("x" * 200_001) is None
+
+    scratch = connection.execute(
+        """SELECT
+               (SELECT SUM(length(key) + length(text)) FROM codex_replacement_texts),
+               (SELECT SUM(length(value) + length(candidate_key)) FROM codex_replacement_keys),
+               (SELECT SUM(length(key)) FROM codex_replacement_contexts)"""
+    ).fetchone()
+    texts_bytes, keys_bytes, contexts_bytes = scratch
+    assert texts_bytes < len(large.encode()) + 1024
+    assert keys_bytes == 4 * 32 and contexts_bytes == 32

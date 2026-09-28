@@ -36,6 +36,7 @@ from polylogue.core.dates import parse_date
 from polylogue.core.enums import ActionResultState
 from polylogue.core.json import JSONValue, require_json_value
 from polylogue.core.refs import delegation_edge_object_id
+from polylogue.core.tool_identity import sql_coalesced_json_extract
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.action_relation import bounded_action_relation_cte
 from polylogue.storage.sqlite.archive_tiers.types import (
@@ -728,16 +729,20 @@ def _action_command_expression(row_alias: str) -> str:
     """
 
     execution_tools = ", ".join(_sql_string_literal(name) for name in _LEGACY_EXECUTION_TOOL_NAMES)
+    # The surrogate-safe projection the generated tool columns use: a stored
+    # lone-surrogate escape must not decode into text that is not UTF-8.
+    cmd = sql_coalesced_json_extract(f"{row_alias}.tool_input", ("cmd",))
+    arguments = sql_coalesced_json_extract(f"{row_alias}.tool_input", ("arguments",))
     return f"""
         COALESCE(
             NULLIF({row_alias}.tool_command, ''),
             CASE
                 WHEN LOWER(COALESCE({row_alias}.tool_name, '')) IN ({execution_tools}) THEN
                     COALESCE(
-                        NULLIF(json_extract({row_alias}.tool_input, '$.cmd'), ''),
+                        NULLIF({cmd}, ''),
                         CASE
                             WHEN json_type({row_alias}.tool_input, '$.arguments') = 'text'
-                                THEN NULLIF(json_extract({row_alias}.tool_input, '$.arguments'), '')
+                                THEN NULLIF({arguments}, '')
                             ELSE NULL
                         END
                     )
