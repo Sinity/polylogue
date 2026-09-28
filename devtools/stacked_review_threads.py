@@ -71,7 +71,7 @@ query($owner: String!, $name: String!, $branch: String!, $cursor: String) {
     pullRequests(states: MERGED, baseRefName: $branch, first: 50, after: $cursor) {
       pageInfo { hasNextPage endCursor }
       nodes {
-        number url headRefName mergedAt
+        number url headRefName mergedAt isCrossRepository
       }
     }
   }
@@ -204,7 +204,10 @@ class StackedThreadGate:
                             parent_number=parent_number,
                         )
                     )
-                pending.append((child["headRefName"], child["number"], child["mergedAt"]))
+                # A fork head names a branch in the fork; nothing in this
+                # repository can have merged into it.
+                if not child["isCrossRepository"]:
+                    pending.append((child["headRefName"], child["number"], child["mergedAt"]))
         verdict.offenders.sort(key=lambda pr: pr.number)
         return verdict
 

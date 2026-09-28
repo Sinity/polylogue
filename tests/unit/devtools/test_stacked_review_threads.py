@@ -30,12 +30,15 @@ def _threads(*resolved: bool, number: int, has_next: bool = False) -> dict[str, 
     }
 
 
-def _merged(number: int, head: str, merged: str, *threads: bool, more_threads: bool = False) -> dict[str, Any]:
+def _merged(
+    number: int, head: str, merged: str, *threads: bool, more_threads: bool = False, fork: bool = False
+) -> dict[str, Any]:
     return {
         "number": number,
         "url": f"https://example.test/pull/{number}",
         "headRefName": head,
         "mergedAt": merged,
+        "isCrossRepository": fork,
         "_threads": _threads(*threads, number=number, has_next=more_threads),
     }
 
@@ -167,6 +170,18 @@ def test_each_lifetime_of_a_reused_child_branch_is_walked_with_its_own_bound() -
     )
     assert set(_offenders(fake, 80)) == {83, 84}
     assert fake.queried_branches.count("child") == 2
+
+
+def test_a_fork_child_is_checked_but_its_head_name_is_not_walked_here() -> None:
+    fake = FakeGitHub(
+        roots=[_root(110, "feat")],
+        merged_into={
+            "feat": [_merged(111, "shared-name", "2026-01-05T00:00:00Z", False, fork=True)],
+            "shared-name": [_merged(112, "unrelated", "2026-01-04T00:00:00Z", False)],
+        },
+    )
+    assert set(_offenders(fake, 110)) == {111}
+    assert "shared-name" not in fake.queried_branches
 
 
 def test_threads_past_the_first_page_are_counted() -> None:
