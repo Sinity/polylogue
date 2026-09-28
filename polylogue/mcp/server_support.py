@@ -445,6 +445,8 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
       ``detail`` set to the exception class name.
     * :class:`ArchiveWriterOwnershipError` → its typed refusal code and safe
       resident-writer identity, so callers can route the write correctly.
+    * :class:`DaemonOperationRejectedError` → the daemon's typed rejection
+      code, with its public rejection detail in ``message``.
     * Any other :class:`Exception` → ``code="internal_error"`` with ``detail``
       set to the exception class name only. The raw exception message is
       deliberately not included so the surface cannot leak credentials, file
@@ -452,6 +454,7 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
     """
     from polylogue.archive.query.expression import ExpressionCompileError
     from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
+    from polylogue.operations.daemon_errors import DaemonOperationRejectedError
 
     if isinstance(exc, QuerySpecError | ExpressionCompileError):
         field = exc.field
@@ -516,6 +519,17 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
             message=f"{fn_name}: {exc.resident_writer or exc.code}",
             code=exc.code,
             error=exc.code,
+            detail=type(exc).__name__,
+            tool=fn_name,
+        )
+    elif isinstance(exc, DaemonOperationRejectedError):
+        # The resident daemon refused the request before durable acceptance
+        # and returned a typed code with a caller-facing detail on its public
+        # wire; it is the caller's error, so relay both, as the CLI does.
+        payload = MCPErrorPayload(
+            message=f"{fn_name}: {exc.detail}",
+            code=exc.outcome,
+            error=exc.outcome,
             detail=type(exc).__name__,
             tool=fn_name,
         )

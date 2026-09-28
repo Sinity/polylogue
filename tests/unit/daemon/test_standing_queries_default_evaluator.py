@@ -19,7 +19,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -131,20 +134,35 @@ def _seed_second_codex_session(archive_root: Path) -> str:
         )
 
 
-async def _write_saved_view(archive_root: Path, **fields: object) -> dict[str, object]:
-    """Invoke the real MCP ``write`` tool against a seeded archive."""
-    import json as _json
-    from typing import cast
+@contextmanager
+def _saved_view_writer(archive_root: Path) -> Iterator[Callable[..., Awaitable[dict[str, object]]]]:
+    """Yield the real MCP ``write`` tool's ``save_saved_view`` against a seeded archive.
 
+    Public archive writes are daemon-owned (#5550), so the calls are served by
+    one production operation stack on the archive's own socket for the
+    duration of the block.
+    """
+    from unittest.mock import patch
+
+    from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.mcp.declarations.models import MCPCapabilities
     from polylogue.mcp.server import build_server
+    from tests.infra.daemon_operations import running_daemon_operations
     from tests.infra.mcp import MCPServerUnderTest, installed_runtime_services, invoke_surface_async
 
     server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(write=True)))
     write_fn = server._tool_manager._tools["write"].fn
-    with installed_runtime_services(archive_root):
+
+    async def write(**fields: object) -> dict[str, object]:
         payload = await invoke_surface_async(write_fn, operation="save_saved_view", fields=fields)
-    return cast(dict[str, object], _json.loads(payload))
+        return cast(dict[str, object], json.loads(payload))
+
+    with (
+        patch("polylogue.daemon.api_auth.resolve_api_auth_token", return_value=None),
+        running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root)),
+        installed_runtime_services(archive_root),
+    ):
+        yield write
 
 
 def _converge(archive_root: Path, session_ids: tuple[str, ...]) -> None:
@@ -168,12 +186,12 @@ async def test_saved_view_marked_watched_is_picked_up_by_the_next_convergence_ti
     archive_root = tmp_path / "archive"
     session_id = _seed_archive_with_one_codex_session(archive_root)
 
-    saved = await _write_saved_view(
-        archive_root,
-        name="codex sessions",
-        query_json=json.dumps({"query": "sessions where origin:codex-session"}),
-        watch=True,
-    )
+    with _saved_view_writer(archive_root) as write:
+        saved = await write(
+            name="codex sessions",
+            query_json=json.dumps({"query": "sessions where origin:codex-session"}),
+            watch=True,
+        )
     assert saved.get("is_error") is not True, saved
 
     _converge(archive_root, (session_id,))
@@ -205,11 +223,10 @@ async def test_saving_the_same_view_unwatched_stops_the_next_tick_evaluating_it(
     session_id = _seed_archive_with_one_codex_session(archive_root)
     query_json = json.dumps({"query": "sessions where origin:codex-session"})
 
-    saved = await _write_saved_view(archive_root, name="codex sessions", query_json=query_json, watch=True)
-    assert saved.get("is_error") is not True, saved
-    unsaved = await _write_saved_view(
-        archive_root, name="codex sessions", query_json=query_json, view_id=str(saved["key"]), watch=False
-    )
+    with _saved_view_writer(archive_root) as write:
+        saved = await write(name="codex sessions", query_json=query_json, watch=True)
+        assert saved.get("is_error") is not True, saved
+        unsaved = await write(name="codex sessions", query_json=query_json, view_id=str(saved["key"]), watch=False)
     assert unsaved.get("is_error") is not True, unsaved
 
     _converge(archive_root, (session_id,))
@@ -230,18 +247,16 @@ async def test_a_view_the_evaluator_cannot_execute_is_refused_instead_of_watched
     archive_root = tmp_path / "archive"
     _seed_archive_with_one_codex_session(archive_root)
 
-    terms = await _write_saved_view(
-        archive_root, name="bare terms", query_json=json.dumps({"query": "hello"}), watch=True
-    )
+    with _saved_view_writer(archive_root) as write:
+        terms = await write(name="bare terms", query_json=json.dumps({"query": "hello"}), watch=True)
+        extra = await write(
+            name="split filters",
+            query_json=json.dumps({"query": "sessions where repo:polylogue", "origin": "codex-session"}),
+            watch=True,
+        )
     assert terms.get("is_error") is True, terms
     assert "sessions where" in str(terms.get("message", ""))
 
-    extra = await _write_saved_view(
-        archive_root,
-        name="split filters",
-        query_json=json.dumps({"query": "sessions where repo:polylogue", "origin": "codex-session"}),
-        watch=True,
-    )
     assert extra.get("is_error") is True, extra
     assert "origin" in str(extra.get("message", ""))
 
