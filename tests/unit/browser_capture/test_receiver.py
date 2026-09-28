@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import socket
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -40,7 +41,6 @@ from polylogue.browser_capture.route_contracts import (
     browser_capture_route_contract_for,
 )
 from polylogue.browser_capture.server import (
-    MAX_BROWSER_CAPTURE_BODY_BYTES,
     make_server,
     mission_control_archive_facts,
 )
@@ -1056,24 +1056,74 @@ def test_receiver_rejects_malformed_capture_payloads(
     assert list(tmp_path.rglob("*.json")) == []
 
 
-def test_receiver_body_limit_allows_native_conversation_payloads_but_still_caps(
-    tmp_path: Path,
+def test_receiver_streams_captures_past_the_control_bound_byte_identically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    assert MAX_BROWSER_CAPTURE_BODY_BYTES >= 64 * 1024 * 1024
+    """A capture is staged in bounded reads and published as the exact body.
 
+    Anti-vacuity: routing captures back through ``_read_json_body`` refuses
+    this body (it exceeds the shrunken control bound), and a whole-body read
+    of the capture makes the largest recorded read the body size instead of
+    the chunk.
+    """
+    import polylogue.browser_capture.capture_stream as capture_stream
+    import polylogue.browser_capture.server as server
+
+    chunk = 64
+    monkeypatch.setattr(server, "MAX_CONTROL_BODY_BYTES", 256)
+    monkeypatch.setattr(capture_stream, "CAPTURE_READ_CHUNK_BYTES", chunk)
+    reads: list[int] = []
+    original_stage = server.stage_capture_body
+
+    def recording_stage(read: object, length: int, *, spool_root: Path) -> object:
+        def recording_read(size: int) -> bytes:
+            reads.append(size)
+            return read(size)  # type: ignore[operator]
+
+        return original_stage(recording_read, length, spool_root=spool_root)
+
+    monkeypatch.setattr(server, "stage_capture_body", recording_stage)
+    payload = _payload()
+    session = cast(dict[str, object], payload["session"])
+    session["turns"] = [
+        {"provider_turn_id": f"u{index}", "role": "user", "text": "long turn " * 40} for index in range(20)
+    ]
+    raw = json.dumps(payload, indent=2).encode("utf-8")
+    assert len(raw) > 256 * 10
+
+    with _running_receiver(tmp_path) as (host, port):
+        response = _request(host, port, "POST", "/v1/browser-captures", body=raw, origin=_EXTENSION_ORIGIN)
+        accepted = BrowserCaptureAcceptedPayload.model_validate(json.loads(response.read()))
+
+    assert response.status == HTTPStatus.ACCEPTED
+    assert max(reads) == chunk
+    assert sum(reads) == len(raw)
+    assert accepted.content_hash == hashlib.sha256(raw).hexdigest()
+    assert (tmp_path / accepted.artifact_ref).read_bytes() == raw
+    assert accepted.provider_session_id == "conv-123"
+    assert not list(tmp_path.rglob(".*.tmp"))
+
+
+def test_receiver_refuses_a_body_shorter_than_its_declared_length(tmp_path: Path) -> None:
+    """A truncated upload is refused and leaves neither artifact nor staging file."""
+    raw = json.dumps(_payload()).encode("utf-8")
     with _running_receiver(tmp_path) as (host, port):
         conn = HTTPConnection(host, port)
         conn.putrequest("POST", "/v1/browser-captures")
         conn.putheader("Origin", _EXTENSION_ORIGIN)
-        conn.putheader("Content-Length", str(MAX_BROWSER_CAPTURE_BODY_BYTES + 1))
+        conn.putheader("Content-Length", str(len(raw) + 100))
         conn.endheaders()
+        assert conn.sock is not None
+        conn.sock.sendall(raw)
+        conn.sock.shutdown(socket.SHUT_WR)
         response = conn.getresponse()
         error = BrowserCaptureErrorPayload.model_validate(json.loads(response.read()))
         conn.close()
 
     assert response.status == HTTPStatus.BAD_REQUEST
-    assert error.error == "invalid_body_size"
+    assert error.error == "incomplete_body"
     assert list(tmp_path.rglob("*.json")) == []
+    assert not list(tmp_path.rglob(".*.tmp"))
 
 
 def test_receiver_auth_allows_cors_preflight_without_bearer_token(tmp_path: Path) -> None:
