@@ -477,12 +477,6 @@ def validate_mutation_plan_integrity(plan: MutationPlan) -> None:
 #: decision.
 MAX_MUTATION_PLAN_TARGETS = 256
 
-#: How many canonical session IDs a delete preview result names. The selection
-#: itself has no count cap, so the result reports its size and a leading sample
-#: instead of echoing every ID past the operation result bound; the full
-#: selection stays in the durable preview chunks the result's refs name.
-DELETE_PREVIEW_SAMPLE_IDS = 20
-
 
 def build_plan(
     *,

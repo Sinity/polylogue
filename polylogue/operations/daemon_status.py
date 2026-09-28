@@ -92,10 +92,14 @@ def produce_direct_status(
 
     settings = embedding_status_settings_from_config(config)
 
-    embedding_status = embedding_status_payload_from_connections(
-        index_conn,
-        config=config,
-        include_detail=False,
+    embedding_status = (
+        embedding_status_payload_from_connections(
+            index_conn,
+            config=config,
+            include_detail=False,
+        )
+        if _attached_connection(index_conn, "embeddings_tier") is not None
+        else None
     ) or _unavailable_embedding_status(settings)
     archive_stats.update(
         {

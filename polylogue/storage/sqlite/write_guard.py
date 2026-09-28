@@ -145,14 +145,24 @@ def _guarded_connect(database: Any, *args: Any, **kwargs: Any) -> sqlite3.Connec
         # Imported here, not at module scope: ``write_lease`` re-exports this
         # module's installer so the guard has a static production consumer,
         # and a module-level import back would close that cycle.
-        from polylogue.storage.sqlite.write_lease import require_write_lease
+        from polylogue.storage.sqlite.write_lease import current_write_lease, require_write_lease
 
         path = guarded_archive_tier_path(database, uri=bool(kwargs.get("uri", False)))
         if path is not None:
-            # No ``archive_root``: the guard asserts that *a* lease is held by
-            # this thread or task, and leaves root binding to the declared
-            # factories, which know which archive they were asked for.
-            require_write_lease(f"sqlite3.connect({path})")
+            # This generic net only asserts that *a* lease is held by this
+            # thread or task; root binding is the declared factories' job,
+            # since they know which archive they were asked for and already
+            # ran their own ``require_write_lease(..., archive_root=...)``
+            # before reaching here. Echo the held lease's own archive root
+            # (a trivial self-match) so the identity check below has nothing
+            # to reject -- passing ``None`` would otherwise read as an
+            # omission on an archive-bound lease and refuse a legitimate,
+            # already-validated recheck.
+            lease = current_write_lease()
+            require_write_lease(
+                f"sqlite3.connect({path})",
+                archive_root=lease.archive_root if lease is not None else None,
+            )
     return original(database, *args, **kwargs)
 
 

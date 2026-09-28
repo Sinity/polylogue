@@ -36,7 +36,6 @@ from polylogue.operations.machine_receipts import (
     ingest_session_ids_digest,
 )
 from polylogue.operations.mutation_transaction import (
-    DELETE_PREVIEW_SAMPLE_IDS,
     AuthorizationMismatchError,
     MutationAuthorization,
     MutationPlan,
@@ -1028,6 +1027,8 @@ class AuditRepository:
     def machine_preview_summary(self, binding: MachineRequestBinding) -> dict[str, object]:
         """Reconstruct a preview response from ordered normalized authority rows."""
         parts = self.machine_parts(binding)
+        from polylogue.operations.daemon_protocol import DELETE_PREVIEW_SAMPLE_IDS
+
         sample: list[str] = []
         count = 0
         expiries: list[int] = []

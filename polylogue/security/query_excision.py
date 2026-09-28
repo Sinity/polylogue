@@ -242,9 +242,9 @@ def apply_query_excision(
         # `scope_ref`, and arbitrary operator JSON in `staleness_json` /
         # `context_policy_json` / `supersedes_json` / `evidence_refs_json`;
         # clearing `value_json`/`body_text` alone left all of those readable
-        # while the receipt reported a successful excision. `author_ref` and
-        # `author_kind` are deliberately retained: they are the accountability
-        # record for the excised note, not its content.
+        # while the receipt reported a successful excision. The durable
+        # operation ledger retains accountability, so this tombstone also
+        # replaces caller-controlled authorship.
         conn.execute(
             f"""
             UPDATE assertions
@@ -258,6 +258,8 @@ def apply_query_excision(
                    evidence_refs_json = '[]',
                    supersedes_json = '[]',
                    context_policy_json = '{{"inject":false}}',
+                   author_ref = 'system:excision',
+                   author_kind = 'system',
                    visibility = 'private',
                    updated_at_ms = ?
              WHERE assertion_id IN ({marks})

@@ -691,19 +691,44 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             return
         try:
             from polylogue.api.archive import candidate_capture_kind
-            from polylogue.config import Config
-            from polylogue.operations.facade_writers import _archive_capture_assertion_candidate
+            from polylogue.daemon.api_auth import resolve_api_auth_token
+            from polylogue.daemon.socket_path import daemon_socket_path
+            from polylogue.daemon_client import DaemonClient
 
             root = self.server.config.archive_root or default_archive_root()
-            envelope = _archive_capture_assertion_candidate(
-                Config(archive_root=root, render_root=root, sources=[]),
-                body_text=payload["body_text"],
-                kind=candidate_capture_kind(payload["kind"]),
-                scope_refs=(evidence_refs[0],),
-                author_ref=str(payload.get("author_ref") or "user:browser-extension"),
-                author_kind=str(payload.get("author_kind") or "user"),
-                idempotency_key=payload.get("idempotency_key"),
+            provider_message_id = str(observation["provider_message_id"])
+            expected_message_ref = (
+                f"{observation.get('origin')}:{observation.get('provider_conversation_id')}:n:{provider_message_id}"
             )
+            if payload["target_ref"] != expected_message_ref:
+                raise ValueError("selected message target does not match its native observation")
+            config = self.server.config
+            response = DaemonClient(
+                daemon_socket_path(root),
+                auth_token=lambda: resolve_api_auth_token(
+                    getattr(config, "api_auth_token", None),
+                    allow_no_auth=getattr(config, "api_allow_no_auth", False),
+                ),
+            ).operation(
+                "mutation.assertion.candidate.capture",
+                {
+                    "body_text": payload["body_text"],
+                    "kind": candidate_capture_kind(payload["kind"]).value,
+                    "refs": [f"message:{provider_message_id}"],
+                    "scope_refs": [evidence_refs[0]],
+                    "author_ref": str(payload.get("author_ref") or "user:browser-extension"),
+                    "author_kind": str(payload.get("author_kind") or "user"),
+                    "idempotency_key": payload.get("idempotency_key"),
+                },
+                archive_root=str(root),
+            )
+            if response is None or response.get("outcome") not in {"completed", "no-effect"}:
+                self._safe_error(HTTPStatus.SERVICE_UNAVAILABLE, "daemon_candidate_capture_unavailable")
+                return
+            candidate = response.get("result")
+            if not isinstance(candidate, dict):
+                self._safe_error(HTTPStatus.BAD_GATEWAY, "daemon_candidate_capture_invalid_result")
+                return
         except (ValueError, KeyError) as exc:
             self._safe_error(HTTPStatus.BAD_REQUEST, str(exc))
             return
@@ -711,9 +736,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             logger.warning("browser_capture.assertion_candidate_failed", request_id=self._request_id(), error=repr(exc))
             self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "assertion_candidate_write_failed")
             return
-        self._send_json(
-            HTTPStatus.ACCEPTED, {"ok": True, "status": "applied", "candidate": envelope.model_dump(mode="json")}
-        )
+        self._send_json(HTTPStatus.ACCEPTED, {"ok": True, "status": "applied", "candidate": candidate})
 
     def do_PUT(self) -> None:
         self._observe_request("PUT", self._do_put)

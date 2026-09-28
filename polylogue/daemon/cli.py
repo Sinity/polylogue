@@ -1629,12 +1629,15 @@ def _acquire_pidfile(pidfile: Path) -> int:
     Returns the open fd. The lock is held until process exit or explicit close.
     """
     pidfile.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(pidfile, os.O_RDWR | os.O_CREAT | os.O_TRUNC, 0o644)
+    fd = os.open(pidfile, os.O_RDWR | os.O_CREAT, 0o644)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError as err:
         os.close(fd)
-        raise RuntimeError(f"Could not acquire lock on {pidfile} — another daemon may be running") from err
+        raise RuntimeError(
+            f"Could not acquire lock on {pidfile}; another daemon or offline archive writer may own this archive"
+        ) from err
+    os.ftruncate(fd, 0)
     os.write(fd, str(os.getpid()).encode())
     os.fsync(fd)
     return fd
@@ -2634,6 +2637,8 @@ async def _run_daemon_services_under_active_writer_lease(
                 compute_adapter=daemon_compute,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
             )
+            if api_server is not None and api_server.operation_runtime.embedding_convergence is None:
+                api_server.operation_runtime.embedding_convergence = embedding_convergence
 
             async def converge_ingest_embeddings(index_db: Path, paths: Sequence[Path]) -> bool:
                 ids = embedding_session_ids_for_paths(index_db, archive_root=archive_root_path, paths=paths)

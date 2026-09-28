@@ -88,7 +88,7 @@ class WorkloadAdapterDeclaration:
     def __post_init__(self) -> None:
         if not all((self.name, self.owner, self.disposition, self.evidence)):
             raise ValueError("workload adapter declarations require complete identity and evidence")
-        if self.disposition not in {"shared-receipt", "explicit-adapter"}:
+        if self.disposition not in {"shared-receipt", "explicit-adapter", "no-receipt-contract"}:
             raise ValueError(f"unknown workload adapter disposition: {self.disposition}")
 
 
@@ -100,8 +100,8 @@ WORKLOAD_ADAPTER_DECLARATIONS: tuple[WorkloadAdapterDeclaration, ...] = (
     WorkloadAdapterDeclaration(
         "scenario-execution",
         "polylogue.scenarios.execution",
-        "explicit-adapter",
-        "execution specs delegate measurement to their declared runner",
+        "no-receipt-contract",
+        "dispatch returns runner or subprocess results; no execution receipt is produced",
     ),
     WorkloadAdapterDeclaration(
         "ingest/source-observation",

@@ -1163,6 +1163,7 @@ def open_initialized_tier_connection(
     timeout: float = 30.0,
     busy_timeout_ms: int | None = None,
     daemon: bool = True,
+    archive_root: Path | str | None = None,
 ) -> sqlite3.Connection:
     """Open a tier database that may not exist yet, materialise it, and validate.
 
@@ -1187,6 +1188,7 @@ def open_initialized_tier_connection(
             busy_timeout_ms=busy_timeout_ms,
             tier=tier,
             validate_schema=False,
+            archive_root=archive_root,
         )
     else:
         conn = open_connection(path, timeout=timeout, tier=tier, validate_schema=False)
@@ -1210,7 +1212,7 @@ def open_initialized_tier_connection(
             # Performance only: the redundant whole-tier DDL goes, the identity
             # policy this route has always applied stays. See
             # converge_same_version_tier on why the two are separable.
-            converge_same_version_tier(conn, tier, derived_identity="stamp")
+            converge_same_version_tier(conn, tier, derived_identity="verify")
         else:
             initialize_archive_tier(conn, tier)
         assert_tier_schema_supported(conn, path, tier)

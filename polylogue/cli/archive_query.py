@@ -1694,7 +1694,7 @@ def _prepared_delete_selection(
     whole selection lives in the durable preview chunks, so a selection of any
     size stays within the operation result bound.
     """
-    from polylogue.operations.mutation_transaction import DELETE_PREVIEW_SAMPLE_IDS
+    from polylogue.operations.daemon_protocol import DELETE_PREVIEW_SAMPLE_IDS
 
     count = daemon_preview.get("session_count")
     raw_sample = daemon_preview.get("session_ids_sample")

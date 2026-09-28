@@ -507,6 +507,13 @@ class InsightRebuildRequest(_OperationPayload):
         return self
 
 
+#: How many canonical session IDs a delete preview result names. The selection
+#: itself has no count cap, so the result reports its size and a leading sample
+#: instead of echoing every ID past the operation result bound; the full
+#: selection stays in the durable preview chunks the result's refs name.
+DELETE_PREVIEW_SAMPLE_IDS = 20
+
+
 #: Transport bound shared by every delete phase. A selection accepted by the
 #: preview yields one preview (then authorization) reference per chunk, so the
 #: follow-up phases must accept a body sized for the same selection.
@@ -770,6 +777,7 @@ class SessionExcisionRequest(_OperationPayload):
     reason: str = Field(min_length=1, max_length=4096)
     actor: str = Field(min_length=1, max_length=512)
     cascade_lineage: bool = False
+    confirm: bool = False
 
 
 class SessionLifecycleRequest(_OperationPayload):
@@ -777,16 +785,19 @@ class SessionLifecycleRequest(_OperationPayload):
     mode: Literal["mirror", "primary"]
     reason: str = Field(min_length=1, max_length=4096)
     actor: str = Field(min_length=1, max_length=512)
+    confirm: bool = False
 
 
 class IdentityResetRequest(_OperationPayload):
     session_ids: list[str] = Field(min_length=1, max_length=10_000)
     reason: str = Field(min_length=1, max_length=4096)
+    confirm: bool = False
 
 
 class RawAuthorityBlockerResolveRequest(_OperationPayload):
     blocker_id: str = Field(min_length=1)
     resolution: str = Field(min_length=1, max_length=4096)
+    confirm: bool = False
 
 
 class ResetRequest(_OperationPayload):
@@ -799,10 +810,13 @@ class ResetRequest(_OperationPayload):
     cache: bool = False
     auth: bool = False
     reset_all: bool = False
+    confirm: bool = False
+    expected_targets: list[str] = Field(default_factory=list, max_length=10_000)
 
 
 class BlobPublicationsAbandonRequest(_OperationPayload):
     publication_ids: list[str] = Field(min_length=1, max_length=10_000)
+    confirm: bool = False
 
 
 class DemoAugmentRequest(_OperationPayload):
@@ -1141,8 +1155,6 @@ class MutationResult(_OperationPayload):
             if self.outcome not in DAEMON_OPERATION_OUTCOMES or self.sequence is None:
                 raise ValueError("mutation lifecycle result requires outcome and durable sequence")
         elif self.status == "prepared":
-            from polylogue.operations.mutation_transaction import DELETE_PREVIEW_SAMPLE_IDS
-
             if not self.preview_refs or self.preview_ref != self.preview_refs[0] or self.session_ids_sample is None:
                 raise ValueError("prepared result requires exact preview references and selection sample")
             if (
@@ -1161,27 +1173,33 @@ class MutationResult(_OperationPayload):
 
 
 class EmbeddingBackfillProgress(_OperationPayload):
-    state: Literal["stopped", "complete"]
-    computed: int = Field(ge=0)
-    failed: int = Field(ge=0)
-    estimated_cost_usd: float = Field(ge=0)
+    state: Literal["stopped", "complete", "unknown"]
+    computed: int | None = Field(default=None, ge=0)
+    failed: int | None = Field(default=None, ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
 
 
 class EmbeddingBackfillCounts(_OperationPayload):
-    done: int = Field(ge=0)
-    pending: int = Field(ge=0)
-    failed: int = Field(ge=0)
+    done: int | None = Field(default=None, ge=0)
+    pending: int | None = Field(default=None, ge=0)
+    failed: int | None = Field(default=None, ge=0)
+
+
+class EmbeddingBackfillFailure(_OperationPayload):
+    code: str = Field(min_length=1, max_length=64)
+    message: str = Field(min_length=1, max_length=512)
 
 
 class EmbeddingBackfillResult(_OperationPayload):
     operation: Literal["maintenance.embeddings.backfill"]
     outcome: Literal["completed", "stopped", "cancelled", "failed"]
     sequence: int = Field(ge=1)
-    effect: Literal["committed", "no-effect"]
-    affected_count: int = Field(ge=0)
+    effect: Literal["committed", "no-effect", "indeterminate"]
+    affected_count: int | None = Field(default=None, ge=0)
     stop_reason: str | None = None
     progress: EmbeddingBackfillProgress
     result: EmbeddingBackfillCounts
+    error: EmbeddingBackfillFailure | None = None
 
 
 class AcceptedOperationReference(_OperationPayload):
@@ -2811,6 +2829,7 @@ __all__ = [
     "MAX_DECLARED_OPERATION_BODY_BYTES",
     "MAX_OPERATION_BODY_BYTES",
     "MAX_OPERATION_RESULT_BYTES",
+    "DELETE_PREVIEW_SAMPLE_IDS",
     "DaemonAuthority",
     "DAEMON_OPERATION_OUTCOMES",
     "DaemonFallback",
