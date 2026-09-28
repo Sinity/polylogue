@@ -432,15 +432,18 @@ def parse_one_source_path(
     emitter = _SessionEmitter(ctx)
 
     if capture_raw and should_group:
-        # Grouped files are published whole before the emitter sees their
-        # records, so the location check runs first.
-        refuse_foreign_material(path, provider_hint)
         if blob_root is None:
             from polylogue.paths import blob_store_root
 
             blob_root = blob_store_root()
         resolved_store = blob_store or BlobStore(blob_root)
-        blob_hash, blob_size = resolved_store.write_from_path(path)
+        from polylogue.sources.bound_capture import capture_bound_source
+
+        # Grouped files are published whole before the emitter sees their
+        # records; validate the captured bytes before the flush reserves them.
+        blob_hash, blob_size = capture_bound_source(
+            resolved_store, path, provider_hint, lambda: resolved_store.write_from_path(path)
+        )
         from polylogue.storage.blob_publication import flush_blob_publications, publication_receipt_id
 
         receipt_id = publication_receipt_id(resolved_store, blob_hash)

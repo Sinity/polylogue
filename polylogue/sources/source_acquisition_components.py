@@ -339,7 +339,9 @@ def iter_entry_payloads(
     provider_locked = False
     for payload in _decoders._iter_json_stream(handle, stream_name):
         normalized_payload = _artifact_payload(payload)
-        if provider_locked:
+        if provider_locked and bound_provider is None:
+            # A bound document validates every record: a later record of
+            # another origin must still be refused, not ride the lock.
             yield DetectedEntryPayload(current_provider, normalized_payload, 0.0)
             continue
 

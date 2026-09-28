@@ -480,9 +480,15 @@ def refuse_foreign_material(
         return
     source = Path(path)
     name = source.name
+    from .origin_specs import database_member_for_filename, path_declaration_refuses_session
+
+    member = database_member_for_filename(name)
+    if member is not None and not same_origin(member.provider, bound):
+        # A declared database of another origin (Codex ``state_5.sqlite``
+        # under a Claude Code root) is foreign by declaration.
+        raise ForeignOriginContentError(expected=bound, found=member.provider, evidence="declared database member")
     if not (name.lower().endswith(".json") or is_jsonl_source_path(name)):
         return
-    from .origin_specs import path_declaration_refuses_session
 
     if path_declaration_refuses_session(bound, source):
         return

@@ -18,6 +18,7 @@ from pathlib import Path
 from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, BoundedMemberReport, ZipAdmission
 from polylogue.config import Source
 from polylogue.core.enums import Provider
+from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_raw_id, zip_member_source_index
 from polylogue.logging import WARNING, emit
 from polylogue.sources.decoder_zip import (
@@ -71,10 +72,8 @@ def iter_retained_source_records(
     logical_path = Path(source_path)
     source = Source(name=source_name or "machine-ingest", path=logical_path)
     binding = database_member_for_filename(logical_path.name)
-    try:
-        declared_provider = Provider(source.name)
-    except ValueError:
-        declared_provider = Provider.UNKNOWN
+    # Source aliases (``codex-state``, ``aistudio``) resolve to their origin.
+    declared_provider = Provider.from_string(canonical_acquisition_provider(source.name, source_name=source.name))
     provider = binding.provider if binding is not None else declared_provider
     # The declared source location binds (not a sniffed dominant provider), so
     # an operator-imported archive stays unbound and classifies its members.
