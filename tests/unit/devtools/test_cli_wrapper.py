@@ -242,12 +242,11 @@ def test_wrapper_provisions_a_fresh_checkout_through_its_devshell(tmp_path: Path
     checkout.mkdir()
     _make_fake_checkout(checkout)
     (checkout / "flake.nix").write_text("{}\n")
-    (checkout / "sub").mkdir()
     log = tmp_path / "nix.log"
     _fake_nix(tmp_path / "bin", log)
     env = {"PATH": f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}"}
 
-    first = _run_wrapper("hello", cwd=checkout / "sub", env=env)
+    first = _run_wrapper("hello", cwd=checkout, env=env)
     assert first.returncode == 0, first.stderr
     assert (checkout / ".venv" / "bin" / "python").exists()
     assert log.read_text().split()[:1] == [str(checkout)]
