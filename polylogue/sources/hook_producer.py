@@ -282,10 +282,13 @@ def append_event(
     resolved_id = str(normalized["event_id"])
     if not resolved_id or not _EVENT_ID_ALPHABET.issuperset(resolved_id):
         raise HookSpoolRecordError("hook carrier event_id must contain only letters, digits, '_' or '-'")
-    with _carrier_lock(Path(root), exclusive=False):
-        target = carrier_path(root, str(normalized["provider"]))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        append_carrier_line(target, normalized)
+    # Producers never wait for the one-shot legacy drain. Each hook process
+    # owns a PID-scoped carrier, while the compactor writes its own carrier;
+    # both can append concurrently without sharing a file. A five-second hook
+    # deadline must not be spent waiting for a large legacy spool fold.
+    target = carrier_path(root, str(normalized["provider"]))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    append_carrier_line(target, normalized)
     return str(target)
 
 
@@ -355,11 +358,28 @@ def _carrier_lock(root: Path, *, exclusive: bool) -> Iterator[None]:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
-def _carrier_paths(root: Path) -> list[str]:
+def _carrier_scope_summary(root: Path) -> dict[str, object]:
+    """Hash carrier membership in a streaming walk without retaining paths."""
+    import hashlib
+
     carrier_root = root / CARRIERS_DIRNAME
-    if not carrier_root.exists():
-        return []
-    return sorted(str(path) for path in carrier_root.rglob("*.ndjson") if path.is_file())
+    digest = hashlib.sha256()
+    count = 0
+    if carrier_root.exists():
+        stack = [carrier_root]
+        while stack:
+            directory = stack.pop()
+            with os.scandir(directory) as entries:
+                ordered = sorted(entries, key=lambda entry: entry.name)
+            for entry in ordered:
+                path = Path(entry.path)
+                if entry.is_dir(follow_symlinks=False):
+                    stack.append(path)
+                elif entry.is_file(follow_symlinks=False) and path.suffix == ".ndjson":
+                    digest.update(path.relative_to(carrier_root).as_posix().encode("utf-8"))
+                    digest.update(b"\0")
+                    count += 1
+    return {"file_count": count, "sha256": digest.hexdigest()}
 
 
 class _CompactionSink:
@@ -594,14 +614,13 @@ def compact_legacy_spool(
     """
 
     with _carrier_lock(root, exclusive=True):
-        before = _carrier_paths(root)
+        before = _carrier_scope_summary(root)
         summary = _compact_legacy_spool_unlocked(root, max_bytes=max_bytes, checkpoint_events=checkpoint_events)
-        after = _carrier_paths(root)
+        after = _carrier_scope_summary(root)
     summary.update(
-        carrier_quiesced=True,
-        carrier_arrivals_during_drain=0,
-        carrier_arrival_policy="producer blocked by exclusive drain lock; post-release arrivals deferred",
-        carrier_scope=sorted(set(before) | set(after)),
+        carrier_compaction_serialized=True,
+        carrier_producer_policy="hook producers do not wait for the legacy drain lock",
+        carrier_scope={"before": before, "after": after},
         conservation_reconciliation="event_id basename; acknowledged day shard is destination metadata",
     )
     return summary

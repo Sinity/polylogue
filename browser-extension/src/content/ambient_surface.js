@@ -523,9 +523,9 @@
       bodyInput.value = selectionCandidate.text;
       editor.hidden = false;
       const observation = selectionCandidate.identity_observation;
-      const accepted = snapshot?.assertions?.accepted_identity;
       const expectedMessageRef = observation?.origin && observation?.provider_conversation_id && observation?.provider_message_id
         ? `${observation.origin}:${observation.provider_conversation_id}:n:${observation.provider_message_id}` : null;
+      const accepted = expectedMessageRef ? snapshot?.assertions?.accepted_identities?.[expectedMessageRef] : null;
       selectionCandidate.message_ref = expectedMessageRef;
       selectionCandidate.evidence_ref = accepted?.message_ref === expectedMessageRef ? accepted.evidence_ref : null;
       assertionButton.disabled = !snapshot?.assertions?.persistence_supported || !selectionCandidate.evidence_ref;

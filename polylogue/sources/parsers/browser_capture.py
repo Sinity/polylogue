@@ -304,7 +304,16 @@ def _claude_attachment_cross_route_match(
     same-name uploads from being attributed to an arbitrary native row.
     """
 
-    if not _is_claude_envelope_attachment_id(envelope.provider_attachment_id):
+    claude_native_file_id = (
+        envelope.provider_file_id
+        if envelope.provider_file_id
+        else envelope.provider_attachment_id.removeprefix("claude-file:")
+        if envelope.provider_attachment_id.startswith("claude-file:")
+        else None
+    )
+    if not (_is_claude_envelope_attachment_id(envelope.provider_attachment_id) or claude_native_file_id):
+        return False
+    if claude_native_file_id and native.provider_attachment_id != claude_native_file_id:
         return False
     if native.message_provider_id != envelope.message_provider_id:
         return False
@@ -348,8 +357,15 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
         for turn in envelope.session.turns
         for attachment in turn.attachments
     ]
+    parsed_roles = {
+        message.provider_message_id: message.role for message in parsed.messages if message.provider_message_id
+    }
     envelope_attachments.extend(
-        _browser_capture_parsed_attachment(attachment, message_provider_id=attachment.message_provider_id)
+        _browser_capture_parsed_attachment(
+            attachment,
+            message_provider_id=attachment.message_provider_id,
+            role=parsed_roles.get(attachment.message_provider_id),
+        )
         for attachment in envelope.session.attachments
     )
     if not envelope_attachments:

@@ -1237,3 +1237,34 @@ def test_checkpoint_after_terminal_update_is_kept(tmp_path: Path) -> None:
         )
         assert status == 200
         assert refetched["job"]["retention"]["timeline_authoritative"] is False
+
+
+def test_explicit_default_retention_is_durable_declaration(tmp_path: Path) -> None:
+    """Anti-vacuity: value equality must not erase an explicit client declaration."""
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        body = {
+            "provider": "chatgpt",
+            "account_scope": SCOPE,
+            "lease_id": adopted["lease"]["lease_id"],
+            "generation": adopted["lease"]["generation"],
+            "proof": adopted["lease"]["proof"],
+            "expected_revision": adopted["job"]["revision"],
+            "request_id": "declare-default-retention",
+            "retention": {"state": "active", "hold_reason": None, "timeline_authoritative": True},
+        }
+        status, declared = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", body)
+        assert status == 200
+        assert declared["receipt"]["no_op"] is False
+
+        body.update(
+            request_id="terminal-after-declaration",
+            expected_revision=declared["job"]["revision"],
+            retention=None,
+            retry={"state": "completed", "attempt": 1, "reason": None, "next_eligible_at": None},
+        )
+        body.pop("retention")
+        status, terminal = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", body)
+        assert status == 200
+        assert terminal["job"]["retention"]["state"] == "active"
