@@ -39,6 +39,7 @@ __all__ = [
     "anchor_text",
     "census_sqlite_degradation_anchors",
     "load_sqlite_degradation_baseline",
+    "module_degradation_anchors",
     "normalized_handler_digest",
 ]
 
@@ -129,12 +130,18 @@ def census_sqlite_degradation_anchors(repo_root: Path, roots: tuple[str, ...]) -
                 source, tree = parse_source(py_file)
             except (OSError, SyntaxError, UnicodeDecodeError):
                 continue
-            file_rel = py_file.relative_to(repo_root).as_posix()
-            parents = {child: parent for parent in walk_module(tree) for child in ast.iter_child_nodes(parent)}
-            for node in walk_module(tree):
-                if isinstance(node, ast.ExceptHandler) and _handles_sqlite(node) and _returns_value(node, parents):
-                    anchors[(file_rel, normalized_handler_digest(source, node))] += 1
+            anchors.update(module_degradation_anchors(source, tree, file_rel=py_file.relative_to(repo_root).as_posix()))
     return anchors
+
+
+def module_degradation_anchors(source: str, tree: ast.Module, *, file_rel: str) -> list[DegradationAnchor]:
+    """Return one module's degradation-site anchors, one per site."""
+    parents = {child: parent for parent in walk_module(tree) for child in ast.iter_child_nodes(parent)}
+    return [
+        (file_rel, normalized_handler_digest(source, node))
+        for node in walk_module(tree)
+        if isinstance(node, ast.ExceptHandler) and _handles_sqlite(node) and _returns_value(node, parents)
+    ]
 
 
 def load_sqlite_degradation_baseline(baseline_path: Path) -> Counter[DegradationAnchor]:

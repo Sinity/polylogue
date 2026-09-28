@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from polylogue.archive.attachment.models import Attachment
 from polylogue.archive.message.model_runtime import MessageRuntimeMixin
@@ -14,6 +14,8 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Origin
 
 
 class Message(MessageRuntimeMixin, BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     id: str
     identity_source: str = "content"
     role: Role

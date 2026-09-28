@@ -52,6 +52,7 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
+    OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
     PytestSlotUnavailableError,
     basetemp_root,
@@ -60,6 +61,7 @@ from devtools.pytest_slot import (
     run_pytest,
     run_pytest_isolated,
     sweep_stale_temp_trees,
+    termination_metadata,
 )
 from devtools.pytest_stream_report import report_file_argument, spool_paths
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
@@ -439,13 +441,36 @@ def _run(
             },
         )
     returncode = outcome.returncode
+    killed = termination_metadata(outcome)
+    if killed.get("diagnosis") == OOM_KILLED_DIAGNOSIS:
+        # The kill took the unit's receipt writer with it, so the provenance
+        # check below would name the missing receipt instead of the cause.
+        return (
+            returncode or 137,
+            time.monotonic() - started,
+            {
+                **killed,
+                "pytest_slot": outcome.slot,
+                **({"pytest_slot_log": str(outcome.log_path)} if outcome.log_path is not None else {}),
+                **({"pytest_slot_receipt": outcome.receipt} if outcome.receipt is not None else {}),
+                # The tree pytest ran against is whatever the slot recorded
+                # before the kill; without that record it is unknown, never
+                # the tree admitted at submission.
+                **(
+                    {"worktree_provenance": outcome.receipt["worktree_provenance"]}
+                    if isinstance(outcome.receipt, dict)
+                    and isinstance(outcome.receipt.get("worktree_provenance"), dict)
+                    else {"worktree_provenance_unknown": True}
+                ),
+            },
+        )
     if outcome.slot.startswith("agentctl job") and (
         not isinstance(outcome.receipt, dict) or not isinstance(outcome.receipt.get("worktree_provenance"), dict)
     ):
         return (
             125,
             time.monotonic() - started,
-            {"diagnosis": "worktree_provenance_unavailable", "pytest_slot": outcome.slot},
+            {"diagnosis": "worktree_provenance_unavailable", **killed, "pytest_slot": outcome.slot},
         )
     # Exit 1 is "tests failed", the only outcome a rerun can speak to. Exit 2
     # (interrupted), 3 (internal error), 4 (usage) and the signal codes
@@ -476,6 +501,8 @@ def _run(
         time.monotonic() - started,
         {
             "diagnosis": "pytest_passed" if returncode == 0 else "pytest_failed",
+            # Another recorded killer (a unit timeout) keeps its attribution.
+            **killed,
             "pytest_slot": outcome.slot,
             **({"rerun": rerun} if rerun is not None else {}),
             **({"suite_cost_receipt": str(suite_cost_receipt)} if suite_cost_receipt is not None else {}),
@@ -737,6 +764,8 @@ def main(argv: list[str] | None = None) -> int:
         rc = int(step["exit"])
         metadata = step
     provenance = metadata.get("worktree_provenance")
+    if not isinstance(provenance, dict) and metadata.get("worktree_provenance_unknown"):
+        run.record_execution_worktree({"capture_source": "unavailable"})
     if isinstance(provenance, dict):
         run.record_execution_worktree(provenance)
         # Report what actually ran, not what was admitted at submission.

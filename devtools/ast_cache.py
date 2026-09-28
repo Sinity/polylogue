@@ -56,6 +56,19 @@ def parse_path(path: Path) -> ast.Module:
     return parse_source(path)[1]
 
 
+def release(path: Path) -> None:
+    """Drop *path*'s parse and its walk; a later parse reads the file again."""
+    cached = _TREES.pop(path.resolve(), None)
+    if cached is not None:
+        _NODES.pop(id(cached[2]), None)
+
+
+def clear() -> None:
+    """Drop every parse this process holds."""
+    _TREES.clear()
+    _NODES.clear()
+
+
 def walk_module(tree: ast.AST) -> tuple[ast.AST, ...]:
     """Return ``tuple(ast.walk(tree))``, computed once for a tree this cache parsed."""
     memo = _NODES.get(id(tree))
@@ -67,4 +80,4 @@ def walk_module(tree: ast.AST) -> tuple[ast.AST, ...]:
     return memo[1]
 
 
-__all__ = ["parse_path", "parse_source", "read_source", "walk_module"]
+__all__ = ["clear", "parse_path", "parse_source", "read_source", "release", "walk_module"]
