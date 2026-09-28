@@ -19,7 +19,6 @@ from click.shell_completion import CompletionItem
 if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
     from polylogue.cli.select import SelectPrintField
-    from polylogue.config import Config
     from polylogue.surfaces.payloads import FacetsResponse
     from polylogue.surfaces.projection_spec import QueryProjectionSpec
 
@@ -2626,12 +2625,6 @@ def _resolve_target_session_id(
     return resolve_session_id_from_root_params(
         dict(request.params), env=env, operation=operation, first_only=first_only
     )
-
-
-def _request_config(request: RootModeRequest) -> Config:
-    """The configuration a resolution runs against."""
-
-    return cast("Config", request.config())
 
 
 def _resolve_query_action_session_id(
