@@ -3514,3 +3514,30 @@ async def test_degraded_intake_service_parks_without_passes_or_settlement() -> N
         clear_degraded()
     assert dispatcher.calls == 0
     assert drained == []
+
+
+@pytest.mark.asyncio
+async def test_degradation_during_a_pass_stops_the_remaining_classes() -> None:
+    """Anti-vacuity: drop the per-class degraded check from ``run_once`` and the
+    second class is still discovered after the first degraded the daemon."""
+    from polylogue.core.degraded import DegradedReason, clear_degraded, set_degraded
+
+    def degrade(_item: IntakeItem) -> AdmissionResult:
+        set_degraded(DegradedReason(code="database_layout_mismatch", message="structural error"))
+        return AdmissionResult(AdmissionOutcome.RETRYABLE, reason="structural error")
+
+    first = FakeAdapter("configured_local", ["file-00"], outcome_for=degrade)
+    second = FakeAdapter("hook_events", ["event-00"])
+    dispatcher = FairIntakeDispatcher(
+        (
+            IntakeClassSpec("configured_local", first, page_size=1),
+            IntakeClassSpec("hook_events", second, page_size=1),
+        )
+    )
+    try:
+        await dispatcher.run_once()
+    finally:
+        clear_degraded()
+
+    assert first.discover_calls
+    assert second.discover_calls == []

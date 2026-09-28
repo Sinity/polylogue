@@ -334,7 +334,14 @@ class FairIntakeDispatcher:
         reports: list[IntakeClassReport] = []
 
         total_weight = sum(spec.weight for spec in schedulable) or 1
+        from polylogue.core.degraded import is_fully_degraded
+
         for spec in schedulable:
+            if is_fully_degraded():
+                # A class that just degraded the daemon (a structural database
+                # error) ends the pass: later classes would still open archive
+                # tiers. The service parks from the next tick.
+                break
             runtime = self._runtime[spec.name]
             share = max(1, budget * spec.weight // total_weight)
             runtime.deficit += share
