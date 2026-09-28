@@ -42,7 +42,7 @@ reader; see the ``Reader`` protocol below.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Generic, TypeVar
 
@@ -161,11 +161,15 @@ def frame_request(
     reference = {**_window_arguments(original), **dict(extra_arguments or {})}
     if dict(transaction.arguments) != reference:
         raise QueryContinuationInvalidError("continuation arguments do not match the requested transcript window")
-    supplied = request.model_dump(mode="json", exclude_unset=True, exclude={"continuation", "operation"})
+    supplied = request.model_dump(mode="json", exclude_unset=True, exclude={"continuation", "operation", "limit"})
     for name, value in supplied.items():
         if value != original.model_dump(mode="json")[name]:
             raise QueryContinuationInvalidError(f"continuation conflicts with {name}")
-    return original, transaction
+    if "limit" not in request.model_fields_set:
+        return original, transaction
+    if request.limit > transaction.page_size:
+        raise QueryContinuationInvalidError("continuation cannot widen its bound window")
+    return request, replace(transaction, page_size=request.limit)
 
 
 def bind_snapshot(archive: Any, transaction: QueryTransactionRequest) -> QueryTransactionRequest:

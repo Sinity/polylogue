@@ -7,10 +7,11 @@ profiles`` works without re-specifying the filter on the subcommand.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import asdict
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import click
 
@@ -214,6 +215,10 @@ def _render_status_plain(report: InsightReadinessReport) -> None:
         expected = f" expected={insight.expected_row_count}" if insight.expected_row_count is not None else ""
         presence = "" if insight.table_present else " (table absent)"
         click.echo(f"{insight.insight_name}: rows={insight.row_count}{expected}{presence}")
+        if insight.degraded_count or insight.fallback_reason_counts:
+            reasons = ", ".join(f"{name}={count}" for name, count in sorted(insight.fallback_reason_counts.items()))
+            detail = f" fallback_reasons={reasons}" if reasons else ""
+            click.echo(f"  degraded={insight.degraded_count}{detail}")
         if insight.missing_count or insight.stale_count or insight.orphan_count or insight.incompatible_count:
             click.echo(
                 "  "
@@ -441,7 +446,7 @@ def insights_fable_packet_command(
         )
     except ValueError as exc:
         fail("insights fable-packet", str(exc))
-    payload = asdict(packet)
+    payload = _packet_json_document(packet)
     if output_format == "json" or ctx.find_root().params.get("output_format") == "json":
         emit_success(cast(dict[str, object], payload))
         return
@@ -462,6 +467,14 @@ def _format_pct(count: int, sample: int) -> str:
     if sample <= 0:
         return "-"
     return f"{(count * 100) // sample}%"
+
+
+def _packet_json_document(packet: Any) -> dict[str, object]:
+    """Lower the packet dataclass's tuples to JSON-native arrays."""
+    payload = json.loads(json.dumps(asdict(packet)))
+    if not isinstance(payload, dict):
+        raise TypeError("Fable packet did not lower to a JSON object")
+    return cast(dict[str, object], payload)
 
 
 def _render_audit_plain(report: InsightRigorAuditReport) -> None:

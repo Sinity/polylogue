@@ -33,6 +33,7 @@ class JudgeCandidateRow:
     evidence_refs: tuple[str, ...] = ()
     review_status: str = "pending"
     evidence_lines: tuple[str, ...] = ()
+    evidence_digest: str | None = None
 
     @classmethod
     def from_review(cls, item: AssertionCandidateReviewItemPayload) -> JudgeCandidateRow:
@@ -58,6 +59,7 @@ class JudgeCandidateRow:
             evidence_refs=item.candidate.evidence_refs,
             review_status=item.review_status,
             evidence_lines=evidence_lines,
+            evidence_digest=getattr(item.candidate, "evidence_digest", None),
         )
 
     @property
@@ -219,6 +221,7 @@ def _edit_and_accept(
     inject: bool,
     actor_ref: str = "user:local",
     reason: str = "operator edited candidate",
+    expected_evidence_digest: str | None = None,
 ) -> AssertionBulkJudgmentPayload:
     """Supersede edited text while preserving the candidate's promoted claim kind.
 
@@ -235,6 +238,7 @@ def _edit_and_accept(
         actor_ref=actor_ref,
         inject=inject,
         replacement_body_text=edited_body,
+        expected_evidence_digest=expected_evidence_digest,
     )
 
 
@@ -523,25 +527,33 @@ def judge_command(
             )
             click.echo("Deferred; editor closed without saving.")
             return
-        _edit_and_accept(
+        result = _edit_and_accept(
             env,
             selected=selected,
             edited_body=edited,
             inject=inject,
             actor_ref=actor_ref,
             reason=reason or "operator edited candidate",
+            expected_evidence_digest=expected_evidence_digest or selected.evidence_digest,
         )
+        if result.failed_count:
+            _emit_bulk_result(result, "supersede", output_format)
+            raise click.ClickException("edited candidate was not promoted")
         click.echo("Edited candidate promoted.")
         return
     if action == "a":
-        _judge(
+        result = _judge(
             env,
             refs=(selected.ref,),
             decision="accept",
             reason=reason,
             actor_ref=actor_ref,
             inject=inject,
+            expected_evidence_digest=expected_evidence_digest or selected.evidence_digest,
         )
+        if result.failed_count:
+            _emit_bulk_result(result, "accept", output_format)
+            raise click.ClickException("candidate was not accepted")
         click.echo("Accepted.")
         return
     raise click.UsageError("judge action must be a, r, d, e, or s")

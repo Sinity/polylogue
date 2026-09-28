@@ -195,3 +195,23 @@ def test_main_bypasses_guard_with_escape_env_var(
             main()
 
     assert excinfo.value.code == 1
+
+
+def test_runtime_refusal_uses_machine_error_envelope(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A preflight refusal is caught by the same JSON entrypoint as Click failures."""
+    monkeypatch.setattr(sys, "argv", ["polylogue", "--format", "json", "ops", "doctor"])
+    monkeypatch.setattr(click_app, "_guard_checkout_or_exit", lambda: None)
+    monkeypatch.setattr(
+        "polylogue.runtime.require_free_threaded_runtime",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("unsupported interpreter")),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        main()
+
+    assert excinfo.value.code == 1
+    payload = parse_json_object(capsys.readouterr().out)
+    assert payload["code"] == "runtime_error"
+    assert "unsupported interpreter" in payload["message"]

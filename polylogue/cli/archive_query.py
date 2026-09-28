@@ -294,11 +294,7 @@ def _read_session_windows(
             window_limit = min(remaining, _SESSION_READ_WINDOW)
         payload, _ = dispatch_read(
             config,
-            (
-                lower_session_read(ref, continuation=continuation)
-                if continuation is not None
-                else lower_session_read(ref, limit=window_limit)
-            ),
+            lower_session_read(ref, continuation=continuation, limit=window_limit),
             daemon_disabled=daemon_disabled,
         )
         window = payload.get("session")

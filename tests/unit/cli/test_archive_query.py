@@ -969,6 +969,30 @@ def test_validate_cursor_request_identity_accepts_matching_query() -> None:
     _validate_cursor_request_identity(cursor, "query-a")
 
 
+def test_cursor_identity_ignores_presentation_options_but_keeps_ranked_selection() -> None:
+    from polylogue.surfaces.cursor_identity import search_cursor_request_identity
+
+    base = {"query": "needle", "origin": "codex-session", "limit": 20}
+    shown_differently = {
+        **base,
+        "output_format": "json",
+        "fields": "title",
+        "verbose": True,
+        "plain": True,
+        "no_daemon": True,
+    }
+    assert search_cursor_request_identity(base) == search_cursor_request_identity(shown_differently)
+    assert search_cursor_request_identity(base) != search_cursor_request_identity({**base, "origin": "claude-code"})
+
+
+def test_field_projection_keeps_terminal_outcome() -> None:
+    payload = {"mode": "stats", "total_sessions": 2, "outcome": {"state": "matched"}}
+    assert _project_payload(payload, "total_sessions") == {
+        "total_sessions": 2,
+        "outcome": {"state": "matched"},
+    }
+
+
 class TestEmitDeleteMachineModeNoPrompt:
     """`_emit_delete` must never block on an interactive prompt in machine mode (#1818 P6).
 
