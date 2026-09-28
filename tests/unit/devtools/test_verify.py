@@ -789,7 +789,9 @@ def test_the_estimate_counts_forced_contract_tests(monkeypatch: pytest.MonkeyPat
     """Forced contract tests count toward the admitted plan, every parametrization.
 
     Anti-vacuity: drop ``forced_tests`` from the estimate and the count stays
-    at the one testmon-selected test while the run launches three.
+    at the one testmon-selected test while the run launches three; union the
+    forced tests into the selection and the overlap case counts three of the
+    four launches.
     """
     graph = SimpleNamespace(status=TestmonGraphStatus.USABLE, full_rerun_cause=None)
     (forced,) = verify.CONTRACT_DOCUMENT_TESTS
@@ -809,6 +811,18 @@ def test_the_estimate_counts_forced_contract_tests(monkeypatch: pytest.MonkeyPat
         tmp_path, graph, ("tests/unit/never.py::test_missing",)
     )
     assert count is None and error is not None
+
+    # A forced test the affected step also selected runs twice and counts twice.
+    _stub_affected_graph(
+        monkeypatch,
+        tmp_path,
+        selected=("tests/unit/a.py::test_one", f"{forced}[alpha]"),
+        unrecorded_files=(),
+        unrecorded_tests=0,
+        recorded=(f"{forced}[beta]",),
+    )
+    count, seconds, error, _unrecorded = verify._estimate_affected_selection(tmp_path, graph, (forced,))
+    assert (count, seconds, error) == (4, 2.0, None)
 
 
 def test_an_agents_only_selection_reason_names_the_contract_document() -> None:

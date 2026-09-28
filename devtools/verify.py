@@ -496,12 +496,16 @@ def _estimate_affected_selection(
                     return None, None, "the testmon environment changed; affected selection is unbounded", None
                 data.determine_stable()
                 selected = set(data.unstable_test_names) | set(data.failing_tests)
+                # The forced step runs its tests again even when the affected
+                # step also selected them, so each launch is counted: a list,
+                # not a union with ``selected``.
+                launched = list(selected)
                 for nodeid in forced_tests:
                     recorded = {name for name in data.all_tests if name == nodeid or name.startswith(f"{nodeid}[")}
                     if not recorded:
                         return None, None, f"the forced test {nodeid} has no recorded execution", None
-                    selected |= recorded
-                durations = [data.all_tests[name].get("duration") for name in selected]
+                    launched.extend(recorded)
+                durations = [data.all_tests[name].get("duration") for name in launched]
                 estimated = (
                     None if any(value is None for value in durations) else sum(float(value) for value in durations)
                 )
@@ -509,7 +513,7 @@ def _estimate_affected_selection(
                 # of the count the cap is applied to. They have no recorded
                 # duration, so the seconds estimate stays the graph's alone and
                 # is a floor rather than a prediction.
-                return len(selected) + unrecorded_tests, estimated, None, unrecorded_tests
+                return len(launched) + unrecorded_tests, estimated, None, unrecorded_tests
             finally:
                 database.con.close()
     except (ImportError, OSError, RuntimeError, TypeError, ValueError, sqlite3.Error):
