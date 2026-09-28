@@ -1429,7 +1429,7 @@ def format_metrics(
                     "group": "ops_attempts",
                     "reason": (
                         "archive_unreadable"
-                        if _ops_probe_reason(configured_root / "ops.db") == "archive_unreadable"
+                        if ({"group": "ops_or_discovery", "reason": "archive_unreadable"}, -1) in states
                         else "none"
                         if ops_attempts_available is True
                         else "schema_unavailable"
@@ -2030,21 +2030,6 @@ def _emit_ops_throughput_metrics(lines: list[str], ops_db: Path) -> bool:
         samples=[(None, materialized_count / duration)],
     )
     return True
-
-
-def _ops_probe_reason(ops_db: Path) -> str:
-    """Distinguish an unreadable ops tier from a readable uninitialized ledger."""
-    if not ops_db.exists():
-        return "schema_unavailable"
-    try:
-        conn = sqlite3.connect(f"file:{ops_db}?mode=ro", uri=True)
-        try:
-            result = conn.execute("PRAGMA quick_check").fetchone()
-        finally:
-            conn.close()
-    except sqlite3.Error:
-        return "archive_unreadable"
-    return "none" if result is not None and result[0] == "ok" else "archive_unreadable"
 
 
 def _emit_db_space_metrics(lines: list[str], db: Path) -> None:

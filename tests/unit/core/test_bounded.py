@@ -59,7 +59,7 @@ def test_bounded_rejects_non_positive_or_non_finite_budgets(budget: object) -> N
 
 def test_run_bounded_rejects_string_argv_without_splitting() -> None:
     with pytest.raises(TypeError, match="not a string"):
-        run_bounded("git status", 1)  # type: ignore[arg-type]
+        run_bounded("git status", 1)
 
 
 @pytest.mark.asyncio

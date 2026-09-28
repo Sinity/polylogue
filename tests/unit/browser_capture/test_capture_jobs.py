@@ -718,7 +718,7 @@ def test_orphan_census_reports_unreadable_files_and_refreshes_diagnostics(tmp_pa
         refreshed = next(entry for entry in second if entry["orphan_kind"] == "malformed_legacy_checkpoint")
         assert refreshed["diagnostic"] == "account scope unavailable; explicit migration or abandonment required"
         unreadable_entry = next(entry for entry in second if entry["orphan_kind"] == "unreadable_legacy_checkpoint")
-        assert unreadable_entry["source_digest"].startswith("path-sha256:")
+        assert str(unreadable_entry["source_digest"]).startswith("path-sha256:")
         assert str(unreadable) not in json.dumps(unreadable_entry)
         assert unreadable_entry["errno_class"] == "PermissionError"
     finally:
@@ -779,7 +779,7 @@ def test_timeline_retention_ignores_empty_and_non_string_refs(tmp_path: Path) ->
             },
         }
     )
-    job_id = created["job"]["job_id"]
+    job_id = cast(dict[str, Any], created["job"])["job_id"]
     with registry._connection() as connection:
         for index, ref in enumerate(("", None, 17)):
             connection.execute(

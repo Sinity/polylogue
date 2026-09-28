@@ -772,7 +772,7 @@ class _Pass:
                 first = next(mapping, None)
                 if first is not None:
                     return "prerequisite inspection budget exhausted"
-                raw = ()
+                raw: tuple[DerivationKey | tuple[str, str], ...] = ()
             else:
                 raw = tuple(islice(mapping, None if remaining is None else remaining + 1))
             if remaining is not None and len(raw) > remaining:

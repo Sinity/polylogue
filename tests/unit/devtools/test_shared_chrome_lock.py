@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
+
+import pytest
 
 from devtools.shared_chrome_lock import shared_chrome_extension_lock
 
 
-def test_anti_vacuity_shared_extension_workflows_are_serialized(tmp_path, monkeypatch) -> None:
+def test_anti_vacuity_shared_extension_workflows_are_serialized(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     active = 0
     maximum = 0

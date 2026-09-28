@@ -34,6 +34,7 @@ from polylogue.browser_capture.models import (
     BrowserCaptureReceiverStatusPayload,
     envelope_has_native_provider_payload,
 )
+from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.hashing import hash_text_short
 from polylogue.core.json import JSONDecodeError, dumps_bytes
 from polylogue.core.json import loads as json_loads
@@ -188,16 +189,7 @@ def persist_receiver_token(token: str, path: Path | None = None) -> str:
     try:
         os.fchmod(lock_fd, 0o600)
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
-        fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
-        try:
-            os.fchmod(fd, 0o600)
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                handle.write(token)
-            os.replace(tmp_name, target)
-        except BaseException:
-            with suppress(FileNotFoundError):
-                Path(tmp_name).unlink()
-            raise
+        atomic_replace(target, token.encode("utf-8"), mode=0o600)
     finally:
         os.close(lock_fd)
     return token

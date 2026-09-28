@@ -476,7 +476,7 @@ def compose_embedding_convergence(
                 if compute_budget <= 0:
                     return EmbeddingConvergenceResult(None, "monthly_cost_cap")
             if scope is None:
-                from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+                from polylogue.daemon.status import open_readonly_connection
 
                 with open_readonly_connection(index_db_path, validate_schema=False) as conn:
                     scanned_sessions = int(conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0])
@@ -524,7 +524,7 @@ def compose_embedding_convergence(
                 )
                 embedded_sessions = 0
                 if completed_message_ids:
-                    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+                    from polylogue.daemon.status import open_readonly_connection
 
                     placeholders = ", ".join("?" for _ in completed_message_ids)
                     with open_readonly_connection(index_db_path, validate_schema=False) as conn:

@@ -1199,7 +1199,7 @@ class TestAgedOutCursorResync:
         page = events.query_events_since(42)
         assert page.status is events.EventCursorStatus.AGED_OUT
         assert page.resync is not None
-        assert page.resync["payload"]["reason"] == "ledger_reset"
+        assert cast(dict[str, object], page.resync["payload"])["reason"] == "ledger_reset"
 
     def test_empty_anchor_parameter_conflicts_with_explicit_offset(self) -> None:
         """Anti-vacuity: checking anchor truthiness accepts ``around=&offset=500``."""

@@ -44,6 +44,13 @@ sites:
     scope: "read_only_module"
     classification: presentation_projection
     reason: "the compact envelope is built with model_copy over a payload this same call composed in memory -- it reads no stored field and touches no database. The substituted members are the caps the compact form declares (changed_paths[:8], peers[:4], resource_episodes[:4]), and the session-tree branch carries its own trim into nodes_complete/edges_complete/truncated_*_count rather than handing back a partial tree that claims to be whole"
+  - file: "polylogue/daemon/embedding_owner.py"
+    function: "_EmbeddingBackfillExecution.accept"
+    subject: "archive_identity"
+    kind: "read_path_substitution"
+    scope: "read_only_module"
+    classification: operator_mutation
+    reason: "This explicit embedding-backfill machine-request route rebinds only the in-memory operation binding to the archive identity already stored on that request's durable audit row, so a request accepted before an index rebuild still resolves its own parts. It does not rewrite or mask any archive-derived producer value."
   - file: "polylogue/daemon/status.py"
     function: "build_daemon_status"
     subject: "overall_status"

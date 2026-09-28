@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from typing import Any
 
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import (
@@ -166,9 +167,13 @@ def test_stale_smaller_snapshot_is_refused(tmp_path: Path) -> None:
 
 def test_session_attachment_does_not_shift_turn_attachment_identity(tmp_path: Path) -> None:
     """Anti-vacuity: flattened positional comparison rejects [session, turn] vs [turn]."""
-    resident = _payload(turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z")
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
     resident["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", "inline_base64": "YQ=="}]
-    incoming = _payload(turn_ids=["t1", "t2"], captured_at="2026-04-24T00:01:00Z", updated_at="2026-04-24T00:01:00Z")
+    incoming: dict[str, Any] = _payload(
+        turn_ids=["t1", "t2"], captured_at="2026-04-24T00:01:00Z", updated_at="2026-04-24T00:01:00Z"
+    )
     incoming["session"]["attachments"] = [{"provider_attachment_id": "B", "content_base64": "Yg=="}]
     incoming["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", "inline_base64": "YQ=="}]
 
@@ -180,9 +185,13 @@ def test_session_attachment_does_not_shift_turn_attachment_identity(tmp_path: Pa
 
 def test_content_carrier_cannot_disagree_with_existing_inline_bytes(tmp_path: Path) -> None:
     """Anti-vacuity: accepting content_base64 without comparing inline bytes changes archive data."""
-    resident = _payload(turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z")
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
     resident["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", "inline_base64": "YQ=="}]
-    incoming = _payload(turn_ids=["t1", "t2"], captured_at="2026-04-24T00:01:00Z", updated_at="2026-04-24T00:01:00Z")
+    incoming: dict[str, Any] = _payload(
+        turn_ids=["t1", "t2"], captured_at="2026-04-24T00:01:00Z", updated_at="2026-04-24T00:01:00Z"
+    )
     incoming["session"]["turns"][0]["attachments"] = [
         {"provider_attachment_id": "A", "inline_base64": "YQ==", "content_base64": "Yg=="}
     ]
@@ -195,7 +204,9 @@ def test_content_carrier_cannot_disagree_with_existing_inline_bytes(tmp_path: Pa
 
 def test_self_declared_wrong_identity_is_not_acknowledged_as_native(tmp_path: Path) -> None:
     """Anti-vacuity: copying observation fidelity alone incorrectly returns native."""
-    payload = _payload(turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z")
+    payload: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
     payload["session"]["turns"][0]["identity_observation"] = {
         "origin": "claude-ai-export",
         "provider_conversation_id": "other",

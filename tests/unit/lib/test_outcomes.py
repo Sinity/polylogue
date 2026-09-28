@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 from polylogue.core.outcomes import (
     BoundOutcomeOwner,
     OutcomeCheck,
+    OutcomeCheckFn,
     OutcomeCompositionFailure,
     OutcomeCompositionFailureKind,
+    OutcomeOwner,
     OutcomeReport,
     OutcomeStatus,
     compose_outcome_checks,
@@ -70,15 +74,17 @@ def test_composition_keeps_siblings_when_owner_is_omitted_or_raises() -> None:
 
 def test_check_property_failure_is_isolated_from_later_owners() -> None:
     class BrokenOwner:
+        """Only the members composition reads before the property raises."""
+
         name = "broken-property"
 
         @property
-        def check(self):
+        def check(self) -> OutcomeCheckFn | None:
             raise RuntimeError("binding failed")
 
     report = compose_outcome_checks(
         (
-            BrokenOwner(),
+            cast(OutcomeOwner, BrokenOwner()),
             BoundOutcomeOwner(name="survivor", check=lambda: OutcomeCheck(name="survivor", status=OutcomeStatus.OK)),
         )
     )

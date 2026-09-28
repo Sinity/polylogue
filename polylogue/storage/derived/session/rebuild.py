@@ -13,7 +13,7 @@ from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import aiosqlite
 
@@ -1616,9 +1616,11 @@ def publish_prepared_session_insight_partition(
         bundle = prepared.bundle
         replace_session_profiles_bulk_sync(conn, (bundle.profile_record,))
         replace_session_latency_profiles_bulk_sync(conn, (bundle.latency_profile_record,))
-        from polylogue.storage.derived.session.repo_observations import refresh_session_repos_sync
+        from polylogue.storage.derived.session.repo_observations import RepoObservation, refresh_session_repos_sync
 
-        refresh_session_repos_sync(conn, prepared.session_id, bundle.repo_observations)
+        refresh_session_repos_sync(
+            conn, prepared.session_id, cast("tuple[RepoObservation, ...]", bundle.repo_observations)
+        )
         conn.execute(
             "DELETE FROM session_profile_demand WHERE session_id = ? AND revision = ?",
             (prepared.session_id, expected_demand_revision),

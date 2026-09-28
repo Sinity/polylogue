@@ -13,7 +13,7 @@ from polylogue.storage.archive_identity import archive_file_set_root
 
 if TYPE_CHECKING:
     from polylogue.archive.query.plan import SessionQueryPlan
-    from polylogue.archive.query.search_contract import LaneFailure
+    from polylogue.archive.query.search_contract import LaneFailure, LaneName
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.config import Config
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
@@ -389,7 +389,7 @@ def project_search_hits(
                 lane_contribution=primary_contribution,
             )
         )
-    actual_lanes = (
+    actual_lanes: tuple[LaneName, ...] = (
         ("text", "vector") if resolved_lane == "hybrid" else (("vector",) if resolved_lane == "semantic" else ("text",))
     )
     execution = SearchExecution(
