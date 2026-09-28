@@ -188,6 +188,7 @@ async function commitCaptureJobsToReceiver(instanceId, checkpoint) {
         error: String(error?.message || error),
         outcome: error?.outcome || null,
         retry_after_ms: Number.isFinite(error?.retryAfterMs) ? error.retryAfterMs : null,
+        retry_until_ms: Number.isFinite(error?.retryUntilMs) ? error.retryUntilMs : null,
       };
     }
   }));
@@ -1872,6 +1873,7 @@ function withProviderTransportOperation(provider, operation, { checkThrottle = t
 function providerThrottleError(deadline, nowMs) {
   const error = new Error("provider_rate_limited");
   error.outcome = "rate_limited";
+  error.retryUntilMs = deadline;
   error.retryAfterMs = Math.max(0, deadline - nowMs);
   error.retryAfterSeconds = Math.ceil(error.retryAfterMs / 1000);
   error.providerThrottleApplied = true;

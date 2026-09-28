@@ -599,10 +599,13 @@ export class BackfillCoordinator {
         errors[failure.job_id] = detail;
         const job = await this.store.getJob(failure.job_id);
         if (job?.status === "running") {
-          const rateLimited = failure.outcome === "rate_limited" && Number.isFinite(failure.retry_after_ms);
+          const retryUntil = Number.isFinite(failure.retry_until_ms)
+            ? failure.retry_until_ms
+            : Number.isFinite(failure.retry_after_ms) ? nowMs + Math.max(0, failure.retry_after_ms) : null;
+          const rateLimited = failure.outcome === "rate_limited" && retryUntil !== null;
           await this.store.controlJob(failure.job_id, "paused", now, {
             cooldown_reason: rateLimited ? "provider_rate_limited" : "receiver_capture_job_authority_unavailable",
-            cooldown_until_ms: rateLimited ? nowMs + Math.max(0, failure.retry_after_ms) : job.cooldown_until_ms,
+            cooldown_until_ms: rateLimited ? retryUntil : job.cooldown_until_ms,
             last_error: detail,
           });
         }
