@@ -3490,3 +3490,24 @@ def test_candidate_digest_is_windowed_and_never_rereads_the_stored_text(monkeypa
     monkeypatch.setattr(pickle, "loads", refuse)
     assert conservation._candidate(large) == key
     assert conservation.add(large) == (key, False)
+
+
+def test_candidate_lookup_normalizes_only_after_the_exact_probe_misses(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: build the NFC copy before probing the exact digest and the
+    guarded ``normalize`` is called for a text registered verbatim."""
+    import sqlite3
+    import unicodedata
+
+    from polylogue.sources.parsers import codex as codex_module
+
+    conservation = codex_module._CodexTextConservation(codex_module._CodexLookaheadIndex(sqlite3.connect(":memory:")))
+    decomposed = "é" * 50
+    key, _new = conservation.add(decomposed)
+    real = unicodedata.normalize
+
+    def guarded(form: Any, value: str) -> str:
+        assert value != decomposed, "normalized a text whose exact digest matches"
+        return real(form, value)
+
+    monkeypatch.setattr(unicodedata, "normalize", guarded)
+    assert conservation._candidate(decomposed) == key

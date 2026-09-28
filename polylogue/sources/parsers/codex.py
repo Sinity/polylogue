@@ -1501,17 +1501,13 @@ class _CodexTextConservation:
         The key is the SHA-256 of the exact code points, so a match is the
         text itself; the stored text is never read back to confirm it.
         """
-        probes = [text]
-        if normalize and not text.isascii():
-            probes.append(unicodedata.normalize("NFC", text))
         connection = self._index.connection
-        for probe in probes:
-            row = connection.execute(
-                f"SELECT candidate_key FROM {keys_table} WHERE value = ?", (_text_digest(probe),)
-            ).fetchone()
-            if row is not None:
-                return bytes(row[0])
-        return None
+        query = f"SELECT candidate_key FROM {keys_table} WHERE value = ?"
+        row = connection.execute(query, (_text_digest(text),)).fetchone()
+        # The NFC copy is built only when the exact probe misses.
+        if row is None and normalize and not text.isascii():
+            row = connection.execute(query, (_text_digest(unicodedata.normalize("NFC", text)),)).fetchone()
+        return bytes(row[0]) if row is not None else None
 
     def _candidate(self, text: str, *, normalize: bool = True) -> bytes | None:
         return self._lookup("codex_replacement_keys", text, normalize=normalize)
