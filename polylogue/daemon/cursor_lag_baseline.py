@@ -288,7 +288,9 @@ def _gc_archive_cursor_lag_samples(
     try:
         with (
             write_lease("daemon.cursor_lag.gc", archive_root=ops_db.parent),
-            closing(open_initialized_tier_connection(ops_db, ArchiveTier.OPS, timeout=0.1)) as conn,
+            closing(
+                open_initialized_tier_connection(ops_db, ArchiveTier.OPS, timeout=0.1, archive_root=ops_db.parent)
+            ) as conn,
         ):
             cur = conn.execute("DELETE FROM cursor_lag_samples WHERE sampled_at_ms < ?", (cutoff_ms,))
             conn.commit()
