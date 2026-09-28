@@ -24,9 +24,10 @@ from polylogue.archive.message.messages import MessageCollection
 from polylogue.archive.message.models import Message
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.domain_models import Session
+from polylogue.archive.session.events import SessionEvent
 from polylogue.core.enums import Origin
 from polylogue.core.refs import EvidenceRef, ObjectRef
-from polylogue.core.types import SessionId
+from polylogue.core.types import SessionEventId, SessionId
 
 
 class _ProjectedDigestEvent:
@@ -780,6 +781,39 @@ def test_direct_run_projection_matches_digest_projection() -> None:
     session = _outcome_session(command="pytest tests/unit", exit_code=1)
 
     assert compile_session_run_projection(session) == compile_session_digest(session).run_projection
+
+
+def test_stored_work_events_feed_digest_and_run_projection() -> None:
+    session = _session().model_copy(
+        update={
+            "session_events": tuple(
+                SessionEvent(
+                    id=SessionEventId(f"work-{index}"),
+                    session_id=SessionId("codex-session:demo"),
+                    origin=Origin.CODEX_SESSION,
+                    event_index=index,
+                    event_type=event_type,
+                    payload={"event_id": f"evt-{index}", "summary": f"recorded {event_type}"},
+                )
+                for index, event_type in enumerate(("tool_run", "subagent_spawn", "decision", "artifact_change"))
+            )
+        }
+    )
+    digest = compile_session_digest(session)
+    observed = [
+        event
+        for event in digest.run_projection.events
+        if event.kind in {"tool_run", "subagent_spawn", "decision", "artifact_change"}
+    ]
+    # Anti-vacuity: removing stored session events from _extract_events or
+    # their kinds from ObservedEventKind drops these four projection rows.
+    assert [event.kind for event in observed] == ["tool_run", "subagent_spawn", "decision", "artifact_change"]
+    assert [event.summary for event in observed] == [
+        "recorded tool_run",
+        "recorded subagent_spawn",
+        "recorded decision",
+        "recorded artifact_change",
+    ]
 
 
 def test_structured_outcomes_use_is_error_when_no_exit_code() -> None:

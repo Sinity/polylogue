@@ -224,7 +224,7 @@ def _query_page_with_authority(
         # *read* of that session it is one; for a selection it is zero rows.
         if "session not found" not in str(getattr(exc, "detail", None) or exc).lower():
             raise
-        return {"items": [], "total": 0}, "unknown"
+        return {"items": [], "total": 0, "next_offset": None}, "unknown"
     if not isinstance(result.value, dict):
         raise OperationEnvelopeError("cli.query returned a non-object result")
     authority = str(result.authority.get("server_identity") or result.authority.get("mode") or "unknown")

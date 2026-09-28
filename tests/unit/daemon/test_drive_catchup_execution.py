@@ -383,3 +383,42 @@ async def test_drive_download_cancellation_closes_staging_after_thread_settles(
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
     await parser.repository.close()
+
+
+async def test_drive_growth_binds_a_raw_owned_by_many_source_generations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Generation ownership cardinality never turns a Drive cohort permanently stale.
+
+    Anti-vacuity: snapshot the cohort's ``source_item_raw_members`` rows into
+    the preparation scratch and this raw's 1,001 ownership rows exceed the
+    cohort row cap, so every pass discards the grown revision unparsed.
+    """
+    root = tmp_path / "archive"
+    source = Source(name="gemini", folder="fixture", path=tmp_path / "source")
+    parser, _, _ = make_parser(root, monkeypatch)
+    client = DriveClient()
+    monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: client)
+    with arm_write_lease_enforcement(process_wide=True):
+        first = await parser.ingest_sources(sources=[source])
+        assert first.parse_result.processed_ids
+        client.grown = True
+        client.modified_time = "2026-01-02T00:00:00Z"
+        acquired = await parser.ingest_sources(sources=[source], parse_records=False)
+        (raw_id,) = acquired.acquire_result.raw_ids
+        with sqlite3.connect(root / "source.db") as conn:
+            conn.executemany(
+                "INSERT INTO source_item_raw_members VALUES (?, 'item', 'coordinate', ?, ?)",
+                [(f"generation-{index}", raw_id, bytes(32)) for index in range(1001)],
+            )
+        second = await parser.parse_from_raw(raw_ids=[raw_id])
+        assert second.processed_ids
+    await parser.repository.close()
+    with sqlite3.connect(root / "source.db") as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM raw_sessions WHERE revision_authority='asserted' AND predecessor_raw_id IS NOT NULL"
+            ).fetchone()[0]
+            == 1
+        )

@@ -135,3 +135,54 @@ def test_browser_capture_attachment_direction_uses_turn_role() -> None:
     assert by_id["input"].direction == "user_input"
     assert by_id["output"].direction == "model_output"
     assert by_id["output"].producer_ref == "message:assistant-turn"
+
+
+def test_session_level_browser_attachment_inherits_referenced_assistant_role() -> None:
+    """Anti-vacuity: omitting role lookup leaves direction unset and rejects archive write."""
+    from polylogue.archive.message.roles import Role
+    from polylogue.browser_capture.models import BrowserCaptureEnvelope
+    from polylogue.core.enums import BlockType
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.sources.parsers.browser_capture import _merge_envelope_attachments
+
+    parsed = ParsedSession(
+        source_name=Provider.CLAUDE_AI,
+        provider_session_id="session-attachment-role",
+        messages=[
+            ParsedMessage(
+                provider_message_id="assistant-1",
+                role=Role.ASSISTANT,
+                text="generated",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="generated")],
+            )
+        ],
+        attachments=[],
+    )
+    envelope = BrowserCaptureEnvelope.model_validate(
+        {
+            "polylogue_capture_kind": "browser_llm_session",
+            "schema_version": 1,
+            "provenance": {
+                "source_url": "https://claude.ai/chat/x",
+                "captured_at": "2026-08-31T00:00:00Z",
+                "adapter_name": "test",
+            },
+            "session": {
+                "provider": "claude",
+                "provider_session_id": "session-attachment-role",
+                "turns": [{"provider_turn_id": "assistant-1", "role": "assistant", "text": "generated"}],
+                "attachments": [
+                    {
+                        "provider_attachment_id": "session-file",
+                        "message_provider_id": "assistant-1",
+                        "name": "out.bin",
+                        "size_bytes": 3,
+                    }
+                ],
+            },
+        }
+    )
+    merged = _merge_envelope_attachments(parsed, envelope)
+    attachment = merged.attachments[0]
+    assert attachment.direction == "model_output"
+    assert attachment.producer_ref == "message:assistant-1"

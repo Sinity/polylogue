@@ -2240,8 +2240,9 @@ async def test_live_full_ingest_offloads_sync_work_to_keep_loop_responsive(
         attempt_id: str | None = None,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
+        prepared_json_paths: frozenset[str] = frozenset(),
     ) -> _FullIngestResult:
-        del source_name, heartbeat, attempt_id, max_pass_seconds, pass_started
+        del source_name, heartbeat, attempt_id, max_pass_seconds, pass_started, prepared_json_paths
         time.sleep(0.2)
         return _FullIngestResult(
             succeeded=list(paths),

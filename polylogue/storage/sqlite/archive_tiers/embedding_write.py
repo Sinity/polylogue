@@ -617,6 +617,21 @@ def publish_embedding_attempt_window(
             )
             if write.derivation_key != expected_key:
                 raise ValueError("embedding window write key does not match its message")
+        # Concurrent owners can reserve the same pending generation. Make a
+        # repeated publication idempotent per message so the attempt count
+        # cannot exceed its unique desired message set.
+        newly_referenced = 0
+        for write in prepared:
+            previous = conn.execute(
+                "SELECT session_id, vector_derivation_hash FROM message_embedding_refs WHERE message_id = ?",
+                (write.message_id,),
+            ).fetchone()
+            if (
+                previous is None
+                or str(previous[0]) != attempt.session_id
+                or bytes(previous[1]) != write.vector_derivation_hash
+            ):
+                newly_referenced += 1
         _write_message_embeddings(conn, prepared)
         conn.execute(
             """
@@ -625,7 +640,7 @@ def publish_embedding_attempt_window(
             WHERE session_id = ? AND generation = ? AND derivation_key = ?
               AND attempt_state = 'pending'
             """,
-            (len(prepared), now_ms, attempt.session_id, attempt.generation, attempt.derivation_key),
+            (newly_referenced, now_ms, attempt.session_id, attempt.generation, attempt.derivation_key),
         )
         conn.execute(
             """
@@ -634,7 +649,7 @@ def publish_embedding_attempt_window(
                 last_embedded_at_ms = ?, needs_reindex = 1, error_message = NULL
             WHERE session_id = ?
             """,
-            (len(prepared), now_ms, attempt.session_id),
+            (newly_referenced, now_ms, attempt.session_id),
         )
     return True
 
@@ -659,7 +674,27 @@ def finalize_embedding_attempt_success(
             """,
             (attempt.session_id, attempt.generation, attempt.derivation_key),
         ).fetchone()
-        if current is None or int(current[0]) != len(desired_ids):
+        if current is None:
+            return False
+        # message_count records publications, including retries and ref-only
+        # cache reuse. It is telemetry, not proof that each desired identity
+        # has exactly one current reference. Validate the reference set so a
+        # retry can reuse surviving vectors without a false counter mismatch.
+        if desired_ids:
+            placeholders = ", ".join("?" for _ in desired_ids)
+            present_ids = {
+                str(row[0])
+                for row in conn.execute(
+                    "SELECT message_id FROM message_embedding_refs "
+                    f"WHERE session_id = ? AND message_id IN ({placeholders})",
+                    (attempt.session_id, *desired_ids),
+                ).fetchall()
+            }
+            if present_ids != set(desired_ids):
+                return False
+        elif conn.execute(
+            "SELECT 1 FROM message_embedding_refs WHERE session_id = ? LIMIT 1", (attempt.session_id,)
+        ).fetchone():
             return False
         prior_ids = tuple(
             str(row[0])

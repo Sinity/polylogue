@@ -195,10 +195,12 @@ class EmbeddingGenerationStore:
     """Own archive-local embedding pointers and bounded rollback retention."""
 
     def __init__(self, archive_root: str | Path, *, active_path: str | Path | None = None) -> None:
-        root = Path(archive_root).expanduser().absolute()
+        # A configured symlink alias is the same archive identity; anchor all
+        # lifecycle paths to its resolved directory before ownership checks.
+        root = Path(archive_root).expanduser().resolve(strict=True)
         if not root.is_absolute():
             raise EmbeddingGenerationError("archive root must be absolute")
-        if root.is_symlink() or not root.is_dir():
+        if not root.is_dir():
             raise EmbeddingGenerationError("embedding archive root must be an owned directory")
         self.archive_root = root
         self.root = root / _GENERATIONS
@@ -347,7 +349,10 @@ class EmbeddingGenerationStore:
         remains.  In particular, do not unlink a WAL or SHM file ourselves:
         SQLite remains the authority for recovery and lock safety.
         """
-        if self.active_path.is_symlink() or not self.active_path.exists():
+        if self.active_path.is_symlink():
+            self.prepare_active_database_for_writer()
+            return
+        if not self.active_path.exists():
             return
         if not _regular_file(self.active_path):
             raise EmbeddingGenerationError("embedding active path is not a regular file")
@@ -768,7 +773,9 @@ class EmbeddingGenerationStore:
             raise EmbeddingGenerationError("embedding replacement candidate must be an archive-local regular file")
         if candidate == self.active_path or candidate.resolve(strict=False) == self.active_path.resolve(strict=False):
             raise EmbeddingGenerationError("embedding replacement candidate cannot be the active database")
-        self._validate_database(candidate)
+        # Validate the entire semantic contract before creating a gen-* child;
+        # a rejected mixed candidate must not poison subsequent inventory reads.
+        candidate_contract = self._database_contract(candidate)
         with self._lock():
             generations = self._generations()
             self._validate_receipts(generations)
@@ -779,13 +786,31 @@ class EmbeddingGenerationStore:
             now = self._next_ns()
             generation_id = f"gen-{now}-{uuid.uuid4().hex[:10]}"
             destination = self.root / generation_id / "embeddings.db"
+            owner = owner_id or uuid.uuid4().hex
+            if not _OWNER.fullmatch(owner):
+                raise EmbeddingGenerationError("embedding owner identity is invalid")
             destination.parent.mkdir(parents=True, exist_ok=False)
             shutil.copyfile(candidate, destination)
             _fsync_file(destination)
             _fsync_dir(destination.parent)
-            owner = owner_id or uuid.uuid4().hex
-            if not _OWNER.fullmatch(owner):
-                raise EmbeddingGenerationError("embedding owner identity is invalid")
+            try:
+                destination_contract = self._database_contract(destination, physical_root=destination.parent)
+                if any(
+                    candidate_contract[field] != destination_contract[field]
+                    for field in (
+                        "recipe_hash",
+                        "source_generation",
+                        "index_generation",
+                        "schema_version",
+                        "sealed",
+                        "membership_digest",
+                    )
+                ):
+                    raise EmbeddingGenerationError("embedding replacement candidate changed while staging")
+            except BaseException:
+                shutil.rmtree(destination.parent)
+                _fsync_dir(self.root)
+                raise
             generation = EmbeddingGeneration(
                 generation_id,
                 str(self.archive_root),
@@ -794,7 +819,7 @@ class EmbeddingGenerationStore:
                 "promoting",
                 now,
                 predecessor_generation_id=current.generation_id if current else None,
-                **self._database_contract(destination, physical_root=destination.parent),
+                **destination_contract,
             )
             self._write_generation(generation)
             _fsync_dir(self.root)

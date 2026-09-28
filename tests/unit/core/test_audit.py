@@ -306,6 +306,12 @@ class TestCheckPrivacyGuards:
         result = check_privacy_guards(schema)
         assert result.status is FAIL
 
+    def test_private_literals_under_standard_keywords_fail(self) -> None:
+        """The audit must inspect standard literal keywords; removing traversal makes this pass."""
+        for keyword in ("const", "default", "examples"):
+            schema = {"type": "string", keyword: "550e8400-e29b-41d4-a716-446655440000"}
+            assert check_privacy_guards(schema).status is FAIL
+
     def test_private_tld_rejected(self) -> None:
         schema = {
             "properties": {

@@ -122,6 +122,27 @@ def test_derived_schema_skew_surface_preserves_structured_recovery_fields() -> N
     assert body["remedy"] == "daemon convergence"
 
 
+def test_archive_writer_ownership_error_preserves_routing_fields() -> None:
+    """Anti-vacuity: without the ownership translation, routing fields vanish."""
+    from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
+    from polylogue.mcp.server_support import _exception_to_error_json
+
+    body = json.loads(
+        _exception_to_error_json(
+            "write",
+            ArchiveWriterOwnershipError(
+                "write refused by resident daemon",
+                archive_root="/archives/one",
+                resident_writer="polylogued PID 31415",
+            ),
+        )
+    )
+
+    assert body["code"] == "archive_writer_ownership_unavailable"
+    assert body["archive_root"] == "/archives/one"
+    assert body["resident_writer"] == "polylogued PID 31415"
+
+
 class TestTopLevelIsolation:
     """An unhandled exception inside a tool body never escapes the wrapper."""
 

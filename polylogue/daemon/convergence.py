@@ -995,6 +995,15 @@ class DaemonConverger:
         self._session_states: dict[str, SessionState] = {}
         self._derivations = DerivationRegistry(cast("Iterable[DerivationAdapter]", derivations))
         self._derivation_cursor = PassCursor()
+        #: The demand-only sweep pages the demand keyspace, not the archive:
+        #: sharing one cursor let a demand pass resume (and finish) the
+        #: archive audit's partial position, so the audit wrapped to its
+        #: first slice on every tick and never reached the tail.
+        self._demand_cursor = PassCursor()
+        #: The index generation the demand cursor's keyset position belongs
+        #: to. A promotion changes ``frame.source_revision``; resuming the old
+        #: generation's position would skip demanded keys that sort before it.
+        self._demand_cursor_revision: str | None = None
 
     @property
     def derivation_domains(self) -> tuple[str, ...]:
@@ -1035,7 +1044,7 @@ class DaemonConverger:
             budget=budget,
             deadline_s=deadline_s,
             domains=domains,
-            cursor=self._derivation_cursor if resume else None,
+            cursor=self._resume_cursor(frame) if resume else None,
             publisher=publisher,
             barrier=self._derivation_barrier,
         )
@@ -1044,9 +1053,19 @@ class DaemonConverger:
         # the archive sweep's retained position alone: replacing it with the
         # targeted frame's terminal cursor would discard fairness for the
         # no-hint pass that follows.
-        if frame.scope is None:
+        if frame.scope is None and frame.profile_demand_only:
+            self._demand_cursor = report.cursor
+            self._demand_cursor_revision = frame.source_revision
+        elif frame.scope is None:
             self._derivation_cursor = report.cursor
         return report
+
+    def _resume_cursor(self, frame: DerivationFrame) -> PassCursor:
+        if not frame.profile_demand_only:
+            return self._derivation_cursor
+        if frame.source_revision != self._demand_cursor_revision:
+            return PassCursor()
+        return self._demand_cursor
 
     @property
     def stage_names(self) -> list[str]:
