@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -9,11 +10,29 @@ import pytest
 import devtools.query_execution_envelope as envelope_module
 from devtools.query_execution_envelope import (
     ResourceProbeUnavailableError,
+    ResourceSample,
     _parse_proc_memory,
     _proc_memory,
     _temp_used_bytes,
     measure_query_envelope,
 )
+
+
+def test_concurrent_peak_observations_keep_every_independent_maximum() -> None:
+    """Concurrent updates retain each dimension's maximum, even from different samples."""
+    peak = envelope_module._ResourcePeak(ResourceSample(0, 0, 0, 0))
+    samples = [
+        ResourceSample(100, 10, 1, 4),
+        ResourceSample(20, 200, 2, 3),
+        ResourceSample(30, 30, 300, 2),
+        ResourceSample(40, 40, 4, 400),
+    ]
+    with ThreadPoolExecutor(max_workers=len(samples)) as pool:
+        list(pool.map(peak.observe, samples))
+
+    assert peak.snapshot() == ResourceSample(100, 200, 300, 400), (
+        "each dimension must retain its maximum even when another sample peaks elsewhere"
+    )
 
 
 def test_proc_memory_is_nonnegative() -> None:

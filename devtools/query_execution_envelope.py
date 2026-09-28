@@ -12,7 +12,7 @@ import json
 import os
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from shutil import disk_usage
 from typing import Any
@@ -41,6 +41,27 @@ class ResourceSample:
     pss_bytes: int
     swap_bytes: int
     temp_delta_bytes: int
+
+
+@dataclass(slots=True)
+class _ResourcePeak:
+    """Thread-safe component-wise maximum of observed resource samples."""
+
+    sample: ResourceSample
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def observe(self, candidate: ResourceSample) -> None:
+        with self._lock:
+            self.sample = ResourceSample(
+                max(self.sample.rss_bytes, candidate.rss_bytes),
+                max(self.sample.pss_bytes, candidate.pss_bytes),
+                max(self.sample.swap_bytes, candidate.swap_bytes),
+                max(self.sample.temp_delta_bytes, candidate.temp_delta_bytes),
+            )
+
+    def snapshot(self) -> ResourceSample:
+        with self._lock:
+            return self.sample
 
 
 PROC_MEMORY_FIELDS = ("VmRSS", "Pss", "VmSwap")
@@ -133,22 +154,14 @@ async def measure_query_envelope(
     temp_before = _temp_used_bytes(temp_root)
     initial_rss, initial_pss, initial_swap = _proc_memory()
     initial = ResourceSample(initial_rss, initial_pss, initial_swap, 0)
-    peak = initial
-    peak_lock = threading.Lock()
+    peak = _ResourcePeak(initial)
     sampler_error: list[BaseException] = []
     stop = threading.Event()
 
     def observe() -> ResourceSample:
-        nonlocal peak
         rss, pss, swap = _proc_memory()
         candidate = ResourceSample(rss, pss, swap, max(0, _temp_used_bytes(temp_root) - temp_before))
-        with peak_lock:
-            peak = ResourceSample(
-                max(peak.rss_bytes, candidate.rss_bytes),
-                max(peak.pss_bytes, candidate.pss_bytes),
-                max(peak.swap_bytes, candidate.swap_bytes),
-                max(peak.temp_delta_bytes, candidate.temp_delta_bytes),
-            )
+        peak.observe(candidate)
         return candidate
 
     def sample() -> None:
@@ -208,6 +221,7 @@ async def measure_query_envelope(
     baseline_swap = max(sample.swap_bytes for sample in baseline)
     baseline_temp = max(sample.temp_delta_bytes for sample in baseline)
     final = measured[-3:]
+    peak_sample = peak.snapshot()
     return_checks = {
         "rss": all(current.rss_bytes <= max(1, baseline_rss) * (1 + tolerance) for current in final),
         "pss": all(current.pss_bytes <= max(1, baseline_pss) * (1 + tolerance) for current in final),
@@ -215,10 +229,10 @@ async def measure_query_envelope(
         "temp": all(current.temp_delta_bytes <= baseline_temp + max_temp_growth_bytes for current in final),
     }
     absolute_checks = {
-        "rss": peak.rss_bytes <= max_rss_bytes,
-        "pss": peak.pss_bytes <= max_pss_bytes,
-        "swap": peak.swap_bytes <= initial_swap + max_swap_growth_bytes,
-        "temp": peak.temp_delta_bytes <= max_temp_growth_bytes,
+        "rss": peak_sample.rss_bytes <= max_rss_bytes,
+        "pss": peak_sample.pss_bytes <= max_pss_bytes,
+        "swap": peak_sample.swap_bytes <= initial_swap + max_swap_growth_bytes,
+        "temp": peak_sample.temp_delta_bytes <= max_temp_growth_bytes,
     }
     returned = all(return_checks.values()) and all(absolute_checks.values())
     return {
