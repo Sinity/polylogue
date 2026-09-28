@@ -10,7 +10,7 @@ from typing import IO, TypeAlias
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
@@ -141,7 +141,13 @@ def iter_source_raw_data(
                             # One refused member must not discard its admissible
                             # siblings; the refusal is recorded per member.
                             failed_count += 1
-                            logger.warning("Refused foreign-origin member %s: %s", entry_path, exc)
+                            emit(
+                                "sources.acquisition.foreign_origin_refused",
+                                level=WARNING,
+                                outcome="refused",
+                                source_path=str(entry_path),
+                                reason=f"{exc.code}: {exc}",
+                            )
                             _record_cursor_failure(cursor_state, entry_path, f"{exc.code}: {exc}")
             else:
                 yield read_plain_source_file(
@@ -165,7 +171,13 @@ def iter_source_raw_data(
             )
         except ForeignOriginContentError as exc:
             failed_count += 1
-            logger.warning("Refused foreign-origin content %s: %s", path, exc)
+            emit(
+                "sources.acquisition.foreign_origin_refused",
+                level=WARNING,
+                outcome="refused",
+                source_path=str(path),
+                reason=f"{exc.code}: {exc}",
+            )
             _record_cursor_failure(cursor_state, str(path), f"{exc.code}: {exc}")
         except (UnicodeDecodeError, zipfile.BadZipFile, OSError) as exc:
             failed_count += 1

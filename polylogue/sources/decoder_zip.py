@@ -379,7 +379,13 @@ def process_zip(
             except ForeignOriginContentError as exc:
                 # A refused member is recorded on its own; admissible siblings
                 # in the same archive are still parsed.
-                logger.warning("Refused foreign-origin ZIP entry %s in %s: %s", name, zip_path, exc)
+                emit(
+                    "sources.acquisition.foreign_origin_refused",
+                    level=WARNING,
+                    outcome="refused",
+                    source_path=str(f"{zip_path}:{name}"),
+                    reason=f"{exc.code}: {exc}",
+                )
                 _record_cursor_failure(cursor_state, f"{zip_path}:{name}", f"{exc.code}: {exc}")
                 continue
 

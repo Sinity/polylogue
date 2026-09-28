@@ -12,7 +12,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.sources.assembly import SidecarData
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
@@ -546,7 +546,13 @@ def iter_source_sessions_with_raw(
             )
         except ForeignOriginContentError as exc:
             failed_count += 1
-            logger.warning("Refused foreign-origin content %s: %s", path, exc)
+            emit(
+                "sources.acquisition.foreign_origin_refused",
+                level=WARNING,
+                outcome="refused",
+                source_path=str(path),
+                reason=f"{exc.code}: {exc}",
+            )
             _record_cursor_failure(cursor_state, str(path), f"{exc.code}: {exc}")
         except (JSONDecodeError, UnicodeDecodeError, zipfile.BadZipFile) as exc:
             failed_count += 1
