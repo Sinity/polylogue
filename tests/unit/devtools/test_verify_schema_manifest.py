@@ -29,6 +29,60 @@ def test_schema_manifest_rejects_a_target_file_with_schema_drift(tmp_path: Path)
     assert verify_schema_manifest.main(["--archive-root", str(root)]) == 1
 
 
+def test_schema_manifest_rejects_missing_archive_tier(tmp_path: Path) -> None:
+    """Anti-vacuity: explicit comparison cannot pass by skipping absent tier files."""
+    root = tmp_path / "partial"
+    root.mkdir()
+    assert verify_schema_manifest.main(["--archive-root", str(root)]) == 1
+
+
+def test_schema_manifest_read_uri_encodes_legal_path_characters(tmp_path: Path) -> None:
+    """Anti-vacuity: '?' and '#' in a valid directory name must not alter SQLite URI parsing."""
+    root = tmp_path / "archive?copy#1"
+    root.mkdir()
+    path = root / "source.db"
+    initialize_archive_database(path, ArchiveTier.SOURCE)
+    result = verify_schema_manifest._check_tier(ArchiveTier.SOURCE, path)
+    assert result["ok"] is True
+
+
+def test_schema_manifest_uses_the_resolved_active_index_generation(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: a stale root index shadow must not be the compared index."""
+    active = tmp_path / "generation" / "index.db"
+    monkeypatch.setattr(
+        verify_schema_manifest.ArchiveLocation,
+        "resolve",
+        lambda _root: type("Location", (), {"active_index_path": active})(),
+    )
+    checked: dict[str, Path | None] = {}
+
+    def fake_check_tier(tier: ArchiveTier, path: Path | None) -> dict[str, object]:
+        checked[tier.value] = path
+        return {"tier": tier.value, "ok": True, "version": 1}
+
+    monkeypatch.setattr(verify_schema_manifest, "_check_tier", fake_check_tier)
+    monkeypatch.setattr(verify_schema_manifest, "_benign_ddl_violations", lambda: [])
+    monkeypatch.setattr(verify_schema_manifest, "_provider_named_index_objects", lambda: [])
+    assert verify_schema_manifest.main(["--archive-root", str(tmp_path)]) == 0
+    assert checked["index"] == active
+
+
+def test_migration_type_change_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: replacing a migration with a symlink is not an allowed edit."""
+    change = verify_schema_manifest._MigrationChange(
+        "T",
+        "polylogue/storage/sqlite/migrations/source/001_init.sql",
+        "polylogue/storage/sqlite/migrations/source/001_init.sql",
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: (change,))
+    assert any(
+        "required migration was modified" in item
+        for item in verify_schema_manifest._migration_integrity_violations("base", ArchiveTier.SOURCE)
+    )
+
+
 def test_schema_manifest_normalization_keeps_escaped_literal_values_exact() -> None:
     """Harmless SQL layout is normalized without rewriting quoted values."""
     compact = "CREATE TABLE sample(value TEXT DEFAULT 'a''b' CHECK(value='A  B'));"
@@ -45,7 +99,7 @@ def test_schema_manifest_normalization_keeps_escaped_literal_values_exact() -> N
 
 
 def _schema_state(
-    *, source_version: int = 1, source_ddl: str = "source", lineage: str = "polylogue.archive-format.v3"
+    *, source_version: int = 1, source_ddl: str = "source", lineage: str = "polylogue.archive-format.v4"
 ) -> verify_schema_manifest._SchemaState:
     ddl = {tier: tier.value for tier in ArchiveTier}
     ddl[ArchiveTier.SOURCE] = source_ddl
@@ -79,7 +133,13 @@ def test_durable_evolution_compares_rendered_ddl_transformations(
     monkeypatch.setattr(
         verify_schema_manifest,
         "_render_schema_state",
-        lambda ref: _schema_state(source_ddl="before" if ref == "base" else "after"),
+        lambda ref: _schema_state(
+            source_ddl=(
+                "CREATE TABLE sample (value TEXT NOT NULL) STRICT;"
+                if ref == "base"
+                else "CREATE TABLE sample (value TEXT) STRICT;"
+            )
+        ),
     )
     monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
 
@@ -96,7 +156,7 @@ def test_new_fresh_lineage_allows_floor_ddl_change_without_migration(monkeypatch
         "_render_schema_state",
         lambda ref: _schema_state(
             source_ddl="before" if ref == "base" else "after",
-            lineage="polylogue.archive-format.v2" if ref == "base" else "polylogue.archive-format.v3",
+            lineage="polylogue.archive-format.v3" if ref == "base" else "polylogue.archive-format.v4",
         ),
     )
     monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
@@ -216,6 +276,56 @@ def test_durable_evolution_accepts_a_declared_retired_column_of_a_surviving_tabl
     monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
 
     assert verify_schema_manifest._durable_ddl_evolution_violations() == []
+
+
+def test_durable_evolution_ignores_standalone_ddl_comments(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: a raw-DDL comparison would reject an unchanged schema."""
+    before = "CREATE TABLE keeper (a TEXT PRIMARY KEY) STRICT;"
+    after = "-- metadata-only note\nCREATE TABLE keeper (a TEXT PRIMARY KEY) STRICT;"
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(source_ddl=before if ref == "base" else after),
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+    assert verify_schema_manifest._durable_ddl_evolution_violations() == []
+
+
+def test_durable_evolution_fails_closed_when_schema_manifest_cannot_render(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity: two invalid DDL states must not collapse to equal None manifests."""
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(source_ddl="CREATE TABLE sample (value TEXT" if ref == "base" else "nonsense DDL"),
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+    assert (
+        "source: rendered DDL changed without a schema-version bump"
+        in verify_schema_manifest._durable_ddl_evolution_violations()
+    )
+
+
+def test_retired_column_does_not_hide_a_table_check_edit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: changing a CHECK beside a retired field must require evolution."""
+    before = _RETIRED_COLUMN_DDL
+    after = _AFTER_COLUMN_RETIREMENT_DDL.replace(
+        "detail TEXT NOT NULL DEFAULT ''", "detail TEXT NOT NULL DEFAULT '' CHECK(length(detail) < 20)"
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(source_ddl=before if ref == "base" else after),
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+    assert (
+        "source: rendered DDL changed without a schema-version bump"
+        in verify_schema_manifest._durable_ddl_evolution_violations()
+    )
 
 
 def test_durable_evolution_rejects_a_redefined_column_beside_a_retired_one(
@@ -445,3 +555,43 @@ def test_benign_ddl_registry_rejects_a_data_producing_create_table(monkeypatch: 
 def test_live_benign_ddl_registries_are_idempotent_and_non_transforming() -> None:
     """Every registered same-version statement passes the shape validator."""
     assert verify_schema_manifest._benign_ddl_violations() == []
+
+
+def test_a_commit_schema_state_is_rendered_once_per_checkout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: read the base state without consulting the commit-keyed
+    cache and the second render extracts the commit again."""
+    renders: list[str] = []
+
+    def render(commit: str) -> dict[str, object]:
+        renders.append(commit)
+        return {"ddl": {"source": "CREATE TABLE t(x)"}, "versions": {"source": 1}, "lineage": "v1"}
+
+    monkeypatch.setattr(verify_schema_manifest, "_SCHEMA_STATE_CACHE", tmp_path / "schema-state")
+    monkeypatch.setattr(verify_schema_manifest, "_render_commit_payload", render)
+    monkeypatch.setattr(verify_schema_manifest, "_git_text", lambda *_args: "a" * 40 + "\n")
+
+    first = verify_schema_manifest._render_schema_state("origin/master")
+    second = verify_schema_manifest._render_schema_state("origin/master")
+
+    assert renders == ["a" * 40]
+    assert first == second
+    assert first.versions == {ArchiveTier.SOURCE: 1}
+
+
+def test_an_unchanged_package_compares_against_itself_without_rendering_the_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity: drop the unchanged-package shortcut and the base is rendered."""
+    rendered: list[str | None] = []
+
+    def render(ref: str | None) -> object:
+        rendered.append(ref)
+        return _schema_state(source_version=1)
+
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(verify_schema_manifest, "_package_unchanged_since", lambda _base: True)
+    monkeypatch.setattr(verify_schema_manifest, "_render_schema_state", render)
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: ())
+
+    assert verify_schema_manifest._durable_ddl_evolution_violations() == []
+    assert rendered == [None]

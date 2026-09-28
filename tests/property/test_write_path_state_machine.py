@@ -414,7 +414,11 @@ class WritePathStateMachine(RuleBasedStateMachine):
         return text
 
     def _fresh_timestamp(self) -> str:
-        timestamp = (datetime(2027, 1, 1, tzinfo=UTC) + timedelta(seconds=self._next_fresh_version)).isoformat()
+        # Newer than every model's default ``updated_at`` but in the past: the
+        # writer treats a stored timestamp far beyond the wall clock as
+        # untrusted freshness (polylogue-1pzmq), so a future base would let the
+        # stale-replace rule stand down and the stale write win.
+        timestamp = (datetime(2026, 1, 2, tzinfo=UTC) + timedelta(seconds=self._next_fresh_version)).isoformat()
         self._next_fresh_version += 1
         return timestamp
 

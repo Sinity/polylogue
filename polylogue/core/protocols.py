@@ -12,9 +12,8 @@ inline rather than through a swappable provider abstraction.
 ``SemanticArchiveQueryStore``, ``SessionSemanticStatsStore``, and
 ``SessionArchiveReadStore`` were removed (polylogue-a7xr.11): each had zero
 consumers anywhere in the tree. Their methods that surviving protocols
-actually needed (``SessionQueryRuntimeStore``, ``SessionOutputStore``,
-``SessionArchiveStatsStore``) are inlined directly rather than inherited
-from a now-deleted shared base.
+actually needed (``SessionOutputStore``, ``SessionArchiveStatsStore``) are
+inlined directly rather than inherited from a now-deleted shared base.
 """
 
 from __future__ import annotations
@@ -133,146 +132,6 @@ class NeighborStore(Protocol):
         origins: builtins.list[str] | None = None,
         since: str | None = None,
     ) -> list[SessionSearchHit]: ...
-
-
-@runtime_checkable
-class SessionQueryRuntimeStore(Protocol):
-    """Repository/query runtime surface consumed by canonical query execution."""
-
-    async def get(self, session_id: str) -> Session | None: ...
-
-    async def get_eager(self, session_id: str) -> Session | None: ...
-
-    async def list(
-        self,
-        limit: int | None = 50,
-        offset: int = 0,
-        origin: str | None = None,
-        origins: builtins.list[str] | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        referenced_path: builtins.list[str] | None = None,
-        cwd_prefix: str | None = None,
-        action_terms: builtins.list[str] | None = None,
-        excluded_action_terms: builtins.list[str] | None = None,
-        tool_terms: builtins.list[str] | None = None,
-        excluded_tool_terms: builtins.list[str] | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        message_type: str | None = None,
-    ) -> builtins.list[Session]: ...
-
-    async def list_summaries(
-        self,
-        limit: int | None = 50,
-        offset: int = 0,
-        origin: str | None = None,
-        origins: builtins.list[str] | None = None,
-        source: str | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        referenced_path: builtins.list[str] | None = None,
-        cwd_prefix: str | None = None,
-        action_terms: builtins.list[str] | None = None,
-        excluded_action_terms: builtins.list[str] | None = None,
-        tool_terms: builtins.list[str] | None = None,
-        excluded_tool_terms: builtins.list[str] | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        message_type: str | None = None,
-    ) -> builtins.list[SessionSummary]: ...
-
-    async def count(
-        self,
-        origin: str | None = None,
-        origins: builtins.list[str] | None = None,
-        since: str | None = None,
-        until: str | None = None,
-        title_contains: str | None = None,
-        referenced_path: builtins.list[str] | None = None,
-        cwd_prefix: str | None = None,
-        action_terms: builtins.list[str] | None = None,
-        excluded_action_terms: builtins.list[str] | None = None,
-        tool_terms: builtins.list[str] | None = None,
-        excluded_tool_terms: builtins.list[str] | None = None,
-        has_tool_use: bool = False,
-        has_thinking: bool = False,
-        min_messages: int | None = None,
-        max_messages: int | None = None,
-        min_words: int | None = None,
-        message_type: str | None = None,
-    ) -> int: ...
-
-    async def get_summary(self, session_id: str) -> SessionSummary | None: ...
-
-    async def resolve_id(self, id_prefix: str, *, strict: bool = False) -> SessionId | None: ...
-
-    def iter_messages(
-        self,
-        session_id: str,
-        *,
-        message_roles: MessageRoleFilter = (),
-        material_origin: tuple[MaterialOrigin, ...] = (),
-        limit: int | None = None,
-    ) -> AsyncIterator[Message]: ...
-
-    async def search(
-        self,
-        query: str,
-        limit: int = 20,
-        origins: builtins.list[str] | None = None,
-    ) -> builtins.list[Session]: ...
-
-    async def search_summaries(
-        self,
-        query: str,
-        limit: int = 20,
-        origins: builtins.list[str] | None = None,
-    ) -> builtins.list[SessionSummary]: ...
-
-    async def search_summary_hits(
-        self,
-        query: str,
-        limit: int = 20,
-        origins: builtins.list[str] | None = None,
-        since: str | None = None,
-    ) -> builtins.list[SessionSearchHit]: ...
-
-    async def search_similar(
-        self,
-        text: str,
-        limit: int = 10,
-        vector_provider: VectorProvider | None = None,
-    ) -> builtins.list[Session]: ...
-
-    async def list_summaries_by_query(
-        self,
-        query: SessionRecordQuery,
-    ) -> builtins.list[SessionSummary]: ...
-
-    async def list_by_query(
-        self,
-        query: SessionRecordQuery,
-    ) -> builtins.list[Session]: ...
-
-    async def count_by_query(self, query: SessionRecordQuery) -> int: ...
-
-    async def delete_session(self, session_id: str) -> bool: ...
-
-    async def search_actions(
-        self,
-        query: str,
-        limit: int = 20,
-        origins: builtins.list[str] | None = None,
-    ) -> builtins.list[Session]: ...
 
 
 @runtime_checkable
@@ -486,7 +345,6 @@ class RawValidationStore(Protocol):
 __all__ = [
     "VectorProvider",
     "ProgressCallback",
-    "SessionQueryRuntimeStore",
     "SessionOutputStore",
     "SessionArchiveStatsStore",
     "TagStore",

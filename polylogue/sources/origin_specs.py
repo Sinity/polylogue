@@ -2427,6 +2427,7 @@ def _codex_spec() -> OriginSpec:
                         "threads",
                         "thread_spawn_edges",
                         "thread_artifacts",
+                        "thread_attachments",
                         "thread_dynamic_tools",
                         "thread_sections",
                         "projects",
@@ -2448,6 +2449,11 @@ def _codex_spec() -> OriginSpec:
                             "thread_artifacts",
                             "retained-for-later-consumption",
                             "Artifact identity and payload are thread evidence with no typed projection yet.",
+                        ),
+                        DatabaseTableRule(
+                            "thread_attachments",
+                            "retained-for-later-consumption",
+                            "Attachment identity and payload are thread evidence with no typed projection yet.",
                         ),
                         DatabaseTableRule(
                             "thread_dynamic_tools",
@@ -2873,8 +2879,6 @@ def _claude_ai_spec() -> OriginSpec:
         acquisition_modes=("export-json",),
         parser_paths=("polylogue/sources/parsers/claude/ai_parser.py",),
         fixture_paths=("tests/unit/sources/test_parsers_claude_ai_catalog.py",),
-        # bd polylogue-4zqh3: sole-copy attachment-byte recovery sidecar.
-        assembly_spec_path="polylogue/sources/assembly_claude_ai.py:ClaudeAIAssemblySpec",
         display_description="Claude web exports (lab: Anthropic)",
         fidelity_notes=(
             "chat_messages[].stop_reason lands on messages.stop_reason only for the tokens "
@@ -3290,10 +3294,16 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
                 "tests/unit/sources/parsers/test_grok.py",
                 "tests/unit/sources/parsers/test_origin_regression_pack.py",
             ),
-            schema_paths=("polylogue/schemas/providers/grok/catalog.json",),
+            # No schema package: the one committed under ``grok`` was Claude.ai's
+            # export folded in by a source-selection defect and was removed
+            # (polylogue-n61h5). It returns only when regenerated from real
+            # Grok artifacts, so the row reports the gap instead of citing a
+            # file that no longer exists.
+            schema_paths=(),
             docs_paths=("docs/provider-origin-identity.md", "docs/architecture.md"),
             caveats=(
-                "The package is a structural parser contract; broader export sampling remains separately tracked.",
+                "The parser is a structural contract reconstructed from secondary sources; no Grok export "
+                "evidence has been admitted, so no schema package exists yet.",
             ),
         ),
     ),

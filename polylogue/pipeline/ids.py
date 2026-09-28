@@ -23,6 +23,7 @@ from polylogue.core.hashing import hash_bytes, hash_payload
 from polylogue.core.json import JSONValue, dumps
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.sqlite_scratch import connect_scratch_database
 from polylogue.core.text_identity import nfc
 from polylogue.core.types import ContentHash, MessageId, SessionId
 
@@ -114,6 +115,27 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
         }
     ),
 }
+
+#: Session-event payload keys kept as evidence but excluded from every event
+#: hash, by event type, with the reason. Gemini thought signatures leave the
+#: hashed block for session evidence (``drive_support_blocks``); they are
+#: provider attestations re-issued on replay, like a block ``signature``, so a
+#: signature-only change must not move the session or event identity.
+_EVENT_PAYLOAD_EXCLUDED_KEYS: dict[str, dict[str, str]] = {
+    "gemini_thinking_evidence": {
+        "thoughtSignature": "provider cryptographic signatures are re-issued on replay",
+        "thoughtSignatures": "provider cryptographic signatures are re-issued on replay",
+    },
+}
+
+
+def _hashed_event_payload(event_type: str, payload: Mapping[str, object]) -> object:
+    """Normalize an event payload for hashing, without its declared replay-volatile keys."""
+    excluded = _EVENT_PAYLOAD_EXCLUDED_KEYS.get(event_type)
+    if excluded:
+        payload = {key: value for key, value in payload.items() if key not in excluded}
+    return _normalize_nested_for_hash(payload)
+
 
 _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
     "ParsedContentBlock": {
@@ -506,7 +528,12 @@ def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> objec
       *not* a tagged wrapper: which container a parser chose for a member list
       is an implementation detail, and a parser normalizing ``{"a", "b"}`` to
       ``["a", "b"]`` must not move every affected ``content_identity``.
-    - ``Decimal``: ``float``, the same lowering ``core/json.py`` declares for
+    - ``Decimal``: ``float`` when the float round-trips exactly, else
+      ``{"$decimal": "<exact text>"}``, so precision beyond a float never
+      merges two values and never collides with an equal string. A mapping
+      key spelled ``$decimal`` (or with more leading ``$``) gains one more
+      ``$``, so no admitted mapping can construct the tag. The
+      float case is the same lowering ``core/json.py`` declares for
       a JSON parser's ``Decimal`` (``_lower_decimals``, ``_default_encoder``).
       The ``QUERY`` digest profile ``hash_payload`` uses reaches stdlib
       ``json.dumps`` with no ``default`` hook at all, so a ``Decimal`` in
@@ -535,6 +562,23 @@ def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> objec
         return _normalize_declared_for_hash(value, path=path)
 
 
+_DECIMAL_TAG = "$decimal"
+
+
+def _hash_key(key: object) -> object:
+    """NFC a string key and escape any spelling of the reserved ``$decimal`` tag.
+
+    The escape prepends one ``$`` to ``$decimal``, ``$$decimal``, ... and is
+    injective, so a mapping key can never produce the tag itself.
+    """
+    if not isinstance(key, str):
+        return key
+    key = nfc(key)
+    if key.endswith(_DECIMAL_TAG) and not key[: -len(_DECIMAL_TAG)].strip("$"):
+        return "$" + key
+    return key
+
+
 class _OutsidePlainVocabularyError(Exception):
     """Internal signal: the path-free fast walk met a value it cannot lower."""
 
@@ -554,9 +598,7 @@ def _normalize_plain_for_hash(value: object) -> object:
     if isinstance(value, str):
         return _EMPTY_SENTINEL if value == "" else nfc(value)
     if isinstance(value, dict):
-        return {
-            (nfc(key) if isinstance(key, str) else key): _normalize_plain_for_hash(item) for key, item in value.items()
-        }
+        return {_hash_key(key): _normalize_plain_for_hash(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_normalize_plain_for_hash(item) for item in value]
     cls = type(value)
@@ -574,10 +616,7 @@ def _normalize_declared_for_hash(value: object, *, path: str) -> object:
     if isinstance(value, str):
         return _EMPTY_SENTINEL if value == "" else nfc(value)
     if isinstance(value, Mapping):
-        return {
-            nfc(key) if isinstance(key, str) else key: _normalize_declared_for_hash(item, path=f"{path}.{key}")
-            for key, item in value.items()
-        }
+        return {_hash_key(key): _normalize_declared_for_hash(item, path=f"{path}.{key}") for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_normalize_declared_for_hash(item, path=f"{path}[]") for item in value]
     if isinstance(value, (set, frozenset)):
@@ -588,7 +627,12 @@ def _normalize_declared_for_hash(value: object, *, path: str) -> object:
     if isinstance(value, Enum):
         return _normalize_declared_for_hash(value.value, path=path)
     if isinstance(value, Decimal):
-        return float(value)
+        # A Decimal that survives the float round trip hashes as that float
+        # (unchanged identity); one that does not keeps its exact text, so two
+        # values differing beyond float precision cannot share a fallback id.
+        as_float = float(value)
+        # Tagged, so an exact decimal never hashes like the equal string.
+        return as_float if Decimal(as_float) == value else {_DECIMAL_TAG: str(value)}
     if isinstance(value, (bytes, bytearray, memoryview)):
         return bytes(value).hex()
     if isinstance(value, (datetime, date, time)):
@@ -869,7 +913,7 @@ def disk_message_content_identities(
     directory = Path(parent).parent if parent is not None else None
     with (
         tempfile.TemporaryDirectory(prefix="polylogue-ids-", dir=directory) as scratch,
-        closing(sqlite3.connect(Path(scratch) / "identities.db")) as conn,
+        closing(connect_scratch_database(Path(scratch) / "identities.db")) as conn,
     ):
         conn.execute("CREATE TABLE count (digest TEXT PRIMARY KEY, value INTEGER NOT NULL) WITHOUT ROWID")
         conn.execute(
@@ -1452,7 +1496,7 @@ def _event_content_payload(event: ParsedSessionEvent) -> dict[str, JSONValue]:
         "event_type": _normalize_for_hash(event.event_type),
         "timestamp": _normalize_for_hash(timestamp),
         "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
-        "payload": hash_payload(_normalize_nested_for_hash(payload)),
+        "payload": hash_payload(_hashed_event_payload(event.event_type, payload)),
     }
 
 
@@ -1579,7 +1623,7 @@ def _session_hash_components(
             "event_type": _normalize_for_hash(event.event_type),
             "timestamp": _normalize_for_hash(event.timestamp),
             "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
-            "payload": hash_payload(_normalize_nested_for_hash(event.payload)),
+            "payload": hash_payload(_hashed_event_payload(event.event_type, event.payload)),
         }
         for event_index, event in enumerate(convo.session_events)
     ]
@@ -1698,7 +1742,7 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
                 "event_type": _normalize_for_hash(event.event_type),
                 "timestamp": _normalize_for_hash(event.timestamp),
                 "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
-                "payload": hash_payload(_normalize_nested_for_hash(event.payload)),
+                "payload": hash_payload(_hashed_event_payload(event.event_type, event.payload)),
             }
         )
     literal('],"title":')
@@ -1778,7 +1822,7 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
                 "event_type": _normalize_for_hash(event.event_type),
                 "timestamp": _normalize_for_hash(event.timestamp),
                 "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
-                "payload": hash_payload(_normalize_nested_for_hash(event.payload)),
+                "payload": hash_payload(_hashed_event_payload(event.event_type, event.payload)),
             }
             conn.execute(
                 "INSERT INTO event_hash VALUES (?, ?)", (event_count - 1, bytes.fromhex(hash_payload(payload)))

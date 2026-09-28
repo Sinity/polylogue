@@ -27,12 +27,20 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
+)
+from devtools.checkout_identity import (
+    ALLOW_DEFAULT_BRANCH_ENV,
+    ON_DEFAULT_BRANCH_FLAG,
+    REFUSAL_EXIT,
+    checkout_identity,
+    default_branch_refusal,
 )
 from devtools.pytest_invocation import (
     CLEAR_CONFIGURED_ADDOPTS,
@@ -44,7 +52,7 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
-    PytestSlotObservationUnavailableError,
+    WORKTREE_PROVENANCE_ENV,
     PytestSlotUnavailableError,
     basetemp_root,
     guard_temp_trees,
@@ -62,8 +70,10 @@ from devtools.verify_runs import (
     VerifyRun,
     append_verification_evidence,
     append_verify_history,
+    copy_current_pytest_artifacts,
     env_for_pytest_step,
     git_head,
+    git_worktree_content_sha256,
     prune_successful_verify_runs,
     pytest_command_worker_request,
 )
@@ -138,7 +148,9 @@ def _format_duration(seconds: float) -> str:
 
 def print_outliers(limit: int = DEFAULT_OUTLIER_COUNT, *, root: Path = ROOT) -> int:
     """Print slow tests and files from the latest full-run pytest reports."""
-    report_paths = sorted((root / PYTEST_REPORT_DIR).glob(PYTEST_PARALLEL_REPORT_PATTERN))
+    report_paths = sorted(
+        path for path in (root / PYTEST_REPORT_DIR).glob("last-pytest-*.json") if path.name != PYTEST_REPORT_PATH.name
+    )
     tests: list[tuple[str, str, float]] = []
     for path in report_paths:
         try:
@@ -153,7 +165,7 @@ def print_outliers(limit: int = DEFAULT_OUTLIER_COUNT, *, root: Path = ROOT) -> 
             duration = _phase_duration(test)
             tests.append((test["nodeid"], test["nodeid"].split("::", 1)[0], duration))
     if not tests:
-        print(f"devtools test --outliers: no readable {PYTEST_PARALLEL_REPORT_PATTERN} receipts", file=sys.stderr)
+        print("devtools test --outliers: no readable full-run pytest receipts", file=sys.stderr)
         return 2
 
     serial_time = sum(duration for _nodeid, _filename, duration in tests)
@@ -403,28 +415,18 @@ def _run(
     artifacts: PytestStepArtifacts,
     report_path: Path,
     runner: str = "managed",
+    stdout: Any = None,
 ) -> tuple[int, float, dict[str, Any]]:
     """Run focused pytest through the host's pytest slot, preserving its receipt."""
     del label, run
     started = time.monotonic()
     try:
         executor = run_pytest if runner == "managed" else run_pytest_isolated
-        env["POLYLOGUE_FOCUSED_WORKTREE_PROVENANCE"] = "1"
-        outcome = executor(command, cwd=cwd, env=env, root=ROOT)
+        env[WORKTREE_PROVENANCE_ENV] = "1"
+        output_option = {"stdout": stdout} if stdout is not None else {}
+        outcome = executor(command, cwd=cwd, env=env, root=ROOT, **output_option)
     except PytestSlotUnavailableError as exc:
         sys.stderr.write(f"devtools test: {exc}\n")
-        observation = (
-            {
-                "job_id": exc.job_id,
-                "errors": exc.observation_errors,
-                "cancellation_attempted": exc.cancellation_attempted,
-                "cancellation_succeeded": exc.cancellation_succeeded,
-                "pytest_slot_receipt": exc.receipt,
-                "pytest_slot_log": str(exc.log_path),
-            }
-            if isinstance(exc, PytestSlotObservationUnavailableError)
-            else None
-        )
         runtime_evidence = getattr(exc, "runtime_evidence", None)
         return (
             125,
@@ -433,7 +435,6 @@ def _run(
                 "diagnosis": "pytest_slot_unavailable",
                 "error": str(exc),
                 "termination_reason": "pytest_slot_unavailable",
-                **({"pytest_slot_observation": observation} if observation is not None else {}),
                 **({"pytest_slot_terminal": runtime_evidence} if runtime_evidence is not None else {}),
             },
         )
@@ -458,6 +459,9 @@ def _run(
             env=env,
             root=ROOT,
             runner=runner,
+            first_provenance=(
+                outcome.receipt.get("worktree_provenance") if isinstance(outcome.receipt, dict) else None
+            ),
         )
         if returncode == 1
         else None
@@ -520,6 +524,28 @@ def _publish_last_focused_pytest_report(report_path: Path) -> None:
         shutil.copyfile(report_path, destination)
 
 
+def _certain_selections(selection: list[str]) -> list[str]:
+    """The arguments that cannot be an option's value.
+
+    An argument directly after a space-separated option (``--ignore
+    tests/test_x.py``, ``-p plugin``) may be that option's value, and pytest's
+    option table is open-ended, so it is left to pytest. Missing one here only
+    defers the refusal to pytest; refusing a value would block a valid run.
+    """
+    certain: list[str] = []
+    for index, argument in enumerate(selection):
+        previous = selection[index - 1] if index else ""
+        if previous.startswith("-") and "=" not in previous:
+            continue
+        certain.append(argument)
+    return certain
+
+
+def _is_test_module_name(name: str) -> bool:
+    """Whether ``name`` follows pytest's default test-module naming."""
+    return name.endswith(".py") and (name.startswith("test_") or name.endswith("_test.py"))
+
+
 def absent_selection_paths(selection: list[str], *, root: Path) -> list[str]:
     """The path selections that name nothing in the checkout.
 
@@ -549,12 +575,22 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if outlier_count is not None:
         return print_outliers(outlier_count)
+    on_default_branch = ON_DEFAULT_BRANCH_FLAG in selection
+    selection = [arg for arg in selection if arg != ON_DEFAULT_BRANCH_FLAG]
     selection = _normalize_selection_paths(selection, invocation_directory=invocation_directory)
     _anchor_test_paths()
+    identity = checkout_identity(ROOT)
+    refusal = default_branch_refusal(identity, command="devtools test", allowed=on_default_branch)
+    if refusal is not None:
+        sys.stderr.write(refusal + "\n")
+        return REFUSAL_EXIT
+    sys.stderr.write(f"devtools test: {identity.describe()}\n")
     try:
         assert_polylogue_matches_checkout(ROOT, context="devtools test")
     except CheckoutImportMismatchError as exc:
+        # The detail first: the verdict, naming the checkout, is the last line.
         sys.stderr.write(f"{exc}\n")
+        sys.stderr.write(f"devtools test: FAILED exit=125 diagnosis=checkout_import_mismatch {identity.describe()}\n")
         return 125
     use_json = "--json" in selection
     # The control-plane dispatch may append a bare ``--json`` machine-readable
@@ -569,6 +605,26 @@ def main(argv: list[str] | None = None) -> int:
             "For the full pre-PR gate use `devtools verify`.\n"
         )
         return 2
+
+    # Refuse a missing path before queueing for the host pytest slot: pytest
+    # fails such a run at collection anyway, but only after it has waited out
+    # the pool admission, which on a contended pool is many minutes.
+    absent_before_admission = [
+        argument
+        for argument in absent_selection_paths(_certain_selections(selection), root=ROOT)
+        # Only a node id or a test module is certain to be a selection: an
+        # option value (``--junit-xml reports/out.xml``, ``--log-file
+        # reports/out.py``) also contains a slash and legitimately does not
+        # exist before the run.
+        if "::" in argument or _is_test_module_name(Path(argument).name)
+    ]
+    if absent_before_admission:
+        sys.stderr.write(
+            "devtools test: these selected paths do not exist, so nothing was queued: "
+            + ", ".join(absent_before_admission)
+            + "\n"
+        )
+        return 4
 
     run = VerifyRun(
         tier="focused-test",
@@ -598,7 +654,8 @@ def main(argv: list[str] | None = None) -> int:
     # reaches the disposition below. Cancelled once that disposition is made.
     temp_guard = guard_temp_trees(run_temp)
     _prepare_nodatacow_parent(run_temp)
-    cmd = [*cmd, "--basetemp", str(run_temp)]
+    if not any(arg == "--basetemp" or arg.startswith("--basetemp=") for arg in selection):
+        cmd = [*cmd, "--basetemp", str(run_temp)]
     _clear_pytest_report(report_path)
     artifacts = run.start_step(label="pytest focused", cmd=cmd)
     started = time.monotonic()
@@ -614,6 +671,11 @@ def main(argv: list[str] | None = None) -> int:
         # body SETS this variable. The call below must stay this module's.
         pytest_env.pop("POLYLOGUE_BROAD_PREWARM", None)
         _normalize_managed_pytest_environment(pytest_env)
+        # Only this invocation's flag authorizes the default branch; an
+        # inherited value must not reach the slot's start-time re-check.
+        pytest_env.pop(ALLOW_DEFAULT_BRANCH_ENV, None)
+        if on_default_branch:
+            pytest_env[ALLOW_DEFAULT_BRANCH_ENV] = "1"
         hypothesis_profile, hypothesis_profile_source = effective_hypothesis_profile(
             selection, pytest_env, default="verify"
         )
@@ -627,7 +689,21 @@ def main(argv: list[str] | None = None) -> int:
             artifacts=artifacts,
             report_path=report_path,
             runner=runner,
+            stdout=sys.stderr if use_json else None,
         )
+        copy_current_pytest_artifacts(
+            ROOT,
+            artifacts,
+            legacy_paths={
+                "progress_path": PYTEST_PROGRESS_PATH,
+                "events_merged_path": PYTEST_EVENTS_PATH,
+                "selection_path": PYTEST_SELECTION_PATH,
+                "summary_path": PYTEST_SUMMARY_PATH,
+            },
+        )
+        slot_log = metadata.get("pytest_slot_log")
+        if isinstance(slot_log, str) and Path(slot_log).is_file():
+            shutil.copyfile(slot_log, ROOT / PYTEST_REPORT_DIR / "current-pytest-output.log")
         _publish_last_focused_pytest_report(report_path)
         metadata["testmon_preselection"] = {
             "status": graph.status.value,
@@ -663,6 +739,20 @@ def main(argv: list[str] | None = None) -> int:
     provenance = metadata.get("worktree_provenance")
     if isinstance(provenance, dict):
         run.record_execution_worktree(provenance)
+        # Report what actually ran, not what was admitted at submission.
+        identity = replace(identity, branch=provenance.get("git_branch"), head=provenance.get("git_head"))
+        # pytest may import files at any point of its run: content that moved
+        # after the slot identified it means no single tree was tested.
+        finished = checkout_identity(ROOT)
+        if (finished.branch, finished.head) != (identity.branch, identity.head) or git_worktree_content_sha256(
+            ROOT
+        ) != provenance.get("git_worktree_content_sha256"):
+            sys.stderr.write(
+                f"devtools test: the checkout moved during the run (tested {identity.describe()}, "
+                f"finished {finished.describe()}); the result is void\n"
+            )
+            rc = rc or 1
+            metadata = {**metadata, "diagnosis": "checkout_moved_during_run"}
     statistics: dict[str, Any] = cast(
         dict[str, Any], metadata.get("statistics") if isinstance(metadata.get("statistics"), dict) else {}
     )
@@ -710,14 +800,15 @@ def main(argv: list[str] | None = None) -> int:
     # reach of that mistake. The receipt is this run's own file, never a
     # `current-*` name a concurrent run in the same checkout would overwrite.
     receipt = run.relative_run_dir / "run.json"
-    sys.stderr.write(
-        f"\ndevtools test: {'PASSED' if rc == 0 else 'FAILED'} exit={rc} "
-        f"diagnosis={metadata.get('diagnosis') or 'unknown'} receipt={receipt}\n"
-    )
     # The rest of the artifacts are reference material, not a result. Printing
     # them after every green run trains the reader to skip the tail of the
     # output, which is exactly where a failure summary appears. `devtools why`
-    # reaches them on demand.
+    # reaches them on demand. When they are printed, it is before the verdict,
+    # so the verdict and the checkout it tested stay the last line.
     if _verbose_output() or rc != 0:
-        sys.stderr.write(f"devtools test: artifacts={run.relative_run_dir}/steps/{artifacts.step_id}\n")
+        sys.stderr.write(f"\ndevtools test: artifacts={run.relative_run_dir}/steps/{artifacts.step_id}")
+    sys.stderr.write(
+        f"\ndevtools test: {'PASSED' if rc == 0 else 'FAILED'} exit={rc} "
+        f"diagnosis={metadata.get('diagnosis') or 'unknown'} receipt={receipt} {identity.describe()}\n"
+    )
     return rc

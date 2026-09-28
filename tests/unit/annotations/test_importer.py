@@ -350,3 +350,153 @@ async def test_import_uses_concrete_delegation_schema_and_exact_retry_is_idempot
             ).fetchone()[0]
             == 5
         )
+
+
+class _Killed(BaseException):
+    """Stands in for the process dying mid-import; not an ``Exception`` any route may catch."""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("crash", ["before-apply", "after-apply"])
+async def test_interrupted_import_is_resolved_complete_or_absent_at_restart(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch, crash: str
+) -> None:
+    """A killed batch import is resolved from its one atomic transaction, never ``unknown``.
+
+    Anti-vacuity: make ``AnnotationBatchImportActuator.recover`` report
+    ``complete`` without reading ``annotation_batches`` and the before-apply
+    row turns red; drop the route from ``recoverable_actuators`` and both rows
+    end ``recovery_not_replayable``.
+    """
+    import sqlite3
+
+    from polylogue.operations.mutation_replay import recover_interrupted_operations
+
+    started: list[str] = []
+
+    def die_mid_import(
+        self: OperationExecutor,
+        binding: OperationBinding[object, object],
+        preview: object,
+        authorization: object,
+        args: object,
+    ) -> object:
+        assert self._audit is not None
+        started.append(self._audit.consume_authorization_and_start(preview, authorization))  # type: ignore[arg-type]
+        if crash == "after-apply":
+            binding.actuator.apply(preview.plan, args)  # type: ignore[attr-defined]
+        raise _Killed
+
+    archive_root = workspace_env["archive_root"]
+    with ArchiveStore(archive_root) as archive:
+        write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="annotation-target",
+                title="Annotation target",
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+            ),
+        )
+    registry = AnnotationSchemaRegistry()
+    registry.register(_schema())
+    jsonl = json.dumps(
+        {
+            "row_key": "row-0",
+            "value": {"label": "yes", "confidence": 0.9},
+            "evidence_refs": ["codex-session:annotation-target"],
+        }
+    )
+    monkeypatch.setattr(OperationExecutor, "execute_bound", die_mid_import)
+    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+        with pytest.raises(_Killed):
+            await import_annotation_batch(poly, _request("batch-killed", jsonl), registry=registry)
+    (operation_id,) = started
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        conn.execute(
+            "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
+        )
+        conn.commit()
+
+    recover_interrupted_operations(archive_root)
+
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        status, reason = conn.execute(
+            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone()
+    with ArchiveStore.open_existing(archive_root) as archive:
+        committed = archive.get_annotation_batch("batch-killed") is not None
+    if crash == "after-apply":
+        assert (status, reason, committed) == ("completed", "recovered_complete", True)
+    else:
+        assert (status, reason, committed) == ("failed", "recovered_absent", False)
+
+
+@pytest.mark.asyncio
+async def test_interrupted_import_reusing_a_batch_id_is_not_mistaken_for_its_predecessor(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An earlier batch under the same id does not make a killed import complete.
+
+    Anti-vacuity: resolve by ``batch_id`` existence alone in
+    ``AnnotationBatchImportActuator.recover`` and this run ends
+    ``recovered_complete`` though none of its rows committed.
+    """
+    import sqlite3
+
+    from polylogue.operations.mutation_replay import recover_interrupted_operations
+
+    archive_root = workspace_env["archive_root"]
+    with ArchiveStore(archive_root) as archive:
+        write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="annotation-target",
+                title="Annotation target",
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="evidence")],
+            ),
+        )
+    registry = AnnotationSchemaRegistry()
+    registry.register(_schema())
+
+    def row(key: str) -> str:
+        return json.dumps(
+            {
+                "row_key": key,
+                "value": {"label": "yes", "confidence": 0.9},
+                "evidence_refs": ["codex-session:annotation-target"],
+            }
+        )
+
+    started: list[str] = []
+
+    def die_before_apply(
+        self: OperationExecutor,
+        binding: OperationBinding[object, object],
+        preview: object,
+        authorization: object,
+        args: object,
+    ) -> object:
+        assert self._audit is not None
+        started.append(self._audit.consume_authorization_and_start(preview, authorization))  # type: ignore[arg-type]
+        raise _Killed
+
+    async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+        await import_annotation_batch(poly, _request("batch-reused", row("first")), registry=registry)
+        monkeypatch.setattr(OperationExecutor, "execute_bound", die_before_apply)
+        with pytest.raises(_Killed):
+            await import_annotation_batch(poly, _request("batch-reused", row("second")), registry=registry)
+    (operation_id,) = started
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        conn.execute(
+            "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
+        )
+        conn.commit()
+
+    recover_interrupted_operations(archive_root)
+
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone() == ("failed", "recovered_absent")

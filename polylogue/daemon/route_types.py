@@ -28,6 +28,25 @@ AuthPolicy = Literal[
     "first_party_same_origin",
     "observability_flag_then_loopback_or_bearer",
 ]
+NonReplayableReason = Literal[
+    # The request mutates durable or credential state; replay would write.
+    "mutation",
+    # The only faithful example addresses an item a prior mutation minted.
+    "requires-prior-mutation",
+    # A read whose request is a POST body rather than a query string.
+    "request-body",
+    # The status code is the verdict (503 while any alert is present), so a
+    # replay measures archive health rather than the request shape.
+    "status-verdict",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class NonReplayable:
+    """Why a route's declared examples cannot be replayed as a JSON GET."""
+
+    reason: NonReplayableReason
+    detail: str
 
 
 @dataclass(frozen=True)
@@ -64,6 +83,13 @@ class RouteSpec:
     OpenAPI renderer need. Keeping this projection beside the kernel record
     makes a route declaration executable without teaching the shared kernel
     about HTTP.
+
+    Every declared example is a real request shape. An example argument named
+    after a path placeholder (``name`` for ``:name``) fills that segment; the
+    remaining arguments are the query string. ``non_replayable`` names why a
+    route's examples cannot be replayed as a simple JSON GET; a non-GET route
+    must carry one, and a GET route without one is replayed by
+    ``TestDeclaredRouteExamples`` and must answer 2xx JSON.
     """
 
     kernel: DeclarationSpec
@@ -80,3 +106,8 @@ class RouteSpec:
     migration_reason: str = ""
     kind: RouteKind | None = None
     stability: RouteStability | None = None
+    non_replayable: NonReplayable | None = None
+
+    def __post_init__(self) -> None:
+        if self.method != "GET" and self.non_replayable is None:
+            raise ValueError(f"{self.method} {self.path} must declare why its examples are not replayable")

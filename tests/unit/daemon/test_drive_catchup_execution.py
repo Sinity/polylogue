@@ -9,6 +9,7 @@ import threading
 from collections.abc import Callable, Iterable
 from pathlib import Path
 from types import SimpleNamespace
+from typing import IO
 
 import pytest
 
@@ -34,7 +35,7 @@ pytestmark = pytest.mark.uses_real_clock("Thread settlement and archive acquisit
 class DriveClient:
     def __init__(self, before_download: Callable[[], None] = lambda: None) -> None:
         self.before_download = before_download
-        self.attachment_available = True
+        self.grown = False
         self.modified_time = "2026-01-01T00:00:00Z"
 
     def resolve_folder_id(self, folder_ref: str) -> str:
@@ -45,28 +46,22 @@ class DriveClient:
 
     def download_bytes(self, file_id: str) -> bytes:
         self.before_download()
-        if file_id == "attachment":
-            if not self.attachment_available:
-                raise OSError("synthetic unavailable attachment")
-            return b"neutral attachment bytes"
-        return json.dumps(
+        chunks: list[dict[str, object]] = [
+            {"role": "user", "text": "Neutral question"},
             {
-                "chunkedPrompt": {
-                    "chunks": [
-                        {"role": "user", "text": "Neutral question"},
-                        {
-                            "role": "model",
-                            "text": "Neutral answer",
-                            "driveDocument": {
-                                "id": "attachment",
-                                "name": "note.txt",
-                                "mimeType": "text/plain",
-                            },
-                        },
-                    ]
-                }
-            }
-        ).encode()
+                "role": "model",
+                "text": "Neutral answer",
+                "driveDocument": {"id": "attachment", "name": "note.txt", "mimeType": "text/plain"},
+            },
+        ]
+        if self.grown:
+            # The provider re-serializes the whole document on each save, so
+            # a conversation that grew is rewritten, not byte-appended.
+            chunks.append({"role": "user", "text": "Neutral follow-up"})
+        return json.dumps({"chunkedPrompt": {"chunks": chunks}, "runSettings": {"model": "neutral"}}).encode()
+
+    def download_into(self, file_id: str, handle: IO[bytes]) -> None:
+        handle.write(self.download_bytes(file_id))
 
 
 def make_parser(
@@ -152,7 +147,14 @@ async def test_drive_preparation_leaves_real_writer_available(
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions WHERE parsed_at_ms IS NOT NULL").fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 0
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM attachments WHERE blob_hash IS NOT NULL").fetchone()[0] == 1
+        # Drive-hosted bytes are fetched later by the attachment convergence
+        # stage; ingest stores the reference only.
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM attachments WHERE blob_hash IS NULL AND acquisition_status = 'unfetched'"
+            ).fetchone()[0]
+            == 1
+        )
         assert conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'Neutral'").fetchone()[0] == 2
 
 
@@ -287,7 +289,7 @@ async def test_drive_cancellation_settles_thread_before_return(
         await coordinator.run_sync("test.after", lambda: require_write_lease("settled", archive_root=tmp_path))
 
 
-async def test_drive_phased_matches_ordinary_attachment_backfill(
+async def test_drive_phased_matches_ordinary_document_growth(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -313,7 +315,6 @@ async def test_drive_phased_matches_ordinary_attachment_backfill(
         root = tmp_path / ("phased" if phased else "ordinary")
         parser, _, _ = make_parser(root, monkeypatch, phased=phased)
         client = DriveClient()
-        client.attachment_available = False
         monkeypatch.setattr(
             "polylogue.sources.drive._resolved_drive_client", lambda fixture_client=client, **kwargs: fixture_client
         )
@@ -322,7 +323,7 @@ async def test_drive_phased_matches_ordinary_attachment_backfill(
         with arm_write_lease_enforcement(armed=phased, process_wide=True):
             first = await parser.ingest_sources(sources=[source])
             assert first.parse_result.processed_ids
-            client.attachment_available = True
+            client.grown = True
             client.modified_time = "2026-01-02T00:00:00Z"
             second = await parser.ingest_sources(sources=[source])
             assert second.parse_result.processed_ids
@@ -382,3 +383,42 @@ async def test_drive_download_cancellation_closes_staging_after_thread_settles(
     with sqlite3.connect(tmp_path / "source.db") as conn:
         assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
     await parser.repository.close()
+
+
+async def test_drive_growth_binds_a_raw_owned_by_many_source_generations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Generation ownership cardinality never turns a Drive cohort permanently stale.
+
+    Anti-vacuity: snapshot the cohort's ``source_item_raw_members`` rows into
+    the preparation scratch and this raw's 1,001 ownership rows exceed the
+    cohort row cap, so every pass discards the grown revision unparsed.
+    """
+    root = tmp_path / "archive"
+    source = Source(name="gemini", folder="fixture", path=tmp_path / "source")
+    parser, _, _ = make_parser(root, monkeypatch)
+    client = DriveClient()
+    monkeypatch.setattr("polylogue.sources.drive._resolved_drive_client", lambda **kwargs: client)
+    with arm_write_lease_enforcement(process_wide=True):
+        first = await parser.ingest_sources(sources=[source])
+        assert first.parse_result.processed_ids
+        client.grown = True
+        client.modified_time = "2026-01-02T00:00:00Z"
+        acquired = await parser.ingest_sources(sources=[source], parse_records=False)
+        (raw_id,) = acquired.acquire_result.raw_ids
+        with sqlite3.connect(root / "source.db") as conn:
+            conn.executemany(
+                "INSERT INTO source_item_raw_members VALUES (?, 'item', 'coordinate', ?, ?)",
+                [(f"generation-{index}", raw_id, bytes(32)) for index in range(1001)],
+            )
+        second = await parser.parse_from_raw(raw_ids=[raw_id])
+        assert second.processed_ids
+    await parser.repository.close()
+    with sqlite3.connect(root / "source.db") as conn:
+        assert (
+            conn.execute(
+                "SELECT COUNT(*) FROM raw_sessions WHERE revision_authority='asserted' AND predecessor_raw_id IS NOT NULL"
+            ).fetchone()[0]
+            == 1
+        )

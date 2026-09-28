@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from polylogue.config import Config
 from polylogue.pipeline.services.indexing import IndexService
+from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_async
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.storage_records import make_content_block, make_message, make_session, save_session_to_archive
 
@@ -206,13 +207,6 @@ class TestIndexService:
         assert descriptions[0] == "Indexing: full-text search 0/2"
         assert descriptions[-1] == "Indexing: full-text search 2/2"
 
-    async def test_ensure_index_exists_success(self, sqlite_backend: SQLiteBackend) -> None:
-        """Ensure FTS5 index exists."""
-        service = IndexService(_config(), backend=sqlite_backend)
-
-        result = await service.ensure_index_exists()
-        assert result is True
-
     async def test_get_index_status(self, sqlite_backend: SQLiteBackend) -> None:
         """Get index status."""
         service = IndexService(_config(), backend=sqlite_backend)
@@ -227,7 +221,8 @@ class TestIndexService:
         service = IndexService(_config(), backend=sqlite_backend)
 
         # Ensure FTS table exists via this backend
-        await service.ensure_index_exists()
+        async with sqlite_backend.connection() as conn:
+            await ensure_fts_index_async(conn)
 
         # get_index_status should use the same backend and find the table
         status = await service.get_index_status()
@@ -277,20 +272,6 @@ class TestIndexServiceErrors:
             side_effect=sqlite3.DatabaseError("disk full"),
         ):
             result = await service.rebuild_index()
-            assert result is False
-
-    async def test_ensure_index_failure(self) -> None:
-        """ensure_index_exists should return False on exception."""
-        config = MagicMock()
-        mock_backend = MagicMock()
-        service = IndexService(config=config, backend=mock_backend)
-
-        with patch(
-            "polylogue.pipeline.services.indexing.ensure_index",
-            new_callable=AsyncMock,
-            side_effect=sqlite3.DatabaseError("corruption"),
-        ):
-            result = await service.ensure_index_exists()
             assert result is False
 
     async def test_get_index_status_failure(self) -> None:

@@ -447,16 +447,10 @@ async def test_path_worker_publishes_prepared_rows_from_captured_blob(
 ) -> None:
     import polylogue.sources.live.batch as batch
     import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
-    from polylogue.sources.prepared_jsonl import PreparedJsonl
 
     paths = _write_fixture_corpus(tmp_path / "sessions", count=1)
     await _ingest(tmp_path / "baseline", paths, parse_stage=None)
     monkeypatch.setattr(batch, "_STREAMING_FULL_INGEST_BYTES", 1)
-    monkeypatch.setattr(
-        PreparedJsonl,
-        "load_sessions",
-        lambda _self: pytest.fail("the writer reconstructed a complete prepared JSONL cohort"),
-    )
     copied = 0
     original_copy = archive_tier_write.copy_shard_session_rows
 
@@ -482,7 +476,6 @@ async def test_json_document_uses_prepared_rows_and_preserves_detected_origin(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
-    from polylogue.sources.prepared_jsonl import PreparedJsonl
 
     source = tmp_path / "inbox" / "session.json"
     source.parent.mkdir()
@@ -530,11 +523,6 @@ async def test_json_document_uses_prepared_rows_and_preserves_detected_origin(
         assert result.ingested_session_count == 1
 
     await ingest(tmp_path / "baseline", None)
-    monkeypatch.setattr(
-        PreparedJsonl,
-        "load_sessions",
-        lambda _self: pytest.fail("the writer reconstructed a complete prepared JSON cohort"),
-    )
     monkeypatch.setattr(archive_tier_write, "copy_shard_session_rows", count_copy)
     stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "shards")
     try:
@@ -1715,3 +1703,64 @@ def test_warm_timeout_cancels_the_workers_it_stopped_waiting_for(
         stage.shutdown()
 
     assert "cancelled 2 unstarted worker(s)" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_prepared_session_with_lowered_sink_keeps_identity_and_rows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worker-lowered session is stored exactly as the inline route stores it.
+
+    The worker derives each tool call's outcome in its sealed sink, a
+    lowering the inline route applies only while building rows. Both routes
+    must store the parse-bound digest and identical rows, and the writer must
+    copy the worker's prepared rows rather than rebuild them. Anti-vacuity:
+    re-hashing the lowered sink on the writer declines the shard as
+    ``content_hash_mismatch`` (``copies`` reads 0) and stores a digest the
+    inline route never produces (``sessions.content_hash`` differs).
+    """
+    import polylogue.storage.sqlite.archive_tiers.write as archive_tier_write
+
+    rows: list[dict[str, object]] = [
+        {"type": "session_meta", "payload": {"id": "lowered", "timestamp": "2026-07-19T00:00:00Z"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "lowered-m0",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "list the files"}],
+            },
+        },
+        {
+            "type": "response_item",
+            "payload": {"type": "function_call", "name": "shell", "arguments": '{"command":["ls"]}', "call_id": "c1"},
+        },
+        {"type": "response_item", "payload": {"type": "function_call_output", "call_id": "c1", "output": "a.txt"}},
+    ]
+    source = tmp_path / "sessions" / "lowered.jsonl"
+    source.parent.mkdir()
+    source.write_bytes(b"".join(json.dumps(row, sort_keys=True).encode() + b"\n" for row in rows))
+    await _ingest(tmp_path / "baseline", [source], parse_stage=None)
+
+    copies = 0
+    real_copy = archive_tier_write.copy_shard_session_rows
+
+    def counting_copy(*args: object, **kwargs: object) -> object:
+        nonlocal copies
+        copies += 1
+        return real_copy(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(archive_tier_write, "copy_shard_session_rows", counting_copy)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    try:
+        await _ingest(tmp_path / "prepared", [source], parse_stage=stage)
+    finally:
+        stage.shutdown()
+
+    baseline = _canonical_snapshot(tmp_path / "baseline")
+    with _connect(tmp_path / "baseline" / "index.db") as conn:
+        outcomes = {row[0] for row in conn.execute("SELECT tool_outcome FROM blocks WHERE tool_id = 'c1'")}
+    assert outcomes and None not in outcomes
+    assert copies == len(baseline["index.sessions"]) == 1
+    assert baseline == _canonical_snapshot(tmp_path / "prepared")

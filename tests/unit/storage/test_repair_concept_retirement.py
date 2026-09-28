@@ -200,7 +200,7 @@ def test_maintenance_surface_offers_no_generic_repair_command() -> None:
 
     The maintenance family is the only registered operator surface that could
     host one; every member is checked against the live Click tree by
-    ``devtools gate declaration-bindings``, so this reads the same declarations
+    ``tests/unit/devtools/test_declaration_binding_registries.py``, so this reads the same declarations
     the CLI actually registers rather than a doc.
 
     Anti-vacuity: declaring ``_command("repair", ...)`` (or ``doctor`` /

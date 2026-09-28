@@ -695,15 +695,6 @@ def reader_anchor(target_type: Literal["session", "message"], target_id: object)
     return f"{prefix}-{safe_id or 'target'}"
 
 
-def _parse_optional_datetime(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
 def reader_session_actions() -> dict[str, ReaderActionAvailabilityPayload]:
     """Default action contract for session-level reader targets."""
     return {
@@ -1596,6 +1587,16 @@ class QueryErrorPayload(SurfacePayloadModel):
     error: str
     detail: str | None = None
     field: str | None = None
+
+
+class QueryFailurePayload(QueryErrorPayload):
+    """An unexpected failure answered at a request boundary, with its terminal outcome.
+
+    Only the daemon HTTP boundary's 500 answer carries ``outcome``; every other
+    error keeps the four-field :class:`QueryErrorPayload` envelope.
+    """
+
+    outcome: OutcomeEnvelope
 
 
 class QueryMissReasonPayload(SurfacePayloadModel):
@@ -4549,6 +4550,7 @@ __all__ = [
     "DelegationSubtreePayload",
     "MutationResultPayload",
     "QueryErrorPayload",
+    "QueryFailurePayload",
     "QueryUnitAggregateEnvelope",
     "QueryUnitAggregateRowPayload",
     "QueryUnitEnvelope",

@@ -254,6 +254,7 @@ def produce_direct_status(
             raw_frontier_integrity=frontier,
             tier_count_unavailable=tier_count_unavailable(tiers),
             halted_units=None,
+            failed_services=None,
             status_snapshot=None,
         ),
         "daemon_liveness": False,
@@ -368,6 +369,18 @@ def produce_operation_status(
     )
     if runtime_status is None:
         return pinned
+    runtime_components = runtime_status.get("component_readiness")
+    pinned_components = pinned.get("component_readiness")
+    if isinstance(runtime_components, Mapping) and isinstance(pinned_components, Mapping):
+        composed_components = {
+            key: dict(value) for key, value in pinned_components.items() if isinstance(value, Mapping)
+        }
+        for key, runtime_entry in runtime_components.items():
+            pinned_entry = composed_components.get(key)
+            collection = runtime_entry.get("collection") if isinstance(runtime_entry, Mapping) else None
+            if pinned_entry is not None and isinstance(collection, Mapping):
+                pinned_entry["collection"] = dict(collection)
+        pinned["component_readiness"] = composed_components
     runtime_only = {
         "daemon_liveness",
         "sinex_publication",
@@ -387,6 +400,7 @@ def produce_operation_status(
     # itself not-ok as ok (polylogue-20d.17.1). The verdict is decided once,
     # by the same function, over the union of both surfaces' evidence.
     runtime_halted = runtime_status.get("halted_units")
+    runtime_service_failures = runtime_status.get("service_failures")
     runtime_snapshot = runtime_status.get("status_snapshot")
     # ``halted_units`` is a JSON array in the daemon contract. ``str`` and
     # ``bytes`` are Sequences too, but accepting either here would turn a
@@ -405,6 +419,12 @@ def produce_operation_status(
             cast(Mapping[str, Mapping[str, object]], pinned["archive_tiers"])
         ),
         halted_units=observed_halted,
+        failed_services=(
+            runtime_service_failures
+            if isinstance(runtime_service_failures, Sequence)
+            and not isinstance(runtime_service_failures, (str, bytes, bytearray))
+            else None
+        ),
         status_snapshot=runtime_snapshot if isinstance(runtime_snapshot, Mapping) else None,
     ) and bool(runtime_status.get("daemon_liveness"))
     result["status_observations"] = {
@@ -991,6 +1011,7 @@ def overall_status_ok(
     raw_frontier_integrity: Mapping[str, object] | None,
     tier_count_unavailable: bool | None,
     halted_units: Sequence[object] | None,
+    failed_services: Sequence[object] | None,
     status_snapshot: Mapping[str, object] | None,
 ) -> bool:
     """Decide the overall ``ok`` verdict for every status surface, once.
@@ -1023,6 +1044,11 @@ def overall_status_ok(
     if halted_units:
         # Something the daemon was asked to do stopped being schedulable and
         # will not resume on its own, whatever the rest of the components say.
+        return False
+    if failed_services:
+        # A failed ``isolate`` service is never restarted and an orphan still
+        # runs past its deadline: declared work has stopped, however green the
+        # components it used to maintain still look.
         return False
     if raw_frontier_integrity is not None and not raw_frontier_integrity_is_proven_healthy(raw_frontier_integrity):
         return False

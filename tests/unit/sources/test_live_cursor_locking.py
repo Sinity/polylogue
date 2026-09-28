@@ -141,6 +141,47 @@ def test_record_failed_cursor_does_not_reincrement_already_excluded_cursor(tmp_p
     assert record.failure_count == failure_count_at_exclusion
 
 
+def test_failed_retry_of_an_excluded_cursor_rebinds_it_to_the_failed_observation(tmp_path: Path) -> None:
+    """A changing excluded file costs one attempt per change, not one per poll.
+
+    Anti-vacuity: drop the ``mark_excluded`` rebind in
+    ``_record_failed_cursor`` and the cursor keeps the pre-append size, so the
+    watcher (which revives an excluded cursor whose observation differs) sees
+    a change on every poll and re-runs the failing ingest indefinitely; bind
+    to a fresh stat instead and the later, unattempted revision is
+    quarantined unread.
+    """
+    from polylogue.sources.live.cursor import _MAX_CURSOR_FAILURES_BEFORE_EXCLUDE
+
+    source = tmp_path / "session.jsonl"
+    source.write_text('{"a":1}\n')
+    store = CursorStore(tmp_path / "live.sqlite")
+    for _ in range(_MAX_CURSOR_FAILURES_BEFORE_EXCLUDE):
+        store.mark_failed(source, failed_stat=source.stat())
+    with source.open("a") as handle:
+        handle.write('{"b":2}\n')
+    appended = source.stat()
+    attempted = (appended.st_dev, appended.st_ino, appended.st_size, appended.st_mtime_ns, appended.st_ctime_ns)
+    # A later write lands after the attempt read the file; the exclusion must
+    # bind to what was attempted, not to this unattempted revision.
+    with source.open("a") as handle:
+        handle.write('{"c":3}\n')
+
+    processor = LiveBatchProcessor(cast(Any, object()), [], cursor=store, parser_fingerprint="fp:test")
+    processor._record_failed_cursor(source, attempted_observation=attempted)
+
+    record = store.get_record(source)
+    assert record is not None
+    assert record.excluded
+    # A revival caused by a parser change must not repeat once that parser failed too.
+    assert record.parser_fingerprint == processor._current_parser_fingerprint()
+    assert (record.byte_size, record.st_ino, record.mtime_ns) == (
+        appended.st_size,
+        appended.st_ino,
+        appended.st_mtime_ns,
+    )
+
+
 def test_failed_persistence_preserves_last_committed_cursor_offset(tmp_path: Path) -> None:
     source = tmp_path / "session.jsonl"
     committed = b'{"role":"user","content":"committed"}\n'

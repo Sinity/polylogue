@@ -36,9 +36,11 @@ their own dedup state to keep evaluations hermetic.
 
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from functools import lru_cache
 from pathlib import Path
 
 from polylogue.config import PolylogueConfig, load_polylogue_config
@@ -162,6 +164,57 @@ def watchsource_name_to_family(name: str) -> str:
     return _WATCHSOURCE_TO_FAMILY.get(name, "unknown")
 
 
+def _default_source_environment() -> tuple[tuple[str, str], ...]:
+    """Every environment value that can move the typed default sources.
+
+    The whole ``POLYLOGUE_*`` and ``XDG_*`` families plus ``HOME``, rather
+    than a hand-kept list of the names read today: a selector added later
+    (a site-config file, a new root override) cannot silently serve roots
+    resolved under the previous configuration.
+    """
+    from polylogue.config import _site_config_path, _user_config_path
+
+    environment = tuple(
+        sorted(
+            (name, value)
+            for name, value in os.environ.items()
+            if name == "HOME" or name.startswith(("POLYLOGUE_", "XDG_"))
+        )
+    )
+    # The selected config files are re-read on every resolution, so an
+    # in-place rewrite (a new [archive] root) must move the key too.
+    revisions: list[tuple[str, str]] = []
+    for path in (_site_config_path(), _user_config_path()):
+        if path is None:
+            continue
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        revisions.append((f"config:{path}", f"{stat.st_mtime_ns}:{stat.st_size}:{stat.st_ino}"))
+    return environment + tuple(revisions)
+
+
+@lru_cache(maxsize=4)
+def _default_source_families(environment: tuple[tuple[str, str], ...]) -> tuple[tuple[Path, str], ...]:
+    """Resolved default-source roots and their families for one environment.
+
+    Status projections classify every debt row and cursor through this; built
+    per row it constructed and resolved the whole default-source set (hook
+    spool topology included) once for each of thousands of rows.
+    """
+    del environment  # the cache key; default_sources() reads the same values
+    from polylogue.sources.live.watcher import default_sources
+
+    families: list[tuple[Path, str]] = []
+    for src in default_sources():
+        try:
+            families.append((src.root.resolve(strict=False), watchsource_name_to_family(src.name)))
+        except OSError:
+            continue
+    return tuple(families)
+
+
 def source_family_for_path(path: Path | str) -> str:
     """Infer the source-family token from a source-file path.
 
@@ -170,7 +223,7 @@ def source_family_for_path(path: Path | str) -> str:
     or the watch-source name is not recognized.
     """
     try:
-        from polylogue.sources.live.watcher import default_sources
+        families = _default_source_families(_default_source_environment())
     except Exception:
         return "unknown"
 
@@ -178,16 +231,12 @@ def source_family_for_path(path: Path | str) -> str:
         resolved = Path(path).resolve(strict=False)
     except OSError:
         return "unknown"
-    for src in default_sources():
-        try:
-            src_root = src.root.resolve(strict=False)
-        except OSError:
-            continue
+    for src_root, family in families:
         try:
             resolved.relative_to(src_root)
         except ValueError:
             continue
-        return watchsource_name_to_family(src.name)
+        return family
     return "unknown"
 
 

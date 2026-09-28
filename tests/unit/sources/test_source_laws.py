@@ -2278,6 +2278,9 @@ class _StubDriveRawClient:
             raise self.failures[file_id]
         return self.raw_bytes[file_id]
 
+    def download_into(self, file_id: str, handle: IO[bytes]) -> None:
+        handle.write(self.download_bytes(file_id))
+
     def download_json_payload(self, file_id: str, *, name: str) -> JSONValue:
         del name
         payload = json.loads(self.download_bytes(file_id))

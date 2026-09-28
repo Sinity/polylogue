@@ -45,6 +45,8 @@ _NON_COMPARABLE_TABLES: dict[str, str] = {
     "messages_fts_identity": "FTS support relation compared through public search and exact membership counts",
     "ingest_marker_witnesses": "live-ingest idempotency receipts are route history, not finished-build output",
     "query_unit_frame_state": "cursor invalidation epoch depends on write-route history",
+    "raw_existence_changes": "live-admission changed-key journal; its rows are write-route history and are pruned",
+    "raw_existence_journal_control": "journal pruning floor for the live-admission certificate, not model data",
     "raw_revision_applications": "attempt receipts contain generated decision ids and wall-clock timestamps",
     "schema_identity": "stores a hash of the DDL identity itself, not derived model data",
 }

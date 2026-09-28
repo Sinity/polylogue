@@ -28,7 +28,7 @@ from polylogue.daemon.socket_path import ensure_private_socket_dir
 from polylogue.daemon.uds import DaemonAPIUnixHTTPServer
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
 from polylogue.daemon_client import DaemonClient
-from polylogue.operations.mutation_transaction import recover_interrupted_operations
+from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.operation_context import prepare_operation_journals
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root

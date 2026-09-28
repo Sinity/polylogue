@@ -198,7 +198,10 @@ def test_raw_scan_budget_advances_and_fanout_reports_unavailable(tmp_path: Path)
     assert len(matches) == 3
     memory = raw_operation(RawMemorySearch(query="needle"), sources=sources)
     assert memory.outcome == "degraded"
-    assert memory.sources[0].availability == "unavailable"
+    # Coverage rows follow the configured source order (#5632), so find the
+    # missing claude-code source by origin rather than by position.
+    availability = {row.origin: row.availability for row in memory.sources}
+    assert availability == {"codex-session": "available", "claude-code-session": "unavailable"}
     assert len(memory.items) == 3
     timeline = raw_operation(RawTimeline(), sources=sources)
     assert timeline.coverage.time_basis == "session-file-mtime"
@@ -476,10 +479,16 @@ async def test_session_continuation_freezes_relative_date_scope(tmp_path: Path, 
 
 
 @pytest.mark.parametrize("operation", ["search", "memory", "list", "timeline"])
-def test_raw_owner_rejects_source_change_between_scan_and_emission(
+def test_raw_owner_emits_the_observation_its_text_was_read_under(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
-    """A first-page result cannot combine an old snippet with a newer file observation."""
+    """A result never combines an old snippet with a newer file observation.
+
+    A change after the scan does not withhold the row (the continuation has
+    already moved past it) and does not relabel it: the emitted size and
+    mtime are the scan-time observation. Anti-vacuity: re-stating the file
+    at emission reports the appended size.
+    """
     from polylogue.operations.raw_sessions.sessions import SessionLogService
 
     sources = raw_sources(tmp_path)
@@ -502,8 +511,12 @@ def test_raw_owner_rejects_source_change_between_scan_and_emission(
         "list": RawList(origin="codex-session"),
         "timeline": RawTimeline(origins=["codex-session"]),
     }
-    with pytest.raises(SessionError, match="changed"):
-        raw_operation(requests[operation], sources=sources)
+    target = sources[0].root / "original-2.jsonl"
+    before = target.stat()
+    page = raw_operation(requests[operation], sources=sources)
+    emitted = [item for item in page.items if item.reference == "codex:original-2.jsonl"]
+    assert emitted and target.stat().st_size > before.st_size
+    assert all(item.bytes == before.st_size and item.mtime_ns == before.st_mtime_ns for item in emitted)
 
 
 @pytest.mark.asyncio
@@ -517,18 +530,32 @@ async def test_session_contract_discovery_passes_mcp_argument_validation() -> No
 
 
 @pytest.mark.asyncio
-async def test_old_archive_refuses_indexed_reads_without_migration_and_keeps_raw_available(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("index_version_offset", "lifecycle_action"),
+    [
+        # The index counter restarted at 1 with the fresh-v1 archive, so the
+        # only version below it is 0 (never materialized); anything above it
+        # was written by a newer runtime.
+        (-1, "rebuild_index"),
+        (1, "upgrade_runtime"),
+    ],
+)
+async def test_old_archive_refuses_indexed_reads_without_migration_and_keeps_raw_available(
+    tmp_path: Path, index_version_offset: int, lifecycle_action: str
+) -> None:
     """Read admission must not upgrade an old archive to make a query succeed."""
     import hashlib
     import sqlite3
     from contextlib import closing
 
     from polylogue.core.errors import SchemaVersionMismatchError
+    from polylogue.storage.sqlite.schema_bootstrap import SCHEMA_VERSION
 
+    index_version = SCHEMA_VERSION + index_version_offset
     root = tmp_path / "archive"
     ids = seed(root, count=1)
     paths = [root / f"{tier}.db" for tier in ("source", "audit", "index")]
-    for path, version in zip(paths, (30, 2, 67), strict=True):
+    for path, version in zip(paths, (30, 2, index_version), strict=True):
         with closing(sqlite3.connect(path)) as conn:
             conn.execute(f"PRAGMA user_version = {version}")
     before = [hashlib.sha256(path.read_bytes()).hexdigest() for path in paths]
@@ -543,8 +570,8 @@ async def test_old_archive_refuses_indexed_reads_without_migration_and_keeps_raw
         for request in requests:
             with pytest.raises(SchemaVersionMismatchError) as failure:
                 await execute_session_operation(api, request)
-            assert failure.value.current_version == 67
-            assert failure.value.lifecycle_action == "rebuild_index"
+            assert failure.value.current_version == index_version
+            assert failure.value.lifecycle_action == lifecycle_action
         raw = await execute_session_operation(
             api, RawSearch(origin="codex-session", query="needle"), raw_sources=sources
         )

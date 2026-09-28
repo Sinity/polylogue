@@ -1,0 +1,268 @@
+"""Bounded metadata snapshots behind raw-session search continuations.
+
+A broad raw search pages through a selected population of provider JSONL
+files. The continuation token cannot carry that population (15,000+ files
+would exceed any sane cursor), and recomputing it on resume makes one
+unrelated live append invalidate an otherwise untouched historical scan.
+
+The population is therefore retained here as a private per-user state file:
+relative paths plus the stat identity observed at selection, and never any
+session content. It is not an archive tier: raw search reads provider files,
+not the archive, and runs from CLI, MCP and daemon processes alike, so
+routing it through the archive writer would add a writer to processes that
+own none. Files are written atomically and bounded by a TTL that slides
+from last use and by one global capacity; they survive process restart
+until they expire or are evicted, after which a resume is reported as a
+typed degraded outcome rather than silently restarting the scan.
+
+There is no per-principal cap: every production caller reaches this store
+through ``raw_operation`` with the same service scope, so a per-principal
+cap would be a smaller host-wide cap, not isolation between callers. The
+signed token and the stored binding still tie each handle to its scope.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import fcntl
+import hashlib
+import json
+import os
+import time
+import uuid
+import zlib
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from polylogue.core.durable_fs import atomic_replace
+
+SNAPSHOT_TTL_MS = 60 * 60 * 1000
+MAX_GLOBAL_SNAPSHOTS = 64
+_SUFFIX = ".snapshot"
+_LOCK_NAME = ".create.lock"
+
+
+@dataclass(frozen=True)
+class FileObservation:
+    st_dev: int
+    st_ino: int
+    st_size: int
+    st_mtime_ns: int
+    st_ctime_ns: int
+
+    @classmethod
+    def of(cls, info: os.stat_result) -> FileObservation:
+        return cls(info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+    def matches(self, info: os.stat_result) -> bool:
+        return self == FileObservation.of(info)
+
+
+@dataclass(frozen=True)
+class SearchSnapshot:
+    handle: str
+    files: tuple[tuple[Path, FileObservation], ...]
+
+
+@dataclass(frozen=True)
+class SnapshotBinding:
+    """Everything a resume must match; a mismatch is a stale continuation."""
+
+    principal: str
+    provider: str
+    query_sha256: str
+    reference: str | None
+    root: Path
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "principal": self.principal,
+            "provider": self.provider,
+            "query_sha256": self.query_sha256,
+            "reference": self.reference,
+            "root": str(self.root),
+        }
+
+
+class SnapshotTemporarilyUnavailableError(RuntimeError):
+    """The snapshot exists but could not be read now; retry the same continuation."""
+
+
+class SnapshotUnavailableError(LookupError):
+    """The handle expired, was evicted, or never belonged to this scope."""
+
+
+class SnapshotBindingMismatchError(SnapshotUnavailableError):
+    """The handle exists but was retained for a different scope (for example another source root)."""
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _principal_key(principal: str) -> str:
+    return hashlib.sha256(principal.encode()).hexdigest()[:16]
+
+
+class SnapshotStore:
+    def __init__(self, directory: Path):
+        self.directory = directory
+
+    def _entries(self) -> list[tuple[int, str, str, Path]]:
+        """(last_used_ms, principal_key, handle, path) parsed from file names only."""
+        try:
+            names = os.listdir(self.directory)
+        except FileNotFoundError:
+            return []
+        entries = []
+        for name in names:
+            if not name.endswith(_SUFFIX):
+                continue
+            parts = name[: -len(_SUFFIX)].split("-")
+            if len(parts) != 3 or not parts[0].isdigit():
+                continue
+            entries.append((int(parts[0]), parts[1], parts[2], self.directory / name))
+        entries.sort()
+        return entries
+
+    @staticmethod
+    def _unlink(path: Path) -> None:
+        path.unlink(missing_ok=True)
+
+    def _sweep_orphaned_temporaries(self, now_ms: int) -> None:
+        """Remove write temporaries a crashed writer left behind for a full TTL."""
+        try:
+            names = os.listdir(self.directory)
+        except FileNotFoundError:
+            return
+        for name in names:
+            if not name.endswith(".tmp"):
+                continue
+            path = self.directory / name
+            try:
+                modified_ms = path.stat().st_mtime_ns // 1_000_000
+            except FileNotFoundError:
+                continue
+            if modified_ms + SNAPSHOT_TTL_MS <= now_ms:
+                self._unlink(path)
+
+    def _prune(self, now_ms: int, *, reserve: int = 0) -> None:
+        """Expire idle handles and keep at most ``MAX_GLOBAL_SNAPSHOTS - reserve``.
+
+        Called only under the creation lock, least recently used first.
+        """
+        self._sweep_orphaned_temporaries(now_ms)
+        live = []
+        for entry in self._entries():
+            if entry[0] + SNAPSHOT_TTL_MS <= now_ms:
+                self._unlink(entry[3])
+            else:
+                live.append(entry)
+        # Least recently used first, so the survivors are the handles in use.
+        for entry in live[: max(0, len(live) - (MAX_GLOBAL_SNAPSHOTS - reserve))]:
+            self._unlink(entry[3])
+
+    @contextlib.contextmanager
+    def _locked(self) -> Iterator[None]:
+        """Serialize creation and last-use touches across processes."""
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        lock_fd = os.open(self.directory / _LOCK_NAME, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(lock_fd)
+
+    def _stamp_after_newest(self, now_ms: int) -> int:
+        """A last-use stamp that sorts after every retained handle, so LRU order is use order."""
+        existing = self._entries()
+        return max(now_ms, existing[-1][0] + 1) if existing else now_ms
+
+    def create(
+        self,
+        binding: SnapshotBinding,
+        files: Sequence[tuple[Path, Any]],
+    ) -> SearchSnapshot:
+        rows = [
+            [
+                path.relative_to(binding.root).as_posix(),
+                info.st_dev,
+                info.st_ino,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+            ]
+            for path, info in files
+        ]
+        now_ms = _now_ms()
+        handle = uuid.uuid4().hex
+        principal_key = _principal_key(binding.principal)
+        body = {"v": 1, "binding": binding.as_json(), "created_at_ms": now_ms, "files": rows}
+        # Rosters under one deep prefix repeat it on every row; compression
+        # keeps retained bytes proportional to distinct path content.
+        encoded = zlib.compress(json.dumps(body, separators=(",", ":")).encode(), level=6)
+        self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        # Creators serialize on one advisory lock, so the prune-and-publish
+        # pair sees every other creator's result and the bound holds without
+        # exempting anyone. The new name is stamped strictly after every
+        # existing one: a millisecond tie can never make it the LRU victim.
+        with self._locked():
+            stamp = self._stamp_after_newest(now_ms)
+            self._prune(now_ms, reserve=1)
+            atomic_replace(self.directory / f"{stamp:013d}-{principal_key}-{handle}{_SUFFIX}", encoded, mode=0o600)
+        return SearchSnapshot(handle, self._decode_rows(binding.root, rows))
+
+    @staticmethod
+    def _decode_rows(root: Path, rows: list[list[Any]]) -> tuple[tuple[Path, FileObservation], ...]:
+        return tuple(
+            (root / relative, FileObservation(int(dev), int(ino), int(size), int(mtime), int(ctime)))
+            for relative, dev, ino, size, mtime, ctime in rows
+        )
+
+    def load(self, handle: str, binding: SnapshotBinding) -> SearchSnapshot:
+        if len(handle) != 32 or not all(c in "0123456789abcdef" for c in handle):
+            raise SnapshotUnavailableError("session continuation snapshot is malformed")
+        now_ms = _now_ms()
+        principal_key = _principal_key(binding.principal)
+        # Path.is_dir() folds EIO into False; only absence means "no snapshot".
+        try:
+            os.stat(self.directory)
+        except FileNotFoundError as exc:
+            raise SnapshotUnavailableError("session continuation expired or was evicted; restart the search") from exc
+        except OSError as exc:
+            raise SnapshotTemporarilyUnavailableError(str(exc)) from exc
+        # Lookup, read and last-use touch hold the same lock as creation's
+        # prune, so a handle being resumed can neither be pruned between its
+        # read and its touch nor be renamed under a concurrent resume.
+        with self._locked():
+            entry = next(
+                (row for row in self._entries() if row[2] == handle and row[1] == principal_key),
+                None,
+            )
+            if entry is not None:
+                last_used_ms, key, entry_handle, path = entry
+                if last_used_ms + SNAPSHOT_TTL_MS <= now_ms:
+                    self._unlink(path)
+                else:
+                    try:
+                        body = json.loads(zlib.decompress(path.read_bytes()))
+                    except FileNotFoundError:
+                        body = None
+                    except (ValueError, zlib.error):
+                        body = None
+                    except OSError as exc:
+                        # Descriptor exhaustion or an I/O error says nothing
+                        # about the snapshot; the same token can succeed later.
+                        raise SnapshotTemporarilyUnavailableError(str(exc)) from exc
+                    if body is not None:
+                        if not isinstance(body, dict) or body.get("v") != 1 or body.get("binding") != binding.as_json():
+                            raise SnapshotBindingMismatchError(
+                                "session continuation does not match its original search scope"
+                            )
+                        # The TTL slides from last use; the name carries the stamp.
+                        stamp = self._stamp_after_newest(now_ms)
+                        path.rename(self.directory / f"{stamp:013d}-{key}-{entry_handle}{_SUFFIX}")
+                        return SearchSnapshot(handle, self._decode_rows(binding.root, body["files"]))
+        raise SnapshotUnavailableError("session continuation expired or was evicted; restart the search")

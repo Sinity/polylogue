@@ -190,7 +190,12 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
         raise FileNotFoundError("Claude Workflow materialization requires source.db and index.db")
 
     blob_store = BlobStore(archive_root / "blob")
-    with sqlite_connection(source_db) as source_conn:
+    # Both reads run on the stage check, outside writer admission. A writable
+    # open there raises ``UnleasedWriteError`` under the daemon's armed
+    # single-writer guard, so the stage never converged and its debt blocked
+    # every fresh build from reaching a terminal state (as polylogue-snhyj did
+    # for delegation evidence). Publication keeps its own admitted write.
+    with sqlite_connection(f"{source_db.absolute().as_uri()}?mode=ro", uri=True) as source_conn:
         source_conn.row_factory = sqlite3.Row
         source_conn.execute("PRAGMA foreign_keys = ON")
         raw_artifacts = _load_current_artifacts(source_conn)
@@ -229,7 +234,7 @@ def _prepare_inputs(archive_root: Path) -> _PreparedInputs:
             )
         parsed.append(value)
 
-    with sqlite_connection(index_db) as index_conn:
+    with sqlite_connection(f"{index_db.absolute().as_uri()}?mode=ro", uri=True) as index_conn:
         index_conn.row_factory = sqlite3.Row
         coordinator_invocations = _load_coordinator_invocations(index_conn, raw_artifacts)
         sessions = _load_session_evidence(index_conn, raw_artifacts)

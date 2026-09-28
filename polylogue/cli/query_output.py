@@ -147,13 +147,6 @@ def _title_budget(width: int) -> int:
     return max(12, width - 2)
 
 
-def _session_list_line(conv: Session, frame: IdentityFrame) -> str:
-    date = _display_date(conv.display_date) or "unknown"
-    identity = frame.display(conv.id)
-    title = _display_title(_explicit_title(conv), identity, max_width=50)
-    return f"{identity:{frame.column_width}s}  {date:10s}  {str(conv.origin):20s}  {title} ({len(conv.messages)} msgs)"
-
-
 def _summary_list_line(summary: SessionSummary, message_count: int, frame: IdentityFrame) -> str:
     row = session_row(summary, message_count=message_count)
     date = _display_date(summary.display_date) or "unknown"
@@ -215,6 +208,11 @@ def deliver_query_output(
             path = destination.path
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(document.content, encoding="utf-8")
+            from polylogue.security.secret_scan import describe_path_scan_result, scan_path_for_secret_candidates
+
+            notice = describe_path_scan_result(scan_path_for_secret_candidates(path))
+            if notice is not None:
+                env.ui.console.print(f"[yellow]{notice}[/yellow]")
             env.ui.console.print(f"Wrote to {path}")
 
 
@@ -352,9 +350,26 @@ def format_summary_list(
     """Format summary-list output for deterministic machine/plain surfaces."""
     message_counts = message_counts or {}
     frame = identity_frame(str(summary.id) for summary in summaries)
+    row_projections = {
+        str(summary.id): session_row(summary, message_count=message_counts.get(str(summary.id), 0))
+        for summary in summaries
+    }
     document = StructuredRowsDocument(
         rows=tuple(_summary_to_dict(summary, message_counts.get(str(summary.id), 0)) for summary in summaries),
-        csv_headers=("id", "date", "origin", "title", "messages", "tags", "summary"),
+        csv_headers=(
+            "id",
+            "date",
+            "origin",
+            "title",
+            "messages",
+            "tags",
+            "summary",
+            "outcome",
+            "cost_usd",
+            "relative_time",
+            "repo",
+            "cwd_display",
+        ),
         csv_rows=tuple(
             (
                 str(summary.id),
@@ -364,6 +379,11 @@ def format_summary_list(
                 message_counts.get(str(summary.id), 0),
                 ",".join(summary.tags) if summary.tags else "",
                 summary.summary or "",
+                row_projections[str(summary.id)].outcome,
+                row_projections[str(summary.id)].cost_usd,
+                row_projections[str(summary.id)].relative_time,
+                row_projections[str(summary.id)].repo,
+                row_projections[str(summary.id)].cwd_display,
             )
             for summary in summaries
         ),
@@ -404,6 +424,12 @@ def format_search_hit_list(
     message_counts = message_counts or {}
     bounded_hits = [_bounded_search_hit(hit) for hit in hits]
     frame = identity_frame(str(hit.summary.id) for hit in bounded_hits)
+    row_projections = {
+        hit.session_id: session_row(
+            hit.summary, message_count=message_counts.get(hit.session_id, hit.summary.message_count or 0)
+        )
+        for hit in bounded_hits
+    }
     document = StructuredRowsDocument(
         rows=tuple(
             _search_hit_to_payload(
@@ -422,6 +448,11 @@ def format_search_hit_list(
             "match_surface",
             "message_id",
             "snippet",
+            "outcome",
+            "cost_usd",
+            "relative_time",
+            "repo",
+            "cwd_display",
         ),
         csv_rows=tuple(
             (
@@ -436,6 +467,11 @@ def format_search_hit_list(
                 hit.message_id or "",
                 search_row(hit, message_count=message_counts.get(hit.session_id, hit.summary.message_count or 0))[1]
                 or "",
+                row_projections[hit.session_id].outcome,
+                row_projections[hit.session_id].cost_usd,
+                row_projections[hit.session_id].relative_time,
+                row_projections[hit.session_id].repo,
+                row_projections[hit.session_id].cwd_display,
             )
             for hit in bounded_hits
         ),

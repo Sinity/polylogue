@@ -8,16 +8,8 @@ from contextlib import AbstractAsyncContextManager
 import aiosqlite
 
 from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
-from polylogue.storage.query_models import (
-    SessionTagRollupListQuery,
-    ThreadListQuery,
-)
 from polylogue.storage.runtime import (
-    SessionTagRollupRecord,
     ThreadRecord,
-)
-from polylogue.storage.sqlite.queries import (
-    session_insight_summary_queries as session_insight_summaries_q,
 )
 from polylogue.storage.sqlite.queries import (
     session_insight_thread_queries as session_insight_threads_q,
@@ -26,9 +18,6 @@ from polylogue.storage.sqlite.query_store_archive import SQLiteQueryStoreArchive
 from polylogue.storage.sqlite.query_store_insight_profiles import (
     SQLiteQueryStoreInsightProfilesMixin,
 )
-from polylogue.storage.sqlite.query_store_insight_run_projection import (
-    SQLiteQueryStoreInsightRunProjectionMixin,
-)
 from polylogue.storage.sqlite.query_store_maintenance import SQLiteQueryStoreMaintenanceMixin
 from polylogue.storage.sqlite.query_store_work_evidence import SQLiteQueryStoreWorkEvidenceMixin
 
@@ -36,7 +25,6 @@ from polylogue.storage.sqlite.query_store_work_evidence import SQLiteQueryStoreW
 class SQLiteQueryStore(
     SQLiteQueryStoreArchiveMixin,
     SQLiteQueryStoreInsightProfilesMixin,
-    SQLiteQueryStoreInsightRunProjectionMixin,
     SQLiteQueryStoreWorkEvidenceMixin,
     SQLiteQueryStoreMaintenanceMixin,
 ):
@@ -63,21 +51,7 @@ class SQLiteQueryStore(
         async with self._connection_factory() as conn:
             return await session_insight_threads_q.get_thread(conn, thread_id)
 
-    async def _list_threads_query(
-        self,
-        query: ThreadListQuery,
-    ) -> list[ThreadRecord]:
-        async with self._connection_factory() as conn:
-            return await session_insight_threads_q.list_threads(conn, query)
-
     # -- Summaries (formerly query_store_insight_summaries.py) --------------
-
-    async def _list_session_tag_rollup_rows_query(
-        self,
-        query: SessionTagRollupListQuery,
-    ) -> list[SessionTagRollupRecord]:
-        async with self._connection_factory() as conn:
-            return await session_insight_summaries_q.list_session_tag_rollup_rows(conn, query)
 
 
 __all__ = ["SQLiteQueryStore"]

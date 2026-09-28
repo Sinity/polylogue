@@ -27,7 +27,6 @@ from polylogue.mcp.declarations import (
     MCPCapabilityFlag,
     MCPResultSemantics,
     MCPToolDeclaration,
-    MCPTransactionDeclaration,
 )
 from polylogue.sources.origin_specs import public_origin_meanings
 
@@ -266,10 +265,6 @@ def _declared_filter_arguments(*names: str) -> tuple[ToolArgument, ...]:
     return tuple(arguments)
 
 
-def _target_declaration_index() -> dict[str, MCPTransactionDeclaration]:
-    return {item.name: item for item in (*TARGET_DEFAULT_READ_ALGEBRA, *PRIVILEGED_ALGEBRA)}
-
-
 def _declaration_index() -> dict[str, MCPToolDeclaration]:
     """Index every declared tool, target-visible or not."""
     return {declaration.name: declaration for declaration in MCP_TOOL_DECLARATIONS}
@@ -364,7 +359,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         arguments=(
             _arg("expression", "string", False, "Parser-owned DSL expression; omit when resuming with continuation."),
             _arg("limit", "integer", False, "Requested page size, subject to server and transport bounds."),
-            _arg("projection", "string", False, "Declared result projection such as session-summary or cost-rollup."),
+            _arg("projection", "string", False, "Declared result projection such as sessions or personal-state kinds."),
             _arg(
                 "session_operation",
                 "string",
@@ -385,15 +380,15 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 "An exhaustive page of action rows with object/evidence refs, one result_ref, and a continuation when more rows exist.",
                 expression="actions where action:file_edit AND path:polylogue/archive/query | sort by time desc | limit 20",
                 limit=20,
-                projection="action-evidence",
+                projection="default",
             ),
             _example(
                 "query-cost-cohort",
                 "Select a recent provider cohort for a cost audit",
-                "A session result set suitable for a declared cost-rollup projection; coverage still governs completeness.",
+                "A filtered session result set for a later cost audit; coverage still governs completeness.",
                 expression="sessions where origin:(claude-code-session|codex-session) AND date >= 2026-07-01",
                 limit=50,
-                projection="cost-rollup",
+                projection="sessions",
             ),
         ),
         supports_continuation=True,
@@ -408,16 +403,21 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             _arg("view", "string", False, "Declared projection/view for the referenced object."),
             _arg("limit", "integer", False, "Page size for collection-like or recursive reads."),
             _arg("offset", "integer", False, "Offset into collection-like reads that use decimal offset pagination."),
-            _arg("around", "string", False, "Message reference whose surrounding window should be read."),
+            _arg(
+                "around",
+                "string",
+                False,
+                "Raw message ID (not a message: ref); only with view=messages and without offset or continuation.",
+            ),
             _arg("continuation", "string", False, "Opaque token from the preceding read response; send alone."),
         ),
         examples=(
             _example(
-                "read-session-chronicle",
-                "Read a session chronicle",
-                "A bounded chronicle page retaining message/block evidence refs and the same result_ref across continuation pages.",
+                "read-session-messages",
+                "Read a session message page",
+                "A bounded messages page; use its returned offset for the next page.",
                 ref="polylogue://session/codex-session:demo-lineage-fork",
-                view="chronicle",
+                view="messages",
                 limit=20,
             ),
         ),
@@ -453,7 +453,7 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 "subject",
                 "string",
                 True,
-                "Declared explanation subject: query, field, value, ref, capability, completions, result, or recovery.",
+                "Declared explanation subject: query, completions, ref, capability, result, or recovery.",
             ),
             _arg("expression", "string", False, "Query expression to parse and lower when subject=query."),
             _arg("ref", "string", False, "Object/ref whose authority or addressing needs explanation."),
@@ -508,10 +508,10 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         ),
         examples=(
             _example(
-                "context-resume",
-                "Compile a resume packet",
+                "context-cohort",
+                "Compile a context snapshot",
                 "A bounded context snapshot plus receipt describing selected refs, omissions, policy, and budget use.",
-                intent="resume",
+                intent="coordination",
                 query="sessions where repo:polylogue AND NOT tag:complete",
                 budget_tokens=4000,
             ),
@@ -565,9 +565,9 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
                 "write-tag",
                 "Add a review tag through the governed write chokepoint",
                 "A mutation receipt with actor, target, effect identity, and resulting generation; no destructive confirmation is invented.",
-                operation="tag.add",
+                operation="add_tag",
                 session_id="codex-session:demo-lineage-fork",
-                value="review",
+                tag="review",
             ),
         ),
         supports_continuation=False,
@@ -662,17 +662,17 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
     _contract(
         name="run",
         source_names=_RUN_SOURCES,
-        purpose="Execute a saved query or governed recipe ref; any nested mutation inherits its own capability and confirmation policy.",
+        purpose="Execute a saved query or saved view; any nested mutation inherits its own capability and confirmation policy.",
         arguments=(
-            _arg("ref", "string", True, "Saved-query or recipe ref."),
+            _arg("ref", "string", True, "Saved-query or saved-view ref."),
             _arg("limit", "integer", False, "Bound on saved-query results."),
         ),
         examples=(
             _example(
-                "run-cost-recipe",
-                "Run a saved read-only cost audit",
-                "A result_ref and receipt for the declared recipe; mutation authority is never gained from the recipe wrapper.",
-                ref="recipe:cost-audit",
+                "run-saved-cost-view",
+                "Run a saved read-only cost view",
+                "A result_ref and receipt for the saved view; mutation authority is never gained from the wrapper.",
+                ref="saved-view:cost-audit",
                 limit=20,
             ),
         ),
@@ -746,27 +746,31 @@ RECIPES: tuple[Recipe, ...] = (
             ),
             RecipeStep(
                 "query",
-                _args(limit=20, projection="session-summary"),
+                _args(limit=20, projection="sessions"),
                 "Find likely unfinished sessions.",
                 capture="candidate_result_ref",
                 example_key="session-negated-tag",
             ),
             RecipeStep(
                 "query",
-                _args(limit=20, projection="action-evidence"),
+                _args(limit=20, projection="default"),
                 "Find recent failed effects that may invalidate an optimistic handoff.",
                 capture="failure_result_ref",
                 example_key="actions-unacknowledged-failures",
             ),
             RecipeStep(
                 "read",
-                _args(ref="polylogue://session/codex-session:demo-lineage-fork", view="chronicle", limit=20),
+                _args(ref="polylogue://session/codex-session:demo-lineage-fork", view="messages", limit=20),
                 "Read the strongest candidate with evidence refs; continue until the needed boundary is reached.",
             ),
             RecipeStep(
                 "context",
-                _args(intent="resume", result_ref="result:0123456789abcdef01234567", budget_tokens=4000),
-                "Compile a bounded resume packet from the selected result set and retain its receipt.",
+                _args(
+                    intent="coordination",
+                    query="sessions where repo:polylogue AND NOT tag:complete",
+                    budget_tokens=4000,
+                ),
+                "Compile a bounded context image from the selected cohort and retain its receipt.",
             ),
         ),
         resources=("polylogue://session/{id}", "polylogue://result-set/{id}"),
@@ -786,14 +790,14 @@ RECIPES: tuple[Recipe, ...] = (
             ),
             RecipeStep(
                 "query",
-                _args(limit=20, projection="aggregate-with-evidence"),
+                _args(limit=20, projection="default"),
                 "Measure failed versus successful tool-finished events.",
                 capture="aggregate_result_ref",
                 example_key="aggregate-events-by-status",
             ),
             RecipeStep(
                 "query",
-                _args(limit=20, projection="action-evidence"),
+                _args(limit=20, projection="default"),
                 "Locate exact failed action refs.",
                 capture="failure_result_ref",
                 example_key="actions-unacknowledged-failures",
@@ -805,7 +809,7 @@ RECIPES: tuple[Recipe, ...] = (
             ),
             RecipeStep(
                 "read",
-                _args(ref="polylogue://session/codex-session:demo-receipts", view="chronicle", limit=20),
+                _args(ref="polylogue://session/codex-session:demo-receipts", view="messages", limit=20),
                 "Read the surrounding chronology and any recovery verification.",
             ),
         ),
@@ -826,7 +830,7 @@ RECIPES: tuple[Recipe, ...] = (
             ),
             RecipeStep(
                 "query",
-                _args(limit=20, projection="session-summary"),
+                _args(limit=20, projection="sessions"),
                 "Find conceptually related sessions even when vocabulary differs.",
                 capture="semantic_result_ref",
                 example_key="ranked-boolean-semantic",
@@ -865,8 +869,8 @@ RECIPES: tuple[Recipe, ...] = (
             ),
             RecipeStep(
                 "query",
-                _args(limit=50, projection="cost-rollup"),
-                "Compute the requested cohort using declared cost semantics.",
+                _args(limit=50, projection="sessions"),
+                "Select the requested cohort for cost analysis; the result remains bounded and coverage-aware.",
                 capture="cost_result_ref",
                 example_key="sample-origin-cohort-window",
             ),

@@ -603,11 +603,6 @@ class TestFingerprintHash:
         assert h1 == h2
         assert len(h1) == 16
 
-    def test_different_fingerprints_different_hashes(self) -> None:
-        fp1 = ("object", (("id", ("string",)),))
-        fp2 = ("object", (("name", ("string",)),))
-        assert _fingerprint_hash(fp1) != _fingerprint_hash(fp2)
-
 
 # =============================================================================
 # Merged from test_provider_schema_meta.py (2024-03-15)

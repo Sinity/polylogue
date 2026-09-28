@@ -157,14 +157,17 @@ def test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field() -> Non
 
 def test_web_reader_archive_root_rejects_schema_mismatch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from polylogue.daemon.http import _web_reader_archive_root
+    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
     from polylogue.storage.sqlite.connection_profile import one_shot_diagnostic_read as real_diagnostic_read
 
     initialize_archive_database(tmp_path / "source.db", ArchiveTier.SOURCE)
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    # Any version but the runtime's; a literal stops meaning "mismatch" when
+    # the counter itself is reset (it restarted at 1 with the fresh-v1 archive).
     with sqlite3.connect(tmp_path / "index.db") as conn:
-        conn.execute("PRAGMA user_version = 1")
+        conn.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX] + 1}")
 
     observed: list[tuple[Path, ArchiveTier | None]] = []
 
@@ -3857,18 +3860,23 @@ def _get_json_ex(base_url: str, path: str) -> tuple[int, dict[str, object]]:
 class TestDeclaredRouteExamples:
     """Every declared daemon-route example must be accepted by its live handler.
 
-    ``devtools gate declaration-bindings`` enforces that each ``RouteSpec``
+    ``tests/unit/devtools/test_declaration_binding_registries.py`` enforces that each ``RouteSpec``
     declares an example, but a gate only reads the declaration -- it cannot
     tell a real request shape from an invented one. This class closes that
-    gap: it replays every declared ``ExampleSpec`` against the production
-    handler on a seeded archive and requires HTTP 200 plus the marker field
-    of the declared response contract.
+    gap: it replays every declared ``ExampleSpec`` of every GET declaration
+    against the production handler on a seeded archive and requires a 2xx JSON
+    object (plus the marker field of the declared response contract for the
+    kernel-bound read routes). A route whose examples cannot be replayed as a
+    JSON GET must say so with a typed ``NonReplayable`` marker.
 
     Anti-vacuity: rename a declared example argument (``view`` -> ``mode``),
     give it a value the handler rejects (``view=unsupported``,
-    ``format=csv``), or point the example at a filter the query grammar does
-    not parse, and these assertions go red -- while the structural gate alone
-    would stay green over the same fabricated declaration.
+    ``format=csv``), drop a required argument (``/api/import/explain`` with no
+    ``path``), name an insight the registry lacks, point an example at the SSE
+    shape of ``/api/events``, or remove a route's ``non_replayable`` marker
+    while its example still cannot answer, and these assertions go red --
+    while the structural gate alone would stay green over the same fabricated
+    declaration.
     """
 
     @staticmethod
@@ -3876,12 +3884,36 @@ class TestDeclaredRouteExamples:
         from urllib.parse import urlencode
 
         spec = cast(Any, declaration)
+        placeholders = [segment[1:] for segment in spec.path.split("/") if segment.startswith(":")]
         paths: list[tuple[str, str]] = []
         for example in spec.kernel.examples:
-            path = spec.path.replace(":id", quote(C1, safe=""))
-            query = urlencode([(key, str(value)) for key, value in example.arguments])
+            arguments = dict(example.arguments)
+            path = spec.path
+            for placeholder in placeholders:
+                if placeholder in arguments:
+                    value = str(arguments.pop(placeholder))
+                elif placeholder == "id":
+                    # A session-addressed route: the seeded archive names it.
+                    value = C1
+                else:
+                    raise AssertionError(f"{spec.path} example {example.name!r} leaves :{placeholder} unfilled")
+                path = path.replace(f":{placeholder}", quote(value, safe=""))
+            query = urlencode([(key, str(value)) for key, value in arguments.items()])
             paths.append((example.name, f"{path}?{query}" if query else path))
         return paths
+
+    @staticmethod
+    def _get(base_url: str, path: str) -> tuple[int, str, object]:
+        req = Request(f"{base_url}{path}")
+        try:
+            with urlopen(req, timeout=10) as resp:
+                status, content_type, body = resp.status, resp.headers.get("Content-Type", ""), resp.read()
+        except HTTPError as e:
+            status, content_type, body = e.code, e.headers.get("Content-Type", ""), e.read()
+        try:
+            return status, content_type, json.loads(body.decode())
+        except (json.JSONDecodeError, ValueError):
+            return status, content_type, body[:200]
 
     def test_every_declared_route_example_is_accepted_by_its_handler(self, workspace_env: dict[str, Path]) -> None:
         from polylogue.daemon.route_contracts import DAEMON_ROUTE_DECLARATIONS
@@ -3895,32 +3927,75 @@ class TestDeclaredRouteExamples:
             "/api/query-units": "items",
             "/api/sessions/:id/read": "view",
         }
+        replayed = [declaration for declaration in DAEMON_ROUTE_DECLARATIONS if declaration.non_replayable is None]
+        marked = [declaration for declaration in DAEMON_ROUTE_DECLARATIONS if declaration.non_replayable is not None]
+        assert set(markers) <= {declaration.path for declaration in replayed}
+        for declaration in marked:
+            marker = declaration.non_replayable
+            assert marker is not None and marker.detail.strip(), declaration.kernel.declaration_id
+        # Only GET routes can be replayed; every other method is marked.
+        assert {declaration.method for declaration in replayed} == {"GET"}
+        # The family routes are replayed too, not just the kernel-bound four.
+        assert len(replayed) > len(markers) + 30, len(replayed)
+
+        failures: list[tuple[str, str, str, int, str, object]] = []
         with _running_server(workspace_env) as (_, base_url):
-            for declaration in DAEMON_ROUTE_DECLARATIONS:
+            for declaration in replayed:
                 for name, path in self._example_paths(declaration):
-                    status, payload = _get_json_ex(base_url, path)
-                    assert status == 200, (declaration.kernel.declaration_id, name, path, payload)
-                    assert markers[declaration.path] in payload, (
-                        declaration.kernel.declaration_id,
-                        name,
-                        sorted(payload),
+                    status, content_type, payload = self._get(base_url, path)
+                    ok = (
+                        200 <= status < 300
+                        and content_type.startswith("application/json")
+                        and isinstance(payload, dict)
                     )
+                    if ok and declaration.path in markers:
+                        ok = markers[declaration.path] in cast(dict[str, object], payload)
+                    if not ok:
+                        failures.append((declaration.kernel.declaration_id, name, path, status, content_type, payload))
+        assert not failures, failures
+
+    def test_a_non_get_route_without_a_replay_marker_is_refused(self) -> None:
+        """A POST/DELETE declaration cannot silently skip replay.
+
+        Anti-vacuity: drop the ``__post_init__`` check on ``RouteSpec`` and a
+        mutating route with a placeholder example would be neither replayed
+        nor marked, so this goes red.
+        """
+
+        from dataclasses import replace
+
+        from polylogue.daemon.route_contracts import daemon_route_declaration
+
+        reset = daemon_route_declaration("POST", "/api/reset")
+        assert reset.non_replayable is not None
+        with pytest.raises(ValueError, match="POST /api/reset"):
+            replace(reset, non_replayable=None)
 
     @pytest.mark.parametrize(
-        "broken_path",
+        ("broken_path", "expected_status"),
         [
-            "/api/sessions/:id/read?view=unsupported&format=json",
-            "/api/sessions/:id/read?view=messages&format=csv",
-            "/api/query-units?continuation=not-a-token",
+            ("/api/sessions/:id/read?view=unsupported&format=json", 400),
+            ("/api/sessions/:id/read?view=messages&format=csv", 400),
+            ("/api/query-units?continuation=not-a-token", 400),
+            # The generated placeholders the family declarations used to carry.
+            ("/api/import/explain", 400),
+            ("/api/webui/freshness", 400),
+            ("/api/webui/insights/default", 404),
         ],
     )
-    def test_a_fabricated_example_argument_is_refused(self, workspace_env: dict[str, Path], broken_path: str) -> None:
-        """The anti-vacuity condition for the class above, made explicit."""
+    def test_a_fabricated_example_argument_is_refused(
+        self, workspace_env: dict[str, Path], broken_path: str, expected_status: int
+    ) -> None:
+        """The anti-vacuity condition for the replay test above, made explicit.
+
+        If any of these placeholder shapes answered 2xx, the replay test could
+        not tell a real example from an invented one; this goes red then.
+        """
 
         request_path = broken_path.replace(":id", quote(C1, safe=""))
         with _running_server(workspace_env) as (_, base_url):
             status, _ = _get_json_ex(base_url, request_path)
-        assert status == 400
+        assert status == expected_status
 
 
 def test_full_session_read_route_aborts_when_the_client_disconnects(workspace_env: dict[str, Path]) -> None:

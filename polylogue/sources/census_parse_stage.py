@@ -162,7 +162,12 @@ class _ProcessBoundedThreadPoolExecutor(ThreadPoolExecutor):
     authority for all SQLite work and are unaffected by this containment.
     """
 
-    def _adjust_thread_count(self) -> None:  # pragma: no cover - exercised by submit
+    def _adjust_thread_count(self) -> None:
+        """Start workers as daemon threads.
+
+        ``ThreadPoolExecutor.submit`` calls this hook, so no caller in this
+        repository names it; it is the one place the stdlib creates workers.
+        """
         if self._idle_semaphore.acquire(timeout=0):
             return
 

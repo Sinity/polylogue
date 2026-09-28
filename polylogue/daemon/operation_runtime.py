@@ -11,7 +11,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic, time
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
 from polylogue.daemon.execution import (
@@ -453,7 +453,13 @@ class DaemonOperationRuntime:
                     outcome="rejected",
                     error={"code": "request_identity_conflict", "retryable": False},
                 ).to_dict()
-            if durable is not None and durable["outcome"] in {"completed", "failed", "cancelled", "interrupted"}:
+            if durable is not None and durable["outcome"] in {
+                "completed",
+                "degraded",
+                "failed",
+                "cancelled",
+                "interrupted",
+            }:
                 # Initial generation/recipe preconditions were checked at
                 # acceptance. A historical terminal receipt does not reopen
                 # index/source or become false after ordinary reconvergence.
@@ -465,19 +471,26 @@ class DaemonOperationRuntime:
                     outcome=str(durable["outcome"]),
                     reference=record,
                     result=durable.get("result", durable),
+                    error=cast("dict[str, object] | None", durable.get("error")),
                 ).to_dict()
-            # A durable non-terminal record is the recovery authority after a
-            # daemon restart.  Re-enqueuing the request here would create a
-            # second exchange and could replay a mutation whose first effect
-            # is merely not yet observable.  Preview-page records are only
-            # staging authority; _durable deliberately excludes them from
-            # this recovery boundary so their normal sealing exchange may
-            # continue.
+            # A durable record with a started attempt is the recovery authority
+            # after a daemon restart.  Re-enqueuing it would create a second
+            # exchange and could replay a mutation whose first effect is merely
+            # not yet observable.  ``accepted`` is different: every remaining
+            # part is unattempted, so no effect can be in flight.  It falls
+            # through, joining this daemon's live exchange when one exists and
+            # otherwise re-dispatching the handler, which resumes the durable
+            # record's unstarted parts and never replays a consumed one.
+            # Returning it here instead left an accepted request whose daemon
+            # died before its first part stranded at ``accepted`` for good.
+            # Preview-page records are only staging authority; _durable
+            # deliberately excludes them from this recovery boundary so their
+            # normal sealing exchange may continue.
             if (
                 record is not None
                 and record["artifact_kind"] != "insight-preview-pages"
                 and durable is not None
-                and durable["outcome"] in {"accepted", "running", "indeterminate"}
+                and durable["outcome"] in {"running", "indeterminate"}
             ):
                 return operation_envelope(
                     request,
@@ -793,7 +806,8 @@ class DaemonOperationRuntime:
                         parts = audit.machine_parts(binding)
                         if any(part["operation_id"] is None for part in parts) or (
                             record["artifact_kind"] == "source-generation"
-                            and machine_request_state(audit, record)["outcome"] not in {"completed", "failed"}
+                            and machine_request_state(audit, record)["outcome"]
+                            not in {"completed", "degraded", "failed"}
                         ):
                             audit.stop_machine_batch(binding, "cancelled")
 

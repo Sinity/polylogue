@@ -84,6 +84,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from devtools.ast_cache import parse_path, walk_module
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER
 
 #: The declaration this census is checked against.
@@ -391,6 +392,10 @@ def _literal_string_sequence(expression: ast.AST, values: Mapping[str, tuple[str
     return ()
 
 
+#: The only node shapes :func:`_string_values` binds a name from.
+_BINDING_NODES = (ast.Assign, ast.AnnAssign, ast.For, ast.AsyncFor)
+
+
 def _string_values(tree: ast.Module) -> dict[str, tuple[str, ...]]:
     """Resolve string-valued names to a fixpoint (3 passes suffice).
 
@@ -400,8 +405,9 @@ def _string_values(tree: ast.Module) -> dict[str, tuple[str, ...]]:
     target expand.
     """
     values: dict[str, tuple[str, ...]] = {}
+    bindings = [node for node in walk_module(tree) if isinstance(node, _BINDING_NODES)]
     for _ in range(3):
-        for node in ast.walk(tree):
+        for node in bindings:
             if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
                 name = node.targets[0].id
                 resolved = _fragments(node.value, values)
@@ -521,7 +527,7 @@ def _classify_statement(
 def _memory_connection_names(tree: ast.Module) -> frozenset[str]:
     """Return local connection names constructed as private in-memory SQLite."""
     names: set[str] = set()
-    for node in ast.walk(tree):
+    for node in walk_module(tree):
         if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             continue
         value = node.value
@@ -598,8 +604,11 @@ def _function_table_parameters(
     """
     wanted = {(site.file, site.function) for site in dynamic_sites if site.table == UNRESOLVED_TABLE}
     parameters: dict[str, tuple[str, int | None]] = {}
+    wanted_files = {file for file, _function in wanted}
     for _path, tree, relative, _values, _scopes in parsed_modules:
-        for node in ast.walk(tree):
+        if relative not in wanted_files:
+            continue
+        for node in walk_module(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
             matching_functions = [
@@ -632,7 +641,7 @@ def _dynamic_table_targets(
         by_name.setdefault(descriptor[0], []).append((helper_key, descriptor[1]))
     targets: dict[tuple[str, str, str, int], DynamicTableTarget] = {}
     for _path, tree, relative, values, _scopes in parsed_modules:
-        for node in ast.walk(tree):
+        for node in walk_module(tree):
             if not isinstance(node, ast.Call):
                 continue
             if isinstance(node.func, ast.Name):
@@ -674,7 +683,16 @@ def _index_foreign_key_cleanup_helpers(
     """Find helpers that derive both dynamic actions from current FK metadata."""
     helpers: set[str] = set()
     for _path, tree, relative, values, _scopes in parsed_modules:
-        for node in ast.walk(tree):
+        # A helper must call ``_session_foreign_key_actions`` itself, so a
+        # module that never calls it cannot hold one.
+        if not any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id == "_session_foreign_key_actions"
+            for call in walk_module(tree)
+        ):
+            continue
+        for node in walk_module(tree):
             if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
             statements = [
@@ -713,7 +731,7 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
 
     for path in sorted(package_root.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_path(path)
         except (SyntaxError, UnicodeDecodeError):
             continue
         relative = path.relative_to(repo_root).as_posix()
@@ -723,7 +741,7 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
         if not _is_archive_tier_runtime_module(relative):
             continue
         memory_connections = _memory_connection_names(tree)
-        for node in ast.walk(tree):
+        for node in walk_module(tree):
             if not isinstance(node, ast.Call):
                 continue
             if not isinstance(node.func, ast.Attribute) or node.func.attr not in _SQL_EXECUTION_METHODS:
@@ -752,7 +770,7 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
         creation.table for creation in runtime_creations.values() if creation.disposition == "persistent"
     )
     for _path, tree, relative, values, scopes in parsed_modules:
-        for node in ast.walk(tree):
+        for node in walk_module(tree):
             if not isinstance(node, ast.Call):
                 continue
             if not isinstance(node.func, ast.Attribute) or node.func.attr not in _SQL_EXECUTION_METHODS:

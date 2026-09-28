@@ -15,7 +15,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
-from typing import Literal, TypeVar, get_args
+from typing import Literal, TypeVar, cast, get_args
 
 from pydantic import Field, field_validator, model_validator
 
@@ -337,6 +337,10 @@ class SessionDigestEvent(ArchiveInsightModel):
         "command_failed",
         "test_passed",
         "test_failed",
+        "tool_run",
+        "subagent_spawn",
+        "decision",
+        "artifact_change",
     ]
     summary: str
     raw_refs: tuple[TransformRawRef, ...]
@@ -1884,6 +1888,25 @@ def _extract_events(session: Session, messages: Sequence[Message]) -> Iterable[S
     result carries no structured outcome yields no event (NULL = unknown,
     never a fabricated positive).
     """
+    for session_event in sorted(session.session_events, key=lambda item: item.event_index):
+        if session_event.event_type not in {"tool_run", "subagent_spawn", "decision", "artifact_change"}:
+            continue
+        event_kind = cast(
+            Literal["tool_run", "subagent_spawn", "decision", "artifact_change"], session_event.event_type
+        )
+        payload = session_event.payload
+        summary = payload.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            summary = session_event.event_type.replace("_", " ")
+        yield SessionDigestEvent(
+            kind=event_kind,
+            summary=summary,
+            raw_refs=(TransformRawRef(session_id=str(session.id), ref_kind="session", preview=summary),),
+            tool_name=_optional_text(payload.get("tool_name")),
+            tool_id=_optional_text(payload.get("tool_id")),
+            status=_optional_text(payload.get("status")),
+        )
+
     result_by_tool_id: dict[str, Mapping[str, object]] = {}
     for message in messages:
         for block in message.blocks:
@@ -2008,15 +2031,6 @@ def _block_ref(session: Session, message: Message, block_index: int, block: Mapp
         block_index=block_index,
         ref_kind="block",
         preview=_preview(_block_text(block) or _tool_command(block) or _tool_name(block)),
-    )
-
-
-def _message_ref(session: Session, message: Message) -> TransformRawRef:
-    return TransformRawRef(
-        session_id=str(session.id),
-        message_id=str(message.id),
-        ref_kind="message",
-        preview=_preview(message.text or ""),
     )
 
 

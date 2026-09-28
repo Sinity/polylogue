@@ -7,11 +7,9 @@ the operational half -- daemon loss must not enable direct mutation.
 
 The half of that contract which holds today is the data half: no module in
 the surface family opens a connection by any route. Nothing pinned it.
-``gate controlled-read`` is the nearest existing check and it censuses
-``ArchiveStore.open_existing`` only, by AST -- a plain
+A census of ``ArchiveStore.open_existing`` alone would miss a plain
 ``sqlite3.connect(...)`` or ``aiosqlite.connect(...)`` inside
-``polylogue/daemon/http.py`` passes it. So this ratchet is not a second copy
-of that gate; it covers the openers that gate cannot see, over the one
+``polylogue/daemon/http.py``. This ratchet covers every opener, over the one
 module family where a second executor would defeat the isolation programme.
 
 It says nothing about the process move itself. The surface is still 11,754
@@ -59,9 +57,7 @@ SURFACE_FAMILY = (
     "polylogue/daemon/workspace_routes.py",
 )
 
-#: Attribute calls that open a database handle. ``open_existing`` is included
-#: even though ``gate controlled-read`` also censuses it, because a reader of
-#: this test should see the whole boundary rather than two-thirds of it.
+#: Attribute calls that open a database handle.
 _OPENER_ATTRIBUTES = frozenset({"connect", "connect_async", "open_existing", "open_or_create"})
 
 #: Bare names that open one after ``from sqlite3 import connect`` or

@@ -187,11 +187,6 @@
   {
     "target": "polylogue/cli",
     "file": "polylogue/cli/commands/embed.py",
-    "import": "polylogue.storage.archive_identity"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/commands/embed.py",
     "import": "polylogue.storage.embeddings.preflight"
   },
   {
@@ -358,11 +353,6 @@
     "target": "polylogue/cli",
     "file": "polylogue/cli/shared/embed_stats.py",
     "import": "polylogue.storage.embeddings.status_payload"
-  },
-  {
-    "target": "polylogue/cli",
-    "file": "polylogue/cli/shared/helper_summary.py",
-    "import": "polylogue.storage.embeddings"
   },
   {
     "target": "polylogue/cli",

@@ -24,7 +24,6 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
-from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Origin
 
 ThemeMode = Literal["dark", "light"]
@@ -121,16 +120,6 @@ ROLE_COLORS: dict[str, RoleColor] = {
 }
 
 DEFAULT_ROLE_COLOR = RoleColor(hex="#94a3b8", label="#94a3b8")
-
-
-def role_color(role: str | Role) -> RoleColor:
-    """Look up a role color."""
-    if isinstance(role, Role):
-        normalized = role
-    else:
-        raw = str(role).strip()
-        normalized = Role.normalize(raw) if raw else Role.UNKNOWN
-    return ROLE_COLORS.get(str(normalized), DEFAULT_ROLE_COLOR)
 
 
 # =============================================================================

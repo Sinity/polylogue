@@ -5,13 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from dataclasses import asdict
+import time
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import aiosqlite
 import pytest
 
-from polylogue.daemon.derivation import Outcome
+from polylogue.daemon.derivation import DerivationReport, Outcome
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
@@ -246,8 +247,13 @@ async def test_promoted_generation_starts_a_bounded_profile_pass_from_new_demand
 
 
 @pytest.mark.asyncio
+@pytest.mark.uses_real_clock("audit_pass takes an absolute time.monotonic() deadline")
 async def test_periodic_sweep_reaches_more_than_one_budget_of_profiles_without_demand(tmp_path: Path) -> None:
-    """A quiet archive tail must survive bounded prerequisite passes."""
+    """A quiet archive tail must survive bounded prerequisite passes.
+
+    The archive-wide audit advances only in bounded slices after demand
+    (polylogue-6remh), so each iteration here is one ``audit_pass`` slice.
+    """
     recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
     source_path = tmp_path / "source.jsonl"
     source_path.write_text("{}\n")
@@ -270,8 +276,11 @@ async def test_periodic_sweep_reaches_more_than_one_budget_of_profiles_without_d
             now=lambda: 0.0,
         )
         prerequisite_ticks = 0
+        assert composed.audit_pass is not None
         for _ in range(16):
-            report = await composed.callback(None)
+            sliced = await composed.audit_pass(time.monotonic() + 600.0)
+            assert sliced is not None
+            report = sliced
             prerequisite_ticks += 1
             assert report.work.discovered <= 128
             assert report.work.published <= 64
@@ -288,7 +297,10 @@ async def test_periodic_sweep_reaches_more_than_one_budget_of_profiles_without_d
 
         profile_ticks = 0
         for _ in range(16):
-            report = await composed.callback(None)
+            sliced = await composed.audit_pass(time.monotonic() + 600.0)
+            if sliced is None:
+                break
+            report = sliced
             profile_ticks += 1
             assert report.work.discovered <= 128
             assert report.work.published <= 64
@@ -322,8 +334,8 @@ async def test_fresh_owner_resweeps_missing_profile_without_demand(tmp_path: Pat
             write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
             now=lambda: 0.0,
         )
-        for _ in range(3):
-            await composed.callback(None)
+        # The startup audit, not a demand tick, finds profiles no demand names.
+        await composed.converge_backlog(600.0)
         with sqlite3.connect(recovered.index_db) as conn:
             assert conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == 2
             conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (recovered.target_session_id,))
@@ -337,8 +349,7 @@ async def test_fresh_owner_resweeps_missing_profile_without_demand(tmp_path: Pat
             write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
             now=lambda: 0.0,
         )
-        for _ in range(3):
-            await restarted.callback(None)
+        await restarted.converge_backlog(600.0)
         with sqlite3.connect(recovered.index_db) as conn:
             assert conn.execute(
                 "SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (recovered.target_session_id,)
@@ -414,6 +425,59 @@ async def test_marker_lowering_sees_a_user_db_created_after_composition(tmp_path
         with sqlite3.connect(user_db) as conn:
             lowered = conn.execute("SELECT COUNT(*) FROM assertions").fetchone()
         assert lowered is not None and lowered[0] > 0
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_backlog_call_sweeps_every_domain_in_bounded_passes(tmp_path: Path) -> None:
+    """One periodic tick drains the audit sweep instead of one pass of it.
+
+    Anti-vacuity: a backlog call that runs a single bounded pass (the old
+    periodic tick) publishes at most 64 keys of one domain, so fewer than all
+    129+ profiles exist afterwards and the audit is still pending.
+    """
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    source_path = tmp_path / "source.jsonl"
+    source_path.write_text("{}\n")
+    with sqlite3.connect(recovered.index_db) as conn:
+        for number in range(129):
+            _seed_raw_source_session(conn, session_id=f"backlog-{number:03d}", source_path=source_path)
+        conn.execute("DELETE FROM session_profile_demand")
+        conn.commit()
+        expected = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        passes = 0
+        real_pass = composed.audit_pass
+        assert real_pass is not None
+
+        async def counting(deadline_at: float) -> DerivationReport | None:
+            nonlocal passes
+            passes += 1
+            report = await real_pass(deadline_at)
+            assert report is None or report.work.published <= 64
+            return report
+
+        # A pass whose instant already passed (e.g. spent waiting for the
+        # owner) does not start.
+        assert await real_pass(0.0) is None
+        counted = replace(composed, audit_pass=counting)
+        await counted.converge_backlog(600.0)
+
+        assert passes > 1
+        assert not composed.audit_pending()
+        with sqlite3.connect(recovered.index_db) as conn:
+            assert conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == expected
     finally:
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)

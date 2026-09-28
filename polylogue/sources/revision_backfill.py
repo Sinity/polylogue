@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextvars
 import hashlib
+import json
 import os
 import pickle
 import shutil
@@ -45,7 +46,11 @@ from polylogue.archive.revision_authority import (
     durable_authority_logical_keys,
     parser_census_is_complete,
 )
-from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
+from polylogue.archive.session_revision_membership import (
+    MembershipDecision,
+    MembershipRevision,
+    classify_membership_revisions,
+)
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
 from polylogue.core.json import JSONValue
@@ -100,9 +105,13 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     PreparedRawRevisionClassification,
     _raw_parse_success_state,
     apply_prepared_raw_revision_classification,
+    membership_key_has_pending_envelope_member,
+    pending_raw_envelope_has_membership_authority,
+    raw_has_membership_governed_pending_envelope,
     record_current_parser_source_census,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
+    PENDING_RAW_LOGICAL_SOURCE_PREFIX,
     ArchiveSourceArtifact,
     apply_source_raw_state_update,
     upsert_raw_artifact,
@@ -1138,9 +1147,24 @@ def prepare_retained_jsonl_artifact(
                 classify_claude_design_object=classify_claude_design_object,
                 classify_chatgpt_object=classify_chatgpt_object,
                 classify_gemini_object=classify_gemini_object,
+                # The publisher recomputes this digest from the retained
+                # evidence for every artifact, so a pass that enriched nothing
+                # (no assembly spec, or no admitted session) must bind the
+                # same evidence value rather than an absent one.
                 preparation_dependency=lambda: (
                     _retained_dependency_digest(
-                        evidence_digest,
+                        evidence_digest
+                        if evidence_digest is not None
+                        else _enrichment_evidence_digest(
+                            _retained_enrichment_sidecar_data(
+                                provider=provider,
+                                sessions=(),
+                                index_conn=index_conn,
+                                source_conn=source_conn,
+                                blob_root=Path(blob_root),
+                                source_path=source_path,
+                            )
+                        ),
                         _retained_parser_sidecar_digest(source_conn, provider=provider, source_path=source_path),
                     ),
                     str(Path(index_db_path).resolve()),
@@ -2058,7 +2082,18 @@ def _census_historical_revision_evidence(
             record_current_parser_source_census(archive._ensure_source_conn(), raw_id, parser_sessions=sessions)
             state.provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
             commit_unit()
-        elif revision_kind is RawRevisionKind.UNKNOWN:
+        elif revision_kind is RawRevisionKind.UNKNOWN or (
+            _raw_has_pending_envelope(archive, raw_id)
+            and (
+                len(sessions) > 1 or raw_has_membership_governed_pending_envelope(archive._ensure_source_conn(), raw_id)
+            )
+        ):
+            # A pending-raw envelope names bytes, not a session. One session
+            # rebinds it to that session's key (the parser census below); a raw
+            # holding several is governed per session, exactly as live ingest
+            # records a multi-session file. A raw already governed that way
+            # replaces its memberships whatever the current session count, so
+            # a parser that now yields one session cannot leave stale members.
             archive.replace_raw_membership_census(
                 raw_id,
                 sessions,
@@ -2378,7 +2413,9 @@ def _load_frozen_revision_evidence(
             )
             shard_transport.add_raw(raw_id, sessions, prepared_artifact=prepared_artifact)
         state.classified += int(len(sessions) == 1)
-        if revision_kind is RawRevisionKind.UNKNOWN:
+        if revision_kind is RawRevisionKind.UNKNOWN or raw_has_membership_governed_pending_envelope(
+            archive._ensure_source_conn(), raw_id
+        ):
             for session in sessions:
                 # Persist the same canonical Origin identity used by current
                 # parser census and live ingestion.
@@ -2926,7 +2963,14 @@ def validate_frozen_source_authority(
         membership_keys = {*persisted_membership_keys, *census.membership_candidates}
         byte_replayed_keys: set[str] = set()
 
+        source_conn = archive._ensure_source_conn()
+        # The candidate installs each byte chain's head before membership
+        # replay runs; frozen validation has no index, so it predicts that
+        # head from the same frozen classification.
+        byte_chain_heads: dict[str, str] = {}
         for logical_key in sorted(set(logical_keys) - transient_non_session_keys):
+            if pending_raw_envelope_has_membership_authority(source_conn, logical_key):
+                continue
             plan = archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
             if not plan.accepted_raw_ids:
                 convertible = archive.convertible_full_revision_raw_ids(logical_key)
@@ -2937,8 +2981,13 @@ def validate_frozen_source_authority(
                     )
                 continue
             byte_replayed_keys.add(logical_key)
+            byte_chain_heads[logical_key] = plan.accepted_raw_ids[-1]
 
-        for logical_key in sorted(membership_keys - byte_replayed_keys):
+        for logical_key in sorted(
+            key
+            for key in membership_keys
+            if key not in byte_replayed_keys or membership_key_has_pending_envelope_member(source_conn, key)
+        ):
             candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
             candidate_raw_ids.update(census.membership_candidates.get(logical_key, ()))
             revisions: list[MembershipRevision] = []
@@ -2967,8 +3016,27 @@ def validate_frozen_source_authority(
                             ),
                         )
                     )
-            classification = classify_membership_revisions(revisions, existing_accepted_raw_id=None)
-            archive.require_frozen_membership_authority(logical_key, classification)
+            # Re-derive exactly what membership replay persists: it classifies
+            # against the byte chain head installed before it and, when that
+            # chain-governed head lies outside the cohort, records every member
+            # as yielding to it.
+            head_raw_id = byte_chain_heads.get(logical_key)
+            classification = classify_membership_revisions(revisions, existing_accepted_raw_id=head_raw_id)
+            yield_decisions: dict[str, MembershipDecision] | None = None
+            if (
+                classification.accepted_raw_ids
+                and head_raw_id is not None
+                and head_raw_id not in {*classification.accepted_raw_ids, *classification.equivalent_raw_ids}
+            ):
+                yield_decisions = dict.fromkeys(
+                    (
+                        *classification.accepted_raw_ids,
+                        *classification.equivalent_raw_ids,
+                        *classification.ambiguous_raw_ids,
+                    ),
+                    MembershipDecision.SUPERSEDED_EQUIVALENT,
+                )
+            archive.require_frozen_membership_authority(logical_key, classification, yield_decisions)
 
 
 def census_historical_revision_evidence(
@@ -3020,9 +3088,13 @@ def census_historical_revision_evidence(
             # read-only snapshot. Apply only its SQL decisions here, after the
             # ordinary parser census has committed; any changed dependency
             # refuses the proof before source authority moves.
+            source_conn = archive._ensure_source_conn()
             for logical_key in sorted(logical_keys):
                 proof = classification_proofs.get(logical_key)
-                if proof is not None:
+                # The census may have just moved a multi-session raw to
+                # membership governance; its pending envelope is then no byte
+                # chain to prove.
+                if proof is not None and not pending_raw_envelope_has_membership_authority(source_conn, logical_key):
                     apply_prepared_raw_revision_classification(archive, proof)
             archive.commit()
     return RevisionCensusResult(
@@ -3463,6 +3535,28 @@ def selected_prepared_membership_head(
     return accepted, member_sessions[accepted]
 
 
+def _prepared_write_for(
+    prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite] | None,
+    raw_id: str,
+    session: ParsedSession,
+) -> PreparedSessionWrite | None:
+    """Select a prepared write by raw and session: one raw may carry several."""
+    if not prepared_writes:
+        return None
+    return prepared_writes.get(
+        (raw_id, f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}")
+    )
+
+
+def _raw_has_pending_envelope(archive: ArchiveStore, raw_id: str) -> bool:
+    row = (
+        archive._ensure_source_conn()
+        .execute("SELECT logical_source_key FROM raw_sessions WHERE raw_id = ?", (raw_id,))
+        .fetchone()
+    )
+    return row is not None and str(row[0] or "").startswith(PENDING_RAW_LOGICAL_SOURCE_PREFIX)
+
+
 def _require_prepared_cross_acquisition_write(
     archive: ArchiveStore,
     session: ParsedSession,
@@ -3513,7 +3607,7 @@ def backfill_historical_revision_evidence(
     prefetch_cache: RawParsePrefetchCache | None = None,
     prepared_inputs: Mapping[str, PreparedRetainedInput] | None = None,
     prepared_aggregates: Mapping[str, PreparedRetainedAggregate] | None = None,
-    prepared_writes: Mapping[str, PreparedSessionWrite] | None = None,
+    prepared_writes: Mapping[tuple[str, str], PreparedSessionWrite] | None = None,
     prepared_replay_plans: Mapping[str, tuple[str, ...]] | None = None,
     pipeline_decode: bool | None = None,
     deadline_check: Callable[[], None] | None = None,
@@ -3808,7 +3902,14 @@ def backfill_historical_revision_evidence(
         # prefetcher's lookahead actually matches what the writer visits
         # next.
         replay_schedule = _lineage_aware_replay_schedule(logical_keys, archive, spill, archive_root)
-        ordered_logical_keys = list(replay_schedule.order)
+        # A multi-session raw's pending envelope is not a one-session chain;
+        # its sessions replay through membership governance below.
+        source_conn = archive._ensure_source_conn()
+        ordered_logical_keys = [
+            logical_key
+            for logical_key in replay_schedule.order
+            if not pending_raw_envelope_has_membership_authority(source_conn, logical_key)
+        ]
         decode_prefetcher: _ReplaySpillPrefetcher | None = None
         if effective_pipeline_decode:
             decode_prefetcher = _ReplaySpillPrefetcher(
@@ -3965,7 +4066,9 @@ def backfill_historical_revision_evidence(
                     continue
                 try:
                     tip_raw_id = plan.accepted_raw_ids[-1]
-                    prepared_write = (prepared_writes or {}).get(tip_raw_id)
+                    prepared_write = _prepared_write_for(
+                        prepared_writes, tip_raw_id, prepared_aggregate_session or parsed_by_raw_id[tip_raw_id]
+                    )
                     _require_prepared_cross_acquisition_write(
                         archive,
                         prepared_aggregate_session or parsed_by_raw_id[tip_raw_id],
@@ -4078,11 +4181,17 @@ def backfill_historical_revision_evidence(
                 # bindings may still sit uncommitted in the open replay
                 # batch, so the in-memory candidates map rides along.
                 decode_prefetcher.start_phase(
-                    [key for key in sorted(membership_keys) if key not in byte_replayed_keys],
+                    [
+                        key
+                        for key in sorted(membership_keys)
+                        if key not in byte_replayed_keys or membership_key_has_pending_envelope_member(source_conn, key)
+                    ],
                     membership_candidates,
                 )
             for logical_key in sorted(membership_keys):
-                if logical_key in byte_replayed_keys:
+                if logical_key in byte_replayed_keys and not membership_key_has_pending_envelope_member(
+                    source_conn, logical_key
+                ):
                     continue
                 if deadline_check is not None:
                     deadline_check()
@@ -4180,7 +4289,9 @@ def backfill_historical_revision_evidence(
                             archive,
                             member_sessions[accepted_raw_id],
                             accepted_raw_id=accepted_raw_id,
-                            prepared_write=(prepared_writes or {}).get(accepted_raw_id),
+                            prepared_write=_prepared_write_for(
+                                prepared_writes, accepted_raw_id, member_sessions[accepted_raw_id]
+                            ),
                             prepared_inputs=prepared_inputs,
                         )
                     if shard_transport is None or not classification.accepted_raw_ids:
@@ -4197,7 +4308,11 @@ def backfill_historical_revision_evidence(
                             fresh_build=fresh_build,
                             fresh_build_batch=fresh_build_batch,
                             prepared_write=(
-                                (prepared_writes or {}).get(classification.accepted_raw_ids[-1])
+                                _prepared_write_for(
+                                    prepared_writes,
+                                    classification.accepted_raw_ids[-1],
+                                    member_sessions[classification.accepted_raw_ids[-1]],
+                                )
                                 if classification.accepted_raw_ids
                                 else None
                             ),
@@ -4224,7 +4339,9 @@ def backfill_historical_revision_evidence(
                                     fresh_build_batch=fresh_build_batch,
                                     prepared_by_raw_id=prepared,
                                     prepared_required_raw_ids=frozenset({accepted_raw_id}),
-                                    prepared_write=(prepared_writes or {}).get(accepted_raw_id),
+                                    prepared_write=_prepared_write_for(
+                                        prepared_writes, accepted_raw_id, accepted_session
+                                    ),
                                 )
                         except PreparedSessionWriteRefusedError as exc:
                             if prepared_inputs is not None:
@@ -5225,6 +5342,41 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
     provider, blob_hash, source_path, kind, _payload_size = archive.raw_revision_descriptor(raw_id)
     fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
 
+    # Work events have their own durable envelope.  They are not provider
+    # transcript records, so replay them before dispatching to provider parsers.
+    if source_path.startswith("agent-work-event:"):
+        _provider, payload, _path, _kind = archive.raw_revision_material(raw_id)
+        try:
+            envelope = json.loads(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f"invalid retained work-event envelope for {raw_id}") from exc
+        if not isinstance(envelope, dict) or envelope.get("_polylogue_work_event") != 1:
+            raise ValueError(f"unrecognized retained work-event envelope for {raw_id}")
+        from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
+
+        try:
+            event_provider = Provider(str(envelope["provider"]))
+            native_id = str(envelope["native_session_id"])
+            event_type = str(envelope["event_type"])
+            event_payload = envelope["payload"]
+            if not isinstance(event_payload, dict):
+                raise TypeError("payload must be an object")
+            event = ParsedSessionEvent(
+                event_type=event_type,
+                timestamp=envelope.get("timestamp"),
+                payload=event_payload,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"malformed retained work-event envelope for {raw_id}") from exc
+        return [
+            ParsedSession(
+                source_name=event_provider,
+                provider_session_id=native_id,
+                messages=[],
+                session_events=[event],
+            )
+        ]
+
     def normalize_replay(sessions: list[ParsedSession]) -> list[ParsedSession]:
         return [normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp) for session in sessions]
 
@@ -5243,14 +5395,24 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
         # without decoding them.  Recovery is the first lawful point to
         # inspect the durable bytes and resolve their parser, before deciding
         # whether their filename is a stream route.
-        with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, _stream_path, _stream_kind):
-            provider, _evidence = _detect_unknown_retained_provider(payload, source_path)
+        with archive.open_raw_revision_material(raw_id) as (
+            _stream_provider,
+            stream_payload,
+            _stream_path,
+            _stream_kind,
+        ):
+            provider, _evidence = _detect_unknown_retained_provider(stream_payload, source_path)
         if is_stream_record_provider(source_path, str(provider)):
-            with archive.open_raw_revision_material(raw_id) as (_stream_provider, payload, stream_path, _stream_kind):
+            with archive.open_raw_revision_material(raw_id) as (
+                _stream_provider,
+                stream_payload,
+                stream_path,
+                _stream_kind,
+            ):
                 return normalize_replay(
                     _parse_stream(
                         provider,
-                        payload,
+                        stream_payload,
                         stream_path,
                         fallback_id_override=fallback_id_override,
                         archive_root=archive.archive_root,
@@ -5270,11 +5432,11 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
             )
         )
     if is_stream_record_provider(source_path, str(provider)):
-        with archive.open_raw_revision_material(raw_id) as (stream_provider, payload, stream_path, _stream_kind):
+        with archive.open_raw_revision_material(raw_id) as (stream_provider, stream_payload, stream_path, _stream_kind):
             return normalize_replay(
                 _parse_stream(
                     stream_provider,
-                    payload,
+                    stream_payload,
                     stream_path,
                     fallback_id_override=fallback_id_override,
                     archive_root=archive.archive_root,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
@@ -116,6 +117,9 @@ def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_
     assert stage.execute_many is not None
     assert stage.false_means_pending is True
     path = tmp_path / "source.jsonl"
+    # A zero pass budget stops after one bounded batch, which is what the two
+    # executions below observe.
+    monkeypatch.setattr(stages, "_DAEMON_RAW_AUTHORITY_CACHE_PASS_SECONDS", 0.0)
     with plog.capture() as records:
         assert stage.check(path) is True
         assert stage.execute_many((path,)) is False
@@ -153,6 +157,32 @@ def test_raw_authority_verdict_cache_stage_warms_in_bounded_batches_and_reports_
     assert stage.execute_many((path,)) is True
 
 
+def test_raw_authority_verdict_cache_execution_keeps_warming_batches_within_its_budget(tmp_path: Path) -> None:
+    """Anti-vacuity: one batch per execution leaves the second batch pending,
+    so the single execution below returns False."""
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        for index in range(2 * stages._DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS + 1):
+            raw_id = f"full-{index}"
+            written_id = archive.write_raw_payload(
+                provider=Provider.CODEX,
+                payload=f"payload-{index}".encode(),
+                source_path="session.jsonl",
+                acquired_at_ms=1,
+                raw_id=raw_id,
+            )
+            archive.bind_raw_revision(
+                written_id,
+                RawRevisionEnvelope(f"codex:full-{index}", RawRevisionKind.FULL, f"revision-{raw_id}", 0),
+            )
+
+    stage = make_raw_authority_verdict_cache_stage(tmp_path / "index.db")
+    assert stage.execute_many is not None
+    path = tmp_path / "source.jsonl"
+    assert stage.execute_many((path,)) is True
+    assert stage.check(path) is False
+
+
 def test_sinex_stage_uses_configured_source_tier_not_active_index_parent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -179,6 +209,38 @@ def test_sinex_stage_uses_configured_source_tier_not_active_index_parent(
     make_default_convergence_stages(tmp_path / "external-generation" / "index.db")
 
     assert captured["source_db_path"] == configured_root / "source.db"
+
+
+@pytest.mark.parametrize("mode", ["off", "mirror", "primary"])
+def test_derivation_barrier_exists_only_in_primary_mode_and_reads_configured_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """Derivation owners get the primary barrier exactly when the staged routes honor it.
+
+    Anti-vacuity (polylogue-wtfyv): returning ``None`` in primary mode leaves
+    every derivation owner unbarriered.
+    """
+    import polylogue.sinex.service as sinex_service
+
+    configured_root = tmp_path / "configured"
+    read: list[tuple[Path, tuple[str, ...]]] = []
+
+    def blocking(source_db_path: Path, object_ids: Sequence[str]) -> set[str]:
+        ids = tuple(object_ids)
+        read.append((source_db_path, ids))
+        return {"held"} & set(ids)
+
+    monkeypatch.setattr(stages, "load_polylogue_config", lambda: SimpleNamespace(sinex_mode=mode))
+    monkeypatch.setattr(sinex_service, "primary_blocking_object_ids", blocking)
+
+    barrier = stages.configured_derivation_barrier(configured_root)
+
+    if mode != "primary":
+        assert barrier is None
+        return
+    assert barrier is not None
+    assert barrier(("held", "free")) == {"held"}
+    assert read == [(configured_root / "source.db", ("held", "free"))]
 
 
 def test_claude_workflow_stage_event_replaces_its_snapshot_rather_than_appending(tmp_path: Path) -> None:

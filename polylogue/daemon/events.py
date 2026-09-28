@@ -214,6 +214,50 @@ def prune_daemon_events(
     return removed
 
 
+@dataclass(frozen=True, slots=True)
+class DaemonEventRecord:
+    """One event row for :func:`emit_daemon_events`."""
+
+    kind: str
+    payload: dict[str, object]
+    operation_id: str | None = None
+    idempotency_key: str | None = None
+
+
+def emit_daemon_events(
+    records: Sequence[DaemonEventRecord],
+    *,
+    archive_root_path: Path | None = None,
+    observed_at_ms: int | None = None,
+) -> None:
+    """Append several events to the ledger in one connection and one commit.
+
+    A live batch announces its summary plus one event per touched session.
+    Emitting those one at a time opened the ledger, ran its DDL, counted the
+    table for retention and committed once per event: two per ingested
+    session, on the writer. The rows, their order and the retention bound are
+    the same; they land together.
+    """
+    if not records:
+        return
+    conn = _ensure_events_db() if archive_root_path is None else _ensure_events_db(archive_root_path / "ops.db")
+    try:
+        ts_ms = current_epoch_ms() if observed_at_ms is None else observed_at_ms
+        conn.executemany(
+            "INSERT INTO daemon_events (ts_ms, kind, operation_id, idempotency_key, payload_json) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(kind, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
+            [
+                (ts_ms, record.kind, record.operation_id, record.idempotency_key, json.dumps(record.payload))
+                for record in records
+            ],
+        )
+        prune_daemon_events(conn, now_ms=observed_at_ms)
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def emit_daemon_event(
     kind: str,
     *,
@@ -798,15 +842,15 @@ def event_spec(kind: str) -> EventSpec:
     return EVENT_SPECS[kind]
 
 
-def emit_session_appended(
+def session_appended_event(
     *,
     source_name: str | None,
     succeeded_file_count: int,
     failed_file_count: int = 0,
     source_paths: Sequence[str] | None = None,
     session_id: str | None = None,
-) -> None:
-    """Emit a ``session.appended`` event for a newly-materialized session.
+) -> DaemonEventRecord:
+    """A ``session.appended`` event for a newly-materialized session.
 
     ``session_id`` is the real archive identity of the session this event
     describes (polylogue-20d.13) -- when known, callers should always pass
@@ -823,18 +867,18 @@ def emit_session_appended(
     }
     if source_paths is not None:
         payload["source_paths"] = list(source_paths)
-    emit_daemon_event(EVENT_SESSION_APPENDED, operation_id=session_id, payload=payload)
+    return DaemonEventRecord(EVENT_SESSION_APPENDED, payload, operation_id=session_id)
 
 
-def emit_session_updated(
+def session_updated_event(
     *,
     session_id: str,
     source_name: str | None = None,
     appended_count: int = 0,
-) -> None:
-    """Emit a ``session.updated`` event when an existing session grows.
+) -> DaemonEventRecord:
+    """A ``session.updated`` event when an existing session grows.
 
-    Distinct from :func:`emit_session_appended`: the live-ingest append
+    Distinct from :func:`session_appended_event`: the live-ingest append
     route only ever grows a file whose session already exists (a
     cursor-tracked prior observation), so every real producer of this event
     is describing a mutation of a session the reader may already have open
@@ -846,17 +890,17 @@ def emit_session_updated(
         "source_name": source_name,
         "appended_count": int(appended_count),
     }
-    emit_daemon_event(EVENT_SESSION_UPDATED, operation_id=session_id, payload=payload)
+    return DaemonEventRecord(EVENT_SESSION_UPDATED, payload, operation_id=session_id)
 
 
-def emit_message_appended(
+def message_appended_event(
     *,
     session_id: str | None,
     source_name: str | None = None,
     appended_count: int = 0,
     source_path: str | None = None,
-) -> None:
-    """Emit a ``message.appended`` event for live-tail consumers.
+) -> DaemonEventRecord:
+    """A ``message.appended`` event for live-tail consumers.
 
     The reader subscribes to this topic only for the currently-open
     session; subscription is encoded via ``?kinds=message.appended``
@@ -869,7 +913,61 @@ def emit_message_appended(
     }
     if source_path is not None:
         payload["source_path"] = source_path
-    emit_daemon_event(EVENT_MESSAGE_APPENDED, payload=payload)
+    return DaemonEventRecord(EVENT_MESSAGE_APPENDED, payload)
+
+
+def emit_session_appended(
+    *,
+    source_name: str | None,
+    succeeded_file_count: int,
+    failed_file_count: int = 0,
+    source_paths: Sequence[str] | None = None,
+    session_id: str | None = None,
+) -> None:
+    """Emit one ``session.appended`` event; see :func:`session_appended_event`."""
+    emit_daemon_events(
+        [
+            session_appended_event(
+                source_name=source_name,
+                succeeded_file_count=succeeded_file_count,
+                failed_file_count=failed_file_count,
+                source_paths=source_paths,
+                session_id=session_id,
+            )
+        ]
+    )
+
+
+def emit_session_updated(
+    *,
+    session_id: str,
+    source_name: str | None = None,
+    appended_count: int = 0,
+) -> None:
+    """Emit one ``session.updated`` event; see :func:`session_updated_event`."""
+    emit_daemon_events(
+        [session_updated_event(session_id=session_id, source_name=source_name, appended_count=appended_count)]
+    )
+
+
+def emit_message_appended(
+    *,
+    session_id: str | None,
+    source_name: str | None = None,
+    appended_count: int = 0,
+    source_path: str | None = None,
+) -> None:
+    """Emit one ``message.appended`` event; see :func:`message_appended_event`."""
+    emit_daemon_events(
+        [
+            message_appended_event(
+                session_id=session_id,
+                source_name=source_name,
+                appended_count=appended_count,
+                source_path=source_path,
+            )
+        ]
+    )
 
 
 def get_daemon_event_counts() -> dict[str, int]:

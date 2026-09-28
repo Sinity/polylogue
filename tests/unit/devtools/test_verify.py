@@ -9,6 +9,8 @@ import signal
 import sqlite3
 import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -102,8 +104,197 @@ def test_quick_steps_are_static_gates() -> None:
     labels = [label for label, _command in verify.build_verify_steps(quick=True)]
 
     assert "gate lint" in labels
-    assert "gate oracle-integrity" in labels
+    assert "gate layering" in labels
     assert not any(label.startswith("pytest") for label in labels)
+
+
+def test_static_gates_run_side_by_side_and_report_in_declared_order(tmp_path: Path) -> None:
+    """Gates overlap in time, and their outcomes keep the declared order.
+
+    Anti-vacuity: run the gates one after another and the rendezvous below
+    times out; return outcomes in completion order and the first gate, which
+    finishes last, is reported last.
+    """
+    rendezvous = threading.Barrier(2, timeout=10)
+    finished: list[str] = []
+
+    def fake_run(label: str, command: list[str], *, run: Any, runner: str) -> tuple[int, float, dict[str, Any]]:
+        del command, run, runner
+        rendezvous.wait()
+        if label == "gate first":
+            time.sleep(0.05)
+        finished.append(label)
+        return 0, 0.0, {"diagnosis": "gate_passed"}
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verify, "_run", fake_run)
+        patch.setattr(verify, "GATE_PARALLELISM", 2)
+        outcomes = verify._run_steps([("gate first", ["a"]), ("gate second", ["b"])], run=None, runner="managed")  # type: ignore[arg-type]
+
+    assert finished == ["gate second", "gate first"]
+    assert [label for label, _outcome in outcomes] == ["gate first", "gate second"]
+
+
+def test_no_gate_started_around_the_interruption_runs_to_completion(tmp_path: Path) -> None:
+    """With more gates than workers, every gate process is stopped, none awaited.
+
+    A queued gate is either cancelled before it starts or, if a freed worker
+    picks it up first, registered before the interruption's snapshot of live
+    processes, so it is terminated rather than waited for.
+
+    Anti-vacuity: snapshot the live processes before cancelling queued gates,
+    or register a process without checking the interruption under the same
+    lock, and a gate launched after the snapshot runs its ``sleep`` to a
+    natural exit, so a return code is 0 instead of a signal.
+    """
+    spawned: list[subprocess.Popen[str]] = []
+    real_popen = subprocess.Popen
+
+    def tracking_popen(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
+        process = real_popen(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    def run_gate(label: str, command: list[str], *, run: Any, runner: str) -> tuple[int, float, dict[str, Any]]:
+        del run, runner
+        if label == "gate interrupting":
+            for _ in range(1000):
+                if verify._LIVE_GATE_PROCESSES:
+                    break
+                time.sleep(0.01)
+            raise verify.VerificationInterrupted(signal.SIGTERM)
+        completed = verify._run_gate_process(command, env=dict(os.environ))
+        return completed.returncode, 0.0, {}
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verify, "ROOT", tmp_path)
+        patch.setattr(verify, "GATE_PARALLELISM", 2)
+        patch.setattr(subprocess, "Popen", tracking_popen)
+        patch.setattr(verify, "_run", run_gate)
+        with pytest.raises(verify.VerificationInterrupted):
+            verify._run_steps(
+                [("gate running", ["sleep", "3"]), ("gate interrupting", ["true"]), ("gate queued", ["sleep", "3"])],
+                run=None,  # type: ignore[arg-type]
+                runner="managed",
+            )
+
+    assert spawned
+    assert all(process.returncode is not None and process.returncode < 0 for process in spawned)
+
+
+def _process_alive(pid: int) -> bool:
+    """Whether *pid* is running; a zombie awaiting its reaper counts as dead."""
+    try:
+        status = Path(f"/proc/{pid}/status").read_text(encoding="utf-8")
+    except OSError:
+        return False
+    return "\nState:\tZ" not in status
+
+
+def test_an_interruption_kills_a_gate_child_that_ignores_sigterm(tmp_path: Path) -> None:
+    """The group is killed even when its leader exits on SIGTERM and a child does not.
+
+    Anti-vacuity: send SIGKILL only when the leader outlives the grace period
+    and the TERM-ignoring child keeps running (and keeps the gate's pipes open).
+    """
+    child_pid = tmp_path / "child.pid"
+    ignoring_child = f'sh -c \'trap "" TERM; echo $$ > "{child_pid}"; exec sleep 30\' & wait'
+
+    def interrupting_run(label: str, command: list[str], *, run: Any, runner: str) -> tuple[int, float, dict[str, Any]]:
+        del run, runner
+        if label == "gate slow":
+            completed = verify._run_gate_process(command, env=dict(os.environ))
+            return completed.returncode, 0.0, {}
+        for _ in range(1000):
+            if verify._LIVE_GATE_PROCESSES and child_pid.exists() and child_pid.read_text().strip():
+                break
+            time.sleep(0.01)
+        raise verify.VerificationInterrupted(signal.SIGTERM)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verify, "ROOT", tmp_path)
+        patch.setattr(verify, "_run", interrupting_run)
+        with pytest.raises(verify.VerificationInterrupted):
+            verify._run_steps(
+                [("gate slow", ["sh", "-c", ignoring_child]), ("gate interrupted", ["true"])],
+                run=None,  # type: ignore[arg-type]
+                runner="managed",
+            )
+
+    pid = int(child_pid.read_text(encoding="utf-8"))
+    for _ in range(500):
+        if not _process_alive(pid):
+            break
+        time.sleep(0.01)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        pytest.fail("a TERM-ignoring gate child survived the interruption")
+
+
+def test_an_interrupted_run_stops_and_joins_its_running_gates(tmp_path: Path) -> None:
+    """An interruption terminates live gates and returns only after their workers.
+
+    Anti-vacuity: drop ``_stop_gate_processes`` from the interruption path and
+    the sleeping gate outlives the run; shut the pool down without waiting and
+    the interrupted gate's worker is still running when ``_run_steps`` raises;
+    let a stopped gate return normally and it is recorded as an ordinary result;
+    signal only the gate process, not its group, and the checker it started
+    (as ``devtools.mypy_gate`` starts ``mypy``) keeps running.
+    """
+    grandchild_pid = tmp_path / "grandchild.pid"
+    spawned: list[subprocess.Popen[str]] = []
+    worker_outcomes: list[str] = []
+    real_popen = subprocess.Popen
+
+    def tracking_popen(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
+        process = real_popen(*args, **kwargs)
+        spawned.append(process)
+        return process
+
+    def interrupting_run(label: str, command: list[str], *, run: Any, runner: str) -> tuple[int, float, dict[str, Any]]:
+        del run, runner
+        if label == "gate slow":
+            try:
+                completed = verify._run_gate_process(command, env=dict(os.environ))
+            except verify._GateInterruptedError:
+                time.sleep(0.2)
+                worker_outcomes.append("interrupted")
+                raise
+            worker_outcomes.append("recorded")
+            return completed.returncode, 0.0, {}
+        for _ in range(1000):
+            if verify._LIVE_GATE_PROCESSES and grandchild_pid.exists() and grandchild_pid.read_text().strip():
+                break
+            time.sleep(0.01)
+        raise verify.VerificationInterrupted(signal.SIGTERM)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(verify, "ROOT", tmp_path)
+        patch.setattr(subprocess, "Popen", tracking_popen)
+        patch.setattr(verify, "_run", interrupting_run)
+        with pytest.raises(verify.VerificationInterrupted):
+            verify._run_steps(
+                [
+                    ("gate slow", ["sh", "-c", f'sleep 30 & echo $! > "{grandchild_pid}"; wait']),
+                    ("gate interrupted", ["true"]),
+                ],
+                run=None,  # type: ignore[arg-type]
+                runner="managed",
+            )
+
+    assert len(spawned) == 1
+    pid = int(grandchild_pid.read_text(encoding="utf-8"))
+    for _ in range(500):
+        if not _process_alive(pid):
+            break
+        time.sleep(0.01)
+    else:
+        os.kill(pid, signal.SIGKILL)
+        pytest.fail("the gate's child process outlived the interruption")
+    # Terminated by the interruption, not left to sleep out its 30 seconds.
+    assert spawned[0].poll() is not None
+    # Joined before the interruption propagated, and never recorded as a result.
+    assert worker_outcomes == ["interrupted"]
 
 
 def test_verification_tools_are_absolute_paths_in_checkout_venv() -> None:
@@ -114,7 +305,7 @@ def test_verification_tools_are_absolute_paths_in_checkout_venv() -> None:
     assert commands["gate lint"][0] == str(verify.ROOT / ".venv/bin/ruff")
     assert commands["gate mypy"][0].startswith(str(verify.ROOT / ".venv/bin/"))
     assert commands["gate generated-surfaces"][0] == str(verify.ROOT / ".venv/bin/python")
-    assert commands["gate schema-privacy"][0] == str(verify.ROOT / ".venv/bin/python")
+    assert commands["gate schema-closure"][0] == str(verify.ROOT / ".venv/bin/python")
 
 
 @pytest.mark.parametrize(
@@ -140,7 +331,7 @@ def test_missing_checkout_venv_tool_is_a_typed_failure(
     monkeypatch.setattr(
         verify, "build_verify_steps", lambda **_kwargs: [("gate lint", [str(tmp_path / ".venv/bin/ruff")])]
     )
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 127
     assert history["diagnosis"] == expected_diagnosis
@@ -186,7 +377,7 @@ def test_quick_missing_ruff_is_a_named_failed_gate(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
     monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("gate lint", ["ruff", "check"])])
     monkeypatch.setattr(required_gate.shutil, "which", lambda name, path=None: None if name == "ruff" else "/bin/true")  # type: ignore[attr-defined]
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 127
     step = history["steps"][0]
@@ -205,10 +396,10 @@ def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.Mo
     monkeypatch.setattr(required_gate.shutil, "which", lambda *_args, **_kwargs: "/bin/ruff")  # type: ignore[attr-defined]
     monkeypatch.setattr(
         subprocess,
-        "run",
+        "Popen",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("ruff")),
     )
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 127
     assert history["diagnosis"] == "gate_subprocess_launch_failed"
@@ -216,6 +407,7 @@ def test_required_gate_subprocess_launch_failure_is_typed(monkeypatch: pytest.Mo
 
 
 def test_actual_render_all_diagnosis_reaches_receipt_and_why(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    verify._GATES_INTERRUPTED.clear()
     monkeypatch.setattr(verify, "ROOT", tmp_path)
     run = VerifyRun(tier="quick", argv=["--quick"], git_head="head", root=tmp_path)
     checkout = Path(__file__).resolve().parents[3]
@@ -265,6 +457,44 @@ def test_early_gate_failure_exit_is_authoritative() -> None:
     result = verify._early_gate_failure_result(0.0, {"exit": 0, "diagnosis": "gate_missing_executable"})
 
     assert result["exit"] == 127
+
+
+def test_descriptor_selection_does_not_enable_archive_prewarm() -> None:
+    """Anti-vacuity: descriptor-only tests must not construct shared archives."""
+    env = {"POLYLOGUE_BROAD_PREWARM": "1"}
+    verify._normalize_managed_pytest_environment(env, verify.DESCRIPTOR_CONTRACT_TESTS)
+    assert "POLYLOGUE_BROAD_PREWARM" not in env
+
+
+def test_optimized_python_is_refused_before_running_verification() -> None:
+    """Anti-vacuity: a -O child must report the preflight refusal, not run gates."""
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-O",
+            "-c",
+            "from devtools.verify import _main; raise SystemExit(_main(['--quick', '--json']))",
+        ],
+        cwd=verify.ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+    assert result.returncode == 125
+    assert json.loads(result.stdout)["diagnosis"] == "optimized_python"
+
+
+def test_interrupted_aggregate_keeps_completed_lane_outcomes() -> None:
+    aggregate = verify._aggregate_pytest_results(
+        [{"name": "pytest (parallel)", "statistics": {"outcomes": {"passed": 4}}}],
+        expected_step_count=3,
+        mode="all",
+        exit_code=130,
+    )
+    assert aggregate["outcomes"] == {"passed": 4}
+    assert aggregate["terminal_green"] is False
+    assert aggregate["complete_corpus_covered"] is False
 
 
 def test_finish_step_does_not_retry_unavailable_pytest_statistics(
@@ -329,6 +559,7 @@ def test_full_corpus_aggregate_sums_disjoint_lanes() -> None:
         "selected_union_count": 30,
         "terminal_union_count": 30,
         "outcomes": {"passed": 26, "skipped": 1, "xfailed": 1},
+        "flaky": [],
         "terminal_green": True,
         "complete_corpus_covered": True,
     }
@@ -366,11 +597,14 @@ def test_focused_profile_requires_a_behavioral_pytest_selection() -> None:
     assert focused["result"] == "pytest"
     assert operation["exec"] == ["devtools", "verify", "--quick"]
     assert operation["result"] == "json"
+    assert operation["timeout_seconds"] == 2400
     assert affected["exec"] == ["devtools", "verify"]
     assert affected["pool"] == "pytest"
     assert affected["result"] == "pytest"
     assert affected["cache"] == "tree+environment"
     assert affected["timeout_seconds"] == 7200
+    # Anti-vacuity: deleting either operation's descriptor deadline makes
+    # this fail, even if AgentCTL applies a host default.
     assert complete["exec"] == ["devtools", "verify", "--all"]
     # polylogue-p2mbi AC4 (#5405): `checkout = "candidate"`. The unset default
     # does not select a tree, it REFUSES every workspace but the project root
@@ -385,6 +619,19 @@ def test_focused_profile_requires_a_behavioral_pytest_selection() -> None:
     assert complete["timeout_seconds"] == 14400
     assert projection["kind"] == "polylogue.verification-result"
     assert projection["operation"] == "verify_quick"
+
+
+def test_verification_docs_distinguish_local_receipts_and_sidecars() -> None:
+    """Anti-vacuity: docs must name real mutable DB files and local run evidence."""
+    sidecars = (verify.ROOT / "docs/sidecars.md").read_text(encoding="utf-8")
+    authority = (verify.ROOT / "docs/verification-authority.md").read_text(encoding="utf-8")
+
+    assert ".cache/testmon/testmondata` plus `-wal`, `-shm`, and `-journal" in sidecars
+    assert "`.cache/verify/graph/**`" in sidecars
+    assert "`.testmondata.bound-*`" in sidecars
+    assert "append them to the checkout-local run" in authority
+    assert "AgentCTL-managed job evidence" in authority
+    assert "no AgentCTL run record" not in authority
 
 
 def test_agentctl_parser_preserves_distinct_verification_pools() -> None:
@@ -465,7 +712,8 @@ def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testm
     descriptor_command = verify._pytest_steps(selection="descriptor", worker_args=[])[0][1]
     assert "--testmon" not in descriptor_command
     assert "tests" not in descriptor_command
-    assert descriptor_command[-len(verify.DESCRIPTOR_CONTRACT_TESTS) :] == list(verify.DESCRIPTOR_CONTRACT_TESTS)
+    contract_slice = [*verify.DESCRIPTOR_CONTRACT_TESTS, *verify.CONTRACT_DOCUMENT_TESTS]
+    assert descriptor_command[-len(contract_slice) :] == contract_slice
 
     affected_command = verify._pytest_steps(selection="affected", worker_args=[])[0][1]
     assert "--testmon" in affected_command
@@ -478,7 +726,7 @@ def test_descriptor_only_changes_use_contract_tests_and_python_changes_use_testm
     [
         frozenset({"docs/devtools.md"}),
         frozenset({".github/workflows/verify.yml"}),
-        frozenset({".agentctl/README.md", "CLAUDE.md", ".github/CODEOWNERS"}),
+        frozenset({".agentctl/README.md", "README.md", ".github/CODEOWNERS"}),
     ],
 )
 def test_metadata_only_changes_select_no_pytest_step(changed: frozenset[str]) -> None:
@@ -507,19 +755,62 @@ def test_one_code_path_makes_the_change_set_affected(changed: frozenset[str], ex
     assert verify._selection_for_changes(changed) == expected
 
 
+def test_an_agents_only_change_runs_the_tracked_reference_ratchet() -> None:
+    """AGENTS.md is read by a contract test, so it is not no-test documentation.
+
+    Anti-vacuity: drop ``_CONTRACT_READ_DOCUMENTS`` and an AGENTS-only change
+    selects ``none``, so the retired-name ratchet never runs on it.
+    """
+    assert verify._selection_for_changes(frozenset({"AGENTS.md"})) == "descriptor"
+    commands = [command for label, command in verify.build_verify_steps(quick=False, selection="descriptor")]
+    ratchet = (
+        "tests/unit/architecture/test_retired_analysis_modules.py::test_no_tracked_reference_to_a_retired_analysis_name"
+    )
+    assert any(ratchet in command for command in commands)
+
+
+def test_a_mixed_change_touching_agents_still_runs_the_ratchet() -> None:
+    """AGENTS.md plus a source edit keeps the affected selection and adds the ratchet.
+
+    Anti-vacuity: without the contract-document step, the affected step is the
+    only pytest step, and testmon never selects a test that reads AGENTS.md
+    through ``git grep``, so a retired name added there passes the verifier.
+    """
+    changed = frozenset({"AGENTS.md", "polylogue/example.py"})
+    assert verify._selection_for_changes(changed) == "affected"
+    steps = [
+        (label, command)
+        for label, command in verify.build_verify_steps(quick=False, selection="affected", changed_paths=changed)
+        if label.startswith("pytest")
+    ]
+    assert [label for label, _command in steps] == ["pytest (affected)", "pytest (contract documents)"]
+    affected_command, contract_command = (command for _label, command in steps)
+    assert "--testmon-forceselect" in affected_command
+    assert not any(nodeid in affected_command for nodeid in verify.CONTRACT_DOCUMENT_TESTS)
+    assert "--testmon" not in contract_command
+    assert contract_command[-len(verify.CONTRACT_DOCUMENT_TESTS) :] == list(verify.CONTRACT_DOCUMENT_TESTS)
+
+    source_only = frozenset({"polylogue/example.py"})
+    labels = [
+        label
+        for label, _command in verify.build_verify_steps(quick=False, selection="affected", changed_paths=source_only)
+    ]
+    assert "pytest (contract documents)" not in labels
+
+
 class _StubTestmonData:
     """Just enough of ``TestmonData`` for the estimator to reach its arithmetic."""
 
     system_packages_change = False
 
-    def __init__(self, selected: tuple[str, ...]) -> None:
+    def __init__(self, selected: tuple[str, ...], recorded: tuple[str, ...] = ()) -> None:
         self.unstable_test_names = list(selected)
         self.failing_tests: list[str] = []
-        self.all_tests = {name: {"duration": 0.5} for name in selected}
+        self.all_tests = {name: {"duration": 0.5} for name in (*selected, *recorded)}
 
     @classmethod
-    def factory(cls, selected: tuple[str, ...]) -> Any:
-        return lambda **_kwargs: cls(selected)
+    def factory(cls, selected: tuple[str, ...], recorded: tuple[str, ...] = ()) -> Any:
+        return lambda **_kwargs: cls(selected, recorded)
 
     def determine_stable(self) -> None:
         return None
@@ -532,6 +823,7 @@ def _stub_affected_graph(
     selected: tuple[str, ...],
     unrecorded_files: tuple[str, ...],
     unrecorded_tests: int | None,
+    recorded: tuple[str, ...] = (),
 ) -> None:
     """Point the estimator at a stub graph with a known selection and unknown set."""
     import testmon.db
@@ -543,10 +835,59 @@ def _stub_affected_graph(
     monkeypatch.setattr(verify, "snapshot_testmon_graph", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(testmon.db, "DB", lambda *_a, **_k: SimpleNamespace(con=SimpleNamespace(close=lambda: None)))
     monkeypatch.setattr(
-        testmon.testmon_core.TestmonData, "for_local_run", _StubTestmonData.factory(selected), raising=False
+        testmon.testmon_core.TestmonData, "for_local_run", _StubTestmonData.factory(selected, recorded), raising=False
     )
     monkeypatch.setattr(verify, "unrecorded_test_files", lambda _root, **_kwargs: unrecorded_files)
     monkeypatch.setattr(verify, "count_collected", lambda _paths, **_kwargs: unrecorded_tests)
+
+
+def test_the_estimate_counts_forced_contract_tests(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Forced contract tests count toward the admitted plan, every parametrization.
+
+    Anti-vacuity: drop ``forced_tests`` from the estimate and the count stays
+    at the one testmon-selected test while the run launches three; union the
+    forced tests into the selection and the overlap case counts three of the
+    four launches.
+    """
+    graph = SimpleNamespace(status=TestmonGraphStatus.USABLE, full_rerun_cause=None)
+    (forced,) = verify.CONTRACT_DOCUMENT_TESTS
+    _stub_affected_graph(
+        monkeypatch,
+        tmp_path,
+        selected=("tests/unit/a.py::test_one",),
+        unrecorded_files=(),
+        unrecorded_tests=0,
+        recorded=(f"{forced}[alpha]", f"{forced}[beta]", "tests/unit/b.py::test_unrelated"),
+    )
+
+    count, seconds, error, _unrecorded = verify._estimate_affected_selection(tmp_path, graph, (forced,))
+    assert (count, seconds, error) == (3, 1.5, None)
+
+    count, _seconds, error, _unrecorded = verify._estimate_affected_selection(
+        tmp_path, graph, ("tests/unit/never.py::test_missing",)
+    )
+    assert count is None and error is not None
+
+    # A forced test the affected step also selected runs twice and counts twice.
+    _stub_affected_graph(
+        monkeypatch,
+        tmp_path,
+        selected=("tests/unit/a.py::test_one", f"{forced}[alpha]"),
+        unrecorded_files=(),
+        unrecorded_tests=0,
+        recorded=(f"{forced}[beta]",),
+    )
+    count, seconds, error, _unrecorded = verify._estimate_affected_selection(tmp_path, graph, (forced,))
+    assert (count, seconds, error) == (4, 2.0, None)
+
+
+def test_an_agents_only_selection_reason_names_the_contract_document() -> None:
+    """Anti-vacuity: reuse the descriptor reason and an AGENTS-only receipt
+    claims the change included the AgentCTL descriptor."""
+    reason = verify._selection_reason("descriptor", frozenset({"AGENTS.md"}))
+    assert reason is not None and "AGENTS.md" in reason and "descriptor" not in reason
+    descriptor_reason = verify._selection_reason("descriptor", frozenset({".agentctl/project.toml", "AGENTS.md"}))
+    assert descriptor_reason is not None and "AgentCTL descriptor" in descriptor_reason
 
 
 def test_the_estimate_counts_tests_the_graph_never_recorded(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -671,7 +1012,7 @@ def test_verify_main_records_why_no_pytest_step_ran(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(verify, "build_verify_steps", capture_steps)
     monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.1, {"diagnosis": "gate_passed"}))
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
     monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
     monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
 
@@ -720,7 +1061,7 @@ def test_verify_main_routes_descriptor_diff_to_bounded_selection(
         capture_steps,
     )
     monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.1, {"diagnosis": "gate_passed"}))
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
     monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
     monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
 
@@ -760,7 +1101,7 @@ def test_affected_admission_refuses_without_launching_pytest(
     monkeypatch.setattr(
         verify,
         "_estimate_affected_selection",
-        lambda _root, _graph: (selected_count, 1.0, None, 0),
+        lambda _root, _graph, _forced=(): (selected_count, 1.0, None, 0),
     )
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
@@ -770,7 +1111,7 @@ def test_affected_admission_refuses_without_launching_pytest(
         return 0, 0.1, {}
 
     monkeypatch.setattr(verify, "_run", capture_run)
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
     monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
     monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
 
@@ -825,6 +1166,9 @@ def test_zero_exit_without_a_report_is_a_failed_pytest_step(monkeypatch: pytest.
         "devtools.verify.subprocess.run",
         lambda *_args, **_kwargs: subprocess.CompletedProcess(["pytest"], 0, stdout="", stderr=""),
     )
+    # The stubbed ``subprocess.run`` cannot answer the slot's git provenance
+    # queries; this case is about the missing report, not the checkout.
+    monkeypatch.setattr("devtools.pytest_slot._focused_worktree_provenance", lambda *_args, **_kwargs: None)
     run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
 
     exit_code, _elapsed, metadata = verify._run("pytest serial (all)", ["pytest"], run=run)
@@ -904,7 +1248,7 @@ def test_verify_persists_terminal_receipt_when_outer_deadline_sends_sigterm(
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
     monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("pytest parallel (all)", ["pytest"])])
     monkeypatch.setattr(verify, "_run", interrupt)
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 143
 
@@ -931,7 +1275,7 @@ def test_verify_emits_shared_workload_receipt_for_step_timing(
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
     monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: [("gate lint", ["ruff", "check"])])
     monkeypatch.setattr(verify, "_run", lambda *_args, **_kwargs: (0, 0.25, {"diagnosis": "gate_passed"}))
-    monkeypatch.setattr(verify, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify._main(["--quick"]) == 0
 
@@ -1390,6 +1734,22 @@ def test_rerun_selector_strips_the_xdist_group_suffix() -> None:
     assert report_nodeid_to_selector("tests/a.py::test_x") == "tests/a.py::test_x"
 
 
+def test_unavailable_pytest_counts_remain_absent_and_flakes_are_aggregated() -> None:
+    """Anti-vacuity: an empty list of executed pytest steps is not a measured zero."""
+    empty = verify._aggregate_pytest_results([], expected_step_count=0, mode="quick", exit_code=0)
+    assert empty["selected_union_count"] is None
+    assert empty["terminal_union_count"] is None
+    assert empty["flaky"] == []
+
+    aggregate = verify._aggregate_pytest_results(
+        [{"name": "pytest selected", "statistics": {}, "rerun": {"flaky": ["t::test_flaky"]}}],
+        expected_step_count=1,
+        mode="affected",
+        exit_code=0,
+    )
+    assert aggregate["flaky"] == ["t::test_flaky"]
+
+
 def test_complete_corpus_tier_traces_and_deselects_nothing() -> None:
     """The ``all`` tier must load testmon and select every collected test."""
     command = verify.build_verify_steps(quick=False, selection="all")[-1][1]
@@ -1579,7 +1939,7 @@ def test_a_failing_run_states_its_verdict_after_the_last_gate(
 
     final = capsys.readouterr().err.strip().splitlines()[-1]
     assert final == (
-        "verify: FAILED exit=1 diagnosis=gate_failed receipt=.cache/verify/runs/verify-quick-20260922/run.json"
+        f"verify: FAILED exit=1 diagnosis=gate_failed receipt={(verify.ROOT / '.cache/verify/runs/verify-quick-20260922/run.json').resolve()}"
     )
 
 
@@ -1600,7 +1960,9 @@ def test_a_passing_run_states_its_verdict_too(capsys: pytest.CaptureFixture[str]
     verify._emit(_verify_payload(0, None), use_json=False, operation=None)
 
     final = capsys.readouterr().err.strip().splitlines()[-1]
-    assert final == "verify: PASSED exit=0 receipt=.cache/verify/runs/verify-quick-20260922/run.json"
+    assert final == (
+        f"verify: PASSED exit=0 receipt={(verify.ROOT / '.cache/verify/runs/verify-quick-20260922/run.json').resolve()}"
+    )
     assert "unknown" not in final
 
 
@@ -1617,3 +1979,51 @@ def test_a_json_verdict_line_stays_off_the_machine_contract(
     captured = capsys.readouterr()
     assert json.loads(captured.out)["exit_code"] == 1
     assert captured.err.strip().splitlines()[-1].startswith("verify: FAILED exit=1")
+
+
+def test_interruption_cleanup_defers_a_second_signal() -> None:
+    """A repeated SIGTERM during gate cleanup does not escape it.
+
+    Anti-vacuity: run the cleanup without ``_signals_deferred`` and the
+    SIGTERM raised inside it reaches the installed handler, which raises.
+    """
+
+    class _RaisedError(Exception):
+        pass
+
+    def raising(_signum: int, _frame: object) -> None:
+        raise _RaisedError
+
+    previous = signal.signal(signal.SIGTERM, raising)
+    try:
+        with verify._signals_deferred():
+            os.kill(os.getpid(), signal.SIGTERM)
+        assert signal.getsignal(signal.SIGTERM) is raising
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
+def test_stopping_gates_shares_one_grace_period(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every stuck gate gets the same deadline, not ten seconds each in turn.
+
+    Anti-vacuity: wait ``timeout=10`` per process and the second wait is
+    asked for the full ten seconds again.
+    """
+    clock = [0.0]
+    waits: list[float] = []
+
+    class _Stuck:
+        pid = 0
+
+        def wait(self, timeout: float) -> int:
+            waits.append(timeout)
+            clock[0] += timeout
+            raise subprocess.TimeoutExpired("gate", timeout)
+
+    monkeypatch.setattr("devtools.verify.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("devtools.verify.os.killpg", lambda *_args: None)
+    monkeypatch.setattr(verify, "_LIVE_GATE_PROCESSES", {_Stuck(), _Stuck()})
+
+    verify._stop_gate_processes()
+
+    assert waits == [10.0, 0.0]

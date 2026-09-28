@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from contextvars import ContextVar
@@ -426,6 +427,9 @@ def _clamp_limit(limit: int | object) -> int:
     return clamp_query_limit(limit, default=10)
 
 
+_REJECTION_CODE = re.compile(r"[a-z][a-z0-9_.-]{0,63}")
+
+
 def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
     """Translate an exception raised by an MCP tool body into a typed error JSON.
 
@@ -445,6 +449,8 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
       ``detail`` set to the exception class name.
     * :class:`ArchiveWriterOwnershipError` → its typed refusal code and safe
       resident-writer identity, so callers can route the write correctly.
+    * :class:`DaemonOperationRejectedError` → the daemon's typed rejection
+      code, with its public rejection detail in ``message``.
     * Any other :class:`Exception` → ``code="internal_error"`` with ``detail``
       set to the exception class name only. The raw exception message is
       deliberately not included so the surface cannot leak credentials, file
@@ -452,6 +458,7 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
     """
     from polylogue.archive.query.expression import ExpressionCompileError
     from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError
+    from polylogue.operations.daemon_errors import DaemonOperationRejectedError
 
     if isinstance(exc, QuerySpecError | ExpressionCompileError):
         field = exc.field
@@ -516,6 +523,23 @@ def _exception_to_error_json(fn_name: str, exc: BaseException) -> str:
             message=f"{fn_name}: {exc.resident_writer or exc.code}",
             code=exc.code,
             error=exc.code,
+            detail=type(exc).__name__,
+            tool=fn_name,
+            archive_root=exc.archive_root,
+            resident_writer=exc.resident_writer,
+        )
+    elif isinstance(exc, DaemonOperationRejectedError):
+        # The resident daemon refused the request before durable acceptance
+        # and returned a typed code with a caller-facing detail on its public
+        # wire; it is the caller's error, so relay both, as the CLI does. A
+        # refusal that declared no code carries its prose in the code slot
+        # (daemon_execution keeps the message); clients key on ``code``, so
+        # that one is reported under the generic ``rejected`` token.
+        code = exc.outcome if _REJECTION_CODE.fullmatch(exc.outcome) else "rejected"
+        payload = MCPErrorPayload(
+            message=f"{fn_name}: {exc.detail}",
+            code=code,
+            error=code,
             detail=type(exc).__name__,
             tool=fn_name,
         )

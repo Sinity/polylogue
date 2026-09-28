@@ -8,7 +8,11 @@ root_markers = ["pyproject.toml", "polylogue"]
 [environment]
 kind = "nix-develop"
 command = ["nix", "develop", "--accept-flake-config", "--command"]
-inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "POLYLOGUE_PYTEST_WORKERS", "POLYLOGUE_LIFECYCLE_RECEIPT_DIR", "OPENAI_API_KEY"]
+# The files the devShell evaluation reads. Jobs enter a cached `nix
+# print-dev-env` realization keyed on them instead of copying a dirty
+# worktree into the store per job (~7-30 s after an edit, ~1 s cached).
+cache_inputs = ["flake.nix", "flake.lock", "nix"]
+inherit = ["HOME", "USER", "LANG", "TERM", "SSH_AUTH_SOCK", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "WAYLAND_DISPLAY", "DISPLAY", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME", "XDG_CACHE_HOME", "UV_CACHE_DIR", "UV_LINK_MODE", "POLYLOGUE_PYTEST_WORKERS", "POLYLOGUE_LIFECYCLE_RECEIPT_DIR", "POLYLOGUE_VERIFICATION_EVIDENCE_PATH", "OPENAI_API_KEY"]
 unset = ["PYTHONPATH", "PYTHONHOME", "VIRTUAL_ENV", "_PYTHON_SYSCONFIGDATA_NAME", "_PYTHON_HOST_PLATFORM", "PYTHONPYCACHEPREFIX"]
 require = ["POLYLOGUE_ARCHIVE_ROOT"]
 

@@ -632,6 +632,33 @@ def test_chatgpt_bundle_all_mapping_shape_drift_warns_loudly(caplog: pytest.LogC
     )
 
 
+def test_chatgpt_bundle_renamed_tree_key_still_warns(caplog: pytest.LogCaptureFixture) -> None:
+    """A renamed ``mapping`` key is the drift the warning exists for.
+
+    Anti-vacuity: gate candidacy on the literal ``mapping`` key again and these
+    records are never candidates, so the shard is dropped with no warning.
+    """
+    renamed = [
+        {
+            "id": f"renamed-{index}",
+            "title": "Neutral",
+            "create_time": 1_700_000_000.0,
+            "current_node": "root",
+            "nodes": {"root": {"id": "root", "message": None, "children": []}},
+        }
+        for index in range(6)
+    ]
+
+    with caplog.at_level("WARNING", logger="polylogue.sources.dispatch"):
+        sessions = parse_payload(Provider.CHATGPT, renamed, "shard-renamed")
+
+    assert sessions == []
+    assert any(
+        "ChatGPT bundle payload" in record.message and "6 candidate records" in record.message
+        for record in caplog.records
+    )
+
+
 def test_chatgpt_bundle_small_metadata_only_array_does_not_warn(caplog: pytest.LogCaptureFixture) -> None:
     """A short, legitimate metadata sibling array (no ``mapping`` key at
     all, e.g. ``shared_conversations.json``) must never trigger the

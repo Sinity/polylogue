@@ -71,7 +71,22 @@ def _wire_request(product: str, fields: dict[str, Any]) -> tuple[str, dict[str, 
             "idempotency_key": fields["idempotency_key"],
             "ttl_seconds": fields["ttl_seconds"],
         }
-    return f"mutation.facade.{product}", dict(fields)
+    return f"mutation.facade.{product}", {key: _wire_value(value) for key, value in fields.items()}
+
+
+def _wire_value(value: Any) -> Any:
+    """Lower a facade argument to its JSON wire shape before validation.
+
+    The declared request models validate the payload exactly as it will cross
+    the socket, where a tuple is a JSON array; the facade signatures take
+    immutable tuples (``related_sessions``, ``session_ids``) that must arrive
+    as lists or the strict ``list`` fields refuse them.
+    """
+    if isinstance(value, tuple | list):
+        return [_wire_value(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _wire_value(item) for key, item in value.items()}
+    return value
 
 
 def _adapt_existing(product: str, state: dict[str, Any]) -> tuple[FacadeProductReceipt, FacadeProductPlan]:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from polylogue.daemon.route_types import AuthPolicy, RouteKind, RouteMethod, RouteSpec, RouteStability
+from polylogue.daemon.route_types import AuthPolicy, NonReplayable, RouteKind, RouteMethod, RouteSpec, RouteStability
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -87,6 +87,8 @@ def _route(
     auth_scope: Literal["read", "events", "user_state"] = "read",
     write_gate: bool = False,
     migration_reason: str,
+    example: ExampleSpec | None = None,
+    non_replayable: NonReplayable | None = None,
 ) -> RouteSpec:
     kind, stability, auth_policy, response_contract = _ROUTE_METADATA[(method, path)]
     declaration_id = "daemon.http." + method.lower() + "." + path.strip("/").replace("/", ".").replace(":", "")
@@ -111,7 +113,7 @@ def _route(
             repair_command="devtools render openapi",
             handlers=(HandlerBinding("daemon-http", "polylogue/daemon/http.py", handler, f"{method} {path}"),),
             outputs=(OutputSpec("response", "stream" if path == "/api/events" else "json", response_contract, path),),
-            examples=(ExampleSpec("default", f"Call {method} {path}", ()),),
+            examples=(example or ExampleSpec("default", f"Call {method} {path}", ()),),
             completeness_edges=(
                 CompletenessEdge(producer, "daemon-http", "route", "polylogue/daemon/http.py"),
                 CompletenessEdge(producer, "openapi-schema", "generated-document", "docs/openapi/search.yaml"),
@@ -129,8 +131,11 @@ def _route(
         migration_reason=migration_reason,
         kind=kind,
         stability=stability,
+        non_replayable=non_replayable,
     )
 
+
+_CREDENTIAL_MUTATION = NonReplayable("mutation", "Mints or revokes a first-party browser credential.")
 
 _OPERATIONAL_REASON = (
     "The handler remains the established HTTP compatibility adapter; it does not call one fixed archive operation."
@@ -142,14 +147,25 @@ ROUTES: tuple[RouteSpec, ...] = (
         "/api/web-auth/session",
         "_handle_web_auth_bootstrap",
         migration_reason="First-party credential lifecycle is owned by the daemon credential registry.",
+        non_replayable=_CREDENTIAL_MUTATION,
     ),
     _route(
         "DELETE",
         "/api/web-auth/session",
         "_handle_web_auth_revoke",
         migration_reason="First-party credential lifecycle is owned by the daemon credential registry.",
+        non_replayable=_CREDENTIAL_MUTATION,
     ),
-    _route("GET", "/api/health/check", "_handle_health_check", migration_reason=_OPERATIONAL_REASON),
+    _route(
+        "GET",
+        "/api/health/check",
+        "_handle_health_check",
+        migration_reason=_OPERATIONAL_REASON,
+        non_replayable=NonReplayable(
+            "status-verdict",
+            "Answers 503 whenever a configured health tier raises an alert; the status code is the check result.",
+        ),
+    ),
     _route("GET", "/api/health", "_handle_health", migration_reason=_OPERATIONAL_REASON),
     _route(
         "GET",
@@ -158,6 +174,9 @@ ROUTES: tuple[RouteSpec, ...] = (
         passes_params=True,
         auth_scope="events",
         migration_reason="The daemon event bus owns polling and SSE streaming.",
+        # Without ``poll`` the route is a Server-Sent Events stream; the poll
+        # shape is the JSON projection of the same event cursor.
+        example=ExampleSpec("poll", "Poll events after the start cursor", (("poll", 1), ("since", 0))),
     ),
     _route(
         "GET",
@@ -173,19 +192,28 @@ ROUTES: tuple[RouteSpec, ...] = (
         "GET", "/api/archive-debt", "_handle_archive_debt", passes_params=True, migration_reason=_OPERATIONAL_REASON
     ),
     _route(
-        "GET", "/api/import/explain", "_handle_import_explain", passes_params=True, migration_reason=_OPERATIONAL_REASON
+        "GET",
+        "/api/import/explain",
+        "_handle_import_explain",
+        passes_params=True,
+        migration_reason=_OPERATIONAL_REASON,
+        example=ExampleSpec(
+            "source-path", "Explain archived evidence for one source path", (("path", "capture.jsonl"),)
+        ),
     ),
     _route(
         "POST",
         "/api/operation",
         "_handle_daemon_operation",
         migration_reason="The payload selects its declared operation dynamically; the HTTP endpoint is the shared dispatcher.",
+        non_replayable=NonReplayable("mutation", "The body selects any declared daemon operation, including writes."),
     ),
     _route(
         "POST",
         "/api/cli/query",
         "_handle_cli_query",
         migration_reason="The CLI query compatibility body is lowered by the daemon query adapter.",
+        non_replayable=NonReplayable("request-body", "The CLI query is carried in the POST body."),
     ),
     _route(
         "POST",
@@ -193,6 +221,7 @@ ROUTES: tuple[RouteSpec, ...] = (
         "_handle_mcp_call_log",
         write_gate=True,
         migration_reason="Bounded telemetry receipt is written by the daemon writer.",
+        non_replayable=NonReplayable("mutation", "Appends MCP call telemetry through the daemon writer."),
     ),
     _route("GET", "/api/webui/observability", "_handle_webui_observability", migration_reason=_OPERATIONAL_REASON),
     _route(
@@ -201,6 +230,7 @@ ROUTES: tuple[RouteSpec, ...] = (
         "_handle_webui_source_freshness",
         passes_params=True,
         migration_reason=_OPERATIONAL_REASON,
+        example=ExampleSpec("named-source", "Project freshness for one named source", (("source", "capture.jsonl"),)),
     ),
     _route(
         "GET",
@@ -208,6 +238,9 @@ ROUTES: tuple[RouteSpec, ...] = (
         "_handle_webui_insight",
         passes_params=True,
         migration_reason=_OPERATIONAL_REASON,
+        example=ExampleSpec(
+            "archive-coverage", "Project the archive-coverage insight panel", (("name", "archive_coverage"),)
+        ),
     ),
 )
 

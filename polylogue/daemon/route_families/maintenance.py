@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from polylogue.daemon.route_types import RouteMethod, RouteSpec, RouteStability
+from polylogue.daemon.route_types import NonReplayable, RouteMethod, RouteSpec, RouteStability
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -80,6 +80,7 @@ def _maintenance_route(
         migration_reason=migration_reason,
         kind="maintenance",
         stability=stability,
+        non_replayable=NonReplayable("mutation", "Maintenance and intake POSTs submit work to the daemon write owner."),
     )
 
 
@@ -116,9 +117,9 @@ ROUTES: tuple[RouteSpec, ...] = (
         handler="_handle_demo_augment",
         request_contract="DemoAugmentRequest",
         response_contract="DemoAugmentResult",
-        discovery_text="Apply deterministic demo augmentation through the daemon write bridge.",
+        discovery_text="Submit deterministic demo augmentation to the declared daemon operation.",
         example=ExampleSpec("default", "Apply demo augmentation", ()),
-        migration_reason="This compatibility route still applies demo writes through the bridge; the declared maintenance.demo.augment operation is not its executor.",
+        domain_operation="maintenance.demo.augment",
         stability="operational",
     ),
 )

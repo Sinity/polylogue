@@ -363,6 +363,13 @@ def record_manual_continuation_product(config: Config, child_session_id: str, pa
                        'manual-continuation', 1.0, '[]', ?)""",
             (child, parent_origin, parent_native, parent, now_ms),
         )
+        # Reuse the canonical cycle and topology projection pass so the edge
+        # cannot be accepted by this facade while its read accelerators remain
+        # stale. Unsafe cycles are quarantined by that writer.
+        from polylogue.storage.sqlite.archive_tiers.write import _resolve_session_graph
+
+        child_origin, child_native = child.split(":", 1)
+        _resolve_session_graph(index, child, child_native, child_origin)
         index.commit()
     finally:
         index.close()

@@ -38,8 +38,11 @@ from pathlib import Path
 
 import pytest
 
-from polylogue.storage.blob_gc import run_blob_gc
+from polylogue.core.enums import Origin
+from polylogue.storage.blob_gc import run_blob_gc_report
 from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 
 pytestmark = pytest.mark.uses_real_clock(
     "Blob aging uses time.time() to backdate file mtime; production GC reads file mtime, not datetime.now."
@@ -51,69 +54,18 @@ pytestmark = pytest.mark.uses_real_clock(
 # ---------------------------------------------------------------------------
 
 
-def _make_gc_db(path: Path) -> sqlite3.Connection:
-    """Create the minimum schema needed by ``run_blob_gc``."""
-    # Blob GC fails closed unless every canonical owner surface is readable.
-    # This fixture exercises an available-but-empty active index surface.
-    with sqlite3.connect(path.with_name("index.db")) as index_conn:
-        index_conn.execute("CREATE TABLE attachments (attachment_id TEXT PRIMARY KEY, blob_hash BLOB)")
-    conn = sqlite3.connect(str(path))
-    conn.row_factory = sqlite3.Row
-    conn.executescript(
-        """
-        CREATE TABLE raw_sessions (
-            raw_id TEXT PRIMARY KEY,
-            source_name TEXT NOT NULL DEFAULT '',
-            source_path TEXT NOT NULL DEFAULT '',
-            blob_hash BLOB,
-            blob_size INTEGER NOT NULL DEFAULT 0,
-            acquired_at TEXT NOT NULL DEFAULT ''
-        );
-        CREATE TABLE raw_hook_events (
-            hook_event_id TEXT PRIMARY KEY,
-            origin TEXT NOT NULL DEFAULT '',
-            native_id TEXT,
-            source_path TEXT NOT NULL DEFAULT '',
-            blob_hash BLOB
-        );
-        CREATE TABLE history_sidecars (
-            sidecar_id TEXT PRIMARY KEY
-        );
-        CREATE TABLE blob_refs (
-            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
-            ref_id TEXT NOT NULL,
-            ref_type TEXT NOT NULL CHECK(ref_type IN ('raw_payload', 'attachment', 'sidecar', 'hook_payload')),
-            source_path TEXT,
-            size_bytes INTEGER NOT NULL DEFAULT 0 CHECK(size_bytes >= 0),
-            acquired_at_ms INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (blob_hash, ref_type, ref_id)
-        );
-        -- gc_generations matches the split-file source.db DDL: typed reclaim
-        -- counters keyed by a TEXT generation_id (#1743).
-        CREATE TABLE gc_generations (
-            generation_id   TEXT PRIMARY KEY,
-            started_at_ms   INTEGER NOT NULL,
-            completed_at_ms INTEGER,
-            reclaimed_count INTEGER NOT NULL DEFAULT 0,
-            reclaimed_bytes INTEGER NOT NULL DEFAULT 0,
-            blob_namespace_marker TEXT
-        );
-        CREATE TABLE gc_generation_members (
-            generation_id TEXT NOT NULL,
-            blob_hash BLOB NOT NULL CHECK(length(blob_hash) = 32),
-            candidate_size_bytes INTEGER NOT NULL CHECK(candidate_size_bytes >= 0),
-            intent_committed_at_ms INTEGER NOT NULL CHECK(intent_committed_at_ms >= 0),
-            outcome TEXT NOT NULL DEFAULT 'pending'
-                CHECK(outcome IN ('pending', 'removed', 'reconciled_removed', 'skipped_still_live', 'failed')),
-            outcome_at_ms INTEGER CHECK(outcome_at_ms >= 0),
-            outcome_detail TEXT,
-            PRIMARY KEY (generation_id, blob_hash),
-            CHECK((outcome = 'pending') = (outcome_at_ms IS NULL))
-        );
-        """
-    )
-    conn.commit()
-    return conn
+def _make_gc_archive(root: Path) -> tuple[Path, BlobStore]:
+    """Bootstrap the production split archive that ``run_blob_gc`` reads.
+
+    GC fails closed unless every canonical owner surface exists, so a
+    hand-written minimum schema drifts silently: once GC learns a new owner
+    table the fixture's GC refuses up front and every "never deletes a live
+    blob" assertion passes without GC having run. The production bootstrap
+    carries each owner table GC resolves, and each test below also asserts GC
+    was not refused.
+    """
+    initialize_active_archive_root(root)
+    return root / "source.db", BlobStore(root / "blob")
 
 
 # ---------------------------------------------------------------------------
@@ -311,28 +263,35 @@ def test_gc_skips_blobs_with_db_reference(tmp_path: Path) -> None:
     """docs/internals.md § GC concurrency model, current-referent step:
     canonical liveness resolves the source owner's ``blob_hash``; if the row
     owns the bytes, GC skips the blob.
+
+    Anti-vacuity: the unreferenced control blob is reclaimed in the same pass,
+    so GC ran; a GC that refused or skipped the pass fails that assertion.
     """
-    blob_root = tmp_path / "blobs"
-    store = BlobStore(blob_root)
-    db_path = tmp_path / "archive.db"
-    conn = _make_gc_db(db_path)
-
-    h, _ = store.write_from_bytes(b"still-referenced")
-    conn.execute(
-        "INSERT INTO raw_sessions (raw_id, source_name, source_path, blob_hash, blob_size, acquired_at) "
-        "VALUES (?, 'claude', 'src.json', ?, 1, '2025-01-01')",
-        (h, bytes.fromhex(h)),
-    )
-    conn.commit()
-    conn.close()
-
+    source_db, store = _make_gc_archive(tmp_path / "archive")
+    with sqlite3.connect(source_db) as conn:
+        raw_id = write_source_raw_session(
+            conn,
+            origin=Origin.CODEX_SESSION,
+            source_path="/src.jsonl",
+            source_index=0,
+            native_id="still-referenced",
+            payload=b"still-referenced",
+            acquired_at_ms=1,
+        )
+        referenced = bytes(
+            conn.execute("SELECT blob_hash FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()[0]
+        ).hex()
+    store.write_from_bytes(b"still-referenced")
+    unreferenced, _ = store.write_from_bytes(b"nothing names this blob")
     # Force candidate eligibility under the MIN_AGE_S age check.
     _backdate_blobs(store)
 
-    deleted = run_blob_gc(db_path, blob_root)
+    report = run_blob_gc_report(source_db, store.root)
 
-    assert deleted == 0
-    assert store.exists(h), "GC must never delete a blob that is still referenced"
+    assert report.blocked_reason is None
+    assert report.deleted_count == 1
+    assert store.exists(referenced), "GC must never delete a blob that is still referenced"
+    assert not store.exists(unreferenced)
 
 
 def test_gc_records_a_new_generation_when_it_runs(tmp_path: Path) -> None:
@@ -345,10 +304,7 @@ def test_gc_records_a_new_generation_when_it_runs(tmp_path: Path) -> None:
     new generation row each cycle so the next cycle can apply the age
     guard against the most-recent completion timestamp.
     """
-    blob_root = tmp_path / "blobs"
-    store = BlobStore(blob_root)
-    db_path = tmp_path / "archive.db"
-    _make_gc_db(db_path).close()
+    source_db, store = _make_gc_archive(tmp_path / "archive")
 
     for cycle in range(3):
         # Plant a fresh candidate blob for each cycle so the GC
@@ -356,9 +312,10 @@ def test_gc_records_a_new_generation_when_it_runs(tmp_path: Path) -> None:
         store.write_from_bytes(f"candidate-{cycle}".encode())
         _backdate_blobs(store)
 
-        run_blob_gc(db_path, blob_root)
+        report = run_blob_gc_report(source_db, store.root)
+        assert report.blocked_reason is None
 
-        conn = sqlite3.connect(str(db_path))
+        conn = sqlite3.connect(str(source_db))
         count = conn.execute("SELECT COUNT(*) FROM gc_generations").fetchone()[0]
         latest = conn.execute(
             "SELECT completed_at_ms FROM gc_generations ORDER BY completed_at_ms DESC LIMIT 1"

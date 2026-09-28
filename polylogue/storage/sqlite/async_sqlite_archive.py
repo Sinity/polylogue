@@ -191,14 +191,6 @@ class SQLiteArchiveMixin:
         """Return the timestamp of the most recent ingestion run, or None."""
         return await self.queries.get_last_sync_timestamp()
 
-    def _session_id_query(
-        self,
-        *,
-        source_names: list[str] | None = None,
-    ) -> tuple[str, tuple[str, ...]]:
-        """Build the canonical scoped session-ID query."""
-        return self.queries.session_id_query(source_names=source_names)
-
     async def count_session_ids(
         self,
         *,

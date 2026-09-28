@@ -51,7 +51,11 @@ from polylogue.storage.sqlite.archive_tiers.embedding_write import (
     replace_message_embedding_derivation,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
+from polylogue.storage.sqlite.connection_profile import (
+    attach_database,
+    open_isolated_write_connection,
+    open_readonly_connection,
+)
 from polylogue.storage.sqlite.sqlite_vec_extension import try_load_sqlite_vec
 from polylogue.storage.sqlite.write_lease import require_write_lease
 
@@ -108,6 +112,9 @@ class EmbeddingMessageReplacement:
 
 _REQUIRED_KEY_PREFIX = "message:"
 _EXCESS_KEY_PREFIX = "orphan:"
+#: Bound parameters per session lookup; SQLite's host-parameter limit is the
+#: physical ceiling, so a larger key page is read in several statements.
+_MESSAGE_LOOKUP_CHUNK = 900
 
 
 def _message_id(key: str) -> tuple[str, bool]:
@@ -310,7 +317,7 @@ class EmbeddingDerivationAdapter:
         with open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False) as conn:
             if not table_exists(conn, "messages"):
                 return (), None
-            conn.execute("ATTACH DATABASE ? AS embeddings", (str(self._embeddings_path),))
+            attach_database(conn, self._embeddings_path, alias="embeddings")
             if not table_exists(conn, "message_embedding_refs", schema="embeddings"):
                 return (), None
             relation = archive_embeddable_messages_relation(conn, alias="desired", recipe=self._recipe)
@@ -337,6 +344,34 @@ class EmbeddingDerivationAdapter:
         keys = tuple(f"{_EXCESS_KEY_PREFIX}{row[0]}" for row in rows[:limit])
         return keys, (str(rows[limit - 1][0]) if len(rows) > limit and keys else None)
 
+    def barrier_sessions(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
+        """Map each required message key to its session for the publication barrier.
+
+        Orphan keys only retire a ref whose message left the membership, which
+        derives nothing from new content, so they are never held.
+        """
+        index_path = self._assert_frame(frame)
+        message_keys: dict[str, str] = {}
+        for key in dict.fromkeys(keys):
+            message_id, excess = _message_id(key)
+            if not excess:
+                message_keys[message_id] = key
+        if not message_keys:
+            return {}
+        sessions: dict[str, str] = {}
+        ids = tuple(message_keys)
+        with contextlib.closing(
+            open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False)
+        ) as conn:
+            for start in range(0, len(ids), _MESSAGE_LOOKUP_CHUNK):
+                chunk = ids[start : start + _MESSAGE_LOOKUP_CHUNK]
+                for message_id, session_id in conn.execute(
+                    f"SELECT message_id, session_id FROM messages WHERE message_id IN ({', '.join('?' for _ in chunk)})",
+                    chunk,
+                ):
+                    sessions[message_keys[str(message_id)]] = str(session_id)
+        return sessions
+
     def inspect(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         """Classify current refs/meta from their authoritative membership relation."""
 
@@ -348,7 +383,7 @@ class EmbeddingDerivationAdapter:
         with open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False) as index:
             embeddings_attached = self._embeddings_path.exists()
             if embeddings_attached:
-                index.execute("ATTACH DATABASE ? AS embeddings", (str(self._embeddings_path),))
+                attach_database(index, self._embeddings_path, alias="embeddings")
             has_refs = embeddings_attached and table_exists(index, "message_embedding_refs", schema="embeddings")
             has_meta = embeddings_attached and table_exists(index, "message_embeddings_meta", schema="embeddings")
             has_vectors = embeddings_attached and table_exists(index, "message_embeddings", schema="embeddings")

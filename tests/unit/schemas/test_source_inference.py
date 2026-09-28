@@ -16,7 +16,7 @@ from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.core.schema_subjects import inference_exclusion_reason
 from polylogue.schemas import source_inference as source_inference_module
 from polylogue.schemas.generation.evidence import SchemaEvidence, merge_evidence
-from polylogue.schemas.generation.workflow import generate_provider_schema_from_sources
+from polylogue.schemas.generation.workflow import build_provider_bundle_from_sources
 from polylogue.schemas.source_inference import (
     SchemaSourceInput,
     SchemaSubjectExcludedError,
@@ -51,13 +51,14 @@ def test_declared_claude_jsonl_source_reaches_evidence_schema_emission(tmp_path:
         encoding="utf-8",
     )
 
-    result = generate_provider_schema_from_sources(
+    result = build_provider_bundle_from_sources(
         "claude-code",
         source_inputs=(SchemaSourceInput("claude-code", source_root),),
         cache_path=tmp_path / "source-cache.sqlite3",
         max_workers=1,
         privacy_config=None,
-    )
+        prior_catalog=None,
+    ).result
 
     assert result.success
     assert result.sample_count > 0
@@ -1061,13 +1062,14 @@ def test_source_schema_hides_keys_in_small_content_maps(tmp_path: Path, source_k
         },
     ]
     source.write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
-    result = generate_provider_schema_from_sources(
+    result = build_provider_bundle_from_sources(
         "claude-code",
         source_inputs=(SchemaSourceInput("claude-code", source),),
         cache_path=tmp_path / "cache.sqlite3",
         max_workers=1,
         privacy_config=None,
-    )
+        prior_catalog=None,
+    ).result
     assert result.success
     assert result.schema is not None
     encoded = json.dumps(result.schema)

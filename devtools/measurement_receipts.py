@@ -4,8 +4,7 @@ Gate classification: **not a gate**. This is a place to put evidence, not a
 new obligation to produce it, and nothing schedules it.
 
 The static verification gates already own their committed evidence:
-``devtools/verify_schema_closure.py`` writes ``docs/plans/schema-closure-baseline.json``
-and ``devtools/verify_oracle_integrity.py`` writes its hermeticity baseline.
+``devtools/verify_schema_closure.py`` writes ``docs/plans/schema-closure-baseline.json``.
 Measurement evidence had no equivalent owner, so
 ``tests/benchmarks/baselines/`` held a single ``.gitkeep`` while
 ``tests/benchmarks/test_finished_build_measurement.py`` built a complete typed
@@ -75,7 +74,11 @@ class Movement:
     after: object
 
     def to_dict(self) -> dict[str, object]:
-        return {"path": self.path, "before": self.before, "after": self.after}
+        return {
+            "path": self.path,
+            "before": {"$absent": True} if self.before is _ABSENT else self.before,
+            "after": {"$absent": True} if self.after is _ABSENT else self.after,
+        }
 
     def __str__(self) -> str:
         return f"{self.path}: {self.before!r} -> {self.after!r}"
@@ -91,11 +94,21 @@ def _leaves(value: object, prefix: str = "") -> dict[str, object]:
     number moved, which is exactly the fact the recorded reason has to explain.
     """
     if isinstance(value, Mapping):
+        if not value:
+            return {prefix or ".": {"$type": "object", "$empty": True}}
         leaves: dict[str, object] = {}
         for key in value:
-            leaves.update(_leaves(value[key], f"{prefix}.{key}" if prefix else str(key)))
+            raw_key = str(key)
+            part = (
+                json.dumps(raw_key, ensure_ascii=False, separators=(",", ":"))
+                if any(c in raw_key for c in ".[]\\")
+                else raw_key
+            )
+            leaves.update(_leaves(value[key], f"{prefix}.{part}" if prefix else part))
         return leaves
     if isinstance(value, (list, tuple)):
+        if not value:
+            return {prefix or ".": {"$type": "array", "$empty": True}}
         leaves = {}
         for position, item in enumerate(value):
             leaves.update(_leaves(item, f"{prefix}[{position}]"))
@@ -110,7 +123,11 @@ def measurement_movement(before: object, after: object) -> tuple[Movement, ...]:
     movements = [
         Movement(path, old.get(path, _ABSENT), new.get(path, _ABSENT))
         for path in sorted(set(old) | set(new))
-        if old.get(path, _ABSENT) != new.get(path, _ABSENT)
+        if (type(old.get(path, _ABSENT)), old.get(path, _ABSENT))
+        != (
+            type(new.get(path, _ABSENT)),
+            new.get(path, _ABSENT),
+        )
     ]
     return tuple(movements)
 
@@ -169,7 +186,12 @@ def emit_receipt(
     directory = receipt_dir(root=root, env=env)
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{name}.json"
-    payload = {"name": name, "host": host_fingerprint(), "measurement": measurement}
+    payload = {
+        "format": "polylogue.measurement-observation.v1",
+        "name": name,
+        "host": host_fingerprint(),
+        "measurement": measurement,
+    }
     path.write_text(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
         encoding="utf-8",
@@ -178,6 +200,8 @@ def emit_receipt(
 
 
 def baseline_path(name: str, *, root: Path | None = None) -> Path:
+    if not name or Path(name).name != name or name in {".", ".."}:
+        raise MeasurementBaselineError("baseline name must be a simple filename stem")
     return (repo_root() if root is None else root) / BASELINE_DIR / f"{name}.json"
 
 
@@ -242,7 +266,7 @@ def _read_observation(path: Path) -> tuple[str | None, dict[str, object] | None,
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
         raise MeasurementBaselineError(f"{path} is not readable measurement JSON: {exc}") from exc
-    if isinstance(payload, dict) and "measurement" in payload:
+    if isinstance(payload, dict) and payload.get("format") == "polylogue.measurement-observation.v1":
         host = payload.get("host")
         return (
             str(payload["name"]) if payload.get("name") else None,
@@ -260,7 +284,7 @@ def _record(args: argparse.Namespace, root: Path) -> tuple[int, dict[str, Any]]:
         raise MeasurementBaselineError(f"no such measurement receipt: {observation}")
     emitted_name, emitted_host, measurement = _read_observation(observation)
     name = args.name or emitted_name or observation.stem
-    host = emitted_host if emitted_host is not None else host_fingerprint()
+    host = emitted_host if emitted_host is not None else {"producer": "unavailable"}
 
     target = baseline_path(name, root=root)
     existing = load_baseline(target)

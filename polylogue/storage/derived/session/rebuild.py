@@ -13,9 +13,12 @@ from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import aiosqlite
+
+if TYPE_CHECKING:
+    from polylogue.storage.derived.session.repo_observations import RepoObservation
 
 from polylogue.analysis.archive_models import (
     SessionEnrichmentPayload,
@@ -724,26 +727,6 @@ def load_marker_blocks_sync(
     )
     decode_block = bind_block_row_mapper(cursor_column_names(cursor.description))
     for row in cursor.fetchall():
-        block = decode_block(row)
-        result.setdefault(str(block.session_id), []).append(block)
-    return result
-
-
-async def load_marker_blocks_async(
-    conn: aiosqlite.Connection,
-    session_ids: Sequence[str],
-) -> dict[str, list[BlockRecord]]:
-    """Async diagnostic twin of :func:`load_marker_blocks_sync`."""
-    if not session_ids:
-        return {}
-    placeholders = ", ".join("?" for _ in session_ids)
-    result: dict[str, list[BlockRecord]] = {str(session_id): [] for session_id in session_ids}
-    cursor = await conn.execute(
-        _SESSION_INSIGHT_MARKER_BLOCK_SQL_TEMPLATE.format(placeholders=placeholders),
-        tuple(session_ids),
-    )
-    decode_block = bind_block_row_mapper(cursor_column_names(cursor.description))
-    for row in await cursor.fetchall():
         block = decode_block(row)
         result.setdefault(str(block.session_id), []).append(block)
     return result
@@ -2064,6 +2047,7 @@ async def rebuild_session_insights_async(
     reconcile_usage_rollup: bool = True,
 ) -> SessionInsightCounts:
     """Async twin of :func:`rebuild_session_insights_sync`, same usage stage."""
+    from polylogue.storage.derived.session.repo_observations import refresh_session_repos
     from polylogue.storage.sqlite.queries.session_insight_profile_writes import (
         replace_session_latency_profile,
         replace_session_profile,
@@ -2090,6 +2074,9 @@ async def rebuild_session_insights_async(
         for bundle in record_bundles:
             await replace_session_profile(conn, bundle.profile_record, transaction_depth)
             await replace_session_latency_profile(conn, bundle.latency_profile_record, transaction_depth)
+            await refresh_session_repos(
+                conn, str(bundle.session_id), cast("Sequence[RepoObservation]", bundle.repo_observations)
+            )
             # Run-projection cache tables are no longer materialized (polylogue-dab).
             # Reads fall back to source-derived CTEs when the tables are absent.
 
@@ -2127,6 +2114,17 @@ async def rebuild_session_insights_async(
             chunk_degraded_ids = chunk
             chunk_full_ids = ()
 
+        demand_placeholders = ",".join("?" * len(chunk))
+        demand_revisions = {
+            str(row[0]): int(row[1])
+            for row in await (
+                await conn.execute(
+                    f"SELECT session_id, revision FROM session_profile_demand WHERE session_id IN ({demand_placeholders})",
+                    chunk,
+                )
+            ).fetchall()
+        }
+
         record_bundles: list[SessionInsightRecordBundle] = []
         batch: SessionInsightArchiveBatch | None = None
         if chunk_degraded_ids:
@@ -2155,6 +2153,17 @@ async def rebuild_session_insights_async(
 
         chunk_profiles = _count_record_bundles(record_bundles)
         await write_record_bundles(record_bundles)
+        # Parity with rebuild_session_insights_sync: a rebuilt profile completes
+        # the exact demand revision captured before it was built, in the same
+        # transaction; a later writer's revision survives. Without this the
+        # profile stays demanded and reads ``stale`` although it is current.
+        completed_ids = {bundle.profile_record.session_id for bundle in record_bundles}
+        for demanded_session_id, expected_revision in demand_revisions.items():
+            if expected_revision > 0 and demanded_session_id in completed_ids:
+                await conn.execute(
+                    "DELETE FROM session_profile_demand WHERE session_id = ? AND revision = ?",
+                    (demanded_session_id, expected_revision),
+                )
         profile_count += chunk_profiles
         if progress_callback is not None and chunk_profiles:
             progress_callback(

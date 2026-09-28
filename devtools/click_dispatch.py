@@ -18,7 +18,10 @@ import click
 from devtools import system_exit
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
+    ForeignInterpreterError,
+    assert_interpreter_belongs_to,
     assert_polylogue_matches_checkout,
+    normalize_checkout_environment,
 )
 from devtools.command_catalog import (
     COMMAND_SPECS,
@@ -100,8 +103,13 @@ def _build_default_action_epilog(spec: CommandSpec) -> str | None:
     forward them untouched -- so they are documented here instead.
     """
     sections: list[str] = []
-    if spec.flags:
-        flag_lines = "\n".join(f"  {flag:<10} {help_text}" for flag, help_text in spec.flags)
+    if spec.flags or spec.value_options:
+        flag_lines = "\n".join(
+            [
+                *(f"  {flag:<10} {help_text}" for flag, help_text in spec.flags),
+                *(f"  {flag} {metavar:<5} {help_text}" for flag, metavar, help_text in spec.value_options),
+            ]
+        )
         sections.append(f"Options for {spec.invocation}:\n{flag_lines}")
     remainder = _build_epilog(spec)
     if remainder:
@@ -116,6 +124,13 @@ def _declared_flag_dests(spec: CommandSpec) -> list[tuple[str, str]]:
     return [(flag, flag.lstrip("-").replace("-", "_")) for flag, _help in spec.flags]
 
 
+def _declared_value_option_dests(spec: CommandSpec) -> list[tuple[str, str, str, str]]:
+    return [
+        (flag, metavar, help_text, flag.lstrip("-").replace("-", "_"))
+        for flag, metavar, help_text in spec.value_options
+    ]
+
+
 def _make_command(spec: CommandSpec) -> click.Command:
     """Create a Click command from a CommandSpec.
 
@@ -126,10 +141,14 @@ def _make_command(spec: CommandSpec) -> click.Command:
     """
     from devtools.command_catalog import COMMANDS
 
-    def callback(args: tuple[str, ...], json_flag: bool = False, **declared: bool) -> None:
+    def callback(args: tuple[str, ...], json_flag: bool = False, **declared: object) -> None:
         ctx = click.get_current_context()
         root_json = ctx.obj.get("json", False) if ctx.obj else False
         argv = [*args, *(flag for flag, dest in _declared_flag_dests(spec) if declared.get(dest))]
+        for flag, _metavar, _help_text, dest in _declared_value_option_dests(spec):
+            value = declared.get(dest)
+            if isinstance(value, str):
+                argv.extend((flag, value))
         if spec.json_flag and (json_flag or root_json):
             argv = [*argv, "--json"]
         # Resolve at call time so monkeypatching COMMANDS works (used in tests)
@@ -146,6 +165,10 @@ def _make_command(spec: CommandSpec) -> click.Command:
     ]
     for flag, dest in _declared_flag_dests(spec):
         params.append(click.Option([flag, dest], is_flag=True, help=dict(spec.flags)[flag], expose_value=True))
+    for flag, metavar, help_text, dest in _declared_value_option_dests(spec):
+        params.append(
+            click.Option([flag, dest], type=str, required=True, metavar=metavar, help=help_text, expose_value=True)
+        )
     if spec.json_flag:
         params.append(
             click.Option(
@@ -162,6 +185,10 @@ def _make_command(spec: CommandSpec) -> click.Command:
         epilog=_build_epilog(spec),
         callback=callback,
         params=params,
+        # The argparse-backed command owns its complete native help surface.
+        # Let --help pass through as an unknown option instead of letting
+        # Click shadow it with wrapper-only options.
+        context_settings={"help_option_names": []},
     )
     # Subcommands use argparse internally, so unknown options must be forwarded
     # as-is rather than rejected by Click's option parser.
@@ -281,6 +308,17 @@ def main(argv: list[str] | None = None) -> int:
     """Entry point for programmatic use of the Click-based devtools CLI."""
 
     command_argv = list(argv or [])
+    corrected = normalize_checkout_environment(_REPO_ROOT)
+    if corrected:
+        sys.stderr.write(
+            f"devtools: rebound the environment to this checkout ({_REPO_ROOT}); "
+            f"it named another: {'; '.join(corrected)}\n"
+        )
+    try:
+        assert_interpreter_belongs_to(_REPO_ROOT, context="devtools")
+    except ForeignInterpreterError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 125
     try:
         assert_polylogue_matches_checkout(_REPO_ROOT, context="devtools")
     except CheckoutImportMismatchError as exc:

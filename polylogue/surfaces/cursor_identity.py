@@ -16,6 +16,25 @@ __all__ = ["search_cursor_request_identity"]
 
 def search_cursor_request_identity(arguments: Mapping[str, object]) -> str:
     """Return a stable identity for the logical ranked-search request."""
-    canonical = {key: value for key, value in arguments.items() if key not in {"cursor", "offset", "limit"}}
+    presentation_only = {
+        "cursor",
+        "offset",
+        "limit",
+        "output",
+        "output_destination",
+        "out_path",
+        "output_format",
+        "fields",
+        "verbose",
+        "plain",
+        "no_daemon",
+        "explain_query",
+        "why",
+        "output_as_json",
+        "diagnose",
+        "stream",
+        "print_url",
+    }
+    canonical = {key: value for key, value in arguments.items() if key not in presentation_only}
     encoded = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:24]

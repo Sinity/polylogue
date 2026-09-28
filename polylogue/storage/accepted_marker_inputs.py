@@ -387,49 +387,6 @@ async def append_accepted_marker_input(
     return int(cast(tuple[int], row)[0])
 
 
-async def persist_pending_accepted_marker_input(
-    conn: _Connection,
-    batch: PreparedAcceptedMarkerInput,
-    *,
-    expected_incarnation_id: str,
-) -> None:
-    """Durably retain exact carrier bytes before the index transaction commits."""
-    _validate(batch)
-    await _assert_marker_input_not_excised(conn, batch.identity, batch.raw_id)
-    if len(expected_incarnation_id) != 36:
-        raise AcceptedMarkerInputRefusedError("pending marker carrier has an invalid index incarnation")
-    cursor = await conn.execute(
-        "SELECT payload_sha256, payload FROM accepted_marker_inputs WHERE identity = ?",
-        (batch.identity,),
-    )
-    accepted = await cursor.fetchone()
-    if accepted is not None:
-        digest, payload = cast(tuple[str, object], accepted)
-        if digest != batch.payload_sha256 or _stored_payload(payload) != batch.payload:
-            raise AcceptedMarkerInputRefusedError("accepted marker request conflicts with retained carrier")
-        return
-    cursor = await conn.execute(
-        "SELECT carrier_digest, expected_incarnation_id, payload FROM pending_accepted_marker_inputs "
-        "WHERE request_key = ?",
-        (batch.identity,),
-    )
-    row = await cursor.fetchone()
-    if row is not None:
-        digest, retained_incarnation, payload = cast(tuple[str, str, object], row)
-        if (
-            digest != batch.payload_sha256
-            or retained_incarnation != expected_incarnation_id
-            or _stored_payload(payload) != batch.payload
-        ):
-            raise AcceptedMarkerInputRefusedError("pending marker request conflicts with retained carrier")
-        return
-    await conn.execute(
-        "INSERT INTO pending_accepted_marker_inputs(request_key, raw_id, carrier_digest, "
-        "expected_incarnation_id, payload) VALUES (?, ?, ?, ?, ?)",
-        (batch.identity, batch.raw_id, batch.payload_sha256, expected_incarnation_id, batch.payload),
-    )
-
-
 async def finalize_pending_accepted_marker_input(conn: _Connection, batch: PreparedAcceptedMarkerInput) -> int:
     """Append accepted bytes and remove their pending copy in the caller's transaction."""
     _validate(batch)

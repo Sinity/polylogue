@@ -114,6 +114,12 @@ SESSION_CARRIERS: Final[dict[str, SessionCarrier]] = _carriers(
         "content-free terminal marker-carrier evidence is deliberately retained",
     ),
     SessionCarrier(
+        "raw_existence_changes",
+        CarrierReach.TOMBSTONE,
+        "the frontier-admission journal records only the deleted raw key, written by the raw_sessions "
+        "delete trigger; it is the evidence that the excised acquisition is gone",
+    ),
+    SessionCarrier(
         "raw_hook_events",
         CarrierReach.EXCISED,
         "hook payloads are addressed by (origin, session_native_id) and carry no raw row (polylogue-bhhsa)",

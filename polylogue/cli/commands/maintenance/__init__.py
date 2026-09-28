@@ -21,7 +21,7 @@ from polylogue.maintenance.declarations import MAINTENANCE_COMMAND_DECLARATIONS
 # The command table is *derived*, never transcribed: every name, submodule,
 # handler attribute, short help, and nested-group flag comes from
 # ``polylogue/maintenance/declarations.py``, whose kernel records are resolved
-# against the live checkout by ``devtools gate declaration-bindings``. Adding a
+# against the live checkout by ``tests/unit/devtools/test_declaration_binding_registries.py``. Adding a
 # maintenance command means adding one declaration, not editing this file.
 
 

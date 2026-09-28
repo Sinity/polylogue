@@ -76,6 +76,55 @@ class _OutcomeCounts:
             self.deferred += 1
 
 
+#: Bound parameters per blocking query; SQLite's host-parameter limit is the
+#: physical ceiling, so larger id sets are read in several statements.
+_BLOCKING_QUERY_CHUNK = 900
+
+
+def primary_blocking_object_ids(source_db_path: Path, object_ids: Sequence[str]) -> set[str]:
+    """Return objects whose newest accepted revision lacks an allowed receipt.
+
+    Historical revisions remain queryable as lag/debt, but cannot re-block a
+    newer confirmed revision.  ``rowid`` is a deterministic tie-breaker for
+    multiple accepted revisions staged in the same millisecond.  This is only
+    the read; whether primary mode is configured is the caller's decision.
+    """
+    ids = tuple(dict.fromkeys(str(value) for value in object_ids if value))
+    if not ids:
+        return set()
+    conn = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True, timeout=30.0)
+    try:
+        conn.execute("PRAGMA busy_timeout = 30000")
+        blocked: set[str] = set()
+        for start in range(0, len(ids), _BLOCKING_QUERY_CHUNK):
+            chunk = ids[start : start + _BLOCKING_QUERY_CHUNK]
+            rows = conn.execute(
+                f"""
+                WITH ranked AS (
+                    SELECT object_id, last_receipt_state,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY object_id
+                               ORDER BY created_at_ms DESC, rowid DESC
+                           ) AS revision_rank
+                    FROM sinex_publication_obligations
+                    WHERE object_id IN ({",".join("?" for _ in chunk)})
+                )
+                SELECT object_id
+                FROM ranked
+                WHERE revision_rank = 1
+                  AND (last_receipt_state IS NULL
+                       OR last_receipt_state NOT IN (
+                           'persisted_confirmed', 'durable_debt', 'spool_accepted_lossless'
+                       ))
+                """,
+                chunk,
+            ).fetchall()
+            blocked.update(str(row[0]) for row in rows)
+        return blocked
+    finally:
+        conn.close()
+
+
 @dataclass
 class PublicationService:
     """Stage and drain publication obligations for one source.db.
@@ -421,23 +470,6 @@ class PublicationService:
         finally:
             conn.close()
 
-    def has_due_work(self, object_ids: Sequence[str]) -> bool:
-        if self.mode is PublicationMode.OFF or not object_ids:
-            return False
-        conn = self._connect(readonly=True)
-        try:
-            return bool(
-                obligations_store.list_obligations(
-                    conn,
-                    statuses=_RETRYABLE_STATUSES,
-                    object_ids=object_ids,
-                    due_at_ms=self.clock(),
-                    limit=1,
-                )
-            )
-        finally:
-            conn.close()
-
     def unresolved_object_ids(self, object_ids: Sequence[str]) -> set[str]:
         """Return selected objects with any exact revision not fully confirmed."""
         if self.mode is PublicationMode.OFF or not object_ids:
@@ -467,37 +499,9 @@ class PublicationService:
         newer confirmed revision.  ``rowid`` is a deterministic tie-breaker for
         multiple accepted revisions staged in the same millisecond.
         """
-        if self.mode is not PublicationMode.PRIMARY or not object_ids:
+        if self.mode is not PublicationMode.PRIMARY:
             return set()
-        ids = tuple(dict.fromkeys(str(value) for value in object_ids if value))
-        if not ids:
-            return set()
-        conn = self._connect(readonly=True)
-        try:
-            rows = conn.execute(
-                f"""
-                WITH ranked AS (
-                    SELECT object_id, last_receipt_state,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY object_id
-                               ORDER BY created_at_ms DESC, rowid DESC
-                           ) AS revision_rank
-                    FROM sinex_publication_obligations
-                    WHERE object_id IN ({",".join("?" for _ in ids)})
-                )
-                SELECT object_id
-                FROM ranked
-                WHERE revision_rank = 1
-                  AND (last_receipt_state IS NULL
-                       OR last_receipt_state NOT IN (
-                           'persisted_confirmed', 'durable_debt', 'spool_accepted_lossless'
-                       ))
-                """,
-                ids,
-            ).fetchall()
-            return {str(row[0]) for row in rows}
-        finally:
-            conn.close()
+        return primary_blocking_object_ids(self.source_db_path, object_ids)
 
     def projection_blocked(self, object_ids: Sequence[str]) -> bool:
         """Whether a selected newest primary revision lacks an allowed receipt."""

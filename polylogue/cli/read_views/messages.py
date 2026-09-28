@@ -157,6 +157,10 @@ def _write_messages_file(
     from polylogue.security.secret_scan import describe_path_scan_result, scan_path_for_secret_candidates
 
     config = cast(Config, request.config())
+    # Resolve before creating the staging sibling, including links to targets
+    # in another directory, so atomic replacement follows the link's meaning.
+    if out_path.is_symlink():
+        out_path = out_path.resolve()
     windows = read_message_windows(
         config,
         session_id,
@@ -214,6 +218,8 @@ def _write_messages_file(
                 fh.write(f'  "limit": {emitted if full else limit},\n')
                 fh.write(f'  "offset": {first_offset}\n')
                 fh.write("}\n")
+            fh.flush()
+            os.fsync(fh.fileno())
     except OperationKernelError as exc:
         staged.unlink(missing_ok=True)
         from polylogue.cli.messages import message_read_failure
@@ -223,8 +229,11 @@ def _write_messages_file(
     except BaseException:
         staged.unlink(missing_ok=True)
         raise
-    os.replace(staged, out_path)
-    _fsync_directory(out_path.parent)
+    # Preserve the established meaning of a symlink destination: replace its
+    # target atomically and leave the link itself in place.
+    destination = out_path.resolve() if out_path.is_symlink() else out_path
+    os.replace(staged, destination)
+    _fsync_directory(destination.parent)
 
     notice = describe_path_scan_result(scan_path_for_secret_candidates(out_path))
     if notice is not None:

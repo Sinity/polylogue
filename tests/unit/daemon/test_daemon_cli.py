@@ -549,7 +549,7 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
         raise sqlite3.OperationalError("database is locked")
 
     with (
-        patch.object(daemon_cli, "_drain_convergence_debt_once", fake_drain),
+        patch.object(daemon_cli, "_drain_convergence_debt_backlog", fake_drain),
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",
@@ -566,45 +566,6 @@ def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path:
     assert terminals[-1]["outcome"] == "degraded"
     assert terminals[-1]["reason"] == "archive_busy"
     assert terminals[-1]["error_type"] == "OperationalError"
-
-
-def test_periodic_drive_source_catchup_waits_for_watcher_registration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Remote Drive work cannot monopolize startup ahead of local sessions."""
-    from polylogue.daemon import cli as daemon_cli
-
-    calls: list[str] = []
-
-    async def fake_run(_callback: object) -> int:
-        from polylogue.storage.sqlite.write_lease import current_write_lease
-
-        assert current_write_lease() is None
-        calls.append("drive")
-        raise asyncio.CancelledError
-
-    async def exercise() -> None:
-        watcher_registered = asyncio.Event()
-        monkeypatch.setattr(
-            daemon_cli,
-            "_run_drive_source_catchup_safely",
-            fake_run,
-        )
-        task = asyncio.create_task(
-            daemon_cli._periodic_drive_source_catchup(
-                session_profile_callback=_unused_session_profile_callback,
-                watcher_registered=watcher_registered,
-            )
-        )
-        await asyncio.sleep(0)
-        assert calls == []
-        watcher_registered.set()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-
-    asyncio.run(exercise())
-
-    assert calls == ["drive"]
 
 
 def test_spool_pending_check_ignores_terminal_cursor_states(
@@ -745,7 +706,7 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
             "daemon_write_coordinator",
             lambda: SimpleNamespace(run_sync=None),
         )
-        monkeypatch.setattr(daemon_cli, "_drain_convergence_debt_once", fake_drain)
+        monkeypatch.setattr(daemon_cli, "_drain_convergence_debt_backlog", fake_drain)
         monkeypatch.setattr(daemon_cli, "_active_index_db_path", lambda: db)
         task = asyncio.create_task(
             daemon_cli._periodic_convergence_check(
@@ -788,7 +749,7 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
     # The drain itself runs off the writer lease (polylogue-ssplv); the
     # coordinator is reached only by the admission each stage's write uses.
     with (
-        patch.object(daemon_cli, "_drain_convergence_debt_once", fake_drain),
+        patch.object(daemon_cli, "_drain_convergence_debt_backlog", fake_drain),
         patch.object(
             daemon_cli,
             "daemon_write_coordinator",
@@ -1797,7 +1758,7 @@ def test_run_daemon_services_parks_operation_recovery_on_audit_schema_mismatch(
 
     with (
         patch(
-            "polylogue.operations.mutation_transaction.recover_interrupted_operations",
+            "polylogue.operations.mutation_replay.recover_interrupted_operations",
             recover_mock,
         ),
         pytest.raises(TimeoutError),
@@ -2330,10 +2291,10 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         events.append("operation-recovery")
 
     def recording_converger(
-        stages: Iterable[ConvergenceStage], *, derivations: Iterable[object] = ()
+        stages: Iterable[ConvergenceStage], *, derivations: Iterable[object] = (), **kwargs: Any
     ) -> DaemonConverger:
         events.append("converger")
-        return DaemonConverger(stages, derivations=derivations)
+        return DaemonConverger(stages, derivations=derivations, **kwargs)
 
     async def fake_loop(name: str) -> None:
         events.append(name)
@@ -2402,7 +2363,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         stack.enter_context(patch.object(daemon_cli, "_run_drive_source_catchup_safely", fake_drive_catchup))
         stack.enter_context(patch.object(daemon_cli, "_configure_fts_automerge", fake_configure_fts_automerge))
         stack.enter_context(
-            patch("polylogue.operations.mutation_transaction.recover_interrupted_operations", fake_operation_recovery)
+            patch("polylogue.operations.mutation_replay.recover_interrupted_operations", fake_operation_recovery)
         )
         stack.enter_context(patch.object(daemon_cli, "_periodic_wal_checkpoint", lambda: fake_loop("wal")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_fts_merge", lambda: fake_loop("fts-merge")))
@@ -2435,9 +2396,6 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", lambda **_kwargs: fake_loop("health")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")))
-        stack.enter_context(
-            patch.object(daemon_cli, "_periodic_drive_source_catchup", lambda **_kwargs: fake_loop("drive"))
-        )
         stack.enter_context(
             patch(
                 "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
@@ -3280,7 +3238,6 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
             lambda **_kwargs: wait_forever(),
         ),
         patch.object(daemon_cli, "_periodic_heartbeat", wait_forever),
-        patch.object(daemon_cli, "_periodic_drive_source_catchup", wait_forever),
         patch.object(daemon_cli, "_periodic_health_check", wait_forever),
         patch.object(daemon_cli, "_periodic_db_optimize", wait_forever),
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", wait_forever),
@@ -3379,7 +3336,6 @@ def test_run_daemon_services_schema_block_skips_write_but_starts_health_check() 
         patch.object(daemon_cli, "_periodic_health_check", fake_health_check),
         patch.object(daemon_cli, "_periodic_db_optimize", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", side_effect=fail_background_work),
-        patch.object(daemon_cli, "_periodic_drive_source_catchup", side_effect=fail_background_work),
         patch("polylogue.daemon.convergence.DaemonConverger", side_effect=fail_background_work),
         patch.object(daemon_cli, "make_server", return_value=server),
         pytest.raises(RuntimeError, match="server stopped"),
@@ -3986,7 +3942,7 @@ def _daemon_startup_stubs(
     stack.enter_context(patch.object(daemon_cli, "_reconcile_blob_publications", _noop))
     stack.enter_context(patch.object(daemon_cli, "_configure_fts_automerge", _noop))
     stack.enter_context(
-        patch("polylogue.operations.mutation_transaction.recover_interrupted_operations", lambda _root: None)
+        patch("polylogue.operations.mutation_replay.recover_interrupted_operations", lambda _root: None)
     )
     stack.enter_context(patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown"))
     stack.enter_context(patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=()))
@@ -4587,7 +4543,6 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
             "_periodic_db_optimize",
             "_periodic_status_snapshot_refresh",
             "_periodic_raw_materialization_convergence",
-            "_periodic_drive_source_catchup",
         ):
             stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", lambda *_a, **_k: idle_loop()))
@@ -4669,7 +4624,7 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
     costs one identical refusal per commit and reports nothing: measured at
     head, 25 ingest wakes produced 25 refusals. The capability moves that to
     selection, where the supervisor resolves one ``skipped`` state that
-    ``supervised_service_states`` publishes.
+    ``supervised_service_snapshot`` publishes.
 
     ``embedding_orphan_reconcile`` is selected in both rows: stale embedding
     rows are debt to drain regardless, so this is a gate on one loop rather
@@ -4682,7 +4637,7 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
     """
     from polylogue.daemon import cli as daemon_cli
     from polylogue.daemon.services import ServiceState
-    from polylogue.daemon.status import supervised_service_states
+    from polylogue.daemon.status import supervised_service_snapshot
     from polylogue.daemon.supervisor import TASK_NAME_PREFIX
     from tests.infra.embedding_config import embedding_config
 
@@ -4721,7 +4676,8 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
         else:
             # The last moment the process still has a composed supervisor, so
             # the status projection is read the way a live daemon reads it.
-            projections.append(supervised_service_states())
+            snapshot = supervised_service_snapshot()
+            projections.append(None if snapshot is None else snapshot[0])
         real_setter(supervisor)
 
     with contextlib.ExitStack() as stack:
@@ -4740,7 +4696,6 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
             "_periodic_db_optimize",
             "_periodic_status_snapshot_refresh",
             "_periodic_raw_materialization_convergence",
-            "_periodic_drive_source_catchup",
         ):
             stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", lambda *_a, **_k: idle_loop()))

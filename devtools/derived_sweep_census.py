@@ -122,11 +122,13 @@ Regenerate the declaration with :func:`render_declaration`.
 from __future__ import annotations
 
 import ast
+import json
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from devtools.ast_cache import parse_path, walk_module
 from devtools.sql_statement_text import (
     HOLE,
     SQL_EXECUTION_METHODS,
@@ -207,15 +209,23 @@ _CREATE_TABLE_RE = re.compile(
 )
 _REWRITE_RE = re.compile(
     r"\b(?P<verb>UPDATE\s+OR\s+\w+|UPDATE|DELETE\s+FROM|INSERT\s+OR\s+REPLACE\s+INTO|REPLACE\s+INTO|INSERT\s+INTO)"
-    r"\s+[`\"\[]?(?P<table>[A-Za-z_][A-Za-z0-9_]*|\{\})",
+    r"\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)?[`\"\[]?(?P<table>[A-Za-z_][A-Za-z0-9_]*|\{\})",
     re.IGNORECASE,
 )
 _DO_UPDATE_RE = re.compile(r"ON\s+CONFLICT\b.*?\bDO\s+UPDATE\b", re.IGNORECASE | re.DOTALL)
 _SELECT_HEAD_RE = re.compile(r"^\s*(?:SELECT|WITH)\b", re.IGNORECASE)
-_SOURCE_TABLE_RE = re.compile(r"\b(?:FROM|JOIN)\s+[`\"\[]?([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+_SOURCE_TABLE_RE = re.compile(
+    r"\b(?:FROM|JOIN)\s+(?:[A-Za-z_][A-Za-z0-9_]*\s*\.\s*)?[`\"\[]?([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
 _WHERE_RE = re.compile(r"\bWHERE\b", re.IGNORECASE)
 _SELECTION_TERMINATOR_RE = re.compile(r"\b(?:ORDER\s+BY|GROUP\s+BY|LIMIT|RETURNING)\b", re.IGNORECASE)
 _BOUND_PARAMETER_RE = re.compile(r"\?|:[A-Za-z_][A-Za-z0-9_]*")
+_CALLER_KEY_BINDING_RE = re.compile(
+    r"\b(?:[A-Za-z_][A-Za-z0-9_]*\.)?"
+    r"(?:id|[A-Za-z_][A-Za-z0-9_]*_id)\s*(?:=|IN\s*\()\s*(?:\?|:[A-Za-z_][A-Za-z0-9_]*|\()",
+    re.IGNORECASE,
+)
 _ANY_DML_RE = re.compile(
     r"\b(?:UPDATE|DELETE\s+FROM|INSERT\s+INTO|INSERT\s+OR\s+\w+\s+INTO|REPLACE\s+INTO)\b",
     re.IGNORECASE,
@@ -250,14 +260,14 @@ class CensusObservation:
     sites: tuple[SweepSite, ...]
 
 
-def derived_table_tiers() -> dict[str, str]:
-    """Map every archive table name to its tier, from the live DDL."""
-    tiers: dict[str, str] = {}
+def derived_table_tiers() -> dict[str, frozenset[str]]:
+    """Map every archive table name to all owning tiers, from the live DDL."""
+    tiers: dict[str, set[str]] = {}
     for tier, ddl in ARCHIVE_DDL_BY_TIER.items():
         name = str(getattr(tier, "value", tier))
         for table in _CREATE_TABLE_RE.findall(ddl):
-            tiers[table] = name
-    return tiers
+            tiers.setdefault(table, set()).add(name)
+    return {table: frozenset(names) for table, names in tiers.items()}
 
 
 #: Scope verdicts, worst first. A call site that can take several statement
@@ -290,10 +300,30 @@ def _selection_region(sql: str, start: int) -> str | None:
     selection with no caller-supplied value anywhere in it.
     """
     region = sql[start:]
-    match = _WHERE_RE.search(region)
-    if match is None:
+    depth = 0
+    quote: str | None = None
+    where_end: int | None = None
+    for index, character in enumerate(region):
+        if quote is not None:
+            if character == quote:
+                quote = None
+            continue
+        if character in "'\"`":
+            quote = character
+        elif character == "(":
+            depth += 1
+        elif character == ")":
+            depth = max(0, depth - 1)
+        elif (
+            depth == 0
+            and region[index : index + 5].upper() == "WHERE"
+            and (index + 5 == len(region) or not (region[index + 5].isalnum() or region[index + 5] == "_"))
+        ):
+            where_end = index + 5
+            break
+    if where_end is None:
         return None
-    tail = region[match.end() :]
+    tail = region[where_end:]
     depth = 0
     for index, character in enumerate(tail):
         if character == "(":
@@ -320,14 +350,14 @@ def _statement_scope(sql: str, start: int) -> str:
     predicate = _selection_region(sql, start)
     if predicate is None:
         return "no_where"
-    if _BOUND_PARAMETER_RE.search(predicate):
+    if _BOUND_PARAMETER_RE.search(predicate) and _CALLER_KEY_BINDING_RE.search(predicate):
         return "bound"
     if HOLE in predicate:
         return "unresolved"
     return "state_predicate"
 
 
-def _rewrites(sql: str, tiers: Mapping[str, str]) -> list[tuple[str, str, str]]:
+def _rewrites(sql: str, tiers: Mapping[str, frozenset[str]]) -> list[tuple[str, str, str]]:
     """Return ``(table, kind, scope)`` for every derived rewrite in *sql*."""
     found: list[tuple[str, str, str]] = []
     has_do_update = bool(_DO_UPDATE_RE.search(sql))
@@ -347,18 +377,26 @@ def _rewrites(sql: str, tiers: Mapping[str, str]) -> list[tuple[str, str, str]]:
         if table == HOLE:
             found.append((HOLE, kind, _statement_scope(sql, match.start())))
             continue
-        if tiers.get(table) in DERIVED_TIERS:
+        if tiers.get(table, frozenset()) & DERIVED_TIERS:
             found.append((table, kind, _statement_scope(sql, match.start())))
     return found
 
 
-def _derived_reads(sql: str, tiers: Mapping[str, str]) -> list[tuple[str, str]]:
+def _derived_reads(sql: str, tiers: Mapping[str, frozenset[str]]) -> list[tuple[str, str]]:
     """Return ``(table, scope)`` for a query whose subject is a derived table."""
-    if not _SELECT_HEAD_RE.match(sql):
+    select = re.search(r"\bSELECT\b", sql, re.IGNORECASE)
+    if select is None:
         return []
-    scope = _statement_scope(sql, 0)
+    projection = sql[select.end() :].lstrip()
+    if projection.startswith("1") and (len(projection) == 1 or not (projection[1].isalnum() or projection[1] == "_")):
+        # Diagnostic existence probes do not yield caller-selected subjects;
+        # treating them as the row source for a later UPDATE is a false link.
+        return []
+    scope = _statement_scope(sql, select.start())
     return [
-        (table, scope) for table in dict.fromkeys(_SOURCE_TABLE_RE.findall(sql)) if tiers.get(table) in DERIVED_TIERS
+        (table, scope)
+        for table in dict.fromkeys(_SOURCE_TABLE_RE.findall(sql[select.start() :]))
+        if tiers.get(table, frozenset()) & DERIVED_TIERS
     ]
 
 
@@ -407,26 +445,45 @@ def _substitution_sites(
     ``.K``, and ``stored.K or <derived>`` supplied as the new value of ``K``.
     """
     found: list[tuple[str, str, int]] = []
-    for node in ast.walk(tree):
+    for node in walk_module(tree):
         if isinstance(node, ast.If | ast.IfExp):
             guard = _attribute_names(node.test)
-            body = node.body if isinstance(node, ast.If) else [node.body]
+            absent_in_true = isinstance(node.test, ast.Compare) and any(
+                isinstance(op, ast.Is) and isinstance(value, ast.Constant) and value.value is None
+                for op, value in zip(node.test.ops, node.test.comparators, strict=False)
+            )
+            absent_in_true |= isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not)
+            body: list[ast.AST]
+            if isinstance(node, ast.If):
+                body = list(node.body if absent_in_true else node.orelse)
+            else:
+                body = [node.body if absent_in_true else node.orelse]
             for statement in body:
                 for call in ast.walk(statement):
                     if not isinstance(call, ast.Call):
                         continue
                     for field in sorted(_substituted_fields(call) & guard):
                         found.append((scopes.get(call, "<module>"), field, call.lineno))
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "model_copy":
-            for keyword in node.keywords:
-                if keyword.arg != "update" or not isinstance(keyword.value, ast.Dict):
-                    continue
-                for key, value in zip(keyword.value.keys, keyword.value.values, strict=False):
-                    if not (isinstance(key, ast.Constant) and isinstance(key.value, str)):
-                        continue
-                    is_or_fallback = isinstance(value, ast.BoolOp) and isinstance(value.op, ast.Or)
-                    if is_or_fallback and key.value in _attribute_names(value):
-                        found.append((scopes.get(node, "<module>"), key.value, node.lineno))
+        if isinstance(node, ast.Call):
+            updates: dict[str, ast.AST] = {}
+            if isinstance(node.func, ast.Attribute) and node.func.attr == "model_copy":
+                update = next((keyword.value for keyword in node.keywords if keyword.arg == "update"), None)
+                if isinstance(update, ast.Dict):
+                    updates = {
+                        key.value: value
+                        for key, value in zip(update.keys, update.values, strict=False)
+                        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+                    }
+            elif isinstance(node.func, (ast.Attribute, ast.Name)) and (
+                node.func.attr in _SUBSTITUTION_METHODS
+                if isinstance(node.func, ast.Attribute)
+                else node.func.id == "replace"
+            ):
+                updates = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg}
+            for field, value in updates.items():
+                is_or_fallback = isinstance(value, ast.BoolOp) and isinstance(value.op, ast.Or)
+                if is_or_fallback and field in _attribute_names(value):
+                    found.append((scopes.get(node, "<module>"), field, node.lineno))
     return found
 
 
@@ -440,11 +497,10 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
 
     for path in sorted(package_root.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = parse_path(path)
         except (SyntaxError, UnicodeDecodeError):
             continue
         relative = path.relative_to(repo_root).as_posix()
-        values = string_values(tree)
         scopes = function_scopes(tree)
 
         # First pass: what each call site executes. The populations below are
@@ -455,15 +511,15 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
         reads_by_function: dict[str, set[tuple[str, str]]] = {}
         omissible_by_function: dict[str, set[tuple[str, int]]] = {}
         pending_rewrites: list[SweepSite] = []
-        module_reads_archive = False
         module_writes = False
 
-        for node in ast.walk(tree):
+        for node in walk_module(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
             if node.func.attr not in SQL_EXECUTION_METHODS or not node.args:
                 continue
             function = scopes.get(node, "<module>")
+            values = string_values(tree, scope=function)
             texts = statement_texts(node.args[0], values)
             if not texts:
                 continue
@@ -476,8 +532,6 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
             for sql in texts:
                 if _ANY_DML_RE.search(sql):
                     module_writes = True
-                if any(table in tiers for table in _SOURCE_TABLE_RE.findall(sql)):
-                    module_reads_archive = True
                 for table, kind, scope in _rewrites(sql, tiers):
                     rewrite_scopes.setdefault((table, kind), []).append(scope)
                 for table, scope in _derived_reads(sql, tiers):
@@ -488,7 +542,11 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
                 rewriting_functions.add(function)
             for (table, kind), candidates in rewrite_scopes.items():
                 scope = _worst_scope(candidates)
-                if kind not in _SELECTING_KINDS or scope == "bound":
+                if scope == "bound":
+                    continue
+                if kind not in _SELECTING_KINDS and not any(
+                    re.search(r"\bSELECT\b.*\bFROM\b", text, re.IGNORECASE | re.DOTALL) for text in texts
+                ):
                     continue
                 observation = "unresolved_rewrite_scope" if scope == "unresolved" else "unbound_rewrite"
                 pending_rewrites.append(
@@ -545,18 +603,19 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
                     )
                 )
 
-        if module_reads_archive:
-            for function, field, line in _substitution_sites(tree, scopes):
-                record(
-                    SweepSite(
-                        file=relative,
-                        function=function,
-                        subject=field,
-                        kind="read_path_substitution",
-                        scope="writing_module" if module_writes else "read_only_module",
-                        line=line,
-                    )
+        # Substitution shape is independently meaningful even when the input
+        # profile was loaded by a caller and this module contains no SQL.
+        for function, field, line in _substitution_sites(tree, scopes):
+            record(
+                SweepSite(
+                    file=relative,
+                    function=function,
+                    subject=field,
+                    kind="read_path_substitution",
+                    scope="writing_module" if module_writes else "read_only_module",
+                    line=line,
                 )
+            )
 
     return CensusObservation(sites=tuple(sorted(sites.values(), key=lambda item: item.key)))
 
@@ -624,7 +683,10 @@ def collect_violations(*, repo_root: Path, declaration_path: Path | None = None)
     if not path.is_file():
         return [{"rule": "derived_sweep_census_declaration_missing", "key": path.as_posix()}]
     declaration = load_declaration(path)
-    observation = census_package(repo_root / declaration.package, repo_root=repo_root)
+    package_root = repo_root / declaration.package
+    if declaration.package != "polylogue" or not package_root.is_dir():
+        return [{"rule": "derived_sweep_census_package_invalid", "key": declaration.package}]
+    observation = census_package(package_root, repo_root=repo_root)
 
     violations: list[dict[str, object]] = []
     for name in declaration.malformed:
@@ -736,8 +798,8 @@ _DECLARATION_HEADER = """\
 # `unclassified` means the census SAW the site, not that the site is legitimate.
 # It is the ratchet's floor: a NEW archive-wide derived sweep, or a NEW read-path
 # substitution, cannot appear undeclared, and a new one arrives at that floor.
-# Every entry below has been adjudicated; a reason that says no permitted member
-# fits is a finding, not pending work.
+# Existing classifications record adjudication. New entries are pinned as
+# unclassified until a reviewer assigns a permitted classification.
 package: polylogue
 sites:
 """
@@ -750,20 +812,31 @@ def render_declaration(
 ) -> str:
     """Render the declaration, preserving any classification already recorded."""
     known = dict(existing or {})
-    lines = [_DECLARATION_HEADER]
+    pending = any(
+        site.key not in known or known[site.key].classification == "unclassified" for site in observation.sites
+    )
+    header = _DECLARATION_HEADER
+    if not pending:
+        header = header.replace(
+            "# Existing classifications record adjudication. New entries are pinned as\n# unclassified until a reviewer assigns a permitted classification.\n",
+            "# Every entry below has been adjudicated; a reason that says no permitted member\n# fits is a finding, not pending work.\n",
+        )
+    lines = [header]
     for site in observation.sites:
         entry = known.get(site.key)
         classification = entry.classification if entry else "unclassified"
         reason = (
-            entry.reason if entry and entry.reason else "pinned by the initial census; adjudication is follow-up work"
+            entry.reason
+            if entry and entry.reason
+            else "newly visible to the census; route review is needed before classification"
         )
         lines.append(
-            f'  - file: "{site.file}"\n'
-            f'    function: "{site.function}"\n'
-            f'    subject: "{site.subject}"\n'
-            f'    kind: "{site.kind}"\n'
-            f'    scope: "{site.scope}"\n'
+            f"  - file: {json.dumps(site.file, ensure_ascii=False)}\n"
+            f"    function: {json.dumps(site.function, ensure_ascii=False)}\n"
+            f"    subject: {json.dumps(site.subject, ensure_ascii=False)}\n"
+            f"    kind: {json.dumps(site.kind, ensure_ascii=False)}\n"
+            f"    scope: {json.dumps(site.scope, ensure_ascii=False)}\n"
             f"    classification: {classification}\n"
-            f'    reason: "{reason}"\n'
+            f"    reason: {json.dumps(reason, ensure_ascii=False)}\n"
         )
     return "".join(lines)

@@ -144,6 +144,8 @@ def test_component_snapshot_metadata_keeps_collection_state_out_of_business_read
             "fingerprint": None,
             "error": "collector exceeded deadline_s=0.1",
             "last_good_at": None,
+            "completed_at": None,
+            "collection_duration_s": None,
         }
     ]
 
@@ -318,7 +320,7 @@ def test_a_detail_operation_is_named_rather_than_executed() -> None:
 # -- the daemon status payload names halted units ---------------------------
 
 
-def test_daemon_status_names_every_halted_unit_and_is_not_ok(tmp_path: Path) -> None:
+def test_daemon_status_names_every_halted_unit_and_is_not_ok(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The reported half of the halt property, on the production status route.
 
     The archive is initialized first and the payload is read **twice**. On a
@@ -332,12 +334,24 @@ def test_daemon_status_names_every_halted_unit_and_is_not_ok(tmp_path: Path) -> 
     post-halt assertion fails, because a daemon with a dead source reports
     healthy again. Executed.
     """
+    from polylogue.daemon import status as status_module
     from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
     from polylogue.daemon.status import daemon_status_payload, format_daemon_status_lines
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+    from tests.unit.daemon.test_status_unmeasured import _patch_healthy_collectors
 
     archive_root = Path(polylogue_paths.archive_root())
     initialize_active_archive_root(archive_root)
+    # An initialized but empty archive is not ok on its own: its search, raw
+    # materialization and frontier are unmeasured (#5491). Pin every collector
+    # to a measured healthy value (keeping this archive's real, healthy
+    # raw-failure lifecycle and frontier proof), so the baseline is green for
+    # a reason other than the halt under test.
+    real_raw_failure_info = status_module._raw_failure_info
+    real_frontier_info = status_module._raw_frontier_integrity_info
+    _patch_healthy_collectors(monkeypatch, archive_root)
+    monkeypatch.setattr(status_module, "_raw_failure_info", real_raw_failure_info)
+    monkeypatch.setattr(status_module, "_raw_frontier_integrity_info", real_frontier_info)
 
     assert daemon_status_payload(sources=(), include_archive_debt=False)["ok"] is True, (
         "the baseline is not green, so a not-ok answer afterwards would not be about the halt"
@@ -376,6 +390,6 @@ def test_daemon_status_with_no_halt_reports_an_empty_list(tmp_path: Path) -> Non
 
 def test_service_states_are_absent_outside_a_composed_daemon() -> None:
     """Mutation: default to ``{}`` and a one-shot CLI looks like a live daemon."""
-    from polylogue.daemon.status import supervised_service_states
+    from polylogue.daemon.status import supervised_service_snapshot
 
-    assert supervised_service_states() is None
+    assert supervised_service_snapshot() is None

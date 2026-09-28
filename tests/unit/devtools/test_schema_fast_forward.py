@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -16,6 +17,7 @@ def _seeded_connection(version: int = 1) -> sqlite3.Connection:
     conn.execute("CREATE TABLE records (value TEXT NOT NULL)")
     conn.execute("INSERT INTO records VALUES ('kept')")
     conn.execute(f"PRAGMA user_version = {version}")
+    conn.commit()
     return conn
 
 
@@ -92,6 +94,36 @@ def test_already_current_is_an_idempotent_noop() -> None:
     assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
+def test_engine_rejects_caller_owned_transaction_without_committing_it() -> None:
+    conn = _seeded_connection()
+    conn.execute("BEGIN")
+    conn.execute("INSERT INTO records VALUES ('pending')")
+    engine = SchemaFastForwardEngine((SchemaFastForwardStep(2, "ALTER TABLE records ADD COLUMN source TEXT"),))
+    with pytest.raises(SchemaFastForwardError, match="no active transaction"):
+        engine.execute(conn)
+    assert conn.in_transaction
+    assert conn.execute("SELECT count(*) FROM records").fetchone()[0] == 2
+    conn.rollback()
+
+
+def test_begin_lock_failure_uses_engine_error_type(tmp_path: Path) -> None:
+    path = tmp_path / "locked.sqlite"
+    writer = sqlite3.connect(path, timeout=0)
+    reader = sqlite3.connect(path, timeout=0)
+    writer.execute("CREATE TABLE records (value TEXT)")
+    writer.commit()
+    writer.execute("BEGIN IMMEDIATE")
+    engine = SchemaFastForwardEngine((SchemaFastForwardStep(1, "CREATE TABLE added (value TEXT)"),))
+    try:
+        with pytest.raises(SchemaFastForwardError, match="could not acquire transaction"):
+            engine.execute(reader)
+        assert reader.execute("SELECT name FROM sqlite_master WHERE name='added'").fetchone() is None
+    finally:
+        writer.rollback()
+        reader.close()
+        writer.close()
+
+
 def test_two_statements_on_one_line_both_apply() -> None:
     """Statement boundaries are SQLite's, not the author's line breaks.
 
@@ -145,3 +177,36 @@ def test_a_newline_separated_transition_still_applies() -> None:
     conn.execute("INSERT INTO records (value) VALUES ('new')")
     assert conn.execute("SELECT note FROM records WHERE value = 'new'").fetchone()[0] == "seen;"
     assert conn.execute("SELECT note FROM records WHERE value = 'kept'").fetchone()[0] == "a;b"
+
+
+@pytest.mark.parametrize(
+    "control",
+    [
+        "COMMIT;",
+        "ROLLBACK;",
+        "BEGIN;",
+        "END;",
+        "SAVEPOINT s;",
+        "RELEASE s;",
+        "-- explanation\nCOMMIT;",
+        "/* explanation */ COMMIT;",
+        "/* a */ -- b\n  /* c\n */ROLLBACK;",
+        "\ufeffCOMMIT;",
+    ],
+)
+def test_transaction_control_is_refused_before_it_runs(control: str) -> None:
+    """A step may not end or nest the engine's transaction.
+
+    Anti-vacuity: without the leading-keyword refusal a ``COMMIT`` executes,
+    commits the preceding ``ALTER`` outside the engine's rollback, and the
+    column survives the failed step.
+    """
+    conn = _seeded_connection()
+    engine = SchemaFastForwardEngine(
+        (SchemaFastForwardStep(2, f"ALTER TABLE records ADD COLUMN escaped TEXT; {control}"),),
+        tier="fixture",
+    )
+
+    with pytest.raises(SchemaFastForwardError, match="transaction control"):
+        engine.execute(conn)
+    assert "escaped" not in {row[1] for row in conn.execute("PRAGMA table_info(records)")}

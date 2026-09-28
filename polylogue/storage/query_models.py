@@ -101,9 +101,6 @@ class SessionRecordQuery:
     def with_offset(self, offset: int) -> SessionRecordQuery:
         return replace(self, offset=offset)
 
-    def for_count(self) -> SessionRecordQuery:
-        return replace(self, limit=None, offset=0)
-
     def without_unstable_semantic_filters(self) -> SessionRecordQuery:
         return replace(
             self,
@@ -111,13 +108,6 @@ class SessionRecordQuery:
             action_terms=(),
             excluded_action_terms=(),
         )
-
-    def for_search(self) -> tuple[str | None, list[str] | None]:
-        if self.origin:
-            return self.origin, None
-        if self.origins:
-            return None, list(self.origins)
-        return None, None
 
     def to_list_kwargs(self) -> SessionListQueryKwargs:
         return {

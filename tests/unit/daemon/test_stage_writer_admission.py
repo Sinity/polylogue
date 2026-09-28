@@ -13,6 +13,7 @@ import hashlib
 import sqlite3
 import threading
 from pathlib import Path
+from typing import IO
 
 from polylogue.core.stage_admission import stage_write_admission
 from polylogue.daemon.convergence import DaemonConverger
@@ -71,12 +72,12 @@ def test_drive_download_runs_with_the_writer_free(tmp_path: Path) -> None:
     writer_free_during_download: list[bool] = []
 
     class _SlowDriveClient:
-        def download_bytes(self, file_id: str) -> bytes:
+        def download_into(self, file_id: str, handle: IO[bytes]) -> None:
             # "Slow" is expressed as an observation, not a sleep: the question
             # is whether an independent publication could be admitted while
             # this request is in flight, and that is decidable right here.
             writer_free_during_download.append(writer.free_right_now())
-            return payloads[file_id]
+            handle.write(payloads[file_id])
 
     stage = make_attachment_convergence_stage(
         tmp_path / "index.db",

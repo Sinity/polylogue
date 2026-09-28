@@ -6,12 +6,11 @@ owns actuator selection and the bound prepare/authorize/execute route.
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import Any
 
 from polylogue.config import Config
 from polylogue.operations import mutation_actuators as actuators
-from polylogue.operations.archive_mutation import execute_archive_mutation
-from polylogue.operations.mutation_transaction import MutationPlan, MutationReceipt
+from polylogue.operations.mutation_transaction import MutationReceipt
 
 
 class FacadeProductRefusalError(ValueError):
@@ -109,25 +108,6 @@ def _normalize_product_fields(product: str, fields: dict[str, Any]) -> dict[str,
     return fields
 
 
-def execute_facade_product(
-    config: Config,
-    product: str,
-    **fields: Any,
-) -> tuple[MutationReceipt, MutationPlan]:
-    """Execute one named product with its operation-owned actuator contract."""
-    fields = _normalize_product_fields(product, fields)
-    actuator_type, args_type = _PRODUCTS[product]
-    actuator = actuator_type()
-    session_id = fields.get("session_id")
-    return execute_archive_mutation(
-        config,
-        actuator,
-        lambda archive: args_type(archive=archive, **fields),
-        capability=f"archive.{product}",
-        session_id=session_id if isinstance(session_id, str) else None,
-    )
-
-
 def delete_session_product(config: Config, session_id: str, *, actor: str) -> tuple[str, MutationReceipt] | None:
     """Delete a resolved session with a bound-token authorization."""
     from polylogue.config import active_archive_root
@@ -183,31 +163,6 @@ def record_work_event_product(
         )
 
 
-async def import_annotation_batch_product(
-    config: Config,
-    request: Any,
-    resolve_ref: Any,
-    *,
-    registry: Any = None,
-) -> Any:
-    """Apply one annotation import with a bounded facade ref resolver."""
-    from polylogue.annotations.importer import import_annotation_batch
-    from polylogue.config import active_archive_root
-    from polylogue.operations.archive_mutation import require_archive_write_authority
-
-    require_archive_write_authority(config, "api.import_annotation_batch")
-
-    class _ImportHandle:
-        archive_root = active_archive_root(config)
-
-        async def resolve_ref(self, ref: str) -> Any:
-            return await resolve_ref(ref)
-
-    if registry is None:
-        return await import_annotation_batch(cast(Any, _ImportHandle()), request)
-    return await import_annotation_batch(cast(Any, _ImportHandle()), request, registry=registry)
-
-
 def _to_wire(value: Any) -> Any:
     from dataclasses import asdict, is_dataclass
     from datetime import datetime
@@ -245,15 +200,13 @@ def _daemon_product(request: Any, context: Any, audit: Any, product: str) -> dic
     actuator = actuator_type()
     binding = runtime_operation_binding(actuator)
     executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
+    # ``mutation.facade.*`` is the Python API's operation family (no CLI route).
+    principal = context.principal.on_surface("api")
     with ArchiveStore.open_existing(context.archive_root, read_only=False) as archive:
         args = args_type(archive=archive, **fields)
         try:
-            preview = executor.prepare_bound_for_archive(
-                binding, args, context.principal, archive_root=context.archive_root
-            )
-            authorization = executor.authorize_bound(
-                binding, preview, context.principal, confirmation_strength="bound_token"
-            )
+            preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=context.archive_root)
+            authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
         except KeyError as exc:
             if isinstance(fields.get("session_id"), str):
                 raise FacadeProductRefusalError("session_not_found", str(fields["session_id"])) from exc
@@ -362,9 +315,7 @@ def facade_delete_session(request: Any, context: Any, audit: Any, snapshot: Any)
         actuator = actuators.SessionDeleteActuator()
         args = actuators.SessionDeleteArgs(archive=archive, session_ids=(resolved,))
         binding = runtime_operation_binding(actuator)
-        principal = MutationPrincipal(
-            actor, context.principal.capabilities, context.principal.surface, context.principal.role_label
-        )
+        principal = MutationPrincipal(actor, context.principal.capabilities, "api", context.principal.role_label)
         executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
         preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=context.archive_root)
         authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")

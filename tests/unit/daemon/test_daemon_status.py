@@ -265,7 +265,9 @@ def test_caller_payload_refresh_uses_invocation_frame(monkeypatch: pytest.Monkey
     result = get_status_snapshot_payload()
     metadata = cast(dict[str, Any], result["status_snapshot"])
     assert result.get("checked_at") != "unbound"
-    assert metadata["state"] == "stale"
+    # No coherent rich observation exists to fall back on, so the snapshot is
+    # unavailable rather than stale (#5621); the frame evidence is unchanged.
+    assert metadata["state"] == "unavailable"
     assert metadata["frame"] == "A"
     assert metadata["current_frame"] == "B"
     assert metadata["frame_error"] == "archive frame changed during status collection"
@@ -3468,6 +3470,17 @@ def _daemon_payload_for_verdict_variant(variant: str, *, collecting_status_snaps
         patch("polylogue.daemon.status.halted_unit_status", return_value=halted),
         patch("polylogue.daemon.status.periodic_loop_payload", return_value={"loops": []}),
         patch("polylogue.daemon.status_snapshot.snapshot_state_for_metrics", return_value=snapshot),
+        patch(
+            "polylogue.daemon.status.supervised_service_snapshot",
+            return_value=(
+                (
+                    {"secret_scan_sweep": "failed"},
+                    [{"service": "secret_scan_sweep", "state": "failed", "reason": "RuntimeError: boom", "at": 1.0}],
+                )
+                if variant == "failed_service"
+                else ({}, [])
+            ),
+        ),
     ):
         return cast(
             dict[str, object],
@@ -3492,6 +3505,7 @@ def test_status_refresh_verdict_ignores_previous_stale_frame() -> None:
         ("lifecycle_unavailable", False),
         ("frontier_violated", False),
         ("component_stale", False),
+        ("failed_service", False),
     ],
 )
 def test_daemon_status_payload_verdict_keeps_every_refutation(variant: str, expected_ok: bool) -> None:
@@ -3516,6 +3530,7 @@ def test_daemon_status_payload_verdict_keeps_every_refutation(variant: str, expe
         ("clean", True),
         ("halted_unit", False),
         ("stale_snapshot", False),
+        ("failed_service", False),
     ],
 )
 def test_overall_ok_verdict_agrees_across_both_status_surfaces(variant: str, expected_ok: bool) -> None:
@@ -3586,6 +3601,27 @@ def test_composed_verdict_reads_the_operands_the_composed_payload_publishes() ->
     published_frontier = cast(dict[str, object], operation_payload["raw_frontier_integrity"])
     assert published_frontier["overall_status"] == "healthy"
     assert operation_payload["ok"] is True
+
+
+def test_status_composition_preserves_runtime_collection_metadata() -> None:
+    """Pinned component values keep the runtime collector's state and age markers."""
+    from polylogue.operations.daemon_status import produce_operation_status
+
+    collection = {"state": "stale", "age_s": 42.0, "error": "collector timed out"}
+    runtime = {
+        **_daemon_payload_for_verdict_variant("clean"),
+        "component_readiness": {"search": {"collection": collection}},
+    }
+    pinned = _clean_pinned_status_payload()
+    with patch("polylogue.operations.daemon_status.produce_direct_status", return_value=pinned):
+        payload = produce_operation_status(
+            archive=cast(Any, _PinnedArchiveStub()),
+            now_ms=1_700_000_000_000,
+            runtime_status=runtime,
+        )
+
+    component_readiness = cast(dict[str, Any], payload["component_readiness"])
+    assert component_readiness["search"]["collection"] == collection
 
 
 def test_pinned_only_refutations_still_reach_the_composed_verdict() -> None:

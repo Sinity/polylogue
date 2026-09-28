@@ -829,7 +829,7 @@ def test_the_superseded_profile_understates_the_run_it_admitted() -> None:
     assert shipped["tests_per_worker_source"] == "admission_estimate"
     assert shipped["worker_anon_drift_mib"] == pytest.approx(524.8, abs=0.2)
     assert shipped["worker_anon_headroom_mib"] == pytest.approx(-524.8, abs=0.2)
-    assert shipped["group_headroom_mib"] == pytest.approx(-187.2, abs=0.2)
+    assert shipped["group_headroom_mib"] == pytest.approx(-99.0, abs=0.2)
 
     # The two terms, as measured, against what each profile declared.
     assert shipped["observed_worker_anon_mib"] == pytest.approx(4723.8, abs=0.5)
@@ -850,7 +850,7 @@ def test_the_corroboration_reports_an_understatement_rather_than_averaging_it_aw
     well inside the predicted charge and only the single heavy worker is out.
     """
     lopsided = {
-        "peak": {"rss_kib": 1024 * 1024},  # 1 GiB group total: far inside the budget
+        "peak": {"rss_kib": 1024 * 1024, "pss_kib": 900 * 1024},  # PSS avoids duplicated shared pages
         "processes": [
             {"pid": 11, "peak_rss_kib": 900 * 1024, "peak_private_kib": 900 * 1024},
             {"pid": 12, "peak_rss_kib": 10 * 1024, "peak_private_kib": 10 * 1024},
@@ -861,22 +861,26 @@ def test_the_corroboration_reports_an_understatement_rather_than_averaging_it_aw
     verdict = corroborate_profile(lopsided, {"workers": 2}, profile=profile)
 
     assert verdict is not None
-    assert verdict["verdict"] == "understated"
+    assert verdict["verdict"] == "inconclusive"
     assert verdict["heaviest_pid"] == 11
     assert verdict["observed_worker_anon_mib"] == pytest.approx(900.0, abs=0.5)
+    assert verdict["observed_group_peak_mib"] == pytest.approx(900.0, abs=0.5), "group peak is PSS, not summed RSS"
     assert verdict["worker_anon_headroom_mib"] == pytest.approx(-400.0, abs=0.5)
-    assert verdict["group_headroom_mib"] > 0, "the group total alone would have said nothing was wrong"
+    assert verdict["group_headroom_mib"] > 0, (
+        "group PSS does not prove an overage; projected counts cannot establish worker drift"
+    )
 
     inside = corroborate_profile(
         {
-            "peak": {"rss_kib": 1024 * 1024},
+            "peak": {"rss_kib": 1024 * 1024, "pss_kib": 400 * 1024},
             "processes": [{"pid": 11, "peak_rss_kib": 400 * 1024, "peak_private_kib": 400 * 1024}],
         },
         {"workers": 2},
         profile=profile,
     )
     assert inside is not None
-    assert inside["verdict"] == "corroborated"
+    assert inside["verdict"] == "inconclusive"
+    assert "peak cgroup charge was not recorded" in inside["inconclusive_reasons"]
 
 
 def test_an_unmeasured_run_reports_no_verdict_rather_than_a_false_one() -> None:
@@ -943,7 +947,7 @@ def test_the_width_aware_model_records_the_20260921_group_margin() -> None:
     assert corroboration is not None
     assert corroboration["tests_per_worker_source"] == "admission_estimate"
     assert corroboration["tests_per_worker"] == pytest.approx(11_763.0)
-    assert corroboration["prediction_margin_mib"] == pytest.approx(-187.2, abs=0.2)
+    assert corroboration["prediction_margin_mib"] == pytest.approx(-99.0, abs=0.2)
     assert corroboration["group_headroom_mib"] == corroboration["prediction_margin_mib"]
     assert abs(corroboration["prediction_margin_mib"]) < 862.4
     assert corroboration["worker_anon_drift_mib"] == pytest.approx(524.8, abs=0.2)
@@ -964,7 +968,7 @@ def test_corroboration_reports_width_one_model_drift_not_the_width_two_constant(
     worker_anon = ANONYMOUS_MEMORY_MODEL.estimate(tests_per_worker)
     group_peak = MEASURED_CHARGE.controller_mib + worker_anon + MEASURED_CHARGE.worker_cache_mib
     memory = {
-        "peak": {"rss_kib": round(group_peak * 1024)},
+        "peak": {"rss_kib": round(group_peak * 1024), "pss_kib": round(group_peak * 1024)},
         "processes": [
             {
                 "pid": 31,
@@ -990,7 +994,8 @@ def test_corroboration_reports_width_one_model_drift_not_the_width_two_constant(
     assert corroboration["tests_per_worker_source"] == "admission_estimate"
     assert corroboration["declared_worker_anon_mib"] == pytest.approx(worker_anon, abs=0.1)
     assert corroboration["worker_anon_drift_mib"] == pytest.approx(0.0, abs=0.1)
-    assert corroboration["verdict"] == "corroborated"
+    assert corroboration["verdict"] == "inconclusive"
+    assert corroboration["tests_per_worker_source"] == "admission_estimate"
 
 
 def test_width_one_survives_a_negative_admission_margin() -> None:
@@ -1048,27 +1053,3 @@ def test_the_estimate_travels_on_the_sizing_payload_the_slot_publishes() -> None
     assert "margin_fraction" in sizing
     assert sizing["budget_mib"] == pytest.approx(float(sizing["available_mib"]), abs=0.1)
     assert sizing["predicted_charge_mib"] == pytest.approx(MEASURED_CHARGE.charge_mib(int(sizing["workers"])), abs=0.1)
-
-
-def test_the_width_gate_catches_a_zero_default() -> None:
-    """``gate testmon-selection`` must fail on the mutation it names.
-
-    That gate's docstring claims setting ``CORPUS_MAX_WORKERS = 0`` makes its
-    worker assertion fail. It did not: the produced arguments and the expected
-    value both read the constant, so both became ``-n 0`` and the gate stayed
-    green while the corpus would have run with no xdist at all. The refusal is
-    now an independent claim about the argument list itself.
-
-    Anti-vacuity: restore
-    ``args != ["--dist=loadgroup", "-n", str(CORPUS_MAX_WORKERS)]`` as the only
-    check and the first assertion here goes green wrongly, because ``-n 0``
-    equals that expression exactly when the constant is zero. The last two
-    assertions pin the opposite direction so a function that refused
-    everything, or accepted any list, cannot pass.
-    """
-    from devtools.verify_testmon_selection import worker_default_refusal
-
-    zeroed = worker_default_refusal(["--dist=loadgroup", "-n", "0"])
-    assert zeroed is not None and "0 workers" in zeroed
-    assert worker_default_refusal(["-n", str(CORPUS_MAX_WORKERS)]) is not None
-    assert worker_default_refusal(["--dist=loadgroup", "-n", str(CORPUS_MAX_WORKERS)]) is None

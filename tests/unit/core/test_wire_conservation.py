@@ -24,6 +24,7 @@ import pytest
 from polylogue.core.enums import BlockType, Provider, Role
 from polylogue.schemas.pinning import PinDecision, PinSet
 from polylogue.schemas.synthetic.conservation import (
+    COVERAGE_EXTRA_KEY,
     check_conservation,
     collect_planted_values,
     excluded_paths_from_pins,
@@ -152,6 +153,62 @@ def test_value_emitted_twice_is_duplication() -> None:
     assert not result.conserved
     assert result.findings[0].verdict == "duplication"
     assert "expected 1" in result.findings[0].detail
+
+
+def test_value_also_carried_outside_the_role_is_not_duplication() -> None:
+    """A body value the wire also carries at an unannotated position may be emitted once per occurrence.
+
+    Anti-vacuity: compare against the planted count alone and the second
+    emission (the ``note`` echo) is reported as duplication.
+    """
+    payload = {"turns": [{"text": "alpha", "note": "alpha"}]}
+
+    assert check_conservation(BODY_SCHEMA, [payload], [_session("alpha", "alpha")]).conserved
+    assert not check_conservation(BODY_SCHEMA, [payload], [_session("alpha", "alpha", "alpha")]).conserved
+
+
+def test_the_wire_occurrence_budget_is_shared_across_roles() -> None:
+    """One title and one body occurrence cannot license two of each in the output.
+
+    Anti-vacuity: compare each role against the full wire count separately and
+    four emissions from two wire occurrences report as conserved.
+    """
+    schema = {
+        "type": "object",
+        "properties": {
+            "title": {"type": "string", "x-polylogue-semantic-role": "session_title"},
+            "text": {"type": "string", "x-polylogue-semantic-role": "message_body"},
+        },
+    }
+    payload = {"title": "alpha", "text": "alpha"}
+    sessions = [_session("alpha", "alpha", title="alpha"), _session(title="alpha")]
+
+    assert not check_conservation(schema, [payload], sessions).conserved
+    assert check_conservation(schema, [payload], [_session("alpha", title="alpha")]).conserved
+
+
+def test_values_under_the_coverage_extra_key_are_out_of_scope() -> None:
+    """The generator's invented key names no provider field, so nothing beneath it is conserved.
+
+    Anti-vacuity: drop the ``_is_coverage_extra_key`` skip and the planted
+    value reports as loss; skip the key even when the schema declares it and
+    the declared property's loss goes unreported.
+    """
+    schema = {
+        "type": "object",
+        "additionalProperties": {"type": "string", "x-polylogue-semantic-role": "message_body"},
+    }
+
+    result = check_conservation(schema, [{COVERAGE_EXTRA_KEY: "alpha"}], [_session()])
+
+    assert result.conserved
+    assert result.planted_count == 0
+
+    declared = {
+        "type": "object",
+        "properties": {COVERAGE_EXTRA_KEY: {"type": "string", "x-polylogue-semantic-role": "message_body"}},
+    }
+    assert not check_conservation(declared, [{COVERAGE_EXTRA_KEY: "alpha"}], [_session()]).conserved
 
 
 def test_truncated_rendering_is_not_conserved() -> None:

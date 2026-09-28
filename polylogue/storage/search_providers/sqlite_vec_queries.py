@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING
 
 import httpx
 
-from polylogue.storage.embeddings.embedding_stats import read_embedding_stats_sync
 from polylogue.storage.runtime import MessageRecord
 from polylogue.storage.search_providers.sqlite_vec_support import SqliteVecError, _serialize_f32, logger
 
@@ -303,83 +302,6 @@ class SqliteVecQueryMixin:
             except sqlite3.OperationalError as exc:
                 raise SqliteVecError(f"session {session_id!r} has no stored embeddings: {exc}") from exc
             return int(row["count"]) if row is not None else 0
-        finally:
-            self._release_connection(conn)
-
-    def query_by_provider(
-        self,
-        text: str,
-        provider: str,
-        limit: int = 10,
-    ) -> list[tuple[str, float]]:
-        """Run the provider route under managed lifecycle admission."""
-        with self._lifecycle_admission():
-            return self._query_by_provider_unlocked(text, provider, limit)
-
-    def _query_by_provider_unlocked(
-        self,
-        text: str,
-        provider: str,
-        limit: int = 10,
-    ) -> list[tuple[str, float]]:
-        """Find semantically similar messages filtered by provider (origin).
-
-        ``message_embeddings`` no longer carries a per-vector origin column
-        (it is content-addressed and shared across origins); the filter is
-        applied post-join against the current-index projection instead.
-        Over-fetches the KNN candidate pool so a narrow origin filter still
-        has enough candidates to fill ``limit`` after filtering.
-        """
-        self._ensure_vec_available()
-
-        embeddings = self._get_embeddings([text], input_type="query")
-        if not embeddings:
-            return []
-
-        query_embedding = _serialize_f32(embeddings[0])
-        fanout_k = max(limit * 5, limit, 1)
-
-        conn = self._get_connection()
-        try:
-            rows = conn.execute(
-                """
-                SELECT r.message_id AS message_id, hits.distance AS distance
-                FROM (
-                    SELECT vector_derivation_hash, distance
-                    FROM message_embeddings
-                    WHERE embedding MATCH ?
-                      AND k = ?
-                ) AS hits
-                JOIN current_embedding_messages AS r
-                  ON lower(hex(r.vector_derivation_hash)) = hits.vector_derivation_hash
-                WHERE r.origin = ?
-                ORDER BY hits.distance
-                LIMIT ?
-                """,
-                (query_embedding, fanout_k, provider, limit),
-            ).fetchall()
-            return [(row["message_id"], row["distance"]) for row in rows]
-        finally:
-            self._release_connection(conn)
-
-    def get_embedding_stats(self) -> dict[str, int | None]:
-        """Run the provider route under managed lifecycle admission."""
-        with self._lifecycle_admission():
-            return self._get_embedding_stats_unlocked()
-
-    def _get_embedding_stats_unlocked(self) -> dict[str, int | None]:
-        """Get embedding statistics.
-
-        Counts are ``None`` when the tier could not be inspected -- publishing
-        a measured 0 there would prescribe a paid re-embed of intact vectors.
-        """
-        conn = self._get_connection()
-        try:
-            embedding_stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
-            return {
-                "embedded_messages": embedding_stats.embedded_messages,
-                "pending_sessions": embedding_stats.pending_sessions,
-            }
         finally:
             self._release_connection(conn)
 

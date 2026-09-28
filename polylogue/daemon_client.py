@@ -267,7 +267,11 @@ class DaemonClient:
             # envelope. A marked refusal is a known refusal for every code,
             # not absence and never a possibly committed mutation; whitelisting
             # codes one at a time failed open into the most expensive outcome.
-            raise DaemonOperationRejectedError(str(response["error"].get("code") or "rejected"))
+            error = response["error"]
+            detail = error.get("detail")
+            raise DaemonOperationRejectedError(
+                str(error.get("code") or "rejected"), str(detail) if isinstance(detail, str) and detail else None
+            )
         try:
             return self._validate_operation_response(request, status, response)
         except DaemonOperationProtocolError as exc:
@@ -575,7 +579,7 @@ class DaemonClient:
                             continue
             if state["outcome"] not in {"accepted", "running"}:
                 result = state.get("result", state)
-                if state["outcome"] == "completed":
+                if state["outcome"] == "completed" or (operation == "ingest" and state["outcome"] == "degraded"):
                     try:
                         validate_operation_result(operation, result)
                     except RuntimeError as exc:
@@ -600,6 +604,7 @@ class DaemonClient:
                     },
                     "outcome": state["outcome"],
                     "result": result,
+                    "error": state.get("error", envelope.get("error")),
                     "accepted_reference": reference,
                     "progress": {
                         "state": state["outcome"],

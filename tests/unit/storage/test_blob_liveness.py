@@ -60,7 +60,8 @@ def test_pending_frozen_input_survives_gc_before_raw_admission(tmp_path: Path) -
     assert store.exists(blob_hash)
 
 
-def test_generation_projection_includes_exact_many_raw_edges_and_only_its_input(tmp_path: Path) -> None:
+def test_projection_keeps_every_generation_input_and_raw_edge(tmp_path: Path) -> None:
+    """Anti-vacuity (polylogue-mdtrf): a generation filter drops generation two's input."""
     root, _ = _archive(tmp_path)
     with sqlite3.connect(root / "source.db") as source:
         for generation, input_hash in (("one", b"1" * 32), ("two", b"2" * 32)):
@@ -89,9 +90,9 @@ def test_generation_projection_includes_exact_many_raw_edges_and_only_its_input(
                         raw_id="raw",
                         raw_blob_hash=b"r" * 32,
                     )
-        projection = project_live_blob_hashes(source, source_generation_id="one")
+        projection = project_live_blob_hashes(source)
         assert not projection.blockers
-        assert projection.live_hashes == frozenset({(b"1" * 32).hex(), (b"r" * 32).hex()})
+        assert {(b"1" * 32).hex(), (b"2" * 32).hex(), (b"r" * 32).hex()} <= projection.live_hashes
 
 
 def test_archives_predating_source_items_remain_inspectable(tmp_path: Path) -> None:
@@ -101,7 +102,7 @@ def test_archives_predating_source_items_remain_inspectable(tmp_path: Path) -> N
         source.execute("DROP TABLE source_item_raw_members")
         source.execute("DROP TABLE source_items")
         decision = inspect_blob_liveness(source, blob_hash.hex())
-        projection = project_live_blob_hashes(source, source_generation_id="not-present")
+        projection = project_live_blob_hashes(source)
         assert decision.state is LivenessState.UNREFERENCED
         assert not projection.blockers
 

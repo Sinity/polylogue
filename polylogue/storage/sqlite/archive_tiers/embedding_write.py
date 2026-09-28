@@ -960,24 +960,6 @@ def resolve_embedding_failure(
     return read_embedding_failure(conn, failure_id)
 
 
-def resolve_open_embedding_failures_for_session(
-    conn: sqlite3.Connection, *, session_id: str, resolved_at_ms: int | None = None
-) -> int:
-    """Preserve prior failures while marking a later successful embedding as resolution."""
-
-    now_ms = int(time.time() * 1000) if resolved_at_ms is None else resolved_at_ms
-    with conn:
-        cursor = conn.execute(
-            """
-            UPDATE embedding_failures
-            SET lifecycle_state = 'resolved', updated_at_ms = ?, resolved_at_ms = ?, resolution_action = 'embedded'
-            WHERE session_id = ? AND lifecycle_state IN ('retryable', 'terminal')
-            """,
-            (now_ms, now_ms, session_id),
-        )
-    return max(0, cursor.rowcount)
-
-
 def list_active_embedding_failures(conn: sqlite3.Connection, *, limit: int = 25) -> tuple[ArchiveEmbeddingFailure, ...]:
     """Return bounded current failure identities for status and agent surfaces."""
 
@@ -1146,7 +1128,6 @@ __all__ = [
     "record_embedding_failure",
     "publish_embedding_attempt_window",
     "resolve_embedding_failure",
-    "resolve_open_embedding_failures_for_session",
     "supersede_embedding_attempt",
     "upsert_message_embedding",
     "upsert_message_embeddings",

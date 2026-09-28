@@ -181,3 +181,32 @@ def test_excised_unconsumed_carrier_cannot_be_delivered(tmp_path: Path) -> None:
     with sqlite3.connect(user_db) as user:
         assert user.execute("SELECT COUNT(*) FROM assertions").fetchone() == (0,)
         assert user.execute("SELECT COUNT(*) FROM accepted_marker_delivery_cursor").fetchone() == (0,)
+
+
+def test_primary_barrier_holds_a_carrier_whose_session_awaits_publication(tmp_path: Path) -> None:
+    """Marker lowering waits for the carrier's sessions like every session-derived domain.
+
+    Anti-vacuity (polylogue-wtfyv review): without ``barrier_sessions`` the kernel
+    ignores the barrier for this domain and lowers the unpublished session's
+    markers into user.db.
+    """
+    from polylogue.daemon.derivation import DerivationFrame, DerivationRegistry, Outcome, PendingReason, converge
+
+    source_db = tmp_path / "source.db"
+    user_db = tmp_path / "user.db"
+    _new_user_tier(user_db)
+    _append_source_batch(source_db, raw_id="held", candidate=_candidate_record("::note: waits", message_id="m1"))
+    adapter = _adapter(source_db, user_db)
+    frame = DerivationFrame(archive_root=str(tmp_path), source_revision="r1")
+
+    held = converge(DerivationRegistry([adapter]), frame, barrier=lambda sessions: {"source:held"} & set(sessions))
+
+    assert held.done == 0
+    assert [(outcome.outcome, outcome.reason) for outcome in held.outcomes] == [
+        (Outcome.PENDING, PendingReason.BLOCKED)
+    ]
+    with sqlite3.connect(user_db) as user:
+        assert user.execute("SELECT COUNT(*) FROM assertions").fetchone()[0] == 0
+
+    released = converge(DerivationRegistry([adapter]), frame, barrier=lambda sessions: set())
+    assert released.done == 1

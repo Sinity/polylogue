@@ -12,6 +12,7 @@ from collections.abc import Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Literal, cast, get_args
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope
@@ -737,13 +738,13 @@ def write_source_raw_session(
         conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
+                raw_id, origin, capture_mode, native_id, source_path, canonical_source_path, source_index, blob_hash,
                 blob_size, acquired_at_ms, file_mtime_ms, parsed_at_ms, parse_error,
                 validated_at_ms, validation_status, validation_error, validation_drift_count,
                 validation_mode, detection_warnings_json, logical_source_key, revision_kind,
                 source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
                 append_end_offset, acquisition_generation, revision_authority
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(raw_id) DO NOTHING
             """,
             (
@@ -752,6 +753,7 @@ def write_source_raw_session(
                 require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None,
                 native_id,
                 source_path,
+                str(Path(source_path).resolve()),
                 source_index,
                 blob_hash,
                 blob_size,
@@ -1113,11 +1115,11 @@ def write_source_raw_session_blob_ref(
         conn.execute(
             """
             INSERT INTO raw_sessions (
-                raw_id, origin, capture_mode, native_id, source_path, source_index, blob_hash,
+                raw_id, origin, capture_mode, native_id, source_path, canonical_source_path, source_index, blob_hash,
                 blob_size, acquired_at_ms, file_mtime_ms, logical_source_key, revision_kind,
                 source_revision, predecessor_source_revision, predecessor_raw_id, baseline_raw_id, append_start_offset,
                 append_end_offset, acquisition_generation, revision_authority
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(raw_id) DO NOTHING
             """,
             (
@@ -1126,6 +1128,7 @@ def write_source_raw_session_blob_ref(
                 require_vocabulary(capture_mode, Provider, field="capture_mode") if capture_mode is not None else None,
                 native_id,
                 source_path,
+                str(Path(source_path).resolve()),
                 source_index,
                 blob_hash,
                 blob_size,

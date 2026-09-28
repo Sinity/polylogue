@@ -8,9 +8,8 @@ catch is a *new* surface, or a future edit to an existing one, quietly calling
 a call would still return the right ids for a first page -- so the differential
 would stay green while that surface silently lost snapshot binding.
 
-This module is that guard. It is an AST census over the production surface
-packages, in the same shape as the controlled-read boundary guard
-(``tests/unit/archive/query/test_read_surface_control.py``).
+This module is that guard: an AST census over the production surface
+packages.
 
 Anti-vacuity: re-split the route -- point the CLI, MCP or HTTP transcript
 window back at ``get_messages_paginated`` -- and
@@ -114,6 +113,33 @@ def test_the_route_validates_the_epoch_on_every_resume(monkeypatch: pytest.Monke
 
     with pytest.raises(QueryContinuationStaleError):
         bind_snapshot(object(), transaction)
+
+
+def test_continuation_can_narrow_final_window_without_losing_snapshot_binding() -> None:
+    from polylogue.archive.query.transaction import (
+        QueryContinuation,
+        QueryContinuationInvalidError,
+        QueryTransactionRequest,
+    )
+    from polylogue.operations.session_contracts import SessionRead
+    from polylogue.operations.transcript_window import frame_request
+
+    original = QueryTransactionRequest(
+        operation="sessions.read",
+        arguments={"ref": "session:x", "message_role": [], "message_type": None, "material_origin": []},
+        page_size=200,
+        offset=200,
+        projection="session-owner-v1",
+        stable_order="position",
+    ).with_archive_epoch("archive:v1:pinned")
+    token = QueryContinuation(original, "result:abc123").encode()
+    narrowed, transaction = frame_request(SessionRead(ref="session:x", limit=20, continuation=token))
+    assert narrowed.limit == 20
+    assert transaction.page_size == 20
+    assert transaction.offset == 200
+    assert transaction.archive_epoch == "archive:v1:pinned"
+    with pytest.raises(QueryContinuationInvalidError, match="cannot widen"):
+        frame_request(SessionRead(ref="session:x", limit=201, continuation=token))
 
 
 def test_a_fresh_window_is_bound_to_the_snapshot_it_was_composed_against(

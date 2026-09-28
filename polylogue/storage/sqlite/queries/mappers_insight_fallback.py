@@ -198,19 +198,6 @@ def _row_text_tuple(
     return _fallback_text_tuple(fallback_payload.get(fallback_key))
 
 
-def _row_int_dict(
-    row: sqlite3.Row,
-    column: str,
-    fallback_payload: FallbackPayloadContainer,
-    *,
-    fallback_key: str,
-) -> dict[str, int]:
-    parsed = _parse_json(_row_get(row, column))
-    if parsed is not None:
-        return _fallback_int_dict(parsed)
-    return _fallback_int_dict(fallback_payload.get(fallback_key))
-
-
 def _fallback_text(value: JSONValue | bytes | bytearray) -> str | None:
     if value is None:
         return None
@@ -240,18 +227,6 @@ def _fallback_text_tuple(
     if not isinstance(value, Iterable) or isinstance(value, str | bytes | Mapping):
         return ()
     return tuple(str(item) for item in value if item is not None)
-
-
-def _fallback_dict_tuple(
-    value: JSONValue | list[JSONValue] | tuple[JSONValue, ...] | bytes | bytearray,
-) -> tuple[FallbackPayload, ...]:
-    if not isinstance(value, Iterable) or isinstance(value, str | bytes | Mapping):
-        return ()
-    items: list[FallbackPayload] = []
-    for item in value:
-        if isinstance(item, Mapping):
-            items.append(json_document(dict(item)))
-    return tuple(items)
 
 
 def _fallback_int_dict(value: JSONValue | bytes | bytearray | Mapping[str, JSONValue]) -> dict[str, int]:

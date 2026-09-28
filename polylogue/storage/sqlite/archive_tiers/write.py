@@ -60,6 +60,7 @@ from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerAmbiguityError
 from polylogue.core.sources import origin_from_provider
+from polylogue.core.sqlite_scratch import connect_scratch_database
 from polylogue.core.timestamp_authority import producer_timestamp_flags, session_evidence_timestamps
 from polylogue.core.timestamps import parse_timestamp, to_epoch_ms
 from polylogue.core.types import AttachmentDirection, LineageInheritance, require_literal
@@ -277,7 +278,7 @@ def _attachment_availability(
     return resolve_attachment_availability(
         blob_hash=blob_hash,
         acquisition_status=acquisition_status,
-        verify=store.verify,
+        verify=store.verify_for_read,
         exists=store.exists,
         generation_id=generation_id,
     )
@@ -6236,6 +6237,7 @@ def _write_parent_links(
     duplicate_native_ids: frozenset[str] = frozenset(),
 ) -> None:
     source = messages.messages if isinstance(messages, _MessageTail) else messages
+    updates = _ParentLinkUpdates(conn)
     if isinstance(source, SqliteMessageSink):
         disk_index = _DiskMessageEventIndex(source.path.parent)
         try:
@@ -6258,19 +6260,17 @@ def _write_parent_links(
                 if parent_message_id is None and message.parent_message_position is not None:
                     parent_message_id = disk_index.boundary_message_id(message.parent_message_position)
                 if parent_message_id is not None:
-                    conn.execute(
-                        "UPDATE messages SET parent_message_id = ? WHERE message_id = ?",
-                        (
-                            parent_message_id,
-                            _message_id(
-                                session_id,
-                                message,
-                                fallback_position,
-                                content_identities=content_identities,
-                                duplicate_native_ids=duplicate_native_ids,
-                            ),
+                    updates.add(
+                        parent_message_id,
+                        _message_id(
+                            session_id,
+                            message,
+                            fallback_position,
+                            content_identities=content_identities,
+                            duplicate_native_ids=duplicate_native_ids,
                         ),
                     )
+            updates.flush()
         finally:
             disk_index.close()
         return
@@ -6304,23 +6304,43 @@ def _write_parent_links(
             parent_message_id = by_message_position.get(message.parent_message_position)
         if parent_message_id is None:
             continue
-        conn.execute(
-            """
-            UPDATE messages
-            SET parent_message_id = ?
-            WHERE message_id = ?
-            """,
-            (
-                parent_message_id,
-                _message_id(
-                    session_id,
-                    message,
-                    fallback_position,
-                    content_identities=content_identities,
-                    duplicate_native_ids=duplicate_native_ids,
-                ),
+        updates.add(
+            parent_message_id,
+            _message_id(
+                session_id,
+                message,
+                fallback_position,
+                content_identities=content_identities,
+                duplicate_native_ids=duplicate_native_ids,
             ),
         )
+    updates.flush()
+
+
+class _ParentLinkUpdates:
+    """Parent-link updates applied in bounded ``executemany`` batches.
+
+    One statement per message was a Python-to-SQLite round trip per row on
+    the writer; each message's update is independent of every other's, so
+    batching changes only the cost, and the batch bound keeps memory flat
+    for a whale session.
+    """
+
+    _BATCH = 4096
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self._rows: list[tuple[str, str]] = []
+
+    def add(self, parent_message_id: str, message_id: str) -> None:
+        self._rows.append((parent_message_id, message_id))
+        if len(self._rows) >= self._BATCH:
+            self.flush()
+
+    def flush(self) -> None:
+        if self._rows:
+            self._conn.executemany("UPDATE messages SET parent_message_id = ? WHERE message_id = ?", self._rows)
+            self._rows = []
 
 
 @dataclass(frozen=True, slots=True)
@@ -7691,22 +7711,6 @@ def _refresh_thread(conn: sqlite3.Connection, root_session_id: str) -> None:
     del conn, root_session_id
 
 
-def _root_ids(conn: sqlite3.Connection, session_ids: set[str]) -> set[str]:
-    root_ids: set[str] = set()
-    for session_id in session_ids:
-        row = conn.execute(
-            """
-            SELECT COALESCE(root_session_id, session_id)
-            FROM sessions
-            WHERE session_id = ?
-            """,
-            (session_id,),
-        ).fetchone()
-        if row is not None and row[0]:
-            root_ids.add(str(row[0]))
-    return root_ids
-
-
 def _next_session_event_position(conn: sqlite3.Connection, session_id: str) -> int:
     row = conn.execute(
         """
@@ -7977,7 +7981,7 @@ class _DiskMessageEventIndex(Mapping[str, str]):
 
     def __init__(self, directory: Path) -> None:
         self._scratch = tempfile.TemporaryDirectory(prefix="polylogue-event-owners-", dir=directory)
-        self._conn = sqlite3.connect(Path(self._scratch.name) / "owners.db")
+        self._conn = connect_scratch_database(Path(self._scratch.name) / "owners.db")
         self._conn.execute("CREATE TABLE owner (provider_id TEXT PRIMARY KEY, message_id TEXT NOT NULL) WITHOUT ROWID")
         self._conn.execute("CREATE TABLE boundary (position INTEGER PRIMARY KEY, message_id TEXT NOT NULL)")
 
@@ -9168,7 +9172,7 @@ def _assert_unique_message_coordinates(
         if isinstance(source, SqliteMessageSink):
             with (
                 tempfile.TemporaryDirectory(prefix="polylogue-coordinates-", dir=source.path.parent) as scratch,
-                sqlite3.connect(Path(scratch) / "coordinates.db") as index,
+                closing(connect_scratch_database(Path(scratch) / "coordinates.db")) as index,
             ):
                 index.execute(
                     "CREATE TABLE coordinate (position INTEGER NOT NULL, variant_index INTEGER NOT NULL, "
@@ -12153,7 +12157,7 @@ class _DiskDuplicateNativeIds(frozenset[str]):
         # The prepared context moves from the read-only preparation thread to
         # the writer, then may be released by a third thread. Every access to
         # this shared handle, including close, is serialized by _lock.
-        self._conn: sqlite3.Connection | None = sqlite3.connect(
+        self._conn: sqlite3.Connection | None = connect_scratch_database(
             Path(self._scratch.name) / "native-ids.db", check_same_thread=False
         )
         self._conn.execute("CREATE TABLE ids (native_id TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID")

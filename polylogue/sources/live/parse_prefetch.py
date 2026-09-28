@@ -689,12 +689,16 @@ class LiveParseStage:
                     self._validate_attempt_result(result, attempt_directory)
                     result = replace(result, attempt_directory=attempt_directory)
                 except (OSError, ValueError) as exc:
+                    # A worker that wrote outside its attempt directory is a
+                    # deterministic defect: fail the path visibly instead of
+                    # deferring it into an endless retry. Only an OS error
+                    # while checking may clear on a later pass.
                     result = LivePathPreparation(
                         None,
                         None,
                         None,
-                        f"worker artifact ownership mismatch: {type(exc).__name__}"[:500],
-                        deferred=True,
+                        f"worker artifact ownership mismatch: {type(exc).__name__}: {exc}"[:500],
+                        deferred=isinstance(exc, OSError),
                     )
                     self._remove_attempt_directory(attempt_directory)
             else:

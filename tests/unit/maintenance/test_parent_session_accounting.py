@@ -26,9 +26,7 @@ produces them -- they are the durable damage the census exists to report:
 * ``source_unavailable`` -- a retained ``raw_sessions`` row whose bytes are
   gone.  No production route reaches it: every raw-deleting route
   (``cleanup_superseded_raw_snapshots``, ``apply_session_excision``) removes
-  the ``raw_sessions`` row with the ref, and
-  ``prune_orphan_blob_reference_debt`` explicitly skips any ref whose
-  ``ref_id`` still has a ``raw_sessions`` row.  The fixture therefore removes
+  the ``raw_sessions`` row with the ref.  The fixture therefore removes
   the export file and the ``blob_refs`` row after acquisition, which is the
   loss event itself, not a fabricated census row.
 """

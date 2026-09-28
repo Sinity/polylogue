@@ -1,0 +1,17 @@
+{
+  "provider": "chatgpt",
+  "pins": [
+    {
+      "path": "$.id",
+      "role": "session_title",
+      "action": "reject",
+      "reason": "The conversation id is an identifier, stored as the provider session id; it is never a title."
+    },
+    {
+      "path": "$.body",
+      "role": "message_body",
+      "action": "reject",
+      "reason": "body/comments/labels/number/state entered the conversation schema from non-conversation JSON documents in the source frontier; ChatGPT conversation text lives under mapping."
+    }
+  ]
+}

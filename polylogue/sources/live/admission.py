@@ -167,14 +167,6 @@ class AdmissionState:
         self._released = True
         return receipt
 
-    def fail_retryably(
-        self,
-        diagnostic: str,
-        *,
-        disposition: AdmissionDisposition = AdmissionDisposition.RETRYABLE_FAILURE,
-    ) -> AdmissionReceipt:
-        return self.finish(disposition, diagnostic=diagnostic, retryable=True)
-
 
 @dataclass(frozen=True, slots=True)
 class AdmissionUnit:

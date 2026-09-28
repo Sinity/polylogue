@@ -18,6 +18,7 @@ from polylogue.daemon.write_coordinator import (
     DaemonWriteThreadBridge,
     daemon_write_lease_active,
 )
+from polylogue.sources.revision_backfill import validate_frozen_source_authority
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -184,9 +185,181 @@ async def test_paused_raw_preparation_does_not_hold_writer_for_unrelated_publica
             == "published"
         )
         release.set()
-        assert (await asyncio.wait_for(task, timeout=3.0)).done == 1
+        # The property is the unrelated writer above publishing within 1s
+        # while compute is paused. Completion only has to happen: since #5565
+        # retained preparation runs in a spawned worker process, whose start
+        # and replay take several seconds on a loaded host, so this bound is
+        # a hang guard, not a latency budget.
+        assert (await asyncio.wait_for(task, timeout=60.0)).done == 1
     finally:
         release.set()
         if not task.done():
             await task
+        await _shutdown(compute, coordinator)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("envelope_byte_classified", [False, True])
+async def test_multi_session_claude_code_raw_settles_every_session(
+    tmp_path: Path, envelope_byte_classified: bool
+) -> None:
+    """One retained Claude Code file carrying two sessionIds settles, not retries.
+
+    Anti-vacuity: requiring the pending-raw tip artifact to yield exactly one
+    session raises a retryable preparation error, leaving the raw pending.
+    ``envelope_byte_classified`` starts from the state an earlier derivation
+    left behind (the pending envelope byte-proven with itself as baseline);
+    checking the member applications against that envelope's chain columns
+    reports the settled raw stale forever.
+    """
+    bootstrap_archive_root(tmp_path)
+    records = [
+        {
+            "type": "user",
+            "uuid": f"{session}-u1",
+            "sessionId": session,
+            "timestamp": f"2026-07-01T10:00:0{index}Z",
+            "message": {"role": "user", "content": f"hello from {session}"},
+        }
+        for index, session in enumerate(("multi-alpha", "multi-beta"))
+    ]
+    payload = b"".join(json.dumps(record).encode() + b"\n" for record in records)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        raw_id = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=payload,
+            source_path="multi-session.jsonl",
+            acquired_at_ms=1,
+            post_parse=True,
+        )
+        if envelope_byte_classified:
+            (pending_key,) = archive.pending_raw_revision_logical_keys()
+            assert archive.classify_raw_revision_cohort_for_rebuild_repair(pending_key).accepted_raw_ids == (raw_id,)
+    owner, compute, coordinator = await _owner(tmp_path)
+    try:
+        # A multi-session raw first publishes its parser census (pending,
+        # binding moved), then settles; fair intake repeats exactly this call.
+        reports = []
+        for _attempt in range(4):
+            report = await owner.converge_raw_id(raw_id)
+            reports.append(report)
+            assert report.failed == 0, report.outcomes
+            if report.done:
+                break
+        assert reports[-1].done == 1, [item.outcomes for item in reports]
+        settled = await owner.converge_raw_id(raw_id)
+        assert settled.failed == settled.pending == 0, settled.outcomes
+        with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            assert archive.index_connection is not None
+            assert sorted(
+                str(row[0])
+                for row in archive.index_connection.execute(
+                    "SELECT session_id FROM sessions WHERE raw_id = ?", (raw_id,)
+                )
+            ) == ["claude-code-session:multi-alpha", "claude-code-session:multi-beta"]
+            assert archive.source_connection is not None
+            assert (
+                archive.source_connection.execute(
+                    "SELECT status FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+                ).fetchone()[0]
+                == "complete"
+            )
+            # Each session is governed under its own identity, never the raw's
+            # pending byte envelope.
+            assert sorted(
+                str(row[0])
+                for row in archive.source_connection.execute(
+                    "SELECT logical_source_key FROM raw_session_memberships WHERE raw_id = ?", (raw_id,)
+                )
+            ) == ["claude-code-session:multi-alpha", "claude-code-session:multi-beta"]
+            assert (
+                archive.source_connection.execute(
+                    "SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)
+                ).fetchone()[0]
+                is not None
+            )
+    finally:
+        await _shutdown(compute, coordinator)
+
+
+def _claude_code_payload(*sessions: str) -> bytes:
+    return b"".join(
+        json.dumps(
+            {
+                "type": "user",
+                "uuid": f"{session}-u1",
+                "sessionId": session,
+                "timestamp": f"2026-07-01T10:00:0{index}Z",
+                "message": {"role": "user", "content": f"hello from {session}"},
+            }
+        ).encode()
+        + b"\n"
+        for index, session in enumerate(sessions)
+    )
+
+
+async def _settle(owner: RawObservationConvergenceOwner, raw_id: str) -> None:
+    reports = []
+    for _attempt in range(4):
+        report = await owner.converge_raw_id(raw_id)
+        reports.append(report)
+        assert report.failed == 0, report.outcomes
+        if report.done:
+            break
+    assert reports[-1].done == 1, [item.outcomes for item in reports]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_path", ["overlap.jsonl", "resumed.jsonl"])
+async def test_multi_session_raw_overlapping_a_byte_chain_decides_every_member(
+    tmp_path: Path, second_path: str
+) -> None:
+    """A later two-session file repeating a session another raw already governs.
+
+    ``overlap.jsonl`` recaptures the first file's path; ``resumed.jsonl`` is a
+    different file carrying the earlier session, as a resumed transcript does.
+    Anti-vacuity: skipping membership replay for a key that byte replay already
+    wrote leaves the later raw's member undecided (reported missing on every
+    retry); a membership yield to a chain-governed head that the receipt
+    validator cannot certify reports the settled raw stale forever.
+    """
+    bootstrap_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        first = archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=_claude_code_payload("overlap-alpha"),
+            source_path="overlap.jsonl",
+            acquired_at_ms=1,
+            post_parse=True,
+        )
+    owner, compute, coordinator = await _owner(tmp_path)
+    try:
+        await _settle(owner, first)
+        with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+            second = archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE,
+                payload=_claude_code_payload("overlap-alpha", "overlap-beta"),
+                source_path=second_path,
+                acquired_at_ms=2,
+                post_parse=True,
+            )
+        await _settle(owner, second)
+        for raw_id in (first, second):
+            settled = await owner.converge_raw_id(raw_id)
+            assert settled.failed == settled.pending == 0, settled.outcomes
+        with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            assert archive.index_connection is not None
+            assert archive.source_connection.execute(
+                "SELECT logical_source_key, decision IS NOT NULL FROM raw_session_memberships "
+                "WHERE raw_id = ? ORDER BY logical_source_key",
+                (second,),
+            ).fetchall() == [("claude-code-session:overlap-alpha", 1), ("claude-code-session:overlap-beta", 1)]
+            assert {str(row[0]) for row in archive.index_connection.execute("SELECT session_id FROM sessions")} == {
+                "claude-code-session:overlap-alpha",
+                "claude-code-session:overlap-beta",
+            }
+        # A frozen rebuild re-derives the same membership authority, including
+        # the member that yielded to the chain-governed head.
+        validate_frozen_source_authority(tmp_path)
+    finally:
         await _shutdown(compute, coordinator)

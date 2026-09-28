@@ -28,6 +28,7 @@ import sqlite3
 from dataclasses import dataclass
 
 from polylogue.core.enums import INGEST_OUTCOME_RETRYABLE, IngestOutcome
+from polylogue.core.storage_faults import StorageFaultKind, storage_fault_kind
 
 #: Bounded diagnostic length -- long enough to keep the failing detail
 #: legible, short enough that a pathological payload can never make the
@@ -207,12 +208,32 @@ def classify_parse_exception(exc: BaseException) -> IngestAttemptDisposition:
     return parser_defect_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
 
 
+def storage_fault_disposition(kind: StorageFaultKind, *, diagnostic: str | None) -> IngestAttemptDisposition:
+    """The disposition for an archive storage fault (full disk, I/O, corrupt page, read-only).
+
+    The input is not at fault and is retried once storage recovers, so the
+    outcome is the retryable infrastructure bucket; ``evidence_ref`` names
+    the fault kind so it stays countable apart from lock contention.
+    """
+    return IngestAttemptDisposition(
+        outcome=IngestOutcome.TRANSIENT_ERROR,
+        evidence_ref=f"archive_write:storage_fault:{kind.value}",
+        diagnostic=bounded_diagnostic(diagnostic),
+        remediation=(
+            "archive storage refused the write; free space or repair the archive storage -- "
+            "the inputs were not quarantined and are retried when writes succeed"
+        ),
+    )
+
+
 def classify_archive_write_exception(exc: BaseException) -> IngestAttemptDisposition:
     """Classify a batch-level archive-write failure (the daemon writer boundary).
 
     A ``sqlite3.OperationalError`` recognized by
     :func:`polylogue.sources.live.sqlite_locking.is_transient_sqlite_lock` is
-    retryable infrastructure contention, never a poisoned payload. Any other
+    retryable infrastructure contention, never a poisoned payload. A storage
+    fault (:func:`polylogue.core.storage_faults.storage_fault_kind`) is
+    retryable infrastructure failure for the same reason. Any other
     exception escaping the archive-write boundary is treated as a parser
     defect (see AC2: materialization/index-failure is deliberately deferred
     to follow-up work, so it also lands here today rather than silently
@@ -223,6 +244,9 @@ def classify_archive_write_exception(exc: BaseException) -> IngestAttemptDisposi
     evidence_ref = f"archive_write:{type(exc).__name__}"
     if isinstance(exc, sqlite3.OperationalError) and is_transient_sqlite_lock(exc):
         return transient_error_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
+    fault = storage_fault_kind(exc)
+    if fault is not None:
+        return storage_fault_disposition(fault, diagnostic=str(exc))
     return parser_defect_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
 
 
@@ -238,6 +262,7 @@ __all__ = [
     "legacy_unknown_disposition",
     "non_session_artifact_disposition",
     "parser_defect_disposition",
+    "storage_fault_disposition",
     "success_disposition",
     "transient_error_disposition",
     "unsupported_shape_disposition",

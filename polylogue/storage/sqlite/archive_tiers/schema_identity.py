@@ -7,12 +7,19 @@ import json
 import sqlite3
 import sys
 from enum import StrEnum
+from functools import lru_cache
 
 from polylogue.core.sqlite_introspection import table_exists
 
 
+@lru_cache(maxsize=8192)
 def _normalize_schema_sql(value: str | None) -> str:
-    """Normalize one sqlite_master SQL definition for semantic comparison."""
+    """Normalize one sqlite_master SQL definition for semantic comparison.
+
+    Memoized: every archive open compares its whole ``sqlite_master``
+    projection, so the same few hundred definitions are re-normalized on each
+    open, and this character-level tokenizer dominated opening an archive.
+    """
     source = value or ""
     tokens: list[tuple[str, bool]] = []
     i = 0
@@ -106,11 +113,6 @@ CREATE TABLE IF NOT EXISTS schema_identity (
 def _canonical_digest(parts: dict[str, object]) -> str:
     payload = json.dumps(parts, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
     return hashlib.sha256(payload).hexdigest()
-
-
-def _identity_ddl(ddl: str) -> str:
-    """Exclude the identity stamp table from the identity it stores."""
-    return ddl.removesuffix(DERIVED_SCHEMA_META_DDL)
 
 
 def _semantic_manifest_fingerprint(tier: DerivedTier) -> str:

@@ -195,7 +195,13 @@ def _insert_session_link(
     where `child_id = row["src_session_id"]` and the resolved session is
     written into `sessions.parent_session_id` keyed by that child. This is
     the reverse of the pre-y964 test fixtures, which is exactly the bug: those fixtures
-    matched the (wrong) shipped view, not real ingestion."""
+    matched the (wrong) shipped view, not real ingestion.
+
+    A dispatched subagent is spawned fresh: it references its parent but
+    replays no parent prefix, so its link carries no branch point. The
+    ``session_links`` branch-anchor CHECK refuses a branch point on any link
+    that is not ``prefix-sharing``; the delegation view joins the dispatch
+    through ``parent_tool_use_block_id`` instead."""
     conn.execute(
         """
         INSERT INTO session_links (
@@ -267,7 +273,6 @@ def test_delegation_resolves_with_canonical_child_to_parent_direction(tmp_path: 
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
-        branch_point_message_id=dispatch_message_id,
         parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
 
@@ -320,7 +325,6 @@ def test_delegation_result_status_error_when_dispatch_action_reports_error(tmp_p
         dst_origin="claude-code-session",
         dst_native_id="parent",
         parent_session_id=parent_id,
-        branch_point_message_id=dispatch_message_id,
         parent_tool_use_block_id=f"{dispatch_message_id}:0",
     )
 

@@ -13,6 +13,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from collections.abc import Sequence
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,14 +30,17 @@ from polylogue.operations.raw_authority_verdict_cache import (
     find_raw_authority_verdict_cache_work,
     warm_raw_authority_verdict_cache,
 )
+from polylogue.operations.raw_existence_journal import make_raw_existence_journal_prune_stage
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.archive_identity import ArchiveLocation
 from polylogue.storage.sqlite.connection_profile import (
+    attach_database,
     open_daemon_connection,
     open_readonly_connection,
 )
 
 if TYPE_CHECKING:
+    from polylogue.daemon.derivation import PublicationBarrier
     from polylogue.sinex.service import PublicationService
     from polylogue.sinex.transport import SinexTransport
 
@@ -44,6 +48,11 @@ _HOT_INSIGHT_SOURCE_BYTES = 64 * 1024 * 1024
 _HOT_INSIGHT_QUIET_SECONDS = 60.0
 _ARCHIVE_INSIGHT_WRITE_BUSY_TIMEOUT_MS = 120_000
 _DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS = 8
+#: One stage execution keeps warming bounded cohort batches while each batch
+#: makes progress, up to this much wall time. A single batch per execution
+#: left a fresh archive's cohorts warming eight at a time behind the debt
+#: backoff: hours for a full corpus.
+_DAEMON_RAW_AUTHORITY_CACHE_PASS_SECONDS = 10.0
 
 
 def _sinex_drain_reason(*, rejected: int, transport_failures: int, payload_failures: int) -> str:
@@ -154,6 +163,7 @@ def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> 
     }
     status = "gaps" if gaps else "clean"
     try:
+        from polylogue.core.stage_admission import admit_stage_write
         from polylogue.storage.archive_readiness import CLAUDE_WORKFLOW_STAGE_NAME
         from polylogue.storage.sqlite.archive_tiers.bootstrap import open_initialized_tier_connection
         from polylogue.storage.sqlite.archive_tiers.ops_write import record_daemon_stage_event
@@ -161,20 +171,27 @@ def _record_claude_workflow_stage_event(archive_root: Path, summary: object) -> 
 
         ops_db = archive_root / "ops.db"
         ops_db.parent.mkdir(parents=True, exist_ok=True)
-        with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
-            record_daemon_stage_event(
-                conn,
-                stage=CLAUDE_WORKFLOW_STAGE_NAME,
-                status=status,
-                observed_at_ms=int(time.time() * 1000),
-                payload=payload,
-                # A stable id makes this the current snapshot rather than an
-                # append: every reader selects only the newest row for this
-                # stage, and ``daemon_stage_events`` has no retention, so
-                # letting the writer mint a fresh UUID each pass grew ops.db
-                # without bound for a row nothing ever read again.
-                event_id=f"{CLAUDE_WORKFLOW_STAGE_NAME}:current",
-            )
+
+        def record() -> None:
+            with open_initialized_tier_connection(ops_db, ArchiveTier.OPS) as conn:
+                record_daemon_stage_event(
+                    conn,
+                    stage=CLAUDE_WORKFLOW_STAGE_NAME,
+                    status=status,
+                    observed_at_ms=int(time.time() * 1000),
+                    payload=payload,
+                    # A stable id makes this the current snapshot rather than
+                    # an append: every reader selects only the newest row for
+                    # this stage, and ``daemon_stage_events`` has no retention,
+                    # so letting the writer mint a fresh UUID each pass grew
+                    # ops.db without bound for a row nothing ever read again.
+                    event_id=f"{CLAUDE_WORKFLOW_STAGE_NAME}:current",
+                )
+
+        # The stage is ``bridged``: its engine runs off the writer lease (the
+        # convergence-debt retry calls it directly), so this ops write must be
+        # admitted like the materializer's own publication.
+        admit_stage_write("stage.claude_workflow.record", record)
     except Exception as exc:
         emit(
             "daemon.stage.event_record_failed",
@@ -345,6 +362,7 @@ def make_delegation_work_evidence_stage(db_path: Path) -> ConvergenceStage:
         check_many=check_many,
         execute_many=execute_many,
         whole_archive=True,
+        subject_independent=True,
         writer_admission="bridged",
     )
 
@@ -465,18 +483,26 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
 
     def execute_many(_paths: Sequence[Path]) -> StageExecuteReturn:
         with span("daemon.stage.execute", stage="raw_authority_verdict_cache", files=len(_paths)) as work:
-            outcome = warm_raw_authority_verdict_cache(
-                db_path.parent,
-                max_cohorts=_DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS,
-                now_ms=int(time.time() * 1000),
-            )
+            deadline = time.monotonic() + _DAEMON_RAW_AUTHORITY_CACHE_PASS_SECONDS
+            warmed = 0
+            while True:
+                outcome = warm_raw_authority_verdict_cache(
+                    db_path.parent,
+                    max_cohorts=_DAEMON_RAW_AUTHORITY_CACHE_MAX_COHORTS,
+                    now_ms=int(time.time() * 1000),
+                )
+                warmed += outcome.warmed_cohorts
+                # Stop on convergence, on a batch that warmed nothing (the
+                # residue is not this pass's to clear), or at the budget.
+                if not outcome.pending_cohorts or not outcome.warmed_cohorts or time.monotonic() >= deadline:
+                    break
             pending = int(outcome.pending_cohorts or 0)
             if pending:
                 # Backlog remains: the stage is not converged this pass, and
                 # false_means_pending will schedule the retry.
-                work.degraded("cohorts_still_pending", cohorts=outcome.warmed_cohorts, pending=pending)
-            elif outcome.warmed_cohorts:
-                work.ok(cohorts=outcome.warmed_cohorts, pending=0)
+                work.degraded("cohorts_still_pending", cohorts=warmed, pending=pending)
+            elif warmed:
+                work.ok(cohorts=warmed, pending=0)
             else:
                 work.empty(cohorts=0, pending=0)
             return not outcome.pending_cohorts
@@ -490,6 +516,7 @@ def make_raw_authority_verdict_cache_stage(db_path: Path) -> ConvergenceStage:
         execute_many=execute_many,
         false_means_pending=True,
         whole_archive=True,
+        subject_independent=True,
     )
 
 
@@ -577,6 +604,7 @@ def make_fts_readiness_binding_stage(db_path: Path) -> ConvergenceStage:
         execute_many=execute_many,
         false_means_pending=True,
         whole_archive=True,
+        subject_independent=True,
     )
 
 
@@ -624,6 +652,23 @@ def make_hook_paste_enrichment_stage(db_path: Path) -> ConvergenceStage:
     )
 
 
+def configured_derivation_barrier(archive_root: Path) -> PublicationBarrier | None:
+    """The primary-publication barrier derivation owners honor, when configured.
+
+    The staged routes read it through the Sinex stage's
+    ``blocks_following_stages``; derivation owners run their own convergers
+    without that stage, so composition hands them the same read directly.
+    Outside primary mode nothing is held.
+    """
+    from polylogue.sinex.models import PublicationMode
+    from polylogue.sinex.service import primary_blocking_object_ids
+
+    if PublicationMode.from_string(load_polylogue_config().sinex_mode) is not PublicationMode.PRIMARY:
+        return None
+    source_db = ArchiveLocation.resolve(archive_root).configured_tier("source").configured_path
+    return partial(primary_blocking_object_ids, source_db)
+
+
 def make_default_convergence_stages(
     db_path: Path,
     *,
@@ -664,6 +709,7 @@ def make_default_convergence_stages(
             # polylogue-crwl6 AC6: the only production writer of the message-FTS
             # readiness binding the five status request paths compare against.
             make_fts_readiness_binding_stage(db_path),
+            make_raw_existence_journal_prune_stage(db_path),
             # Session-profile publication is no longer a generic stage.  The
             # daemon's typed session owner runs it through the derivation
             # kernel after ingest and from its no-hint periodic sweep.
@@ -716,7 +762,7 @@ def _ensure_source_tier_attached(conn: sqlite3.Connection, *, archive_root: Path
     source_db = _attached_source_db_path(conn, archive_root=archive_root)
     if not source_db.exists():
         return False
-    conn.execute("ATTACH DATABASE ? AS source_tier", (str(source_db),))
+    attach_database(conn, source_db, alias="source_tier")
     return True
 
 

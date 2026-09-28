@@ -329,22 +329,6 @@ class SqliteVecRuntimeMixin:
         finally:
             self._release_connection(conn)
 
-    def _stored_embedding_dimension(self) -> int | None:
-        """Return the dimension stored in message_embeddings_meta, if any."""
-        conn = self._get_connection()
-        try:
-            has_table = conn.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='message_embeddings_meta'"
-            ).fetchone()
-            if has_table is None:
-                return None
-            row = conn.execute("SELECT dimension FROM message_embeddings_meta LIMIT 1").fetchone()
-            return int(row["dimension"]) if row else None
-        except (sqlite3.OperationalError, TypeError, ValueError):
-            return None
-        finally:
-            self._release_connection(conn)
-
 
 def _vec0_table_dimension(conn: sqlite3.Connection) -> int | None:
     """Read the dimension of the existing vec0 table, if it exists."""

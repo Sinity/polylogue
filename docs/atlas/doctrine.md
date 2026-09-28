@@ -91,33 +91,30 @@ than convergence on one route.
 `polylogue/operations/operation_context.py:158-232` (the operation kernel's
 pinned snapshot, which re-resolves the archive identity after pinning and
 refuses a republication that landed mid-pin). Which module may own a
-controlled read is policy in `docs/plans/controlled-read-census.yaml:26-36`;
-the classification of every call site, with a reason each, is the rest of that
-file, and `devtools/verify_controlled_read.py:1-61` is the checker.
+controlled read was policy in a census file checked by a `controlled-read`
+gate.
 
-**Owning gate**: `controlled-read`
+**Owning gate**: none. The census gate was deleted (polylogue-j325x): it
+caught no violation in 569 quick runs, and a stray read cannot damage durable
+state. `tests/unit/daemon/test_surface_data_boundary.py` still refuses any
+connection opener in the surface packages.
 
 **Observable failure**: a surface reads the archive with no admission, no
 snapshot pin, no cancellation and no receipt, and its answer cannot say which
-archive revision produced it. The realistic silent form is not a new module —
-it is a declared writer that loses its explicit `read_only=False` and becomes
-an uncontrolled read while its census row still reads "writer"; the gate names
-that `controlled_read_writer_is_not_explicit`. An undeclared open is
-`controlled_read_site_undeclared` and is reported by `file:line`.
+archive revision produced it. The realistic silent form is a writer that loses
+its explicit `read_only=False` and becomes an uncontrolled read.
 
-**Change procedure**: a new archive open is declared in the census with a
-classification and a reason in the same change that adds it. A new
-*read-boundary owner* is a policy edit to `read_boundary_owners`, reviewed as
-such, because otherwise a new uncontrolled read could license itself by
-claiming to be the boundary. A licensed writer that is wrong in the long run
-carries a `debt` field rather than a silent pass.
+**Change procedure**: a new direct archive open is justified in review as one
+of the three kinds, in the change that adds it; no census records it. Adding a
+read-boundary owner is a design decision reviewed as such, because otherwise a
+new uncontrolled read could license itself by claiming to be the boundary.
 
 ## Doctrine: finding provenance
 
 **Invariant**: a finding is an ordinary durable assertion carrying a
-`polylogue.finding.v1` value with its own evidence refs, and it is rejected at
-the write boundary if those refs, its statistic, or its declared negative
-controls do not hold up. Provenance is queryable, not prose.
+`polylogue.finding.v1` value with its own evidence refs, and its shape, statistic, and declared negative controls are validated at
+the write boundary. Reference existence is resolved later; missing referenced
+objects make the finding stale rather than preventing storage. Provenance is queryable, not prose.
 
 **Owner**: the write-boundary projection and its refusals are
 `polylogue/storage/sqlite/archive_tiers/user_write.py:1593-1612`; the finding
@@ -242,10 +239,12 @@ to retire this non-goal, not to leave both.
 
 ## Doctrine: injected-context trust
 
-**Invariant**: trust is derived from authenticated provenance *and* the
-source's own authority; content can never raise its own trust class. Assertion
-prose is not eligible for `system` trust at all. A context source supplies
-candidates; it cannot allocate budget or grant trust.
+**Intended invariant**: trust should derive from authenticated provenance
+*and* the source's own authority; content must not raise its own trust class.
+Assertion prose is not eligible for `system` trust. The current policy-item
+authorization path does not authenticate provenance independently: a context
+source can supply the fields that qualify an item for executable policy. Those
+fields alone are not structural proof of trust.
 
 **Owner**: `polylogue/core/assertions.py:72-101` derives the trust class and
 treats an assertion-controlled context policy as a capability cap rather than
@@ -283,22 +282,20 @@ justification. Declarations sharing a family id must agree on all five.
 `polylogue/declarations/models.py:22-41`, including the difference report used
 in refusals. The registry refuses a mismatched family member at registration
 time (`polylogue/declarations/registry.py:64-78`), which means any route that
-builds a registry fails — including the bindings gate. The interview and its
+builds a registry fails — including the bindings check. The interview and its
 two refusals are `devtools/scaffold.py:36-48` and
 `devtools/scaffold.py:519-527`.
 
-**Owning gate**: `declaration-bindings`
+**Owning check**: the live test
+`tests/unit/devtools/test_declaration_binding_registries.py`, run through
+`devtools test`; the `declaration-bindings` gate was folded into it
+(polylogue-j325x).
 
 **Observable failure**: two things that differ in authority or durability end
 up in one family, so a read that is safe for one becomes a claim the other
 cannot support. Worked examples, all anchored in current source:
 
-- **Accepted reuse**: several daemon read routes share one family because they
-  genuinely match on all five dimensions — same identity kind, stable
-  lifecycle, daemon-read authority, read-only durability — and differ only in
-  envelope shape, which is itself one of the five
-  (`polylogue/daemon/route_contracts.py:165`;
-  `polylogue/daemon/route_contracts.py:193`).
+- **Required separation**: status and query-units have distinct identities and access result shapes. `_STATUS_DECLARATION` uses `daemon.read-status` with `status-envelope`; `_QUERY_UNITS_DECLARATION` uses `daemon.read-query-units` with `query-unit-envelope` (`polylogue/daemon/route_contracts.py`). Because result shape is one of the five compatibility dimensions, keep them in separate families.
 - **Rejected: query run into context delivery.** A query object is durable,
   content-addressed, and re-resolvable
   (`polylogue/storage/sqlite/query_objects.py:1`); a context delivery decision
@@ -340,13 +337,8 @@ not establish an answer.
   partition are production code proven by tests; there is no repository check
   that a newly registered context source cannot emit operator-class output.
 - **Process-level sole writership is not proven by any gate.** The layering
-  gate proves declaration and inventories mutation sites; the controlled-read
-  gate proves every direct archive open is classified, and *records* which
-  licensed writers take the lease outside the daemon coordinator
-  (`docs/plans/controlled-read-census.yaml:58-97` — the four Python-API
-  facade mutations). Neither proves that a live CLI or API caller cannot
-  write outside the coordinator. That census is the evidence for the claim,
-  not the enforcement of it.
+  gate proves declaration and inventories mutation sites. It does not prove
+  that a live CLI or API caller cannot write outside the coordinator.
 - **cpf names a sixth unification dimension that code does not carry.** The
   epic's criteria list "remaining domain semantics" alongside the five
   compatibility dimensions. In source there is no sixth dimension: the family's

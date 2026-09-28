@@ -14,7 +14,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Coroutine, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
 from contextlib import redirect_stdout
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -29,7 +29,7 @@ from polylogue.api import Polylogue
 from polylogue.browser_capture.receiver import resolve_receiver_auth_token
 from polylogue.browser_capture.server import BrowserCaptureHTTPServer, make_server
 from polylogue.core.degraded import DegradedReason, set_degraded
-from polylogue.core.json import JSONDocument, dumps, json_document, loads
+from polylogue.core.json import JSONDocument, dumps, json_document
 from polylogue.core.loopback import bind_hosts_overlap, is_loopback_host
 from polylogue.core.stage_admission import (
     StageWriteAdmission,
@@ -118,6 +118,7 @@ def validate_api_bind_policy(*, enabled: bool, host: str, allow_remote: bool, au
 
 
 if TYPE_CHECKING:
+    from polylogue.daemon.events import DaemonEventRecord
     from polylogue.daemon.fts_convergence import FtsConvergenceOwner
     from polylogue.daemon.http import DaemonAPIHTTPServer
     from polylogue.daemon.intake_adapters import ColdBuildGeneration
@@ -130,9 +131,18 @@ if TYPE_CHECKING:
 
 _WHALE_RECEIPT_ROOT: Path | None = None
 _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
+#: Wall budget for back-to-back bounded session-derivation passes in one
+#: periodic convergence tick; the tick interval leaves the rest for the others.
+_SESSION_PROFILE_BACKLOG_SECONDS = 45.0
 #: Debt rows one retry tick inspects, shared by the admitted pass and the
 #: lease-free embedding pass that precedes it so both see the same window.
 _CONVERGENCE_DEBT_RETRY_LIMIT = 100
+#: Wall budget for draining due debt page after page within one retry tick.
+#: One page per tick made the drain cadence-bound: a cold build records a few
+#: deferred rows per admitted file, and 100 rows a minute is days of backlog
+#: for a full archive. Pages continue while they make progress, inside a
+#: budget shorter than the tick so ticks never pile up.
+_CONVERGENCE_DEBT_DRAIN_BUDGET_SECONDS = 45.0
 #: Convergence-debt stages whose backlog has its own recurring domain owner.
 #: The generic drain neither retries nor reports on these: the owner does.
 #: ``raw_retention`` is drained by ``LiveBatchProcessor`` on live-ingest passes
@@ -189,7 +199,6 @@ def _lineage_startup_lifecycle_phase(census: LineageStartupCensus) -> str:
     return "component_ready" if census.converged else "component_degraded"
 
 
-_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS = 3600
 _BLOB_REFERENCE_RESTORE_CONVERGENCE_BATCH_LIMIT = 25
 _SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS = 60
 #: Cadences that used to be bare literals inside their own ``while True``.
@@ -773,33 +782,6 @@ async def _run_drive_source_catchup_safely(
         return 0
 
 
-async def _periodic_drive_source_catchup(
-    *,
-    session_profile_callback: SessionProfileCallback,
-    watcher_registered: asyncio.Event | None = None,
-) -> None:
-    """Periodically converge remote Drive sources such as AiStudio exports.
-
-    The first pass normally runs immediately in the background.  A live
-    watcher supplies ``watcher_registered`` so fresh local session evidence
-    gets the single archive writer before remote download/index work.  The
-    gate is deliberately absent for maintenance-only callers.
-    """
-
-    async def once() -> None:
-        changed = await _run_drive_source_catchup_safely(session_profile_callback)
-        if changed:
-            emit("daemon.drive_catchup.refreshed", outcome="ok", loop="drive source catch-up", changed=changed)
-
-    await daemon_periodic_runner().run(
-        "drive_source_catchup",
-        once,
-        interval_s=_DRIVE_SOURCE_CATCHUP_INTERVAL_SECONDS,
-        gate=watcher_registered_gate(watcher_registered),
-        run_first=True,
-    )
-
-
 async def _periodic_heartbeat(*, sources: tuple[WatchSource, ...] = ()) -> None:
     """Log daemon heartbeat with archive stats every 15 minutes."""
     if not sources:
@@ -966,6 +948,8 @@ async def _periodic_convergence_check(
     raw_retention_callback: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Periodically retry recorded convergence debt."""
+    from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
+
     db = _active_index_db_path()
 
     async def once() -> None:
@@ -983,7 +967,9 @@ async def _periodic_convergence_check(
                     error_detail=str(exc),
                 )
         await fts_owner.converge()
-        if session_profile_callback is not None:
+        if isinstance(session_profile_callback, ComposedSessionProfiles):
+            await session_profile_callback.converge_backlog(_SESSION_PROFILE_BACKLOG_SECONDS)
+        elif session_profile_callback is not None:
             await session_profile_callback(None)
 
     await daemon_periodic_runner().run(
@@ -997,6 +983,24 @@ async def _periodic_convergence_check(
 
 async def _retry_convergence_debt_once(db: Path) -> None:
     """Run one logged derived-debt retry pass when the archive exists."""
+    from polylogue.daemon.intake_adapters import active_cold_build_generation
+
+    if active_cold_build_generation() is not None:
+        # Debt recorded during a cold build describes the unpromoted candidate,
+        # while every stage here reads the active generation. Running them now
+        # spends writer admission on the wrong archive, and an archive-wide
+        # stage would answer "converged" for the empty active index and clear
+        # rows the candidate still owes. Promotion ends the build; the next
+        # tick drains against the promoted generation.
+        emit(
+            "daemon.convergence_debt.pass.skipped",
+            level=DEBUG,
+            outcome="skipped",
+            reason="cold_build_in_progress",
+            loop="convergence debt retry",
+            path=db,
+        )
+        return
     if not db.exists():
         emit(
             "daemon.convergence_debt.pass.skipped",
@@ -1022,7 +1026,7 @@ async def _retry_convergence_debt_once(db: Path) -> None:
             repaired = await asyncio.to_thread(
                 _run_with_stage_admission,
                 _daemon_stage_write_admission(),
-                partial(_drain_convergence_debt_once, db),
+                partial(_drain_convergence_debt_backlog, db),
             )
         except sqlite3.OperationalError as exc:
             if is_transient_sqlite_lock(exc):
@@ -1151,17 +1155,6 @@ def _emit_mapped_bytes_budget_check(check: Any) -> None:
         limit=check.effective_memory_budget_bytes,
         active=check.concurrent_read_connections,
     )
-
-
-def _raw_source_path(archive: Path, raw_id: str) -> str | None:
-    """Read one raw's physical source path from the source tier, read-only."""
-    from contextlib import closing
-
-    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
-
-    with closing(open_readonly_connection(archive / "source.db", validate_schema=False)) as conn:
-        row = conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
-    return None if row is None or row[0] is None else str(row[0])
 
 
 def _raw_materialized_session_ids(archive: Path, raw_id: str) -> tuple[str, ...]:
@@ -1333,7 +1326,34 @@ def _run_with_stage_admission(admission: StageWriteAdmission, work: Callable[[],
         return work()
 
 
+def _drain_convergence_debt_backlog(
+    db: Path,
+    *,
+    limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT,
+    budget_s: float = _CONVERGENCE_DEBT_DRAIN_BUDGET_SECONDS,
+) -> int:
+    """Drain due debt page by page until it is exhausted, stalls, or the budget ends.
+
+    A page that retried nothing, or found fewer due rows than a full page, ends
+    the drain: the rest is either absent or waiting for its retry time. Each
+    page's ledger write is separately admitted, so the writer interleaves other
+    work between pages.
+    """
+    deadline = time.monotonic() + budget_s
+    total = 0
+    while True:
+        retried, candidates = _drain_convergence_debt_page(db, limit=limit)
+        total += retried
+        if retried == 0 or candidates < limit or time.monotonic() >= deadline:
+            return total
+
+
 def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT) -> int:
+    """Retry one page of due derived convergence debt; return the rows retried."""
+    return _drain_convergence_debt_page(db, limit=limit)[0]
+
+
+def _drain_convergence_debt_page(db: Path, *, limit: int = _CONVERGENCE_DEBT_RETRY_LIMIT) -> tuple[int, int]:
     """Retry due derived convergence debt without rereading source payloads.
 
     Debt identity is stage-scoped. A retry therefore runs only the recorded
@@ -1362,15 +1382,16 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
     # it keeps that startup-equivalent recovery, now under the writer.
     cursor = admit_stage_write("maintenance.convergence_debt.initialize", partial(CursorStore, db))
     now = datetime.now(UTC)
+    page = cursor.list_convergence_debt(limit=limit, retry_due_only=True, exclude_stages=_OWNED_DEBT_STAGES)
     candidate_debt = [
         debt
-        for debt in cursor.list_convergence_debt(limit=limit)
+        for debt in page
         if debt.subject_type in {"source_path", "session_id"}
         and debt.stage not in _OWNED_DEBT_STAGES
         and _debt_retry_due(debt, now=now)
     ]
     if not candidate_debt:
-        return 0
+        return 0, len(page)
 
     default_stages = make_default_convergence_stages(db)
     stages_by_name = {stage.name: stage for stage in default_stages}
@@ -1398,9 +1419,10 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
 
     due_debt = [debt for debt in candidate_debt if debt.stage in implemented_stages]
     if not due_debt:
-        return 0
+        return 0, len(page)
 
     subject_states: dict[tuple[str, str, str], object] = {}
+    converged_whole_archive: dict[str, int] = {}
     retryable_debt = tuple(due_debt)
     if retryable_debt:
         for stage_name in dict.fromkeys(debt.stage for debt in retryable_debt):
@@ -1412,9 +1434,25 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
             session_ids = tuple(
                 dict.fromkeys(debt.subject_id for debt in stage_debt if debt.subject_type == "session_id")
             )
+            subject_independent = stage_name != "convergence" and stages_by_name[stage_name].subject_independent
+            run_started_ms = int(time.time() * 1000)
+            if subject_independent and paths:
+                # The stage's check and work ignore the subject, so one run
+                # answers for every subject it owes. Run it once, on one
+                # representative subject, instead of once per page of rows.
+                paths = paths[:1]
             converger = DaemonConverger(stages=selected_stages)
             path_states, _path_timings = converger.converge_batch(paths)
             session_states, _session_timings = converger.converge_sessions(session_ids)
+            if subject_independent and paths:
+                representative = path_states.get(paths[0])
+                if representative is not None and bool(getattr(representative, "converged", False)):
+                    converged_whole_archive[stage_name] = run_started_ms
+                path_states = (
+                    {Path(debt.subject_id): representative for debt in stage_debt if debt.subject_type == "source_path"}
+                    if representative is not None
+                    else {}
+                )
             subject_states.update(
                 ((stage_name, "source_path", str(path)), state) for path, state in path_states.items()
             )
@@ -1422,22 +1460,55 @@ def _drain_convergence_debt_once(db: Path, *, limit: int = _CONVERGENCE_DEBT_RET
                 ((stage_name, "session_id", session_id), state) for session_id, state in session_states.items()
             )
 
-    return admit_stage_write(
+    retried = admit_stage_write(
         "maintenance.convergence_debt.ledger",
-        partial(_record_convergence_debt_retries, cursor, due_debt, subject_states),
+        partial(_record_convergence_debt_retries, cursor, due_debt, subject_states, converged_whole_archive),
     )
+    return retried, len(page)
 
 
 def _record_convergence_debt_retries(
     cursor: CursorStore,
     due_debt: Sequence[Any],
     subject_states: dict[tuple[str, str, str], object],
+    converged_whole_archive: Mapping[str, int] | None = None,
 ) -> int:
     """Update the ops debt ledger for one drained pass. The only write here."""
     from polylogue.sources.live.convergence_debt import is_deferred_stage_state
 
     retried = 0
+    # Stages settled here by one archive-wide clear. Their rows are owned by
+    # that clear's cutoff: clearing them again per row would delete a row
+    # re-recorded after the converging run started.
+    settled_stages: set[str] = set()
+    cleared_stages: set[str] = set()
+    for stage_name, started_ms in (converged_whole_archive or {}).items():
+        try:
+            cleared = cursor.clear_stage_convergence_debt(stage=stage_name, recorded_before_ms=started_ms)
+        except RuntimeError as exc:
+            emit(
+                "daemon.convergence_debt.stage_clear_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="stage_clear_not_written",
+                stage=stage_name,
+                error_detail=str(exc),
+            )
+        else:
+            emit(
+                "daemon.convergence_debt.stage_cleared",
+                outcome="ok",
+                stage=stage_name,
+                rows=cleared,
+            )
+            cleared_stages.add(stage_name)
+        settled_stages.add(stage_name)
     for debt in due_debt:
+        if debt.stage in settled_stages:
+            # Cleared above, or left for the next pass when the clear could
+            # not be written; either way not this row's per-subject outcome.
+            retried += debt.stage in cleared_stages
+            continue
         state = subject_states.get((debt.stage, debt.subject_type, debt.subject_id))
         if state is None:
             # The stage ran but returned no state for this subject: the row's
@@ -1630,28 +1701,29 @@ def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
     refreshed by an event that only ever touched session B
     (polylogue-20d.13 -- the defect the description names: "an unscoped
     message event currently refreshes whichever session a browser has
-    open").
+    open"). The summary and every per-session event land in one ledger
+    transaction.
     """
+    from polylogue.daemon.events import DaemonEventRecord, emit_daemon_events
+
+    records = [DaemonEventRecord(kind, payload)]
+    if kind == "ingestion_batch":
+        records.extend(_live_batch_session_events(payload))
+    emit_daemon_events(records)
+
+
+def _live_batch_session_events(payload: dict[str, object]) -> list[DaemonEventRecord]:
+    """The identity-scoped session and message events one live batch implies."""
     from collections import Counter
 
-    from polylogue.daemon.events import (
-        emit_daemon_event,
-        emit_message_appended,
-        emit_session_appended,
-        emit_session_updated,
-    )
-
-    emit_daemon_event(kind, payload=payload)
-
-    if kind != "ingestion_batch":
-        return
+    from polylogue.daemon.events import message_appended_event, session_appended_event, session_updated_event
 
     succeeded_raw = payload.get("succeeded_file_count", 0)
     failed_raw = payload.get("failed_file_count", 0)
     succeeded = int(succeeded_raw) if isinstance(succeeded_raw, int | float) else 0
     failed = int(failed_raw) if isinstance(failed_raw, int | float) else 0
     if succeeded <= 0:
-        return
+        return []
 
     new_touches = _session_id_touches(payload, "new_sessions")
     updated_touches = _session_id_touches(payload, "updated_sessions")
@@ -1663,23 +1735,21 @@ def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
         # dropping the notification -- a coarse "something changed" signal
         # is still better than none, and existing consumers already treat
         # an absent session_id as "refresh regardless".
-        emit_session_appended(source_name=None, succeeded_file_count=succeeded, failed_file_count=failed)
-        emit_message_appended(session_id=None, source_name=None, appended_count=succeeded)
-        return
+        return [
+            session_appended_event(source_name=None, succeeded_file_count=succeeded, failed_file_count=failed),
+            message_appended_event(session_id=None, source_name=None, appended_count=succeeded),
+        ]
 
-    new_counts = Counter(new_touches)
-    for (source_name, session_id), count in new_counts.items():
-        emit_session_appended(
-            source_name=source_name,
-            succeeded_file_count=count,
-            session_id=session_id,
+    records: list[DaemonEventRecord] = []
+    for (source_name, session_id), count in Counter(new_touches).items():
+        records.append(
+            session_appended_event(source_name=source_name, succeeded_file_count=count, session_id=session_id)
         )
-        emit_message_appended(session_id=session_id, source_name=source_name, appended_count=count)
-
-    updated_counts = Counter(updated_touches)
-    for (source_name, session_id), count in updated_counts.items():
-        emit_session_updated(session_id=session_id, source_name=source_name, appended_count=count)
-        emit_message_appended(session_id=session_id, source_name=source_name, appended_count=count)
+        records.append(message_appended_event(session_id=session_id, source_name=source_name, appended_count=count))
+    for (source_name, session_id), count in Counter(updated_touches).items():
+        records.append(session_updated_event(session_id=session_id, source_name=source_name, appended_count=count))
+        records.append(message_appended_event(session_id=session_id, source_name=source_name, appended_count=count))
+    return records
 
 
 async def _emit_daemon_lifecycle_event(
@@ -2057,6 +2127,27 @@ async def _run_daemon_services_under_active_writer_lease(
                 files=len(recovered_train_paths),
                 error_detail=", ".join(str(path) for path in recovered_train_paths),
             )
+        # Declared durable migrations are ordinary lifecycle: apply them now,
+        # under the same exclusive ownership, before anything serves.
+        from polylogue.daemon.durable_migrations import apply_declared_durable_migrations
+
+        applied_migrations = apply_declared_durable_migrations(
+            archive_root_path,
+            archive_owner=archive_owner,
+            write_lease=lambda actor: write_lease(actor, archive_root=archive_root_path),
+        )
+        for migration in applied_migrations:
+            emit(
+                "daemon.durable_migration.applied",
+                level=WARNING,
+                outcome="ok",
+                reason="declared_durable_migration_applied_at_open",
+                tier=migration.tier.value,
+                error_detail=(
+                    f"v{migration.current_version} -> v{migration.target_version}"
+                    f"{' behind a verified backup' if migration.requires_backup else ''}"
+                ),
+            )
     except BaseException:
         archive_owner.release()
         raise
@@ -2213,7 +2304,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 )
             )
         else:
-            from polylogue.operations.mutation_transaction import recover_interrupted_operations
+            from polylogue.operations.mutation_replay import recover_interrupted_operations
 
             await write_coordinator.run_sync(
                 "daemon.operation_recovery.startup", recover_interrupted_operations, archive_root_path
@@ -2563,13 +2654,18 @@ async def _run_daemon_services_under_active_writer_lease(
             )
 
             from polylogue.daemon.convergence import DerivationConvergenceOwner
+            from polylogue.daemon.convergence_stages import configured_derivation_barrier
             from polylogue.daemon.fts_convergence import FtsConvergenceOwner
             from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
 
             fts_index = archive_root_path / "index.db"
             fts_owner = FtsConvergenceOwner(
                 DerivationConvergenceOwner(
-                    DaemonConverger((), derivations=(make_fts_derivation(fts_index, archive_root=archive_root_path),)),
+                    DaemonConverger(
+                        (),
+                        derivations=(make_fts_derivation(fts_index, archive_root=archive_root_path),),
+                        derivation_barrier=configured_derivation_barrier(archive_root_path),
+                    ),
                     compute_adapter=daemon_compute,
                     write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
                 ),
@@ -3028,6 +3124,27 @@ async def _run_daemon_services_under_active_writer_lease(
                                     reason="promoted" if promoted else "discarded",
                                     generation_id=generation.generation_id,
                                 )
+                        if watcher is not None:
+                            # Work deferred behind the candidate (stages the
+                            # build could not run, retention it could not
+                            # apply) accrued retry backoff while it waited,
+                            # though nothing failed. Whether the candidate was
+                            # promoted or discarded, the deferral has ended.
+                            try:
+                                released = await write_coordinator.run_sync(
+                                    "daemon.cold_build.release_deferred_debt",
+                                    watcher._cursor.release_deferred_convergence_debt,
+                                )
+                            except Exception as exc:
+                                emit(
+                                    "daemon.cold_build.release_deferred_debt_failed",
+                                    level=WARNING,
+                                    outcome="degraded",
+                                    error_type=type(exc).__name__,
+                                    error_detail=str(exc),
+                                )
+                            else:
+                                emit("daemon.cold_build.deferred_debt_released", outcome="ok", rows=released)
                         if promoted and isinstance(session_profile_callback, ComposedSessionProfiles):
                             try:
                                 await session_profile_callback.converge_promoted()
@@ -3537,39 +3654,49 @@ main.add_command(browser_capture_command)
 main.add_command(api_command)
 
 
-_LIVE_DAEMON_STATUS_TIMEOUT_S = 0.3
-
-
-def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_S) -> JSONDocument | None:
-    """Return a running daemon's cached ``/api/status`` snapshot, or ``None``.
+def _live_daemon_status_payload() -> JSONDocument | None:
+    """Return the running daemon's status through its machine socket, or ``None``.
 
     ``polylogued status`` used to always recompute the full rich status
-    in-process, cold, with every expensive diagnostic flag on by default —
-    the same collection a running daemon already keeps refreshed
-    off-request and exposes here. Preferring the live daemon's answer
-    (bounded, cheap) avoids repeating that expensive collection when a
-    daemon is already up, which was the reported ">15s although
-    heartbeat/DB descriptors were healthy" hang (polylogue-20d.17). Honours
-    ``POLYLOGUE_DAEMON_URL`` like the archive CLI's ``polylogue status`` so
-    tests can route this probe to an unreachable address (#1325).
-    """
-    from urllib.error import URLError
-    from urllib.request import Request, urlopen
+    in-process, cold, with every expensive diagnostic flag on by default --
+    the same collection a running daemon already keeps refreshed off-request
+    (polylogue-20d.17). It asks the daemon for its ``status`` operation, which
+    merges the daemon's cached runtime snapshot (writer, services, cold-build
+    progress, ETA) with the pinned archive reading.
 
+    The request goes over the daemon's AF_UNIX socket, the route every CLI
+    verb uses: the client verifies the listener's uid with ``SO_PEERCRED``
+    before any credential is sent, so neither a squatted TCP port, a proxy, a
+    redirect nor a URL from an untrusted ``polylogue.toml`` can receive the
+    daemon's bearer. No socket means no daemon and a silent local fallback. A
+    daemon that answers but refuses is reported on stderr: a silent
+    recomputation here would present the CLI's own configuration and an empty
+    in-process state as the running daemon's view.
+    """
+    from polylogue.cli.operation_kernel import (
+        OperationKernelError,
+        OperationRequest,
+        OperationUnavailableError,
+        dispatch,
+    )
     from polylogue.config import load_polylogue_config
 
-    url = (load_polylogue_config().daemon_url or "http://127.0.0.1:8766").rstrip("/")
+    config = load_polylogue_config()
     try:
-        req = Request(f"{url}/api/status", headers={"Accept": "application/json"}, method="GET")
-        with urlopen(req, timeout=timeout) as resp:
-            body = resp.read()
-    except (OSError, URLError, ValueError):
+        # The operation's own declared deadline: a pinned read on a large
+        # archive can legitimately take longer than a connect probe, and
+        # cutting it short would fall back to the slower local path.
+        result = dispatch(config, OperationRequest("status", {}), daemon_only=True)
+    except OperationUnavailableError:
         return None
-    try:
-        parsed = loads(body)
-    except ValueError:
+    except OperationKernelError as exc:
+        click.echo(
+            f"polylogued status: the running daemon did not answer the status request ({exc}); "
+            "showing a recomputation in this process, which cannot see the daemon's in-process state",
+            err=True,
+        )
         return None
-    document = json_document(parsed)
+    document = json_document(result.value)
     return document or None
 
 
@@ -3589,7 +3716,9 @@ def _live_daemon_status_payload(*, timeout: float = _LIVE_DAEMON_STATUS_TIMEOUT_
 )
 def status_command(spool_path: Path | None, output_format: str | None) -> None:
     configure_logging()
-    payload = _live_daemon_status_payload()
+    # An explicit ``--spool`` asks about a path the running daemon's cached
+    # status does not describe, so it is always answered in this process.
+    payload = None if spool_path is not None else _live_daemon_status_payload()
     if payload is None:
         if output_format == "json":
             with redirect_stdout(sys.stderr):

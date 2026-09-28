@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Awaitable, Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from polylogue.daemon.convergence import (
@@ -33,9 +34,38 @@ class ComposedSessionProfiles:
     callback: SessionProfileCallback
     promoted_callback: Callable[[], Awaitable[DerivationReport]]
     maintenance: SessionInsightMaintenance
+    #: Whether the archive-wide audit sweep still has domains to finish.
+    audit_pending: Callable[[], bool] = field(default=lambda: False)
+    #: One bounded audit pass that must finish by the given ``time.monotonic``
+    #: instant, or ``None`` when the audit has nothing left to sweep or the
+    #: instant passed while it waited for the owner.
+    audit_pass: Callable[[float], Awaitable[DerivationReport | None]] | None = None
 
     async def __call__(self, scope: Sequence[str] | None) -> DerivationReport:
         return await self.callback(scope)
+
+    async def converge_backlog(self, budget_s: float) -> DerivationReport:
+        """Run bounded passes back to back until the audit sweep finishes.
+
+        Each pass keeps its page and publication bounds, so no writer hold
+        grows; what changes is that a promoted generation's sweep no longer
+        advances one bounded pass per periodic tick. At 64 keys per pass and
+        three domains that was one minute of wall time per 64 sessions per
+        domain, whatever the writer and compute had free.
+        """
+        deadline = time.monotonic() + budget_s
+        report = await self.callback(None)
+        if self.audit_pass is None:
+            return report
+        # Every further pass carries the remaining time as its derivation
+        # deadline, so the kernel stops inside the pass rather than a pass
+        # started near the end overrunning the tick's budget.
+        while deadline > time.monotonic():
+            passed = await self.audit_pass(deadline)
+            if passed is None:
+                break
+            report = passed
+        return report
 
     async def converge_promoted(self) -> DerivationReport:
         return await self.promoted_callback()
@@ -67,8 +97,14 @@ def compose_session_profile_callback(
     # this domain's work pending without invalidating the index family
     # (polylogue-ylh7v).
     markers = make_session_marker_derivation(index_path, archive_root=archive_root)
+    from polylogue.daemon.convergence_stages import configured_derivation_barrier
+
     owner = SessionProfileConvergenceOwner(
-        DaemonConverger(stages=(), derivations=(summary, usage_rollup, profile, markers)),
+        DaemonConverger(
+            stages=(),
+            derivations=(summary, usage_rollup, profile, markers),
+            derivation_barrier=configured_derivation_barrier(archive_root),
+        ),
         compute_adapter=compute_adapter,
         write_bridge=write_bridge,
     )
@@ -82,13 +118,13 @@ def compose_session_profile_callback(
     audit_reset = True
     demand_reset = False
 
-    async def audit_tick() -> DerivationReport:
+    async def audit_tick(deadline_at: float | None = None) -> DerivationReport:
         nonlocal audit_index, audit_reset, demand_reset
         domain = audit_domains[audit_index]
         frame = make_session_profile_frame(index_path, archive_root=archive_root, scope=None, profile_full_scan=True)
         report = await owner.converge(
             frame,
-            budget=audit_budget,
+            budget=audit_budget if deadline_at is None else replace(audit_budget, deadline_at=deadline_at),
             domains=(domain,),
             resume=not audit_reset,
         )
@@ -100,6 +136,15 @@ def compose_session_profile_callback(
         return report
 
     async def converge(scope: Sequence[str] | None) -> DerivationReport:
+        """Converge demanded session work; never the archive-wide audit.
+
+        Demand runs first on every tick (polylogue-6remh): a periodic tick
+        that swept the startup audit before demand starved demanded profiles
+        for as long as the audit took, and an idle tick must inspect nothing.
+        The audit is the startup/promotion sweep, advanced only in bounded
+        slices by :meth:`ComposedSessionProfiles.converge_backlog` after this
+        demand pass, and it does not repeat once swept.
+        """
         nonlocal demand_reset
         if scope is not None:
             frame = make_session_profile_frame(
@@ -107,14 +152,21 @@ def compose_session_profile_callback(
             )
             return await owner.converge(frame)
         async with audit_lock:
-            if audit_index < len(audit_domains):
-                return await audit_tick()
             frame = make_session_profile_frame(
                 index_path, archive_root=archive_root, scope=None, profile_demand_only=True
             )
             report = await owner.converge(frame, resume=not demand_reset)
             demand_reset = False
             return report
+
+    async def audit_pass(deadline_at: float) -> DerivationReport | None:
+        async with audit_lock:
+            # The pass carries the absolute instant, so time spent waiting for
+            # the owner's lock or a compute worker is spent from the tick's
+            # budget rather than added to it.
+            if audit_index >= len(audit_domains) or deadline_at <= time.monotonic():
+                return None
+            return await audit_tick(deadline_at)
 
     async def converge_promoted() -> DerivationReport:
         nonlocal audit_index, audit_reset, demand_reset
@@ -135,4 +187,6 @@ def compose_session_profile_callback(
         converge,
         converge_promoted,
         make_session_insight_maintenance(owner, index_db_path=index_path, archive_root=archive_root),
+        audit_pending=lambda: audit_index < len(audit_domains),
+        audit_pass=audit_pass,
     )

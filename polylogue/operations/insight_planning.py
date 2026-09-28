@@ -24,7 +24,8 @@ from polylogue.operations.mutation_transaction import (
     MutationPlan,
     MutationReceipt,
     MutationTarget,
-    RecoveryDisposition,
+    RecoveryResolution,
+    ReplayHandles,
     build_typed_plan,
 )
 from polylogue.storage.derived.session.threads import thread_root_ids_sync
@@ -59,8 +60,11 @@ class AcceptedInsightActuator:
     def apply(self, _plan: MutationPlan, _args: object) -> MutationReceipt:
         raise RuntimeError("accepted insight publication requires the shared staged owner")
 
-    def inspect_recovery(self, _operation: object, _args: object) -> RecoveryDisposition:
-        return RecoveryDisposition("unknown", "operator-blocking", "insight recovery requires exact output bindings")
+    def recover(self, _handles: ReplayHandles, _plan: MutationPlan) -> RecoveryResolution:
+        """Terminalize an interrupted page; see ``InsightsRebuildActuator.recover``."""
+        return RecoveryResolution(
+            "not-replayable", "an interrupted insight page is re-derived by convergence or a new rebuild request"
+        )
 
 
 def _required_index_connection(archive: ArchiveStore) -> sqlite3.Connection:

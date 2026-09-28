@@ -1024,16 +1024,6 @@ def _convergence_debt(
     }
 
 
-def _boundary_table_counts(
-    conn: sqlite3.Connection,
-    *,
-    ops_db: Path | None = None,
-    source_db: Path | None = None,
-    exact: bool = False,
-) -> dict[str, int]:
-    return _boundary_table_counts_and_precision(conn, ops_db=ops_db, source_db=source_db, exact=exact)[0]
-
-
 def _boundary_table_counts_and_precision(
     conn: sqlite3.Connection,
     *,

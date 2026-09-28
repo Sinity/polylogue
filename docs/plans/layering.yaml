@@ -140,7 +140,7 @@ writer_modules:
       entrypoints:
         [begin_embedding_attempt, complete_embedding_attempt_success, finalize_embedding_attempt_success,
         mark_session_embedding_error, publish_embedding_attempt_window, record_embedding_failure,
-        replace_message_embedding_derivation, resolve_embedding_failure, resolve_open_embedding_failures_for_session,
+        replace_message_embedding_derivation, resolve_embedding_failure,
         supersede_embedding_attempt, upsert_message_embedding, upsert_message_embeddings]
     - path: polylogue/storage/sqlite/archive_tiers/user_write.py
       surfaces:
@@ -235,7 +235,6 @@ rules:
         - polylogue/operations/mutation_transaction
         - polylogue/operations/mutation_actuators
         - polylogue/operations/delete_authorization
-        - polylogue/operations/session_mutations
         - polylogue/annotations/importer
       baseline: docs/plans/layering-cli-mutation-authority-baseline.json
 
@@ -255,7 +254,6 @@ rules:
         - polylogue/operations/mutation_transaction
         - polylogue/operations/mutation_actuators
         - polylogue/operations/delete_authorization
-        - polylogue/operations/session_mutations
       baseline: docs/plans/layering-cli-mutation-authority-baseline.json
 
   - target: polylogue/mcp
@@ -274,9 +272,11 @@ rules:
 
       An import rule can only ever see a *direct* import, which is one
       spelling of the write; the facade-routed spelling is invisible to it by
-      construction. That half is censused by
-      ``tests/unit/api/test_facade_mutation_census.py``, which pins the
-      twenty caller methods and their surface reach. This rule covers the
+      construction. That half closed in #5550: the facade no longer writes
+      in-process, every public mutation submits a declared daemon operation
+      (``polylogue/api/facade_client.py``), and the census that pinned the
+      twenty ``_execute_facade_mutation`` callers retired with the helper.
+      This rule covers the
       direct half: ``polylogue/mcp/server_cutover.py`` imports
       ``polylogue.annotations.importer``, which drives ``OperationExecutor``
       against ``user.db`` in the MCP process. That import is the MCP twin of
@@ -287,7 +287,6 @@ rules:
         - polylogue/operations/mutation_transaction
         - polylogue/operations/mutation_actuators
         - polylogue/operations/delete_authorization
-        - polylogue/operations/session_mutations
         - polylogue/annotations/importer
       baseline: docs/plans/layering-cli-mutation-authority-baseline.json
 

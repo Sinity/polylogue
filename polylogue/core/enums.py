@@ -609,8 +609,10 @@ class IngestOutcome(PolylogueStrEnum):
     parsing produced no materializable sessions.
     ``CORRUPT_INPUT``: the raw bytes could not be decoded as the expected
     payload shape (empty blob, undecodable JSON/UTF-8).
-    ``TRANSIENT_ERROR``: a retryable infrastructure failure (SQLite
-    lock/busy contention) at the archive-write boundary.
+    ``TRANSIENT_ERROR``: a retryable infrastructure failure at the
+    archive-write boundary: SQLite lock/busy contention, or an archive storage
+    fault (full disk, I/O error, corrupt page, read-only mount) that says
+    nothing about the input and is retried once storage recovers.
     ``PARSER_DEFECT``: an unexpected exception from parsing/transform that
     is not one of the above structurally-detected classes -- a real bug
     bucket, not a guess.

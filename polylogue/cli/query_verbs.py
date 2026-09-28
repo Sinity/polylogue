@@ -10,6 +10,7 @@ import json
 import shlex
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import click
@@ -745,6 +746,8 @@ def _build_read_projection_spec(
         _effective_read_output_format(request, view=primary_view, output_format=output_format) or "markdown"
     )
     query_spec = request.query_spec()
+    if selection_limit is not None and query_spec.limit != selection_limit:
+        query_spec = replace(query_spec, limit=selection_limit)
     origin = query_spec.origins[0] if len(query_spec.origins) == 1 else None
     project_path = selection_project_path if selection_project_path is not None else query_spec.cwd_prefix
     project_repo = (
@@ -1164,6 +1167,9 @@ def read_verb(
     env: AppEnv = ctx.obj
     output_format = normalize_output_dialect(output_format)
     request = _parent_request(ctx)
+    if ref is not None and _is_direct_session_ref(ref):
+        # Normalize positional session refs before --spec and --explain.
+        request = request.with_query_terms((ref,))
     # Rendering inherits the root format, but the explained stage reports what
     # the read verb itself was given: the stage describes this verb's options,
     # not the invocation's output encoding.
@@ -1247,6 +1253,7 @@ def read_verb(
     render_layout = _merge_render_option("layout", render_settings.get("layout"), render_layout)
     timestamp_policy = _merge_render_option("timestamps", render_settings.get("timestamps"), timestamp_policy)
     output_format = _merge_render_option("format", render_settings.get("format"), output_format)
+    local_output_format = _merge_render_option("format", render_settings.get("format"), local_output_format)
     destination = (
         _merge_render_option("destination", render_settings.get("destination"), destination_alias) or destination
     )
@@ -1260,6 +1267,8 @@ def read_verb(
     primary_view = view_tokens[0]
     if all_matches and first_only:
         raise click.UsageError("read --all and --first are mutually exclusive.")
+    if all_matches and continuation is not None and not _spec_is_exact_session_ref(request.query_spec()):
+        raise click.UsageError("read --all cannot broadcast a session-bound --continuation across sessions.")
     if full and limit is not None and primary_view in {"messages", "raw"}:
         raise click.UsageError("read --full and --limit are mutually exclusive for paginated session-body views.")
     if destination == RenderDestination.FILE and not out_path:
@@ -1280,7 +1289,9 @@ def read_verb(
         projection_neighbor_window_hours if len(view_tokens) == 1 and view_tokens[0] == "neighbors" else None
     )
     uses_context_image_selector = "context-image" in view_tokens
-    context_image_max_sessions = min(max_sessions, limit) if limit is not None else max_sessions
+    context_image_max_sessions = projection_context_max_sessions
+    if context_image_max_sessions is None:
+        context_image_max_sessions = min(max_sessions, limit) if limit is not None else max_sessions
     spec_selection_limit = context_image_max_sessions if uses_context_image_selector else selection_limit
     if show_spec:
         spec = _build_read_projection_spec(
@@ -1332,12 +1343,6 @@ def read_verb(
         payload = run_coroutine_sync(env.polylogue.resolve_ref(ref))
         click.echo(serialize_surface_payload(payload, exclude_none=True))
         return
-
-    if ref is not None:
-        # Session refs are the exact-selection spelling of the ordinary read
-        # route. Keeping the ref as a query term lets the normal resolver apply
-        # view profiles, projection budgets, and handler-specific options.
-        request = request.with_query_terms((ref,))
 
     # Summary all-mode is the command-floor replacement for the old list verb:
     # it preserves the summary-list envelope and fields/limit behavior instead
@@ -1659,11 +1664,16 @@ def continue_verb(
     if execute:
         result = subprocess.run(route.argv, cwd=route.cwd, check=False)
         if result.returncode:
-            raise click.exceptions.Exit(result.returncode)
+            raise SystemExit(_shell_exit_status(result.returncode))
         return
     if destination not in (RenderDestination.TERMINAL, RenderDestination.STDOUT) or out_path is not None:
         raise click.UsageError("continue prints its command to terminal/stdout; omit --to/--out.")
     click.echo(route.command)
+
+
+def _shell_exit_status(returncode: int) -> int:
+    """Map subprocess signal termination to the shell's conventional status."""
+    return 128 + abs(returncode) if returncode < 0 else returncode
 
 
 @click.command("delete")
@@ -1720,9 +1730,13 @@ def delete_verb(
     output_format = normalize_output_dialect(output_format)
     env: AppEnv = ctx.obj
     request = _parent_request(ctx)
+    inherited_output_format = request.params.get("output_format")
     effective_output_format = output_format or (
-        request.params.get("output_format") if isinstance(request.params.get("output_format"), str) else None
+        inherited_output_format if isinstance(inherited_output_format, str) else None
     )
+    # Named projection callbacks enter through the same renderer, so use the
+    # root query's inherited dialect in every branch below.
+    output_format = effective_output_format
     if _explain_terminal_action(
         request,
         action="delete",
@@ -1741,12 +1755,13 @@ def delete_verb(
     # which caps at the default limit of 20 and would preview fewer sessions
     # than --yes --all actually deletes (#1873).
     if dry_run:
-        probe_ids = probe_session_ids_for_verb(env, request, limit=2)
+        probe_ids = probe_session_ids_for_verb(env, request, limit=AMBIGUITY_CANDIDATE_LIMIT + 1)
         if len(probe_ids) > 1 and not all_flag:
             raise AmbiguousSelectionError(
                 "'delete dry-run' matched multiple sessions. "
                 "Use --all to preview every matched session, or narrow the query.",
                 candidates=tuple(probe_ids[:AMBIGUITY_CANDIDATE_LIMIT]),
+                bounded=len(probe_ids) > AMBIGUITY_CANDIDATE_LIMIT,
                 next_actions=(
                     NextAction("Preview every matched session", "polylogue find <QUERY> then delete --dry-run --all"),
                     NextAction("Preview one session", "polylogue find id:'<REF>' then delete --dry-run"),
@@ -2322,6 +2337,8 @@ def _invoke_analyze_projection(ctx: click.Context, **kwargs: object) -> None:
 def analyze_count_command(ctx: click.Context, *, output_format: str | None) -> None:
     """Print the matched-session count."""
     request = _named_analyze_request(ctx, count_only=True)
+    if _explain_terminal_action(request, action="analyze", projection="count"):
+        return
     output_format = normalize_output_dialect(output_format)
     if output_format:
         request = request.with_param_updates(output_format=output_format)
@@ -2341,6 +2358,8 @@ def analyze_count_command(ctx: click.Context, *, output_format: str | None) -> N
 def analyze_by_command(ctx: click.Context, *, dimension: str, output_format: str | None, limit: int | None) -> None:
     """Group the matched sessions by DIMENSION."""
     request = _named_analyze_request(ctx, stats_only=False, stats_by=dimension)
+    if _explain_terminal_action(request, action="analyze", projection="by", dimension=dimension, limit=limit):
+        return
     output_format = normalize_output_dialect(output_format)
     if output_format:
         request = request.with_param_updates(output_format=output_format)
@@ -2361,6 +2380,8 @@ def analyze_facets_command(
     """Show facet families for the matched query scope."""
     env: AppEnv = ctx.obj
     request = _named_analyze_request(ctx)
+    if _explain_terminal_action(request, action="analyze", projection="facets"):
+        return
     response = run_coroutine_sync(
         env.polylogue.facets(request.query_spec(), include_idf=not no_idf, include_deferred=include_deferred)
     )

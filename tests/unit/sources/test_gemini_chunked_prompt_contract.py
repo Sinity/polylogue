@@ -473,16 +473,6 @@ class TestMetadataRoundtrip:
         assert assistant_msgs
         assert all(any(b.type == BlockType.TEXT for b in m.blocks) for m in assistant_msgs)
 
-    def test_thinking_budget_and_is_thought_surface_at_top_level(self) -> None:
-        # isThought / thinkingBudget are no longer retained in provider_meta;
-        # the canonical signal is the thinking block on the message.
-        payload = _load_catalog("code_execution_prompt.json")
-        session = _parse(payload, "code_execution_prompt")
-        thought_msgs = [m for m in session.messages if any(b.type == BlockType.THINKING for b in m.blocks)]
-        assert len(thought_msgs) == 1
-        thinking_block = next(b for b in thought_msgs[0].blocks if b.type == BlockType.THINKING)
-        assert thinking_block.text == "I should use code execution."
-
     def test_safety_ratings_round_trip_into_provider_meta(self) -> None:
         # safetyRatings are no longer retained in provider_meta; the message
         # that previously carried them is still parsed with its text intact.

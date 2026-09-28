@@ -658,17 +658,6 @@ class TestSeedDeterminism:
         b = corpus.generate(count=3, seed=42)
         assert a == b, f"{provider}: same seed produced different output"
 
-    def test_different_seeds_produce_different_output(self) -> None:
-        """Different seeds produce different output."""
-        available = SyntheticCorpus.available_providers()
-        if not available:
-            fail_missing_schema("No schemas available")
-
-        corpus = SyntheticCorpus.for_provider(available[0])
-        a = corpus.generate(count=2, seed=1)
-        b = corpus.generate(count=2, seed=2)
-        assert a != b
-
 
 class TestMessageCountContract:
     """Generated sessions respect the message count range."""

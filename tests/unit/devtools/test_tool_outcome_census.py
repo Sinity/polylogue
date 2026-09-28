@@ -177,3 +177,12 @@ def test_main_censuses_an_explicit_candidate_archive_root(tmp_path: Path, capsys
 
     assert tool_outcome_census.main(["--archive-root", str(candidate_root), "--json"]) == 0
     assert '"clean": true' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("root", ["", "relative/candidate"])
+def test_main_rejects_empty_or_relative_candidate_roots(root: str, capsys: pytest.CaptureFixture[str]) -> None:
+    """Anti-vacuity: empty Path values must not resolve to the active cwd."""
+    with pytest.raises(SystemExit) as exc_info:
+        tool_outcome_census.main(["--archive-root", root])
+    assert exc_info.value.code == 2
+    assert "absolute candidate root" in capsys.readouterr().err

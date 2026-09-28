@@ -55,10 +55,17 @@ def _write_blob(blob_root: Path, payload: bytes) -> str:
 
 
 def _claude_payload(title: str = "hello") -> bytes:
-    """Produce a tiny well-formed Claude web export payload."""
+    """Produce a tiny Claude web export payload the current schema accepts.
+
+    ``summary`` and ``account`` are required by the current package; without
+    them schema selection falls back to a historical schema after one
+    rejected probe, which is a second validation pass by construction.
+    """
     body = {
         "uuid": f"conv-{title}",
         "name": title,
+        "summary": "",
+        "account": {"uuid": "account-fixture"},
         "created_at": "2026-01-01T00:00:00Z",
         "updated_at": "2026-01-01T00:00:00Z",
         "chat_messages": [
@@ -219,18 +226,26 @@ class TestValidateRecordSyncDeterminism:
     def test_current_payload_uses_one_schema_validation_pass(
         self, blob_root: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The runtime consumes schema-selection verdicts instead of revalidating them."""
+        """The runtime consumes schema-selection verdicts instead of revalidating them.
+
+        Selection may probe several schema versions (the resolved one, then
+        historical ones until one accepts), so the number of calls follows the
+        payload. What must never happen is validating the same sample against
+        the same validator twice. Anti-vacuity: re-run ``validator.validate``
+        over the selected samples in ``_validate_record_sync`` and a
+        (validator, sample) pair repeats.
+        """
         from polylogue.schemas.validator import SchemaValidator
 
         payload = _claude_payload("single-pass")
         digest = _write_blob(blob_root, payload)
         record = _make_record(digest, payload=payload)
-        calls = 0
+        # Holding the objects keeps their ids unique for the whole call.
+        probed: list[tuple[SchemaValidator, object]] = []
         original_validate = SchemaValidator.validate
 
         def count_validate(validator: SchemaValidator, sample: object, *, include_drift: bool | None = None) -> object:
-            nonlocal calls
-            calls += 1
+            probed.append((validator, sample))
             return original_validate(validator, sample, include_drift=include_drift)
 
         monkeypatch.setattr(SchemaValidator, "validate", count_validate)
@@ -238,7 +253,9 @@ class TestValidateRecordSyncDeterminism:
         outcome = _validate_record_sync(record, ValidationMode.STRICT, str(blob_root))
 
         assert outcome.validation_status is ValidationStatus.PASSED
-        assert calls == 1
+        assert probed
+        pairs = [(id(validator), id(sample)) for validator, sample in probed]
+        assert len(pairs) == len(set(pairs))
 
     @pytest.mark.asyncio
     async def test_evaluate_retained_wal_sqlite_keeps_blob_namespace_pristine(

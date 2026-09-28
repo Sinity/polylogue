@@ -67,6 +67,7 @@ __all__ = [
     "PageLike",
     "PassCursor",
     "PendingReason",
+    "PublicationBarrier",
     "Replacement",
     "ReplacementLike",
     "WorkCounters",
@@ -75,6 +76,11 @@ __all__ = [
 
 #: Keys requested per discovery call when the caller declares no page budget.
 DEFAULT_PAGE = 128
+
+
+def _pass_clock() -> float:
+    """The clock one pass's deadline is measured on (monotonic seconds)."""
+    return time.monotonic()
 
 
 class KeyStatus(Enum):
@@ -241,6 +247,10 @@ class Budget:
     publication: int | None = None
     retained_outcomes: int | None = None
     deadline_s: float | None = None
+    #: An absolute ``time.monotonic`` instant the pass must stop by, for a
+    #: caller whose wall budget started before the pass could (owner lock,
+    #: compute queue). Checked alongside the relative ``deadline_s``.
+    deadline_at: float | None = None
 
     def __post_init__(self) -> None:
         if self.page < 1:
@@ -326,11 +336,6 @@ class PassCursor:
     def position(self, domain: str) -> DomainCursor:
         return self.positions.get(domain, DomainCursor())
 
-    def with_position(self, domain: str, cursor: DomainCursor) -> PassCursor:
-        merged = dict(self.positions)
-        merged[domain] = cursor
-        return PassCursor(merged)
-
 
 @dataclass(frozen=True, slots=True)
 class DerivationReport:
@@ -380,8 +385,21 @@ class DerivationReport:
         return self.work.published == 0
 
 
+#: Returns the subset of the given session ids whose newest admitted revision
+#: may not yet feed derived output (the Sinex primary publication barrier).
+PublicationBarrier = Callable[[Sequence[str]], set[str]]
+
+
 class DerivationAdapter(Protocol):
-    """One domain's derivation. The domain owns its storage, SQL, and atomicity."""
+    """One domain's derivation. The domain owns its storage, SQL, and atomicity.
+
+    A domain whose output derives from session content may also implement
+    ``barrier_sessions(frame, keys) -> Mapping[key, session_id | session_ids]``.
+    A pass run with a publication barrier consults it for required keys and
+    holds every key any of whose sessions the barrier names as pending; a
+    domain without it is not session-derived and is never held. Retiring an
+    excess key derives nothing from new content, so retirement is never held.
+    """
 
     @property
     def domain(self) -> str: ...
@@ -553,12 +571,14 @@ class _Pass:
         frame: DerivationFrame,
         budget: Budget,
         publisher: Callable[[str, Callable[[], bool]], bool] | None,
+        barrier: PublicationBarrier | None = None,
     ) -> None:
         self.registry = registry
         self.frame = frame
         self.budget = budget
         self.publisher = publisher
-        self.started = time.monotonic()
+        self.barrier = barrier
+        self.started = _pass_clock()
         self.counts: dict[Outcome, int] = {Outcome.DONE: 0, Outcome.PENDING: 0, Outcome.FAILED: 0}
         self.retained: list[KeyOutcome] = []
         self.truncated = False
@@ -603,8 +623,11 @@ class _Pass:
     # ── bounds ─────────────────────────────────────────────────────
 
     def out_of_time(self) -> bool:
+        now = _pass_clock()
         deadline = self.budget.deadline_s
-        return deadline is not None and time.monotonic() - self.started >= deadline
+        if deadline is not None and now - self.started >= deadline:
+            return True
+        return self.budget.deadline_at is not None and now >= self.budget.deadline_at
 
     def work_exhausted(self, *, inspected: bool = False) -> bool:
         """True when no further key in this pass can be computed or published."""
@@ -652,6 +675,47 @@ class _Pass:
         if position.phase is DiscoveryPhase.REQUIRED:
             return DomainCursor(DiscoveryPhase.EXCESS, None, 0)
         return DomainCursor(DiscoveryPhase.DONE, None, 0)
+
+    # ── publication barrier ────────────────────────────────────────
+
+    def barrier_blocks(
+        self, adapter: DerivationAdapter, keys: Sequence[str], *, phase: DiscoveryPhase
+    ) -> dict[str, str]:
+        """Map each candidate key held by the publication barrier to its reason.
+
+        A held key is PENDING, not FAILED: it becomes derivable as soon as its
+        session's newest revision is published, and the next pass sees that
+        from the barrier itself. A barrier that cannot be read holds every
+        session-derived candidate, because deriving past an unknown barrier is
+        exactly the ordering violation it exists to prevent.
+        """
+        mapper = getattr(adapter, "barrier_sessions", None)
+        if self.barrier is None or mapper is None or not keys or phase is not DiscoveryPhase.REQUIRED:
+            return {}
+        try:
+            sessions: dict[str, tuple[str, ...]] = {
+                str(key): (str(value),) if isinstance(value, str) else tuple(str(item) for item in value)
+                for key, value in dict(mapper(self.frame, keys)).items()
+            }
+            blocked = self.barrier(tuple(dict.fromkeys(session for group in sessions.values() for session in group)))
+        except Exception as exc:
+            emit(
+                "daemon.derivation.barrier_failed",
+                level=WARNING,
+                outcome="error",
+                phase="barrier",
+                domain=adapter.domain,
+                considered=len(keys),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
+            return dict.fromkeys(keys, f"publication barrier unreadable: {exc}")
+        held: dict[str, str] = {}
+        for key, group in sessions.items():
+            waiting = sorted(session for session in group if session in blocked)
+            if waiting:
+                held[key] = f"session {', '.join(waiting)} awaits primary publication"
+        return held
 
     # ── prerequisites ──────────────────────────────────────────────
 
@@ -789,7 +853,17 @@ class _Pass:
             )
             return
 
+        held_at_admission: dict[str, str] = {}
+
         def _publish(adapter: DerivationAdapter = adapter, replacement: ReplacementLike = replacement) -> bool:
+            # Compute ran outside the writer, so the pre-compute barrier
+            # decision may be stale: an ingest can stage a newer, unpublished
+            # revision meanwhile. Re-decide inside the writer admission, where
+            # no such ingest can interleave, and refuse the publication.
+            if not retiring:
+                held_at_admission.update(self.barrier_blocks(adapter, (key,), phase=DiscoveryPhase.REQUIRED))
+                if held_at_admission:
+                    return False
             return adapter.publish(self.frame, replacement)
 
         # The publication budget bounds *attempts*, not successes. Counting
@@ -825,7 +899,8 @@ class _Pass:
                 KeyOutcome(
                     key=derivation_key,
                     outcome=Outcome.PENDING,
-                    reason=PendingReason.BINDING_MOVED,
+                    reason=PendingReason.BLOCKED if held_at_admission else PendingReason.BINDING_MOVED,
+                    error=held_at_admission.get(key),
                     elapsed_s=elapsed,
                 )
             )
@@ -977,11 +1052,31 @@ class _Pass:
             else:
                 statuses = dict.fromkeys(keys, KeyStatus.EXCESS)
 
+            held = self.barrier_blocks(
+                adapter,
+                [
+                    key
+                    for key in keys
+                    if self.verdicts.get(DerivationKey(domain, key)) is not Outcome.FAILED
+                    and statuses.get(key, KeyStatus.MISSING) is not KeyStatus.VALID
+                ],
+                phase=position.phase,
+            )
             stopped_at: int | None = None
             for index, key in enumerate(keys):
                 if self.verdicts.get(DerivationKey(domain, key)) is Outcome.FAILED:
                     continue
                 if statuses.get(key, KeyStatus.MISSING) is KeyStatus.VALID:
+                    continue
+                if key in held:
+                    self.record(
+                        KeyOutcome(
+                            key=DerivationKey(domain, key),
+                            outcome=Outcome.PENDING,
+                            reason=PendingReason.BLOCKED,
+                            error=held[key],
+                        )
+                    )
                     continue
                 if stopped_at is not None or self.work_exhausted(inspected=True):
                     # Already classified, so it is reported; not attempted, so
@@ -1010,6 +1105,7 @@ def converge(
     publisher: Callable[[str, Callable[[], bool]], bool] | None = None,
     domains: Sequence[str] | None = None,
     cursor: PassCursor | None = None,
+    barrier: PublicationBarrier | None = None,
 ) -> DerivationReport:
     """Run one bounded convergence pass and report every key it reached.
 
@@ -1026,10 +1122,13 @@ def converge(
     relations. Keys beyond the page a bound stopped in are not enumerated at
     all -- a pass over a domain of a million keys reports the page it looked
     at, not a million pending results.
+
+    ``barrier`` holds session-derived keys whose session's newest revision is
+    not yet published to the primary store (see :class:`DerivationAdapter`).
     """
     limits = Budget.coerce(budget, deadline_s=deadline_s)
     resume = cursor or PassCursor()
-    state = _Pass(registry, frame, limits, publisher)
+    state = _Pass(registry, frame, limits, publisher, barrier)
 
     selected = registry.ordered()
     if domains is not None:

@@ -11,6 +11,7 @@ import pytest
 
 from polylogue import Polylogue
 from polylogue.core.enums import Provider
+from polylogue.operations.operation_context import open_operation_read
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage.sqlite.archive_tiers import revision_governance as archive_revision_governance
@@ -98,6 +99,10 @@ def _watcher(archive: Polylogue, root: Path) -> LiveWatcher:
         archive,
         (WatchSource(name="claude-code", root=root),),
         cursor=CursorStore(archive.archive_root / "index.db"),
+        # The daemon's read route. Without it off-writer preparation defers
+        # every full-route file, the write never runs, and the injected lock
+        # these tests exist to exercise is never reached.
+        read_snapshot=open_operation_read,
     )
 
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sqlite3
+import time
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Sequence
 from contextlib import closing, contextmanager, suppress
 from dataclasses import dataclass
@@ -25,7 +26,6 @@ from typing import Any, Protocol, cast
 from polylogue.archive.revision_authority import decided_unresolved_membership_sql
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.protocols import ArchiveRootOwner
-from polylogue.core.source_halts import halted_sources
 from polylogue.core.sources import provider_from_origin
 from polylogue.logging import get_logger
 from polylogue.sources.hooks import (
@@ -87,6 +87,7 @@ _PARSER_FINGERPRINT = "live-batched-v3"
 # overshoot is one work item. Past the writer gate's own declared hold bound
 # the same checkpoints end the pass with ``WriteHoldBudgetError``.
 _LIVE_INGEST_MAX_PASS_SECONDS = 20.0
+_RAW_RETENTION_RETRY_BUDGET_SECONDS = 30.0
 _INCOMPLETE_APPEND_PROBE_BYTES = 64 * 1024 * 1024
 # polylogue-dhkuu: the probe's own working set, independent of how much tail
 # it is allowed to scan. The scan looks only for the first b"\n", so it never
@@ -180,54 +181,6 @@ def _directory_identity(path: Path) -> tuple[int, int] | None:
     except OSError:
         return None
     return (stat.st_dev, stat.st_ino)
-
-
-class _SourceTreeWalk:
-    """One source's catch-up walk, following deliberate directory symlinks.
-
-    A directory symlink under a watch root is a deliberate placement -- the
-    inbox exposes whole export corpora that way -- so the walk enters it.
-    Two things bound what that admits:
-
-    ``_walked`` holds every directory identity already entered, so a link to
-    an ancestor or to an already-walked tree is not followed a second time; a
-    cycle terminates and one corpus reachable under two names is one candidate.
-
-    ``_containment`` holds, per walked directory, the real root of the tree
-    the walk is inside: the source root, or the target of the last symlink it
-    followed. A file whose resolved path leaves that tree is a symlink
-    escaping the watch root and is never a candidate.
-    """
-
-    def __init__(self, source: WatchSource) -> None:
-        self._source = source
-        root = source.root.resolve()
-        self._walked = {identity for identity in (_directory_identity(source.root),) if identity is not None}
-        self._containment: dict[str, Path] = {str(source.root): root}
-
-    def descendable(self, directory: Path, dirnames: list[str]) -> list[str]:
-        """Return the child directory names this walk may descend into."""
-        inherited = self._containment.get(str(directory), self._source.root.resolve())
-        descendable: list[str] = []
-        for dirname in dirnames:
-            child = directory / dirname
-            if self._source.ignores_directory(child):
-                continue
-            identity = _directory_identity(child)
-            if identity is None or identity in self._walked:
-                continue
-            self._walked.add(identity)
-            self._containment[str(child)] = child.resolve() if child.is_symlink() else inherited
-            descendable.append(dirname)
-        return descendable
-
-    def contains(self, directory: Path, path: Path) -> bool:
-        """Whether ``path`` stays inside the real tree the walk is in."""
-        root = self._containment.get(str(directory), self._source.root.resolve())
-        try:
-            return path.resolve().is_relative_to(root)
-        except OSError:
-            return False
 
 
 #: Directory names no watched root ever descends into.
@@ -469,15 +422,31 @@ class LiveWatcher:
         return self._intake_revisions[source.root]
 
     async def retry_raw_retention_backlog(self) -> None:
-        """Drain retry-due retention debt even when no source changed."""
-        async with self._ingest_lock:
-            if not self._batch_processor._raw_retention_backlog_paths(exclude=set()):
+        """Drain retry-due retention debt even when no source changed.
+
+        Bounded passes repeat while the due backlog keeps changing, inside a
+        budget shorter than the convergence tick. One pass per tick made the
+        drain cadence-bound: after a cold build every admitted file owes
+        retention, and a fixed page per minute is a day of backlog for a
+        full archive. A pass that retains nothing re-records its paths with
+        backoff, so the due set moves on or empties; an unchanged set ends
+        the drain. The ingest lock is released between passes.
+        """
+        deadline = time.monotonic() + _RAW_RETENTION_RETRY_BUDGET_SECONDS
+        previous: list[Path] | None = None
+        while True:
+            async with self._ingest_lock:
+                backlog = self._batch_processor._raw_retention_backlog_paths(exclude=set())
+                if not backlog or backlog == previous:
+                    return
+                await self._run_writer_sync(
+                    "watcher.live_ingest.raw_compaction_retry",
+                    self._batch_processor._compact_superseded_raw_snapshots,
+                    [],
+                )
+            previous = backlog
+            if time.monotonic() >= deadline:
                 return
-            await self._run_writer_sync(
-                "watcher.live_ingest.raw_compaction_retry",
-                self._batch_processor._compact_superseded_raw_snapshots,
-                [],
-            )
 
     def _existing_source_roots(self) -> list[Path]:
         """Return configured roots that exist at the instant of a scan."""
@@ -1227,7 +1196,11 @@ class LiveWatcher:
         The lock is process-local ordering on top of that: one live ingest at
         a time in this process.
         """
-        self._batch_processor.require_cursor_authority(paths)
+        from polylogue.core.degraded import is_fully_degraded
+
+        if not is_fully_degraded():
+            # A degraded batch returns its skip metrics without the gate.
+            self._batch_processor.require_cursor_authority(paths)
         async with self._ingest_lock:
             return await self._batch_processor.ingest_files(
                 paths,
@@ -1260,33 +1233,6 @@ class LiveWatcher:
             # Source admission is already durable.  The owner reconstructs
             # missed work from output inspection in its periodic no-hint pass.
             logger.warning("live.watcher: lease-free session profile convergence did not complete", exc_info=True)
-
-    async def _publish_source_halts(self) -> None:
-        """Record every newly halted source as a durable event, once each.
-
-        Without this the halt exists only as one rate-limited log line, which
-        scrolls away while the source stays stopped for the rest of the run.
-        """
-        if self._event_emitter is None:
-            return
-        emitter = self._event_emitter
-        for source_name, reason in sorted(halted_sources().items()):
-            if self._published_source_halts.get(source_name) == reason.code:
-                continue
-            self._published_source_halts[source_name] = reason.code
-            payload: dict[str, object] = {
-                "source_name": source_name,
-                "code": reason.code,
-                "message": reason.message,
-                "derived_only": reason.derived_only,
-                "detail": dict(reason.detail) if reason.detail is not None else None,
-            }
-            await self._run_writer_sync(
-                "watcher.source_halt.event",
-                emitter,
-                "source_ingest_halted",
-                payload,
-            )
 
     async def _run_coordinated(self, actor: str, operation: Callable[[], Awaitable[None]]) -> None:
         """Run a complete watcher write batch under the injected coordinator."""

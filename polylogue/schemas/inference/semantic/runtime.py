@@ -54,6 +54,16 @@ def infer_semantic_roles(
     return candidates
 
 
+def normalize_array_path(path: str) -> str:
+    """Spell every array element step as ``[*]``.
+
+    Pins are written as ``$.entries[].created`` while field statistics name
+    array elements ``$.entries[*].created``; matching must not depend on which
+    spelling a source used.
+    """
+    return path.replace("[]", "[*]")
+
+
 def select_best_roles(
     candidates: list[SemanticCandidate],
     *,
@@ -64,10 +74,12 @@ def select_best_roles(
     When ``pins`` is provided, candidates whose (path, role) appears in
     the rejected set are filtered out before selection.
     """
-    rejected: dict[str, set[str]] = pins or {}
+    rejected: dict[str, set[str]] = {}
+    for path, roles in (pins or {}).items():
+        rejected.setdefault(normalize_array_path(path), set()).update(roles)
     best: dict[str, SemanticCandidate] = {}
     for candidate in candidates:
-        if candidate.path in rejected and candidate.role in rejected[candidate.path]:
+        if candidate.role in rejected.get(normalize_array_path(candidate.path), ()):
             continue
         if candidate.role not in best or candidate.confidence > best[candidate.role].confidence:
             best[candidate.role] = candidate
@@ -97,6 +109,7 @@ def score_candidate(
 
 __all__ = [
     "RECORD_STREAM_ELIGIBLE_ROLES",
+    "normalize_array_path",
     "RECORD_STREAM_KINDS",
     "infer_semantic_roles",
     "score_candidate",

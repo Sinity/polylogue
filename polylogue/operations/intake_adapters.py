@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
 from polylogue.core.durable_fs import DurableFilesystemError
+from polylogue.core.storage_faults import ArchiveStorageFaultError
 from polylogue.daemon.intake import (
     DEFAULT_INTAKE_BYTE_BUDGET,
     UNMEASURABLE_INTAKE_COST_BYTES,
@@ -32,11 +33,12 @@ from polylogue.daemon.intake import (
     IntakeItem,
     IntakePass,
 )
-from polylogue.logging import WARNING, emit
+from polylogue.logging import ERROR, WARNING, emit
 from polylogue.maintenance.candidate_capacity import ArchiveCapacityError, InsufficientCapacityError
 from polylogue.maintenance.receipt_fs import MaintenanceReceiptPathError
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
+    active_cold_build_generation,
     active_index_generation_is_empty,
     clear_cold_build_generation,
     is_transient_cold_storage_errno,
@@ -45,7 +47,6 @@ from polylogue.sources.live.cold_build import (
 from polylogue.sources.live.discovery import _bounded_source_paths as _bounded_source_paths
 from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.metrics import (
-    REFUSED_DAEMON_DEGRADED,
     REFUSED_UNATTEMPTED,
     REFUSED_UNATTEMPTED_TIME_BUDGET,
 )
@@ -70,6 +71,7 @@ __all__ = [
     "active_index_generation_is_empty",
     "build_intake_adapters",
     "clear_cold_build_generation",
+    "active_cold_build_generation",
     "discover_pending_raw_ids",
     "register_cold_build_generation",
 ]
@@ -190,6 +192,13 @@ class FileIntakeAdapter(IntakeAdapter):
         self._discovery_thread = threading.local()
 
     async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+        from polylogue.core.degraded import is_fully_degraded
+
+        if is_fully_degraded():
+            # Discovery reads the cursor tier (due retries, pending fresh
+            # pages); a structurally degraded daemon must not touch it on every
+            # event, and has nothing to admit anyway (#1003).
+            return ()
         # Filesystem enumeration and path probes can be slow on mounted
         # sources. Keep them off the daemon's event loop.
         cancelled = threading.Event()
@@ -678,6 +687,43 @@ class FileIntakeAdapter(IntakeAdapter):
         ``retry_after`` and isolation accounting are exactly what they were
         under per-file admission.
         """
+        from polylogue.core.degraded import degraded_reason, is_fully_degraded
+
+        if is_fully_degraded():
+            # A structurally degraded daemon admits nothing and touches nothing:
+            # no authority gate (it reads the archive's existence journals), no
+            # cursor initialization, no selection. Every item stays retryable,
+            # so nothing is lost once the degradation is cleared (#1003), and
+            # costs nothing, so the class deficit is not charged for work that
+            # did not happen, and before any page bookkeeping, so the page stays
+            # unattempted. Discovery normally returns no page while degraded;
+            # this covers a page discovered just before.
+            degradation = degraded_reason()
+            detail = f"archive ingest is degraded: {degradation.code if degradation is not None else 'unknown'}"
+            # Forget the offered durable-retry page without rotating past it:
+            # the retry position did not advance, so the next discovery after
+            # recovery re-offers the same due items, tail included.
+            if self._local_retry_page:
+                # Offering a local retry page pushed its deadlines forward;
+                # nothing was attempted, so the items are due again at once.
+                now = self._clock()
+                with self._retry_state_lock:
+                    for offered in self._retry_page_paths:
+                        if offered in self._fresh_retry_debt:
+                            self._fresh_retry_debt[offered] = now
+            self._retry_page_pending = False
+            self._retry_page_paths = ()
+            self._local_retry_page = False
+            return {
+                item.item_id: AdmissionResult(
+                    AdmissionOutcome.RETRYABLE, reason=detail, actual_cost=0, unattempted=True
+                )
+                for item in items
+            }
+        # Bookkeeping below assumes the page is attempted; a late degradation
+        # (after this entry check) must restore it, since nothing was.
+        retry_after_before = self._retry_after
+        offered_local_retries = self._retry_page_paths if self._local_retry_page else ()
         for item in items:
             self._consume_retry_item(item)
             if not self._retry_page and isinstance(item.payload, (str, Path)):
@@ -791,6 +837,25 @@ class FileIntakeAdapter(IntakeAdapter):
                 skipped_file_count=len(skipped),
                 whole_archive_convergence=False,
             )
+        except ArchiveStorageFaultError as exc:
+            # Archive storage refused the page's writes (full disk, I/O error,
+            # corrupt page, read-only mount). No item is at fault and none was
+            # marked failed or quarantined; every one stays retryable. This is
+            # an operator condition, so it is reported at ERROR with the fault
+            # kind as its reason rather than as ordinary admission churn.
+            emit(
+                "daemon.intake.page_refused",
+                level=ERROR,
+                outcome="error",
+                reason=exc.reason,
+                component=self.class_name,
+                files=len(batch),
+                error_type=type(exc.__cause__ or exc).__name__,
+                error_detail=str(exc),
+            )
+            for item in batch:
+                outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.RETRYABLE, reason=str(exc))
+            return outcomes
         except (OSError, ValueError, RuntimeError) as exc:
             # A cursor-authority refusal lands here too: it is retryable for
             # every item in the page, and nothing in the archive changed. Say
@@ -844,10 +909,10 @@ class FileIntakeAdapter(IntakeAdapter):
         # spend; distributing the measured total over the admitted items in
         # proportion to their estimates keeps the class budget denominated in
         # bytes actually read.
-        refused_reasons = dict(getattr(metrics, "refused_bytes_by_reason", {}) or {})
-        unattempted_is_retryable = bool(getattr(metrics, "time_budget_exceeded", False)) or (
-            REFUSED_DAEMON_DEGRADED in refused_reasons
-        )
+        # The degraded skip is a flag, not a refused-byte bucket: a batch of
+        # empty files refuses zero bytes and still attempted nothing.
+        degraded_skip = bool(getattr(metrics, "daemon_degraded_skip", False))
+        unattempted_is_retryable = bool(getattr(metrics, "time_budget_exceeded", False)) or degraded_skip
         read_bytes = int(getattr(metrics, "source_payload_read_bytes", 0) or 0)
         estimated_total = sum(max(1, int(item.estimated_cost)) for item in batch)
         for item in batch:
@@ -862,6 +927,7 @@ class FileIntakeAdapter(IntakeAdapter):
                     AdmissionOutcome.RETRYABLE,
                     reason=f"source admission left {key} unattempted: {excluded_by_path[key]}",
                     actual_cost=0,
+                    unattempted=True,
                 )
             elif key in excluded_by_path:
                 # polylogue-onbz3: a durable refusal is not "already admitted
@@ -891,6 +957,7 @@ class FileIntakeAdapter(IntakeAdapter):
                     AdmissionOutcome.RETRYABLE,
                     reason=f"source admission left {key} unattempted",
                     actual_cost=0,
+                    unattempted=True,
                 )
             elif not succeeded:
                 # A zero-success, zero-failure batch supplied no per-item
@@ -907,8 +974,18 @@ class FileIntakeAdapter(IntakeAdapter):
                 # file. Acknowledgeable, never progress.
                 outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.DUPLICATE, actual_cost=item_estimate)
 
+        if degraded_skip:
+            self._retry_after = retry_after_before
+            if offered_local_retries:
+                now = self._clock()
+                with self._retry_state_lock:
+                    for offered in offered_local_retries:
+                        if offered in self._fresh_retry_debt:
+                            self._fresh_retry_debt[offered] = now
         admitted_paths = [path for path in paths if str(path) in succeeded]
-        if admitted_paths:
+        if admitted_paths and not is_fully_degraded():
+            # A later file in this batch may have degraded the daemon; derived
+            # follow-up converges from durable evidence once it recovers.
             converge_embeddings = getattr(self.context.watcher, "_converge_embeddings_off_writer", None)
             if callable(converge_embeddings):
                 await converge_embeddings(admitted_paths)
@@ -1463,9 +1540,32 @@ class DaemonIntakeService:
         self._progress_since_blocked = False
 
     async def run(self) -> None:
+        from polylogue.core.degraded import is_fully_degraded
+
         while True:
             self._wakeup.clear()
+            if is_fully_degraded():
+                # Parked, not drained: a structurally degraded daemon runs no
+                # pass (every adapter's discovery reads its own tier), so no
+                # retry deadline or retained page can spin the loop, and an
+                # empty pass can never read as a drained backlog that settles
+                # a cold build. Resume at the idle cadence or on a wakeup.
+                try:
+                    async with asyncio.timeout(self.idle_delay_s):
+                        await self._wakeup.wait()
+                except TimeoutError:
+                    pass
+                continue
             result = await self.dispatcher.run_once(budget=self.budget)
+            if is_fully_degraded():
+                # The pass itself degraded the daemon; park before any
+                # post-pass callback touches the archive (next iteration),
+                # but keep the progress it did commit, which later cold-build
+                # settlement depends on.
+                if result.progressed:
+                    self._progressed_once = True
+                    self._progress_since_blocked = True
+                continue
             schedulable = self.dispatcher.schedulable_classes()
             discovery_pending = any(bool(getattr(spec.adapter, "discovery_pending", False)) for spec in schedulable)
             retry_delays = tuple(

@@ -10,8 +10,8 @@ live binding that must resolve or an intentional absence with its reason.
 MCP rows are derived from the MCP declaration registry, so a new tool adds a
 row here automatically.
 
-Drift check: `devtools verify api-parity --check` (also run by
-`devtools verify --quick` as `gate api-parity`).
+Drift check: `devtools verify api-parity --check` (also asserted by
+`tests/unit/devtools/test_api_parity_surface.py`).
 
 ## Operations
 
@@ -35,7 +35,7 @@ Drift check: `devtools verify api-parity --check` (also run by
 
 ## Classification of the public Python facade
 
-Every public callable on `polylogue.api.Polylogue` (166 at
+Every public callable on `polylogue.api.Polylogue` (167 at
 render time) is either bound by an operation above or listed here as an
 explicit exclusion. An unclassified callable fails the parity gate.
 

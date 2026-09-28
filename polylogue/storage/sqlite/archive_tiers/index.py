@@ -157,8 +157,8 @@ def _profile_demand_sql(session_id: str) -> str:
 #
 # polylogue-u6tl: v51 wires delegation_facts.mapping_state/result_status onto
 # the `literal_check` generator (storage/sqlite/archive_tiers/common.py),
-# which previously had zero call sites despite CLAUDE.md documenting it by
-# name as the mechanism that keeps `typing.Literal` types and their SQL CHECK
+# which previously had zero call sites despite the agent instructions of the
+# time naming it as the mechanism that keeps `typing.Literal` types and their SQL CHECK
 # lists in lockstep. Both columns already only ever receive values from their
 # typed counterparts (DelegationMappingState / DelegationResultStatus in
 # archive_tiers/archive.py) in the canonical delegation-facts view; this only
@@ -231,7 +231,7 @@ def _profile_demand_sql(session_id: str) -> str:
 #    carried by resolved_dst_session_id IS NOT NULL.
 # Both title_source's CHECK and status's CHECK are also switched from a
 # hand-written literal IN (...) list to the generated `nullable_check()`
-# form, closing the CLAUDE.md-documented drift gap ("most hand-written
+# form, closing a drift gap the agent instructions of the time recorded ("most hand-written
 # CHECK(col IN (...)) lists ... still have no generator tie"). A live archive
 # can carry `title_source='unknown'` today (14,915 rows measured against
 # index.db user_version=46 before this bead's fix) or `link_type='repaired'`
@@ -649,6 +649,32 @@ CREATE TABLE IF NOT EXISTS sessions (
     {TABLE_SPECS["sessions"].ddl_body}
 ) STRICT;
 
+-- Transactional changed-key evidence for the process-local live admission
+-- certificate. Every new index reference is recorded, regardless of writer.
+CREATE TABLE IF NOT EXISTS raw_existence_changes (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    raw_id TEXT NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS raw_existence_journal_control (
+    singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+    retained_floor INTEGER NOT NULL DEFAULT 0 CHECK(retained_floor >= 0)
+) STRICT;
+INSERT OR IGNORE INTO raw_existence_journal_control(singleton) VALUES (1);
+CREATE TRIGGER IF NOT EXISTS raw_existence_session_insert AFTER INSERT ON sessions
+WHEN NEW.raw_id IS NOT NULL
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_session_update AFTER UPDATE OF raw_id ON sessions
+WHEN NEW.raw_id IS NOT NULL AND NEW.raw_id IS NOT OLD.raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_head_insert AFTER INSERT ON raw_revision_heads
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.accepted_raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_head_update AFTER UPDATE OF accepted_raw_id ON raw_revision_heads
+WHEN NEW.accepted_raw_id IS NOT OLD.accepted_raw_id
+BEGIN INSERT INTO raw_existence_changes(raw_id) VALUES (NEW.accepted_raw_id); END;
+CREATE TRIGGER IF NOT EXISTS raw_existence_journal_prune AFTER DELETE ON raw_existence_changes
+BEGIN UPDATE raw_existence_journal_control
+     SET retained_floor = max(retained_floor, OLD.sequence) WHERE singleton = 1; END;
+
 CREATE INDEX IF NOT EXISTS idx_sessions_origin_sort
 ON sessions(origin, sort_key_ms DESC);
 
@@ -687,6 +713,9 @@ WHERE root_session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_raw_id
 ON sessions(raw_id)
 WHERE raw_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_raw_revision_heads_accepted_raw_id
+ON raw_revision_heads(accepted_raw_id);
 
 -- polylogue-crwl6: the session-counter domain's input binding, colocated with
 -- the ``sessions`` row that *is* its output relation. A present row states

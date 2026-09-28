@@ -206,13 +206,22 @@ def test_outliers_aggregate_phases_and_report_test_and_file_shares(
         ),
         encoding="utf-8",
     )
+    for name, nodeid, duration in (
+        ("last-pytest-serial.json", "tests/unit/serial.py::test_serial", 4.0),
+        ("last-pytest-storage-scale.json", "tests/unit/storage_scale.py::test_scale", 5.0),
+    ):
+        (report_dir / name).write_text(
+            json.dumps({"tests": [{"nodeid": nodeid, "call": {"duration": duration}}]}), encoding="utf-8"
+        )
 
-    assert run_tests.print_outliers(2, root=tmp_path) == 0
+    assert run_tests.print_outliers(5, root=tmp_path) == 0
     output = capsys.readouterr().out
-    assert "Full-run receipts: 1; tests: 3; serial time: 17.20s" in output
-    assert "Top 2 slowest tests (93.0% of serial time):" in output
+    assert "Full-run receipts: 3; tests: 5; serial time: 26.20s" in output
+    assert "tests/unit/serial.py::test_serial" in output
+    assert "tests/unit/storage_scale.py::test_scale" in output
+    assert "Top 5 slowest tests (100.0% of serial time):" in output
     assert "tests/unit/slow.py::test_a" in output
-    assert "Top 2 slowest files (100.0% of serial time):" in output
+    assert "Top 4 slowest files (100.0% of serial time):" in output
     assert "tests/unit/slow.py" in output
 
 
@@ -269,7 +278,9 @@ def test_queued_focused_receipt_identifies_execution_content(monkeypatch: pytest
     """A mutation after submission changes the content named by run.json."""
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     ignored = tmp_path / ".gitignore"
-    ignored.write_text(".cache/\n", encoding="utf-8")
+    # The autouse fixture puts the XDG homes, and with them the durable
+    # verification evidence lane, inside tmp_path; they are not worktree content.
+    ignored.write_text(".cache/\nxdg-*/\n", encoding="utf-8")
     source = tmp_path / "test_input.py"
     source.write_text("value = 1\n", encoding="utf-8")
     subprocess.run(["git", "add", ".gitignore", "test_input.py"], cwd=tmp_path, check=True)
@@ -325,6 +336,7 @@ def test_queued_focused_receipt_identifies_execution_content(monkeypatch: pytest
     assert receipt["git_dirty"] is True
     assert receipt["git_worktree_content_sha256"] == executed["digest"]
     assert receipt["worktree_capture_source"] == "pytest_slot_start"
+    assert receipt["git_branch"] == "test/feature"
     assert json.loads((tmp_path / receipt["artifact_dir"] / "run.json").read_text(encoding="utf-8")) == receipt
 
     source.write_text("value = 1\n", encoding="utf-8")
@@ -747,6 +759,40 @@ def test_absent_paths_are_resolved_against_the_checkout_not_the_caller_cwd(
     assert run_tests.absent_selection_paths(selection, root=checkout) == ["tests/unit/test_deleted.py"]
 
 
+def test_main_refuses_a_missing_path_before_queueing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A missing selection path is refused before pool admission.
+
+    Anti-vacuity: drop the pre-admission check in ``main`` and the fake slot
+    below is reached, failing the test, which is the minutes-long queue wait a
+    typo'd path used to cost.
+    """
+
+    def must_not_queue(*_args: Any, **_kwargs: Any) -> SlotOutcome:
+        raise AssertionError("a selection with a missing path was queued for the pytest slot")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest", must_not_queue)
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "tests/unit/test_no_such_file.py"]) == 4
+    assert "tests/unit/test_no_such_file.py" in capsys.readouterr().err
+
+
+def test_pre_admission_gate_ignores_option_values_that_look_like_paths() -> None:
+    """Output paths passed to options are not selections, even when they end in ``.py``.
+
+    Anti-vacuity: treat every absent ``*.py`` argument as a selection and the
+    ``--log-file`` value below is refused before pytest runs.
+    """
+    assert not run_tests._is_test_module_name("output.py")
+    assert not run_tests._is_test_module_name("results.xml")
+    assert run_tests._is_test_module_name("test_widget.py")
+    assert run_tests._is_test_module_name("widget_test.py")
+    assert run_tests._certain_selections(
+        ["--ignore", "tests/unit/test_retired.py", "tests/unit/test_a.py", "--junit-xml=out.xml", "tests/test_b.py"]
+    ) == ["--ignore", "tests/unit/test_a.py", "--junit-xml=out.xml", "tests/test_b.py"]
+
+
 def test_focused_run_never_loads_or_names_a_testmon_graph(tmp_path: Path) -> None:
     """Focused checks preserve the broad graph rather than making a scratch one."""
     run = VerifyRun(tier="focused-test", argv=["tests"], git_head="head", root=tmp_path)
@@ -804,7 +850,9 @@ def test_every_run_names_the_receipt_it_wrote(
 
     final = capsys.readouterr().err.strip().splitlines()[-1]
     assert final.startswith("devtools test: PASSED exit=0 diagnosis=pytest_passed receipt=")
-    receipt = tmp_path / final.split("receipt=", 1)[1].strip()
+    receipt = tmp_path / final.split("receipt=", 1)[1].split()[0]
+    # The line names the checkout it tested, so a cited receipt is self-identifying.
+    assert " checkout=" in final and " branch=" in final and " head=" in final
     assert receipt.is_file()
     recorded = json.loads(receipt.read_text(encoding="utf-8"))
     assert recorded["exit_code"] == 0
@@ -835,8 +883,12 @@ def test_a_run_that_never_acquired_the_slot_keeps_its_reason(
     assert history["diagnosis"] == "pytest_slot_unavailable"
     assert history["steps"][0]["diagnosis"] == "pytest_slot_unavailable"
 
-    final = capsys.readouterr().err.strip().splitlines()[-1]
-    assert final.startswith("devtools test: artifacts=")
+    lines = capsys.readouterr().err.strip().splitlines()
+    # The artifact pointer precedes the verdict, which stays the last line and
+    # names the checkout it tested.
+    assert lines[-2].startswith("devtools test: artifacts=")
+    assert lines[-1].startswith("devtools test: FAILED exit=125 diagnosis=pytest_slot_unavailable receipt=")
+    assert " branch=" in lines[-1]
     receipt = tmp_path / run_tests.PYTEST_REPORT_DIR / "runs" / history["run_id"] / "run.json"
     recorded = json.loads(receipt.read_text(encoding="utf-8"))
     assert recorded["exit_code"] == 125

@@ -27,6 +27,15 @@ WireFormat = Literal["json", "jsonl"]
 JSONRecord: TypeAlias = JSONDocument
 
 
+class EmptyJsonlStreamError(ValueError):
+    """A JSONL sample holds no inspected record, and no record failed to decode.
+
+    The stream is empty or blank, or every record exceeded the inspection
+    bound. Distinct from a stream whose lines failed to decode, which is
+    decode-loss evidence; this is an unresolved sample, not a detection crash.
+    """
+
+
 def _decode_provider_utf8(raw: bytes) -> str:
     """Decode provider bytes while preserving UTF-8-encoded surrogate code units.
 
@@ -203,6 +212,7 @@ def _sample_jsonl_payload_with_detail(
     malformed_lines = 0
     malformed_detail: str | None = None
     valid_records = 0
+    uninspected_records = 0
     first_line = True
     line_number = 0
 
@@ -211,6 +221,7 @@ def _sample_jsonl_payload_with_detail(
             line_number += 1
             if oversized:
                 first_line = False
+                uninspected_records += 1
                 continue
             assert raw_line is not None
             try:
@@ -242,6 +253,10 @@ def _sample_jsonl_payload_with_detail(
                 break
 
     if valid_records == 0:
+        if malformed_lines == 0:
+            # Nothing failed to decode: the stream is empty, blank, or every
+            # record exceeded the inspection bound and was left uninspected.
+            raise EmptyJsonlStreamError("No valid JSONL records found")
         raise ValueError("No valid JSONL records found")
     return samples, malformed_lines, malformed_detail
 

@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, cast
 
 import pytest
 from pydantic import BaseModel
@@ -28,7 +28,6 @@ from polylogue.operations.bindings import OperationBinding
 from polylogue.operations.ingest_acceptance import INGEST_OPERATION
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.machine_receipts import (
-    IngestHistoricalReceipt,
     IngestHistoricalReceiptV2,
     IngestInputHistoricalReceipt,
     IngestInputPageHistoricalReceipt,
@@ -44,6 +43,7 @@ from polylogue.operations.machine_receipts import (
     ingest_insight_pages_digest,
     ingest_session_ids_digest,
 )
+from polylogue.operations.mutation_replay import recover_interrupted_operations
 from polylogue.operations.mutation_transaction import (
     AuditFinalizationError,
     AuthorizationMismatchError,
@@ -56,15 +56,13 @@ from polylogue.operations.mutation_transaction import (
     OperationExecutor,
     PlanStaleError,
     RecoveryBlockedError,
-    RecoveryDisposition,
-    RecoveryOperation,
-    RecoveryTargetDisposition,
+    RecoveryResolution,
+    ReplayHandles,
     TargetAuthorityPolicy,
     TargetDurability,
     TokenConsumedError,
     TokenExpiredError,
     build_plan,
-    recover_interrupted_operations,
 )
 from polylogue.operations.specs import OperationKind, OperationSpec
 from polylogue.storage.sqlite.audit_continuity import (
@@ -88,11 +86,8 @@ class _Actuator:
     changed: bool = False
     calls: int = 0
     crash: bool = False
-    recovery_disposition: RecoveryDisposition = field(
-        default_factory=lambda: RecoveryDisposition("confirmed-not-applied", "retry-exact")
-    )
     recovery_raises: bool = False
-    inspections: int = 0
+    recoveries: int = 0
     target_refs: tuple[str, ...] = ("session:fixture",)
     effect: str | None = None
     destructive_class: DestructiveClass = "reversible"
@@ -125,21 +120,11 @@ class _Actuator:
             applied_at="now",
         )
 
-    def inspect_recovery(self, operation: RecoveryOperation, _args: object) -> RecoveryDisposition:
-        self.inspections += 1
+    def recover(self, _handles: ReplayHandles, plan: MutationPlan) -> RecoveryResolution:
+        self.recoveries += 1
         if self.recovery_raises:
             raise OSError("synthetic target is unreadable")
-        disposition = self.recovery_disposition
-        if disposition.kind == "unknown" or disposition.target_dispositions:
-            return disposition
-        refs = tuple(target.ref for target in operation.targets)
-        state: Literal["applied", "not-applied", "unknown"] = (
-            "applied" if disposition.kind == "confirmed-applied" else "not-applied"
-        )
-        return replace(
-            disposition,
-            target_dispositions=tuple(RecoveryTargetDisposition(ref, state, disposition.action) for ref in refs),
-        )
+        return RecoveryResolution("complete", "fixture replay", self.apply(plan, None))
 
 
 @dataclass(frozen=True)
@@ -977,229 +962,6 @@ def _dead_nonterminal_operation(tmp_path: Path, actuator: _Actuator) -> tuple[Au
     return audit, operation_id
 
 
-def test_dead_attempt_is_inspected_before_overlapping_apply_and_exact_retry_is_single_effect(tmp_path: Path) -> None:
-    """A crash after attempt start is classified from the domain before retry.
-
-    Anti-vacuity: deleting overlap discovery, target inspection, or the
-    durable recovery finalization either leaves the first operation running or
-    permits the new apply without recording the classification.
-    """
-
-    actuator = _Actuator()
-    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-    retry = OperationExecutor(audit=audit, token_factory=lambda: "retry-boundary-token")
-    binding = _binding(actuator)
-    preview = retry.prepare_bound(
-        binding,
-        object(),
-        _principal(),
-        archive_instance_id="archive:recovery",
-        archive_identity_digest="identity:recovery",
-        parameter_digest="params:recovery",
-    )
-    authorization = retry.authorize_bound(binding, preview, _principal())
-
-    receipt = retry.execute_bound(binding, preview, authorization, object())
-
-    assert receipt.status == "applied"
-    assert actuator.inspections == 1
-    assert actuator.calls == 1
-    with sqlite3.connect(tmp_path / "audit.db") as conn:
-        assert conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone() == (
-            "failed",
-        )
-        assert conn.execute(
-            "SELECT event_type FROM operation_events WHERE operation_id = ? ORDER BY sequence DESC LIMIT 1",
-            (operation_id,),
-        ).fetchone() == ("recovery_classified",)
-
-
-def test_recovery_rejects_a_different_effect_over_the_same_target(tmp_path: Path) -> None:
-    """A target match cannot authorize a retry with a changed immutable plan."""
-
-    actuator = _Actuator()
-    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-    actuator.effect = "different-effect"
-    retry = OperationExecutor(audit=audit, token_factory=lambda: "drifted-retry-token")
-    binding = _binding(actuator)
-    preview = retry.prepare_bound(
-        binding,
-        object(),
-        _principal(),
-        archive_instance_id="archive:recovery",
-        archive_identity_digest="identity:recovery",
-        parameter_digest="params:recovery",
-    )
-    authorization = retry.authorize_bound(binding, preview, _principal())
-
-    with pytest.raises(RecoveryBlockedError, match="plan identity drift"):
-        retry.execute_bound(binding, preview, authorization, object())
-
-    assert actuator.calls == 0
-    with sqlite3.connect(tmp_path / "audit.db") as conn:
-        assert conn.execute(
-            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
-        ).fetchone() == ("failed", "recovery_unknown")
-        assert conn.execute(
-            "SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,)
-        ).fetchone() == ("unknown",)
-
-
-@pytest.mark.parametrize(
-    ("disposition", "raises"),
-    [
-        (RecoveryDisposition("unknown", "operator-blocking", "unreadable target"), False),
-        (RecoveryDisposition("confirmed-not-applied", "retry-exact"), True),
-    ],
-)
-def test_unreadable_or_unknown_recovery_never_consumes_overlapping_authority(
-    tmp_path: Path, disposition: RecoveryDisposition, raises: bool
-) -> None:
-    """Unknown target evidence blocks before a second authorization is consumed."""
-
-    actuator = _Actuator(recovery_disposition=disposition, recovery_raises=raises)
-    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-    retry = OperationExecutor(audit=audit, token_factory=lambda: "blocked-retry-token")
-    binding = _binding(actuator)
-    preview = retry.prepare_bound(
-        binding,
-        object(),
-        _principal(),
-        archive_instance_id="archive:recovery",
-        archive_identity_digest="identity:recovery",
-        parameter_digest="params:recovery",
-    )
-    authorization = retry.authorize_bound(binding, preview, _principal())
-
-    with pytest.raises(RecoveryBlockedError):
-        retry.execute_bound(binding, preview, authorization, object())
-
-    assert actuator.calls == 0
-    with sqlite3.connect(tmp_path / "audit.db") as conn:
-        assert conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone() == (
-            "failed",
-        )
-        assert conn.execute(
-            "SELECT state FROM operation_authorizations WHERE token_sha256 = ?", (token_sha256("blocked-retry-token"),)
-        ).fetchone() == ("active",)
-
-
-def test_confirmed_applied_recovery_refuses_duplicate_effect(tmp_path: Path) -> None:
-    """A target-specific applied classification cannot be replayed as a new effect."""
-
-    actuator = _Actuator(recovery_disposition=RecoveryDisposition("confirmed-applied", "forward"))
-    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-    retry = OperationExecutor(audit=audit, token_factory=lambda: "duplicate-retry-token")
-    binding = _binding(actuator)
-    preview = retry.prepare_bound(
-        binding,
-        object(),
-        _principal(),
-        archive_instance_id="archive:recovery",
-        archive_identity_digest="identity:recovery",
-        parameter_digest="params:recovery",
-    )
-    authorization = retry.authorize_bound(binding, preview, _principal())
-
-    with pytest.raises(RecoveryBlockedError, match="already applied"):
-        retry.execute_bound(binding, preview, authorization, object())
-
-    assert actuator.calls == 0
-    with sqlite3.connect(tmp_path / "audit.db") as conn:
-        assert conn.execute("SELECT status FROM operation_runs WHERE operation_id = ?", (operation_id,)).fetchone() == (
-            "completed",
-        )
-
-
-def test_confirmed_applied_recovery_installs_a_durable_barrier_for_every_later_retry(tmp_path: Path) -> None:
-    """The first blocked retry must not make the second retry a fresh effect.
-
-    Anti-vacuity: this goes through a second preview and authorization after
-    the original operation is terminal, so overlap-only implementations pass
-    the first refusal and fail the second.
-    """
-
-    actuator = _Actuator(recovery_disposition=RecoveryDisposition("confirmed-applied", "forward"))
-    audit, _operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-    binding = _binding(actuator)
-    retry = OperationExecutor(audit=audit, token_factory=lambda: "duplicate-first")
-    first_preview = retry.prepare_bound(
-        binding,
-        object(),
-        _principal(),
-        archive_instance_id="archive:recovery",
-        archive_identity_digest="identity:recovery",
-        parameter_digest="params:recovery",
-    )
-    first_authorization = retry.authorize_bound(binding, first_preview, _principal())
-    with pytest.raises(RecoveryBlockedError, match="already applied"):
-        retry.execute_bound(binding, first_preview, first_authorization, object())
-
-    second = OperationExecutor(audit=audit, token_factory=lambda: "duplicate-second")
-    second_preview = second.prepare_bound(
-        binding,
-        object(),
-        _principal(),
-        archive_instance_id="archive:recovery",
-        archive_identity_digest="identity:recovery",
-        parameter_digest="params:recovery",
-    )
-    second_authorization = second.authorize_bound(binding, second_preview, _principal())
-    with pytest.raises(RecoveryBlockedError, match="semantic effect applied"):
-        second.execute_bound(binding, second_preview, second_authorization, object())
-    assert actuator.calls == 0
-
-
-def test_partial_recovery_continuation_remains_an_overlap_barrier(tmp_path: Path) -> None:
-    """A declared forward or rollback continuation cannot disappear at terminalization."""
-
-    actuator = _Actuator(
-        recovery_disposition=RecoveryDisposition(
-            "confirmed-partial",
-            "forward",
-            "one target needs the declared forward continuation",
-            (RecoveryTargetDisposition("session:fixture", "applied", "forward"),),
-        )
-    )
-    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-    audit.record_recovery_disposition(operation_id, actuator.recovery_disposition)
-
-    retry = OperationExecutor(audit=audit, token_factory=lambda: "partial-continuation-retry")
-    binding = _binding(actuator)
-    preview = retry.prepare_bound(
-        binding,
-        object(),
-        _principal(),
-        archive_instance_id="archive:recovery",
-        archive_identity_digest="identity:recovery",
-        parameter_digest="params:recovery",
-    )
-    authorization = retry.authorize_bound(binding, preview, _principal())
-
-    with pytest.raises(RecoveryBlockedError, match="requires declared 'forward' continuation"):
-        retry.execute_bound(binding, preview, authorization, object())
-
-    assert actuator.calls == 0
-    assert actuator.inspections == 1
-
-
-def test_recovery_operation_loads_a_declared_partial_continuation(tmp_path: Path) -> None:
-    """The exact recovery lookup accepts the partial state exposed by listing."""
-
-    actuator = _Actuator(
-        recovery_disposition=RecoveryDisposition(
-            "confirmed-partial",
-            "forward",
-            "one target needs the declared forward continuation",
-            (RecoveryTargetDisposition("session:fixture", "applied", "forward"),),
-        )
-    )
-    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-    audit.record_recovery_disposition(operation_id, actuator.recovery_disposition)
-
-    assert audit.recovery_operation(operation_id).operation_id == operation_id
-
-
 @dataclass
 class _DestructiveClassActuator(_Actuator):
     """Like ``_Actuator``, but ``prepare()`` honors ``self.destructive_class``.
@@ -1220,176 +982,16 @@ class _DestructiveClassActuator(_Actuator):
         )
 
 
-def test_recovered_applied_delete_barrier_never_refuses_a_later_retry(tmp_path: Path) -> None:
-    """A ``delete``-class recovered-applied barrier must not block forever.
+def _register_fixture(monkeypatch: pytest.MonkeyPatch, actuator: _Actuator) -> None:
+    from polylogue.operations import mutation_transaction
 
-    Session deletion is re-ingest-resurrectable (archive identity is
-    inode-based): a source replay can recreate the same session and produce
-    an identical parameter/target digest, so a legitimate subsequent delete
-    of it must not be permanently refused just because a prior
-    crash-recovered delete of the same identity was classified applied.
-    Delete is also naturally idempotent (``already_satisfied`` when nothing
-    remains), so the duplicate-effect barrier is unnecessary for this class
-    either way.
-
-    Anti-vacuity: restricting the ``destructive_class != "delete"`` bypass in
-    ``OperationExecutor.execute_bound`` back to an unconditional
-    ``has_recovered_effect`` check makes this test fail -- the second retry
-    would raise ``RecoveryBlockedError`` (matching the reversible-class
-    barrier test above) instead of applying, and ``actuator.calls`` would
-    stay 0.
-
-    Mirrors ``test_confirmed_applied_recovery_installs_a_durable_barrier_for_every_later_retry``:
-    the FIRST retry still gets blocked (it is the one that *discovers* and
-    classifies the dead overlapping op -- that immediate-overlap block is
-    unaffected by this fix). Only the durable ``recovered_applied`` barrier
-    a SECOND, later retry would otherwise hit is bypassed for ``delete``.
-    """
-
-    actuator = _DestructiveClassActuator(
-        destructive_class="delete",
-        recovery_disposition=RecoveryDisposition("confirmed-applied", "forward"),
-    )
-    audit, _operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-    binding = _delete_binding(actuator)
-    first = OperationExecutor(audit=audit, token_factory=lambda: "delete-barrier-first")
-    first_preview = first.prepare_bound(
-        binding,
-        object(),
-        _principal(),
-        archive_instance_id="archive:recovery",
-        archive_identity_digest="identity:recovery",
-        parameter_digest="params:recovery",
-    )
-    first_authorization = first.authorize_bound(binding, first_preview, _principal())
-    with pytest.raises(RecoveryBlockedError, match="already applied"):
-        first.execute_bound(binding, first_preview, first_authorization, object())
-
-    second = OperationExecutor(audit=audit, token_factory=lambda: "delete-barrier-second")
-    second_preview = second.prepare_bound(
-        binding,
-        object(),
-        _principal(),
-        archive_instance_id="archive:recovery",
-        archive_identity_digest="identity:recovery",
-        parameter_digest="params:recovery",
-    )
-    second_authorization = second.authorize_bound(binding, second_preview, _principal())
-    receipt = second.execute_bound(binding, second_preview, second_authorization, object())
-
-    assert receipt.status == "applied"
-    assert actuator.calls == 1
-    with sqlite3.connect(tmp_path / "audit.db") as conn:
-        # The barrier is still durably recorded (evidence preserved) even
-        # though it no longer refuses a later retry.
-        assert (
-            conn.execute("SELECT COUNT(*) FROM operation_runs WHERE terminal_reason = 'recovered_applied'").fetchone()[
-                0
-            ]
-            == 1
-        )
+    monkeypatch.setitem(mutation_transaction._RECOVERY_ROUTES, actuator.operation, actuator)
 
 
-def test_recovery_disposition_keeps_create_update_delete_outcomes_per_target(tmp_path: Path) -> None:
-    """A mixed mutation remains a per-target audit record, never a delete shortcut."""
-
-    actuator = _Actuator(target_refs=("session:create", "session:update", "session:delete"))
-    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-    audit.record_recovery_disposition(
-        operation_id,
-        RecoveryDisposition(
-            "confirmed-partial",
-            "retry-exact",
-            "domain inspector distinguished create, update, and delete",
-            (
-                RecoveryTargetDisposition("session:create", "applied", "forward"),
-                RecoveryTargetDisposition("session:update", "not-applied", "retry-exact"),
-                RecoveryTargetDisposition("session:delete", "unknown", "operator-blocking"),
-            ),
-        ),
-    )
-    with sqlite3.connect(tmp_path / "audit.db") as conn:
-        assert conn.execute(
-            "SELECT state FROM operation_targets WHERE operation_id = ? ORDER BY ordinal", (operation_id,)
-        ).fetchall() == [("applied",), ("failed",), ("unknown",)]
-        assert conn.execute(
-            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
-        ).fetchone() == ("failed", "recovery_unknown")
-
-
-def test_recovery_disposition_rejects_internally_inconsistent_target_outcomes() -> None:
-    """A disposition cannot claim a kind its own per-target outcomes contradict."""
-
-    with pytest.raises(ValueError, match="applied outcomes only"):
-        RecoveryDisposition(
-            "confirmed-applied",
-            "forward",
-            "inconsistent",
-            (RecoveryTargetDisposition("session:one", "not-applied", "forward"),),
-        )
-    with pytest.raises(ValueError, match="not-applied outcomes only"):
-        RecoveryDisposition(
-            "confirmed-not-applied",
-            "retry-exact",
-            "inconsistent",
-            (RecoveryTargetDisposition("session:one", "applied", "retry-exact"),),
-        )
-    with pytest.raises(ValueError, match="target outcomes"):
-        RecoveryDisposition(
-            "confirmed-partial",
-            "retry-exact",
-            "no target evidence",
-        )
-    with pytest.raises(ValueError, match="unknown recovery must block an operator"):
-        RecoveryDisposition("unknown", "retry-exact", "unknown cannot continue")
-
-
-def test_confirmed_recovery_must_classify_every_durable_target(tmp_path: Path) -> None:
-    """A confirmed recovery cannot terminalize a run it only partly inspected.
-
-    Anti-vacuity: restricting the completeness check to ``confirmed-partial``
-    lets a confirmed-applied disposition name one target and silently leave
-    the rest applied by the flat fallback.
-    """
-
-    actuator = _Actuator(target_refs=("session:one", "session:two"))
-    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-
-    with pytest.raises(ValueError, match="classify every durable target exactly once"):
-        audit.record_recovery_disposition(
-            operation_id,
-            RecoveryDisposition(
-                "confirmed-applied",
-                "forward",
-                "only one target inspected",
-                (RecoveryTargetDisposition("session:one", "applied", "forward"),),
-            ),
-        )
-    with sqlite3.connect(tmp_path / "audit.db") as conn:
-        assert conn.execute(
-            "SELECT DISTINCT state FROM operation_targets WHERE operation_id = ? ORDER BY state", (operation_id,)
-        ).fetchall() == [("pending",), ("running",)]
-
-
-def test_partial_recovery_persists_each_target_continuation(tmp_path: Path) -> None:
-    """A mixed recovery cannot collapse target evidence into one flat action."""
-
-    actuator = _Actuator(
-        target_refs=("session:first", "session:second"),
-        recovery_disposition=RecoveryDisposition(
-            "confirmed-partial",
-            "retry-exact",
-            "first delete applied, second remains",
-            (
-                RecoveryTargetDisposition("session:first", "applied", "forward"),
-                RecoveryTargetDisposition("session:second", "not-applied", "retry-exact"),
-            ),
-        ),
-    )
-    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-    executor = OperationExecutor(audit=audit, token_factory=lambda: "partial-retry")
+def _retry(audit: AuditRepository, actuator: _Actuator, token: str) -> MutationReceipt:
+    retry = OperationExecutor(audit=audit, token_factory=lambda: token)
     binding = _binding(actuator)
-    preview = executor.prepare_bound(
+    preview = retry.prepare_bound(
         binding,
         object(),
         _principal(),
@@ -1397,16 +999,138 @@ def test_partial_recovery_persists_each_target_continuation(tmp_path: Path) -> N
         archive_identity_digest="identity:recovery",
         parameter_digest="params:recovery",
     )
-    authorization = executor.authorize_bound(binding, preview, _principal())
-    receipt = executor.execute_bound(binding, preview, authorization, object())
-    assert receipt.status == "applied"
+    authorization = retry.authorize_bound(binding, preview, _principal())
+    return retry.execute_bound(binding, preview, authorization, object())
+
+
+def _run_state(tmp_path: Path, operation_id: str) -> tuple[str, str, tuple[str, ...]]:
     with sqlite3.connect(tmp_path / "audit.db") as conn:
-        assert conn.execute(
-            "SELECT state FROM operation_targets WHERE operation_id = ? ORDER BY ordinal", (operation_id,)
-        ).fetchall() == [("applied",), ("failed",)]
-    event = audit.list_events(operation_id)[-1]
-    assert event["event_type"] == "recovery_classified"
-    assert '"target_ref":"session:second"' in str(event["detail_json"])
+        status, reason = conn.execute(
+            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone()
+        targets = tuple(
+            str(row[0])
+            for row in conn.execute(
+                "SELECT state FROM operation_targets WHERE operation_id = ? ORDER BY ordinal", (operation_id,)
+            )
+        )
+    return str(status), str(reason), targets
+
+
+def test_dead_overlapping_attempt_is_replayed_before_the_new_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash after attempt start is re-applied, then the new request proceeds.
+
+    Anti-vacuity: skip ``_resolve_overlapping_operations`` and the dead run
+    stays ``running``; stop terminalizing it and it is met again by the next
+    request instead of reading ``recovered_complete``.
+    """
+
+    actuator = _Actuator()
+    _register_fixture(monkeypatch, actuator)
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+
+    receipt = _retry(audit, actuator, "retry-boundary-token")
+
+    assert receipt.status == "applied"
+    assert (actuator.recoveries, actuator.calls) == (1, 2)
+    assert _run_state(tmp_path, operation_id) == ("completed", "recovered_complete", ("applied",))
+    assert audit.list_events(operation_id)[-1]["event_type"] == "recovery_resolved"
+
+
+def test_failed_replay_terminalizes_without_blocking_the_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replay that raises is a typed terminal failure, never a standing refusal.
+
+    Anti-vacuity: let the replay exception escape ``resolve_interrupted_operation``
+    and the new request raises instead of applying.
+    """
+
+    actuator = _Actuator(recovery_raises=True)
+    _register_fixture(monkeypatch, actuator)
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+
+    receipt = _retry(audit, actuator, "after-failed-replay-token")
+
+    assert receipt.status == "applied"
+    assert _run_state(tmp_path, operation_id) == ("failed", "recovery_replay_failed", ("failed",))
+
+
+@pytest.mark.parametrize("registered", [False, True], ids=["unregistered-family", "retired-version"])
+def test_unreplayable_interrupted_work_is_terminal_not_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registered: bool
+) -> None:
+    """A family or version this runtime cannot replay ends failed, not ``unknown``.
+
+    Anti-vacuity: drop the registry or version check in
+    ``resolve_interrupted_operation`` and the retired plan is replayed through
+    today's actuator (``recoveries`` becomes 1).
+    """
+
+    actuator = _Actuator()
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    retired = replace(actuator, operation_version=2)
+    if registered:
+        _register_fixture(monkeypatch, retired)
+
+    recover_interrupted_operations(tmp_path)
+
+    assert (actuator.recoveries, retired.recoveries) == (0, 0)
+    assert _run_state(tmp_path, operation_id) == ("failed", "recovery_not_replayable", ("failed",))
+
+
+def test_startup_replays_an_interrupted_operation_to_completion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Daemon startup resolves a dead operation on its own, with no request pending.
+
+    Anti-vacuity: return early from ``recover_interrupted_operations`` after
+    ``recover_abandoned_attempts`` and the run stays ``interrupted``.
+    """
+
+    actuator = _Actuator()
+    _register_fixture(monkeypatch, actuator)
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+
+    recover_interrupted_operations(tmp_path)
+    recover_interrupted_operations(tmp_path)
+
+    assert (actuator.recoveries, actuator.calls) == (1, 1)
+    assert _run_state(tmp_path, operation_id) == ("completed", "recovered_complete", ("applied",))
+    assert [event["event_type"] for event in audit.list_events(operation_id)].count("recovery_resolved") == 1
+
+
+def test_recovery_resolution_replays_after_source_prepare_crash_at_daemon_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A prepared resolution command survives a crash and is completed at startup.
+
+    Anti-vacuity: drop the receipt from the write-ahead payload and the replayed
+    resolution cannot be rebuilt, so this restart raises.
+    """
+
+    actuator = _Actuator()
+    _register_fixture(monkeypatch, actuator)
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+    original_phase = AuditContinuityCoordinator._phase
+
+    def interrupt_resolution(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
+        if mutation.kind == "record_recovery_resolution" and phase == "after_source_prepare":
+            raise RuntimeError("crash after recovery resolution prepare")
+        original_phase(self, phase, mutation)
+
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_resolution)
+    with pytest.raises(RuntimeError, match="recovery resolution prepare"):
+        recover_interrupted_operations(tmp_path)
+    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
+
+    recover_interrupted_operations(tmp_path)
+
+    assert _run_state(tmp_path, operation_id) == ("completed", "recovered_complete", ("applied",))
+    with sqlite3.connect(tmp_path / "source.db") as source:
+        assert source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone() == (None,)
 
 
 def test_unknown_owner_is_not_stolen_by_an_overlapping_apply(tmp_path: Path) -> None:
@@ -1434,7 +1158,7 @@ def test_unknown_owner_is_not_stolen_by_an_overlapping_apply(tmp_path: Path) -> 
     with pytest.raises(RecoveryBlockedError, match="unknown owner"):
         retry.execute_bound(binding, preview, authorization, object())
 
-    assert actuator.inspections == 0
+    assert actuator.recoveries == 0
     assert actuator.calls == 0
     assert audit.list_events(operation_id)[-1]["event_type"] == "authorization_consumed"
 
@@ -1819,48 +1543,6 @@ def test_closed_historical_receipt_replays_through_source_wal(tmp_path: Path, mo
     AuditRepository.for_archive_root(tmp_path).reconcile_continuity()
     replayed = AuditRepository.for_archive_root(tmp_path).historical_machine_receipt(str(started.operation_id))
     assert replayed == history
-
-
-def test_recovery_disposition_replays_after_source_prepare_crash_at_daemon_startup(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Daemon startup completes a prepared recovery classification command.
-
-    Anti-vacuity: omitting target dispositions from the write-ahead command
-    makes this restart raise before it can clear the pending source command.
-    """
-
-    actuator = _Actuator()
-    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-    original_phase = AuditContinuityCoordinator._phase
-
-    def interrupt_disposition(self: AuditContinuityCoordinator, phase: str, mutation: AuditMutation) -> None:
-        if mutation.kind == "record_recovery_disposition" and phase == "after_source_prepare":
-            raise RuntimeError("crash after recovery disposition prepare")
-        original_phase(self, phase, mutation)
-
-    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", interrupt_disposition)
-    disposition = RecoveryDisposition(
-        "confirmed-not-applied",
-        "retry-exact",
-        "inspector proved the target was retained",
-        (RecoveryTargetDisposition("session:fixture", "not-applied", "retry-exact"),),
-    )
-    with pytest.raises(RuntimeError, match="recovery disposition prepare"):
-        audit.record_recovery_disposition(operation_id, disposition)
-    monkeypatch.setattr(AuditContinuityCoordinator, "_phase", original_phase)
-
-    recover_interrupted_operations(tmp_path)
-
-    with sqlite3.connect(tmp_path / "audit.db") as conn:
-        assert conn.execute(
-            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
-        ).fetchone() == ("failed", "recovered_not_applied")
-        assert conn.execute(
-            "SELECT state FROM operation_targets WHERE operation_id = ?", (operation_id,)
-        ).fetchone() == ("failed",)
-    with sqlite3.connect(tmp_path / "source.db") as source:
-        assert source.execute("SELECT pending_mutation_id FROM audit_continuity_control").fetchone() == (None,)
 
 
 def test_atomic_batch_finalization_marks_every_target_and_terminates_run(tmp_path: Path) -> None:
@@ -2362,54 +2044,6 @@ def test_token_consumption_and_initial_attempt_roll_back_together(
     assert run_count == 0
 
 
-def test_find_interrupted_operation_adopts_a_recovery_unknown_run(tmp_path: Path) -> None:
-    """A restart-classified ``recovery_unknown`` run must be adoptable, too.
-
-    Startup terminalizes an operator-blocking orphan as
-    ``status='failed'``/``terminal_reason='recovery_unknown'`` -- it never
-    stays ``interrupted``. Rerunning a committed raw recovery with matching
-    intent/postflight/receipt evidence looks its interrupted attempt up by
-    ``(operation_name, parameter_digest)`` to adopt it; restricting that
-    lookup to ``status = 'interrupted'`` leaves it wedged forever once
-    startup gets there first.
-
-    Anti-vacuity: narrowing ``find_interrupted_operation``'s WHERE clause
-    back to ``status = 'interrupted'`` only makes this test fail, since the
-    fixture operation is already terminalized to failed/recovery_unknown
-    before the lookup runs.
-    """
-
-    actuator = _Actuator()
-    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-    audit.recover_abandoned_attempts()
-    audit.record_recovery_disposition(
-        operation_id, RecoveryDisposition("unknown", "operator-blocking", "synthetic operator-blocking classification")
-    )
-    with sqlite3.connect(tmp_path / "audit.db") as conn:
-        status, terminal_reason, parameter_digest, operation_name = conn.execute(
-            "SELECT status, terminal_reason, parameter_digest, operation_name FROM operation_runs WHERE operation_id = ?",
-            (operation_id,),
-        ).fetchone()
-    assert (status, terminal_reason) == ("failed", "recovery_unknown")
-
-    found = audit.find_interrupted_operation(operation_name=operation_name, parameter_digest=parameter_digest)
-    assert found == operation_id
-    # And the same widened status set must let adoption actually finalize it.
-    audit.record_recovery_disposition(
-        operation_id,
-        RecoveryDisposition(
-            "confirmed-applied",
-            "forward",
-            "adoption evidence",
-            (RecoveryTargetDisposition("session:fixture", "applied", "forward"),),
-        ),
-    )
-    with sqlite3.connect(tmp_path / "audit.db") as conn:
-        assert conn.execute(
-            "SELECT status, terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
-        ).fetchone() == ("completed", "recovered_applied")
-
-
 def _excise_binding(actuator: _Actuator) -> OperationBinding[object, object]:
     """Like ``_delete_binding``, but the effective destructive class is ``excise``."""
 
@@ -2434,74 +2068,6 @@ def _excise_binding(actuator: _Actuator) -> OperationBinding[object, object]:
         affected_tiers=("user",),
     )
     return OperationBinding(spec, actuator)
-
-
-def test_recovered_applied_excise_barrier_survives_an_index_generation_promotion(tmp_path: Path) -> None:
-    """polylogue-cois9 (A): promoting a new index generation must not reopen a duplicate excise.
-
-    ``operation_runs.archive_identity_digest`` records the live archive
-    identity digest, which folds in the *rebuildable* index tier's inode.
-    Promoting a new index generation is an ordinary rebuild, not an incident,
-    and it moves that digest.  The duplicate-effect barrier must still refuse:
-    ``excise`` is not re-ingest-resurrectable and carries no compensating
-    idempotency argument, so a silently unfindable barrier row would
-    re-execute an already durably applied excise.
-
-    Anti-vacuity: restoring ``AND archive_identity_digest = ?`` to
-    ``AuditRepository.has_recovered_effect``'s WHERE clause makes this test
-    red -- the second retry, whose plan names the promoted generation, would
-    find no barrier row, apply, and leave ``actuator.calls == 1``.
-    """
-
-    actuator = _DestructiveClassActuator(
-        destructive_class="excise",
-        recovery_disposition=RecoveryDisposition("confirmed-applied", "forward"),
-    )
-    audit, _operation_id = _dead_nonterminal_operation(tmp_path, actuator)
-    binding = _excise_binding(actuator)
-
-    first = OperationExecutor(audit=audit, token_factory=lambda: "excise-barrier-first")
-    first_preview = first.prepare_bound(
-        binding,
-        object(),
-        _principal(),
-        archive_instance_id="archive:recovery",
-        archive_identity_digest="identity:generation-one",
-        parameter_digest="params:recovery",
-    )
-    first_authorization = first.authorize_bound(
-        binding, first_preview, _principal(), confirmation_strength="bound_token"
-    )
-    # The first retry is the one that discovers and classifies the dead
-    # overlapping operation; it installs the durable ``recovered_applied`` row.
-    with pytest.raises(RecoveryBlockedError):
-        first.execute_bound(binding, first_preview, first_authorization, object())
-
-    # An ordinary index-generation promotion: same durable archive lineage,
-    # different live archive identity digest.
-    second = OperationExecutor(audit=audit, token_factory=lambda: "excise-barrier-second")
-    second_preview = second.prepare_bound(
-        binding,
-        object(),
-        _principal(),
-        archive_instance_id="archive:recovery",
-        archive_identity_digest="identity:generation-two",
-        parameter_digest="params:recovery",
-    )
-    second_authorization = second.authorize_bound(
-        binding, second_preview, _principal(), confirmation_strength="bound_token"
-    )
-    with pytest.raises(RecoveryBlockedError, match="already proved"):
-        second.execute_bound(binding, second_preview, second_authorization, object())
-
-    assert actuator.calls == 0
-    with sqlite3.connect(tmp_path / "audit.db") as conn:
-        assert (
-            conn.execute("SELECT COUNT(*) FROM operation_runs WHERE terminal_reason = 'recovered_applied'").fetchone()[
-                0
-            ]
-            == 1
-        )
 
 
 def test_machine_request_dedup_survives_an_index_generation_promotion(tmp_path: Path) -> None:
@@ -2798,23 +2364,27 @@ def test_ingest_insight_pages_replay_and_reject_missing_evidence(
     restarted = AuditRepository.for_archive_root(tmp_path)
     restarted.reconcile_continuity()
     monkeypatch.setattr(machine_receipts, "MAX_MACHINE_RECEIPT_PAGES", 1)
-    receipt = IngestHistoricalReceipt(
+    receipt = IngestHistoricalReceiptV2(
         source_generation_id="generation:fixture",
         final_sequence=1,
         input_count=1,
-        input_pages=[
-            IngestInputPageHistoricalReceipt.from_items(
-                0,
-                [
-                    IngestInputHistoricalReceipt(
-                        source_item_id="source-item:fixture",
-                        logical_coordinate="fixture.json",
-                        denominator=1,
-                        raw_ids=["raw:fixture"],
-                    )
-                ],
-            )
-        ],
+        input_pages_ref="operation:fixture",
+        input_page_count=1,
+        input_pages_digest=ingest_input_pages_digest(
+            [
+                IngestInputPageHistoricalReceipt.from_items(
+                    0,
+                    [
+                        IngestInputHistoricalReceipt(
+                            source_item_id="source-item:fixture",
+                            logical_coordinate="fixture.json",
+                            denominator=1,
+                            raw_ids=["raw:fixture"],
+                        )
+                    ],
+                )
+            ]
+        ),
         insight_pages_ref=started.operation_id,
         insight_page_count=2,
         insight_pages_digest=ingest_insight_pages_digest(pages),
@@ -3026,3 +2596,129 @@ def test_pending_command_of_an_undeclared_kind_is_a_typed_refusal(tmp_path: Path
 
     assert refusal.value.kind == "retired_kind"
     assert coordinator._pending() is not None
+
+
+def test_ingest_refusal_pages_resolve_every_named_refusal(tmp_path: Path) -> None:
+    """More refusals than one page are all retained and resolved, none dropped.
+
+    Anti-vacuity: truncate the refusal enumeration (the removed 256 cap) and
+    ``resolve_ingest_refusals`` returns fewer refusals than the receipt counts,
+    which it refuses as differing from the terminal receipt.
+    """
+    from polylogue.operations.machine_receipts import (
+        MAX_PAGE_ITEMS,
+        IngestRefusalPageHistoricalReceipt,
+        IngestRefusedMembershipHistorical,
+        ingest_refusal_pages_digest,
+    )
+
+    audit = _audit(tmp_path)
+    actuator = _IngestPageActuator()
+    executor = OperationExecutor(audit=audit, token_factory=lambda: "refusal-page-token")
+    binding = _binding(actuator, operation_name=INGEST_OPERATION)
+    preview = executor.prepare_bound(
+        binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:refusal-page",
+        archive_identity_digest="identity:refusal-page",
+        parameter_digest="params:refusal-page",
+    )
+    authorization = executor.authorize_bound(binding, preview, _principal())
+    started = executor.begin_bound(binding, preview, authorization, object())
+    operation_id = started.operation_id
+    assert operation_id is not None
+    refusals = [
+        IngestRefusedMembershipHistorical(
+            logical_source_key=f"codex-session:{index:05d}", raw_id=f"raw:{index:05d}", reason="did not parse"
+        )
+        for index in range(MAX_PAGE_ITEMS + 1)
+    ]
+    pages = [
+        IngestRefusalPageHistoricalReceipt(ordinal=0, refusals=refusals[:MAX_PAGE_ITEMS]),
+        IngestRefusalPageHistoricalReceipt(ordinal=1, refusals=refusals[MAX_PAGE_ITEMS:]),
+    ]
+    for page in pages:
+        audit.append_ingest_refusal_page(operation_id, page)
+    audit.append_ingest_refusal_page(operation_id, pages[1])
+
+    def receipt(digest: str) -> IngestHistoricalReceiptV2:
+        return IngestHistoricalReceiptV2(
+            source_generation_id="generation:fixture",
+            final_sequence=1,
+            input_count=1,
+            input_pages_ref=operation_id,
+            input_page_count=1,
+            input_pages_digest="0" * 64,
+            summary=IngestTerminalSummaryHistorical(
+                enumeration_complete=True,
+                source_complete=False,
+                confirmed_raw_count=0,
+                unresolved_raw_count=0,
+                profile_targets_observed=0,
+                refused_membership_count=len(refusals),
+                refused_membership_pages_ref=operation_id,
+                refused_membership_page_count=len(pages),
+                refused_memberships_digest=digest,
+            ),
+        )
+
+    assert audit.resolve_ingest_refusals(receipt(ingest_refusal_pages_digest(pages))) == refusals
+    with pytest.raises(ValueError, match="differ from terminal receipt"):
+        audit.resolve_ingest_refusals(receipt("a" * 64))
+    with pytest.raises(ValueError, match="conflicts with durable page"):
+        audit.append_ingest_refusal_page(
+            operation_id, IngestRefusalPageHistoricalReceipt(ordinal=1, refusals=refusals[:1])
+        )
+
+
+def test_recovery_needing_an_unservable_tier_is_deferred_not_failed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A schema refusal while recovering leaves the run for the next attempt.
+
+    Anti-vacuity: let ``SchemaRefusalError`` fall into the generic handler in
+    ``resolve_interrupted_operation`` and the run is terminalized as
+    ``recovery_replay_failed`` although nothing was tried.
+    """
+    from polylogue.core.errors import SchemaSkewError
+
+    actuator = _Actuator()
+
+    def skewed(_handles: ReplayHandles, _plan: MutationPlan) -> RecoveryResolution:
+        raise SchemaSkewError("index", "identity:new", "identity:old")
+
+    monkeypatch.setattr(actuator, "recover", skewed)
+    _register_fixture(monkeypatch, actuator)
+    _audit_repo, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+
+    recover_interrupted_operations(tmp_path)
+
+    status, _reason, _targets = _run_state(tmp_path, operation_id)
+    assert status == "interrupted"
+
+
+def test_a_request_overlapping_deferred_recovery_is_refused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """New work on targets whose interrupted run could not be resolved waits for it.
+
+    Anti-vacuity: ignore the deferred ids returned to
+    ``_resolve_overlapping_operations`` and the new request applies before the
+    older interrupted one.
+    """
+    from polylogue.core.errors import SchemaSkewError
+
+    actuator = _Actuator()
+
+    def skewed(_handles: ReplayHandles, _plan: MutationPlan) -> RecoveryResolution:
+        raise SchemaSkewError("index", "identity:new", "identity:old")
+
+    monkeypatch.setattr(actuator, "recover", skewed)
+    _register_fixture(monkeypatch, actuator)
+    audit, operation_id = _dead_nonterminal_operation(tmp_path, actuator)
+
+    with pytest.raises(RecoveryBlockedError, match="cannot resolve yet"):
+        _retry(audit, actuator, "after-deferral-token")
+
+    assert actuator.calls == 0
+    # Left for a later attempt: not terminalized, still overlapping its targets.
+    assert _run_state(tmp_path, operation_id)[0] in {"running", "interrupted"}

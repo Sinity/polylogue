@@ -371,7 +371,12 @@ def build_session_orchestration(
     topology_payload = topology.model_dump(mode="json") if topology else None
     if topology_payload and topology and (len(topology.nodes) > _LIMIT or len(topology.edges) > _LIMIT):
         topology_payload["nodes"] = topology_payload["nodes"][:_LIMIT]
-        topology_payload["edges"] = topology_payload["edges"][:_LIMIT]
+        retained_ids = {node["session_id"] for node in topology_payload["nodes"]}
+        topology_payload["edges"] = [
+            edge
+            for edge in topology_payload["edges"][:_LIMIT]
+            if edge["parent_id"] in retained_ids and edge["child_id"] in retained_ids
+        ]
         truncated.append("topology")
         gaps.append("observation_limit")
     return SessionOrchestrationEvidence(

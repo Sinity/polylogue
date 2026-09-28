@@ -222,12 +222,6 @@ def archive_tier_init_counts() -> dict[str, int]:
         return {f"{tier}.{outcome}": count for (tier, outcome), count in sorted(_TIER_INIT_COUNTS.items())}
 
 
-def reset_archive_tier_init_counts() -> None:
-    """Clear the tally; for tests asserting on a known window."""
-    with _TIER_INIT_COUNTS_LOCK:
-        _TIER_INIT_COUNTS.clear()
-
-
 def _tier_prototype_dir() -> Path:
     global _TIER_PROTOTYPE_DIR
     if _TIER_PROTOTYPE_DIR is None:

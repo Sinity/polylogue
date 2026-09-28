@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import re
+import sqlite3
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Protocol
+from typing import IO, Protocol, cast
 
 import ijson
 
@@ -20,6 +22,7 @@ from polylogue.archive.artifact_taxonomy import (
 )
 from polylogue.archive.raw_payload.decode import (
     JSONL_RECORD_INSPECTION_BYTES,
+    EmptyJsonlStreamError,
     _sample_jsonl_payload_with_detail,
     jsonl_session_artifact,
 )
@@ -28,8 +31,13 @@ from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
 from polylogue.core.write_hold import check_write_hold_budget
 from polylogue.pipeline.services.process_pool import select_ingest_worker_count
-from polylogue.sources.dispatch import _detect_provider_from_raw_bytes, detect_provider, is_jsonl_source_path
-from polylogue.sources.parsers import antigravity, hermes_state, hermes_verification
+from polylogue.sources.dispatch import (
+    detect_provider,
+    detect_provider_from_raw_bytes_evidence,
+    is_jsonl_source_path,
+)
+from polylogue.sources.parsers import antigravity, codex_state, hermes_state, hermes_verification
+from polylogue.sources.sqlite_snapshot import is_sqlite_path
 from polylogue.storage.runtime import RawSessionRecord
 
 _FULL_PARSE_PROGRESS_MAX_BYTES = 64 * 1024 * 1024
@@ -102,15 +110,6 @@ class ClaudeSemanticFrontier:
     body_bytes: int
 
 
-def encode_claude_semantic_frontier(*, header: bytes, body: bytes) -> str:
-    """Encode the evidence needed to resume after a mutable-header rewrite."""
-    return encode_claude_semantic_frontier_digests(
-        header_sha256=hashlib.sha256(header).hexdigest(),
-        body_sha256=hashlib.sha256(body).hexdigest(),
-        body_bytes=len(body),
-    )
-
-
 def encode_claude_semantic_frontier_digests(*, header_sha256: str, body_sha256: str, body_bytes: int) -> str:
     """Encode a Claude frontier from already-streamed semantic evidence."""
     if not (_sha256_hex(header_sha256) and _sha256_hex(body_sha256) and body_bytes >= 0):
@@ -127,27 +126,6 @@ def decode_claude_semantic_frontier(value: str | None) -> ClaudeSemanticFrontier
     if not (_sha256_hex(parts[1]) and _sha256_hex(parts[2]) and parts[3].isdigit()):
         return None
     return ClaudeSemanticFrontier(parts[1], parts[2], int(parts[3]))
-
-
-def claude_semantic_frontier_from_path(path: Path) -> tuple[str, int, int] | None:
-    """Return frontier authority, body start, and complete body end.
-
-    A first record and every body record must be complete. A partial first
-    record is therefore deferred instead of being interpreted as an empty body.
-    """
-    try:
-        end_offset = path.stat().st_size
-    except OSError:
-        return None
-    frontier = claude_semantic_frontier_for_prefix(path, end_offset)
-    if frontier is None:
-        return None
-    try:
-        with path.open("rb") as handle:
-            header = handle.readline()
-    except OSError:
-        return None
-    return frontier, len(header), end_offset
 
 
 def claude_semantic_frontier_for_prefix(
@@ -325,6 +303,9 @@ class _FullIngestResult:
     #: succeeded, failed, preparation_deferred, or here: one that lands in none is
     #: indistinguishable from an idle source (polylogue-6q16u).
     excluded: dict[Path, str] = field(default_factory=dict)
+    #: Admitted paths whose provider is the source fallback only because
+    #: detection crashed, with the failure. A shape fallback is not listed.
+    detection_fallbacks: dict[Path, str] = field(default_factory=dict)
     raw_fingerprints: dict[Path, str] = field(default_factory=dict)
     raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
     raw_frontier_sizes: dict[Path, int] = field(default_factory=dict)
@@ -363,6 +344,7 @@ def _full_ingest_result_from_summary(
     raw_deferred: list[Path] | None = None,
     source_payload_read_bytes: int,
     excluded: dict[Path, str] | None = None,
+    detection_fallbacks: dict[Path, str] | None = None,
     raw_fingerprints: dict[Path, str],
     raw_byte_sizes: dict[Path, int],
     raw_frontier_sizes: dict[Path, int] | None = None,
@@ -383,6 +365,7 @@ def _full_ingest_result_from_summary(
         raw_deferred=list(raw_deferred or ()),
         source_payload_read_bytes=source_payload_read_bytes,
         excluded=dict(excluded or {}),
+        detection_fallbacks=dict(detection_fallbacks or {}),
         raw_fingerprints=raw_fingerprints,
         raw_byte_sizes=raw_byte_sizes,
         raw_frontier_sizes=raw_frontier_sizes or {},
@@ -877,6 +860,11 @@ def _browser_capture_provider_from_path(path: Path) -> Provider | None:
 
 
 def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONValue]:
+    return _jsonl_sample_with_failure(path, max_records=max_records)[0]
+
+
+def _jsonl_sample_with_failure(path: Path, *, max_records: int = 32) -> tuple[list[JSONValue], str | None]:
+    """Sample a JSONL file's leading records; the second value names a decode failure."""
     try:
         records, _malformed_lines, _malformed_detail = _sample_jsonl_payload_with_detail(
             path,
@@ -884,14 +872,31 @@ def _jsonl_sample_from_path(path: Path, *, max_records: int = 32) -> list[JSONVa
             scan_full=False,
             max_record_bytes=JSONL_RECORD_INSPECTION_BYTES,
         )
-    except ValueError:
-        return []
-    return records
+    except EmptyJsonlStreamError:
+        # An empty capture is a shape fallback, not a detection crash.
+        return [], None
+    except ValueError as exc:
+        return [], _crash(exc)
+    return records, None
 
 
 def _detect_provider_from_path_sample(
     path: Path, fallback_provider: Provider, *, json_document: bool = False
 ) -> Provider:
+    return detect_provider_from_path_sample_evidence(path, fallback_provider, json_document=json_document)[0]
+
+
+def detect_provider_from_path_sample_evidence(
+    path: Path, fallback_provider: Provider, *, json_document: bool = False
+) -> tuple[Provider, str | None]:
+    """Detect a path's provider; the second value names a detection crash.
+
+    ``fallback_provider`` is returned both when no detector claims the sample
+    (a shape outcome) and when reading or decoding the sample failed. The
+    second value is ``None`` for the former and describes the failure for the
+    latter, so a batch can count payloads whose provider is the fallback only
+    because detection crashed (polylogue-fkqxx).
+    """
     if fallback_provider is Provider.HERMES and (json_document or path.suffix.lower() == ".json"):
         # Hermes snapshots have a streaming envelope recognizer. Avoid routing
         # them through the generic document sampler, whose fallback builds the
@@ -901,32 +906,32 @@ def _detect_provider_from_path_sample(
         try:
             with path.open("rb") as handle:
                 if hermes_snapshot_envelope(handle) is not None:
-                    return Provider.HERMES
-        except OSError:
-            return fallback_provider
+                    return Provider.HERMES, None
+        except OSError as exc:
+            return fallback_provider, _crash(exc)
     if fallback_provider is Provider.ANTIGRAVITY and antigravity.looks_like_trajectory_db_path(path):
-        return Provider.ANTIGRAVITY
+        return Provider.ANTIGRAVITY, None
     if hermes_state.looks_like_state_db_path(path) or hermes_verification.looks_like_verification_evidence_db_path(
         path
     ):
-        return Provider.HERMES
+        return Provider.HERMES, None
     if is_jsonl_source_path(str(path)):
-        records = _jsonl_sample_from_path(path)
+        records, failure = _jsonl_sample_with_failure(path)
         if records:
-            return detect_provider(records) or fallback_provider
-        return fallback_provider
+            return detect_provider(records) or fallback_provider, None
+        return fallback_provider, failure
     if json_document or path.suffix.lower() == ".json":
         browser_capture, capture_provider = _browser_capture_prefix_probe(path)
         if browser_capture and capture_provider is not None:
-            return capture_provider
+            return capture_provider, None
         from polylogue.sources.decoder_json import grok_export_item_count
 
         try:
             with path.open("rb") as handle:
                 if grok_export_item_count(handle) is not None:
-                    return Provider.GROK
-        except OSError:
-            return fallback_provider
+                    return Provider.GROK, None
+        except OSError as exc:
+            return fallback_provider, _crash(exc)
         from polylogue.sources.decoders import _iter_json_stream
 
         sample: list[JSONValue] = []
@@ -935,43 +940,99 @@ def _detect_provider_from_path_sample(
                 for record in _iter_json_stream(handle, path.name):
                     detected = detect_provider(record)
                     if detected is not None:
-                        return detected
+                        return detected, None
                     sample.append(record)
                     if len(sample) >= 32:
                         break
-        except (OSError, ValueError):
-            return fallback_provider
-        return detect_provider(sample) or fallback_provider
+        except (OSError, ValueError) as exc:
+            return fallback_provider, _crash(exc)
+        return detect_provider(sample) or fallback_provider, None
     try:
         with path.open("rb") as handle:
             payload = handle.read(_NON_JSON_PROBE_BYTES + 1)
-    except OSError:
-        return fallback_provider
+    except OSError as exc:
+        return fallback_provider, _crash(exc)
     if len(payload) > _NON_JSON_PROBE_BYTES:
-        return fallback_provider
-    return _detect_provider_from_raw_bytes(payload, path.name, fallback_provider)
+        return fallback_provider, None
+    provider, evidence = detect_provider_from_raw_bytes_evidence(payload, path.name, fallback_provider)
+    return provider, evidence if evidence.startswith("stream decode error") else None
+
+
+def _crash(exc: BaseException) -> str:
+    return f"{type(exc).__name__}: {exc}"
+
+
+class _CheckpointedLines:
+    """Iterate a byte stream's lines, calling ``checkpoint`` before every chunk read.
+
+    A session-evidence scan of a sidecar reads to EOF; a caller that must stop
+    cooperatively (the cold-build baseline observation) raises from its
+    checkpoint. Reading in fixed chunks lets the checkpoint run inside one
+    long line too, not only between lines.
+    """
+
+    _CHUNK_BYTES = 1024 * 1024
+
+    def __init__(self, stream: IO[bytes], checkpoint: Callable[[], None]) -> None:
+        self._stream = stream
+        self._checkpoint = checkpoint
+
+    def __iter__(self) -> Iterator[bytes]:
+        parts: list[bytes] = []
+        while True:
+            self._checkpoint()
+            chunk = self._stream.read(self._CHUNK_BYTES)
+            if not chunk:
+                if parts:
+                    yield b"".join(parts)
+                return
+            start = 0
+            while (newline := chunk.find(b"\n", start)) >= 0:
+                parts.append(chunk[start : newline + 1])
+                yield b"".join(parts)
+                parts = []
+                start = newline + 1
+            if start < len(chunk):
+                parts.append(chunk[start:])
 
 
 def _jsonl_provider_and_session_artifact(
     path: Path,
     fallback_provider: Provider,
-) -> tuple[Provider, bool]:
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> tuple[Provider, bool, str | None]:
+    """Classify a JSONL path from one sample.
+
+    Returns the provider, whether to session-parse the path, and -- when the
+    provider is the fallback because the sample failed to decode -- that
+    failure (polylogue-fkqxx). All three come from the same sample.
+    """
     from polylogue.sources.origin_specs import path_declaration_refuses_session
 
-    records = _jsonl_sample_from_path(path)
-    provider = (detect_provider(records) if records else None) or fallback_provider
+    records, failure = _jsonl_sample_with_failure(path)
+    detected = detect_provider(records) if records else None
+    provider = detected or fallback_provider
+    detection_failure = failure if detected is None else None
     # A ``raw-only`` declaration is terminal: its bytes are evidence and the
     # record shape cannot decide otherwise (polylogue-ximhz). Checked before
     # the content probe so a prompt-history log -- whose rows carry the same
     # ``sessionId`` keys a transcript does -- is never session-parsed.
     if path_declaration_refuses_session(provider, path):
-        return provider, False
-    if jsonl_session_artifact(path, provider=provider) is not None:
-        return provider, True
+        return provider, False, detection_failure
+    if checkpoint is None:
+        artifact = jsonl_session_artifact(path, provider=provider)
+    else:
+        with path.open("rb") as handle:
+            artifact = jsonl_session_artifact(
+                cast(IO[bytes], _CheckpointedLines(handle, checkpoint)), provider=provider
+            )
+    if artifact is not None:
+        return provider, True, detection_failure
     path_classification = classify_artifact_path(path, provider=provider)
     if path_classification is not None:
-        return provider, path_classification.parse_as_session
-    return provider, False
+        return provider, path_classification.parse_as_session, detection_failure
+    return provider, False, detection_failure
 
 
 def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
@@ -1016,6 +1077,193 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
     except JSONDecodeError:
         return False
     return classify_artifact(document, provider=provider, source_path=path).parse_as_session
+
+
+_RETRYABLE_READ_ERRNOS = frozenset(
+    {
+        errno.EIO,
+        errno.EACCES,
+        errno.EPERM,
+        errno.ESTALE,
+        errno.ETIMEDOUT,
+        errno.EAGAIN,
+        errno.EBUSY,
+        errno.ENOSPC,
+        errno.EDQUOT,
+    }
+)
+
+
+def retryable_read_fault(exc: BaseException) -> bool:
+    """Whether a source read failed for a reason a later read can clear."""
+    sqlite_code = getattr(exc, "sqlite_errorcode", None)
+    return (isinstance(exc, OSError) and exc.errno in _RETRYABLE_READ_ERRNOS) or (
+        isinstance(exc, sqlite3.Error)
+        and isinstance(sqlite_code, int)
+        and sqlite_code & 0xFF
+        in {
+            sqlite3.SQLITE_IOERR,
+            sqlite3.SQLITE_BUSY,
+            sqlite3.SQLITE_LOCKED,
+            sqlite3.SQLITE_CANTOPEN,
+            sqlite3.SQLITE_PERM,
+        }
+    )
+
+
+def probe_sqlite_readable(path: Path) -> None:
+    """Raise the read fault of a database about to be excluded, if any."""
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
+    try:
+        conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()
+    finally:
+        conn.close()
+
+
+@dataclass(frozen=True, slots=True)
+class PreAcquisitionDecision:
+    """Whether full intake retains a discovered file, and the sniff it used.
+
+    ``excluded_reason`` is the typed cursor-exclusion reason, or ``None`` when
+    intake retains the file's bytes. ``detected_provider`` and
+    ``detection_crash`` carry the content sniff this decision already paid
+    for, so the retaining branch does not sniff again.
+    """
+
+    excluded_reason: str | None
+    detected_provider: Provider | None = None
+    detection_crash: str | None = None
+
+
+def classify_pre_acquisition(
+    path: Path,
+    *,
+    fallback_provider: Provider,
+    source_only: bool,
+    size_bytes: int,
+    checkpoint: Callable[[], None] | None = None,
+) -> PreAcquisitionDecision:
+    """Decide whether full intake excludes ``path`` before retaining any bytes.
+
+    This is the one authority for pre-acquisition exclusion. The full-ingest
+    batch applies it to every file it acquires, and the cold-build production
+    baseline applies it to every file discovery accepts, so a revision the
+    baseline requires is always one intake retains. The branch order mirrors
+    the batch's acquisition branches: an earlier retaining branch wins over a
+    later exclusion rule.
+
+    The structural SQLite recognizers read an unreadable database as "not
+    ours". Before a database is excluded, a retryable read fault is raised
+    instead, so the caller retries the file rather than excluding a valid
+    database for good; bytes that are not a readable database stay excluded.
+    """
+    decision = _classify_pre_acquisition(
+        path,
+        fallback_provider=fallback_provider,
+        source_only=source_only,
+        size_bytes=size_bytes,
+        checkpoint=checkpoint,
+    )
+    if decision.excluded_reason is not None and is_sqlite_path(path):
+        try:
+            probe_sqlite_readable(path)
+        except (OSError, sqlite3.Error) as exc:
+            if retryable_read_fault(exc):
+                raise
+    return decision
+
+
+def _classify_pre_acquisition(
+    path: Path,
+    *,
+    fallback_provider: Provider,
+    source_only: bool,
+    size_bytes: int,
+    checkpoint: Callable[[], None] | None,
+) -> PreAcquisitionDecision:
+    from polylogue.sources.origin_specs import (
+        artifact_rule_for_path,
+        database_capability_for_provider,
+        recognize_source_class,
+    )
+
+    if path.suffix.lower() == ".zip":
+        # ZIP members are admitted or excluded one by one by the member walk.
+        return PreAcquisitionDecision(None)
+    if (
+        fallback_provider is Provider.ANTIGRAVITY
+        and path.suffix.lower() == ".pb"
+        and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
+    ):
+        # Converted as one cohort through the vendor language server.
+        return PreAcquisitionDecision(None)
+    hermes_capability = database_capability_for_provider(Provider.HERMES)
+    hermes_member = hermes_capability.member(path.name) if hermes_capability is not None else None
+    hermes_owned_sqlite_name = (
+        source_only
+        and fallback_provider is Provider.HERMES
+        and hermes_member is not None
+        and hermes_member.disposition != "out-of-scope"
+    )
+    source_class = recognize_source_class(
+        fallback_provider, path, source_only=source_only, source_size_bytes=size_bytes
+    )
+    if source_class is not None and source_class.source_class == "unsupported" and not hermes_owned_sqlite_name:
+        return PreAcquisitionDecision("unsupported source class")
+    if fallback_provider in {Provider.ANTIGRAVITY, Provider.UNKNOWN} and antigravity.looks_like_trajectory_db_path(
+        path
+    ):
+        return PreAcquisitionDecision(None)
+    if hermes_owned_sqlite_name or (
+        not source_only
+        and (
+            hermes_state.looks_like_state_db_path(path)
+            or hermes_verification.looks_like_verification_evidence_db_path(path)
+        )
+    ):
+        return PreAcquisitionDecision(None)
+    codex_capability = database_capability_for_provider(Provider.CODEX)
+    codex_member = codex_capability.member(path.name) if codex_capability is not None else None
+    if (
+        codex_member is not None
+        and codex_member.disposition != "out-of-scope"
+        and ((source_only and fallback_provider is Provider.CODEX) or codex_state.is_in_scope_codex_sqlite_path(path))
+    ):
+        return PreAcquisitionDecision(None)
+    if codex_member is not None:
+        return PreAcquisitionDecision("declared out-of-scope or structurally unverified state database")
+    if source_only:
+        return PreAcquisitionDecision(None)
+    origin_artifact_rule = artifact_rule_for_path(fallback_provider, str(path))
+    jsonl = is_jsonl_source_path(str(path))
+    if origin_artifact_rule is None and not jsonl:
+        strong = strong_path_classification(path, provider=fallback_provider)
+        if strong is not None and not strong.parse_as_session:
+            # Only definitive sidecar paths are excluded before retained
+            # acquisition. Weak locations reach the same parser at every
+            # size, where decoded evidence determines their disposition.
+            return PreAcquisitionDecision("path rule classifies this as non-session evidence")
+    if origin_artifact_rule is not None and origin_artifact_rule.parse_policy != "session":
+        return PreAcquisitionDecision(None, fallback_provider)
+    if jsonl:
+        provider, parse_as_session, crash = (
+            _jsonl_provider_and_session_artifact(path, fallback_provider)
+            if checkpoint is None
+            else _jsonl_provider_and_session_artifact(path, fallback_provider, checkpoint=checkpoint)
+        )
+        # An unknown JSONL cannot be safely excluded from acquire: the strict
+        # parse route persists typed terminal evidence for empty and
+        # malformed exports. Known-provider sidecars are excluded here
+        # because their classification is already authoritative.
+        if not parse_as_session and provider is not Provider.UNKNOWN:
+            return PreAcquisitionDecision("declared artifact rule: not parsed as a session", provider, crash)
+        return PreAcquisitionDecision(None, provider, crash)
+    if path.suffix.lower() == ".json":
+        return PreAcquisitionDecision(None, fallback_provider)
+    provider, crash = detect_provider_from_path_sample_evidence(path, fallback_provider)
+    if not _parse_path_as_session_artifact(path, provider=provider):
+        return PreAcquisitionDecision("path rule refuses session parsing", provider, crash)
+    return PreAcquisitionDecision(None, provider, crash)
 
 
 def _parse_payload_as_session_artifact(path: Path, *, provider: Provider, payload: bytes) -> bool:

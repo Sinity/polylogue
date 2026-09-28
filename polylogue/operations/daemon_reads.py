@@ -106,11 +106,6 @@ class DaemonReadDependencies:
     status_now_ms: int | None = None
     status_config: Config | PolylogueConfig | None = None
 
-    def with_vector_snapshot(self, connection: sqlite3.Connection | None) -> DaemonReadDependencies:
-        """Bind the config-only vector dependency to one pinned SQL handle."""
-
-        return replace(self, vector_connection=connection)
-
     @property
     def vector_provider(self) -> VectorProvider | None:
         if self.vector_binding is None or self.vector_connection is None:
@@ -1199,6 +1194,7 @@ def _session_identity_projection(
                         "text": block.text,
                         "tool_name": block.tool_name,
                         "tool_id": block.tool_id,
+                        "tool_input": block.tool_input,
                         "semantic_type": block.semantic_type,
                     }
                     for block in message.blocks

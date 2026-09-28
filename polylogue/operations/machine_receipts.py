@@ -11,12 +11,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from typing import Literal, TypeAlias
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 MAX_MACHINE_RECEIPT_PAGES = 40
-MAX_MACHINE_RECEIPT_INPUTS = 10_000
 MAX_PAGE_ITEMS = 256
 MAX_RAW_IDS_PER_INPUT = 10_000
 MAX_INLINE_RAW_IDS_PER_INPUT = MAX_RAW_IDS_PER_INPUT
@@ -202,6 +202,43 @@ class IngestRefusedMembershipHistorical(_Receipt):
     reason: str = Field(min_length=1, max_length=512)
 
 
+class IngestRefusalPageHistoricalReceipt(_Receipt):
+    """One page of refused memberships, retained in audit before the root cites it."""
+
+    ordinal: int = Field(ge=0)
+    refusals: list[IngestRefusedMembershipHistorical] = Field(min_length=1, max_length=MAX_PAGE_ITEMS)
+
+
+class IngestRefusalPagesDigest:
+    """Canonical digest of an ordered refusal page sequence, one page at a time.
+
+    Equal to the SHA-256 of the canonical JSON array of the pages, so a
+    builder can persist each page and forget it.
+    """
+
+    def __init__(self) -> None:
+        self._hasher = hashlib.sha256(b"[")
+        self._pages = 0
+
+    def update(self, page: IngestRefusalPageHistoricalReceipt) -> None:
+        if self._pages:
+            self._hasher.update(b",")
+        self._hasher.update(json.dumps(page.model_dump(mode="json"), sort_keys=True, separators=(",", ":")).encode())
+        self._pages += 1
+
+    def hexdigest(self) -> str:
+        final = self._hasher.copy()
+        final.update(b"]")
+        return final.hexdigest()
+
+
+def ingest_refusal_pages_digest(pages: Iterable[IngestRefusalPageHistoricalReceipt]) -> str:
+    digest = IngestRefusalPagesDigest()
+    for page in pages:
+        digest.update(page)
+    return digest.hexdigest()
+
+
 class IngestTerminalSummaryHistorical(_Receipt):
     enumeration_complete: bool
     source_complete: bool
@@ -213,7 +250,14 @@ class IngestTerminalSummaryHistorical(_Receipt):
     # reported here -- a skipped key that nothing counts would be a silent
     # degradation traded for the loud one.
     refused_membership_count: int = Field(ge=0, default=0)
-    refused_memberships: list[IngestRefusedMembershipHistorical] = Field(default_factory=list, max_length=256)
+    # Every refusal is named: inline up to one page, otherwise in referenced
+    # audit pages that together hold exactly ``refused_membership_count``.
+    refused_memberships: list[IngestRefusedMembershipHistorical] = Field(
+        default_factory=list, max_length=MAX_PAGE_ITEMS
+    )
+    refused_membership_pages_ref: str | None = Field(default=None, min_length=1)
+    refused_membership_page_count: int = Field(default=0, ge=0)
+    refused_memberships_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     # Captured by the admitted writer during cohort publication. Public API
     # clients project ParseResult from this terminal fact, never a later index
     # read that may already describe another generation or replacement.
@@ -225,6 +269,38 @@ class IngestTerminalSummaryHistorical(_Receipt):
     processed_message_count: int = Field(default=0, ge=0)
     changed_session_count: int = Field(default=0, ge=0)
     changed_message_count: int = Field(default=0, ge=0)
+    # Whether every session this generation proved was carried through profile
+    # and insight convergence. ``None`` only on receipts written before the
+    # fact was recorded. A committed ingest whose convergence stopped on a
+    # retryable target is ``degraded``, never ``completed`` (polylogue-5639
+    # review): its rows are durable, its derived readiness is not.
+    profile_convergence_complete: bool | None = None
+
+    @property
+    def converged(self) -> bool | None:
+        """Whether the ingest's source and derived convergence both finished."""
+        if not self.source_complete:
+            # Known on every receipt, including ones written before profile
+            # convergence was recorded.
+            return False
+        return self.profile_convergence_complete
+
+    @model_validator(mode="after")
+    def valid_refusals(self) -> IngestTerminalSummaryHistorical:
+        paged = self.refused_membership_pages_ref is not None
+        if paged != bool(self.refused_membership_page_count) or paged != bool(self.refused_memberships_digest):
+            raise ValueError("ingest refusal page reference is incomplete")
+        if paged:
+            if self.refused_memberships or self.refused_membership_count <= MAX_PAGE_ITEMS:
+                raise ValueError("ingest refusal pages are only for more refusals than one page")
+            if (
+                self.refused_membership_page_count
+                != (self.refused_membership_count + MAX_PAGE_ITEMS - 1) // MAX_PAGE_ITEMS
+            ):
+                raise ValueError("ingest refusal page count does not match its refusals")
+        elif self.refused_membership_count != len(self.refused_memberships):
+            raise ValueError("ingest refusal count does not match its named refusals")
+        return self
 
     @model_validator(mode="after")
     def valid_parse_projection(self) -> IngestTerminalSummaryHistorical:
@@ -254,48 +330,6 @@ class IngestTerminalSummaryHistorical(_Receipt):
             or any((self.processed_message_count, self.changed_session_count, self.changed_message_count))
         ):
             raise ValueError("unknown ingest parse projection cannot invent changed rows")
-        return self
-
-
-class IngestHistoricalReceipt(_Receipt):
-    kind: Literal["ingest/v1"] = "ingest/v1"
-    source_generation_id: str = Field(min_length=1)
-    final_sequence: int = Field(ge=1)
-    input_count: int = Field(ge=1, le=MAX_MACHINE_RECEIPT_INPUTS)
-    input_pages: list[IngestInputPageHistoricalReceipt] = Field(min_length=1, max_length=MAX_MACHINE_RECEIPT_PAGES)
-    insight_pages: list[IngestInsightPageHistoricalReceipt] = Field(
-        default_factory=list, max_length=MAX_MACHINE_RECEIPT_PAGES
-    )
-    insight_pages_ref: str | None = Field(default=None, min_length=1)
-    insight_page_count: int = Field(default=0, ge=0)
-    insight_pages_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
-    summary: IngestTerminalSummaryHistorical
-
-    @model_validator(mode="after")
-    def valid_terminal_summary(self) -> IngestHistoricalReceipt:
-        if sum(len(page.items) for page in self.input_pages) != self.input_count:
-            raise ValueError("historical ingest pages do not cover the input denominator")
-        if [page.ordinal for page in self.input_pages] != list(range(len(self.input_pages))):
-            raise ValueError("historical ingest input pages are not contiguous")
-        if [page.ordinal for page in self.insight_pages] != list(range(len(self.insight_pages))):
-            raise ValueError("historical ingest insight pages are not contiguous")
-        paged_insights = self.insight_pages_ref is not None
-        if paged_insights != bool(self.insight_page_count) or paged_insights != bool(self.insight_pages_digest):
-            raise ValueError("historical ingest insight page reference is incomplete")
-        if paged_insights and self.insight_pages:
-            raise ValueError("historical ingest cannot mix inline and referenced insight pages")
-        if paged_insights and self.insight_page_count <= MAX_MACHINE_RECEIPT_PAGES:
-            raise ValueError("historical ingest insight reference requires more than inline pages")
-        if not paged_insights and self.summary.profile_targets_observed != sum(
-            len(page.targets) for page in self.insight_pages
-        ):
-            raise ValueError("historical ingest profile total does not match its pages")
-        if paged_insights and self.summary.profile_targets_observed > self.insight_page_count * MAX_PAGE_ITEMS:
-            raise ValueError("historical ingest profile total exceeds its referenced pages")
-        if self.summary.refused_membership_count < len(self.summary.refused_memberships):
-            raise ValueError("historical ingest refusal count is smaller than its enumerated refusals")
-        if self.summary.refused_membership_count and self.summary.source_complete:
-            raise ValueError("historical ingest cannot be source-complete while memberships were refused")
         return self
 
 
@@ -342,15 +376,60 @@ class IngestHistoricalReceiptV2(_Receipt):
             raise ValueError("historical ingest profile total does not match its pages")
         if paged_insights and self.summary.profile_targets_observed > self.insight_page_count * MAX_PAGE_ITEMS:
             raise ValueError("historical ingest profile total exceeds its referenced pages")
-        if self.summary.refused_membership_count < len(self.summary.refused_memberships):
-            raise ValueError("historical ingest refusal count is smaller than its enumerated refusals")
         if self.summary.refused_membership_count and self.summary.source_complete:
             raise ValueError("historical ingest cannot be source-complete while memberships were refused")
         return self
 
 
-IngestTerminalReceipt: TypeAlias = IngestHistoricalReceipt | IngestHistoricalReceiptV2
+IngestTerminalReceipt: TypeAlias = IngestHistoricalReceiptV2
 MachineHistoricalReceipt: TypeAlias = InsightPartHistoricalReceipt | IngestTerminalReceipt
+
+
+def ingest_terminal_outcome(history: IngestHistoricalReceiptV2) -> str:
+    """``completed`` only when the committed ingest also finished converging.
+
+    The ingest's rows are durable either way. When source enumeration refused
+    members or profile convergence stopped on a retryable target, the daemon's
+    ordinary convergence owns the rest, and the terminal outcome says so
+    instead of certifying readiness it did not reach.
+    """
+    summary = getattr(history, "summary", None)
+    converged = getattr(summary, "converged", None)
+    return "degraded" if converged is False else "completed"
+
+
+def ingest_unconverged_error(history: IngestHistoricalReceiptV2) -> dict[str, object]:
+    summary = getattr(history, "summary", None)
+    source_complete = bool(getattr(summary, "source_complete", False))
+    if not source_complete:
+        # Recorded membership refusals and unresolved raws are this source
+        # generation's terminal facts; nothing retries them at this head.
+        return {
+            "code": "ingest_source_incomplete",
+            "detail": (
+                "ingest committed its rows, but source admission refused or could not resolve some members; "
+                "the receipt names them"
+            ),
+            "retryable": False,
+            "data": {
+                "source_complete": False,
+                "refused_membership_count": getattr(summary, "refused_membership_count", 0),
+                "unresolved_raw_count": getattr(summary, "unresolved_raw_count", 0),
+                "profile_convergence_complete": getattr(summary, "profile_convergence_complete", None),
+            },
+        }
+    return {
+        "code": "ingest_convergence_pending",
+        "detail": (
+            "ingest committed its rows, but profile and insight convergence did not finish; "
+            "the daemon's convergence continues it"
+        ),
+        "retryable": True,
+        "data": {
+            "source_complete": source_complete,
+            "profile_convergence_complete": getattr(summary, "profile_convergence_complete", None),
+        },
+    }
 
 
 def encode_machine_receipt(receipt: MachineHistoricalReceipt) -> dict[str, object]:
@@ -368,8 +447,6 @@ def decode_machine_receipt(raw: object) -> MachineHistoricalReceipt:
         kind = raw.get("kind")
         if kind == "insight-part/v1":
             return InsightPartHistoricalReceipt.model_validate(raw)
-        if kind == "ingest/v1":
-            return IngestHistoricalReceipt.model_validate(raw)
         if kind == "ingest/v2":
             return IngestHistoricalReceiptV2.model_validate(raw)
     except ValidationError as exc:
@@ -378,7 +455,9 @@ def decode_machine_receipt(raw: object) -> MachineHistoricalReceipt:
 
 
 __all__ = [
-    "IngestHistoricalReceipt",
+    "ingest_terminal_outcome",
+    "ingest_unconverged_error",
+    "IngestRefusalPageHistoricalReceipt",
     "IngestHistoricalReceiptV2",
     "IngestTerminalReceipt",
     "IngestInputHistoricalReceipt",
@@ -392,4 +471,6 @@ __all__ = [
     "decode_machine_receipt",
     "encode_machine_receipt",
     "ingest_input_pages_digest",
+    "IngestRefusalPagesDigest",
+    "ingest_refusal_pages_digest",
 ]

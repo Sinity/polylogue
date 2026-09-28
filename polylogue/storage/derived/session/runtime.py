@@ -2,30 +2,10 @@
 
 from __future__ import annotations
 
-import sqlite3
-from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TypeAlias
 
 ProviderDayGroup: TypeAlias = tuple[str, str]
-
-
-def session_profile_candidates(
-    conn: sqlite3.Connection,
-    session_ids: Sequence[str],
-    *,
-    materializer_version: int,
-) -> list[str]:
-    """Sessions whose partition is not valid, by value-complete inspection.
-
-    Re-exported here because this module is the daemon converger's declared
-    window onto session-insight runtime; the implementation belongs to the
-    domain (:mod:`polylogue.storage.derived.session.derivation`).
-    """
-    from polylogue.storage.derived.session.derivation import inspect_session_profiles
-
-    statuses = inspect_session_profiles(conn, session_ids, materializer_version=materializer_version)
-    return sorted(session_id for session_id, status in statuses.items() if status != "valid")
 
 
 @dataclass(slots=True)

@@ -759,12 +759,6 @@ def _is_strict_stream_prefix(
     return memo[key]
 
 
-def _iter_jsonl_payloads(handle: Iterable[bytes]) -> Iterator[JSONValue]:
-    """Decode JSONL record by record and fail closed on incomplete input."""
-    for item in _iter_sized_jsonl_payloads(handle):
-        yield item.value
-
-
 def _iter_sized_jsonl_payloads(handle: Iterable[bytes]) -> Iterator[_SizedPayload]:
     """Decode JSONL with physical line sizes for bounded source reduction."""
     for line_number, line in enumerate(handle, start=1):

@@ -2600,13 +2600,15 @@ def _raw_replay_backlog_info(*, include: bool = True) -> dict[str, object]:
 
 def _sinex_publication_status_info() -> dict[str, object]:
     """Read durable Sinex publication state without requiring a transport."""
-    from polylogue.config import load_polylogue_config
+    from polylogue.config import active_archive_root, load_polylogue_config, resolve_runtime_config
     from polylogue.sinex.models import PublicationMode
     from polylogue.sinex.service import publication_status
     from polylogue.storage.archive_identity import ArchiveLocation
 
-    mode = PublicationMode.from_string(load_polylogue_config().sinex_mode)
-    source_db = ArchiveLocation.resolve(archive_root()).configured_tier("source").configured_path
+    config = load_polylogue_config()
+    mode = PublicationMode.from_string(config.sinex_mode)
+    runtime_config = resolve_runtime_config().as_config()
+    source_db = ArchiveLocation.resolve(active_archive_root(runtime_config)).configured_tier("source").configured_path
     return publication_status(source_db, mode).as_dict()
 
 
@@ -3414,18 +3416,51 @@ def halted_unit_status() -> list[dict[str, str]]:
     return [record.as_dict() for record in registry.halted_units()]
 
 
-def supervised_service_states() -> dict[str, str] | None:
-    """Return this process' service states, or ``None`` outside a daemon.
+_FAILED_SERVICE_STATES = frozenset({"failed", "orphaned"})
+_SERVICE_FAILURE_REASON_MAX_CHARS = 300
 
-    ``None`` is not "everything is fine": it means no supervisor is composed
-    here, which is the honest answer from a one-shot CLI process.
+
+def supervised_service_snapshot() -> tuple[dict[str, str], list[dict[str, object]]] | None:
+    """Return this process' service states and its failed or orphaned services.
+
+    Both come from one read of the supervisor's states, so a service that
+    fails while status is being collected cannot appear as ``failed`` in one
+    field and be missing from the other (the refresh runs off the daemon
+    loop, which is where the supervisor mutates state).
+
+    An ``isolate`` service that raised is marked failed and never restarted;
+    an orphan outlived its shutdown deadline. Either is work the daemon was
+    asked to do and is no longer doing, so it is named with its reason rather
+    than left as a bare state string. ``None`` outside a daemon: that is not
+    "everything is fine", only that no supervisor is composed here.
     """
     from polylogue.daemon.cli import active_supervisor
 
     supervisor = active_supervisor()
     if supervisor is None:
         return None
-    return {name: state.value for name, state in supervisor.states().items()}
+    states = dict(supervisor.states())
+    last_transition = {transition.service: transition for transition in supervisor.transitions()}
+    failures: list[dict[str, object]] = []
+    for name, state in sorted(states.items()):
+        if state.value not in _FAILED_SERVICE_STATES:
+            continue
+        exc = supervisor.failure(name)
+        transition = last_transition.get(name)
+        reason = (
+            f"{type(exc).__name__}: {exc}"
+            if exc is not None
+            else (transition.reason if transition is not None and transition.reason else state.value)
+        )
+        failures.append(
+            {
+                "service": name,
+                "state": state.value,
+                "reason": reason[:_SERVICE_FAILURE_REASON_MAX_CHARS],
+                "at": transition.at if transition is not None else None,
+            }
+        )
+    return {name: state.value for name, state in states.items()}, failures
 
 
 def daemon_status_payload(
@@ -3577,6 +3612,8 @@ def daemon_status_payload(
     # the resulting snapshot metadata after collection completes.
     if collecting_status_snapshot:
         status_snapshot = {**status_snapshot, "state": "refreshing"}
+    service_snapshot = supervised_service_snapshot()
+    service_states, service_failures = service_snapshot if service_snapshot is not None else (None, None)
 
     return json_document(
         {
@@ -3594,10 +3631,12 @@ def daemon_status_payload(
                 raw_frontier_integrity=status.raw_frontier_integrity.model_dump(),
                 tier_count_unavailable=None,
                 halted_units=halted_units,
+                failed_services=service_failures,
                 status_snapshot=status_snapshot,
             ),
             "halted_units": halted_units,
-            "services": supervised_service_states(),
+            "services": service_states,
+            "service_failures": service_failures,
             # Per-loop cadence evidence: last run, next due, last error and
             # which startup gate (if any) a loop is waiting on. Without it an
             # idle loop and a frozen one look identical (polylogue-74wvj).
@@ -3755,6 +3794,13 @@ def _excluded_archive_debt_status_summary() -> dict[str, object]:
     }
 
 
+def _failing_periodic_loops(loops: object) -> list[dict[str, object]]:
+    """Loops whose most recent run raised (an earlier, since-recovered error is not failing)."""
+    if not isinstance(loops, list):
+        return []
+    return [loop for loop in loops if isinstance(loop, dict) and loop.get("last_run_failed") is True]
+
+
 def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
     """Render daemon component status as plain text lines."""
     lines = ["Polylogue daemon"]
@@ -3765,6 +3811,22 @@ def format_daemon_status_lines(payload: JSONDocument) -> list[str]:
             if not isinstance(record, dict):
                 continue
             lines.append(f"    {record.get('unit', '?')}: {record.get('reason', '?')} - {record.get('message', '')}")
+    service_failures = payload.get("service_failures")
+    if isinstance(service_failures, list) and service_failures:
+        lines.append(f"  FAILED SERVICES: {len(service_failures)} declared service(s) stopped doing their work")
+        for record in service_failures:
+            if isinstance(record, dict):
+                lines.append(
+                    f"    {record.get('service', '?')}: {record.get('state', '?')} - {record.get('reason', '')}"
+                )
+    failing_loops = _failing_periodic_loops(payload.get("periodic_loops"))
+    if failing_loops:
+        lines.append(f"  Failing loops: {len(failing_loops)} (last run raised)")
+        for loop in failing_loops:
+            lines.append(
+                f"    {loop.get('name', '?')}: {loop.get('last_error_type', '?')}: {loop.get('last_error', '')} "
+                f"(failures {loop.get('failures', '?')}, runs {loop.get('runs', '?')})"
+            )
     lifecycle = payload.get("daemon_lifecycle")
     if payload.get("daemon_liveness"):
         age = lifecycle.get("heartbeat_age_s") if isinstance(lifecycle, dict) else None

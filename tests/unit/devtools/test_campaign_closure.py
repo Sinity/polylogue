@@ -137,6 +137,22 @@ def test_absent_prerequisite_is_not_assumed_closed() -> None:
     assert "syn-?" in report.missing
 
 
+def test_endpoint_attached_edge_is_indexed_by_declared_issue_and_missing_root_fails(tmp_path: Path) -> None:
+    """Prerequisite edges count even when exported under their other endpoint.
+
+    Anti-vacuity: requiring the containing record id to equal issue_id drops
+    syn-z from the closure and incorrectly returns success for the root.
+    """
+    root = issue(ROOT, blocks_on=("syn-n",))
+    prerequisite = issue("syn-n")
+    endpoint = issue("syn-z")
+    endpoint["dependencies"] = [{"issue_id": "syn-n", "depends_on_id": "syn-z", "type": "blocks"}]
+    assert closure_ids([root, prerequisite, endpoint], [ROOT]) == {ROOT, "syn-n", "syn-z"}
+    export = tmp_path / "empty.jsonl"
+    export.write_text("", encoding="utf-8")
+    assert main(["--root", "syn-typo", "--export", str(export)]) == 1
+
+
 def test_violations_are_unblocked_without_disposition() -> None:
     """Criterion 1's count, and its exit status.
 

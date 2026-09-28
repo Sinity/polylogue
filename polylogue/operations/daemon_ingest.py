@@ -35,18 +35,21 @@ from polylogue.operations.machine_receipts import (
     MAX_INLINE_RAW_IDS_PER_INPUT,
     MAX_MACHINE_RECEIPT_PAGES,
     MAX_PAGE_ITEMS,
-    IngestHistoricalReceipt,
     IngestHistoricalReceiptV2,
     IngestInputHistoricalReceipt,
     IngestInputPageHistoricalReceipt,
     IngestInputRawMemberHistorical,
     IngestInputRawPageHistoricalReceipt,
     IngestInsightPageHistoricalReceipt,
+    IngestRefusalPageHistoricalReceipt,
+    IngestRefusalPagesDigest,
     IngestRefusedMembershipHistorical,
     IngestTerminalSummaryHistorical,
     InsightTargetHistoricalReceipt,
     ingest_input_raw_pages_digest,
     ingest_insight_pages_digest,
+    ingest_terminal_outcome,
+    ingest_unconverged_error,
 )
 from polylogue.operations.mutation_transaction import (
     MutationPreview,
@@ -257,9 +260,13 @@ class IngestExecution:
         self.changed_message_count = 0
         self.refused_count = 0
         self.inline_refusals: list[IngestRefusedMembershipHistorical] = []
+        self.refusal_pages_ref: str | None = None
+        self.refusal_page_count = 0
+        self.refusal_pages_digest: str | None = None
         self.insight_pages_ref: str | None = None
         self.insight_page_count = 0
         self.insight_pages_digest: str | None = None
+        self.profile_convergence_complete = False
         self.publisher = ArchiveBlobPublisher(context.archive_root / "source.db", context.archive_root / "blob")
 
     def record_refusal(self, refusal: CohortMembershipRefusalError) -> None:
@@ -841,7 +848,13 @@ class IngestExecution:
         return await self.receipt(generation_id)
 
     async def converge_profiles(self, receipt: SourceReceiptSpool) -> tuple[SessionInsightPartReceipt, ...]:
-        """Derive only the exact sessions proved by this source denominator."""
+        """Derive only the exact sessions proved by this source denominator.
+
+        Stops at the first page with an unattempted or unsuccessful target;
+        ``profile_convergence_complete`` records whether every page was
+        carried through, so a stopped convergence cannot read as done.
+        """
+        self.profile_convergence_complete = False
         if not receipt.complete:
             return ()
         parts: list[SessionInsightPartReceipt] = []
@@ -860,8 +873,9 @@ class IngestExecution:
             if part.remaining_unattempted_target_refs or any(
                 target.disposition not in {"already_satisfied", "published"} for target in part.targets
             ):
-                break
+                return tuple(parts)
             cursor = session_ids[-1]
+        self.profile_convergence_complete = True
         return tuple(parts)
 
     async def historical_receipt(
@@ -957,6 +971,9 @@ class IngestExecution:
                 profile_targets_observed=sum(len(part.targets) for part in profile_parts),
                 refused_membership_count=self.refused_count,
                 refused_memberships=self.inline_refusals,
+                refused_membership_pages_ref=self.refusal_pages_ref,
+                refused_membership_page_count=self.refusal_page_count,
+                refused_memberships_digest=self.refusal_pages_digest,
                 parse_projection_known=True,
                 processed_session_ids=self.inline_session_ids,
                 processed_session_id_pages_ref=self.session_id_pages_ref,
@@ -965,6 +982,7 @@ class IngestExecution:
                 processed_message_count=self.changed_message_count,
                 changed_session_count=self.changed_session_count,
                 changed_message_count=self.changed_message_count,
+                profile_convergence_complete=self.profile_convergence_complete,
             ),
         )
         return root
@@ -1029,12 +1047,40 @@ class IngestExecution:
             counts = state.execute("SELECT COUNT(*), COALESCE(SUM(message_count), 0) FROM changed_sessions").fetchone()
             self.changed_session_count, self.changed_message_count = int(counts[0]), int(counts[1])
             self.refused_count = int(state.execute("SELECT COUNT(*) FROM refusals").fetchone()[0])
-            self.inline_refusals = [
-                IngestRefusedMembershipHistorical(logical_source_key=str(key), raw_id=str(raw_id), reason=str(reason))
-                for key, raw_id, reason in state.execute(
-                    "SELECT logical_key, raw_id, reason FROM refusals ORDER BY ordinal LIMIT 256"
-                )
-            ]
+            refusal_cursor = state.execute("SELECT logical_key, raw_id, reason FROM refusals ORDER BY ordinal")
+            if self.refused_count <= MAX_PAGE_ITEMS:
+                self.inline_refusals = [
+                    IngestRefusedMembershipHistorical(
+                        logical_source_key=str(key), raw_id=str(raw_id), reason=str(reason)
+                    )
+                    for key, raw_id, reason in refusal_cursor
+                ]
+            else:
+                # Each page is persisted as it is built and folded into the
+                # digest, so memory holds one page, not every refusal.
+                refusal_digest = IngestRefusalPagesDigest()
+                refusal_page_count = 0
+                while refusal_rows := refusal_cursor.fetchmany(MAX_PAGE_ITEMS):
+                    self.check_stop()
+                    refusal_page = IngestRefusalPageHistoricalReceipt(
+                        ordinal=refusal_page_count,
+                        refusals=[
+                            IngestRefusedMembershipHistorical(
+                                logical_source_key=str(key), raw_id=str(raw_id), reason=str(reason)
+                            )
+                            for key, raw_id, reason in refusal_rows
+                        ],
+                    )
+
+                    def persist_refusal_page(page: IngestRefusalPageHistoricalReceipt = refusal_page) -> None:
+                        self.audit.append_ingest_refusal_page(operation_id, page)
+
+                    await self.runtime.write_phase("ingest.refusal_page", persist_refusal_page)
+                    refusal_digest.update(refusal_page)
+                    refusal_page_count += 1
+                self.refusal_pages_ref = operation_id
+                self.refusal_page_count = refusal_page_count
+                self.refusal_pages_digest = refusal_digest.hexdigest()
             if self.changed_session_count <= MAX_INLINE_INGEST_SESSION_IDS:
                 self.inline_session_ids = [
                     str(row[0]) for row in state.execute("SELECT session_id FROM changed_sessions ORDER BY session_id")
@@ -1127,22 +1173,25 @@ async def execute_ingest_operation(
         if execution.resumed:
             state = await execution.state()
             restored = state.get("result")
-            if state["outcome"] == "completed" and isinstance(restored, dict):
+            if state["outcome"] in {"completed", "degraded"} and isinstance(restored, dict):
                 from polylogue.operations.machine_receipts import decode_machine_receipt
 
-                history = decode_machine_receipt(restored)
-                if not isinstance(history, (IngestHistoricalReceipt, IngestHistoricalReceiptV2)):
+                # The durable state wraps the receipt; decode the receipt itself.
+                history = decode_machine_receipt(restored.get("historical_receipt"))
+                if not isinstance(history, IngestHistoricalReceiptV2):
                     raise ValueError("completed ingest has another historical receipt kind")
+                outcome = ingest_terminal_outcome(history)
                 return operation_envelope(
                     request,
                     context,
                     snapshot=execution.snapshot,
                     started_at=started,
-                    outcome="completed",
+                    outcome=outcome,
                     reference=execution.record,
+                    error=None if outcome == "completed" else ingest_unconverged_error(history),
                     result={
                         "source_generation_id": history.source_generation_id,
-                        "outcome": "completed",
+                        "outcome": outcome,
                         "sequence": history.final_sequence,
                         "historical_receipt": history.model_dump(mode="json"),
                     },
@@ -1205,16 +1254,18 @@ async def execute_ingest_operation(
             history = await execution.finalize(generation, receipt, profile_parts)
         finally:
             receipt.close()
+        outcome = ingest_terminal_outcome(history)
         return operation_envelope(
             request,
             context,
             snapshot=execution.snapshot,
             started_at=started,
-            outcome="completed",
+            outcome=outcome,
             reference=execution.record,
+            error=None if outcome == "completed" else ingest_unconverged_error(history),
             result={
                 "source_generation_id": generation.source_generation_id,
-                "outcome": "completed",
+                "outcome": outcome,
                 "sequence": history.final_sequence,
                 "historical_receipt": history.model_dump(mode="json"),
             },

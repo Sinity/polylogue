@@ -19,6 +19,24 @@ from polylogue.sources.source_walk import census_source_root
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
+def test_every_origin_artifact_rule_names_a_declared_artifact_kind() -> None:
+    """A path rule whose kind is not an ``ArtifactKind`` fails only when a path matches.
+
+    Anti-vacuity: remove any member an ``OriginArtifactRule`` names from
+    ``ArtifactKind`` and this fails at the rule, not later at the first
+    matching source file (``skill_asset`` shipped that way).
+    """
+    from polylogue.sources.origin_specs import ORIGIN_SPECS
+
+    undeclared = {
+        (spec.origin.value, rule.kind)
+        for spec in ORIGIN_SPECS
+        for rule in spec.artifact_rules
+        if rule.kind not in ArtifactKind._value2member_map_
+    }
+    assert undeclared == set()
+
+
 def test_beads_interaction_artifact_is_refused_as_session() -> None:
     artifact = classify_artifact(
         [

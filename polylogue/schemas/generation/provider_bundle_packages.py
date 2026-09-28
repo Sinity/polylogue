@@ -171,14 +171,6 @@ def _membership_bundle_scope_identities(memberships: Sequence[_UnitMembership]) 
     return [bundle_scope_identity(scope) for scope in scopes]
 
 
-def _package_scope_identities(package: _PackageAccumulator) -> list[str]:
-    if isinstance(package.memberships, JournalMemberships):
-        scopes = package.memberships.iter_scope_keys()
-    else:
-        scopes = iter(sorted(package.bundle_scopes))
-    return [bundle_scope_identity(scope) for scope in scopes]
-
-
 def build_provider_catalog_artifacts(
     *,
     provider_token: Provider,
