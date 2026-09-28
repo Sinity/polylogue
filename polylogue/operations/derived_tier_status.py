@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -33,7 +34,7 @@ def derived_identity_mismatches(tier_paths: Mapping[str, Path]) -> list[str]:
             continue
         try:
             expected, actual = derived_tier_identity(path, name)
-        except (OSError, ValueError):
+        except (OSError, ValueError, sqlite3.Error):
             mismatches.append(name)
             continue
         if actual != expected:

@@ -689,6 +689,7 @@ def _ops_latest_ingest_memory(ops_db: Path) -> list[tuple[str, float]]:
                 """
                 SELECT payload_json
                 FROM daemon_stage_events
+                WHERE attempt_id IS NOT NULL
                 ORDER BY observed_at_ms DESC, event_id DESC
                 LIMIT 1
                 """

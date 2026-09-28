@@ -43,8 +43,9 @@ def select_embedding_session_window(
     """Resolve one bounded pending-session window for a daemon operation."""
     from polylogue.storage.embeddings.materialization import select_pending_session_window
 
-    del archive_root
-    with open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False) as conn:
+    active_index = resolve_active_index_path(archive_root)
+    limitations: list[bool] = []
+    with open_readonly_connection(active_index, timeout_class="background-read", validate_schema=False) as conn:
         rows = select_pending_session_window(
             conn,
             rebuild=rebuild,
@@ -52,10 +53,10 @@ def select_embedding_session_window(
             # fit from a max-sessions window that leaves pending sessions.
             max_sessions=None if max_sessions is None else max_sessions + 1,
             max_messages=max_messages,
+            min_messages=min_messages,
+            limit_reached=limitations,
         )
-    if min_messages is not None:
-        rows = [row for row in rows if row.message_count >= min_messages]
-    session_limit_reached = max_sessions is not None and len(rows) > max_sessions
+    session_limit_reached = bool(limitations) or (max_sessions is not None and len(rows) > max_sessions)
     selected = rows if max_sessions is None else rows[:max_sessions]
     return tuple(row.session_id for row in selected), session_limit_reached
 

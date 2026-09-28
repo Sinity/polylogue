@@ -1423,16 +1423,34 @@ def test_an_unavailable_debt_ledger_is_not_zero_debt() -> None:
     assert backlog["counts"]["retry_debt_unresolved"] is None
 
     diff = workload_probe.compare(
-        {"report_version": workload_probe.REPORT_VERSION, "ok": True, "convergence_debt": unavailable},
+        {
+            "report_version": workload_probe.REPORT_VERSION,
+            "ok": True,
+            "convergence_debt": unavailable,
+            "automatic_convergence_backlog": {
+                "retry_debt_available": False,
+                "counts": {"retry_debt_unresolved": None},
+            },
+        },
         {
             "report_version": workload_probe.REPORT_VERSION,
             "ok": True,
             "convergence_debt": {"available": True, "failed_count": 3, "deferred_count": 1, "unresolved_count": 4},
+            "automatic_convergence_backlog": {
+                "retry_debt_available": True,
+                "counts": {"retry_debt_unresolved": 4},
+            },
         },
     )
     debt = diff["convergence_debt"]
     assert debt["available_before"] is False
     assert debt["unresolved_count"] == {"before": None, "after": 4, "delta": None, "measured": False}
+    assert diff["automatic_convergence_backlog"]["counts"]["retry_debt_unresolved"] == {
+        "before": None,
+        "after": 4,
+        "delta": None,
+        "measured": False,
+    }
 
 
 def test_two_available_debt_ledgers_still_diff() -> None:

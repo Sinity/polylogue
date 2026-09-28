@@ -417,3 +417,33 @@ def test_embedding_session_window_reports_max_session_truncation(
     assert received["max_sessions"] == 3
     assert selected == ("s1", "s2")
     assert limited is True
+
+
+def test_embedding_session_window_reports_message_budget_truncation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A message budget that leaves pending sessions remains visibly limited.
+
+    Anti-vacuity: deriving the receipt stop flag only from ``max_sessions``
+    marks a one-session prefix complete when a second session exceeds the
+    message budget.
+    """
+    from contextlib import nullcontext
+    from types import SimpleNamespace
+
+    from polylogue.operations.embedding_derivation import select_embedding_session_window
+
+    def select(_conn: object, **kwargs: object) -> list[object]:
+        cast(list[bool], kwargs["limit_reached"]).append(True)
+        return [SimpleNamespace(session_id="s1", message_count=2)]
+
+    monkeypatch.setattr(
+        "polylogue.operations.embedding_derivation.open_readonly_connection",
+        lambda *_args, **_kwargs: nullcontext(object()),
+    )
+    monkeypatch.setattr("polylogue.storage.embeddings.materialization.select_pending_session_window", select)
+
+    selected, limited = select_embedding_session_window(tmp_path / "index.db", archive_root=tmp_path, max_messages=2)
+
+    assert selected == ("s1",)
+    assert limited is True

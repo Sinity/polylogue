@@ -59,9 +59,15 @@ def prepare_retained_non_json_artifact_worker(
         )
 
 
-def make_raw_observation_derivation(archive_root: Path) -> RawObservationDerivation:
+def make_raw_observation_derivation(
+    archive_root: Path, *, index_db_path: Path | None = None
+) -> RawObservationDerivation:
     """Construct the storage-owned raw adapter from the operations boundary."""
-    return RawObservationDerivation(archive_root, prepare_non_json_artifact=prepare_retained_non_json_artifact_worker)
+    return RawObservationDerivation(
+        archive_root,
+        prepare_non_json_artifact=prepare_retained_non_json_artifact_worker,
+        index_db_path=index_db_path,
+    )
 
 
 def raw_observation_output_session_ids(archive_root: Path, raw_id: str) -> tuple[str, ...]:
@@ -93,16 +99,20 @@ def raw_observation_frame(
     *,
     source_roots: Sequence[Path] = (),
     raw_ids: Sequence[str] = (),
+    index_db_path: Path | None = None,
 ) -> DerivationFrame:
+    index_path = index_db_path or ArchiveLocation.resolve(archive_root).active_index_path
     return DerivationFrame(
         archive_root=str(archive_root),
-        source_revision=str(ArchiveLocation.resolve(archive_root).active_index_path.resolve()),
+        source_revision=str(index_path.resolve()),
         recipe_versions={RAW_OBSERVATION_DOMAIN: _RAW_OBSERVATION_RECIPE_VERSION},
         scope=RawObservationScope(source_roots=tuple(source_roots), raw_ids=tuple(raw_ids)),
     )
 
 
-def raw_observation_backlog_snapshot(archive_root: Path, *, limit: int) -> dict[str, object]:
+def raw_observation_backlog_snapshot(
+    archive_root: Path, *, limit: int, index_db_path: Path | None = None
+) -> dict[str, object]:
     """Describe one bounded canonical raw-observation page for status surfaces.
 
     Status is observational and must not reintroduce a second all-raw
@@ -128,8 +138,8 @@ def raw_observation_backlog_snapshot(archive_root: Path, *, limit: int) -> dict[
             "page_complete": True,
         }
 
-    adapter = make_raw_observation_derivation(archive_root)
-    frame = raw_observation_frame(archive_root)
+    adapter = make_raw_observation_derivation(archive_root, index_db_path=index_db_path)
+    frame = raw_observation_frame(archive_root, index_db_path=index_db_path)
     try:
         raw_ids, next_cursor = adapter.required_page(frame, cursor=None, limit=limit)
         states = adapter.inspect(frame, raw_ids)
