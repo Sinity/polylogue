@@ -1025,6 +1025,36 @@ def test_read_verb_context_image_invokes_declared_read() -> None:
     assert "- Selection query: repo:polylogue" not in delivered
 
 
+def test_context_image_projection_max_sessions_controls_execution() -> None:
+    """The projection selector reaches the context-image operation.
+
+    Anti-vacuity: using only the dedicated flag default sends five sessions
+    instead of the explicitly requested projection value.
+    """
+    from polylogue.context.compiler import ContextImage
+
+    _, child = _context_pair(query_terms=("repo:polylogue",))
+    child.obj.config = SimpleNamespace()
+    wrapped = getattr(query_verbs.read_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+    image = ContextImage(
+        spec=ContextSpec(seed_query="repo:polylogue", read_views=("messages",)),
+        segments=(),
+        build_ref="build:context-image",
+        ledger=(),
+    )
+    with (
+        patch(
+            "polylogue.cli.read_dispatch.dispatch_read",
+            return_value=({"view": "context-image", "payload": image.model_dump(mode="json")}, None),
+        ) as dispatch_image,
+        patch("polylogue.cli.read_views.context.configured_mutation_operation"),
+        patch("polylogue.cli.read_views.base.deliver_content"),
+    ):
+        wrapped(child, **_read_verb_kwargs(view="context-image", projection_expr="context-max-sessions:2"))
+    assert dispatch_image.call_args.args[1].payload["max_sessions"] == 2
+
+
 def test_context_image_first_uses_only_resolved_seed() -> None:
     """A scoped --first result cannot be widened by a second seed query."""
     _, child = _context_pair(query_terms=("repo:polylogue",))

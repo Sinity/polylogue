@@ -77,6 +77,14 @@ def _build_click_params(pt: InsightType) -> list[click.Parameter]:
     )
     params.append(
         click.Option(
+            ("--json", "output_format"),
+            flag_value="json",
+            default=None,
+            help="Alias for --format json.",
+        )
+    )
+    params.append(
+        click.Option(
             ("--offset",),
             type=int,
             default=0,
@@ -252,6 +260,7 @@ def _render_export_plain(result: InsightExportBundleResult) -> None:
 @click.option("--since", default=None, help="Limit coverage details to rows at/after this timestamp or date.")
 @click.option("--until", default=None, help="Limit coverage details to rows at/before this timestamp or date.")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+@click.option("--json", "output_format", flag_value="json", default=None, help="Alias for --format json.")
 @click.pass_context
 def insights_status_command(
     ctx: click.Context,
@@ -293,6 +302,7 @@ def insights_status_command(
 
 @ops_insights_command.command("hermes-health")
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+@click.option("--json", "output_format", flag_value="json", default=None, help="Alias for --format json.")
 @click.pass_context
 def insights_hermes_health_command(ctx: click.Context, output_format: str | None) -> None:
     """Report the bounded Hermes-to-Polylogue integration health rollup (fs1.15).
@@ -360,6 +370,7 @@ def _render_hermes_health_plain(health: object) -> None:
 @click.option("--until", default=None, help="Limit supported insights to rows at/before this timestamp or date.")
 @click.option("--bundle-format", type=click.Choice(["jsonl"]), default="jsonl", show_default=True)
 @click.option("--format", "-f", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
+@click.option("--json", "output_format", flag_value="json", default=None, help="Alias for --format json.")
 @click.option(
     "--overwrite", is_flag=True, help="Replace an existing bundle directory after writing a complete new one."
 )
@@ -417,6 +428,7 @@ def insights_export_command(
 @click.option("--schema-version", type=click.IntRange(min=1), default=1, show_default=True)
 @click.option("--exact-template-cap", type=click.IntRange(min=1), default=1, show_default=True)
 @click.option("-f", "--format", "output_format", type=click.Choice(["json"]), default=None)
+@click.option("--json", "output_format", flag_value="json", default=None, help="Alias for --format json.")
 @click.pass_context
 def insights_fable_packet_command(
     ctx: click.Context,
@@ -525,6 +537,7 @@ def _render_audit_plain(report: InsightRigorAuditReport) -> None:
     default=None,
     help="Output format.",
 )
+@click.option("--json", "output_format", flag_value="json", default=None, help="Alias for --format json.")
 @click.pass_context
 def insights_audit_command(
     ctx: click.Context,

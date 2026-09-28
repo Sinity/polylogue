@@ -113,16 +113,28 @@ def _status_operation_result(
     from polylogue.cli.operation_kernel import configured_read_operation
     from polylogue.cli.shared.helpers import load_effective_config
 
-    # URL policy (polylogue-2d8oq): accept every value ``_default_daemon_url``
-    # can produce. That resolver exists so site/user TOML and
-    # ``POLYLOGUE_DAEMON_URL`` can point the CLI somewhere other than the
-    # built-in address; refusing exactly those values defeated it and turned an
-    # ordinary configuration into a refusal that the renderer then published as
-    # a live daemon. This route reads through the configured archive route
-    # (machine endpoint or pinned direct reader), so the URL selects nothing
-    # here and an address no daemon answers simply yields the direct fallback.
-    del daemon_url
     config = load_effective_config(env)
+    # The status command's public endpoint is HTTP. Other operation reads use
+    # the archive-scoped UDS, but bare status must honor its configured URL.
+    url = daemon_url or getattr(env, "daemon_url", None) or config.daemon_url or _BUILTIN_DAEMON_URL
+    if url.rstrip("/") != _BUILTIN_DAEMON_URL:
+        import urllib.request
+
+        from polylogue.daemon.api_auth import resolve_api_auth_token
+
+        token = resolve_api_auth_token(config.api_auth_token, allow_no_auth=config.api_allow_no_auth)
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        request = urllib.request.Request(url.rstrip("/") + "/api/status", headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=0.5) as response:
+                status = json.loads(response.read())
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            from polylogue.cli.operation_kernel import OperationFailedError
+
+            raise OperationFailedError("daemon_transport_error", str(exc)) from exc
+        from polylogue.cli.operation_kernel import OperationResult
+
+        return OperationResult("status", status, {"mode": "daemon", "server_identity": "daemon"}, None)
     return configured_read_operation(
         config,
         "status",
@@ -295,7 +307,7 @@ def status_command(
         obs.daemon_path = str(mode)
         status = operation_result.value
         status_ok = (
-            _show_status_json(env, status, full=full_payload or exact_archive_readiness)
+            _show_status_json(env, status, full=full_payload or exact_archive_readiness, source=str(mode))
             if output_format == "json"
             else _render_direct_status_payload(env, status, compact=not full_payload)
             if mode == "direct"
@@ -526,9 +538,9 @@ def _show_daemon_status(env: AppEnv, status: dict[str, Any], *, compact: bool = 
     return overall_ok
 
 
-def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False) -> bool:
+def _show_status_json(env: AppEnv, status: dict[str, Any], *, full: bool = False, source: str | None = None) -> bool:
     """Machine-readable JSON status output."""
-    source = "direct" if status.get("daemon_liveness") is False else "daemon"
+    source = source or ("direct" if status.get("daemon_liveness") is False else "daemon")
     normalized = normalize_raw_frontier_status_payload(
         status,
         snapshot_state="pinned" if source == "direct" else None,

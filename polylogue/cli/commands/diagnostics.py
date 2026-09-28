@@ -282,6 +282,7 @@ async def _turns(env: AppEnv, session_id: str, limit: int) -> None:
     default="text",
     help="Output format.",
 )
+@click.option("--json", "output_format", flag_value="json", default=None, help="Alias for --format json.")
 @click.pass_context
 def usage_command(
     ctx: click.Context,

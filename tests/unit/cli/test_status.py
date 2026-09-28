@@ -694,6 +694,47 @@ class TestCanonicalStatusOperation:
         assert payload["messages"] == 5
         assert payload["ok"] is False
 
+    def test_status_json_provenance_comes_from_operation_authority(self) -> None:
+        """A stale liveness probe cannot relabel daemon-served data as direct.
+
+        Anti-vacuity: deriving source from ``daemon_liveness`` changes this
+        payload to ``direct`` and skips the daemon snapshot provenance check.
+        """
+        env = _make_app_env()
+        _show_status_json(
+            env,
+            {"ok": True, "daemon_liveness": False, "status_snapshot": {"state": "fresh"}},
+            source="daemon",
+        )
+        payload = json.loads(_combined_calls(env))
+        assert payload["source"] == "daemon"
+
+    def test_status_honors_a_non_builtin_daemon_url(self) -> None:
+        """A custom status URL receives the HTTP status request.
+
+        Anti-vacuity: discarding ``daemon_url`` routes the operation to the
+        local archive socket and this HTTP request is never observed.
+        """
+        from polylogue.cli.commands.status import _status_operation_result
+
+        env = _make_app_env()
+        config = SimpleNamespace(
+            daemon_url="http://daemon.example:9000",
+            api_auth_token=None,
+            api_allow_no_auth=True,
+        )
+        response = MagicMock()
+        response.read.return_value = b'{"ok":true,"daemon_liveness":false}'
+        response.__enter__.return_value = response
+        with (
+            patch("polylogue.cli.shared.helpers.load_effective_config", return_value=config),
+            patch("urllib.request.urlopen", return_value=response) as urlopen,
+        ):
+            result = _status_operation_result(env, daemon_url="http://daemon.example:9000")
+        request = urlopen.call_args.args[0]
+        assert request.full_url == "http://daemon.example:9000/api/status"
+        assert result.authority["mode"] == "daemon"
+
     def test_status_command_passes_exact_readiness_to_canonical_operation(self, tmp_path: Path) -> None:
         env = _make_app_env()
         config = SimpleNamespace(archive_root=tmp_path)

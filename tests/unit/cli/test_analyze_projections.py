@@ -59,6 +59,44 @@ def test_named_projections_reach_the_shared_analyze_view() -> None:
         assert action["count"] is False
 
 
+def test_named_count_by_and_facets_explain_before_archive_work() -> None:
+    """Named terminal projections honor root --explain before executing.
+
+    Anti-vacuity: removing a child route's explain check calls the query
+    executor or facets API instead of returning the projection explanation.
+    """
+    runner = CliRunner()
+    invocations = (
+        ["count"],
+        ["by", "origin"],
+        ["facets"],
+    )
+    with (
+        patch("polylogue.cli.query.explain_query_request") as explain,
+        patch("polylogue.cli.query_verbs._execute_query_verb") as execute,
+        patch("polylogue.cli.query_verbs.run_coroutine_sync") as facets,
+    ):
+        for projection in invocations:
+            result = runner.invoke(cli, ["--explain", "find", "repo:polylogue", "then", "analyze", *projection])
+            assert result.exit_code == 0, result.output
+    assert explain.call_count == len(invocations)
+    execute.assert_not_called()
+    facets.assert_not_called()
+
+
+def test_nested_analyze_commands_accept_json_aliases() -> None:
+    """The verb-wide JSON alias remains available on lazy child commands.
+
+    Anti-vacuity: omitting the alias from a lazy child makes Click reject
+    ``--json`` before it can show that child's help or execute its contract.
+    """
+    runner = CliRunner()
+    usage = runner.invoke(cli, ["analyze", "usage", "--json", "--help"])
+    insight = runner.invoke(cli, ["analyze", "insights", "profiles", "--json", "--help"])
+    assert usage.exit_code == 0, usage.output
+    assert insight.exit_code == 0, insight.output
+
+
 def test_root_format_reaches_a_named_analyze_projection() -> None:
     """The root ``--format`` is the contract a named projection must honour."""
     runner = CliRunner()

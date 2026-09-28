@@ -1817,19 +1817,23 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
 
             if scope == "sinex":
                 from polylogue.config import load_polylogue_config
+                from polylogue.mcp.archive_support import active_archive_root
                 from polylogue.sinex.service import publication_status_payload
 
+                config = hooks.get_config()
+                active_root = active_archive_root(config) or config.archive_root
                 root["sinex"] = publication_status_payload(
-                    hooks.get_config().archive_root / "source.db",
+                    active_root / "source.db",
                     str(getattr(load_polylogue_config(), "sinex_mode", "off")),
                 )
                 return hooks.json_payload(MCPRootPayload(root=root), exclude_none=True)
 
             from polylogue.archive.query.transaction import QueryTransaction, QueryTransactionRequest
-            from polylogue.mcp.archive_support import mcp_archive_root
+            from polylogue.mcp.archive_support import active_archive_root, mcp_archive_root
 
+            config = hooks.get_config()
             transaction = QueryTransaction(
-                mcp_archive_root(hooks.get_config()),
+                mcp_archive_root(config),
                 QueryTransactionRequest(
                     operation="status", arguments={"scope": scope}, page_size=1, projection="status"
                 ),
@@ -1841,11 +1845,12 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 ).model_dump(mode="json")
             if scope == "archive":
                 from polylogue.config import load_polylogue_config
+                from polylogue.mcp.archive_support import active_archive_root
                 from polylogue.sinex.models import PublicationMode
                 from polylogue.sinex.service import publication_status
 
                 config = hooks.get_config()
-                source_db = mcp_archive_root(config) / "source.db"
+                source_db = (active_archive_root(config) or mcp_archive_root(config)) / "source.db"
                 root["sinex_publication"] = publication_status(
                     source_db,
                     PublicationMode.from_string(load_polylogue_config().sinex_mode),
