@@ -2876,6 +2876,41 @@ async def test_search_envelope_paginates_filter_only_boolean_predicates(tmp_path
         await archive.close()
 
 
+async def test_search_envelope_blank_query_with_origin_lists_the_filtered_sessions(tmp_path: Path) -> None:
+    """A blank query plus an origin filter is a filter-only read, not an empty search.
+
+    Anti-vacuity: keep the blank ``""`` as a query term and the ranked search
+    returns nothing while the filter-only fallback never runs, so the envelope
+    is empty although a session matches the origin.
+    """
+    archive = _archive(tmp_path)
+    try:
+        with ArchiveStore(archive.config.archive_root) as archive_db:
+            for provider, session_id in ((Provider.CODEX, "blank-kept"), (Provider.CLAUDE_CODE, "blank-other")):
+                write_index_session(
+                    archive_db,
+                    ParsedSession(
+                        source_name=provider,
+                        provider_session_id=session_id,
+                        title=session_id,
+                        messages=[
+                            ParsedMessage(
+                                provider_message_id="u1",
+                                role=Role.USER,
+                                text="a question",
+                                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="a question")],
+                            )
+                        ],
+                    ),
+                )
+
+        envelope = await archive.search_envelope("", origin="codex-session")
+
+        assert [hit.session.id for hit in envelope.hits] == ["codex-session:blank-kept"]
+    finally:
+        await archive.close()
+
+
 async def test_query_sessions_sampled_text_query_uses_search_kwargs(tmp_path: Path) -> None:
     """Sampled specs with text queries do not leak list-only kwargs into FTS search."""
     archive = _archive(tmp_path)

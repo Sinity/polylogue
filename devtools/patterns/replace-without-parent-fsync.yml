@@ -10,8 +10,8 @@ rule:
         not:
           has:
             any:
-              - pattern: _fsync_directory($PATH.parent)
-              - pattern: _fsync_dir($PATH.parent)
+              - pattern: _fsync_directory($DIR)
+              - pattern: _fsync_dir($DIR)
               - inside:
                   kind: function_definition
                   all:

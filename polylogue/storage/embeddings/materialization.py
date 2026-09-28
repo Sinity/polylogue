@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import contextlib
 import sqlite3
+import threading
 import time
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import partial
@@ -1598,7 +1599,7 @@ def _read_archive_embedding_source_snapshot(
     session_id: str,
     *,
     recipe: EmbeddingRecipe,
-) -> tuple[bytes, int]:
+) -> tuple[bytes, int, tuple[str, ...]]:
     """Re-read live source identity to detect drift during materialization.
 
     Queried fresh (not from the Python-side hashes computed before the
@@ -1616,7 +1617,7 @@ def _read_archive_embedding_source_snapshot(
         """,
         (session_id,),
     ).fetchall()
-    return _archive_embedding_source_hash(rows), len(rows)
+    return _archive_embedding_source_hash(rows), len(rows), tuple(sorted(str(row["message_id"]) for row in rows))
 
 
 def inline_embedding_admission(actor: str, function: Callable[[], T]) -> T:
@@ -1700,7 +1701,52 @@ def _open_bound_embedding_connection(binding: EmbeddingGenerationBinding) -> sql
     return conn
 
 
+_SESSION_ATTEMPT_LOCK_GUARD = threading.Lock()
+_SESSION_ATTEMPT_LOCKS: dict[str, tuple[threading.Lock, int]] = {}
+
+
+@contextlib.contextmanager
+def _session_attempt_lock(key: str) -> Iterator[None]:
+    """Serialize one session's provider work across live and backlog owners."""
+    with _SESSION_ATTEMPT_LOCK_GUARD:
+        lock, users = _SESSION_ATTEMPT_LOCKS.get(key, (threading.Lock(), 0))
+        _SESSION_ATTEMPT_LOCKS[key] = (lock, users + 1)
+    try:
+        with lock:
+            yield
+    finally:
+        with _SESSION_ATTEMPT_LOCK_GUARD:
+            current_lock, users = _SESSION_ATTEMPT_LOCKS[key]
+            if users == 1:
+                del _SESSION_ATTEMPT_LOCKS[key]
+            else:
+                _SESSION_ATTEMPT_LOCKS[key] = (current_lock, users - 1)
+
+
 def embed_archive_session_sync(
+    index_db_path: Path,
+    vec_provider: VectorProvider,
+    session_id: str,
+    *,
+    embeddings_db_path: Path | None = None,
+    stop_after_seconds: float | None = None,
+    admit: EmbeddingWriteAdmission | None = None,
+) -> EmbedSessionOutcome:
+    """Own a session attempt exclusively until provider work and publication settle."""
+    embeddings_path = embeddings_db_path or index_db_path.with_name("embeddings.db")
+    key = f"{embeddings_path.resolve(strict=False)}\0{session_id}"
+    with _session_attempt_lock(key):
+        return _embed_archive_session_sync_unlocked(
+            index_db_path,
+            vec_provider,
+            session_id,
+            embeddings_db_path=embeddings_path,
+            stop_after_seconds=stop_after_seconds,
+            admit=admit,
+        )
+
+
+def _embed_archive_session_sync_unlocked(
     index_db_path: Path,
     vec_provider: VectorProvider,
     session_id: str,
@@ -2127,12 +2173,13 @@ def _finalize_archive_embedding_attempt(plan: _ArchiveEmbeddingPlan) -> EmbedSes
             raise
         try:
             current_recipe = _configured_embedding_recipe()
-            current_source_hash, current_message_count = _read_archive_embedding_source_snapshot(
+            current_source_hash, current_message_count, current_message_ids = _read_archive_embedding_source_snapshot(
                 index_conn, plan.session_id, recipe=current_recipe
             )
             if (
                 current_source_hash != plan.attempt.source_hash
                 or current_message_count != len(plan.embeddable_message_ids)
+                or current_message_ids != tuple(sorted(plan.embeddable_message_ids))
                 or current_recipe.recipe_hash != plan.configured_recipe_before.recipe_hash
                 or current_recipe.output_contract_hash != plan.configured_recipe_before.output_contract_hash
             ):

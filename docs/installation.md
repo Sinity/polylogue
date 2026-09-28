@@ -83,12 +83,13 @@ polylogue ops status
 
 ## PyPI and Homebrew
 
-`pipx` is the recommended isolated Python CLI install. `uv tool` provides the
-same isolation model if uv is already your package frontend:
+`pipx` is the recommended isolated Python CLI install. Polylogue requires
+CPython 3.14 free-threaded (`3.14t`); install that interpreter first. `uv tool`
+provides the same isolation model if uv is already your package frontend:
 
 ```bash
-pipx install polylogue
-# or: uv tool install polylogue
+pipx install --python python3.14t polylogue
+# or: uv tool install --python 3.14t polylogue
 polylogue --version
 polylogued --help
 polylogue-mcp --help

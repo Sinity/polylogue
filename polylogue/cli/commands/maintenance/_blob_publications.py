@@ -37,7 +37,9 @@ def _submit_abandonment(config: Config, publication_ids: tuple[str, ...]) -> dic
         try:
             results.append(
                 configured_mutation_operation(
-                    config, operation, {"publication_ids": list(publication_ids[start : start + chunk])}
+                    config,
+                    operation,
+                    {"publication_ids": list(publication_ids[start : start + chunk]), "confirm": True},
                 )
             )
         except OperationKernelError as exc:

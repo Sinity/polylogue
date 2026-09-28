@@ -23,6 +23,8 @@ def _receipt(**overrides: Any) -> dict[str, Any]:
         "run_id": "run-1",
         "status": "success",
         "exit_code": 0,
+        "git_head": "a" * 40,
+        "final_git_head": "a" * 40,
         "steps": [{"name": "gate lint", "status": "success", "exit": 0}],
         "testmon_selection": {"selection_mode": "affected", "selection_reason": None},
     }
@@ -135,6 +137,12 @@ def test_a_receipt_recording_another_run_id_is_refused(tmp_path: Path, capsys: p
 
     assert verify_receipt_check.main([str(tmp_path), "--run-id", "run-1"]) == 1
     assert "records run 'run-9'" in capsys.readouterr().err
+
+
+def test_a_missing_final_tree_sha_is_refused() -> None:
+    """Anti-vacuity: matching only the starting SHA does not prove the ending tree."""
+    refusal = verify_receipt_check.candidate_tree_refusal({"git_head": _CANDIDATE, "final_git_head": None}, _CANDIDATE)
+    assert refusal is not None and "no ending tree SHA" in refusal
 
 
 def test_main_refuses_without_a_current_run_or_receipt(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

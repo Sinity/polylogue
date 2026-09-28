@@ -292,15 +292,33 @@ def _read_session_windows(
             if remaining <= 0:
                 break
             window_limit = min(remaining, _SESSION_READ_WINDOW)
-        payload, _ = dispatch_read(
-            config,
-            (
-                lower_session_read(ref, continuation=continuation)
-                if continuation is not None
-                else lower_session_read(ref, limit=window_limit)
-            ),
-            daemon_disabled=daemon_disabled,
-        )
+        payload: Mapping[str, object]
+        while True:
+            try:
+                payload, _ = dispatch_read(
+                    config,
+                    (
+                        lower_session_read(ref, continuation=continuation)
+                        if continuation is not None
+                        else lower_session_read(
+                            ref, limit=window_limit if window_limit is not None else _SESSION_READ_WINDOW
+                        )
+                    ),
+                    daemon_disabled=daemon_disabled,
+                )
+                break
+            except Exception as exc:
+                from polylogue.cli.operation_kernel import OperationFailedError
+
+                if (
+                    continuation is not None
+                    or not isinstance(exc, OperationFailedError)
+                    or exc.code != "result_too_large"
+                    or (window_limit if window_limit is not None else _SESSION_READ_WINDOW) <= 1
+                ):
+                    raise
+                current = window_limit if window_limit is not None else _SESSION_READ_WINDOW
+                window_limit = max(1, current // 2)
         window = payload.get("session")
         if not isinstance(window, Mapping):
             raise click.ClickException("session.read returned no session body")
@@ -358,7 +376,19 @@ def _session_messages(session: Mapping[str, object]) -> list[Mapping[str, object
 def _session_message_text(message: Mapping[str, object]) -> str:
     blocks = message.get("blocks")
     rows = [block for block in blocks if isinstance(block, Mapping)] if isinstance(blocks, list) else []
-    return "\n".join(str(block.get("text") or "") for block in rows if block.get("text"))
+    rendered: list[str] = []
+    for block in rows:
+        kind = str(block.get("block_type") or "")
+        if kind in {"thinking", "reasoning"}:
+            continue
+        if kind == "tool_use":
+            tool = str(block.get("tool_name") or "tool")
+            tool_input = block.get("tool_input")
+            detail = json.dumps(tool_input, ensure_ascii=False, sort_keys=True) if tool_input is not None else "{}"
+            rendered.append(f"[{tool} {detail}]")
+        elif block.get("text"):
+            rendered.append(str(block["text"]))
+    return "\n".join(rendered)
 
 
 def _emit_session_result(
@@ -1299,11 +1329,18 @@ def _emit_stats(
     from polylogue.cli.render.outcome import convergence_warning_line
 
     convergence_warning = convergence_warning_line()
+    # Totals over a partially materialized archive are an undercount, not
+    # a complete census: the warning is a named gap on the outcome.
+    outcome = decide_outcome(
+        matched=stats.total_sessions,
+        degraded=("archive_not_converged",) if convergence_warning is not None else (),
+    )
+    exit_code = outcome_exit_code(outcome)
     payload = {
         "mode": "stats",
         "origin": origin,
         "query": query or None,
-        "outcome": decide_outcome(matched=stats.total_sessions).to_dict(),
+        "outcome": outcome.to_dict(),
         **stats.to_dict(),
     }
     if convergence_warning is not None:
@@ -1311,15 +1348,19 @@ def _emit_stats(
         payload["convergence_warning"] = convergence_warning
     if output_format == "json":
         click.echo(json.dumps(project_payload(payload, fields), indent=2, sort_keys=True))
+        if exit_code:
+            raise SystemExit(exit_code)
         return
     if output_format == "yaml":
         import yaml
 
         click.echo(yaml.safe_dump(project_payload(payload, fields), sort_keys=False, allow_unicode=True), nl=False)
+        if exit_code:
+            raise SystemExit(exit_code)
         return
     if output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Stats do not support --format {output_format}.")
-    outcome_line = render_outcome_line(OutcomeEnvelope.model_validate(payload["outcome"]))
+    outcome_line = render_outcome_line(outcome)
     lines = [
         f"Sessions: {stats.total_sessions}",
         f"Messages: {stats.total_messages}",
@@ -1332,6 +1373,8 @@ def _emit_stats(
     if outcome_line is not None:
         lines.insert(0, outcome_line)
     click.echo("\n".join(lines))
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 def _emit_stats_by(

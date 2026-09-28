@@ -51,7 +51,9 @@ TESTMON_ENVIRONMENT = "polylogue"
 TESTMON_COVERAGE_CORE = "ctrace"
 
 #: Tables the installed pytest-testmon writes and reads.
-_REQUIRED_TABLES = frozenset({"environment", "test_execution", "file_fp", "test_execution_file_fp"})
+_REQUIRED_TABLES = frozenset(
+    {"metadata", "environment", "test_execution", "file_fp", "test_execution_file_fp", "suite_execution_file_fsha"}
+)
 
 #: Files under this prefix are tests, not the code under test.
 _TEST_PREFIX = "tests/"
@@ -76,10 +78,10 @@ class TestmonGraphState:
     #: Number of test executions currently represented by the graph.  These
     #: counts are evidence about the graph that was inspected, not a claim
     #: about what a later pytest invocation will select.
-    recorded_tests: int = 0
+    recorded_tests: int | None = None
     #: Number of non-test files with recorded dependencies.  A graph with
     #: tests but no source dependencies is unusable for affected selection.
-    source_dependencies: int = 0
+    source_dependencies: int | None = None
 
     @property
     def usable(self) -> bool:
@@ -103,7 +105,7 @@ def inspect_testmon_graph(root: Path) -> TestmonGraphState:
     if not data_path.is_file() or data_path.stat().st_size == 0:
         return TestmonGraphState(TestmonGraphStatus.ABSENT, "no testmon datafile")
     try:
-        connection = sqlite3.connect(f"file:{data_path}?mode=ro", uri=True, timeout=10)
+        connection = sqlite3.connect(data_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=10)
     except sqlite3.Error as exc:
         return TestmonGraphState(TestmonGraphStatus.UNUSABLE, f"the testmon datafile cannot be opened: {exc}")
     try:
@@ -111,9 +113,23 @@ def inspect_testmon_graph(root: Path) -> TestmonGraphState:
             data_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             environment = None
-            recorded_tests = 0
-            source_dependencies = 0
+            recorded_tests: int | None = None
+            source_dependencies: int | None = None
             if data_version == TESTMON_DATA_VERSION and tables >= _REQUIRED_TABLES:
+                required_columns = {
+                    "metadata": {"dataid", "data"},
+                    "environment": {"id", "environment_name", "system_packages", "python_version"},
+                    "test_execution": {"id", "environment_id", "test_name", "duration", "failed", "forced"},
+                    "file_fp": {"id", "filename", "method_checksums", "mtime", "fsha"},
+                    "test_execution_file_fp": {"test_execution_id", "fingerprint_id"},
+                    "suite_execution_file_fsha": {"suite_execution_id", "filename", "fsha"},
+                }
+                for table, expected in required_columns.items():
+                    actual = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})")}
+                    if not expected <= actual:
+                        raise sqlite3.DatabaseError(f"incompatible {table} columns")
+                recorded_tests = 0
+                source_dependencies = 0
                 environment = connection.execute(
                     "SELECT system_packages, python_version FROM environment WHERE environment_name = ? ORDER BY id DESC",
                     (TESTMON_ENVIRONMENT,),
@@ -125,6 +141,8 @@ def inspect_testmon_graph(root: Path) -> TestmonGraphState:
                         (len(_TEST_PREFIX), _TEST_PREFIX),
                     ).fetchone()[0]
                 )
+                if environment is None:
+                    raise sqlite3.DatabaseError(f"missing {TESTMON_ENVIRONMENT!r} environment row")
     except sqlite3.Error as exc:
         return TestmonGraphState(TestmonGraphStatus.UNUSABLE, f"the testmon datafile is corrupt: {exc}")
     if data_version != TESTMON_DATA_VERSION:
@@ -195,7 +213,7 @@ def snapshot_testmon_graph(source: Path, destination: Path) -> bool:
     temporary = Path(temporary_name)
     temporary.unlink()
     try:
-        source_connection = sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=30)
+        source_connection = sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True, timeout=30)
     except sqlite3.Error:
         with contextlib.suppress(FileNotFoundError, OSError):
             temporary.unlink()

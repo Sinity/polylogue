@@ -41,22 +41,23 @@ def select_embedding_session_window(
     min_messages: int | None = None,
 ) -> tuple[tuple[str, ...], bool]:
     """Resolve one bounded pending-session window for a daemon operation."""
-    from polylogue.storage.embeddings.materialization import select_pending_session_window
+    from polylogue.storage.embeddings.materialization import select_pending_archive_session_window
 
-    active_index = resolve_active_index_path(archive_root)
-    limitations: list[bool] = []
-    with open_readonly_connection(active_index, timeout_class="background-read", validate_schema=False) as conn:
-        rows = select_pending_session_window(
+    with open_readonly_connection(index_db_path, timeout_class="background-read", validate_schema=False) as conn:
+        embeddings_path = archive_root / "embeddings.db"
+        if embeddings_path.exists():
+            conn.execute("ATTACH DATABASE ? AS embedding_tier", (str(embeddings_path),))
+        rows = select_pending_archive_session_window(
             conn,
+            status_table="embedding_tier.embedding_status" if embeddings_path.exists() else "",
             rebuild=rebuild,
             # Read one extra row so the operation can distinguish an exact
             # fit from a max-sessions window that leaves pending sessions.
             max_sessions=None if max_sessions is None else max_sessions + 1,
             max_messages=max_messages,
             min_messages=min_messages,
-            limit_reached=limitations,
         )
-    session_limit_reached = bool(limitations) or (max_sessions is not None and len(rows) > max_sessions)
+    session_limit_reached = max_sessions is not None and len(rows) > max_sessions
     selected = rows if max_sessions is None else rows[:max_sessions]
     return tuple(row.session_id for row in selected), session_limit_reached
 

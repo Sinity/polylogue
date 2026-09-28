@@ -635,7 +635,7 @@ def _search_payload(
     # filter rather than the unset spec field.
     from polylogue.archive.query.spec import resolve_default_root_filter, session_count_unit_label
 
-    envelope = build_search_envelope(
+    envelope_model = build_search_envelope(
         hit_payloads,
         total=total,
         total_unit=session_count_unit_label(
@@ -650,12 +650,21 @@ def _search_payload(
         request_identity=request_identity,
         execution=hits.execution,
         authority=authority,
-    ).model_dump(mode="json")
+    )
+    # The builder decides ``outcome`` from the page it emits -- after the
+    # cursor trims stragglers and the limit truncates -- so the emitted hits
+    # and the authority count must be that same page, never the raw fetch.
+    emitted_hits = envelope_model.hits
+    if envelope_model.authority is not None:
+        envelope_model = envelope_model.model_copy(
+            update={"authority": envelope_model.authority.model_copy(update={"matched": len(emitted_hits)})}
+        )
+    envelope = envelope_model.model_dump(mode="json")
     # Match the direct branch's hit shape exactly: ``archive_query._hit_payload``
     # dumps the same ``SessionSearchHitPayload`` with ``exclude_none=True``.
     # The envelope keeps its own explicit nulls -- a vector page's ``total`` is
     # an honest ``None`` and dropping the key would read as "not reported".
-    envelope["hits"] = [hit.model_dump(mode="json", exclude_none=True) for hit in hit_payloads]
+    envelope["hits"] = [hit.model_dump(mode="json", exclude_none=True) for hit in emitted_hits]
     # The ranked envelope's own continuation is ``next_cursor``; ``next_offset``
     # is the offset-shaped answer the list page also gives, decided by the one
     # helper so a client walking pages cannot see the two paths disagree.
@@ -672,8 +681,15 @@ def _search_payload(
     # the helper's own no-total rule -- a page that filled its bound continues,
     # a short page terminates -- rather than by a denominator in the wrong
     # unit.
+    # The continuation must track what this response actually emitted: the
+    # cursor page's own effective offset (``cursor.r``, not the caller's
+    # original ``spec.offset``) plus the *emitted* page after the cursor
+    # trims stragglers and the limit truncates it -- not the raw fetch.
     envelope["next_offset"] = page_next_offset(
-        offset=spec.offset, returned=len(hit_payloads), total=None, limit=display_limit
+        offset=cursor.r if cursor is not None else spec.offset,
+        returned=len(emitted_hits),
+        total=None,
+        limit=display_limit,
     )
     return envelope
 
@@ -1213,6 +1229,7 @@ def _session_identity_projection(
                         "text": block.text,
                         "tool_name": block.tool_name,
                         "tool_id": block.tool_id,
+                        "tool_input": block.tool_input,
                         "semantic_type": block.semantic_type,
                     }
                     for block in message.blocks

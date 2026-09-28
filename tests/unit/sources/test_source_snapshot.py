@@ -568,6 +568,24 @@ def test_spool_handoff_recovers_retired_generation_after_marker_crash(
     assert not retired.exists()
 
 
+def test_spool_handoff_recovers_when_destination_was_never_created(tmp_path: Path) -> None:
+    """Anti-vacuity: a crash after rename but before staging must retain pre-cut events."""
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    (spool / "before.json").write_text("before", encoding="utf-8")
+    preflight = preflight_source_cut(
+        [SourceDeclaration("spool", SourceRole.SPOOL, spool, True)], request_id="missing-destination"
+    )
+    retired = tmp_path / ".spool.spool.cut"
+    spool.rename(retired)
+
+    recovered = execute_source_cut(preflight, tmp_path / "cut")
+
+    assert recovered.counts.conserved
+    assert (recovered.candidate_root / "spool" / "before.json").read_text(encoding="utf-8") == "before"
+    assert spool.is_dir()
+
+
 def test_source_id_cannot_escape_candidate_staging(tmp_path: Path) -> None:
     """Mutation: an absolute source ID must be rejected before any staging path is joined."""
     root = tmp_path / "source"

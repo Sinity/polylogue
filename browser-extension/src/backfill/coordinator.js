@@ -267,6 +267,9 @@ export class BackfillCoordinator {
       result = await adapter.enumerate(job.inventory_cursor, job.cutoff);
     } catch (error) {
       job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
+      // A shared provider cooldown refuses the request before it is sent: that
+      // is the provider's rate limit, not a transport failure.
+      if (sharedRateLimitError(error)) return this.handleProviderBlock(job, sharedRateLimitResponse(error), "rate_limited", now);
       return this.handleJobTransport(job, error, now);
     }
     job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
@@ -316,6 +319,10 @@ export class BackfillCoordinator {
       response = await this.adapters[job.provider].fetchNative(item.native_id);
     } catch (error) {
       job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
+      if (sharedRateLimitError(error)) {
+        await this.saveQueue(job, { ...item, state: "retry_wait", lease_owner: null, lease_expires_at_ms: null, last_response_class: "rate_limited", next_eligible_at_ms: now });
+        return this.handleProviderBlock(job, sharedRateLimitResponse(error), "rate_limited", now);
+      }
       if (bridgeOversizeError(error)) return this.holdBridgeOversize(job, item, error, now);
       if (providerContractDriftError(error)) {
         await this.saveQueue(job, {
@@ -641,4 +648,17 @@ export class BackfillCoordinator {
     if (!this.alarms?.create) return;
     await this.alarms.create(backfillAlarmName(jobId), { when: Math.max(this.clock() + 1000, whenMs) });
   }
+}
+
+// The runtime refuses a provider request while a shared cooldown is active and
+// throws a `rate_limited` error without contacting the provider. Treat it as
+// the rate limit it is, carrying the remaining cooldown as Retry-After.
+function sharedRateLimitError(error) {
+  return error?.outcome === "rate_limited";
+}
+
+function sharedRateLimitResponse(error) {
+  const seconds = Number(error?.retryAfterSeconds);
+  const value = Number.isFinite(seconds) && seconds >= 0 ? String(seconds) : null;
+  return { status: 429, headers: { get: (name) => (String(name).toLowerCase() === "retry-after" ? value : null) } };
 }

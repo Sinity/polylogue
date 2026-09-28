@@ -1256,7 +1256,7 @@ def _automatic_convergence_backlog(archive_tiers: dict[str, Any], convergence_de
         if retry_debt_available
         else None
     )
-    state = "ready" if total_missing == 0 else "catching_up"
+    state = "unknown" if not retry_debt_available else "ready" if total_missing == 0 else "catching_up"
     return {
         "checked": True,
         "state": state,
@@ -2618,7 +2618,8 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         }
 
     return {
-        "ok": True,
+        "ok": bool((before.get("convergence_debt") or {}).get("available", True))
+        and bool((after.get("convergence_debt") or {}).get("available", True)),
         "report_version": REPORT_VERSION,
         "before_captured_at": before.get("captured_at"),
         "after_captured_at": after.get("captured_at"),
@@ -3205,12 +3206,15 @@ def main(argv: list[str] | None = None) -> int:
         f"convergence mean {timings.get('convergence_time_s', {}).get('mean', 0.0):.3f}s"
     )
     debt = payload["convergence_debt"]
-    print(
-        "  convergence debt: "
-        f"{debt['failed_count']} failed, "
-        f"{debt.get('deferred_count', 0)} deferred, "
-        f"{debt.get('unresolved_count', debt['failed_count'])} unresolved"
-    )
+    if not debt.get("available", True):
+        print(f"  convergence debt: unavailable ({debt.get('error') or 'ops ledger unavailable'})")
+    else:
+        print(
+            "  convergence debt: "
+            f"{debt['failed_count']} failed, "
+            f"{debt.get('deferred_count', 0)} deferred, "
+            f"{debt.get('unresolved_count', debt['failed_count'])} unresolved"
+        )
     backlog = payload.get("automatic_convergence_backlog") or {}
     if backlog.get("checked"):
         backlog_counts = backlog.get("counts") or {}
@@ -3235,7 +3239,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  query plan hazards: {len(plan_hazards)}")
     for hazard in plan_hazards:
         print(f"    {hazard}")
-    return 0
+    return 1 if not debt.get("available", True) else 0
 
 
 def _json_list(value: object) -> list[str]:

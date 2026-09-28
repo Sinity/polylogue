@@ -15,6 +15,33 @@ def test_module_entrypoints_delegate_to_click_main() -> None:
     assert click_main.call_count == 2
 
 
+def test_extension_probe_cannot_silently_reenable_the_gil(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The contract observes GIL state again after extension imports.
+
+    Anti-vacuity: if ``require_free_threaded_runtime`` returns its pre-probe
+    identity without re-reading the interpreter, the second state transition
+    below goes unnoticed and this test fails.
+    """
+    import polylogue.runtime as runtime
+
+    observations = iter((False, True))
+    monkeypatch.setattr(
+        runtime,
+        "runtime_identity",
+        lambda: runtime.RuntimeIdentity(
+            implementation="cpython",
+            version=(3, 14, 0),
+            gil_enabled=next(observations),
+            thread_inherit_context=None,
+            abi_flags="t",
+            executable="python3.14t",
+        ),
+    )
+    monkeypatch.setattr(runtime, "probe_extensions", lambda: ())
+    with pytest.raises(runtime.RuntimeContractError, match="GIL was enabled while probing"):
+        runtime.require_free_threaded_runtime(consumer="test")
+
+
 #: Console scripts that deliberately do NOT establish the runtime contract,
 #: with the reason. An entry here is a decision, not an oversight: adding one
 #: is the deliberate act this test exists to force.

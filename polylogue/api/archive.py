@@ -7,7 +7,7 @@ import json
 import sqlite3
 from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from http import HTTPStatus
 from pathlib import Path
@@ -168,12 +168,6 @@ if TYPE_CHECKING:
         SessionSearchHitPayload,
         TagMutationResult,
     )
-
-
-def _require_archive_write_authority(config: Config, purpose: str) -> None:
-    from polylogue.operations.archive_mutation import require_archive_write_authority
-
-    require_archive_write_authority(config, purpose)
 
 
 _FACET_CORE_FAMILIES = (
@@ -697,8 +691,15 @@ def _archive_list_summaries_with_post_filters(
 ) -> list[ArchiveSessionSummary]:
     """Apply content-dependent spec filters after the SQL candidate query."""
     candidates = _post_filter_candidates(archive, query_text=query_text, query_kwargs=query_kwargs)
-    start = offset if offset is not None else 0
-    end = None if limit is None else start + limit
+    # The spec's own page is authoritative unless an adapter explicitly
+    # supplies a replacement. Candidate widening above removes SQL paging;
+    # restore the effective page after content filtering.
+    raw_offset = query_kwargs.get("offset", 0)
+    effective_offset = offset if offset is not None else int(raw_offset) if isinstance(raw_offset, (int, str)) else 0
+    raw_limit = limit if limit is not None else query_kwargs.get("limit")
+    effective_limit = None if raw_limit is None else int(raw_limit) if isinstance(raw_limit, (int, str)) else None
+    start = effective_offset
+    end = None if effective_limit is None else start + effective_limit
     filtered = list(_iter_post_filtered_summaries(archive, spec, candidates, needed=end))
     return filtered[start:end]
 
@@ -965,7 +966,12 @@ def _archive_aggregate_facet_families(
         return rows
 
     def keyed(rows: list[Any]) -> dict[str, int]:
-        return {str(row[0]): int(row[1] or 0) for row in rows if row[0]}
+        counts: dict[str, int] = {}
+        for row in rows:
+            if row[0]:
+                key = str(row[0])
+                counts[key] = counts.get(key, 0) + int(row[1] or 0)
+        return counts
 
     def table_has_column(table: str, column: str) -> bool:
         try:
@@ -1226,49 +1232,18 @@ def _archive_list_assertion_claims(
 ) -> list[Any]:
     """Return assertion-backed lifecycle claims from ``user.db``."""
 
-    from polylogue.archive.query.transaction import run_archive_read_sync
-    from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_claims
+    from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CLAIM_KINDS, list_assertion_claims
 
-    def _read(archive: Any) -> list[Any]:
-        try:
-            conn = open_readonly_connection(archive.user_db_path)
-            conn.row_factory = sqlite3.Row
-            try:
-                if kinds is None:
-                    return list_assertion_claims(
-                        conn,
-                        target_ref=target_ref,
-                        scope_ref=scope_ref,
-                        statuses=statuses,
-                        context_inject=context_inject,
-                        limit=limit,
-                    )
-                return list_assertion_claims(
-                    conn,
-                    kinds=kinds,
-                    target_ref=target_ref,
-                    scope_ref=scope_ref,
-                    statuses=statuses,
-                    context_inject=context_inject,
-                    limit=limit,
-                )
-            finally:
-                conn.close()
-        except sqlite3.Error as exc:
-            raise ArchiveTierUnavailableError(
-                tier="user.db",
-                path=str(archive.user_db_path.resolve(strict=False)),
-                reason=f"cannot read SQLite database ({exc})",
-                guidance="restore or initialize the durable user tier at this path, then retry the query; "
-                "the reader will not create a replacement or search another archive root",
-            ) from exc
-
-    return run_archive_read_sync(
-        _active_archive_root(config),
-        operation="assertion-list",
-        arguments={"target_ref": target_ref, "scope_ref": scope_ref},
-        work=_read,
-    )
+    with _readable_user_tier(config) as conn:
+        return list_assertion_claims(
+            conn,
+            kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
+            target_ref=target_ref,
+            scope_ref=scope_ref,
+            statuses=statuses,
+            context_inject=context_inject,
+            limit=limit,
+        )
 
 
 def _archive_get_context_delivery(
@@ -2582,7 +2557,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             operation="insights.postmortem.scope",
             arguments={"spec": spec, "limit": cap},
             work=lambda archive: (
-                _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
+                _archive_list_summaries_for_spec(archive, replace(spec, limit=None, offset=0), default_limit=1_000_000)
                 if spec is not None and spec.has_filters()
                 else archive.list_summaries(limit=1_000_000)
             ),
@@ -2665,7 +2640,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             operation="insights.pathology.scope",
             arguments={"spec": spec, "limit": cap},
             work=lambda archive: (
-                _archive_list_summaries_for_spec(archive, spec, default_limit=1_000_000)
+                _archive_list_summaries_for_spec(archive, replace(spec, limit=None, offset=0), default_limit=1_000_000)
                 if spec is not None and spec.has_filters()
                 else archive.list_summaries(limit=1_000_000)
             ),
@@ -3453,6 +3428,20 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             )
         return image
 
+    async def record_context_ledger(self, assembly: Any, *, observed_at_ms: int) -> None:
+        """Submit preamble scheduling receipts through the archive writer."""
+        from polylogue.api.facade_client import submit_facade_writer
+
+        await submit_facade_writer(
+            self.config,
+            "context_ledger",
+            {
+                "build_ref": assembly.build_ref,
+                "ledger_rows": [row.as_dict() for row in assembly.ledger],
+                "observed_at_ms": observed_at_ms,
+            },
+        )
+
     def _context_temporal_window(self, summary: SessionSummary) -> TemporalEvidenceWindow:
         return _archive_context_temporal_window(self.config, summary)
 
@@ -3969,15 +3958,9 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         """
         from polylogue.archive.query.search_hits import search_hits_for_plan
 
-        vector_provider = None
-        if spec.similar_text or spec.retrieval_lane == "hybrid":
-            from polylogue.storage.search_providers import create_vector_provider
-
-            archive_root = _active_archive_root(self.config)
-            vector_provider = create_vector_provider(
-                self.config, db_path=archive_root / "embeddings.db", archive_root=archive_root
-            )
-        return await search_hits_for_plan(spec.to_plan(vector_provider=vector_provider), self.config)
+        # The executor resolves construction failures into its typed lane
+        # outcome; keep facade setup outside that failure-classifying path.
+        return await search_hits_for_plan(spec.to_plan(), self.config)
 
     async def diagnose_query_miss(self, spec: SessionQuerySpec, *, full: bool = False) -> QueryMissDiagnostics:
         """Best-effort explanation for an empty archive query result.
@@ -4408,17 +4391,11 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
 
     def filter(self) -> SessionFilter:
         from polylogue.archive.filter.filters import SessionFilter
-        from polylogue.storage.search_providers import create_vector_provider
 
         archive_root = _active_archive_root(self.config)
-        vector_provider = create_vector_provider(
-            self.config, db_path=archive_root / "embeddings.db", archive_root=archive_root
-        )
-
         return SessionFilter(
             archive_root=archive_root,
             config=self.config,
-            vector_provider=vector_provider,
         )
 
     async def origin_usage_report(
@@ -4831,6 +4808,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         if around is not None:
             if continuation is not None or offset:
                 raise ValueError("around and an explicit window coordinate name two different windows")
+            if message_role or message_type is not None or material_origin:
+                raise ValueError("around cannot be combined with transcript filters")
             archive_root = _active_archive_root(self.config)
             offset = await run_archive_read(
                 archive_root,
@@ -4971,10 +4950,23 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         at_position: int | None = None,
     ) -> list[dict[str, object]] | None:
         """Return the provider-effective context at a message position."""
-        resolved = await self.repository.resolve_id(session_id)
-        target = str(resolved) if resolved is not None else session_id
-        session = await self.repository.get(target)
-        if session is None:
+
+        def resolve_existing(archive: ArchiveStore) -> str | None:
+            try:
+                resolved_id = archive.resolve_session_id(session_id)
+                archive.read_summary(resolved_id)
+                return resolved_id
+            except KeyError:
+                return None
+
+        target = await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session.exists",
+            arguments={"session_id": session_id},
+            work=resolve_existing,
+            projection="session-id",
+        )
+        if target is None:
             return None
         messages = await self.repository.get_effective_context(target, at_position)
         return [message.model_dump(mode="json", exclude_none=True) for message in messages]
@@ -5303,6 +5295,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             {
                 "id": summary.session_id,
                 "title": summary.display_label or summary.title,
+                "title_is_synthesized": summary.display_label_source == "synthesized",
                 "origin": summary.origin,
                 "created_at": parse_archive_datetime(summary.created_at),
                 "updated_at": parse_archive_datetime(summary.updated_at),

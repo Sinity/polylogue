@@ -165,6 +165,9 @@ def test_excised_unconsumed_carrier_cannot_be_delivered(tmp_path: Path) -> None:
     user_db = tmp_path / "user.db"
     _new_user_tier(user_db)
     _append_source_batch(source_db, raw_id="purged", candidate=_candidate_record("::note: remove me", message_id="m4"))
+    adapter = _adapter(source_db, user_db)
+    key = adapter.required_page(object(), cursor=None, limit=1)[0][0]
+    replacement = adapter.compute(object(), key)
 
     with sqlite3.connect(source_db) as source:
         targets = marker_input_excision_targets_sync(
@@ -176,11 +179,47 @@ def test_excised_unconsumed_carrier_cannot_be_delivered(tmp_path: Path) -> None:
         assert excise_marker_input_targets_sync(source, targets, excised_at_ms=1) == {"pending": 0, "accepted": 1}
         source.commit()
 
-    adapter = _adapter(source_db, user_db)
-    assert adapter.required_page(object(), cursor=None, limit=1) == ((), None)
+    assert adapter.publish(object(), replacement) is True
     with sqlite3.connect(user_db) as user:
         assert user.execute("SELECT COUNT(*) FROM assertions").fetchone() == (0,)
-        assert user.execute("SELECT COUNT(*) FROM accepted_marker_delivery_cursor").fetchone() == (0,)
+        assert user.execute("SELECT applied_sequence FROM accepted_marker_delivery_cursor").fetchone() == (1,)
+
+
+def test_consumer_advances_across_excised_sequence_and_delivers_later_batch(tmp_path: Path) -> None:
+    """A durable excision tombstone preserves progress through the source stream.
+
+    Anti-vacuity: restore the contiguous-sequence error in ``required_page``
+    and the consumer remains stuck at sequence 1 instead of reaching 3.
+    """
+    source_db = tmp_path / "source.db"
+    user_db = tmp_path / "user.db"
+    _new_user_tier(user_db)
+    _append_source_batch(source_db, raw_id="first", candidate=_candidate_record("::note: first", message_id="m1"))
+    _append_source_batch(source_db, raw_id="removed", candidate=_candidate_record("::note: removed", message_id="m2"))
+    _append_source_batch(source_db, raw_id="third", candidate=_candidate_record("::note: third", message_id="m3"))
+    with sqlite3.connect(source_db) as source:
+        targets = marker_input_excision_targets_sync(
+            source,
+            target_session_ids=frozenset({"source:removed"}),
+            target_raw_ids=frozenset(),
+        )
+        assert len(targets) == 1
+        excise_marker_input_targets_sync(source, targets, excised_at_ms=2)
+        source.commit()
+
+    adapter = _adapter(source_db, user_db)
+    first_key = adapter.required_page(object(), cursor=None, limit=1)[0][0]
+    assert adapter.publish(object(), adapter.compute(object(), first_key)) is True
+    tombstone_key = adapter.required_page(object(), cursor=None, limit=1)[0][0]
+    assert tombstone_key.endswith(":2")
+    assert adapter.publish(object(), adapter.compute(object(), tombstone_key)) is True
+    final_key = adapter.required_page(object(), cursor=None, limit=1)[0][0]
+    assert final_key.endswith(":3")
+    assert adapter.publish(object(), adapter.compute(object(), final_key)) is True
+    with sqlite3.connect(user_db) as user:
+        assert user.execute("SELECT applied_sequence FROM accepted_marker_delivery_cursor").fetchone() == (3,)
+        bodies = user.execute("SELECT body_text FROM assertions ORDER BY assertion_id").fetchall()
+        assert all("removed" not in str(body) for (body,) in bodies)
 
 
 def test_primary_barrier_holds_a_carrier_whose_session_awaits_publication(tmp_path: Path) -> None:

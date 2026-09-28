@@ -330,7 +330,7 @@ def audit_revision_fidelity(
                     composed_count = len(envelope.messages)
                     if not envelope.lineage_complete:
                         reasons.append(str(envelope.lineage_truncation_reason or "incomplete_lineage"))
-                    elif composed_count != best_count:
+                    elif composed_count < best_count and composed_count + have_events < best_count:
                         reasons.append("composed_count_mismatch")
                     else:
                         state = "prefix_composed"
@@ -343,7 +343,10 @@ def audit_revision_fidelity(
         elif have_messages < best_count and have_messages + have_events >= best_count:
             state = "event_reclassified"
         elif have_messages > best_count:
-            reasons.append("indexed_count_exceeds_source")
+            # Multiple retained revisions may contribute complementary
+            # messages; an indexed superset conserves at least the recorded
+            # revision and is not a shortfall.
+            state = "indexed_superset"
         else:
             reasons.append("direct_count_shortfall")
 

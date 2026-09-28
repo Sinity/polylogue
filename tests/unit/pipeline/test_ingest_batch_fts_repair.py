@@ -112,3 +112,25 @@ def test_process_ingest_batch_repairs_fts_for_unchanged_session(
         ).fetchone()[0]
 
     assert message_fts_count == 1
+
+
+def test_bulk_repair_targets_include_unchanged_sessions_missing_fts() -> None:
+    """A batched run's bulk FTS repair covers sessions queued only for repair.
+
+    Anti-vacuity: drop the ``fts_repair_session_ids`` merge in
+    ``apply_ingest_batch_summary`` and ``unchanged-missing-fts`` disappears
+    from the repair targets, so its search rows are never rebuilt.
+    """
+    from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
+    from polylogue.pipeline.services.ingest_batch._summary import apply_ingest_batch_summary
+    from polylogue.pipeline.services.parsing_models import ParseResult
+
+    result = ParseResult()
+    summary = _IngestBatchSummary(
+        changed_session_ids=["changed"],
+        fts_repair_session_ids=["unchanged-missing-fts", "changed"],
+    )
+    apply_ingest_batch_summary(result, summary)
+
+    assert result.changed_session_ids == ("changed",)
+    assert result.fts_repair_session_ids == ("changed", "unchanged-missing-fts")

@@ -57,11 +57,15 @@ def _transaction(request: PagedRequest) -> tuple[PagedRequest, QueryTransactionR
             raise QueryContinuationInvalidError("continuation belongs to another session operation")
         arguments = {key: value for key, value in tx.arguments.items() if key != "resolved_dates"}
         original = type(request).model_validate({**arguments, "limit": tx.page_size, "offset": tx.offset})
-        supplied = request.model_dump(mode="json", exclude_unset=True, exclude={"continuation", "operation"})
+        supplied = request.model_dump(mode="json", exclude_unset=True, exclude={"continuation", "operation", "limit"})
         for name, value in supplied.items():
             if value != original.model_dump(mode="json")[name]:
                 raise QueryContinuationInvalidError(f"continuation conflicts with {name}")
-        return original, tx
+        if "limit" not in request.model_fields_set:
+            return original, tx
+        if request.limit > tx.page_size:
+            raise QueryContinuationInvalidError("continuation cannot widen its bound window")
+        return request, replace(tx, page_size=request.limit)
     arguments = request.model_dump(mode="json", exclude={"continuation", "limit", "offset"})
     return request, QueryTransactionRequest(
         operation=request.operation,

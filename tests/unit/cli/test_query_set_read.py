@@ -333,6 +333,47 @@ def test_read_spec_accepts_render_expression() -> None:
     assert payload["projection"]["families"] == ["temporal", "sessions", "chronicle", "messages"]
 
 
+def test_read_spec_keeps_positional_session_reference_in_selection() -> None:
+    """The non-executing spec branch uses the positional session selection.
+
+    Anti-vacuity: returning --spec before normalizing ``ref`` emits an empty
+    selection even though execution of the same command reads that session.
+    """
+    result = CliRunner().invoke(
+        cli,
+        ["--plain", "read", "--view", "messages", "--spec", "session:codex-session:abc"],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["selection"]["query"] == "session:codex-session:abc"
+
+
+def test_read_all_rejects_session_bound_continuation() -> None:
+    """A single-session continuation cannot be broadcast to a query set.
+
+    Anti-vacuity: without the upfront refusal, the token is sent to each
+    selected session and the second session fails the complete export.
+    """
+    result = CliRunner().invoke(
+        cli,
+        [
+            "--plain",
+            "find",
+            "repo:polylogue",
+            "then",
+            "read",
+            "--all",
+            "--view",
+            "messages",
+            "--continuation",
+            "opaque",
+        ],
+    )
+    assert result.exit_code == 2
+    assert "cannot broadcast a session-bound --continuation" in result.output
+
+
 def test_read_spec_accepts_projection_expression() -> None:
     runner = CliRunner()
     result = runner.invoke(

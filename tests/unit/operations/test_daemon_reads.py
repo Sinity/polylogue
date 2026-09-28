@@ -604,6 +604,48 @@ def test_search_continuation_survives_a_session_grain_total(tmp_path: Path) -> N
     assert cast(list[dict[str, Any]], second["hits"]), "the second page must still carry the remaining hit"
 
 
+def test_a_cursor_page_emits_the_builder_page_its_outcome_describes(tmp_path: Path) -> None:
+    """The daemon route emits the hits the envelope builder decided on.
+
+    A cursor page fetches twice the display limit so the builder can trim
+    stragglers at or before the anchor and truncate to the limit.
+
+    Anti-vacuity: replace ``envelope["hits"]`` with the raw fetch again and
+    this page carries two hits under a limit of one, rows the outcome and
+    ``authority.matched`` never counted.
+    """
+    from tests.infra.storage_records import SessionBuilder
+
+    for name in ("alpha", "beta", "gamma", "delta"):
+        SessionBuilder(tmp_path / "index.db", name).provider("claude-code").title(name).add_message(
+            "m-0000", role="user", text=f"needle body {name}"
+        ).save()
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        first = execute_read_operation(
+            "cli.query",
+            {"params": {"query": "needle", "limit": 1}},
+            archive=archive,
+            serving_identity="daemon",
+        )
+        cursor = first["next_cursor"]
+        assert isinstance(cursor, str)
+        second = execute_read_operation(
+            "cli.query",
+            {"params": {"query": "needle", "limit": 1, "cursor": cursor}},
+            archive=archive,
+            serving_identity="daemon",
+        )
+
+    hits = cast(list[dict[str, Any]], second["hits"])
+    assert len(hits) == 1
+    assert cast(_Outcome, second["outcome"])["state"] != "empty"
+    # ``matched`` names the query's full match count (#5727), not the page.
+    assert cast(dict[str, Any], second["authority"])["matched"] >= len(hits)
+    first_hits = cast(list[dict[str, Any]], first["hits"])
+    assert hits[0]["session"]["id"] != first_hits[0]["session"]["id"]
+
+
 def test_a_short_ranked_page_still_terminates(tmp_path: Path) -> None:
     """The opposite direction: a page under its own bound ends the walk."""
     from tests.infra.storage_records import SessionBuilder

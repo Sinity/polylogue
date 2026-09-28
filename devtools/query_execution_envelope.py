@@ -12,13 +12,14 @@ import json
 import os
 import threading
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from shutil import disk_usage
 from typing import Any
 
 from polylogue import Polylogue
 from polylogue.core.errors import SchemaVersionMismatchError
+from polylogue.storage.archive_identity import resolve_active_index_path
 
 DEFAULT_EXPRESSION = "actions where tool:shell | group by tool | count"
 DEFAULT_ROUNDS = 20
@@ -42,11 +43,36 @@ class ResourceSample:
     temp_delta_bytes: int
 
 
+@dataclass(slots=True)
+class _ResourcePeak:
+    """Thread-safe component-wise maximum of observed resource samples."""
+
+    sample: ResourceSample
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+
+    def observe(self, candidate: ResourceSample) -> None:
+        with self._lock:
+            self.sample = ResourceSample(
+                max(self.sample.rss_bytes, candidate.rss_bytes),
+                max(self.sample.pss_bytes, candidate.pss_bytes),
+                max(self.sample.swap_bytes, candidate.swap_bytes),
+                max(self.sample.temp_delta_bytes, candidate.temp_delta_bytes),
+            )
+
+    def snapshot(self) -> ResourceSample:
+        with self._lock:
+            return self.sample
+
+
 PROC_MEMORY_FIELDS = ("VmRSS", "Pss", "VmSwap")
 
 
 class ResourceProbeUnavailableError(RuntimeError):
     """procfs did not report a field the declared envelope is measured against."""
+
+
+class TempProbeUnavailableError(RuntimeError):
+    """The temporary filesystem usage could not be measured."""
 
 
 def _parse_proc_memory(text: str) -> tuple[int, int, int]:
@@ -85,8 +111,8 @@ def _temp_used_bytes(temp_root: Path) -> int:
     """Return used bytes on the filesystem containing the temp root."""
     try:
         usage = disk_usage(temp_root)
-    except OSError:
-        return 0
+    except OSError as exc:
+        raise TempProbeUnavailableError(f"temporary filesystem usage is unavailable for {temp_root}: {exc}") from exc
     return usage.total - usage.free
 
 
@@ -120,7 +146,7 @@ async def measure_query_envelope(
         raise ValueError("resource envelope limits must be non-negative")
 
     archive_root = archive_root.resolve()
-    db_path = archive_root / "index.db"
+    db_path = resolve_active_index_path(archive_root).resolve()
     if not db_path.is_file():
         raise FileNotFoundError(db_path)
 
@@ -128,19 +154,14 @@ async def measure_query_envelope(
     temp_before = _temp_used_bytes(temp_root)
     initial_rss, initial_pss, initial_swap = _proc_memory()
     initial = ResourceSample(initial_rss, initial_pss, initial_swap, 0)
-    peak = initial
+    peak = _ResourcePeak(initial)
+    sampler_error: list[BaseException] = []
     stop = threading.Event()
 
     def observe() -> ResourceSample:
-        nonlocal peak
         rss, pss, swap = _proc_memory()
         candidate = ResourceSample(rss, pss, swap, max(0, _temp_used_bytes(temp_root) - temp_before))
-        peak = ResourceSample(
-            max(peak.rss_bytes, candidate.rss_bytes),
-            max(peak.pss_bytes, candidate.pss_bytes),
-            max(peak.swap_bytes, candidate.swap_bytes),
-            max(peak.temp_delta_bytes, candidate.temp_delta_bytes),
-        )
+        peak.observe(candidate)
         return candidate
 
     def sample() -> None:
@@ -149,7 +170,8 @@ async def measure_query_envelope(
         while not stop.is_set():
             try:
                 observe()
-            except ResourceProbeUnavailableError:
+            except (ResourceProbeUnavailableError, TempProbeUnavailableError) as exc:
+                sampler_error.append(exc)
                 return
             time.sleep(sample_interval_s)
 
@@ -178,6 +200,11 @@ async def measure_query_envelope(
         stop.set()
         sampler.join(timeout=2)
 
+    if sampler_error:
+        raise ResourceProbeUnavailableError(
+            f"background resource sample failed: {sampler_error[0]}"
+        ) from sampler_error[0]
+
     elapsed_ms = round((time.perf_counter() - started) * 1000, 3)
     baseline = [
         ResourceSample(item["rss_bytes"], item["pss_bytes"], item["swap_bytes"], item["temp_delta_bytes"])
@@ -194,6 +221,7 @@ async def measure_query_envelope(
     baseline_swap = max(sample.swap_bytes for sample in baseline)
     baseline_temp = max(sample.temp_delta_bytes for sample in baseline)
     final = measured[-3:]
+    peak_sample = peak.snapshot()
     return_checks = {
         "rss": all(current.rss_bytes <= max(1, baseline_rss) * (1 + tolerance) for current in final),
         "pss": all(current.pss_bytes <= max(1, baseline_pss) * (1 + tolerance) for current in final),
@@ -201,16 +229,16 @@ async def measure_query_envelope(
         "temp": all(current.temp_delta_bytes <= baseline_temp + max_temp_growth_bytes for current in final),
     }
     absolute_checks = {
-        "rss": peak.rss_bytes <= max_rss_bytes,
-        "pss": peak.pss_bytes <= max_pss_bytes,
-        "swap": peak.swap_bytes <= initial_swap + max_swap_growth_bytes,
-        "temp": peak.temp_delta_bytes <= max_temp_growth_bytes,
+        "rss": peak_sample.rss_bytes <= max_rss_bytes,
+        "pss": peak_sample.pss_bytes <= max_pss_bytes,
+        "swap": peak_sample.swap_bytes <= initial_swap + max_swap_growth_bytes,
+        "temp": peak_sample.temp_delta_bytes <= max_temp_growth_bytes,
     }
     returned = all(return_checks.values()) and all(absolute_checks.values())
     return {
         "status": "succeeded" if returned else "failed",
         "archive_root": str(archive_root),
-        "archive_generation": db_path.resolve().parent.name,
+        "archive_generation": db_path.parent.name,
         "archive_index_bytes": db_path.stat().st_size,
         "expression": expression,
         "rounds": rounds,
@@ -230,7 +258,7 @@ async def measure_query_envelope(
             "swap_bytes": baseline_swap,
             "temp_delta_bytes": baseline_temp,
         },
-        "peak": asdict(peak),
+        "peak": asdict(peak_sample),
         "initial_sample": asdict(initial),
         "quiescent_sample": asdict(quiescent),
         "final_samples": [asdict(sample) for sample in final],
@@ -278,12 +306,12 @@ def main(argv: list[str] | None = None) -> int:
                 max_temp_growth_bytes=args.max_temp_growth_mb * MIB,
             )
         )
-    except (SchemaVersionMismatchError, ResourceProbeUnavailableError) as exc:
+    except (SchemaVersionMismatchError, ResourceProbeUnavailableError, TempProbeUnavailableError) as exc:
         regression_path = (
             "Re-run against the exact promoted generation after its schema lifecycle action completes; "
             "do not bypass the archive compatibility check."
             if isinstance(exc, SchemaVersionMismatchError)
-            else "Re-run on a host whose procfs reports VmRSS, Pss, and VmSwap; the envelope is unmeasured here."
+            else "Re-run where procfs and the temporary filesystem can be measured; the envelope is unmeasured here."
         )
         receipt = {
             "status": "blocked-env",
