@@ -183,7 +183,7 @@ def normalize_checkout_environment(root: Path, environ: dict[str, str] | None = 
             corrected.append(f"{name}={value}")
     own_venv = resolved_root / ".venv"
     virtual_env = env.get("VIRTUAL_ENV")
-    if virtual_env and not _inside(Path(virtual_env), resolved_root):
+    if virtual_env and _polylogue_checkout_ancestor(Path(virtual_env)) != resolved_root:
         corrected.append(f"VIRTUAL_ENV={virtual_env}")
         if own_venv.is_dir():
             env["VIRTUAL_ENV"] = str(own_venv)

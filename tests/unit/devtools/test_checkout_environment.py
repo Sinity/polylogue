@@ -130,11 +130,15 @@ def test_a_checkout_nested_inside_this_one_is_foreign(tmp_path: Path, monkeypatc
     clone's venv is kept on PATH and its interpreter accepted."""
     outer = _checkout(tmp_path / "outer")
     nested = _checkout(outer / "vendor" / "clone")
-    environ = {"PATH": os.pathsep.join([str(nested / ".venv" / "bin"), "/usr/bin"])}
+    environ = {
+        "PATH": os.pathsep.join([str(nested / ".venv" / "bin"), "/usr/bin"]),
+        "VIRTUAL_ENV": str(nested / ".venv"),
+    }
 
     normalize_checkout_environment(outer, environ)
 
     assert str(nested / ".venv" / "bin") not in environ["PATH"].split(os.pathsep)
+    assert environ["VIRTUAL_ENV"] == str(outer.resolve() / ".venv")
     monkeypatch.setattr(sys, "prefix", str(nested / ".venv"))
     with pytest.raises(ForeignInterpreterError):
         assert_interpreter_belongs_to(outer, context="devtools")
