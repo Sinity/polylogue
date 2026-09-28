@@ -594,8 +594,12 @@ def _post_filter_candidates(
     if query_kwargs.get("sort") == "random":
         query_kwargs.pop("sort")
     if query_text is not None:
-        for hit in cast(Iterator[Any], archive.iter_search_summaries(query_text, **query_kwargs)):
-            yield archive.read_summary(hit.session_id)
+        # A search yields one hit per matching block; each session is a
+        # single candidate, so it is hydrated and sampled once.
+        with _DistinctSessions() as seen:
+            for hit in cast(Iterator[Any], archive.iter_search_summaries(query_text, **query_kwargs)):
+                if seen.add(str(hit.session_id)):
+                    yield archive.read_summary(hit.session_id)
         return
     yield from cast(Iterator[ArchiveSessionSummary], archive.iter_summaries(**query_kwargs))
 
@@ -660,6 +664,10 @@ def _archive_list_summaries_with_post_filters(
     effective_offset = offset if offset is not None else int(raw_offset) if isinstance(raw_offset, (int, str)) else 0
     raw_limit = limit if limit is not None else query_kwargs.get("limit")
     effective_limit = None if raw_limit is None else int(raw_limit) if isinstance(raw_limit, (int, str)) else None
+    # A negative window reads as the SQL route reads it: from the start, empty.
+    effective_offset = max(effective_offset, 0)
+    if effective_limit is not None:
+        effective_limit = max(effective_limit, 0)
     survivors = _iter_post_filtered_summaries(archive, spec, candidates, needed=None)
     if query_kwargs.get("sample") or query_kwargs.get("sort") == "random":
         start = 0 if query_kwargs.get("sample") else effective_offset

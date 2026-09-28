@@ -377,6 +377,8 @@ class PolylogueInsightsMixin:
                 "origin": request.origin,
                 "since": request.since,
                 "until": request.until,
+                "status": request.status,
+                "model": request.model,
                 "limit": request.limit,
                 "offset": request.offset,
             },
