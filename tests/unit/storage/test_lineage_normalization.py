@@ -4574,8 +4574,10 @@ def test_a_scoped_replay_refuses_a_prefix_that_no_longer_matches(tmp_path: Path)
 def test_a_deep_chain_composes_in_linear_time(tmp_path: Path) -> None:
     """One list is cut and extended down the chain; no level's transcript is kept.
 
-    Anti-vacuity: rebuild ``prefix + own`` at every level and cache each, and
-    the composition holds every intermediate transcript, quadratic in depth.
+    Covers the writer's signatures, the envelope planner and compact
+    accounting. Anti-vacuity: rebuild ``prefix + own`` at every level and
+    cache each, and the composition holds every intermediate transcript,
+    quadratic in depth.
     """
     from polylogue.storage.sqlite.archive_tiers import write as write_module
 
@@ -4592,4 +4594,45 @@ def test_a_deep_chain_composes_in_linear_time(tmp_path: Path) -> None:
     assert len(composed) == depth
     assert set(intermediates) == {"codex-session:s0", leaf}
     assert _composed_texts(conn, leaf) == [f"r{index}" for index in range(depth)]
+
+    from polylogue.storage.derived.lineage.compact import _CompositionShape
+
+    shape = _CompositionShape(conn)
+    accounting = shape.accounting(leaf)
+    assert (accounting.unique, accounting.inherited) == (1, depth - 1)
+    # Only the walked base and the requested parent are kept, not every level.
+    assert len(shape._segments) == 2
     conn.close()
+
+
+def test_a_scoped_replay_keeps_an_appended_duplicate_of_a_copy(tmp_path: Path) -> None:
+    """A row appended after materialization keeps the occurrence the append gave it.
+
+    The ID-less prefix ``[hi, answer]`` is copied into the child as content
+    IDs; an appended ``hi`` then takes the occurrence after the copy.
+    Anti-vacuity: count every non-prefix row before the copies on replay and
+    the copy and the appended row exchange IDs.
+    """
+    parent = [_msg("", Role.USER, "hi", 0), _msg("", Role.ASSISTANT, "answer", 1)]
+    child = [*parent, _msg("", Role.USER, "tail", 2)]
+    rewritten = [_msg("", Role.USER, "hi", 0), _msg("", Role.ASSISTANT, "another answer", 1)]
+    _inheriting, materialized, _replayed = _materialize_then_replay(tmp_path, parent, child, rewritten)
+    conn = _connect(tmp_path / "index.db")
+    appended = _msg("", Role.USER, "hi", 3)
+    write_parsed_session_to_archive(
+        conn,
+        ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="child",
+            title="child",
+            parent_session_provider_id="parent",
+            branch_type=BranchType.FORK,
+            messages=[appended],
+        ),
+        merge_append=True,
+    )
+    conn.commit()
+    stored = _child_ids(conn, "codex-session:child")
+    conn.close()
+    assert len(stored) == 4 and set(materialized) <= set(stored)
+    assert _replay_child(tmp_path, [*child, appended]) == stored

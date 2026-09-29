@@ -296,29 +296,49 @@ class _CompositionShape:
             chain.append((cursor, branch_point_message_id))
             visited.add(parent_id)
             cursor = parent_id
-        result = base
-        for child_id, branch_point_message_id in reversed(chain):
-            if result is not None:
-                prefix = self._truncate_at(result, branch_point_message_id)
-                result = None if prefix is None else [*prefix, (child_id, self._own_count(child_id))]
-            self._segments[child_id] = result
-        if session_id not in self._segments:
-            self._segments[session_id] = result
+        if not chain:
+            self._segments[session_id] = base
+            return base
+        # One list is cut at each branch point and extended by each tail, with
+        # an index of each owner's segment, so a deep chain composes in time
+        # linear in its depth; only the requested session's result is cached,
+        # since keeping every intermediate list would be quadratic. Sessions on
+        # a chain are distinct (the visited set), so each owns one segment.
+        result: list[tuple[str, int]] | None = None
+        if base is not None:
+            result = list(base)
+            index = {owner: position for position, (owner, _length) in enumerate(result)}
+            for child_id, branch_point_message_id in reversed(chain):
+                if not self._cut_at(result, index, branch_point_message_id):
+                    result = None
+                    break
+                index[child_id] = len(result)
+                result.append((child_id, self._own_count(child_id)))
+        self._segments[session_id] = result
         return result
 
-    def _truncate_at(
-        self, segments: Sequence[tuple[str, int]], branch_point_message_id: str
-    ) -> list[tuple[str, int]] | None:
-        """Cut a composed segment list after the branch-point message."""
-        out: list[tuple[str, int]] = []
-        for owner, length in segments:
-            rank = self._rank_within_own(owner, branch_point_message_id)
-            if rank is None or rank > length:
-                out.append((owner, length))
-                continue
-            out.append((owner, rank))
-            return out
-        return None
+    def _owner_of(self, message_id: str) -> str | None:
+        row = self._conn.execute("SELECT session_id FROM messages WHERE message_id = ?", (message_id,)).fetchone()
+        return None if row is None else str(row[0])
+
+    def _cut_at(self, segments: list[tuple[str, int]], index: dict[str, int], branch_point_message_id: str) -> bool:
+        """Cut a composed segment list after the branch-point message, in place.
+
+        ``False`` when the branch point is not inside the composed transcript.
+        """
+        owner = self._owner_of(branch_point_message_id)
+        at = None if owner is None else index.get(owner)
+        if owner is None or at is None:
+            return False
+        rank = self._rank_within_own(owner, branch_point_message_id)
+        if rank is None or rank > segments[at][1]:
+            return False
+        for dropped, _length in segments[at:]:
+            del index[dropped]
+        del segments[at:]
+        index[owner] = len(segments)
+        segments.append((owner, rank))
+        return True
 
     def accounting(self, session_id: str) -> LineageMessageAccounting:
         edge = self._prefix_edge(session_id)
@@ -329,8 +349,9 @@ class _CompositionShape:
         parent_segments = self.segments(parent_id)
         if parent_segments is None:
             return LineageMessageAccounting(status=LineageAccountingStatus.UNKNOWN, reason=_ACCOUNTING_UNCOMPOSABLE)
-        prefix = self._truncate_at(parent_segments, branch_point_message_id)
-        if prefix is None:
+        prefix = list(parent_segments)
+        index = {owner: position for position, (owner, _length) in enumerate(prefix)}
+        if not self._cut_at(prefix, index, branch_point_message_id):
             return LineageMessageAccounting(status=LineageAccountingStatus.UNKNOWN, reason=_ACCOUNTING_DANGLING)
         return LineageMessageAccounting(
             status=LineageAccountingStatus.KNOWN,

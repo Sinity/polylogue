@@ -22,7 +22,7 @@ import uuid
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
 from contextlib import closing, contextmanager, nullcontext, suppress
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from itertools import chain, islice
 from pathlib import Path
 from typing import Any, Literal, cast, overload
@@ -746,6 +746,11 @@ class _IdentityScope:
     #: even when the transcript gained a message before them.
     prefix_digest: str = ""
     first_identity: str = ""
+    #: Per content identity, the occurrence the first content copy took: the
+    #: tail's occurrences of it at materialization. A row outside the prefix
+    #: from that point on (a later append) numbers past the copies, as the
+    #: append allocated it, so a replay never hands it a copy's ID.
+    copy_bases: Mapping[str, int] = field(default_factory=dict)
 
     def to_json(self) -> str:
         return json.dumps(
@@ -754,6 +759,7 @@ class _IdentityScope:
                 "content_copies": {key: list(value) for key, value in sorted(self.content_copies.items())},
                 "prefix_digest": self.prefix_digest,
                 "first_identity": self.first_identity,
+                "copy_bases": dict(sorted(self.copy_bases.items())),
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -768,10 +774,11 @@ class _IdentityScope:
                 str(key): tuple(sorted(int(item) for item in value))
                 for key, value in dict(raw.get("content_copies") or {}).items()
             }
+            bases = {str(key): int(value) for key, value in dict(raw.get("copy_bases") or {}).items()}
         except (TypeError, ValueError, KeyError):
             return None
         return (
-            cls(count, copies, str(raw.get("prefix_digest") or ""), str(raw.get("first_identity") or ""))
+            cls(count, copies, str(raw.get("prefix_digest") or ""), str(raw.get("first_identity") or ""), bases)
             if count > 0
             else None
         )
@@ -935,25 +942,45 @@ def _scoped_identities(
         floor = len(before_positions_map) + len(prefix_positions)
         if min_tail_position is not None and min_tail_position < floor:
             tail_shift = floor - min_tail_position
-    identities: list[MessageContentIdentity] = []
+    # Occurrences are decided in three passes, then listed by ordinal: rows
+    # after the prefix keep the numbering they had (the tail's at
+    # materialization, then past the copies for later appends), recorded
+    # copies take theirs, and rows the materialization never saw (gained
+    # before the prefix, or an unrecorded ID-less prefix row) take fresh
+    # occurrences past every one of those.
+    occurrences: dict[int, int] = {}
     cleared: set[int] = set()
+    taken: dict[str, set[int]] = defaultdict(set)
+    after_seen: Counter[str] = Counter()
+    for ordinal in range(start + count, len(digests)):
+        digest = digests[ordinal]
+        seen = after_seen[digest]
+        after_seen[digest] += 1
+        copies = scope.content_copies.get(digest, ())
+        base = scope.copy_bases.get(digest, tail_counts[digest]) if copies else seen + 1
+        occurrences[ordinal] = seen if seen < base else seen + len(copies)
+        taken[digest].add(occurrences[ordinal])
     prefix_seen: Counter[str] = Counter()
-    tail_seen: Counter[str] = Counter()
-    for ordinal, digest in enumerate(digests):
-        if start <= ordinal < start + count:
-            occurrence = prefix_seen[digest]
-            prefix_seen[digest] += 1
-            copies = scope.content_copies.get(digest, ())
-            if occurrence in copies:
-                cleared.add(ordinal)
-                identities.append((digest, tail_counts[digest] + copies.index(occurrence)))
-            else:
-                # Native, or an ID-less message the scope did not record: the
-                # occurrence stays unique and past every recorded one.
-                identities.append((digest, tail_counts[digest] + len(copies) + occurrence))
-            continue
-        identities.append((digest, tail_seen[digest]))
-        tail_seen[digest] += 1
+    unrecorded: list[int] = []
+    for ordinal in range(start, start + count):
+        digest = digests[ordinal]
+        occurrence = prefix_seen[digest]
+        prefix_seen[digest] += 1
+        copies = scope.content_copies.get(digest, ())
+        if occurrence in copies:
+            cleared.add(ordinal)
+            occurrences[ordinal] = scope.copy_bases.get(digest, tail_counts[digest]) + copies.index(occurrence)
+            taken[digest].add(occurrences[ordinal])
+        else:
+            # Native, or an ID-less message the scope did not record: the
+            # occurrence stays unique and past every recorded one.
+            unrecorded.append(ordinal)
+    for ordinal in [*range(0, start), *unrecorded]:
+        digest = digests[ordinal]
+        fresh = max(taken[digest], default=-1) + 1
+        occurrences[ordinal] = fresh
+        taken[digest].add(fresh)
+    identities = [(digest, occurrences[ordinal]) for ordinal, digest in enumerate(digests)]
     # A native repeated outside the prefix, or shared with a copied prefix row
     # that keeps it, is a content identity for the non-prefix row: the stored
     # prefix row keeps its ID.
@@ -2847,48 +2874,65 @@ def _message_coordinates(conn: sqlite3.Connection, message_id: str) -> tuple[str
     return (str(row["session_id"]), int(row["position"]), int(row["variant_index"]))
 
 
-def _segments_through_branch_point(
-    conn: sqlite3.Connection,
-    segments: tuple[_TranscriptSegment, ...],
-    branch_point_message_id: str,
-) -> tuple[_TranscriptSegment, ...] | None:
-    """Cut ``segments`` after the branch point, or ``None`` when it is not in them.
+class _SegmentList:
+    """A composed transcript's segments, cut and extended down a lineage chain.
 
-    ``None`` is the dangling branch point: the parent message was hard-deleted,
-    or it is not part of the parent's own composed transcript. The first
-    segment that both owns the message and still contains it wins, which is
-    what scanning the composed rows in order finds -- a lineage cycle can put
-    the same session in the list more than once, and only the earliest
-    occurrence is the one a row scan would reach.
+    One list is cut at each branch point and extended by each tail, with an
+    index of each session's segment and a running total, so a deep chain
+    composes in time linear in its depth instead of rescanning and copying
+    every intermediate segment tuple. Sessions on a chain are distinct (the
+    walk's visited set), so each owns at most one segment.
     """
-    located = _message_coordinates(conn, branch_point_message_id)
-    if located is None:
-        return None
-    owner_session_id, position, variant_index = located
-    for index, segment in enumerate(segments):
-        if segment.session_id != owner_session_id:
-            continue
+
+    def __init__(self, conn: sqlite3.Connection, base: Sequence[_TranscriptSegment]) -> None:
+        self._conn = conn
+        self.segments = list(base)
+        self._index = {segment.session_id: position for position, segment in enumerate(self.segments)}
+        self.total = sum(segment.message_count for segment in self.segments)
+
+    def cut_at(self, branch_point_message_id: str) -> bool:
+        """Cut after the branch point; ``False`` when it is not in the segments.
+
+        ``False`` is the dangling branch point: the parent message was
+        hard-deleted, or it is not part of the parent's composed transcript.
+        """
+        located = _message_coordinates(self._conn, branch_point_message_id)
+        if located is None:
+            return False
+        owner_session_id, position, variant_index = located
+        at = self._index.get(owner_session_id)
+        if at is None:
+            return False
+        segment = self.segments[at]
         if (
             segment.upto_position is not None
             and segment.upto_variant_index is not None
             and (position, variant_index) > (segment.upto_position, segment.upto_variant_index)
         ):
-            continue
-        return (
-            *segments[:index],
+            return False
+        for dropped in self.segments[at:]:
+            self.total -= dropped.message_count
+            del self._index[dropped.session_id]
+        del self.segments[at:]
+        self.append(
             _TranscriptSegment(
                 session_id=owner_session_id,
                 upto_position=position,
                 upto_variant_index=variant_index,
                 message_count=_count_session_messages(
-                    conn,
-                    owner_session_id,
-                    upto_position=position,
-                    upto_variant_index=variant_index,
+                    self._conn, owner_session_id, upto_position=position, upto_variant_index=variant_index
                 ),
-            ),
+            )
         )
-    return None
+        return True
+
+    def clear(self) -> None:
+        self.segments, self._index, self.total = [], {}, 0
+
+    def append(self, segment: _TranscriptSegment) -> None:
+        self._index[segment.session_id] = len(self.segments)
+        self.segments.append(segment)
+        self.total += segment.message_count
 
 
 def _composed_transcript_plan(conn: sqlite3.Connection, session_id: str) -> _ComposedTranscriptPlan:
@@ -2944,38 +2988,31 @@ def _composed_transcript_plan(conn: sqlite3.Connection, session_id: str) -> _Com
         visited.add(parent_session_id)
         cursor_session_id = parent_session_id
 
+    if not chain:
+        return plan
+    composed = _SegmentList(conn, plan.segments)
+    complete, reason = plan.lineage_complete, plan.lineage_truncation_reason
     for child_session_id, parent_session_id, branch_point_message_id in reversed(chain):
-        parent_plan = plan
-        own = own_segment(child_session_id)
-        witness_matches = _branch_point_content_address_matches(
+        cut = _branch_point_content_address_matches(
             conn, child_session_id, parent_session_id, branch_point_message_id
-        )
-        prefix = (
-            _segments_through_branch_point(conn, parent_plan.segments, branch_point_message_id)
-            if witness_matches
-            else None
-        )
-        segments = (*prefix, own) if prefix is not None else (own,)
-        lineage_complete = True
-        lineage_truncation_reason: LineageTruncationReason | None = None
-        # Check the parent's OWN incompleteness first: a branch point missing
-        # from a truncated parent is a symptom of that truncation, not an
-        # independent dangling-branch-point condition.
-        if not parent_plan.lineage_complete:
-            lineage_complete = False
-            lineage_truncation_reason = parent_plan.lineage_truncation_reason
-        elif prefix is None:
-            lineage_complete = False
-            lineage_truncation_reason = LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT
-        plan = _ComposedTranscriptPlan(
-            segments=segments,
-            total_message_count=sum(segment.message_count for segment in segments),
-            lineage_complete=lineage_complete,
-            lineage_truncation_reason=lineage_truncation_reason,
-            lineage_inheritance="prefix-sharing",
-            lineage_branch_point_message_id=branch_point_message_id,
-        )
-    return plan
+        ) and composed.cut_at(branch_point_message_id)
+        # The parent's own incompleteness is checked first: a branch point
+        # missing from a truncated parent is a symptom of that truncation, not
+        # an independent dangling-branch-point condition.
+        if not cut:
+            composed.clear()
+            if complete:
+                complete, reason = False, LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT
+        composed.append(own_segment(child_session_id))
+    return _ComposedTranscriptPlan(
+        segments=tuple(composed.segments),
+        total_message_count=composed.total,
+        lineage_complete=complete,
+        lineage_truncation_reason=reason,
+        lineage_inheritance="prefix-sharing",
+        # The requested session's own edge: the chain is leaf-first.
+        lineage_branch_point_message_id=chain[0][2],
+    )
 
 
 def _read_session_header_row(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row:
@@ -9913,18 +9950,16 @@ def _disk_composed_db_signatures(
             chain.append((cursor_session_id, branch_point))
             visited.add(parent_id)
             cursor_session_id = parent_id
-        segments: tuple[_TranscriptSegment, ...] = (
-            _TranscriptSegment(cursor_session_id, None, None, _count_session_messages(conn, cursor_session_id)),
+        composed = _SegmentList(
+            conn,
+            (_TranscriptSegment(cursor_session_id, None, None, _count_session_messages(conn, cursor_session_id)),),
         )
         for child_id, branch_point in reversed(chain):
-            prefix = _segments_through_branch_point(conn, segments, branch_point)
-            segments = (
-                (*prefix, _TranscriptSegment(child_id, None, None, _count_session_messages(conn, child_id)))
-                if prefix
-                else (_TranscriptSegment(child_id, None, None, _count_session_messages(conn, child_id)),)
-            )
+            if not composed.cut_at(branch_point):
+                composed.clear()
+            composed.append(_TranscriptSegment(child_id, None, None, _count_session_messages(conn, child_id)))
         result = _DiskSignatureSequence(directory)
-        for segment in segments:
+        for segment in composed.segments:
             for message_id, digest in _iter_own_db_signatures(conn, segment):
                 result.append(message_id, digest)
         return result
@@ -11090,6 +11125,7 @@ def _materialize_inherited_prefix(
     # spawned-fresh child reproduces these IDs (``_IdentityScope``).
     prefix_ordinals: Counter[str] = Counter()
     content_copies: dict[str, list[int]] = defaultdict(list)
+    copy_bases: dict[str, int] = {}
     for (_old_id, row), planned in zip(sources, plan, strict=True):
         identity = row[4]
         if identity is None:
@@ -11098,12 +11134,15 @@ def _materialize_inherited_prefix(
         prefix_ordinals[str(identity)] += 1
         if planned[5] == "content":
             content_copies[str(identity)].append(ordinal_in_prefix)
+            assert planned[4] is not None
+            copy_bases.setdefault(str(identity), planned[4])
     prefix_identities = [str(row[4]) for _old_id, row in sources if row[4] is not None]
     identity_scope = _IdentityScope(
         len(inherited_ids),
         {identity: tuple(ordinals) for identity, ordinals in content_copies.items()},
         _identity_sequence_digest(prefix_identities) if len(prefix_identities) == len(sources) else "",
         prefix_identities[0] if prefix_identities and len(prefix_identities) == len(sources) else "",
+        copy_bases,
     )
     conn.execute(
         f"""CREATE TEMP TABLE {_GUARD_PREFIX}plan (
