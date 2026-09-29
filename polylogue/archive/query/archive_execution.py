@@ -226,7 +226,11 @@ def _archive_summaries(
 
     filter_kwargs = plan_filter_kwargs(plan)
     limit = _fetch_limit(plan, default=default_limit)
-    post_filter_fetch = (plan.has_post_filters() and plan.limit is not None) or complete
+    # A post-filtered plan pages its candidates from offset zero and applies
+    # the offset once, over survivors, in the caller. An unlimited plan takes
+    # the same route: a SQL offset here would skip unfiltered candidates and
+    # the caller would then skip survivors again.
+    post_filter_fetch = plan.has_post_filters() or complete
     wanted = None if plan.limit is None or plan.sample is not None else plan.offset + plan.limit
     sort = plan.sort
     reverse = plan.reverse
@@ -663,7 +667,9 @@ async def count_archive(
                 return int(archive.count_search_sessions(query_text, **filter_kwargs))
             return int(archive.count_sessions(**filter_kwargs))
 
-    unbounded = plan.with_limit(None)
+    # A count is the size of the whole result, not of one page: the SQL
+    # count above ignores the window, so this route drops the offset too.
+    unbounded = replace(plan, limit=None, offset=0)
     if unbounded.can_use_summaries():
         rows = await list_summaries_archive(
             unbounded,

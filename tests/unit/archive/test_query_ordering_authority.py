@@ -513,3 +513,34 @@ async def test_units_of_an_unlimited_sampled_page_get_the_sample_width(
 
     assert len(sessions) == 50
     assert widths and set(widths) == {50}
+
+
+@pytest.mark.asyncio
+async def test_post_filtered_offset_applies_once_and_count_ignores_the_window(tmp_path: Path) -> None:
+    """An offset skips survivors exactly once; a count reports the whole result.
+
+    ``root`` is a residual post-filter. An unlimited post-filtered read used to
+    pass the offset to SQL, over unfiltered candidates, and then skip that many
+    survivors again, and ``count`` kept the page offset on its unbounded plan.
+    Anti-vacuity: restore ``plan.limit is not None`` in ``post_filter_fetch``
+    and the unlimited page loses four rows instead of two; keep the offset in
+    ``count_archive`` and the count drops below five.
+    """
+    from polylogue.archive.query.archive_execution import count_archive
+
+    for index in range(5):
+        _seed(tmp_path, f"root-{index}", updated_at=f"2026-01-0{index + 1}T00:00:00Z", messages=1)
+
+    everything = await list_summaries_archive(SessionQueryPlan(root=True), archive_root=tmp_path, config=None)
+    unlimited = await list_summaries_archive(SessionQueryPlan(root=True, offset=2), archive_root=tmp_path, config=None)
+    limited = await list_summaries_archive(
+        SessionQueryPlan(root=True, offset=2, limit=10), archive_root=tmp_path, config=None
+    )
+    sessions = await list_archive(SessionQueryPlan(root=True, offset=2), archive_root=tmp_path, config=None)
+
+    assert len(everything) == 5
+    assert [summary.id for summary in unlimited] == [summary.id for summary in everything[2:]]
+    assert [summary.id for summary in limited] == [summary.id for summary in everything[2:]]
+    assert [session.id for session in sessions] == [summary.id for summary in everything[2:]]
+    assert await count_archive(SessionQueryPlan(root=True, offset=2), archive_root=tmp_path, config=None) == 5
+    assert await count_archive(SessionQueryPlan(root=True, offset=2, limit=1), archive_root=tmp_path, config=None) == 5
