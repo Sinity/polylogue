@@ -938,51 +938,58 @@ def _descriptor_storage_names(descriptor: QueryFieldDescriptor) -> tuple[str, ..
     return descriptor.storage_names or ((descriptor.sql_param,) if descriptor.sql_param else ())
 
 
+def _descriptor_dsl_names(descriptor: QueryFieldDescriptor) -> tuple[str, ...]:
+    from polylogue.archive.query.metadata import EXPRESSION_FIELD_REGISTRY
+
+    spec_names = set(_descriptor_spec_names(descriptor))
+    return tuple(
+        name
+        for name, info in EXPRESSION_FIELD_REGISTRY.items()
+        if spec_names.intersection(info["spec_field"].split("/"))
+    )
+
+
+def _descriptor_boundary_names(
+    descriptor: QueryFieldDescriptor, boundary: Literal["mcp", "spec", "storage", "api", "dsl"]
+) -> tuple[str, ...]:
+    if boundary == "mcp":
+        return descriptor.mcp_names
+    if boundary == "spec":
+        return _descriptor_spec_names(descriptor)
+    if boundary == "storage":
+        return _descriptor_storage_names(descriptor)
+    if boundary == "api":
+        return descriptor.api_names
+    return _descriptor_dsl_names(descriptor)
+
+
 def query_boundary_names(boundary: Literal["mcp", "spec", "storage", "api", "dsl"]) -> frozenset[str]:
     """Return names accepted at one explicit public/lowering boundary."""
-    names: set[str] = set()
-    for descriptor in QUERY_FIELD_DESCRIPTORS:
-        if boundary == "mcp":
-            names.update(descriptor.mcp_names)
-        elif boundary == "spec":
-            names.update(_descriptor_spec_names(descriptor))
-        elif boundary == "storage":
-            names.update(_descriptor_storage_names(descriptor))
-        elif boundary == "api":
-            names.update(descriptor.api_names)
-        else:
-            names.add(descriptor.name)
-    return frozenset(names)
+    if boundary == "dsl":
+        from polylogue.archive.query.metadata import EXPRESSION_FIELD_REGISTRY
+
+        return frozenset(EXPRESSION_FIELD_REGISTRY)
+    return frozenset(
+        name for descriptor in QUERY_FIELD_DESCRIPTORS for name in _descriptor_boundary_names(descriptor, boundary)
+    )
 
 
 def query_boundary_alternatives(
     name: str, boundary: Literal["mcp", "spec", "storage", "api", "dsl"]
 ) -> tuple[str, ...]:
-    """Return declared spellings for *name*, excluding the current layer."""
-    matches = [
-        descriptor
-        for descriptor in QUERY_FIELD_DESCRIPTORS
-        if name
-        in {
+    """Return related spellings accepted by the requested boundary."""
+    names: set[str] = set()
+    for descriptor in QUERY_FIELD_DESCRIPTORS:
+        aliases = {
+            descriptor.name,
             *descriptor.mcp_names,
             *_descriptor_spec_names(descriptor),
             *_descriptor_storage_names(descriptor),
             *descriptor.api_names,
-            descriptor.name,
+            *_descriptor_dsl_names(descriptor),
         }
-    ]
-    names: set[str] = set()
-    for descriptor in matches:
-        names.update(
-            {
-                *descriptor.mcp_names,
-                *_descriptor_spec_names(descriptor),
-                *_descriptor_storage_names(descriptor),
-                *descriptor.api_names,
-                descriptor.name,
-            }
-        )
-    names.difference_update(query_boundary_names(boundary))
+        if name in aliases:
+            names.update(_descriptor_boundary_names(descriptor, boundary))
     return tuple(sorted(names))
 
 

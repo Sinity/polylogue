@@ -2934,6 +2934,8 @@ def _ensure_aggregate_lowerer_supported(unit: QueryUnitName, *, stage: str) -> N
 def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSource:
     selected_fields = _parse_select_stage(source.unit, stage)
     if selected_fields is not None:
+        if source.aggregate is not None or source.agg_metrics is not None or source.group_by is not None:
+            raise ExpressionCompileError("row projections cannot be combined with aggregate stages", field="fields")
         if source.selected_fields:
             raise ExpressionCompileError("pipeline projection may only be specified once", field="fields")
         return replace(
@@ -2989,6 +2991,8 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
         )
     group_by = _parse_group_stage(stage)
     if group_by is not None:
+        if source.selected_fields:
+            raise ExpressionCompileError("row projections cannot be combined with aggregate stages", field="fields")
         if source.aggregate is not None:
             raise ExpressionCompileError("pipeline `group by` must appear before `count`", field="group")
         if source.sort is not None:
@@ -3009,6 +3013,8 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
             ),
         )
     if _parse_count_stage(stage):
+        if source.selected_fields:
+            raise ExpressionCompileError("row projections cannot be combined with aggregate stages", field="fields")
         if source.limit is not None or source.offset is not None:
             raise ExpressionCompileError("pipeline `count` must appear before `limit` and `offset`", field="count")
         _ensure_sql_aggregate_pipeline_lowerer(source.unit, stage="count")
@@ -3023,6 +3029,8 @@ def _apply_pipeline_stage(source: QueryUnitSource, stage: str) -> QueryUnitSourc
         )
     agg_metrics = _parse_agg_stage(source.unit, stage)
     if agg_metrics is not None:
+        if source.selected_fields:
+            raise ExpressionCompileError("row projections cannot be combined with aggregate stages", field="fields")
         if source.aggregate is not None or source.agg_metrics is not None:
             raise ExpressionCompileError("pipeline `agg` cannot follow `count` or another `agg` stage", field="agg")
         if source.sort is not None:

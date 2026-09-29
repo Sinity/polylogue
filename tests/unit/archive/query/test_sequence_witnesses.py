@@ -186,3 +186,31 @@ def test_a_one_step_pattern_is_refused(workspace_env: dict[str, Path]) -> None:
     with ArchiveStore(workspace_env["archive_root"], initialize=False, read_only=True) as archive:
         with pytest.raises(ValueError, match="at least two steps"):
             archive.query_action_sequence_witnesses(QuerySequencePredicate(action_terms=("file_edit",)), limit=10)
+
+
+def test_completed_sql_witnesses_do_not_cut_off_late_viable_prefixes(workspace_env: dict[str, Path]) -> None:
+    """The 101 x 102 intermediate pairs must still yield every adjacent final match.
+
+    A 10,000-prefix cutoff loses the final edits' witnesses. The live SQL owner
+    must apply all edge constraints before paging complete matches.
+    """
+    index_db = workspace_env["archive_root"] / "index.db"
+    _seed(
+        index_db,
+        "seq-late-prefix",
+        (
+            *(("Edit", f"edit-{i}", "file_edit") for i in range(101)),
+            *(("Bash", f"shell-{i}", "shell") for i in range(102)),
+            ("Grep", "search-final", "search"),
+        ),
+    )
+    predicate = _sequence_predicate("seq(action:file_edit -> action:shell ->[next] action:search)")
+    with ArchiveStore(workspace_env["archive_root"], initialize=False, read_only=True) as archive:
+        witnesses = archive.query_action_sequence_witnesses(predicate, limit=200)
+        selected = archive.list_summaries(limit=10, boolean_predicate=predicate)
+        stored = _stored_action_ids(archive, "seq-late-prefix")
+    assert len(witnesses) == 101
+    assert len(selected) == 1
+    assert {w.action_ids[0] for w in witnesses} == {stored[f"edit-{i}"] for i in range(101)}
+    assert {w.action_ids[1:] for w in witnesses} == {(stored["shell-101"], stored["search-final"])}
+    assert {w.session_id for w in witnesses} == {selected[0].session_id}

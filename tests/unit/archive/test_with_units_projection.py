@@ -806,3 +806,26 @@ def test_legacy_execution_arguments_with_a_lone_surrogate_stay_readable(tmp_path
         (action,) = archive.query_session_actions([session_id])
 
     assert action.tool_command == "x\\ud800"
+
+
+async def test_truncated_attachment_projection_emits_only_registered_event_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Restoring the list-valued units field produces log.field_rejected on this real read."""
+    from polylogue import logging as plog
+    from polylogue.archive.query import attached_units
+
+    monkeypatch.setattr(attached_units, "_MAX_ROWS_PER_SESSION", 1)
+    session_id = TestAttachedRowCeilingIsReported._seed_messages(tmp_path, 3, "event-projection")
+    spec = compile_expression(f"id:{session_id} with messages")
+    with plog.capture() as records:
+        summaries = await list_summaries_archive(
+            spec.to_plan(), archive_root=tmp_path, config=None, with_units=spec.with_units
+        )
+    assert len(summaries) == 1
+    assert len(summaries[0].attached_units["message"]) == 1
+    events = [record for record in records if record["event"] == "archive.attached_units.truncated"]
+    assert len(events) == 1
+    assert events[0]["outcome"] == "degraded"
+    assert events[0]["sessions"] == 1
+    assert not any(record["event"] == "log.field_rejected" for record in records)

@@ -139,3 +139,37 @@ def test_a_renamed_unit_executor_is_an_actionable_diagnostic() -> None:
     assert [item.code for item in diagnostics] == ["unresolved_handler_symbol"]
     assert "query_messages_renamed_away" in diagnostics[0].message
     assert diagnostics[0].repair_command
+
+
+def test_dsl_boundary_names_are_the_executable_grammar() -> None:
+    """Descriptor implementation names must not masquerade as accepted DSL tokens."""
+    from polylogue.archive.query.expression import compile_expression
+    from polylogue.archive.query.fields import query_boundary_names
+    from polylogue.archive.query.metadata import EXPRESSION_FIELD_REGISTRY
+
+    names = query_boundary_names("dsl")
+    assert names == frozenset(EXPRESSION_FIELD_REGISTRY)
+    assert {"origin", "repo", "tag"} <= names
+    assert "origins" not in names
+    assert compile_expression("origin:codex-session repo:sample tag:review").origins
+
+
+def test_boundary_recovery_suggests_names_that_the_receiver_accepts() -> None:
+    """Subtracting the receiver's names produces precisely the wrong recovery advice."""
+    from polylogue.archive.query.fields import query_boundary_alternatives, query_boundary_names
+    from polylogue.mcp.query_contracts import build_query_spec
+
+    alternatives = query_boundary_alternatives("has_paste", "mcp")
+    assert alternatives == ("has_paste_evidence",)
+    assert build_query_spec(**{alternatives[0]: True}).filter_has_paste is True
+    for spelling in ("origins", "repo_names", "tags"):
+        names = query_boundary_alternatives(spelling, "dsl")
+        assert names
+        assert set(names) <= query_boundary_names("dsl")
+
+
+def test_api_named_fields_declare_the_api_projection() -> None:
+    """Removing API projection registration must fail even when MCP still works."""
+    fields = [descriptor for descriptor in QUERY_FIELD_DESCRIPTORS if descriptor.api_names]
+    assert fields
+    assert all("api" in descriptor.projections for descriptor in fields)

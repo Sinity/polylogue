@@ -6495,3 +6495,22 @@ class TestDaemonSessionIdFilter:
         assert isinstance(payload, dict)
         hits = payload.get("hits")
         assert isinstance(hits, list) and len(hits) == 1
+
+
+@pytest.mark.parametrize("projection", ["fields role", "select role"])
+@pytest.mark.parametrize("aggregate", ["count", "agg count", "group by role | count"])
+@pytest.mark.parametrize("projection_first", [False, True])
+def test_unit_projection_cannot_be_silently_ignored_by_aggregate(
+    projection: str, aggregate: str, projection_first: bool
+) -> None:
+    """Without the stage compatibility check this parses but execution drops the projection."""
+    stages = [projection, aggregate] if projection_first else [aggregate, projection]
+    with pytest.raises(ExpressionCompileError) as error:
+        parse_unit_source_expression("messages where role:assistant | " + " | ".join(stages))
+    assert error.value.field == "fields"
+
+
+def test_unit_row_projection_remains_executable() -> None:
+    parsed = parse_unit_source_expression("messages where role:assistant | fields role")
+    assert parsed is not None
+    assert parsed.selected_fields == ("role",)

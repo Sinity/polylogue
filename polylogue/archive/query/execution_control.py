@@ -758,7 +758,15 @@ async def execute_archive_read(
                 _release()
             raise
 
+    def _observe_worker(completed: asyncio.Task[T]) -> None:
+        # A disconnect may stop waiting before the worker finishes. Retrieve
+        # its eventual exception even then; executor completion still owns
+        # admission release, independently of this observation callback.
+        if not completed.cancelled():
+            completed.exception()
+
     worker = asyncio.create_task(_admitted_submission())
+    worker.add_done_callback(_observe_worker)
     try:
         result = await asyncio.shield(worker)
     except asyncio.CancelledError:

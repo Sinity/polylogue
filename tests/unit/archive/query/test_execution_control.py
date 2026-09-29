@@ -1099,3 +1099,57 @@ def test_exact_session_multi_aggregate_work_is_not_amplified_by_irrelevant_growt
     assert bounded_ctx.receipt.cleanup_complete is True
     assert bounded_ctx.receipt.sqlite_vm_steps_lower_bound < 50_000
     assert mutant_ctx.receipt.sqlite_vm_steps_lower_bound >= 50_000
+
+
+async def test_detached_failure_is_observed_after_disconnect_drain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Deleting the worker observer reports an unhandled exception after the drain ends."""
+    import gc
+
+    import polylogue.archive.query.execution_control as execution_control
+
+    monkeypatch.setattr(execution_control, "DISCONNECT_DRAIN_TIMEOUT_S", 0.01)
+    root = _bootstrap_archive(tmp_path)
+    controller = QueryAdmissionController(capacity=1, reserved_interactive=0)
+    entered = threading.Event()
+    release = threading.Event()
+    finished = asyncio.Event()
+    ctx = QueryExecutionContext.create(query_text="detached-fixture", timeout_s=None)
+    loop = asyncio.get_running_loop()
+    unhandled: list[dict[str, object]] = []
+    previous_handler = loop.get_exception_handler()
+    create_task = asyncio.create_task
+
+    def track_task(coro, **kwargs):
+        task = create_task(coro, **kwargs)
+        if coro.cr_code.co_name == "_admitted_submission":
+            task.add_done_callback(lambda _task: finished.set())
+        return task
+
+    monkeypatch.setattr(asyncio, "create_task", track_task)
+
+    def work(_store: ArchiveStore) -> int:
+        entered.set()
+        assert release.wait(timeout=5)
+        raise RuntimeError("synthetic detached failure")
+
+    loop.set_exception_handler(lambda _loop, context: unhandled.append(context))
+    caller = asyncio.create_task(execute_archive_read(root, work, ctx=ctx, controller=controller))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        assert ctx.receipt.state == "disconnected"
+        assert controller.in_flight_weight == 1
+        release.set()
+        await asyncio.wait_for(finished.wait(), timeout=2)
+        await asyncio.sleep(0)
+        gc.collect()
+        await asyncio.sleep(0)
+        assert controller.in_flight_weight == 0
+        assert unhandled == []
+    finally:
+        release.set()
+        loop.set_exception_handler(previous_handler)
