@@ -146,3 +146,46 @@ def test_prepared_cohort_rejects_conflicting_session_identity(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match="provider-native session identity"):
         prepare_retained_cohort_artifact(ordered, tmp_path)
+
+
+def test_prepared_cohort_leaf_is_not_a_revision_storage_default(tmp_path: Path) -> None:
+    """The merge chooses the cohort's leaf, so a revision's storage-default
+    marker must not ride along and veto the path the cohort leaf implies.
+
+    Anti-vacuity: copying the revision's ``active_leaf_fallback`` onto the
+    cohort's last message makes the lowering treat the merge's leaf as a
+    storage default and leave both explicit ``False`` paths unset.
+    """
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="same",
+        messages=[ParsedMessage(provider_message_id="m0", role=Role.USER, text="first", is_active_path=False)],
+    )
+    second = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="same",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                parent_message_provider_id="m0",
+                role=Role.ASSISTANT,
+                text="second",
+                is_active_path=False,
+                is_active_leaf=True,
+                active_leaf_fallback=True,
+            )
+        ],
+    )
+    ordered = [
+        ("raw-0", _chunk_artifact(tmp_path / "first", first, "c" * 64)),
+        ("raw-1", _chunk_artifact(tmp_path / "second", second, "d" * 64)),
+    ]
+
+    aggregate = prepare_retained_cohort_artifact(ordered, tmp_path)
+    messages = list(next(iter(aggregate.iter_sessions())).messages)
+
+    assert [(message.is_active_leaf, message.active_leaf_fallback) for message in messages] == [
+        (False, False),
+        (True, False),
+    ]
+    assert [message.is_active_path for message in messages] == [True, True]

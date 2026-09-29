@@ -116,7 +116,13 @@ def _merge_into_store(
     for _, artifact in ordered:
         session = _single_prepared_session(artifact)
         for message in session.messages:
-            messages.append(message.model_copy(update={"position": len(messages), "is_active_leaf": False}))
+            # The merge chooses the cohort's leaf below; a revision's own
+            # storage-default leaf marker does not survive into the cohort.
+            messages.append(
+                message.model_copy(
+                    update={"position": len(messages), "is_active_leaf": False, "active_leaf_fallback": False}
+                )
+            )
         for event in session.session_events:
             if merged.source_name is Provider.CLAUDE_CODE and event.event_type in claude_summaries:
                 seen.add(event.event_type)
