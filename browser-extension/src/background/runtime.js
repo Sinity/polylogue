@@ -833,7 +833,9 @@ async function clearRetryAlarm() {
 
 function isRetryableCaptureError(error) {
   if (!error) return false;
-  if (typeof error.status === "number") return error.status >= 500 || error.status === 429;
+  // 408: the receiver cancelled an upload that stopped sending, releasing the
+  // disk space it had reserved; the capture itself was never refused.
+  if (typeof error.status === "number") return error.status >= 500 || error.status === 429 || error.status === 408;
   // No HTTP status means fetch itself rejected (offline, DNS failure, refused
   // connection, CORS) rather than the receiver answering with an error body.
   return true;

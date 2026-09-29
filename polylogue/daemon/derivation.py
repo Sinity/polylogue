@@ -615,6 +615,7 @@ class _Pass:
         #: Domains this pass observed holding at least one non-valid key.
         self.unconverged_domains: set[str] = set()
         self.prerequisite_cache: dict[DerivationKey, str | None] = {}
+        self.coarse_domain_cache: dict[str, str | None] = {}
 
     # ── bookkeeping ────────────────────────────────────────────────
 
@@ -771,7 +772,55 @@ class _Pass:
                 return f"prerequisite domain {name!r} could not be inspected"
             if name in self.unconverged_domains:
                 return f"prerequisite domain {name!r} has an unconverged key"
+            if (reason := self.inspect_coarse_domain(name)) is not None:
+                return reason
         return None
+
+    def inspect_coarse_domain(self, name: str) -> str | None:
+        """Establish current required-key validity before using a coarse edge.
+
+        A resumed cursor may leave an earlier refusal behind it, so the
+        in-pass outcome set cannot certify the whole prerequisite domain.
+        Stream every required page and cache the first refusal for this pass.
+        """
+        if name in self.coarse_domain_cache:
+            return self.coarse_domain_cache[name]
+        try:
+            upstream = self.registry.get(name)
+            cursor: str | None = None
+            while True:
+                # The scan is bounded by the pass deadline and counted as
+                # prerequisite work; an exhausted deadline is not cached, so a
+                # later pass resumes the check instead of trusting a partial one.
+                if self.out_of_time():
+                    return f"prerequisite domain {name!r} inspection deadline exhausted"
+                limit = DEFAULT_PAGE
+                if self.budget.inspection is not None:
+                    allowance = self.budget.inspection - self.inspected - self.prerequisites_inspected
+                    if allowance <= 0:
+                        return f"prerequisite domain {name!r} inspection budget exhausted"
+                    limit = min(limit, allowance)
+                page = _as_page(upstream.required_page(self.frame, cursor=cursor, limit=limit))
+                self.pages += 1
+                if len(page.keys) > limit:
+                    raise ValueError(f"prerequisite domain {name!r} exceeded page limit")
+                statuses = _coerce_statuses(dict(upstream.inspect(self.frame, page.keys)))
+                self.prerequisites_inspected += len(page.keys)
+                for key in page.keys:
+                    if statuses.get(key, KeyStatus.MISSING) is not KeyStatus.VALID:
+                        reason = f"prerequisite domain {name!r} has unconverged key {key!r}"
+                        self.coarse_domain_cache[name] = reason
+                        return reason
+                if page.next_cursor is None:
+                    self.coarse_domain_cache[name] = None
+                    return None
+                if page.next_cursor == cursor:
+                    raise ValueError(f"prerequisite domain {name!r} cursor did not advance")
+                cursor = page.next_cursor
+        except Exception as exc:
+            reason = f"prerequisite domain {name!r} could not be inspected: {exc}"
+            self.coarse_domain_cache[name] = reason
+            return reason
 
     def binding_block(self, binding: DerivationKey) -> str | None:
         if binding.domain in self.unreadable_domains:
@@ -833,7 +882,9 @@ class _Pass:
         derivation_key = DerivationKey(adapter.domain, key)
         expected = KeyStatus.MISSING if retiring else KeyStatus.VALID
 
-        blocked = self.prerequisite_block(adapter, key)
+        # Retiring an excess key removes an output nothing requires; it reads no
+        # upstream inputs, so it is never gated on (or scans for) prerequisites.
+        blocked = None if retiring else self.prerequisite_block(adapter, key)
         if blocked is not None:
             self.record(
                 KeyOutcome(key=derivation_key, outcome=Outcome.PENDING, reason=PendingReason.BLOCKED, error=blocked)

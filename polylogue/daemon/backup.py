@@ -32,6 +32,7 @@ from polylogue.core.content_identity import ContentIdentityRefusal, payload_cont
 from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import SchemaSkew
+from polylogue.core.raw_coordinates import split_zip_member_text
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.write_lease import require_write_lease, write_lease
 from polylogue.daemon.cli import checkpoint_connection, open_isolated_write_connection
@@ -708,18 +709,40 @@ def _blob_reference_evidence(
     }
 
 
-def _resolved_source_path(source_path: str, root: Path, *, container: bool = False) -> str:
-    """Resolve an acquisition path against the archive root in force."""
-    outer, separator, member = source_path.partition(":") if container else (source_path, "", "")
-    path = Path(outer)
+def _relocated(path: Path, root: Path) -> Path:
+    """The same acquisition path under the archive root in force, when it exists there."""
     parts = path.parts
     for directory in ("inbox", "browser-capture", "hooks"):
         if directory in parts:
             candidate = root.joinpath(*parts[parts.index(directory) :])
             if candidate.exists():
-                path = candidate
-                break
-    return f"{path}:{member}" if separator else str(path)
+                return candidate
+    return path
+
+
+def _live_zip_split(source_path: str, root: Path) -> tuple[str, str] | None:
+    """Split ``<container>:<member>`` at a prefix that is a real ZIP here.
+
+    The container path may itself hold colons (a Windows drive, a legal POSIX
+    filename), so every colon is tried, shortest container first.
+    """
+    start = 0
+    while (separator_at := source_path.find(":", start)) != -1:
+        start = separator_at + 1
+        if separator_at == 0 or separator_at == len(source_path) - 1:
+            continue
+        candidate = _relocated(Path(source_path[:separator_at]), root)
+        if candidate.is_file() and zipfile.is_zipfile(candidate):
+            return source_path[:separator_at], source_path[start:]
+    return None
+
+
+def _resolved_source_path(source_path: str, root: Path, *, container: bool = False) -> str:
+    """Resolve an acquisition path against the archive root in force."""
+    split = (_live_zip_split(source_path, root) or split_zip_member_text(source_path)) if container else None
+    outer, member = split if split is not None else (source_path, None)
+    path = _relocated(Path(outer), root)
+    return f"{path}:{member}" if member is not None else str(path)
 
 
 def _is_recorded_container(row: Mapping[str, object], root: Path) -> bool:
@@ -731,16 +754,7 @@ def _is_recorded_container(row: Mapping[str, object], root: Path) -> bool:
     ):
         return True
     source_path = row.get("source_path")
-    if not isinstance(source_path, str) or ":" not in source_path:
-        return False
-    outer, _separator, _member = source_path.partition(":")
-    candidate = Path(outer)
-    parts = candidate.parts
-    for directory in ("inbox", "browser-capture", "hooks"):
-        if directory in parts:
-            candidate = root.joinpath(*parts[parts.index(directory) :])
-            break
-    return candidate.is_file() and zipfile.is_zipfile(candidate)
+    return isinstance(source_path, str) and _live_zip_split(source_path, root) is not None
 
 
 def _append_segment_payload(path: str, start: int, end: int) -> tuple[bytes | None, str | None]:

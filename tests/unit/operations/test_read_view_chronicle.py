@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import cast
+from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
@@ -11,6 +11,19 @@ from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.core.enums import Origin
 from polylogue.operations.read_view_chronicle import _chronicle_edges, execute_chronicle_read
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+from tests.infra.builders import make_conv, make_msg
+
+
+def _serving(rows: list[Any]) -> Any:
+    """A fake candidate fetch that streams to ``on_batch`` as the real one does."""
+
+    def fetch(*_args: object, on_batch: Any = None, **_kwargs: object) -> list[Any]:
+        if on_batch is None:
+            return rows
+        on_batch(rows)
+        return []
+
+    return fetch
 
 
 def test_chronicle_edges_reads_composed_pages_and_counts_only_authored_dialogue(
@@ -101,7 +114,7 @@ def test_chronicle_operation_applies_exclude_text_before_offset_and_limit(monkey
         "codex-session:3": "keep third",
     }
     archive = Mock(archive_root="/tmp/archive")
-    monkeypatch.setattr(archive_execution, "_archive_summaries", lambda *args, **kwargs: rows)
+    monkeypatch.setattr(archive_execution, "_archive_summaries", _serving(rows))
     monkeypatch.setattr(read_view_chronicle, "archive_summary_to_domain", lambda row: summaries[row.session_id])
     monkeypatch.setattr(
         "polylogue.archive.hydration.archive_envelope_to_session",
@@ -127,3 +140,173 @@ def test_chronicle_operation_applies_exclude_text_before_offset_and_limit(monkey
     assert isinstance(sessions, list)
     assert sessions[0]["session_id"] == "codex-session:3"
     assert archive.read_session.call_count == 3
+
+
+def test_ranked_chronicle_count_sort_keeps_the_requested_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P1, #5695): clear the window for a ranked count sort
+    and the semantic pool falls back to its default size, so ``offset=150``
+    removes every candidate even when more matches exist."""
+    import polylogue.archive.query.archive_execution as archive_execution
+    from polylogue.archive.query.plan import SessionQueryPlan
+
+    fetched: list[tuple[SessionQueryPlan, object]] = []
+
+    def capture(plan: SessionQueryPlan, *_args: object, **kwargs: object) -> list[object]:
+        fetched.append((plan, kwargs.get("complete")))
+        return []
+
+    monkeypatch.setattr(archive_execution, "_archive_summaries", capture)
+    execute_chronicle_read(
+        {"params": {"similar_text": "neutral probe", "sort": "messages", "offset": 150, "limit": 1}},
+        archive=Mock(archive_root="/tmp/archive"),
+        vector_provider=None,
+    )
+
+    ((plan, complete),) = fetched
+    assert complete is False
+    assert plan.offset == 150
+    assert plan.limit == 1
+
+
+@pytest.mark.parametrize(
+    ("params", "scan"),
+    [
+        ({"sort": "messages"}, True),
+        ({"sort": "tokens", "limit": 1}, True),
+        ({"sort": "date"}, False),
+        ({"sort": "messages", "similar_text": "neutral probe"}, False),
+    ],
+)
+def test_a_complete_chronicle_count_sort_is_admitted_as_scan_work(params: dict[str, object], scan: bool) -> None:
+    """Anti-vacuity (Codex P2, #5695): classify ``read.chronicle`` by its spec
+    alone and a count-sorted page that hydrates every candidate runs under the
+    interactive-read class and its two-second deadline."""
+    from polylogue.operations.daemon_reads import read_is_archive_scan
+
+    assert read_is_archive_scan("read.chronicle", {"params": params}) is scan
+    assert read_is_archive_scan("cli.query", {"params": params}) is False
+
+
+def test_a_chronicle_count_sort_hydrates_each_candidate_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A count-sorted chronicle page reads every candidate once, not twice.
+
+    Anti-vacuity (Codex P2, #5695): hydrate for the content filters and then
+    again for the composed order and ``read_session`` runs twice per session.
+    """
+    import polylogue.archive.query.archive_execution as archive_execution
+    import polylogue.operations.read_view_chronicle as read_view_chronicle
+
+    rows = [
+        SimpleNamespace(session_id=f"codex-session:{index}", display_label=None, display_label_source=None)
+        for index in range(5)
+    ]
+    summaries = {
+        row.session_id: SessionSummary(
+            id=row.session_id,
+            origin=Origin.from_string("codex-session"),
+            updated_at=datetime(2026, 1, index + 1, tzinfo=timezone.utc),
+        )
+        for index, row in enumerate(rows)
+    }
+    archive = Mock(archive_root="/tmp/archive")
+    monkeypatch.setattr(archive_execution, "_archive_summaries", _serving(rows))
+    monkeypatch.setattr(read_view_chronicle, "archive_summary_to_domain", lambda row: summaries[row.session_id])
+    monkeypatch.setattr(
+        "polylogue.archive.hydration.archive_envelope_to_session",
+        lambda envelope, **kwargs: make_conv(
+            id=envelope.session_id,
+            messages=[make_msg(id=f"m{i}", text="x") for i in range(int(envelope.session_id.rsplit(":", 1)[1]) + 1)],
+        ),
+    )
+    monkeypatch.setattr(read_view_chronicle, "_chronicle_edges", lambda *args, **kwargs: ([], [], 0))
+    archive.read_session.side_effect = lambda session_id: SimpleNamespace(session_id=session_id)
+
+    result = execute_chronicle_read({"params": {"sort": "messages", "limit": 1}}, archive=archive, vector_provider=None)
+
+    body = result["payload"]
+    assert isinstance(body, dict)
+    sessions = body["sessions"]
+    assert isinstance(sessions, list)
+    assert sessions[0]["session_id"] == "codex-session:4"
+    assert archive.read_session.call_count == len(rows)
+
+
+def test_a_sampled_chronicle_count_sort_samples_every_candidate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sampled count-sorted chronicle draws from every qualified session.
+
+    Anti-vacuity (Codex P2, #5695): keep only the top ``offset + limit`` before
+    sampling and the sample can only ever return the single largest session.
+    """
+    import polylogue.archive.query.archive_execution as archive_execution
+    import polylogue.operations.read_view_chronicle as read_view_chronicle
+    from polylogue.archive.query.plan import SessionQueryPlan
+
+    rows = [
+        SimpleNamespace(session_id=f"codex-session:{index}", display_label=None, display_label_source=None)
+        for index in range(5)
+    ]
+    summaries = {
+        row.session_id: SessionSummary(
+            id=row.session_id,
+            origin=Origin.from_string("codex-session"),
+            updated_at=datetime(2026, 1, index + 1, tzinfo=timezone.utc),
+        )
+        for index, row in enumerate(rows)
+    }
+    archive = Mock(archive_root="/tmp/archive")
+    monkeypatch.setattr(archive_execution, "_archive_summaries", _serving(rows))
+    monkeypatch.setattr(read_view_chronicle, "archive_summary_to_domain", lambda row: summaries[row.session_id])
+    monkeypatch.setattr(
+        "polylogue.archive.hydration.archive_envelope_to_session",
+        lambda envelope, **kwargs: make_conv(
+            id=envelope.session_id,
+            messages=[make_msg(id=f"m{i}", text="x") for i in range(int(envelope.session_id.rsplit(":", 1)[1]) + 1)],
+        ),
+    )
+    monkeypatch.setattr(read_view_chronicle, "_chronicle_edges", lambda *args, **kwargs: ([], [], 0))
+    archive.read_session.side_effect = lambda session_id: SimpleNamespace(session_id=session_id)
+    offered: list[int] = []
+    original = SessionQueryPlan._finalize
+
+    def finalize(self: SessionQueryPlan, items: list[Any]) -> list[Any]:
+        offered.append(len(items))
+        return original(self, items)
+
+    monkeypatch.setattr(SessionQueryPlan, "_finalize", finalize)
+
+    execute_chronicle_read(
+        {"params": {"sort": "messages", "limit": 1, "sample": 1}}, archive=archive, vector_provider=None
+    )
+
+    # A reservoir of the sample's size: only one hydrated session is held.
+    assert offered == [1]
+
+
+def test_a_null_chronicle_limit_is_the_default_page() -> None:
+    """``limit: null`` compiles to the five-session default, not an unbounded scan.
+
+    Anti-vacuity (Codex P2, #5695): leave the null in place and the plan has
+    ``limit=None``.
+    """
+    from polylogue.operations.read_view_chronicle import _chronicle_plan
+
+    plan = _chronicle_plan({"params": {"sort": "messages", "limit": None}}, vector_provider=None)
+
+    assert plan.limit == 5
+
+
+def test_clients_send_the_scan_deadline_for_a_scan_shaped_chronicle() -> None:
+    """The client-side deadline follows the request's shape, as the runtime's does.
+
+    Anti-vacuity (Codex P2, #5695): fill an omitted deadline from the spec
+    alone and a count-sorted chronicle still carries two seconds, so the
+    runtime's scan deadline never takes effect.
+    """
+    from polylogue.cli.operation_kernel import OperationRequest, _declared_deadline_s
+    from polylogue.daemon_client import _request_deadline_s
+    from polylogue.operations.daemon_reads import READ_SCAN_DEADLINE_S
+
+    scan = {"params": {"sort": "messages"}}
+    assert _request_deadline_s("read.chronicle", scan) == READ_SCAN_DEADLINE_S
+    assert _declared_deadline_s(OperationRequest("read.chronicle", scan)) == READ_SCAN_DEADLINE_S
+    assert _request_deadline_s("read.chronicle", {"params": {"sort": "date"}}) == 2.0

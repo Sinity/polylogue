@@ -344,13 +344,15 @@ def test_child_first_mutual_parent_pair_quarantines_the_closing_edge(tmp_path: P
     assert census["quarantined_with_stale_projection_count"] == 0
 
 
-def test_over_budget_acyclic_walk_is_not_recorded_as_a_cycle_and_keeps_prefix(tmp_path: Path) -> None:
-    """The live writer must distinguish an indeterminate deep walk from a cycle.
+def test_a_walk_stopped_by_a_foreign_loop_is_not_recorded_as_a_cycle_and_keeps_prefix(tmp_path: Path) -> None:
+    """The live writer must distinguish an indeterminate walk from a cycle.
 
-    Production dependencies: pre-slice cycle classification, outbound link
-    quarantine, and the synchronous composed reader. Mutation: returning a
-    cycle path at the walk budget records `cycle_rejected`; treating exhaustion
-    as acyclic slices the copied parent prefix and serves only the tail.
+    The parent chain above the proposed parent loops without passing through
+    the child, which no guarded route produces. Production dependencies:
+    pre-slice cycle classification, outbound link quarantine, and the
+    synchronous composed reader. Mutation: returning a cycle path at the loop
+    records `cycle_rejected`; treating it as acyclic slices the copied parent
+    prefix and serves only the tail; dropping the visited set never returns.
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
@@ -379,6 +381,11 @@ def test_over_budget_acyclic_walk_is_not_recorded_as_a_cycle_and_keeps_prefix(tm
             """,
             (native_id, parent_session_id, bytes(32)),
         )
+    # deep-1024 points back at deep-512: a loop not through the child.
+    conn.execute(
+        "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
+        ("codex-session:deep-512", "codex-session:deep-1024"),
+    )
     conn.execute(
         "UPDATE sessions SET parent_session_id = ? WHERE session_id = ?",
         ("codex-session:deep-1", parent_id),
@@ -401,8 +408,8 @@ def test_over_budget_acyclic_walk_is_not_recorded_as_a_cycle_and_keeps_prefix(tm
     assert link["status"] == TopologyEdgeStatus.QUARANTINED.value
     assert evidence["reason"] == "cycle_walk_budget_exhausted"
     assert "cycle_path" not in evidence
-    assert evidence["walk_budget"] == 1024
-    assert len(evidence["walk_path"]) == 1026
+    assert evidence["walk_budget"] == len(evidence["walk_path"]) - 2
+    assert evidence["walk_path"][-1] == "codex-session:deep-1024"
     own_message_ids = [
         str(row[0])
         for row in conn.execute(

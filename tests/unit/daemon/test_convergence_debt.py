@@ -176,22 +176,17 @@ def _composed_texts(root: Path, session_id: str) -> list[str | None]:
         return [message.blocks[0].text if message.blocks else None for message in envelope.messages]
 
 
-def test_stranded_branch_point_debt_recomposes_the_child_from_its_raw(tmp_path: Path) -> None:
-    """polylogue-gy2yu end to end: a shortened parent re-acquisition strands a
-    child, and the drain restores the child's complete composed transcript.
+def test_parent_rewrite_on_the_replay_route_never_strands_a_child(tmp_path: Path) -> None:
+    """polylogue-gy2yu on a replayed archive: a parent re-parse that rewrites
+    the child's branch-point message leaves the child whole in the same write.
 
-    The child's own raw physically replays the parent's prefix, so the message
-    the parent dropped is still retained evidence. Replaying the child aligns it
-    against the parent's *current* transcript and keeps the dropped message as
-    child-owned content.
+    The child's inherited prefix is evidence from its own bytes, so the write
+    materializes it into the child instead of recording a lineage debt for a
+    later re-derivation.
 
-    Anti-vacuity: drop ``anchored_stranded_ids`` from the writer's residual (no
-    debt is recorded, so the drain does nothing and the child stays truncated),
-    or skip the replay in ``recompose_session_prefix`` (the row survives and the
-    composed read stays short). Either reds the final assertions.
+    Anti-vacuity: skip ``_settle_inherited_prefixes`` in the writer and the
+    child composes short while no debt names it.
     """
-    from polylogue.daemon import cli as daemon_cli
-
     root = tmp_path / "archive"
     seed_lineage_graph(
         root,
@@ -206,11 +201,9 @@ def test_stranded_branch_point_debt_recomposes_the_child_from_its_raw(tmp_path: 
     backfill_historical_revision_evidence(root)
     complete = ["s00-tail-0", "s00-tail-1", "s00-tail-2", "s01-tail-0", "s01-tail-1"]
     assert _composed_texts(root, CHILD) == complete
-    assert _debt(root) == []
 
     # The parent is re-acquired with the message the child branched after
-    # rewritten under a new native id, so the child's branch point names a row
-    # the replacement transcript no longer has.
+    # rewritten under a new native id.
     rewritten = codex_lineage_payload("s00", ["s00-tail-0", "s00-tail-1", "s00-tail-2-rewritten"])
     rewritten = rewritten.replace(b'"id":"m2"', b'"id":"m2-rewritten"')
     (parent_session,) = parse_payload(
@@ -218,12 +211,6 @@ def test_stranded_branch_point_debt_recomposes_the_child_from_its_raw(tmp_path: 
     )
     _write(root, parent_session)
     assert _composed_texts(root, PARENT) == ["s00-tail-0", "s00-tail-1", "s00-tail-2-rewritten"]
-    assert _composed_texts(root, CHILD) != complete, "the fixture must strand the child"
-    assert [(row["stage"], row["target_id"]) for row in _debt(root)] == [("lineage_prefix_recompose", CHILD)]
-
-    _make_retry_due(root)
-    assert daemon_cli._drain_convergence_debt_once(root / "index.db") == 1
-
     assert _composed_texts(root, CHILD) == complete
     assert _debt(root) == []
 

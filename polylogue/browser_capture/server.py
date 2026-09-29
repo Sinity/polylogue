@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import hmac
 import json
 import re
@@ -34,6 +33,16 @@ from polylogue.browser_capture.actions import (
     update_action,
 )
 from polylogue.browser_capture.capture_jobs import CaptureJobError, registry_for_receiver
+from polylogue.browser_capture.capture_stream import (
+    CaptureBodyIncompleteError,
+    CaptureEnvelopeError,
+    SpoolStorageExhaustedError,
+    StagedCapture,
+    is_storage_exhausted,
+    reap_stale_staging,
+    stage_capture_body,
+    summarize_capture_file,
+)
 from polylogue.browser_capture.models import (
     BROWSER_CAPTURE_EXTENSION_ORIGIN_WILDCARD,
     BrowserActionApprovalDecisionRequest,
@@ -48,7 +57,6 @@ from polylogue.browser_capture.models import (
     BrowserBackfillCheckpointRequest,
     BrowserCaptureAcceptedPayload,
     BrowserCaptureCapabilitiesPayload,
-    BrowserCaptureEnvelope,
     BrowserCaptureErrorPayload,
     BrowserCaptureHealthEventAcceptedPayload,
     BrowserCaptureHealthEventRequest,
@@ -67,17 +75,17 @@ from polylogue.browser_capture.receiver import (
     BrowserCaptureReceiverConfig,
     BrowserCaptureSpoolConflictError,
     SpoolQuotaExceededError,
+    admit_staged_capture,
     capture_response_id,
     existing_capture_state,
     read_backfill_checkpoint,
     receiver_identity,
     receiver_status_payload,
     write_backfill_checkpoint,
-    write_capture_envelope_bytes,
 )
 from polylogue.core.json import dumps_bytes
 from polylogue.core.loopback import is_loopback_host
-from polylogue.logging import get_logger
+from polylogue.logging import INFO, WARNING, emit, get_logger
 from polylogue.paths import archive_root as default_archive_root
 
 # polylogue.daemon.events is imported lazily inside the capture-health route
@@ -89,10 +97,19 @@ CAPTURE_HEALTH_EVENT_KIND = "browser_capture_health"
 
 logger = get_logger(__name__)
 
-MAX_BROWSER_CAPTURE_BODY_BYTES = 128 * 1024 * 1024
+#: Bound on a JSON control message (browser-action requests, checkpoints,
+#: pairing, health reports, assertion candidates), which is parsed in memory.
+#: Captures never pass through it: ``POST /v1/browser-captures`` streams its
+#: body into the spool whatever its size.
+MAX_CONTROL_BODY_BYTES = 128 * 1024 * 1024
+#: Seconds a capture upload may go without delivering a byte. Its declared
+#: length is already reserved on disk, so a stalled client is cancelled rather
+#: than left holding that space. Pacing, not a size bound.
+CAPTURE_BODY_IDLE_TIMEOUT_S = 60.0
+_CONTENT_LENGTH = re.compile(r"[0-9]+")
 # Capture-job requests are control messages -- job descriptors, leases, event
-# envelopes, checkpoints -- never capture content, so they must not inherit the
-# 128 MiB cap sized for capture envelopes. 1 MiB leaves ample headroom over the
+# envelopes, checkpoints -- never capture content, so they need far less than
+# the general control bound. 1 MiB leaves ample headroom over the
 # registry's own per-event cap (CAPTURE_JOB_EVENT_MAX_BYTES, 64 KiB) plus the
 # surrounding request fields, and bounds the bytes the receiver reads and
 # json.loads-es before any registry validation runs.
@@ -202,6 +219,11 @@ class BrowserCaptureHTTPServer(ThreadingHTTPServer):
 
     def __init__(self, server_address: tuple[str, int], config: BrowserCaptureReceiverConfig) -> None:
         self.config = config
+        # Staging files left by a receiver that died mid-upload are invisible
+        # to the spool quota; reclaim them before accepting new uploads.
+        reaped = reap_stale_staging(config.spool_path)
+        if reaped:
+            emit("browser_capture.stale_staging_reaped", level=INFO, reclaimed=reaped)
         super().__init__(server_address, BrowserCaptureHandler)
 
 
@@ -219,7 +241,6 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
     server: BrowserCaptureHTTPServer
     _polylogue_request_id: str
     _polylogue_status: int | None
-    _request_body_bytes: bytes
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -550,26 +571,107 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         self._observe_request("POST", self._do_post)
 
-    def _read_json_body(self, *, max_bytes: int = MAX_BROWSER_CAPTURE_BODY_BYTES) -> object | None:
-        """Read and parse a JSON request body, sending an error and returning None on failure."""
-        try:
-            length = int(self.headers.get("Content-Length", "0"))
-        except ValueError:
+    def _content_length(self) -> int | None:
+        """Return a positive declared body length, or send the error and return None."""
+        declared = self.headers.get("Content-Length", "0").strip()
+        # ``Content-Length = 1*DIGIT``; ``int`` would also take a sign,
+        # ``_`` separators and non-ASCII digits.
+        if not _CONTENT_LENGTH.fullmatch(declared):
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_content_length")
             return None
-        if length <= 0 or length > max_bytes:
+        length = int(declared)
+        if length <= 0:
+            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_body_size")
+            return None
+        return length
+
+    def _read_json_body(self, *, max_bytes: int = MAX_CONTROL_BODY_BYTES) -> object | None:
+        """Read and parse a JSON control message, sending an error and returning None on failure."""
+        length = self._content_length()
+        if length is None:
+            return None
+        if length > max_bytes:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_body_size")
             return None
         raw = self.rfile.read(length)
-        self._request_body_bytes = raw
         try:
             parsed: object = json.loads(raw)
         except json.JSONDecodeError:
             logger.warning("browser_capture.invalid_json", request_id=self._request_id())
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_json")
             return None
-        self._request_content_hash = hashlib.sha256(raw).hexdigest()
         return parsed
+
+    def _stage_capture_body(self) -> StagedCapture | None:
+        """Stream the capture body into the spool's staging area.
+
+        No size refusal: the body is copied chunk by chunk while hashed, so
+        the receiver never holds it. Its declared length is reserved on disk
+        first; a spool filesystem that cannot hold it is retryable pressure
+        (507), not a refusal of the capture.
+        """
+        length = self._content_length()
+        if length is None:
+            return None
+        # The declared length is reserved before the first read, so a client
+        # that stops sending must not hold it: every socket read gets an idle
+        # deadline, and a stalled upload is cancelled and its space released.
+        previous_timeout = self.connection.gettimeout()
+        self.connection.settimeout(CAPTURE_BODY_IDLE_TIMEOUT_S)
+        try:
+            return stage_capture_body(self.rfile.read, length, spool_root=self.server.config.spool_path)
+        except TimeoutError:
+            emit(
+                "browser_capture.upload_stalled",
+                level=WARNING,
+                reason="upload_stalled",
+                request_id=self._request_id(),
+                bytes=length,
+                timeout_ms=int(CAPTURE_BODY_IDLE_TIMEOUT_S * 1000),
+            )
+            self._safe_error(HTTPStatus.REQUEST_TIMEOUT, "upload_stalled")
+            return None
+        except CaptureBodyIncompleteError:
+            emit(
+                "browser_capture.incomplete_body",
+                level=WARNING,
+                reason="incomplete_body",
+                request_id=self._request_id(),
+            )
+            self._safe_error(HTTPStatus.BAD_REQUEST, "incomplete_body")
+            return None
+        except SpoolStorageExhaustedError as exc:
+            emit(
+                "browser_capture.spool_storage_exhausted",
+                level=WARNING,
+                reason="spool_storage_exhausted",
+                request_id=self._request_id(),
+                bytes=exc.requested_bytes,
+            )
+            self._safe_error(HTTPStatus.INSUFFICIENT_STORAGE, "spool_storage_exhausted")
+            return None
+        except OSError as exc:
+            if is_storage_exhausted(exc):
+                emit(
+                    "browser_capture.spool_storage_exhausted",
+                    level=WARNING,
+                    reason="spool_storage_exhausted",
+                    request_id=self._request_id(),
+                )
+                self._safe_error(HTTPStatus.INSUFFICIENT_STORAGE, "spool_storage_exhausted")
+                return None
+            emit(
+                "browser_capture.write_failed",
+                level=WARNING,
+                reason="write_failed",
+                request_id=self._request_id(),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+            return None
+        finally:
+            self.connection.settimeout(previous_timeout)
 
     def _do_post(self) -> None:
         if self._reject_origin():
@@ -617,24 +719,38 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         if path != "/v1/browser-captures":
             self._safe_error(HTTPStatus.NOT_FOUND, "not_found")
             return
-        payload = self._read_json_body()
-        if payload is None:
+        staged = self._stage_capture_body()
+        if staged is None:
             return
         try:
-            envelope = BrowserCaptureEnvelope.model_validate(payload)
-        except ValidationError:
-            logger.warning("browser_capture.invalid_payload", request_id=self._request_id())
-            self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_payload")
+            self._admit_capture(staged)
+        finally:
+            staged.discard()
+
+    def _admit_capture(self, staged: StagedCapture) -> None:
+        try:
+            summary = summarize_capture_file(staged.path)
+        except CaptureEnvelopeError as exc:
+            emit("browser_capture.invalid_envelope", level=WARNING, reason=exc.reason, request_id=self._request_id())
+            self._safe_error(HTTPStatus.BAD_REQUEST, exc.reason)
             return
-        if envelope.provenance.extension_instance_id is None:
+        except OSError as exc:
+            emit(
+                "browser_capture.write_failed",
+                level=WARNING,
+                reason="write_failed",
+                request_id=self._request_id(),
+                error_type=type(exc).__name__,
+                error_detail=str(exc),
+            )
+            self._safe_error(HTTPStatus.INTERNAL_SERVER_ERROR, "write_failed")
+            return
+        if summary.head.provenance.extension_instance_id is None:
             logger.warning("browser_capture.missing_instance_id", request_id=self._request_id())
             self._safe_error(HTTPStatus.BAD_REQUEST, "missing_extension_instance_id")
             return
         try:
-            result = write_capture_envelope_bytes(
-                self._request_body_bytes,
-                spool_path=self.server.config.spool_path,
-            )
+            result = admit_staged_capture(staged, summary, spool_path=self.server.config.spool_path)
         except SpoolQuotaExceededError as exc:
             logger.warning("browser_capture.spool_quota_exceeded", request_id=self._request_id(), error=str(exc))
             self._safe_error(HTTPStatus.TOO_MANY_REQUESTS, "spool_quota_exceeded")
@@ -661,11 +777,11 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         self._send_json(
             HTTPStatus.ACCEPTED,
             BrowserCaptureAcceptedPayload(
-                capture_id=capture_response_id(result.provider, result.provider_session_id, envelope.capture_id),
+                capture_id=capture_response_id(result.provider, result.provider_session_id, summary.capture_id),
                 provider=result.provider,
                 provider_session_id=result.provider_session_id,
                 artifact_ref=result.artifact_ref,
-                content_hash=self._request_content_hash,
+                content_hash=staged.sha256,
                 dedup_content_hash=result.dedup_content_hash,
                 bytes_written=result.bytes_written,
                 replaced=result.replaced,

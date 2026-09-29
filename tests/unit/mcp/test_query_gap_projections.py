@@ -237,6 +237,24 @@ def _seed_tool_episode_archive(archive_root: Path) -> str:
 
 class TestPersonalStateProjections:
     @pytest.mark.asyncio
+    async def test_empty_personal_state_projection_has_empty_outcome(self, tmp_path: Path) -> None:
+        """A complete empty list is distinguished from unavailable data.
+
+        Anti-vacuity: constructing the list without its outcome returns no
+        terminal state for an empty durable projection.
+        """
+        archive_root = tmp_path / "archive"
+        _seed_archive(archive_root)
+        query_fn = build_tools(MCPCapabilities(write=True))["query"]
+
+        with daemon_served_runtime_services(archive_root):
+            listed = json.loads(await invoke_surface_async(query_fn, projection="marks"))
+
+        assert listed.get("is_error") is not True, listed
+        assert listed["items"] == []
+        assert listed["outcome"]["state"] == "empty"
+
+    @pytest.mark.asyncio
     async def test_marks_round_trip(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"
         session_id = _seed_archive(archive_root)
@@ -254,6 +272,7 @@ class TestPersonalStateProjections:
             listed = json.loads(await invoke_surface_async(query_fn, projection="marks"))
             assert listed.get("is_error") is not True, listed
             assert listed["total"] >= 1
+            assert listed["outcome"]["state"] == "ok"
             assert any(item["mark_type"] == "star" and item["session_id"] == session_id for item in listed["items"])
 
     @pytest.mark.asyncio

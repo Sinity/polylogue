@@ -531,7 +531,13 @@ class TypedReceiptEnvelope:
             and not (self.promoted or self.cited or (self.definition.promoted or self.definition.cited))
         ):
             raise AnalysisContractError("sensitive receipt requires explicit promotion or citation")
-        if (self.promoted or self.cited) and (not self.retention_policy or not self.excision_link):
+        # Any durable promoted/cited receipt needs a forgetting contract, like
+        # DefinitionIdentity above, whatever its privacy class.
+        if (
+            self.durability in {"user", "audit"}
+            and (self.promoted or self.cited or self.definition.promoted or self.definition.cited)
+            and (not self.retention_policy or not self.excision_link)
+        ):
             raise AnalysisContractError("promoted/cited receipt requires retention and excision")
         object.__setattr__(self, "evidence_refs", _refs(self.evidence_refs, field_name="evidence_refs"))
 

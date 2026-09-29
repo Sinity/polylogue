@@ -30,7 +30,7 @@ from polylogue.analysis.claude_workflow_materializer import (
 from polylogue.archive.artifact_taxonomy import classify_artifact_path
 from polylogue.config import Source
 from polylogue.core.enums import Provider
-from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
@@ -61,7 +61,7 @@ async def test_configured_claude_workflow_admission_preserves_raw_revisions_and_
     claude_root, run_path, first_meta_path = _write_fixture(one_shot_workspace_env["data_root"] / ".claude")
     monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
 
-    result = await parse_sources_archive(
+    result = await ingest_one_shot_archive(
         archive_root,
         [Source(name=Provider.CLAUDE_CODE.value, path=claude_root)],
     )
@@ -359,7 +359,7 @@ async def test_claude_workflow_convergence_stage_surfaces_gap_through_readiness(
     claude_root, run_path, first_meta_path = _write_fixture(one_shot_workspace_env["data_root"] / ".claude")
     monkeypatch.setenv("POLYLOGUE_INGEST_PARSE_WORKERS", "1")
 
-    result = await parse_sources_archive(
+    result = await ingest_one_shot_archive(
         archive_root,
         [Source(name=Provider.CLAUDE_CODE.value, path=claude_root)],
     )

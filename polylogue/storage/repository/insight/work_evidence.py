@@ -25,7 +25,7 @@ class RepositoryWorkEvidenceMixin:
     async def get_work_evidence_graph(self, graph_id: str) -> WorkEvidenceGraph | None:
         """Load one complete graph snapshot, e.g. for effect reconciliation."""
 
-        async with self._backend.connection() as conn:
+        async with self._backend.read_connection() as conn:
             return await work_evidence_q.get_work_evidence_graph(conn, graph_id)
 
     async def traverse_work_evidence(

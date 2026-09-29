@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from devtools.pytest_invocation import (
+    ASSERT_PLAIN_ARGS,
     CLEAR_CONFIGURED_ADDOPTS,
     MANAGED_PLUGIN_ARGS,
     REPORT_PLUGIN_ARGS,
@@ -126,6 +127,7 @@ def rerun_failed_once(
         "-p",
         "no:randomly",
         CLEAR_CONFIGURED_ADDOPTS,
+        ASSERT_PLAIN_ARGS,
         *failed,
     ]
     sys.stderr.write(f"\n  rerun {len(failed)} failed test(s) alone ... ")

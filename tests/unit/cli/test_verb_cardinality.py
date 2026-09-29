@@ -12,6 +12,7 @@ All three verbs share the single :func:`check_cardinality` path from
 
 from __future__ import annotations
 
+import json
 from contextlib import AbstractContextManager
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,9 +23,11 @@ import click
 import pytest
 
 from polylogue.cli import query_verbs
+from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
 from polylogue.cli.root_request import RootModeRequest
 from polylogue.cli.select import SelectSessionRow
 from polylogue.cli.verb_cardinality import CardinalityError, check_cardinality
+from tests.infra.daemon_operations import cli_daemon_archive
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -113,7 +116,7 @@ class TestReadVerbCardinality:
     ) -> None:
         cb = self._read_callback()
         cb(  # type: ignore[operator]
-            ctx=child,
+            child,
             view=view,
             destination="terminal",
             output_format=None,
@@ -443,7 +446,9 @@ class TestDeleteVerbCardinality:
             self._call_delete(child, dry_run=True)
 
         mock_probe.assert_called_once()
-        assert mock_probe.call_args.kwargs == {"limit": 2}
+        # The probe reads one past the listed candidates so a refusal can say
+        # whether its candidate list is complete.
+        assert mock_probe.call_args.kwargs == {"limit": AMBIGUITY_CANDIDATE_LIMIT + 1}
         mock_card.assert_not_called()
         mock_exec.assert_called_once()
 
@@ -533,6 +538,38 @@ class TestDeleteVerbCardinality:
         ):
             with pytest.raises(click.UsageError, match="No sessions matched"):
                 self._call_delete(child, yes_flag=True, all_flag=True)
+
+    @pytest.mark.parametrize("all_flag", [False, True])
+    def test_zero_match_delete_submits_no_mutation(self, all_flag: bool, capsys: pytest.CaptureFixture[str]) -> None:
+        """A selection that matches nothing never reaches the daemon write.
+
+        ``delete --yes`` refuses with the typed empty-cardinality error, and
+        ``delete --dry-run`` reports an empty preview, both before any
+        declared mutation is submitted.
+
+        Anti-vacuity: move the cardinality check after
+        ``execute_delete_by_session_ids`` and the exploding submit runs.
+        """
+        from polylogue.cli.verb_cardinality import EmptyCardinalityError
+
+        _, child = _context_pair()
+        child.obj = SimpleNamespace(config=MagicMock(), ui=SimpleNamespace(plain=True))
+
+        def _no_submit(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("a zero-match delete submitted a mutation")
+
+        with (
+            patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb", return_value=[]),
+            patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=[]),
+            patch("polylogue.cli.operation_kernel.configured_mutation_operation", _no_submit),
+            patch("polylogue.cli.archive_query._submit_mutation_operation", _no_submit),
+        ):
+            with pytest.raises(EmptyCardinalityError):
+                self._call_delete(child, yes_flag=True, all_flag=all_flag)
+            self._call_delete(child, dry_run=True, all_flag=all_flag)
+
+        preview = json.loads(capsys.readouterr().out)
+        assert (preview["status"], preview["session_count"], preview["affected_count"]) == ("preview", 0, 0)
 
     def test_delete_uses_shared_check_cardinality(self) -> None:
         """delete_verb must call check_cardinality (the shared path)."""
@@ -850,47 +887,50 @@ class TestDeleteCardinalityLargeNonMocked:
 
         return _route
 
-    def test_guard_dry_run_and_deleted_sets_are_identical_and_unlimited(self, workspace_env: dict[str, Path]) -> None:
+    def test_guard_dry_run_and_deleted_sets_are_identical_and_unlimited(
+        self, workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         from polylogue.cli.verb_cardinality import resolve_session_ids_for_verb
         from tests.infra.app_env import make_app_env
 
         index_db = workspace_env["archive_root"] / "index.db"
         self._seed(index_db)
 
-        env = make_app_env(archive_root=workspace_env["archive_root"])
-        request = RootModeRequest.from_params({"query": (self.TOKEN,)})
+        with cli_daemon_archive(workspace_env["archive_root"], monkeypatch):
+            env = make_app_env(archive_root=workspace_env["archive_root"])
+            request = RootModeRequest.from_params({"query": (self.TOKEN,)})
 
-        # 1. Guard set: the full matched set, not a default page.
-        guard = resolve_session_ids_for_verb(env, request)
-        assert len(guard) == self.COUNT, f"cardinality guard truncated to {len(guard)} (expected {self.COUNT})"
-        assert len(set(guard)) == self.COUNT, "guard set has duplicates"
+            # 1. Guard set: the full matched set, not a default page.
+            guard = resolve_session_ids_for_verb(env, request)
+            assert len(guard) == self.COUNT, f"cardinality guard truncated to {len(guard)} (expected {self.COUNT})"
+            assert len(set(guard)) == self.COUNT, "guard set has duplicates"
 
-        # 2. Dry-run preview set: must equal the guard set (the #1873 bug previewed
-        #    only the first page while --yes --all deleted everything).
-        with pytest.raises(click.UsageError, match="Use --all to preview every matched session"):
-            self._invoke_delete(env, dry_run=True, yes_flag=False, all_flag=False)
+            # 2. Dry-run preview set: must equal the guard set (the #1873 bug previewed
+            #    only the first page while --yes --all deleted everything).
+            with pytest.raises(click.UsageError, match="Use --all to preview every matched session"):
+                self._invoke_delete(env, dry_run=True, yes_flag=False, all_flag=False)
 
-        preview = self._invoke_delete(env, dry_run=True, yes_flag=False, all_flag=True)
-        assert preview["status"] == "preview"
-        assert preview["session_count"] == self.COUNT
-        assert preview["affected_count"] == 0
-        preview_ids = preview["session_ids"]
-        assert isinstance(preview_ids, list)
-        assert set(preview_ids) == set(guard), "dry-run preview set diverges from the guard set"
+            preview = self._invoke_delete(env, dry_run=True, yes_flag=False, all_flag=True)
+            assert preview["status"] == "preview"
+            assert preview["session_count"] == self.COUNT
+            assert preview["affected_count"] == 0
+            preview_ids = preview["session_ids"]
+            assert isinstance(preview_ids, list)
+            assert set(preview_ids) == set(guard), "dry-run preview set diverges from the guard set"
 
-        # Dry-run mutates nothing.
-        assert len(resolve_session_ids_for_verb(env, request)) == self.COUNT
+            # Dry-run mutates nothing.
+            assert len(resolve_session_ids_for_verb(env, request)) == self.COUNT
 
-        # 3. Deleted set: --yes --all removes the entire matched set.
-        with patch(
-            "polylogue.cli.archive_query._submit_mutation_operation",
-            side_effect=self._daemon_delete_route(workspace_env["archive_root"]),
-        ):
-            result = self._invoke_delete(env, dry_run=False, yes_flag=True, all_flag=True)
-        assert result["session_count"] == self.COUNT
-        assert result["affected_count"] == self.COUNT, (
-            f"delete truncated to {result['affected_count']} (expected {self.COUNT})"
-        )
+            # 3. Deleted set: --yes --all removes the entire matched set.
+            with patch(
+                "polylogue.cli.archive_query._submit_mutation_operation",
+                side_effect=self._daemon_delete_route(workspace_env["archive_root"]),
+            ):
+                result = self._invoke_delete(env, dry_run=False, yes_flag=True, all_flag=True)
+            assert result["session_count"] == self.COUNT
+            assert result["affected_count"] == self.COUNT, (
+                f"delete truncated to {result['affected_count']} (expected {self.COUNT})"
+            )
 
-        # The archive no longer matches the query: deleted set == guard set.
-        assert resolve_session_ids_for_verb(env, request) == []
+            # The archive no longer matches the query: deleted set == guard set.
+            assert resolve_session_ids_for_verb(env, request) == []

@@ -3043,17 +3043,31 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             state_filter=state_filter,
         )
         entries: list[LibraryEntry] = []
-        for raw_att, title, origin in rows:
+        canonical_titles: dict[str, str] = {}
+        # One archive read for the page's sessions, not one per session.
+        summaries = await poly.get_session_summaries([str(cast(_AttachmentRow, row[0]).session_id) for row in rows])
+        for raw_att, _title, origin in rows:
             # The facade returns the attachment opaquely: polylogue/api may not
             # import polylogue/storage (gate layering), so the record type cannot
             # be named in its signature. Bind it structurally here instead.
             att = cast(_AttachmentRow, raw_att)
             sid = str(att.session_id)
+            # The SQL page's sessions.title is the parser title, which can be
+            # an echoed user prompt for heuristic titles. Resolve the same
+            # canonical display label used by session summaries before it
+            # reaches the attachment library.
+            if sid not in canonical_titles:
+                summary = summaries.get(sid)
+                canonical_titles[sid] = (
+                    str(getattr(summary, "display_label", None) or getattr(summary, "title", None) or sid)
+                    if summary is not None
+                    else sid
+                )
             envelope = attachment_to_envelope(att, session_id=sid, message_id=att.message_id)
             entries.append(
                 LibraryEntry(
                     envelope=envelope,
-                    session_title=title,
+                    session_title=canonical_titles[sid],
                     origin=origin,
                     message_anchor=reader_anchor("message", att.message_id) if att.message_id else None,
                 )
@@ -3410,7 +3424,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             }
             items.append(row)
 
-        list_outcome = decide_outcome(matched=total)
+        list_outcome = decide_outcome(matched=len(items))
         route_state_name, route_state_reason = _session_list_state(list_outcome, filtered=spec.has_filters())
         from polylogue.archive.query.spec import resolve_default_root_filter, session_count_unit_label
 
@@ -3656,7 +3670,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         **_filter_kw,  # type: ignore[arg-type]
                     ),
                 )
-                search_outcome = decide_outcome(matched=total)
+                search_outcome = decide_outcome(matched=len(hits))
                 route_state_name, route_state_reason = _session_list_state(search_outcome, filtered=True)
                 from polylogue.archive.query.spec import session_count_unit_label
 
@@ -3724,7 +3738,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     compute=lambda: archive.count_sessions(**_filter_kw),  # type: ignore[arg-type]
                 )
             )
-            archive_list_outcome = decide_outcome(matched=total)
+            archive_list_outcome = decide_outcome(matched=len(summaries))
             route_state_name, route_state_reason = _session_list_state(archive_list_outcome, filtered=filtered)
             from polylogue.archive.query.spec import session_count_unit_label
 
@@ -4530,6 +4544,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             return
         if output_format not in capability.formats:
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
+            return
+        if capability.route != "/api/sessions/{session_id}/read":
+            self._send_error(HTTPStatus.BAD_REQUEST, "read_view_requires_dedicated_route")
             return
 
         if view == "messages":

@@ -72,6 +72,13 @@ sites:
     scope: "read_only_module"
     classification: presentation_projection
     reason: "Budget.coerce composes an in-memory pass budget from the caller's Budget and an outer deadline: it keeps the tighter of the two deadlines via dataclasses.replace. The substituted member is a value this call computed, not a stored producer output, and the function touches no database."
+  - file: "polylogue/daemon/session_profile_composition.py"
+    function: "_merge_reports"
+    subject: "truncated"
+    kind: "read_path_substitution"
+    scope: "read_only_module"
+    classification: presentation_projection
+    reason: "_merge_reports composes one in-memory DerivationReport from the two domain-pass reports this promotion just produced: outcomes concatenate, counts and work counters add, and truncated is true when either pass truncated. Every substituted member is a value this call computed from its own inputs; it reads no stored producer output and touches no database."
   - file: "polylogue/daemon/status_snapshot.py"
     function: "refresh_status_snapshot"
     subject: "refresh_error"
@@ -681,6 +688,20 @@ sites:
     scope: "state_predicate"
     classification: producer_scoped_transaction
     reason: "derived_refresh_guard is the writer's own trigger-suppression flag: the same function inserts the named guard row before its session writes and deletes that exact guard_name afterwards (in delete_sessions, from a finally block). The subject is the one row this call created, not archive state"
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_materialize_inherited_prefix"
+    subject: "attachment_refs"
+    kind: "state_selected_subject"
+    scope: "no_where"
+    classification: producer_scoped_transaction
+    reason: "the attachment_refs read joins the refs this same call just copied into the child through the per-child TEMP plan (plan.new_id = message_id), to refresh the counts of exactly those attachments inside the parent write (polylogue-gy2yu). It selects no stale derived row for repair"
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_materialize_inherited_prefix"
+    subject: "messages"
+    kind: "state_selected_subject"
+    scope: "no_where"
+    classification: producer_scoped_transaction
+    reason: "the message reads without a WHERE on the subject are the INSERT ... SELECT copies driven by the per-child TEMP plan table (JOIN on plan.old_id), inside the parent write that is changing the child's inherited rows (polylogue-gy2yu). The subject is exactly the one child the write captured before its replace; no stale derived row is selected for repair"
   - file: "polylogue/storage/sqlite/archive_tiers/write_shard.py"
     function: "copy_shard_session_rows"
     subject: "blocks"

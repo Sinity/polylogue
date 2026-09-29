@@ -570,7 +570,7 @@ def test_archive_lineage_descriptor_does_not_invent_resolution_when_truncated() 
             root_session_id=None,
             branch_type="fork",
             lineage_complete=False,
-            lineage_truncation_reason="depth_limit",
+            lineage_truncation_reason="cycle",
             lineage_inheritance="prefix-sharing",
             lineage_branch_point_message_id="parent:p1",
             active_leaf_message_id=None,
@@ -579,4 +579,4 @@ def test_archive_lineage_descriptor_does_not_invent_resolution_when_truncated() 
     assert descriptor.root_session_id is None
     assert descriptor.resolved is None
     assert descriptor.availability.value == "partial"
-    assert descriptor.lineage_truncation_reason == "depth_limit"
+    assert descriptor.lineage_truncation_reason == "cycle"

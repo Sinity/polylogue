@@ -83,7 +83,7 @@ typed assertions in `user.db`.
 The deterministic archive checks for the current demo fixture world are split
 across direct and daemon-backed behavior tests. `tests/unit/scenarios/test_demo_archive_convergence.py`
 writes the same `build_demo_corpus_specs()` artifacts, converges them in
-process with `parse_sources_archive()`, and verifies:
+process with `ingest_one_shot_archive()`, and verifies:
 
 - three sessions are stored: ChatGPT export, Claude Code session, and Codex
   session;

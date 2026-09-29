@@ -106,6 +106,22 @@ def _session_id(value: Any) -> str:
     return str(getattr(value, "id", getattr(value, "session_id", value)))
 
 
+def _summary_hit(value: Any) -> Any:
+    from polylogue.archive.session.domain_models import SessionSummary
+
+    if isinstance(value, SessionSummary):
+        return value
+    # A hit wrapper nests its SessionSummary; a full Session's ``summary`` is
+    # metadata prose, so only a model (or a wrapper exposing an id) unwraps.
+    summary = getattr(value, "summary", None)
+    if isinstance(summary, SessionSummary) or (summary is not None and hasattr(summary, "id")):
+        return summary
+
+    fields = SessionSummary.model_fields
+    payload = {name: getattr(value, name) for name in fields if hasattr(value, name)}
+    return SessionSummary.model_validate(payload)
+
+
 def _signals(context_pack: list[dict[str, object]]) -> dict[str, list[str]]:
     """Extract bounded, non-semantic hints for later workflow stages."""
     text = "\n".join(str(item["text"]) for item in context_pack)
@@ -128,7 +144,7 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
 
     seeds = await store.search_summary_hits(query, limit=min(request.seed_limit, request.max_sessions))
     for hit in seeds:
-        summary = getattr(hit, "summary", hit)
+        summary = _summary_hit(hit)
         sid = _session_id(summary)
         sessions[sid] = summary
         evidence[sid] = TopicPackEvidence(sid, "fts", {"rank": getattr(hit, "rank", None), "lane": "text"})
@@ -147,10 +163,11 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
             gaps.append(f"vector expansion failed: {type(exc).__name__}")
         else:
             for item in vector_hits:
-                sid = _session_id(item)
+                summary = _summary_hit(item)
+                sid = _session_id(summary)
                 if sid not in sessions and len(sessions) >= request.max_sessions:
                     break
-                sessions[sid] = item
+                sessions[sid] = summary
                 evidence[sid] = TopicPackEvidence(sid, "embedding", {"lane": "vector"})
                 retrieval_lanes["embedding"] += 1
     elif request.vector_provider is None:
