@@ -167,6 +167,8 @@ _Parsed = TypeVar("_Parsed")
 #: exceeds what a single enrichment needs, whatever the parsed size.
 _parsed_retained_cache: dict[str, tuple[tuple[str, str, str], object]] = {}
 _parsed_retained_lock = threading.Lock()
+#: Held across one read-and-parse, so parsed residency stays one origin's.
+_parsed_retained_fill_lock = threading.Lock()
 
 
 def _read_parsed(
@@ -180,18 +182,25 @@ def _read_parsed(
         cached = _parsed_retained_cache.get(kind)
         if cached is not None and cached[0] == key:
             return cast("_Parsed", cached[1])
-        # Release the previous artifact of this kind, and every artifact of
-        # another origin, before parsing the next.
-        origin = kind.split(".", 1)[0]
-        for held in [held for held in _parsed_retained_cache if held == kind or held.split(".", 1)[0] != origin]:
-            del _parsed_retained_cache[held]
-    payload = _read(blob_store, artifact)
-    if payload is None:
-        return None
-    parsed = parse(payload)
-    with _parsed_retained_lock:
-        _parsed_retained_cache[kind] = (key, parsed)
-    return parsed
+    # Fills are serialized: two workers filling different origins at once
+    # would each hold an unbounded parse and publish both. Under the fill
+    # lock, the previous artifact of this kind and every artifact of another
+    # origin are released before the next is parsed.
+    with _parsed_retained_fill_lock:
+        with _parsed_retained_lock:
+            cached = _parsed_retained_cache.get(kind)
+            if cached is not None and cached[0] == key:
+                return cast("_Parsed", cached[1])
+            origin = kind.split(".", 1)[0]
+            for held in [held for held in _parsed_retained_cache if held == kind or held.split(".", 1)[0] != origin]:
+                del _parsed_retained_cache[held]
+        payload = _read(blob_store, artifact)
+        if payload is None:
+            return None
+        parsed = parse(payload)
+        with _parsed_retained_lock:
+            _parsed_retained_cache[kind] = (key, parsed)
+        return parsed
 
 
 # --------------------------------------------------------------------------

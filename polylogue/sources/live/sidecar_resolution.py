@@ -308,16 +308,27 @@ class RetainedSidecarResolver:
             blob_hashes = [baseline[0]]
             end = baseline[2]
             last_raw_id = baseline[5]
-            appends = [row for row in candidate_rows if row[1] == "append" and row[3] is not None]
+            # Rows are in receipt order. A step must be admitted after the
+            # selected baseline and after the previous step: a historical
+            # append of the same revision (``A -> A+X -> B -> A``) predates
+            # the current ``A`` and is not part of it.
+            last_position = max(index for index, row in enumerate(candidate_rows) if row is baseline)
+            appends = [
+                (index, row) for index, row in enumerate(candidate_rows) if row[1] == "append" and row[3] is not None
+            ]
             while True:
                 steps = {
-                    row
-                    for row in appends
-                    if row[6] == last_raw_id and row[3] == end and row[4] is not None and row[4] > end
+                    (index, row)
+                    for index, row in appends
+                    if index > last_position
+                    and row[6] == last_raw_id
+                    and row[3] == end
+                    and row[4] is not None
+                    and row[4] > end
                 }
                 if len(steps) != 1:
                     break
-                step = next(iter(steps))
+                last_position, step = next(iter(steps))
                 blob_hashes.append(step[0])
                 assert step[4] is not None
                 end = step[4]

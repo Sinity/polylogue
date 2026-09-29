@@ -143,7 +143,10 @@ def _schema_archive_session_ids_for_source_path(archive_root: Path, path: Path) 
     if not index_db.exists() or not source_db.exists():
         return ()
     try:
-        conn = open_readonly_connection(index_db)
+        # Identity is not validated: during an owned cold rebuild the active
+        # index is the previous generation, and a skew here would fail a
+        # write that already committed to the candidate.
+        conn = open_readonly_connection(index_db, validate_schema=False)
         try:
             attach_readonly_database(conn, source_db, alias="source_tier")
             rows = conn.execute(

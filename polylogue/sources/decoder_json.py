@@ -967,31 +967,12 @@ def iter_grok_export_events(
 def iter_json_container_records(handle: JsonReadable, prefix: str) -> Iterable[JsonValue]:
     """Yield complete array members; a corrupt suffix raises after its prefix.
 
-    Members keep ijson's ``Decimal`` numbers for the bundle parsers; only the
-    storable-value limit is enforced here.
+    Members keep ijson's ``Decimal`` numbers for the bundle parsers. The
+    storable-value limit is not applied to decoded members: a field the
+    parser ignores never reaches storage, and every value that does is
+    bounded, typed, where it is written (``prepared_message_sink._write_row``).
     """
-    for record in ijson.items(handle, prefix):
-        _require_storable_member(record)
-        yield record
-
-
-def _require_storable_member(value: object) -> None:
-    """Refuse a member holding an unstorable string, at any nesting depth.
-
-    An explicit stack, not recursion: a field nested past Python's recursion
-    limit is still valid input that a provider parser may simply ignore.
-    """
-    pending: list[object] = [value]
-    while pending:
-        current = pending.pop()
-        if isinstance(current, str):
-            value_bounds.require_storable_string(current)
-        elif isinstance(current, list):
-            pending.extend(current)
-        elif isinstance(current, dict):
-            for key, item in current.items():
-                value_bounds.require_storable_string(key, kind="object key")
-                pending.append(item)
+    yield from ijson.items(handle, prefix)
 
 
 __all__ = [

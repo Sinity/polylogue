@@ -215,6 +215,7 @@ def live_parse_path_worker(
     """
     from polylogue.sources.dispatch import is_jsonl_source_path
     from polylogue.sources.live.batch_support import _detect_provider_from_path_sample, jsonl_complete_prefix_path
+    from polylogue.sources.live.sidecar_resolution import FilesystemSidecarResolver
 
     source = Path(source_path)
     provider = _detect_provider_from_path_sample(source, Provider.from_string(provider_value))
@@ -237,6 +238,7 @@ def live_parse_path_worker(
             attempt_directory=None if attempt_directory is None else Path(attempt_directory),
             parse_prefix_size=parse_prefix_size,
             prepare_session=lambda session: session,
+            sidecar_resolver=FilesystemSidecarResolver(),
         )
     from polylogue.sources.revision_backfill import open_retained_session_enricher
 
@@ -260,6 +262,10 @@ def live_parse_path_worker(
             attempt_directory=None if attempt_directory is None else Path(attempt_directory),
             parse_prefix_size=parse_prefix_size,
             prepare_session=enrich,
+            # The live parse joins tool-output sidecars from the source tree
+            # (as ``parse_payload`` does by default); a sealed carrier without
+            # them would keep masked excerpts the live route replaces.
+            sidecar_resolver=FilesystemSidecarResolver(),
             preparation_dependency=lambda: (
                 enrich.dependency_digest(),
                 str(Path(evidence.index_db_path).resolve()),

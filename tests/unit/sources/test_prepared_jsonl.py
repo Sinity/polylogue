@@ -3204,6 +3204,68 @@ def test_sibling_index_includes_appended_tails(tmp_path: Path) -> None:
     }
 
 
+def test_a_historical_append_does_not_extend_a_reselected_baseline(tmp_path: Path) -> None:
+    """``A -> A+X -> B -> A``: the current ``A`` is not followed by the old ``X``.
+
+    Anti-vacuity (Codex P1, #5643): follow any append whose predecessor and
+    offsets match and ``toolu_x`` from the historical tail reappears, though
+    the live ``A`` file holds no such call.
+    """
+    from polylogue.sources.live.sidecar_resolution import RetainedSidecarResolver
+
+    source_db = tmp_path / "source.db"
+    with sqlite3.connect(source_db) as conn:
+        initialize_archive_tier(conn, ArchiveTier.SOURCE)
+    blob_root = tmp_path / "blob"
+    store = BlobStore(blob_root)
+    session_dir = tmp_path / "project" / "session-1"
+    sibling = (session_dir / "subagents" / "agent-a.jsonl").as_posix()
+
+    def tool_use(tool_id: str) -> bytes:
+        return (
+            json.dumps(
+                {
+                    "type": "assistant",
+                    "message": {"content": [{"type": "tool_use", "id": tool_id, "name": "Bash", "input": {}}]},
+                }
+            ).encode()
+            + b"\n"
+        )
+
+    a_hash, a_size = store.write_from_bytes(tool_use("toolu_a"))
+    x_hash, x_size = store.write_from_bytes(tool_use("toolu_x"))
+    b_hash, b_size = store.write_from_bytes(tool_use("toolu_b") + tool_use("toolu_b2"))
+    rows = (
+        ("a", a_hash, a_size, "full", None, None, None, 4),
+        ("x", x_hash, x_size, "append", a_size, a_size + x_size, "a", 2),
+        ("b", b_hash, b_size, "full", None, None, None, 3),
+    )
+    with sqlite3.connect(source_db) as conn:
+        for raw_id, blob_hash, size, kind, start, end, predecessor, receipt_ms in rows:
+            conn.execute(
+                "INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms, "
+                "revision_kind, append_start_offset, append_end_offset, predecessor_raw_id) "
+                "VALUES (?, 'claude-code-session', ?, ?, ?, 1, ?, ?, ?, ?)",
+                (raw_id, sibling, bytes.fromhex(blob_hash), size, kind, start, end, predecessor),
+            )
+            conn.execute(
+                "INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
+                "VALUES (?, ?, 'raw_payload', ?, ?, ?)",
+                (bytes.fromhex(blob_hash), raw_id, sibling, size, receipt_ms),
+            )
+    with sqlite3.connect(source_db) as conn:
+        resolver = RetainedSidecarResolver(tmp_path, blob_root=blob_root, source_conn=conn)
+        (found,) = resolver._retained_siblings(conn, session_dir.parent / "session-1.jsonl")
+        tool_ids = {
+            block["id"]
+            for record in found.open_records()
+            if isinstance(record, dict)
+            for block in record["message"]["content"]
+        }
+
+    assert tool_ids == {"toolu_a"}
+
+
 def test_sibling_baseline_follows_the_newest_durable_receipt(tmp_path: Path) -> None:
     """A sibling whose bytes returned to an earlier value replays that value.
 
@@ -3514,17 +3576,16 @@ def test_chatgpt_generation_timings_live_in_the_spill_database(tmp_path: Path) -
         store.close()
 
 
-def test_bundle_member_nested_past_the_recursion_limit_is_checked_iteratively() -> None:
-    """A member with a field nested deeper than the recursion limit still streams.
+def test_an_unused_oversized_bundle_field_is_not_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A member field no parser stores is never held to SQLite's cell limit.
 
-    Anti-vacuity: walk the member recursively and the check raises
-    ``RecursionError`` before the parser can ignore the deep field.
+    Anti-vacuity (Codex P2, #5643): bound every decoded scalar and a
+    conversation with one oversized ignored field is refused whole.
     """
-    import sys
-
+    from polylogue.sources import value_bounds
     from polylogue.sources.decoder_json import iter_json_container_records
 
-    depth = sys.getrecursionlimit() + 100
-    payload = b'[{"id": "c1", "deep": ' + b"[" * depth + b"]" * depth + b"}]"
+    monkeypatch.setattr(value_bounds, "MAX_STORABLE_VALUE_BYTES", 16)
+    payload = b'[{"id": "c1", "ignored": "' + b"x" * 64 + b'"}]'
     (record,) = list(iter_json_container_records(BytesIO(payload), "item"))
     assert isinstance(record, dict) and record["id"] == "c1"

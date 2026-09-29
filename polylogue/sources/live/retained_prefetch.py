@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 import time
 from concurrent.futures import Executor, Future
 from concurrent.futures import TimeoutError as FutureTimeoutError
@@ -153,9 +152,12 @@ def prepare_live_retained_raws(
                 if not future.cancel():
                     future.add_done_callback(_discard_late_artifact)
                 break
-            except (RetainedPreparationRetryableError, OSError, ValueError, sqlite3.Error):
+            except (RetainedPreparationRetryableError, OSError, ValueError):
                 # The writer still owns this member's replay. A prewarm miss
-                # must not defer the live path that merely overlaps it.
+                # must not defer the live path that merely overlaps it. The
+                # worker already turns a retryable SQLite read failure into
+                # ``RetainedPreparationRetryableError``; any other SQLite
+                # error is the writer's too, and propagates.
                 continue
             if artifact.error is not None or artifact.deferred:
                 # Refusals and non-session members keep their writer-side
