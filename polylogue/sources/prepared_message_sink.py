@@ -562,6 +562,25 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
         """A disk-backed set for membership comparison of large sessions."""
         return SqliteProviderMessageIds(self, include_none=include_none)
 
+    def occurred_at_bounds(self) -> tuple[int | None, int | None]:
+        """The ``occurred_at_ms`` extrema of the stored rows, without decoding a message.
+
+        Read from the rows as they are now, so an unsealed sink edited after
+        an earlier call reports its current timeline.
+        """
+        sql = (
+            "SELECT MIN(json_extract(message_json, '$.occurred_at_ms')), "
+            "MAX(json_extract(message_json, '$.occurred_at_ms')) "
+            "FROM prepared_message WHERE session_ordinal = ?"
+        )
+        if self._writer is not None:
+            row = self._writer.execute(sql, (self.session_ordinal,)).fetchone()
+        else:
+            with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
+                row = conn.execute(sql, (self.session_ordinal,)).fetchone()
+        low, high = row if row is not None else (None, None)
+        return (int(low) if low is not None else None, int(high) if high is not None else None)
+
     def iter_from(self, start: int) -> Iterator[ParsedMessage]:
         """Stream a suffix without decoding or scanning its inherited prefix."""
         if start < 0 or start > self._count:
