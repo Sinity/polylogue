@@ -623,6 +623,11 @@ class FilesystemResetActuator(ConvergentReplay):
     def apply(self, plan: MutationPlan, args: FilesystemResetArgs) -> MutationReceipt:
         import shutil
 
+        # APPLY can be entered without the public handler, including replay.
+        # Until lifecycle-owned quiescence exists, tier files must never be
+        # unlinked by a request-local executor with live archive handles.
+        self._refuse_tier_deletion(args)
+
         deleted: list[str] = []
         missing: list[str] = []
         for name, path in args.targets:
@@ -654,6 +659,16 @@ class FilesystemResetActuator(ConvergentReplay):
             },
         )
 
+    @staticmethod
+    def _refuse_tier_deletion(args: FilesystemResetArgs) -> None:
+        from polylogue.operations.reset_safety import LiveArchiveTierResetError, live_archive_tier_targets
+
+        tiers = live_archive_tier_targets(
+            args.archive_root, args.targets, served_index_path=_index_db_path(args.archive_root)
+        )
+        if tiers:
+            raise LiveArchiveTierResetError(tiers)
+
     def replay_args(self, handles: ReplayHandles, plan: MutationPlan) -> FilesystemResetArgs:
         return FilesystemResetArgs(
             archive_root=handles.archive_root,
@@ -671,9 +686,16 @@ class FilesystemResetActuator(ConvergentReplay):
         """
         import shutil
 
+        args = self.replay_args(handles, plan)
+        from polylogue.operations.reset_safety import LiveArchiveTierResetError
+
+        try:
+            self._refuse_tier_deletion(args)
+        except LiveArchiveTierResetError as exc:
+            return RecoveryResolution("replay-failed", str(exc))
         identities = cast("dict[str, list[int]]", plan.context["identities"])
         deleted: list[str] = []
-        for name, path in self.replay_args(handles, plan).targets:
+        for name, path in args.targets:
             if str(path) not in identities or _path_identity(path) != identities[str(path)]:
                 continue
             if path.is_dir() and not path.is_symlink():

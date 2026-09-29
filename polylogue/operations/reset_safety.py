@@ -30,7 +30,7 @@ class LiveArchiveTierResetError(ValueError):
         super().__init__(
             "refusing to delete archive tier files the serving daemon holds open: "
             + ", ".join(targets)
-            + "; stop polylogued before removing archive tier databases"
+            + "; lifecycle-coordinated database reset is not implemented; no files were deleted"
         )
 
 

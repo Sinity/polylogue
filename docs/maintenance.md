@@ -561,3 +561,9 @@ primary one, but [#818](https://github.com/Sinity/polylogue/issues/818)
 tracks remaining classes), attach the lease/GC probe snapshot from
 step 2 to that issue so the GC pass that mis-classified the blob can
 be reproduced.
+
+Database reset lifecycle limitation: `--index`, `--database`, and `--all` are
+currently refused; stopping the daemon does not enable a CLI-side reset writer.
+The refusal also covers direct APPLY and interrupted-plan recovery, before any
+mixed cache/asset targets are deleted. A lifecycle-owned quiesce, audited reset,
+and restart route remains required; refusal is not a successful reset.

@@ -2491,15 +2491,15 @@ class TestFilesystemResetActuator:
         archive_root = tmp_path / "archive"
         archive_root.mkdir()
         initialize_active_archive_root(archive_root)
-        doomed_file = archive_root / "embeddings.db"
-        doomed_file.write_bytes(b"vector bytes")
+        doomed_file = archive_root / "scratch.cache"
+        doomed_file.write_bytes(b"cache bytes")
         doomed_tree = archive_root / "blob"
         doomed_tree.mkdir()
         (doomed_tree / "aa").mkdir()
         (doomed_tree / "aa" / "blob.bin").write_bytes(b"payload")
         args = FilesystemResetArgs(
             archive_root=archive_root,
-            targets=(("embeddings database", doomed_file), ("blob store", doomed_tree)),
+            targets=(("scratch cache", doomed_file), ("blob store", doomed_tree)),
         )
         return archive_root, args
 
@@ -2511,10 +2511,10 @@ class TestFilesystemResetActuator:
         plan = FilesystemResetActuator().prepare(args)
 
         assert plan.target_refs == (
-            f"path:{archive_root / 'embeddings.db'}",
+            f"path:{archive_root / 'scratch.cache'}",
             f"path:{archive_root / 'blob'}",
         )
-        assert (archive_root / "embeddings.db").exists()
+        assert (archive_root / "scratch.cache").exists()
         assert (archive_root / "blob" / "aa" / "blob.bin").exists()
 
     def test_the_reset_writes_preview_and_run_rows_before_deleting(self, tmp_path: Path) -> None:
@@ -2532,7 +2532,7 @@ class TestFilesystemResetActuator:
 
         assert receipt.status == "applied"
         assert receipt.affected_count == 2
-        assert not (archive_root / "embeddings.db").exists()
+        assert not (archive_root / "scratch.cache").exists()
         assert not (archive_root / "blob").exists()
         with sqlite3.connect(archive_root / "audit.db") as conn:
             assert conn.execute("SELECT state FROM operation_previews").fetchone()[0] == "consumed"
@@ -2640,3 +2640,44 @@ class TestReplayActsOnTheRecordedIdsExactly:
             handles.close()
 
         assert self._sibling_state(archive_root, sibling) == (True, 0)
+
+
+@pytest.mark.parametrize(
+    "target_name", ["index.db", "ops.db", "source.db", "user.db", "embeddings.db", "audit.db", "."]
+)
+def test_reset_apply_and_recovery_refuse_tier_files_before_any_deletion(tmp_path: Path, target_name: str) -> None:
+    from polylogue.operations.mutation_actuators import FilesystemResetActuator, FilesystemResetArgs
+    from polylogue.operations.mutation_transaction import ReplayHandles
+    from polylogue.operations.reset_safety import LiveArchiveTierResetError
+
+    initialize_active_archive_root(tmp_path)
+    db_path = tmp_path / ("index.db" if target_name == "." else target_name)
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("CREATE TABLE reset_probe(value TEXT)")
+        conn.execute("INSERT INTO reset_probe VALUES ('retained')")
+        conn.commit()
+        cache = tmp_path / "reset-cache"
+        cache.write_bytes(b"also retained on refusal")
+        targets = (("cache", cache), ("tier", tmp_path / target_name))
+        args = FilesystemResetArgs(tmp_path, targets)
+        actuator = FilesystemResetActuator()
+        plan = actuator.prepare(args)
+        with pytest.raises(LiveArchiveTierResetError):
+            actuator.apply(plan, args)
+        handles = ReplayHandles(tmp_path)
+        try:
+            resolution = actuator.recover(handles, plan)
+        finally:
+            handles.close()
+        assert resolution.outcome == "replay-failed"
+        assert resolution.receipt is None
+        assert cache.read_bytes() == b"also retained on refusal"
+        assert db_path.exists()
+        assert db_path.with_name(db_path.name + "-wal").exists()
+        assert conn.execute("SELECT value FROM reset_probe").fetchone() == ("retained",)
+        with sqlite3.connect(db_path) as reopened:
+            assert reopened.execute("SELECT value FROM reset_probe").fetchone() == ("retained",)
+    finally:
+        conn.close()
