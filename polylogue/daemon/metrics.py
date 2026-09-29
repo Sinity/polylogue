@@ -408,15 +408,6 @@ def _columns(conn: sqlite3.Connection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
 
 
-def _qualified_columns(conn: sqlite3.Connection, table: str) -> set[str]:
-    if "." not in table:
-        return _columns(conn, table)
-    schema, _, name = table.rpartition(".")
-    if not schema.replace("_", "").isalnum() or not name.replace("_", "").isalnum():
-        return set()
-    return {row[1] for row in conn.execute(f"PRAGMA {schema}.table_info({name})")}
-
-
 def _scalar_int(conn: sqlite3.Connection, sql: str) -> int:
     row = conn.execute(sql).fetchone()
     if row is None or row[0] is None:
@@ -856,23 +847,15 @@ def _emit_storage_route_metrics(lines: list[str], counts: dict[str, int]) -> Non
     )
 
 
-def _embedding_message_count(conn: sqlite3.Connection, *, status_table: str = "", meta_table: str = "") -> int:
-    # message_embedding_refs is the per-message count (polylogue-q88p);
-    # message_embeddings/message_embeddings_meta are content-addressed and
-    # deduped, so their row count undercounts messages whenever identical
-    # text is shared across sessions -- only fall back to them for legacy
-    # (pre-v4) archives that predate the refs table.
-    if _table_exists(conn, "message_embedding_refs"):
-        return _scalar_int(conn, "SELECT COUNT(*) FROM message_embedding_refs")
-    if _table_exists(conn, "message_embeddings_rowids"):
-        return _scalar_int(conn, "SELECT COUNT(*) FROM message_embeddings_rowids")
-    if _table_exists(conn, "message_embeddings"):
-        return _scalar_int(conn, "SELECT COUNT(*) FROM message_embeddings")
-    if status_table and "message_count_embedded" in _qualified_columns(conn, status_table):
-        return _scalar_int(conn, f"SELECT COALESCE(SUM(message_count_embedded), 0) FROM {status_table}")
-    if meta_table:
-        return _scalar_int(conn, f"SELECT COUNT(*) FROM {meta_table}")
-    return 0
+def _embedding_message_count(conn: sqlite3.Connection, *, refs_table: str) -> int:
+    # message_embedding_refs (message_id -> vector_derivation_hash) is the
+    # per-message count; message_embeddings/message_embeddings_meta are
+    # content-addressed and deduped, so their row count undercounts messages
+    # whenever identical text is shared across sessions. The embeddings DDL
+    # always creates the refs table, so its absence means no embeddings tier.
+    if not refs_table:
+        return 0
+    return _scalar_int(conn, f"SELECT COUNT(*) FROM {refs_table}")
 
 
 def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = None) -> EmbeddingMetricState:
@@ -882,7 +865,7 @@ def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = 
     pending_sessions = 0
     failed_sessions = 0
     status_table = "embedding_status" if _table_exists(conn, "embedding_status") else ""
-    meta_table = "message_embeddings_meta" if _table_exists(conn, "message_embeddings_meta") else ""
+    refs_table = "message_embedding_refs" if _table_exists(conn, "message_embedding_refs") else ""
     if ops_db is not None:
         embeddings_db = ops_db.parent / "embeddings.db"
     else:
@@ -892,7 +875,7 @@ def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = 
 
         attach_readonly_database(conn, embeddings_db, alias="embeddings")
         status_table = _attached_table_name(conn, "embeddings", "embedding_status")
-        meta_table = _attached_table_name(conn, "embeddings", "message_embeddings_meta")
+        refs_table = _attached_table_name(conn, "embeddings", "message_embedding_refs")
 
     if status_table:
         embedded_sessions = _scalar_int(
@@ -923,7 +906,7 @@ def _archive_embedding_state(conn: sqlite3.Connection, *, ops_db: Path | None = 
         session_state = count_archive_embedding_session_state(conn, status_table="", rebuild=False)
         pending_sessions = session_state.pending_sessions
 
-    embedded_messages = _embedding_message_count(conn, status_table=status_table, meta_table=meta_table)
+    embedded_messages = _embedding_message_count(conn, refs_table=refs_table)
     eligible_sessions = embedded_sessions + pending_sessions
     coverage_percent: float | None
     if eligible_sessions > 0:

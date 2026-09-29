@@ -11,7 +11,7 @@ cost feedback against the cost cap; and
 existing embeddings.
 
 The substrate-side primitives (token-count and cost estimation,
-``PendingSession`` enumeration, ``embed_session_sync``) live under
+``PendingSession`` enumeration, ``embed_archive_session_sync``) live under
 ``polylogue.storage.embeddings``; the CLI is a thin orchestrator over them.
 """
 

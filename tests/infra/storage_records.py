@@ -9,7 +9,7 @@ import threading
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Final, Protocol, TypeAlias, TypeVar, cast
 from uuid import uuid4
 
 from polylogue.archive.message.roles import Role
@@ -28,18 +28,24 @@ from polylogue.core.json import dumps, loads, require_json_document, require_jso
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamps import _timestamp_sort_key
 from polylogue.core.types import AttachmentId, ContentHash, MessageId, SessionId
+from polylogue.pipeline.services.acquisition_records import pending_pre_parse_raw_admission_request
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
     ParsedMessage,
     ParsedSession,
 )
+from polylogue.storage.raw.models import UNSET, RawSessionStateUpdate, _RawStateUnset
 from polylogue.storage.runtime import (
     AttachmentRecord,
     BlockRecord,
     MessageRecord,
     RawSessionRecord,
     SessionRecord,
+)
+from polylogue.storage.sqlite.archive_tiers.raw_admission import (
+    PendingPreParseRawAdmissionRequest,
+    RawAdmissionExecution,
 )
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection import connection_context, open_connection
@@ -923,6 +929,73 @@ def make_raw_session(
     }
     payload.update(kwargs)
     return RawSessionRecord.model_validate(payload)
+
+
+class RawAdmissionStore(Protocol):
+    """The production acquisition write surface of a backend or repository."""
+
+    async def admit_raw(self, request: PendingPreParseRawAdmissionRequest) -> RawAdmissionExecution: ...
+
+    async def update_raw_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None: ...
+
+
+def raw_admission_request(record: RawSessionRecord) -> PendingPreParseRawAdmissionRequest:
+    """Map a seed record to the production pending pre-parse admission request.
+
+    Synthetic seeds often omit ``blob_hash`` or use a readable ``raw_id``; the
+    admission route requires a 32-byte content address, so the seed's blob
+    hash (or, absent that, its ``raw_id``) is used when it is one and hashed
+    to one otherwise. The mapping itself is the acquisition service's.
+    """
+    address = record.blob_hash or record.raw_id
+    try:
+        digest = bytes.fromhex(address)
+    except ValueError:
+        digest = address.encode("utf-8")
+    if len(digest) != 32:
+        digest = hashlib.sha256(digest).digest()
+    return pending_pre_parse_raw_admission_request(record.model_copy(update={"blob_hash": digest.hex()}))
+
+
+_SeedValue = TypeVar("_SeedValue")
+
+
+def _set_or_unset(value: _SeedValue | None) -> _SeedValue | _RawStateUnset:
+    return UNSET if value is None else value
+
+
+def raw_post_admission_state(record: RawSessionRecord) -> RawSessionStateUpdate:
+    """Parse and validation evidence a seed carries beyond acquisition.
+
+    Only the fields the seed sets are written, through the same typed state
+    update the parse and validation stages use; ``validated_at`` is stamped by
+    that validation transition rather than copied from the seed.
+    """
+    return RawSessionStateUpdate(
+        payload_provider=_set_or_unset(record.payload_provider),
+        parsed_at=_set_or_unset(record.parsed_at),
+        parse_error=_set_or_unset(record.parse_error),
+        validation_status=_set_or_unset(record.validation_status),
+        validation_error=_set_or_unset(record.validation_error),
+        validation_drift_count=_set_or_unset(record.validation_drift_count),
+        validation_provider=_set_or_unset(record.validation_provider),
+        validation_mode=_set_or_unset(record.validation_mode),
+        detection_warnings=_set_or_unset(record.detection_warnings),
+    )
+
+
+async def admit_raw_record(store: RawAdmissionStore, record: RawSessionRecord) -> bool:
+    """Seed one raw row through the production admission route.
+
+    Admission records acquisition evidence only; any parse or validation state
+    the seed carries is then applied with ``update_raw_state``. Returns whether
+    admission inserted a new row.
+    """
+    execution = await store.admit_raw(raw_admission_request(record))
+    state = raw_post_admission_state(record)
+    if state.has_values:
+        await store.update_raw_state(execution.result.raw_id, state=state)
+    return execution.inserted
 
 
 class DbFactory:

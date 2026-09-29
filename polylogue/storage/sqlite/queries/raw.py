@@ -23,7 +23,6 @@ from polylogue.storage.sqlite.queries.raw_state import (
     reset_parse_status,
     reset_validation_status,
 )
-from polylogue.storage.sqlite.queries.raw_writes import save_raw_session
 
 __all__ = [
     "apply_raw_state_update",
@@ -43,5 +42,4 @@ __all__ = [
     "raw_id_query",
     "reset_parse_status",
     "reset_validation_status",
-    "save_raw_session",
 ]

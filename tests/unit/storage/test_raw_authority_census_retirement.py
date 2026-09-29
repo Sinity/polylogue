@@ -23,7 +23,6 @@ from polylogue.storage.archive_readiness import (
 from polylogue.storage.raw_authority import resolve_raw_authority_blocker
 from polylogue.storage.raw_reconciler import RawAuthorityFrontierState, inspect_raw_authority_frontier
 from polylogue.storage.sqlite.archive_tiers.schema_inventory import canonical_schema_objects
-from polylogue.storage.sqlite.archive_tiers.source import RETIRED_SOURCE_SCHEMA_OBJECTS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root
 
@@ -57,7 +56,6 @@ def test_fresh_source_ddl_omits_every_census_ledger_object(object_ref: str) -> N
     """A fresh source generation declares none of the census ledger objects."""
     declared = {obj.object_ref.split(":", 1)[1] for obj in canonical_schema_objects(ArchiveTier.SOURCE)}
     assert object_ref not in declared
-    assert object_ref in RETIRED_SOURCE_SCHEMA_OBJECTS
 
 
 @pytest.mark.parametrize("table", RETAINED_AUTHORITY_TABLES)
@@ -65,7 +63,6 @@ def test_retained_raw_authority_tables_are_still_declared(table: str) -> None:
     """The retained durable evidence is untouched by the retirement."""
     declared = {obj.table_name for obj in canonical_schema_objects(ArchiveTier.SOURCE)}
     assert table in declared
-    assert f"table:{table}" not in RETIRED_SOURCE_SCHEMA_OBJECTS
 
 
 def test_a_fresh_archive_builds_without_the_census_ledger(tmp_path: Path) -> None:

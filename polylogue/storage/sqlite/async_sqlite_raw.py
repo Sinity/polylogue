@@ -79,18 +79,6 @@ class SQLiteRawMixin:
         ):
             yield raw_header
 
-    async def save_raw_session(self, record: RawSessionRecord) -> bool:
-        """Save a raw session record. Returns True if inserted.
-
-        Delegates to the single canonical writer (``queries/raw_writes.py``)
-        instead of hand-rolling SQL here: a second, narrower column list for
-        the same durable-tier table let re-saves silently reset revision
-        evidence (raw_id, revision_kind, source_revision, ...) to defaults
-        (polylogue-vwia). Do not reintroduce a parallel INSERT here.
-        """
-        async with self._get_connection() as conn:
-            return await raw_queries.save_raw_session(conn, record, self._transaction_depth)
-
     async def admit_raw(self, request: RawAdmissionRequest) -> RawAdmissionExecution:
         """Apply one normal acquisition admission through the shared planner."""
         plan = plan_raw_admission(request)

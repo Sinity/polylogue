@@ -33,7 +33,7 @@ from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.storage_records import make_raw_session
+from tests.infra.storage_records import admit_raw_record, make_raw_session
 
 pytestmark = pytest.mark.uses_real_clock("Same as test_async_index: acquired_at is opaque metadata.")
 
@@ -81,7 +81,8 @@ async def test_parse_backlog_excludes_terminal_failure_authority_until_forced_re
     source_db = tmp_path / "source.db"
     backend = SQLiteBackend(db_path=source_db)
     try:
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             make_raw_session(
                 raw_id="terminal-unsupported",
                 source_name="codex-session",
@@ -90,7 +91,7 @@ async def test_parse_backlog_excludes_terminal_failure_authority_until_forced_re
                 parse_error="unsupported shape",
                 blob_size=1,
                 acquired_at="2026-08-09T00:00:00+00:00",
-            )
+            ),
         )
         await backend.save_raw_failure_evidence(
             "terminal-unsupported",
@@ -124,7 +125,8 @@ async def test_parse_backlog_keeps_malformed_terminal_evidence_retryable(
     backend = SQLiteBackend(db_path=source_db)
     raw_id = "malformed-terminal"
     try:
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             make_raw_session(
                 raw_id=raw_id,
                 source_name="codex-session",
@@ -133,7 +135,7 @@ async def test_parse_backlog_keeps_malformed_terminal_evidence_retryable(
                 parse_error="unsupported shape",
                 blob_size=1,
                 acquired_at="2026-08-09T00:00:00+00:00",
-            )
+            ),
         )
         await backend.save_raw_failure_evidence(
             raw_id,
@@ -174,7 +176,8 @@ async def test_validation_failed_unsupported_terminal_evidence_remains_unexplain
     source_db = tmp_path / "source.db"
     backend = SQLiteBackend(db_path=source_db)
     try:
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             make_raw_session(
                 raw_id="validation-failed-unsupported",
                 source_name="codex-session",
@@ -182,7 +185,7 @@ async def test_validation_failed_unsupported_terminal_evidence_remains_unexplain
                 validation_status="failed",
                 parse_error="unsupported shape",
                 blob_size=1,
-            )
+            ),
         )
         await backend.save_raw_failure_evidence(
             "validation-failed-unsupported",
@@ -827,14 +830,15 @@ class TestPlanningService:
         source_dir = tmp_path / "inbox-a"
         source_dir.mkdir()
 
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             RawSessionRecord(
                 raw_id="raw-scoped",
                 source_name="inbox-a",
                 source_path=str(source_dir / "a.json"),
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
-            )
+            ),
         )
         mock_iter.side_effect = AssertionError("parse planning must not scan sources")
 
@@ -858,14 +862,15 @@ class TestPlanningService:
             ("raw-legacy-provider", None, str(tmp_path / "legacy" / "legacy.json")),
             ("raw-other", "inbox-b", str(tmp_path / "inbox-b" / "b.json")),
         ):
-            await backend.save_raw_session(
+            await admit_raw_record(
+                backend,
                 RawSessionRecord(
                     raw_id=raw_id,
                     source_name=source_name,
                     source_path=source_path,
                     blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
-                )
+                ),
             )
 
         plan = await planner.build_plan(sources=[Source(name="inbox-a", path=source_dir)], stage="parse")
@@ -912,14 +917,15 @@ class TestPlanningService:
 
         backlog_ids = [hashlib.sha256(f"backlog-{index}".encode()).hexdigest() for index in range(5)]
         for index in range(5):
-            await backend.save_raw_session(
+            await admit_raw_record(
+                backend,
                 RawSessionRecord(
                     raw_id=backlog_ids[index],
                     source_name="inbox-a",
                     source_path=str(source_dir / f"backlog-{index}.json"),
                     blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
-                )
+                ),
             )
 
         call_count = [0]
@@ -953,14 +959,15 @@ class TestPlanningService:
 
         total_backlog = ValidationService.RAW_BATCH_SIZE + 5
         for index in range(total_backlog):
-            await backend.save_raw_session(
+            await admit_raw_record(
+                backend,
                 RawSessionRecord(
                     raw_id=hashlib.sha256(f"raw-preview-{index}".encode()).hexdigest(),
                     source_name="inbox-a",
                     source_path=str(source_dir / f"p-{index}.json"),
                     blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
-                )
+                ),
             )
 
         call_count = [0]
@@ -994,14 +1001,15 @@ class TestPlanningService:
         source_dir.mkdir()
 
         for raw_id, status in (("raw-passed", "passed"), ("raw-skipped", "skipped"), ("raw-failed", "failed")):
-            await backend.save_raw_session(
+            await admit_raw_record(
+                backend,
                 RawSessionRecord(
                     raw_id=raw_id,
                     source_name="inbox-a",
                     source_path=str(source_dir / f"{raw_id}.json"),
                     blob_size=len(b'{"id":"x"}'),
                     acquired_at=datetime.now(tz=timezone.utc).isoformat(),
-                )
+                ),
             )
             await backend.mark_raw_validated(raw_id, status=status, provider="chatgpt", mode="strict")
 
@@ -1018,37 +1026,40 @@ class TestPlanningService:
         source_dir = tmp_path / "inbox-a"
         source_dir.mkdir()
 
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             RawSessionRecord(
                 raw_id="raw-validated",
                 source_name="inbox-a",
                 source_path=str(source_dir / "validated.json"),
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
-            )
+            ),
         )
         await backend.mark_raw_validated("raw-validated", status="passed", provider="chatgpt", mode="strict")
         await backend.mark_raw_parsed("raw-validated", payload_provider="chatgpt")
 
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             RawSessionRecord(
                 raw_id="raw-unvalidated",
                 source_name="inbox-a",
                 source_path=str(source_dir / "unvalidated.json"),
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
-            )
+            ),
         )
         await backend.mark_raw_parsed("raw-unvalidated", payload_provider="chatgpt")
 
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             RawSessionRecord(
                 raw_id="raw-validation-failed",
                 source_name="inbox-a",
                 source_path=str(source_dir / "validation-failed.json"),
                 blob_size=len(b'{"id":"x"}'),
                 acquired_at=datetime.now(tz=timezone.utc).isoformat(),
-            )
+            ),
         )
         await backend.mark_raw_validated(
             "raw-validation-failed",
@@ -1098,7 +1109,7 @@ class TestPlanningService:
             blob_size=len(b'{"id":"x"}'),
             acquired_at=datetime.now(tz=timezone.utc).isoformat(),
         )
-        await backend.save_raw_session(record)
+        await admit_raw_record(backend, record)
         await backend.mark_raw_validated("raw-existing", status="passed", provider="chatgpt", mode="strict")
         await backend.mark_raw_parsed("raw-existing", payload_provider="chatgpt")
 
@@ -1170,7 +1181,7 @@ class TestPlanningService:
             ),
         ]
         for record in records:
-            await backend.save_raw_session(record)
+            await admit_raw_record(backend, record)
 
         passed_id = records[0].raw_id
         unvalidated_id = records[1].raw_id
