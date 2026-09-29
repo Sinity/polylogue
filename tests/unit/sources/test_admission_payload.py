@@ -375,3 +375,19 @@ def test_repeated_unknown_records_keep_one_pending_event_per_type() -> None:
         observer.observe({"type": "future_record_kind"})
 
     assert len(observer._unknowns) == 1
+
+
+def test_the_default_scan_never_reads_a_wire_type_from_tool_data() -> None:
+    """An origin without its own scanner still ignores tool arguments and results.
+
+    Anti-vacuity (#5711, the class Codex found for OTel): recurse into every
+    value and a ChatGPT-style tool argument ``{"type": "unknown"}`` marks the
+    record unknown, while a real nested future content type must still be
+    found.
+    """
+    from polylogue.sources.parsers.base_support import _unknown_wire_type
+
+    for key in ("arguments", "input", "output", "result", "attributes", "parameters"):
+        record = {"type": "message", "tool_call": {key: {"type": "unknown", "nested": [{"kind": "future_x"}]}}}
+        assert _unknown_wire_type(record) is None, key
+    assert _unknown_wire_type({"type": "message", "content": [{"content_type": "future_part"}]}) == "future_part"

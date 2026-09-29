@@ -796,13 +796,13 @@ def test_a_multi_conversation_document_is_scanned_once(monkeypatch: Any) -> None
     from polylogue.sources.parsers import base_support
 
     calls: list[object] = []
-    scan = base_support._ADMISSION_SCANS["otel_genai"]
+    scan = base_support._ADMISSION_SCANS["opentelemetry"]
 
     def counting(value: object) -> str | None:
         calls.append(value)
         return scan(value)
 
-    monkeypatch.setitem(base_support._ADMISSION_SCANS, "otel_genai", counting)
+    monkeypatch.setitem(base_support._ADMISSION_SCANS, "opentelemetry", counting)
     payload = _document(
         *(
             ([_attr("service.name", f"svc-{index}")], [_chat(f"{index:032x}", "1" * 16, 1_000, ["Q"], "A")])

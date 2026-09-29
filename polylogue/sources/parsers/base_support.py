@@ -211,19 +211,43 @@ def otel_genai_unknown_wire_type(value: object) -> str | None:
     return None
 
 
+#: Keys whose values are user or tool data in every origin: a tool call's
+#: arguments or input, its output or result, span attributes. The default
+#: scan never reads a wire type from beneath them -- a tool argument
+#: ``{"type": "unknown"}`` is data, not a provider discriminator.
+_USER_DATA_KEYS = frozenset(
+    {
+        "arguments",
+        "args",
+        "input",
+        "tool_input",
+        "toolInput",
+        "parameters",
+        "params",
+        "output",
+        "result",
+        "results",
+        "attributes",
+    }
+)
+
+
 def _unknown_wire_type(value: object) -> str | None:
     """Return a deliberately future-shaped wire type, if one is visible.
 
     This is intentionally narrow.  Admission must not classify ordinary
     provider metadata as unknown merely because it contains a ``type`` field;
-    the parser-specific lowering remains authoritative for known shapes.
+    the parser-specific lowering remains authoritative for known shapes. It
+    does not descend into user data (:data:`_USER_DATA_KEYS`).
     """
     if isinstance(value, dict):
         for key in ("type", "content_type", "kind", "record_type"):
             candidate = value.get(key)
             if _is_unknown_sentinel(candidate):
                 return cast(str, candidate)
-        for child in value.values():
+        for key, child in value.items():
+            if key in _USER_DATA_KEYS:
+                continue
             found = _unknown_wire_type(child)
             if found is not None:
                 return found
@@ -382,7 +406,7 @@ _ADMISSION_SCANS: dict[str, Callable[[object], str | None]] = {
     "hermes": hermes_unknown_wire_type,
     "codex": codex_unknown_wire_type,
     "claude_code": claude_code_unknown_wire_type,
-    "otel_genai": otel_genai_unknown_wire_type,
+    "opentelemetry": otel_genai_unknown_wire_type,
 }
 
 
