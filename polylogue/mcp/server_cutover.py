@@ -79,10 +79,12 @@ def _cancel_reference_unknown(envelope: object) -> bool:
 
 async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dict[str, object]) -> str:
     """Submit a privileged request to the resident daemon only."""
+    from polylogue.core.enums import OperationStatus
     from polylogue.daemon.api_auth import resolve_api_auth_token
     from polylogue.daemon.socket_path import daemon_socket_path
     from polylogue.daemon_client import DaemonClient
     from polylogue.operations.daemon_errors import DaemonMutationIndeterminateError
+    from polylogue.operations.daemon_protocol import DAEMON_INDETERMINATE_OUTCOMES
 
     config = hooks.get_config()
     # ``no_daemon``/``daemon_client_mode`` live on PolylogueConfig (the settings
@@ -140,14 +142,17 @@ async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dic
         # it, so a client told only "start polylogued run" cannot tell WHICH
         # privileged route refused (the gap #5474 closed for the CLI envelope).
         return hooks.error_json(f"start polylogued run to serve this operation: {operation}", code="daemon_required")
-    if response.get("outcome") in {"indeterminate", "disconnected-after-acceptance", "restarted"}:
+    outcome = response.get("outcome", OperationStatus.COMPLETED.value)
+    if outcome in DAEMON_INDETERMINATE_OUTCOMES:
         raise DaemonMutationIndeterminateError(method="POST", path="/api/operation", request_id=request_id)
-    if response.get("outcome") in {"rejected", "failed"}:
-        error = response.get("error")
+    error = response.get("error")
+    if error is not None or outcome not in {OperationStatus.COMPLETED.value, OperationStatus.ACCEPTED.value}:
+        # A cancelled, timed-out, degraded or failed envelope is not a result,
+        # whatever body it carries.
         detail = (error.get("detail") or error.get("message")) if isinstance(error, dict) else None
         code = error.get("code") if isinstance(error, dict) else None
         retryable = error.get("retryable") if isinstance(error, dict) else None
-        extra: dict[str, str] = {"code": str(code or "daemon_rejected")}
+        extra: dict[str, str] = {"code": str(code or outcome or "daemon_rejected")}
         if retryable is not None:
             extra["retryable"] = str(retryable)
         return hooks.error_json(str(detail or "daemon operation refused"), **extra)
@@ -1020,40 +1025,27 @@ async def _query_insight_projection(
         {"projection": projection, "origin": origin, "tag": tag, "repo": repo, "since": since, "until": until},
     ):
         if projection in ("postmortem", "pathologies"):
+            from polylogue.analysis.postmortem import pathology_outcome, postmortem_outcome
+
             request = build_session_query_request(origin=origin, tag=tag, repo=repo, since=since, until=until)
             spec = replace(request.build_spec(hooks.clamp_limit), limit=None)
             if projection == "postmortem":
                 bundle = await poly.postmortem_bundle(spec, limit=limit)
-                gaps: list[str] = []
-                scope = bundle.scope
-                if scope.truncated or scope.dropped_session_count:
-                    gaps.append("match_cap_exceeded")
-                if scope.analyzed_session_count < scope.matched_session_count - scope.dropped_session_count:
-                    gaps.append("session_profile_unavailable")
-                if bundle.wasted_loop.missing_digest_count or bundle.failure_mode.missing_digest_count:
-                    gaps.append("session_digest_unavailable")
-                if scope.matched_session_count and bundle.longest_tool_gap.status == "unavailable":
-                    gaps.append("longest_tool_gap_unavailable")
                 return hooks.json_payload(
                     MCPRootPayload(
                         root={
                             **bundle.model_dump(mode="json", exclude_none=True),
-                            "outcome": decide_outcome(matched=scope.matched_session_count, degraded=gaps).to_dict(),
+                            "outcome": postmortem_outcome(bundle).to_dict(),
                         }
                     ),
                     exclude_none=True,
                 )
             report = await poly.pathology_report(spec, limit=limit)
-            gaps = []
-            if report.truncated or report.dropped_session_count:
-                gaps.append("match_cap_exceeded")
-            if report.failed_session_count:
-                gaps.append("session_digest_unavailable")
             return hooks.json_payload(
                 MCPRootPayload(
                     root={
                         **report.model_dump(mode="json", exclude_none=True),
-                        "outcome": decide_outcome(matched=len(report.findings), degraded=gaps).to_dict(),
+                        "outcome": pathology_outcome(report).to_dict(),
                     }
                 ),
                 exclude_none=True,

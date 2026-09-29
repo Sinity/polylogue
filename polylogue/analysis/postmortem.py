@@ -25,8 +25,9 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
 from polylogue.analysis.archive_models import ArchiveInsightModel
-from polylogue.analysis.pathology import PathologyFinding, compile_pathology_report
+from polylogue.analysis.pathology import PathologyFinding, PathologyReport, compile_pathology_report
 from polylogue.core.refs import EvidenceRef
+from polylogue.surfaces.outcome import OutcomeEnvelope, decide_outcome
 
 if TYPE_CHECKING:
     from polylogue.analysis.transforms import SessionDigest
@@ -716,3 +717,40 @@ __all__ = [
     "render_postmortem_markdown",
     "render_postmortem_plain",
 ]
+
+
+def postmortem_outcome(bundle: PostmortemBundle) -> OutcomeEnvelope:
+    """Decide the terminal outcome of a postmortem bundle from its coverage.
+
+    Every matched session the bundle could not profile, digest, or keep
+    under the match cap is a named gap, and so is a headline measurement the
+    bundle reports as unavailable over a nonempty scope.
+    """
+
+    scope = bundle.scope
+    gaps: list[str] = []
+    if scope.truncated or scope.dropped_session_count:
+        gaps.append("match_cap_exceeded")
+    if scope.analyzed_session_count < scope.matched_session_count - scope.dropped_session_count:
+        gaps.append("session_profile_unavailable")
+    if bundle.wasted_loop.missing_digest_count or bundle.failure_mode.missing_digest_count:
+        gaps.append("session_digest_unavailable")
+    if scope.matched_session_count and bundle.longest_tool_gap.status == "unavailable":
+        gaps.append("longest_tool_gap_unavailable")
+    return decide_outcome(matched=scope.matched_session_count, degraded=gaps)
+
+
+def pathology_outcome(report: PathologyReport) -> OutcomeEnvelope:
+    """Decide the terminal outcome of a pathology report from its coverage.
+
+    Zero findings is ``empty`` only when every matched session was analyzed:
+    a truncated match or an unreadable digest leaves sessions unmeasured, so
+    the absence of findings there is ``degraded``.
+    """
+
+    gaps: list[str] = []
+    if report.truncated or report.dropped_session_count:
+        gaps.append("match_cap_exceeded")
+    if report.failed_session_count:
+        gaps.append("session_digest_unavailable")
+    return decide_outcome(matched=len(report.findings), degraded=gaps)

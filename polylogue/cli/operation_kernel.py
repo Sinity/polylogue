@@ -17,6 +17,7 @@ from polylogue.operations.daemon_errors import (
     DaemonOperationProtocolError,
 )
 from polylogue.operations.daemon_protocol import (
+    DAEMON_INDETERMINATE_OUTCOMES,
     MAX_OPERATION_RESULT_BYTES,
     DaemonOperationSpec,
     OperationStatus,
@@ -188,7 +189,7 @@ class OperationKernel:
             outcome = envelope.get("outcome", OperationStatus.COMPLETED.value)
             # An explanatory error cannot demote accepted, unresolved effects
             # to an ordinary failure that callers may safely retry.
-            if outcome in {"indeterminate", "disconnected-after-acceptance", "restarted"}:
+            if outcome in DAEMON_INDETERMINATE_OUTCOMES:
                 raise OperationIndeterminateError(
                     f"{request.operation} requires receipt recovery",
                     request_id=call_id,

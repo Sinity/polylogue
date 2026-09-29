@@ -85,6 +85,13 @@ DAEMON_OPERATION_OUTCOMES = frozenset(
 )
 
 
+#: Outcomes after which the daemon may have applied the request's effects
+#: although the caller holds no receipt. Every surface raises
+#: ``DaemonMutationIndeterminateError``-shaped recovery for these instead of
+#: reporting a failure a caller could safely retry.
+DAEMON_INDETERMINATE_OUTCOMES = frozenset({"indeterminate", "disconnected-after-acceptance", "restarted"})
+
+
 class _OperationPayload(BaseModel):
     """Base for a concrete machine-operation payload type."""
 

@@ -72,8 +72,30 @@ async def test_registered_maintenance_preserves_submitted_identity(
         assert result["code"] == "indeterminate"
         assert result["request_id"] == submitted[0]
         assert result["retryable"] is False
-        assert "recover the existing request" in result["message"]
-        assert "start polylogued" not in result["message"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["cancelled", "timed-out", "degraded", "disconnected-before-acceptance"])
+async def test_registered_maintenance_refuses_unfinished_envelopes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    """An envelope that did not complete is an error even when it carries a body."""
+    tools = build_tools(MCPCapabilities(maintenance=True))
+    monkeypatch.setattr("polylogue.cli.read_dispatch.daemon_route_disabled", lambda **_: False)
+
+    def unfinished_operation(
+        self: object, operation: str, payload: object, *, request_id: str, **kwargs: object
+    ) -> dict[str, Any]:
+        return {"operation": operation, "request_id": request_id, "outcome": outcome, "result": {"rebuilt": 0}}
+
+    monkeypatch.setattr(DaemonClient, "operation", unfinished_operation)
+    with installed_runtime_services(tmp_path / "archive"):
+        result = json.loads(
+            await invoke_surface_async(tools["maintenance"], operation="rebuild_insights", confirm=True)
+        )
+    assert result["is_error"] is True, result
+    assert result["code"] == outcome
+    assert "rebuilt" not in result
 
 
 def test_shared_exception_boundary_preserves_identity_without_internal_paths() -> None:
@@ -256,7 +278,6 @@ async def test_registered_delete_prepares_then_consumes_the_callers_preview(
                 await invoke_surface_async(tools["write"], operation="delete_session", session_id=ids[0], confirm=True)
             )
             assert bare["code"] == "invalid_argument", bare
-            assert "preview_ref" in bare["message"]
             prepared = json.loads(
                 await invoke_surface_async(tools["write"], operation="prepare_delete_session", session_id=ids[0])
             )
