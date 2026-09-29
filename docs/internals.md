@@ -683,10 +683,9 @@ manifest** for the affected tier. Additive means `CREATE TABLE`/`CREATE INDEX`/
 `ADD COLUMN`/bounded backfill; destructive durable-tier changes require a
 copy-forward design and explicit operator consent, never a routine migration.
 
-`ops.db` (disposable daemon telemetry) may additionally use narrowly scoped
-`ALTER TABLE ... ADD COLUMN` bootstrap helpers in
-`storage/sqlite/archive_tiers/bootstrap.py`
-(ingest-cursor runtime fields, cursor-lag rollups). The
+`ops.db` (disposable daemon telemetry) has no column-level upgrade helpers:
+its canonical DDL is the whole shape, and a column or CHECK change is a new
+ops shape that moves its schema identity, not an in-place upgrade. The
 `devtools verify schema-manifest` check enforces the whole boundary:
 numbered durable-tier migrations are allowed, and derived tiers are held to
 their identity hash. Ad hoc open-path upgrades are not a supported runtime

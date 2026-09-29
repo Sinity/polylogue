@@ -85,6 +85,7 @@ from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.connection_profile import open_isolated_write_connection, open_readonly_connection
 from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement, write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
+from tests.infra.storage_records import admit_raw_record
 
 BlockSpec: TypeAlias = tuple[str, ParsedContentBlock]
 AttachmentRefSpec: TypeAlias = tuple[str, str]
@@ -4454,7 +4455,8 @@ async def test_process_ingest_batch_off_mode_supports_repository_without_source_
     blob_hash, blob_size = BlobStore(tmp_path / "blob").write_from_bytes(b"index-only ingest payload")
     repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"))
     assert repository.source_backend is None
-    assert await repository.save_raw_session(
+    assert await admit_raw_record(
+        repository,
         RawSessionRecord(
             raw_id=raw_id,
             blob_hash=blob_hash,
@@ -4462,7 +4464,7 @@ async def test_process_ingest_batch_off_mode_supports_repository_without_source_
             source_path="/sources/index-only.jsonl",
             blob_size=blob_size,
             acquired_at="2026-04-02T00:00:00Z",
-        )
+        ),
     )
 
     session_id = "codex-session:off-index-only"

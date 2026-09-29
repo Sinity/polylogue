@@ -42,8 +42,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Final
 
-from polylogue.storage.sqlite.archive_tiers.source import RETIRED_SOURCE_SCHEMA_OBJECTS
-
 #: Column that makes a relation reachable through a raw acquisition.
 RAW_KEY_COLUMN: Final = "raw_id"
 
@@ -63,12 +61,6 @@ class CarrierReach(StrEnum):
     #: are excised per member; the container row survives only while another
     #: member is still live, and the receipt names it when it does.
     CONTAINER = "container"
-    #: A retired schema object that only a migrated historical source tier
-    #: still carries. Fresh generations omit it, so it never appears in a
-    #: fresh tier's audit; it holds derived bookkeeping receipts or telemetry,
-    #: not acquired payload. Where a migrated tier does carry it,
-    #: ``apply_session_excision`` still deletes its rows by name.
-    RETIRED = "retired"
     #: Content-free terminal evidence deliberately retained after carrier
     #: bytes are erased, so a retry cannot recreate them.
     TOMBSTONE = "tombstone"
@@ -128,11 +120,6 @@ SESSION_CARRIERS: Final[dict[str, SessionCarrier]] = _carriers(
         "raw_hook_events",
         CarrierReach.EXCISED,
         "hook payloads are addressed by (origin, session_native_id) and carry no raw row (polylogue-bhhsa)",
-    ),
-    SessionCarrier(
-        "otlp_spans",
-        CarrierReach.RETIRED,
-        "retired inbound span storage (polylogue-enrpa); excised by name where a migrated tier still carries it",
     ),
     SessionCarrier(
         "source_items",
@@ -261,8 +248,7 @@ def session_keyed_tables(conn: sqlite3.Connection) -> tuple[str, ...]:
 def audit_session_carriers(conn: sqlite3.Connection) -> CarrierAudit:
     """Compare every live session-keyed relation against its declared reach.
 
-    Derived from the live schema, not from a copy of the DDL, so a table that
-    only a migrated historical tier carries is classified too --- and a table
+    Derived from the live schema, not from a copy of the DDL, so a table
     created outside the declared DDL (the anti-vacuity case) is reported as
     undeclared rather than skipped.
     """
@@ -272,9 +258,6 @@ def audit_session_carriers(conn: sqlite3.Connection) -> CarrierAudit:
     for table in session_keyed_tables(conn):
         carrier = SESSION_CARRIERS.get(table)
         if carrier is None:
-            if f"table:{table}" in RETIRED_SOURCE_SCHEMA_OBJECTS:
-                declared.append(table)
-                continue
             undeclared.append(table)
             continue
         declared.append(table)

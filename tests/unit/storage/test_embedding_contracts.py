@@ -15,7 +15,6 @@ import sqlite3
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, TypeAlias, cast
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -24,15 +23,12 @@ from polylogue.storage.embeddings.embedding_stats import (
 )
 from polylogue.storage.embeddings.materialization import (
     count_archive_embedding_session_state,
-    count_archive_session_embeddable_messages,
     embed_archive_session_sync,
-    embed_session_sync,
     select_pending_archive_session_window,
     select_pending_session_window,
 )
 from polylogue.storage.embeddings.models import EmbeddingStatsSnapshot
 from polylogue.storage.runtime import MessageRecord
-from polylogue.storage.sqlite.schema import SCHEMA_VERSION
 from tests.infra.live_ingest import write_index_session
 
 
@@ -78,9 +74,10 @@ _EMBEDDING_STATUS_DDL = """
     );
 """
 
-_MESSAGE_EMBEDDINGS_DDL = """
-    CREATE TABLE IF NOT EXISTS message_embeddings (
-        message_id TEXT
+_MESSAGE_EMBEDDING_REFS_DDL = """
+    CREATE TABLE IF NOT EXISTS message_embedding_refs (
+        message_id TEXT PRIMARY KEY,
+        vector_derivation_hash BLOB
     );
 """
 
@@ -114,20 +111,10 @@ _MESSAGES_DDL = """
 def _setup_minimal_embedding_db(conn: sqlite3.Connection) -> None:
     """Create the minimum tables needed for embedding stats reading."""
     conn.executescript(_EMBEDDING_STATUS_DDL)
-    conn.executescript(_MESSAGE_EMBEDDINGS_DDL)
+    conn.executescript(_MESSAGE_EMBEDDING_REFS_DDL)
     conn.executescript(_SESSIONS_DDL)
     conn.executescript(_MESSAGES_DDL)
     conn.commit()
-
-
-def _setup_minimal_embedding_file(path: Path) -> None:
-    conn = sqlite3.connect(path)
-    try:
-        _setup_minimal_embedding_db(conn)
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def _insert_session(conn: sqlite3.Connection, session_id: str, *, message_count: int) -> None:
@@ -310,17 +297,15 @@ def test_embedding_status_lifecycle(
             )
         conn.commit()
 
-        # Seed message_embeddings for fully embedded sessions
+        # Seed message_embedding_refs for fully embedded sessions
         for conv_id, _last_embedded, needs_reindex, _error_msg in seed_rows:
             if needs_reindex == 0:
-                conn.execute(
-                    "INSERT INTO message_embeddings (message_id) VALUES (?)",
-                    (f"{conv_id}-msg-1",),
-                )
-                conn.execute(
-                    "INSERT INTO message_embeddings (message_id) VALUES (?)",
-                    (f"{conv_id}-msg-2",),
-                )
+                for suffix in ("msg-1", "msg-2"):
+                    conn.execute(
+                        "INSERT INTO message_embedding_refs (message_id, vector_derivation_hash) "
+                        "VALUES (?, zeroblob(32))",
+                        (f"{conv_id}-{suffix}",),
+                    )
         conn.commit()
 
         stats = read_embedding_stats_sync(conn, include_retrieval_bands=False)
@@ -469,167 +454,6 @@ def test_pending_archive_window_skips_session_larger_than_max_messages() -> None
         conn.close()
 
 
-def test_pending_archive_window_reselects_status_with_lower_actual_count() -> None:
-    conn = sqlite3.connect(":memory:")
-    try:
-        _setup_minimal_embedding_db(conn)
-        # The archive selector orders by sort_key_ms; the minimal DDL omits it.
-        conn.execute("ALTER TABLE sessions ADD COLUMN sort_key_ms INTEGER")
-        _insert_session(conn, "completed", message_count=5)
-        conn.execute(
-            """
-            INSERT INTO embedding_status (
-                session_id, message_count_embedded, needs_reindex, error_message
-            ) VALUES ('completed', 1, 0, NULL)
-            """
-        )
-        conn.commit()
-
-        pending = select_pending_archive_session_window(conn, status_table="embedding_status", min_messages=3)
-
-        assert [item.session_id for item in pending] == ["completed"]
-        assert pending[0].message_count == 5
-    finally:
-        conn.close()
-
-
-def test_pending_archive_window_does_not_treat_aggregate_overcount_as_stale() -> None:
-    conn = sqlite3.connect(":memory:")
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                origin TEXT NOT NULL DEFAULT 'unknown-export',
-                title TEXT,
-                sort_key_ms INTEGER,
-                authored_user_message_count INTEGER NOT NULL DEFAULT 0,
-                assistant_message_count INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                role TEXT NOT NULL DEFAULT 'user',
-                message_type TEXT NOT NULL DEFAULT 'message',
-                material_origin TEXT NOT NULL DEFAULT 'human_authored',
-                word_count INTEGER NOT NULL DEFAULT 8
-            );
-            CREATE TABLE embedding_status (
-                session_id TEXT PRIMARY KEY,
-                message_count_embedded INTEGER NOT NULL DEFAULT 0,
-                needs_reindex INTEGER NOT NULL DEFAULT 0,
-                error_message TEXT
-            );
-            INSERT INTO sessions VALUES ('complete', 'codex-session', 'complete', 3, 20, 20);
-            INSERT INTO sessions VALUES ('pending-newest', 'codex-session', 'pending', 2, 70, 48);
-            INSERT INTO sessions VALUES ('pending-older', 'codex-session', 'pending older', 1, 8, 4);
-            INSERT INTO embedding_status VALUES ('complete', 40, 0, NULL);
-            INSERT INTO embedding_status VALUES ('pending-newest', 50, 0, NULL);
-            INSERT INTO embedding_status VALUES ('pending-older', 0, 1, NULL);
-            """
-        )
-
-        pending = select_pending_archive_session_window(
-            conn,
-            status_table="embedding_status",
-            max_sessions=1,
-            max_messages=200,
-            min_messages=2,
-        )
-
-        assert [item.session_id for item in pending] == ["pending-older"]
-        assert pending[0].message_count == 12
-    finally:
-        conn.close()
-
-
-def test_pending_archive_window_reselects_clean_status_with_new_eligible_prose() -> None:
-    conn = sqlite3.connect(":memory:")
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                origin TEXT NOT NULL DEFAULT 'unknown-export',
-                title TEXT,
-                sort_key_ms INTEGER,
-                authored_user_message_count INTEGER NOT NULL DEFAULT 0,
-                assistant_message_count INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                text TEXT,
-                role TEXT NOT NULL DEFAULT 'user',
-                message_type TEXT NOT NULL DEFAULT 'message',
-                material_origin TEXT NOT NULL DEFAULT 'human_authored',
-                word_count INTEGER NOT NULL DEFAULT 8
-            );
-            CREATE TABLE embedding_status (
-                session_id TEXT PRIMARY KEY,
-                message_count_embedded INTEGER NOT NULL DEFAULT 0,
-                needs_reindex INTEGER NOT NULL DEFAULT 0,
-                error_message TEXT
-            );
-            INSERT INTO sessions VALUES ('changed', 'codex-session', 'changed', 1, 2, 0);
-            INSERT INTO messages (
-                message_id, session_id, text, role, message_type, material_origin, word_count
-            ) VALUES
-                ('m-old', 'changed', 'old authored prose long enough', 'user', 'message', 'human_authored', 5),
-                ('m-new', 'changed', 'new authored prose long enough', 'user', 'message', 'human_authored', 5);
-            INSERT INTO embedding_status VALUES ('changed', 1, 0, NULL);
-            """
-        )
-
-        pending = select_pending_archive_session_window(conn, status_table="embedding_status")
-
-        assert [item.session_id for item in pending] == ["changed"]
-        assert pending[0].message_count == 2
-    finally:
-        conn.close()
-
-
-def test_pending_archive_window_filters_zero_rollups_before_session_limit() -> None:
-    conn = sqlite3.connect(":memory:")
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                origin TEXT NOT NULL DEFAULT 'unknown-export',
-                title TEXT,
-                sort_key_ms INTEGER,
-                authored_user_message_count INTEGER NOT NULL DEFAULT 0,
-                assistant_message_count INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                role TEXT NOT NULL DEFAULT 'user',
-                message_type TEXT NOT NULL DEFAULT 'message',
-                material_origin TEXT NOT NULL DEFAULT 'human_authored',
-                word_count INTEGER NOT NULL DEFAULT 8
-            );
-            CREATE TABLE embedding_status (
-                session_id TEXT PRIMARY KEY,
-                message_count_embedded INTEGER NOT NULL DEFAULT 0,
-                needs_reindex INTEGER NOT NULL DEFAULT 0,
-                error_message TEXT
-            );
-            INSERT INTO sessions VALUES ('zero-newest', 'codex-session', 'zero', 3, 0, 0);
-            INSERT INTO sessions VALUES ('zero-next', 'codex-session', 'zero', 2, 0, 0);
-            INSERT INTO sessions VALUES ('eligible', 'codex-session', 'eligible', 1, 1, 1);
-            """
-        )
-
-        pending = select_pending_archive_session_window(conn, status_table="embedding_status", max_sessions=1)
-
-        assert [item.session_id for item in pending] == ["eligible"]
-        assert pending[0].message_count == 2
-    finally:
-        conn.close()
-
-
 def test_pending_archive_window_counts_only_embeddable_prose() -> None:
     conn = sqlite3.connect(":memory:")
     try:
@@ -679,311 +503,6 @@ def test_pending_archive_window_counts_only_embeddable_prose() -> None:
         # correctly excluding the context/tool-result rows even without a
         # status ledger to consult.
         assert pending[0].message_count == 2
-    finally:
-        conn.close()
-
-
-def test_pending_archive_window_matches_materialization_text_floor() -> None:
-    conn = sqlite3.connect(":memory:")
-    try:
-        _setup_minimal_embedding_db(conn)
-        conn.execute("ALTER TABLE sessions ADD COLUMN sort_key_ms INTEGER")
-        conn.execute(
-            """
-            INSERT INTO sessions (session_id, origin, title, updated_at_ms, message_count, content_hash, sort_key_ms)
-            VALUES ('mixed', 'unknown-export', 'mixed', 1, 3, 'hash-mixed', 1)
-            """
-        )
-        conn.executemany(
-            """
-            INSERT INTO messages (
-                message_id, session_id, text, role, message_type, material_origin, word_count
-            ) VALUES (?, 'mixed', ?, 'user', 'message', 'human_authored', 1)
-            """,
-            [
-                ("m-long", "long enough authored prose"),
-                ("m-short-a", "tiny"),
-                ("m-short-b", "brief"),
-            ],
-        )
-        conn.execute(
-            """
-            INSERT INTO embedding_status (
-                session_id, message_count_embedded, needs_reindex, error_message
-            ) VALUES ('mixed', 1, 0, NULL)
-            """
-        )
-        conn.commit()
-
-        assert select_pending_archive_session_window(conn, status_table="embedding_status") == []
-    finally:
-        conn.close()
-
-
-def test_pending_archive_window_reselects_stale_message_hash() -> None:
-    conn = sqlite3.connect(":memory:")
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                origin TEXT NOT NULL DEFAULT 'unknown-export',
-                title TEXT,
-                sort_key_ms INTEGER,
-                authored_user_message_count INTEGER NOT NULL DEFAULT 0,
-                assistant_message_count INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                text TEXT,
-                role TEXT NOT NULL DEFAULT 'user',
-                message_type TEXT NOT NULL DEFAULT 'message',
-                material_origin TEXT NOT NULL DEFAULT 'human_authored',
-                word_count INTEGER NOT NULL DEFAULT 8,
-                content_hash BLOB
-            );
-            CREATE TABLE embedding_status (
-                session_id TEXT PRIMARY KEY,
-                message_count_embedded INTEGER NOT NULL DEFAULT 0,
-                needs_reindex INTEGER NOT NULL DEFAULT 0,
-                error_message TEXT
-            );
-            CREATE TABLE message_embeddings_meta (
-                message_id TEXT PRIMARY KEY,
-                model TEXT NOT NULL,
-                dimension INTEGER NOT NULL,
-                content_hash BLOB,
-                embedded_at_ms INTEGER NOT NULL,
-                needs_reindex INTEGER NOT NULL DEFAULT 0
-            );
-            INSERT INTO sessions VALUES ('changed', 'codex-session', 'changed', 1, 1, 0);
-            INSERT INTO messages (
-                message_id, session_id, text, role, message_type, material_origin, word_count, content_hash
-            ) VALUES (
-                'm1', 'changed', 'edited authored prose long enough', 'user', 'message',
-                'human_authored', 5, x'02'
-            );
-            INSERT INTO embedding_status VALUES ('changed', 1, 0, NULL);
-            INSERT INTO message_embeddings_meta VALUES ('m1', 'voyage-4', 1024, x'01', 1000, 0);
-            """
-        )
-
-        pending = select_pending_archive_session_window(conn, status_table="embedding_status")
-        state = count_archive_embedding_session_state(conn, status_table="embedding_status")
-
-        assert [item.session_id for item in pending] == ["changed"]
-        assert state.pending_sessions == 1
-        assert state.embedded_sessions == 0
-    finally:
-        conn.close()
-
-
-def test_bounded_backfill_mutation_restoring_stale_hash_bypass_misses_changed_content() -> None:
-    conn = sqlite3.connect(":memory:")
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                origin TEXT NOT NULL DEFAULT 'unknown-export',
-                title TEXT,
-                sort_key_ms INTEGER,
-                authored_user_message_count INTEGER NOT NULL DEFAULT 0,
-                assistant_message_count INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                text TEXT,
-                role TEXT NOT NULL DEFAULT 'user',
-                message_type TEXT NOT NULL DEFAULT 'message',
-                material_origin TEXT NOT NULL DEFAULT 'human_authored',
-                word_count INTEGER NOT NULL DEFAULT 8,
-                content_hash BLOB
-            );
-            CREATE TABLE embedding_status (
-                session_id TEXT PRIMARY KEY,
-                message_count_embedded INTEGER NOT NULL DEFAULT 0,
-                needs_reindex INTEGER NOT NULL DEFAULT 0,
-                error_message TEXT
-            );
-            CREATE TABLE message_embeddings_meta (
-                message_id TEXT PRIMARY KEY,
-                model TEXT NOT NULL,
-                dimension INTEGER NOT NULL,
-                content_hash BLOB,
-                embedded_at_ms INTEGER NOT NULL,
-                needs_reindex INTEGER NOT NULL DEFAULT 0
-            );
-            INSERT INTO sessions VALUES ('changed', 'codex-session', 'changed', 1, 1, 0);
-            INSERT INTO messages (
-                message_id, session_id, text, role, message_type, material_origin, word_count, content_hash
-            ) VALUES (
-                'm1', 'changed', 'edited authored prose long enough', 'user', 'message',
-                'human_authored', 5, x'02'
-            );
-            INSERT INTO embedding_status VALUES ('changed', 1, 0, NULL);
-            INSERT INTO message_embeddings_meta VALUES ('m1', 'voyage-4', 1024, x'01', 1000, 0);
-            """
-        )
-
-        pending = select_pending_archive_session_window(
-            conn,
-            status_table="embedding_status",
-            max_sessions=10,
-            max_messages=10,
-        )
-
-        assert [item.session_id for item in pending] == ["changed"]
-        exact = select_pending_archive_session_window(conn, status_table="embedding_status")
-        assert [item.session_id for item in exact] == ["changed"]
-    finally:
-        conn.close()
-
-
-def test_bounded_archive_window_uses_the_same_freshness_predicate_as_unbounded_mode() -> None:
-    conn = sqlite3.connect(":memory:")
-    try:
-        conn.executescript(
-            """
-            CREATE TABLE sessions (
-                session_id TEXT PRIMARY KEY,
-                origin TEXT NOT NULL DEFAULT 'unknown-export',
-                title TEXT,
-                sort_key_ms INTEGER,
-                authored_user_message_count INTEGER NOT NULL DEFAULT 0,
-                assistant_message_count INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE TABLE messages (
-                message_id TEXT PRIMARY KEY,
-                session_id TEXT NOT NULL,
-                text TEXT,
-                role TEXT NOT NULL DEFAULT 'user',
-                message_type TEXT NOT NULL DEFAULT 'message',
-                material_origin TEXT NOT NULL DEFAULT 'human_authored',
-                word_count INTEGER NOT NULL DEFAULT 8,
-                content_hash BLOB
-            );
-            CREATE TABLE embedding_status (
-                session_id TEXT PRIMARY KEY,
-                message_count_embedded INTEGER NOT NULL DEFAULT 0,
-                needs_reindex INTEGER NOT NULL DEFAULT 0,
-                error_message TEXT
-            );
-            INSERT INTO sessions VALUES ('clean', 'codex-session', 'clean', 1, 10, 0);
-            INSERT INTO messages (
-                message_id, session_id, text, role, message_type, material_origin, word_count, content_hash
-            ) VALUES (
-                'm1', 'clean', 'one authored prose message long enough', 'user', 'message',
-                'human_authored', 5, x'01'
-            );
-            INSERT INTO embedding_status VALUES ('clean', 1, 0, NULL);
-            """
-        )
-
-        bounded = select_pending_archive_session_window(
-            conn,
-            status_table="embedding_status",
-            max_sessions=10,
-            max_messages=20,
-        )
-        exact = select_pending_archive_session_window(conn, status_table="embedding_status")
-
-        assert bounded == []
-        assert exact == []
-    finally:
-        conn.close()
-
-
-def test_no_message_session_records_clean_status(tmp_path: Path) -> None:
-    db_path = tmp_path / "archive.sqlite"
-    _setup_minimal_embedding_file(db_path)
-    conn = sqlite3.connect(db_path)
-    try:
-        _insert_session(conn, "conv-empty", message_count=0)
-        conn.commit()
-    finally:
-        conn.close()
-
-    repo = MagicMock()
-    repo.backend.db_path = db_path
-    repo.get_messages = AsyncMock(return_value=[])
-
-    outcome = embed_session_sync(repo, MagicMock(), "conv-empty")
-
-    assert outcome.status == "no_messages"
-    conn = sqlite3.connect(db_path)
-    try:
-        row = conn.execute(
-            "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = 'conv-empty'"
-        ).fetchone()
-        assert row == (0, None)
-        assert select_pending_session_window(conn) == []
-    finally:
-        conn.close()
-
-
-def test_no_embeddable_provider_noop_records_clean_status(tmp_path: Path) -> None:
-    db_path = tmp_path / "archive.sqlite"
-    _setup_minimal_embedding_file(db_path)
-    conn = sqlite3.connect(db_path)
-    try:
-        _insert_session(conn, "conv-short", message_count=1)
-        conn.commit()
-    finally:
-        conn.close()
-
-    repo = MagicMock()
-    repo.backend.db_path = db_path
-    repo.get_messages = AsyncMock(
-        return_value=[MagicMock(message_id="m", session_id="conv-short", text="short", content_hash="h")]
-    )
-    provider = MagicMock()
-    provider.upsert.return_value = None
-
-    outcome = embed_session_sync(repo, provider, "conv-short")
-
-    assert outcome.status == "no_embeddable_messages"
-    conn = sqlite3.connect(db_path)
-    try:
-        row = conn.execute(
-            "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = 'conv-short'"
-        ).fetchone()
-        assert row == (0, None)
-        assert select_pending_session_window(conn) == []
-    finally:
-        conn.close()
-
-
-def test_provider_error_records_error_status_and_clears_retry(tmp_path: Path) -> None:
-    db_path = tmp_path / "archive.sqlite"
-    _setup_minimal_embedding_file(db_path)
-    conn = sqlite3.connect(db_path)
-    try:
-        _insert_session(conn, "conv-error", message_count=1)
-        conn.commit()
-    finally:
-        conn.close()
-
-    repo = MagicMock()
-    repo.backend.db_path = db_path
-    repo.get_messages = AsyncMock(
-        return_value=[MagicMock(message_id="m", session_id="conv-error", text="long enough", content_hash="h")]
-    )
-    provider = MagicMock()
-    provider.upsert.side_effect = RuntimeError("provider 429")
-
-    outcome = embed_session_sync(repo, provider, "conv-error")
-
-    assert outcome.status == "error"
-    conn = sqlite3.connect(db_path)
-    try:
-        row = conn.execute(
-            "SELECT needs_reindex, error_message FROM embedding_status WHERE session_id = 'conv-error'"
-        ).fetchone()
-        assert row == (1, "provider 429")
-        assert [item.session_id for item in select_pending_session_window(conn)] == ["conv-error"]
     finally:
         conn.close()
 
@@ -1056,6 +575,67 @@ def test_archive_pending_window_and_embedding_success(tmp_path: Path) -> None:
         assert select_pending_archive_session_window(conn, status_table="embeddings.embedding_status") == []
     finally:
         conn.close()
+
+
+def test_archive_clean_status_row_without_current_derivation_key_stays_pending(tmp_path: Path) -> None:
+    """``embedding_status`` is attempt telemetry; it cannot certify freshness.
+
+    Anti-vacuity: let the freshness predicate accept a clean status row whose
+    ``message_count_embedded`` covers the session without a current
+    ``embedding_derivation_state`` key and this session drops out of the
+    pending window and is counted as embedded.
+    """
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, MaterialOrigin, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    archive_root = tmp_path / "archive"
+    long_text = "This archive message is long enough to embed for semantic search."
+    with ArchiveStore(archive_root) as archive:
+        session_id = write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="clean-status-no-key",
+                title="clean status without derivation key",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text=long_text,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text=long_text)],
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                    )
+                ],
+            ),
+        )
+
+    index_db = archive_root / "index.db"
+    embeddings_db = archive_root / "embeddings.db"
+    initialize_archive_database(embeddings_db, ArchiveTier.EMBEDDINGS)
+    with sqlite3.connect(embeddings_db) as conn:
+        conn.execute(
+            """
+            INSERT INTO embedding_status (session_id, origin, message_count_embedded, needs_reindex, error_message)
+            VALUES (?, 'codex-session', 1, 0, NULL)
+            """,
+            (session_id,),
+        )
+
+    conn = sqlite3.connect(index_db)
+    try:
+        conn.execute("ATTACH DATABASE ? AS embeddings", (str(embeddings_db),))
+        pending = select_pending_archive_session_window(conn, status_table="embeddings.embedding_status")
+        state = count_archive_embedding_session_state(conn, status_table="embeddings.embedding_status")
+    finally:
+        conn.close()
+
+    assert [item.session_id for item in pending] == [session_id]
+    assert state.pending_sessions == 1
+    assert state.embedded_sessions == 0
 
 
 def test_archive_embedding_resumes_after_bounded_message_window(
@@ -1646,8 +1226,8 @@ def test_archive_failure_ledger_survives_origin_lookup_failure(tmp_path: Path, m
     assert "sqlite-vec" in error_message
 
 
-def test_exact_embeddable_count_measures_concatenated_block_prose() -> None:
-    """The exact per-session count must apply the 20-character floor to the
+def test_pending_window_measures_concatenated_block_prose() -> None:
+    """The pending window must apply the 20-character floor to the
     concatenated message prose, exactly as the materializer does.
 
     The message below holds two 10-character text blocks. The materializer
@@ -1655,16 +1235,16 @@ def test_exact_embeddable_count_measures_concatenated_block_prose() -> None:
     the floor to a single ``blocks.text`` row instead sees 10 and drops the
     message, which removes the session from the pending window.
 
-    Anti-vacuity: restore the unqualified ``HAVING LENGTH(TRIM(COALESCE(text,
-    ''))) >= 20`` alias in ``count_archive_session_embeddable_messages`` and
-    this goes red with ``0``, because SQLite resolves that bare ``text`` to
-    the joined ``blocks.text`` column rather than the projected prose.
+    Anti-vacuity: apply the floor to an unqualified ``text`` in
+    ``archive_embeddable_messages_relation`` and this goes red with an empty
+    window, because SQLite resolves that bare ``text`` to the joined
+    ``blocks.text`` column rather than the projected prose.
     """
     conn = sqlite3.connect(":memory:")
     try:
         conn.executescript(
             """
-            CREATE TABLE sessions (session_id TEXT PRIMARY KEY);
+            CREATE TABLE sessions (session_id TEXT PRIMARY KEY, title TEXT, sort_key_ms INTEGER);
             CREATE TABLE messages (
                 message_id TEXT PRIMARY KEY,
                 session_id TEXT NOT NULL,
@@ -1684,7 +1264,7 @@ def test_exact_embeddable_count_measures_concatenated_block_prose() -> None:
                 block_type TEXT NOT NULL,
                 text TEXT
             );
-            INSERT INTO sessions VALUES ('multi');
+            INSERT INTO sessions VALUES ('multi', 'multi', 1);
             INSERT INTO messages VALUES
                 ('multi:n:m1', 'multi', 0, 0, 'user', 'message', 'human_authored', 4, zeroblob(32)),
                 ('multi:n:m2', 'multi', 1, 0, 'user', 'message', 'human_authored', 1, zeroblob(32));
@@ -1696,6 +1276,8 @@ def test_exact_embeddable_count_measures_concatenated_block_prose() -> None:
         )
         conn.commit()
 
-        assert count_archive_session_embeddable_messages(conn, "multi") == 1
+        pending = select_pending_archive_session_window(conn, status_table="")
+
+        assert [(item.session_id, item.message_count) for item in pending] == [("multi", 1)]
     finally:
         conn.close()

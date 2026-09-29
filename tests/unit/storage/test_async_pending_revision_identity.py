@@ -1,7 +1,7 @@
-"""The async acquisition writer stores a replaceable pending identity.
+"""Async raw admission stores a replaceable pending identity.
 
 An acquisition that persists bytes before parsing carries no revision
-envelope, so the writer assigns a provisional one. That provisional key is not
+envelope, so the admission planner assigns a provisional one. That provisional key is not
 free-form: ``bind_source_raw_revision`` replaces it only when it matches
 ``pending-raw:%``, and parser-census canonicalisation excludes exactly that
 prefix before partitioning the rest on an ``Origin``/``Provider`` segment. A
@@ -11,7 +11,7 @@ durably blocking materialization readiness and authoritative rebuilds.
 
 Anti-vacuity: restore the local f-string
 ``f"pending:{origin.value}:{source_path}:{source_index}:{raw_id}"`` in
-``_write_raw_session_record_async`` and both assertions below fail -- the
+``plan_raw_admission`` and both assertions below fail -- the
 stored key no longer carries the canonical prefix, and the later bind raises
 a revision-identity conflict instead of succeeding.
 """
@@ -32,7 +32,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
     bind_source_raw_revision,
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
-from tests.infra.storage_records import make_raw_session
+from tests.infra.storage_records import admit_raw_record, make_raw_session
 
 
 async def test_a_pending_async_acquisition_can_later_bind_its_parsed_identity(
@@ -50,7 +50,7 @@ async def test_a_pending_async_acquisition_can_later_bind_its_parsed_identity(
         acquired_at="2026-02-02T12:00:00+00:00",
         file_mtime=None,
     )
-    assert await backend.save_raw_session(record) is True
+    assert await admit_raw_record(backend, record) is True
 
     with sqlite3.connect(db_path) as conn:
         stored = conn.execute(

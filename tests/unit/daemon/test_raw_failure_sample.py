@@ -73,7 +73,6 @@ class TestRawFailureSampleModel:
                     "deferred_hot_jsonl_capture",
                     "deferred_claude_code_partial_jsonl",
                     "deferred_cas_frontier",
-                    "deferred_codex_cas_frontier",
                 }
             )
             == RAW_FAILURE_DEFERRED_EVIDENCE_KINDS

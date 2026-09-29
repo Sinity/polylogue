@@ -49,6 +49,7 @@ from polylogue.core.metrics import PipelineMetrics
 from polylogue.core.sources import provider_from_origin
 from polylogue.demo.workspace import VerificationWorkspace, create_verification_workspace
 from polylogue.paths import archive_root, blob_store_root
+from polylogue.pipeline.services.acquisition_records import pending_pre_parse_raw_admission_request
 from polylogue.pipeline.services.parsing import ParsingService
 from polylogue.scenarios import (
     PipelineProbeInputMode,
@@ -59,6 +60,7 @@ from polylogue.storage.blob_store import BlobStore, reset_blob_store
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite import SQLiteBackend, create_backend
+from polylogue.storage.sqlite.archive_tiers.raw_admission import RawAdmissionExecution, RawAdmissionRequest
 from polylogue.storage.sqlite.connection import open_connection
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
@@ -155,22 +157,6 @@ def _effective_source_name(record: RawSessionRecord) -> str:
 
 def _source_bucket_name(record: RawSessionRecord) -> str:
     return record.source_name or "<unknown>"
-
-
-def _normalize_record_for_replay(record: RawSessionRecord) -> RawSessionRecord:
-    """Reset parse/validation state so a copied raw row behaves like post-acquire input."""
-    return record.model_copy(
-        update={
-            "parsed_at": None,
-            "parse_error": None,
-            "validated_at": None,
-            "validation_status": None,
-            "validation_error": None,
-            "validation_drift_count": None,
-            "validation_provider": None,
-            "validation_mode": None,
-        }
-    )
 
 
 def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
@@ -551,14 +537,14 @@ def _resolve_archive_manifest(
     )
 
 
-class _RawSessionStore(Protocol):
-    async def save_raw_session(self, record: RawSessionRecord) -> bool: ...
+class _RawAdmissionStore(Protocol):
+    async def admit_raw(self, request: RawAdmissionRequest) -> RawAdmissionExecution: ...
 
 
 async def _seed_archive_subset(
     *,
     manifest: ArchiveManifest,
-    repository: _RawSessionStore,
+    repository: _RawAdmissionStore,
     target_blob_store: BlobStore,
 ) -> ArchiveSubsetSampleSummary:
     records = [RawSessionRecord.model_validate(record_payload) for record_payload in manifest["records"]]
@@ -576,7 +562,13 @@ async def _seed_archive_subset(
             destination_blob_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source_blob_path, destination_blob_path)
             copied_blob_bytes += destination_blob_path.stat().st_size
-        await repository.save_raw_session(_normalize_record_for_replay(record))
+        # Re-admit through the acquisition route: the copied row starts in the
+        # pending post-acquire state, so its sampled parse and validation
+        # evidence is not carried into the probe archive. The manifest
+        # addresses each payload by its blob hash.
+        await repository.admit_raw(
+            pending_pre_parse_raw_admission_request(record.model_copy(update={"blob_hash": record.raw_id}))
+        )
         copied_records += 1
 
     return {
@@ -1037,7 +1029,6 @@ __all__ = [
     "_empty_archive_manifest_error",
     "_fetch_archive_candidates",
     "_isolated_env",
-    "_normalize_record_for_replay",
     "_probe_stage_sequence",
     "_provider_counts",
     "_raw_session_count",
