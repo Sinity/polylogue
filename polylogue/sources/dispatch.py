@@ -2170,67 +2170,87 @@ def parse_payload(
     return sessions
 
 
-def iter_bundle_record_sessions(
+class BundleCandidateDrift:
+    """ChatGPT bundle-candidate accounting across one container's members.
+
+    A member that looks like a conversation but fails the fragment shape is
+    a refused candidate; ``emit`` reports them once the container is done,
+    under the same threshold as the collecting bundle lowering.
+    """
+
+    def __init__(self) -> None:
+        self.candidates = 0
+        self.rejected = 0
+        self.matched = 0
+
+    def observe_streamed_conversation(self) -> None:
+        """Count a member proved a conversation fragment and parsed from scratch."""
+        self.candidates += 1
+        self.matched += 1
+
+    def emit(self, provider: Provider, fallback_id: str) -> None:
+        if (
+            provider is Provider.CHATGPT
+            and self.rejected
+            and (self.matched or self.candidates >= _CHATGPT_BUNDLE_DRIFT_MIN_CANDIDATES)
+        ):
+            emit(
+                "sources.chatgpt_bundle_candidate_rejected",
+                level=WARNING,
+                source_id=fallback_id,
+                provider=Provider.CHATGPT.value,
+                refused=self.rejected,
+                rows=self.candidates,
+                succeeded=self.matched,
+            )
+
+
+def bundle_member_sessions(
     provider: Provider,
-    records: Iterable[JSONValue],
+    record: JSONValue,
     fallback_id: str,
+    index: int,
     *,
     count: int,
     all_browser_captures: bool,
+    drift: BundleCandidateDrift,
     source_path: str | None = None,
     sidecar_resolver: SidecarResolver | None = None,
-) -> Iterator[ParsedSession]:
-    """Parse independent bundle members through the ordinary lowering rules."""
+) -> list[ParsedSession]:
+    """Parse one decoded bundle member through the ordinary lowering rules."""
     resolver = sidecar_resolver if sidecar_resolver is not None else _default_sidecar_resolver()
-    candidates = 0
-    rejected_candidates = 0
-    matched = 0
-    for index, record in enumerate(records):
-        if count == 1:
-            # Singleton arrays have special shared-page and browser lowering.
-            yield from parse_payload(
-                provider,
-                [record],
-                fallback_id,
-                source_path=source_path,
-                sidecar_resolver=resolver,
-            )
-        elif all_browser_captures:
-            yield from parse_payload(
-                provider,
-                record,
-                f"{fallback_id}-{index}",
-                source_path=source_path,
-                sidecar_resolver=resolver,
-            )
-        else:
-            # Reuse the same bundle normalization, including ChatGPT fragment
-            # rejection and Codex-task detection, before correcting the local
-            # one-item suffix to the original array position.
-            specs = _lower_bundle_payload(provider, [record], fallback_id)
-            if provider is Provider.CHATGPT:
-                shaped = _payload_record(record)
-                if shaped is not None and _looks_like_chatgpt_mapping_candidate(shaped):
-                    candidates += 1
-                    if not chatgpt.looks_like_fragment(shaped):
-                        rejected_candidates += 1
-                matched += len(specs)
-            for spec in specs:
-                yield from _parse_lowered_spec(replace(spec, fallback_id=f"{fallback_id}-{index}"), resolver)
-    if (
-        provider is Provider.CHATGPT
-        and rejected_candidates
-        and (matched or candidates >= _CHATGPT_BUNDLE_DRIFT_MIN_CANDIDATES)
-    ):
-        emit(
-            "sources.chatgpt_bundle_candidate_rejected",
-            level=WARNING,
-            source_id=fallback_id,
-            provider=Provider.CHATGPT.value,
-            refused=rejected_candidates,
-            rows=candidates,
-            succeeded=matched,
+    if count == 1:
+        # Singleton arrays have special shared-page and browser lowering.
+        return parse_payload(
+            provider,
+            [record],
+            fallback_id,
+            source_path=source_path,
+            sidecar_resolver=resolver,
         )
+    if all_browser_captures:
+        return parse_payload(
+            provider,
+            record,
+            f"{fallback_id}-{index}",
+            source_path=source_path,
+            sidecar_resolver=resolver,
+        )
+    # Reuse the same bundle normalization, including ChatGPT fragment
+    # rejection and Codex-task detection, before correcting the local
+    # one-item suffix to the original array position.
+    specs = _lower_bundle_payload(provider, [record], fallback_id)
+    if provider is Provider.CHATGPT:
+        shaped = _payload_record(record)
+        if shaped is not None and _looks_like_chatgpt_mapping_candidate(shaped):
+            drift.candidates += 1
+            if not chatgpt.looks_like_fragment(shaped):
+                drift.rejected += 1
+        drift.matched += len(specs)
+    sessions: list[ParsedSession] = []
+    for spec in specs:
+        sessions.extend(_parse_lowered_spec(replace(spec, fallback_id=f"{fallback_id}-{index}"), resolver))
+    return sessions
 
 
 def _lower_shared_chatgpt_document(record: PayloadRecord) -> ChatGPTLoweredDocument | None:
@@ -2485,7 +2505,8 @@ __all__ = [
     "is_jsonl_source_path",
     "is_stream_record_provider",
     "parse_payload",
-    "iter_bundle_record_sessions",
+    "BundleCandidateDrift",
+    "bundle_member_sessions",
     "lower_chatgpt_documents",
     "parse_stream_payload",
 ]
