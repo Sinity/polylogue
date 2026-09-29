@@ -393,3 +393,112 @@ async def test_one_shot_ingest_refuses_non_retryable_exclusions() -> None:
 
     with pytest.raises(RuntimeError, match="non-retryable reason"):
         await _ingest_selected_paths([path], ingest_pass)
+
+
+@pytest.mark.asyncio
+async def test_one_shot_teardown_settles_the_writer_before_stopping_the_parse_stage(
+    tmp_path: Path,
+    one_shot_workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled caller must not invalidate an admitted writer's carrier.
+
+    The writer consumes its preparation through ``LiveParseStage.pop_path``;
+    stopping the stage first can terminate workers and discard that result
+    while the writer still owns the archive. Anti-vacuity: restoring the old
+    ``parse_stage.shutdown()`` -> coordinator-idle order reverses ``events``.
+    """
+    import polylogue.operations.canonical_archive_ingest as canonical
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.parse_prefetch import LiveParseStage
+
+    source_path = tmp_path / "external-source" / "session.jsonl"
+    source_path.parent.mkdir()
+    source_path.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": "teardown", "timestamp": "2026-01-01T00:00:00Z"}}) + "\n",
+        encoding="utf-8",
+    )
+    events: list[str] = []
+    original_idle = canonical._wait_for_coordinator_idle
+    original_shutdown = LiveParseStage.shutdown
+
+    async def wait_idle(coordinator: object) -> None:
+        await original_idle(coordinator)  # type: ignore[arg-type]
+        events.append("writer_settled")
+
+    def shutdown(self: LiveParseStage) -> None:
+        events.append("stage_shutdown")
+        original_shutdown(self)
+
+    async def cancelled_ingest(self: LiveBatchProcessor, paths: object, **_kwargs: object) -> object:
+        raise RuntimeError("caller cancelled after writer admission")
+
+    monkeypatch.setattr(canonical, "_wait_for_coordinator_idle", wait_idle)
+    monkeypatch.setattr(LiveParseStage, "shutdown", shutdown)
+    monkeypatch.setattr(LiveBatchProcessor, "ingest_files", cancelled_ingest)
+
+    with pytest.raises(RuntimeError, match="caller cancelled"):
+        await parse_sources_archive(
+            one_shot_workspace_env["archive_root"],
+            [Source(name="codex", path=source_path)],
+            parse_workers=1,
+        )
+
+    assert events == ["writer_settled", "stage_shutdown"]
+
+
+@pytest.mark.asyncio
+async def test_one_shot_teardown_stops_the_parse_stage_when_the_settle_wait_fails(
+    tmp_path: Path,
+    one_shot_workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A settle wait that raises (a second cancellation) still stops the stage.
+
+    Anti-vacuity: with the teardown steps in sequence rather than nested
+    ``finally`` blocks, the raising wait skips ``shutdown`` and the archive
+    close, leaking the worker pool; ``events`` then lacks both.
+    """
+    import polylogue.operations.canonical_archive_ingest as canonical
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.parse_prefetch import LiveParseStage
+
+    source_path = tmp_path / "external-source" / "session.jsonl"
+    source_path.parent.mkdir()
+    source_path.write_text(
+        json.dumps({"type": "session_meta", "payload": {"id": "teardown", "timestamp": "2026-01-01T00:00:00Z"}}) + "\n",
+        encoding="utf-8",
+    )
+    events: list[str] = []
+    original_shutdown = LiveParseStage.shutdown
+    from polylogue import Polylogue
+
+    original_close = Polylogue.close
+
+    async def failing_wait(coordinator: object) -> None:
+        raise RuntimeError("settle wait interrupted")
+
+    def shutdown(self: LiveParseStage) -> None:
+        events.append("stage_shutdown")
+        original_shutdown(self)
+
+    async def close(self: object) -> None:
+        events.append("archive_closed")
+        await original_close(self)  # type: ignore[arg-type]
+
+    async def cancelled_ingest(self: LiveBatchProcessor, paths: object, **_kwargs: object) -> object:
+        raise RuntimeError("caller cancelled after writer admission")
+
+    monkeypatch.setattr(canonical, "_wait_for_coordinator_idle", failing_wait)
+    monkeypatch.setattr(LiveParseStage, "shutdown", shutdown)
+    monkeypatch.setattr(Polylogue, "close", close)
+    monkeypatch.setattr(LiveBatchProcessor, "ingest_files", cancelled_ingest)
+
+    with pytest.raises(RuntimeError, match="settle wait interrupted"):
+        await parse_sources_archive(
+            one_shot_workspace_env["archive_root"],
+            [Source(name="codex", path=source_path)],
+            parse_workers=1,
+        )
+
+    assert events == ["stage_shutdown", "archive_closed"]

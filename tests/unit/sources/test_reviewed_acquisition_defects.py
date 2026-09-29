@@ -171,6 +171,9 @@ def test_gemini_cli_parsing_is_not_path_independent() -> None:
     from polylogue.sources.revision_backfill import _PATH_INDEPENDENT_PARSE_PROVIDERS
 
     assert Provider.GEMINI_CLI not in _PATH_INDEPENDENT_PARSE_PROVIDERS
+    # Claude Code resolves retained tool-result sidecars and subagent
+    # siblings from ``source_path`` the same way.
+    assert Provider.CLAUDE_CODE not in _PATH_INDEPENDENT_PARSE_PROVIDERS
     # The opposite direction: emptying the set would also pass the assertion
     # above, so pin a provider that is genuinely path-independent.
     assert Provider.CHATGPT in _PATH_INDEPENDENT_PARSE_PROVIDERS
