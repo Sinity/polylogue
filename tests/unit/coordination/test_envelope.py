@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 from collections.abc import Callable, Sequence
@@ -1281,10 +1282,10 @@ def test_coordination_fingerprint_does_not_cache_unreadable_sources(
     original_stat = Path.stat
     original_exists = Path.exists
 
-    def stat(path: Path, *args, **kwargs):
+    def stat(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
         if path.name == faulting_name:
             raise PermissionError("synthetic stat failure")
-        return original_stat(path, *args, **kwargs)
+        return original_stat(path, follow_symlinks=follow_symlinks)
 
     monkeypatch.setattr(Path, "stat", stat)
     monkeypatch.setattr(Path, "exists", lambda path: False if path.name == faulting_name else original_exists(path))
