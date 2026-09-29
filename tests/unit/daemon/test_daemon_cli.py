@@ -3881,7 +3881,6 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                     enable_api=False,
                     enable_source_catchup=False,
                     service_profile=ServiceProfile.INTAKE,
