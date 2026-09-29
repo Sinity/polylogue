@@ -225,9 +225,9 @@ def test_zero_match_mutation_is_a_no_op_not_a_refusal(
         cli_daemon_archive(tagged_archive, monkeypatch),
         patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served),
     ):
-        result = CliRunner().invoke(cli, [*args, "find", "origin:chatgpt"])
+        result = CliRunner().invoke(cli, [*args, "find", "origin:chatgpt-export"])
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 0, (result.output, repr(result.exception))
     assert issued == []
     payload = json.loads(result.output)
     assert payload["status"] == "ok"

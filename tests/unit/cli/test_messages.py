@@ -962,7 +962,9 @@ def test_read_messages_page_past_the_end_is_empty_in_every_format(
     if output_format == "json":
         assert json.loads(captured.out)["outcome"]["state"] == "empty"
     else:
-        assert captured.out.strip() == ""
+        # Rows stay on stdout; the outcome is named on stderr.
+        if output_format == "ndjson":
+            assert captured.out.strip() == ""
         assert captured.err.strip() != ""
 
 

@@ -1819,7 +1819,7 @@ def test_read_chronicle_uses_projection_spec_edge_limit() -> None:
 def test_read_messages_uses_projection_spec_body_window() -> None:
     projection_spec = projection_from_views(("messages",), body_limit=7, body_offset=2)
 
-    with patch("polylogue.cli.messages.run_messages") as run_messages:
+    with patch("polylogue.cli.messages.run_messages", return_value=None) as run_messages:
         read_view_handlers.run_read_view(
             cast(AppEnv, SimpleNamespace(config=SimpleNamespace())),
             RootModeRequest.from_params({}),
