@@ -440,11 +440,12 @@ class RawObservationDerivation:
                 return "missing"
             output = conn.execute(
                 """SELECT s.origin, s.parser_fingerprint, s.lowering_fingerprint, s.session_id, s.native_id,
-                       b.evidence_key
+                       b.evidence_key, accepted.source_path AS accepted_source_path
                 FROM index_tier.raw_revision_heads h JOIN index_tier.sessions s
                   ON s.session_id = h.session_id AND s.raw_id = h.accepted_raw_id
                  AND s.content_hash = h.accepted_content_hash
                 LEFT JOIN index_tier.session_enrichment_bindings b ON b.session_id = s.session_id
+                LEFT JOIN raw_sessions accepted ON accepted.raw_id = h.accepted_raw_id
                 WHERE h.logical_source_key = ?""",
                 (logical_key,),
             ).fetchone()
@@ -455,7 +456,11 @@ class RawObservationDerivation:
                 or output["lowering_fingerprint"] != lowering_fingerprint()
             ):
                 return "stale"
-            if self._enrichment_evidence_moved(conn, raw["source_path"], output):
+            # The binding was written from the accepted head's raw; a
+            # superseded sibling from another directory reads different
+            # evidence and could never match it, so compare the head's own.
+            evidence_path = output["accepted_source_path"] or raw["source_path"]
+            if self._enrichment_evidence_moved(conn, evidence_path, output):
                 return "stale"
         from polylogue.storage.sqlite.archive_tiers.revision_governance import expand_raw_membership_selection_sync
 

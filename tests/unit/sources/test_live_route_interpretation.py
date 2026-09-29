@@ -674,3 +674,65 @@ def test_parsed_sidecars_of_another_origin_are_released(monkeypatch: pytest.Monk
 
     assert set(retained_assembly._parsed_retained_cache) == {"codex.session_index"}
     retained_assembly._parsed_retained_cache.clear()
+
+
+def test_a_superseded_sibling_from_another_directory_reads_the_accepted_evidence(tmp_path: Path) -> None:
+    """Inspection compares enrichment evidence from the accepted head's raw.
+
+    Two observations of one Claude session sit in two project directories
+    whose ``sessions-index.json`` files title it differently. The binding is
+    written from the accepted head; the superseded sibling must be compared
+    against that head's evidence, not its own directory's.
+
+    Anti-vacuity (Codex P1, #5643): read evidence from the inspected raw's own
+    ``source_path`` and the sibling is ``stale`` forever, so convergence never
+    settles and this inspection is not all ``valid``.
+    """
+    from polylogue.operations.raw_observation_derivation import (
+        make_raw_observation_derivation,
+        raw_observation_frame,
+    )
+
+    projects = tmp_path / "live" / ".claude" / "projects"
+    session_id = "bbbbbbbb-1111-2222-3333-444444444441"
+
+    def record(index: int) -> dict[str, object]:
+        return {
+            "type": "user",
+            "uuid": f"u{index}",
+            "sessionId": session_id,
+            "timestamp": f"2026-07-20T10:00:0{index}.000Z",
+            "message": {"role": "user", "content": f"prompt {index}"},
+        }
+
+    def project(name: str, summary: str, count: int) -> tuple[Path, Path, Path]:
+        directory = projects / name
+        directory.mkdir(parents=True)
+        transcript = directory / f"{session_id}.jsonl"
+        transcript.write_text("".join(json.dumps(record(index)) + "\n" for index in range(count)), encoding="utf-8")
+        index_path = directory / "sessions-index.json"
+        index_path.write_text(
+            json.dumps({"entries": [{"sessionId": session_id, "fullPath": str(transcript), "summary": summary}]}),
+            encoding="utf-8",
+        )
+        return directory, transcript, index_path
+
+    first, first_transcript, first_index = project("-first", "Title first", 1)
+    second, second_transcript, second_index = project("-second", "Title second", 2)
+    archive_root = tmp_path / "archive"
+    _claude_ingest(archive_root, first, [first_index, first_transcript])
+    _claude_ingest(archive_root, second, [second_index, second_transcript])
+    _converge_to_fixpoint(archive_root, projects)
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        raws = [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT raw_id FROM raw_sessions WHERE source_path LIKE ?", (f"%{session_id}.jsonl",)
+            )
+        ]
+    assert len(raws) == 2
+    statuses = make_raw_observation_derivation(archive_root).inspect(
+        raw_observation_frame(archive_root, source_roots=(projects,)), raws
+    )
+    assert set(statuses.values()) == {"valid"}
