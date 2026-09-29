@@ -134,7 +134,7 @@ def test_non_object_record_is_refused_not_materialized() -> None:
     materialized and the scalar balances the ledger as ``MATERIALIZED``.
     """
     observer = base_support.AdmissionObserver()
-    observer.observe({"type": "message"})
+    observer.observe({"type": "message"}, lowered=True)
     observer.observe(7)
     from polylogue.sources.parsers.base import ParsedSession
 
@@ -214,7 +214,7 @@ def test_disk_backed_event_sink_is_kept_not_copied() -> None:
     sink = Sink()
     sink.append(ParsedSessionEvent(event_type="compaction", payload={}))
     observer = base_support.AdmissionObserver()
-    observer.observe({"type": "message"})
+    observer.observe({"type": "message"}, lowered=True)
     observer.observe({"type": "future_record_kind"})
     session = ParsedSession.model_construct(
         source_name=Provider.CODEX, provider_session_id="s", messages=[], session_events=sink, unit_accounting=None
@@ -338,7 +338,7 @@ def test_every_unproven_session_of_a_multi_session_result_is_admitted(provider: 
         ParsedSession(source_name=Provider.HERMES, provider_session_id=name, messages=[])
         for name in ("parent", "child")
     ]
-    admitted = base_support.admit_parsed_sessions(provider, [{"type": "session"}], sessions)
+    admitted = base_support.admit_parsed_sessions(provider, {"type": "session"}, sessions)
 
     assert [session.provider_session_id for session in admitted] == ["parent", "child"]
     assert all(session.unit_accounting is not None for session in admitted)

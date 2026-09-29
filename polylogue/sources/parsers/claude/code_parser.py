@@ -46,10 +46,9 @@ from ..base import (
     ParsedSessionEvent,
     ParsedSessionRef,
     content_blocks_from_segments,
-    parser_admission,
     text_blocks_prose,
 )
-from ..base_support import claude_code_unknown_wire_type
+from ..base_support import AdmissionObserver, claude_code_unknown_wire_type
 from .common import (
     _message_duration_ms,
     _message_model_effort,
@@ -2128,12 +2127,18 @@ def _count_by_value(counts: dict[str, int], item: Mapping[str, object], key: str
         counts[value] = counts.get(value, 0) + 1
 
 
-def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, object]) -> None:
-    """Fold one already-dict-typed Claude Code record into ``acc``.
+def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, object]) -> bool:
+    """Fold one already-dict-typed Claude Code record into ``acc``; return whether it was lowered.
 
     Exactly the per-record body ``_parse_code_records``'s main loop used to
     run inline; every early ``continue`` in the original loop is a ``return``
     here since each call handles exactly one record.
+
+    The return value is this parser's admission disposition for the record
+    (polylogue-mg7jx): ``True`` when the record left evidence in ``acc`` --
+    a message, an event, or a counted disposition such as a duplicate uuid or
+    an empty-content drop, which the finalized session reports -- and
+    ``False`` when it left nothing (a record without a string ``type``).
     """
     if acc.session_kind_value is None:
         raw_session_kind = item.get("sessionKind")
@@ -2211,7 +2216,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
         )
         acc.message_position += 1
         acc.previous_boundary_end = boundary_end
-        return
+        return True
 
     micro_compaction = detect_micro_compaction(item)
     if micro_compaction is not None:
@@ -2232,12 +2237,12 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
                 },
             )
         )
-        return
+        return True
 
     record_type = item.get("type")
     if not isinstance(record_type, str):
         logger.debug("Skipping invalid record at index %d: missing type", index)
-        return
+        return False
 
     record_uuid = _string_field(item, "uuid")
     if record_uuid:
@@ -2245,7 +2250,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
             acc.duplicate_uuid_count += 1
             acc.first_duplicate_uuid = acc.first_duplicate_uuid or record_uuid
             acc.first_duplicate_index = acc.first_duplicate_index or index
-            return
+            return True
         acc.seen_uuids.add(record_uuid)
 
     if not acc.session_id:
@@ -2361,7 +2366,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
                     )
         if persisted_this_record:
             acc.sidecar_persisted_counts[record_type] = acc.sidecar_persisted_counts.get(record_type, 0) + 1
-        return
+        return True
     if timestamp:
         acc.created_at = timestamp if acc.created_at is None or timestamp < acc.created_at else acc.created_at
         acc.updated_at = timestamp if acc.updated_at is None or timestamp > acc.updated_at else acc.updated_at
@@ -2559,7 +2564,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
                         payload=_unclassified_record_payload(record_type, item),
                     )
                 )
-            return
+            return True
     # Paste markers only appear in user prompts; restricting detection to the
     # user role avoids false positives from assistant text that quotes a marker.
     paste_spans = _detect_paste_spans(text) if resolved_role == Role.USER else []
@@ -2655,6 +2660,7 @@ def _fold_code_record(acc: _SessionAccumulator, index: int, item: dict[str, obje
     model_name = message_payload.get("model")
     if isinstance(model_name, str) and model_name != _SYNTHETIC_MODEL_PLACEHOLDER:
         acc.models.add(model_name)
+    return True
 
 
 def _finalize_code_session(acc: _SessionAccumulator) -> ParsedSession:
@@ -3089,11 +3095,12 @@ def _parse_code_records(
         acc.seen_uuids = scratch.string_set(f"seen:{fallback_id}")
         acc.background_notifications = scratch.notifications(fallback_id)
         acc.delegation_progress = scratch.mapped(f"delegation:{fallback_id}")
+    admission = AdmissionObserver(claude_code_unknown_wire_type, record_stream=True)
     for index, item in enumerate(records, start=1):
-        if not isinstance(item, dict):
-            continue
-        _fold_code_record(acc, index, item)
-    return _finalize_code_session(acc)
+        # The fold is this record's admission owner: a non-object record is
+        # refused, and the fold says whether an object record was lowered.
+        admission.observe(item, lowered=isinstance(item, dict) and _fold_code_record(acc, index, item))
+    return admission.apply(_finalize_code_session(acc), "claude_code")
 
 
 def apply_tool_result_sidecars(session: ParsedSession, join_result: SidecarJoinResult) -> ParsedSession:
@@ -3207,7 +3214,6 @@ def order_session_events(events: MutableSequence[ParsedSessionEvent]) -> Mutable
     return [event for _, event in sorted(enumerate(events), key=sort_key)]
 
 
-@parser_admission("claude_code", scan=claude_code_unknown_wire_type)
 def parse_code(
     payload: Iterable[object],
     fallback_id: str,

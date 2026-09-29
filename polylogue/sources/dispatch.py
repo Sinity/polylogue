@@ -1203,20 +1203,18 @@ def _claude_code_multiway_parse_inner(
         # not once per read of a field.
         observer = observers.get(group_id)
         if observer is None:
-            observer = observers[group_id] = AdmissionObserver(claude_code_unknown_wire_type)
-        # ``_fold_code_record`` silently drops a dict record whose ``type``
-        # is missing or not a string (logged, never folded into evidence);
-        # the admission ledger must not still count that as MATERIALIZED.
-        recognized = not (isinstance(item, dict) and not isinstance(item.get("type"), str))
-        observer.observe(item, source_index=index, recognized=recognized)
+            observer = observers[group_id] = AdmissionObserver(claude_code_unknown_wire_type, record_stream=True)
         if sidecar_accumulators is not None:
             sidecar_accumulators[group_id].observe(item)
         if record is not None and not is_agent_fallback and group_id == fallback_id:
             uuid = optional_string(record.get("uuid"))
             if uuid is not None:
                 primary_uuids.add(uuid)
-        if isinstance(item, dict):
-            claude_code_parser._fold_code_record(accumulators[group_id], index, item)
+        # The fold is the record's admission owner: it says whether the record
+        # was lowered (a dict without a string ``type`` leaves nothing), and a
+        # non-object record is refused.
+        lowered = isinstance(item, dict) and claude_code_parser._fold_code_record(accumulators[group_id], index, item)
+        observer.observe(item, source_index=index, lowered=lowered)
 
     record_index = 0
     for item in payloads:
@@ -1910,7 +1908,16 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> 
     outer-record ledger the decorated leaf parsers attach.
     """
     sessions = _parse_lowered_spec_unadmitted(spec, resolver)
-    return admit_parsed_sessions(spec.provider.value.replace("-", "_"), spec.payload, sessions)
+    return admit_parsed_sessions(
+        spec.provider.value.replace("-", "_"),
+        spec.payload,
+        sessions,
+        # The one grouped record sequence whose sessions carry no parser
+        # ledger: the ATOF stream parser's own recognizer settles each record.
+        recognizes=hermes_spans.looks_like_atof_payload
+        if spec.provider is Provider.HERMES and spec.mode == "grouped_records"
+        else None,
+    )
 
 
 def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:
@@ -2457,34 +2464,44 @@ def parse_stream_payload(
         )
     if runtime_provider is Provider.CODEX:
         observer = AdmissionObserver(codex_unknown_wire_type)
+        stream = observer.observing(payloads)
         session = codex.parse_stream(
-            observer.observing(payloads),
+            stream,
             fallback_id,
             message_sink=message_sink_factory() if message_sink_factory is not None else None,
             event_sink=event_sink_factory() if event_sink_factory is not None else None,
         )
+        observer.drain(stream)
         return [observer.apply(session, "codex")]
     if runtime_provider is Provider.HERMES:
-        observer = AdmissionObserver(hermes_unknown_wire_type)
+        observer = AdmissionObserver(hermes_unknown_wire_type, record_stream=True)
+        parsed = False
 
         def admitted(records: Iterable[object]) -> Iterator[object]:
             # The parser's own recognition decides: a known-kind record it
             # skips (no uuid, say) is refused, not counted as materialized.
+            # A record the parser never pulled has no disposition at all.
             for item in records:
+                if parsed:
+                    observer.observe(item)
+                    continue
                 record = _payload_record(item)
+                recognized = record is not None and hermes_spans.looks_like_atof_payload(record)
                 observer.observe(
                     item,
-                    malformed=record is not None
-                    and hermes_unknown_wire_type(record) is None
-                    and not hermes_spans.looks_like_atof_payload(record),
+                    lowered=recognized,
+                    malformed=record is not None and not recognized and hermes_unknown_wire_type(record) is None,
                 )
                 yield item
 
+        stream = admitted(payloads)
         sessions = hermes_spans.parse_atof_stream(
-            admitted(payloads),
+            stream,
             fallback_id,
             profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)) if source_path else None,
         )
+        parsed = True
+        AdmissionObserver.drain(stream)
         return observer.apply_each(sessions, "hermes")
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")
 
