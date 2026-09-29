@@ -16,7 +16,7 @@ from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope, write_parsed_session_to_archive
 
 
-def _connection(path: Path) -> sqlite3.Connection:
+def _connection(path: Path | str) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -78,15 +78,16 @@ def test_anchor_does_not_relocate_through_an_unclassified_edge(tmp_path: Path) -
         assert result.state == "missing"
 
 
-def test_anchor_relocation_reaches_an_ancestor_beyond_the_former_search_cap(tmp_path: Path) -> None:
+def test_anchor_relocation_reaches_an_ancestor_beyond_the_former_search_cap() -> None:
     """The anchor's own 512-node search cap hid a block every production read exposes.
 
     Production composition has no depth cap. With the block only in a root
     520 prefix-sharing links up, the capped neighbourhood never reached it and
     reported ``missing``; the relocation must name a session whose read
-    really contains the block.
+    really contains the block. The 521-session chain lives in memory: its
+    per-session commits, not the resolver, dominate the test's cost.
     """
-    with closing(_connection(tmp_path / "index.db")) as conn:
+    with closing(_connection(":memory:")) as conn:
         root = _session(conn, "depth-0", [("m", "root evidence")])
         original = _anchor(conn, root)
         parent = root
