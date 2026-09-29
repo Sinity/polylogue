@@ -508,6 +508,10 @@ def _expand_duplicate_decisions(
     return [decision_by_raw_id[raw_id] for raw_id in ordered_ids]
 
 
+def _never_compared(parent: str, child: str) -> bool:
+    raise AssertionError(f"a single-revision cohort compared {parent} with {child}")
+
+
 def _stream_size_and_hash(revision: HistoricalRawRevisionStream) -> tuple[int, str]:
     size = 0
     digest = sha256()
@@ -543,8 +547,9 @@ def classify_historical_full_revision_streams(
 ) -> list[HistoricalRevisionDecision]:
     """Stream the same dedup-first, localized-ambiguity proof, without eager payloads.
 
-    Each stream is read exactly once to learn its true size and content hash
-    (never trusting the caller-supplied ``payload_size`` alone); streams whose
+    In a cohort of two or more, each stream is read exactly once to learn its
+    true size and content hash (never trusting the caller-supplied
+    ``payload_size`` alone); streams whose
     hash matches are byte-identical duplicates and are collapsed per I4 before
     any prefix comparison runs. Prefix comparisons between distinct-content
     representatives are themselves streamed (``_stream_is_prefix``), so no
@@ -552,6 +557,18 @@ def classify_historical_full_revision_streams(
     """
     if not revisions:
         return []
+    if len(revisions) == 1:
+        # A lone revision has no duplicate to collapse and no prefix to
+        # prove: it is its cohort's baseline whatever its bytes are, so they
+        # are not read. Hashing them anyway re-read every retained file of a
+        # fresh build (a 440 MB rollout in full) under the writer hold.
+        (only,) = revisions
+        sizes = {only.raw_id: only.payload_size}
+        return _expand_duplicate_decisions(
+            _classify_deduped_nodes([only.raw_id], sizes, _never_compared),
+            {only.raw_id: [only.raw_id]},
+            sizes,
+        )
     size_and_hash = {revision.raw_id: _stream_size_and_hash(revision) for revision in revisions}
     by_hash: dict[str, list[HistoricalRawRevisionStream]] = {}
     for revision in revisions:

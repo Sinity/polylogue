@@ -75,3 +75,23 @@ def test_dropped_spool_releases_its_file_after_the_last_replay() -> None:
     del replay
     gc.collect()
     assert handle.closed
+
+
+@pytest.mark.parametrize("block", [1, 5, 64])
+def test_block_reads_cross_value_boundaries(monkeypatch: pytest.MonkeyPatch, block: int) -> None:
+    """Values straddling or exceeding the read block replay intact.
+
+    Anti-vacuity: drop the exact read for a value larger than the block and
+    those values come back truncated.
+    """
+    from polylogue.sources import pickle_spool
+
+    monkeypatch.setattr(pickle_spool, "_READ_BLOCK_BYTES", block)
+    spool = PickleSpool[tuple[str, int]](indexed=True)
+    values = [("v" * (index * 7 % 97), index) for index in range(120)]
+    for value in values:
+        spool.append(value)
+
+    assert list(spool) == values
+    assert list(spool.iter_from(61)) == values[61:]
+    spool.close()

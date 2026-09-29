@@ -69,18 +69,53 @@ class PickleSpool(Generic[_T]):
         if start == self._count:
             return
         self._file.flush()
-        fd = self._file.fileno()
-        offset = self._offsets[start] if start and self._offsets is not None else 0
+        reader = _OffsetReader(self._file.fileno(), self._offsets[start] if start and self._offsets is not None else 0)
         end = self._size
-        while offset < end:
-            length = int.from_bytes(_pread_exact(fd, _LENGTH_BYTES, offset), "little")
-            offset += _LENGTH_BYTES
-            value: _T = pickle.loads(_pread_exact(fd, length, offset))
-            offset += length
+        while reader.position < end:
+            length = int.from_bytes(reader.read(_LENGTH_BYTES), "little")
+            value: _T = pickle.loads(reader.read(length))
             yield value
 
     def close(self) -> None:
         self._release()
+
+
+class _OffsetReader:
+    """Sequential reads at a private offset, in blocks of ``_READ_BLOCK_BYTES``.
+
+    Values are small and many, so one ``pread`` per block rather than two per
+    value; a value larger than the block is read in one exact call.
+    """
+
+    __slots__ = ("_fd", "position", "_buffer", "_buffer_start")
+
+    def __init__(self, fd: int, position: int) -> None:
+        self._fd = fd
+        self.position = position
+        self._buffer = b""
+        self._buffer_start = position
+
+    def read(self, length: int) -> bytes:
+        offset = self.position - self._buffer_start
+        if offset + length > len(self._buffer):
+            if length > _READ_BLOCK_BYTES:
+                data = _pread_exact(self._fd, length, self.position)
+                self.position += length
+                return data
+            self._buffer = _pread_up_to(self._fd, _READ_BLOCK_BYTES, self.position)
+            self._buffer_start = self.position
+            offset = 0
+            if len(self._buffer) < length:
+                raise EOFError("pickle spool ended inside a value")
+        self.position += length
+        return self._buffer[offset : offset + length]
+
+
+_READ_BLOCK_BYTES = 1 << 20
+
+
+def _pread_up_to(fd: int, length: int, offset: int) -> bytes:
+    return os.pread(fd, length, offset)
 
 
 def _pread_exact(fd: int, length: int, offset: int) -> bytes:

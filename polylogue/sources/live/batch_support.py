@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, Protocol, cast
+from typing import IO, BinaryIO, Protocol, cast
 
 import ijson
 
@@ -515,38 +515,93 @@ def jsonl_complete_prefix(payload: bytes) -> JsonlBoundary:
     return JsonlBoundary(complete_end, _jsonl_record_count(payload[:complete_end]), complete_end != len(payload))
 
 
-def jsonl_complete_prefix_path(path: Path) -> JsonlBoundary:
-    """Find the same JSONL frontier from a sealed blob without loading its session."""
+@dataclass(frozen=True, slots=True)
+class JsonlFrontier:
+    """The proven record frontier of a JSONL file, decided from its tail.
+
+    The same ``prefix_size``/``incomplete_tail``/``malformed_record`` a
+    :class:`JsonlBoundary` carries, without a record count: counting needs
+    every byte, and no caller of the file route reads it.
+    """
+
+    prefix_size: int
+    incomplete_tail: bool
+    malformed_record: bool = False
+
+
+#: The bytes ``bytes.strip()`` removes, so a line is blank exactly when the
+#: bytes route would find it blank.
+_JSONL_STRIP_BYTES = b" \t\n\r\x0b\x0c"
+_JSONL_TAIL_READ_BYTES = 1 << 20
+
+
+def jsonl_complete_prefix_path(path: Path) -> JsonlFrontier:
+    """Find the same JSONL frontier as :func:`jsonl_complete_prefix` from a file's tail.
+
+    A physical newline cannot occur inside a valid JSON string, so the last
+    non-blank line decides the frontier; it is located by reading backwards
+    from the end and is the only record decoded. Earlier bytes are never
+    read -- the whole-file line walk this replaces read a 440 MB rollout in
+    full, under the writer hold, to count records no caller used.
+    """
     size = path.stat().st_size
-    offset = 0
-    complete_end = 0
-    record_count = 0
-    preceding_count = 0
-    candidate_start = 0
-    candidate = b""
-    candidate_terminated = False
     with path.open("rb") as handle:
-        for line in handle:
-            terminated = line.endswith(b"\n")
-            if terminated:
-                complete_end = offset + len(line)
-            stripped = line.strip()
-            if stripped:
-                preceding_count = record_count
-                record_count += 1
-                candidate_start = offset
-                candidate = stripped
-                candidate_terminated = terminated
-            offset += len(line)
-    if not candidate:
-        return JsonlBoundary(complete_end, 0, complete_end != size)
+        last_newline = _last_newline_before(handle, size)
+        complete_end = last_newline + 1
+        last_content = _last_content_byte_before(handle, size)
+        if last_content < 0:
+            return JsonlFrontier(complete_end, complete_end != size)
+        candidate_start = _last_newline_before(handle, last_content) + 1
+        candidate_end = _next_newline_at_or_after(handle, last_content + 1, size)
+        candidate_terminated = candidate_end < size
+        handle.seek(candidate_start)
+        candidate = handle.read(candidate_end - candidate_start).strip()
     try:
         json.loads(candidate)
     except (UnicodeDecodeError, json.JSONDecodeError):
-        return JsonlBoundary(candidate_start, preceding_count, True, candidate_terminated)
+        return JsonlFrontier(candidate_start, True, candidate_terminated)
     if candidate_terminated:
-        return JsonlBoundary(complete_end, record_count, complete_end != size)
-    return JsonlBoundary(size, record_count, False)
+        return JsonlFrontier(complete_end, complete_end != size)
+    return JsonlFrontier(size, False)
+
+
+def _last_newline_before(handle: BinaryIO, end: int) -> int:
+    """Offset of the last ``\\n`` before ``end``, or ``-1``."""
+    while end > 0:
+        start = max(0, end - _JSONL_TAIL_READ_BYTES)
+        handle.seek(start)
+        index = handle.read(end - start).rfind(b"\n")
+        if index >= 0:
+            return start + index
+        end = start
+    return -1
+
+
+def _last_content_byte_before(handle: BinaryIO, end: int) -> int:
+    """Offset of the last byte before ``end`` that ``bytes.strip`` keeps, or ``-1``."""
+    while end > 0:
+        start = max(0, end - _JSONL_TAIL_READ_BYTES)
+        handle.seek(start)
+        kept = handle.read(end - start).rstrip(_JSONL_STRIP_BYTES)
+        if kept:
+            return start + len(kept) - 1
+        end = start
+    return -1
+
+
+def _next_newline_at_or_after(handle: BinaryIO, start: int, size: int) -> int:
+    """Offset of the first ``\\n`` at or after ``start``, or ``size``."""
+    offset = start
+    while offset < size:
+        handle.seek(offset)
+        window = handle.read(min(_JSONL_TAIL_READ_BYTES, size - offset))
+        if not window:
+            break
+        index = window.find(b"\n")
+        if index >= 0:
+            return offset + index
+        offset += len(window)
+    return size
 
 
 def jsonl_parse_prefix_size(boundary: JsonlBoundary, size: int) -> int | None:

@@ -59,6 +59,7 @@ from polylogue.sources.live.batch_support import (
     _parse_payload_as_session_artifact,
     encode_cursor_hash_authority,
     jsonl_complete_prefix,
+    jsonl_complete_prefix_path,
     sha256_range_from_path,
     tail_hash_from_path,
 )
@@ -10057,3 +10058,92 @@ def test_settled_observation_does_not_hide_a_same_size_rewrite(tmp_path: Path) -
     assert processor._last_cursor_write_stale is True
     record = cursor.get_record(path)
     assert record is None or record.content_fingerprint != sha256(captured).hexdigest()
+
+
+_FRONTIER_PIECES = (
+    b'{"a":1}',
+    b'{"b":"x y"}',
+    b"",
+    b"  ",
+    b"\t",
+    b'{"bad"',
+    b"[1,2]",
+    b"\x0b",
+    b'{"u":"\xc3\xa9"}',
+    b"\xff",
+)
+
+
+@pytest.mark.parametrize("window", [1, 2, 3, 7, 1 << 20])
+def test_file_frontier_matches_the_bytes_frontier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, window: int) -> None:
+    """The tail-first file route decides every frontier exactly as the bytes route does.
+
+    Payloads mix records, blank and whitespace-only lines, CRLF, malformed
+    and unterminated tails; small read windows put every boundary across a
+    window edge. Anti-vacuity: take the candidate from the last physical line
+    instead of the last non-blank one, and blank-tail payloads disagree.
+    """
+    import random
+
+    from polylogue.sources.live import batch_support
+
+    monkeypatch.setattr(batch_support, "_JSONL_TAIL_READ_BYTES", window)
+    rng = random.Random(window)
+    path = tmp_path / "frontier.jsonl"
+    for _ in range(600):
+        payload = b"".join(
+            rng.choice(_FRONTIER_PIECES) + rng.choice((b"\n", b"\n", b"\r\n", b"")) for _ in range(rng.randint(0, 6))
+        )
+        path.write_bytes(payload)
+        expected = jsonl_complete_prefix(payload)
+        frontier = jsonl_complete_prefix_path(path)
+        assert (frontier.prefix_size, frontier.incomplete_tail, frontier.malformed_record) == (
+            expected.prefix_size,
+            expected.incomplete_tail,
+            expected.malformed_record,
+        ), payload
+
+
+def test_file_frontier_reads_only_the_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Deciding the frontier of a large file reads its last record, not the file.
+
+    Anti-vacuity: walk every line (the predecessor) and the bytes read equal
+    the file size.
+    """
+    from polylogue.sources.live import batch_support
+
+    monkeypatch.setattr(batch_support, "_JSONL_TAIL_READ_BYTES", 4096)
+    path = tmp_path / "large.jsonl"
+    record = b'{"type":"response_item","payload":{"text":"' + b"r" * 900 + b'"}}\n'
+    path.write_bytes(record * 4000 + b'{"partial":')
+    read = 0
+    real_open = Path.open
+
+    class CountingHandle:
+        def __init__(self, handle: Any) -> None:
+            self._handle = handle
+
+        def __enter__(self) -> CountingHandle:
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            self._handle.close()
+
+        def seek(self, offset: int) -> int:
+            return int(self._handle.seek(offset))
+
+        def read(self, size: int = -1) -> bytes:
+            nonlocal read
+            data: bytes = self._handle.read(size)
+            read += len(data)
+            return data
+
+    def counting_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        return CountingHandle(real_open(self, *args, **kwargs))
+
+    monkeypatch.setattr(Path, "open", counting_open)
+    frontier = jsonl_complete_prefix_path(path)
+
+    assert frontier.prefix_size == len(record) * 4000
+    assert frontier.incomplete_tail and not frontier.malformed_record
+    assert read < 4 * 4096

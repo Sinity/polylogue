@@ -128,6 +128,8 @@ from polylogue.sources.live.batch_support import (
     _DEFER_APPEND,
     _MAX_APPEND_PLAN_PAYLOAD_BYTES,
     _STREAMING_FULL_INGEST_BYTES,
+    JsonlBoundary,
+    JsonlFrontier,
     RetryableSourceReadError,
     _accumulate_stage_timings,
     _append_plan_group_ready,
@@ -4046,7 +4048,7 @@ class LiveBatchProcessor:
             # unlike every other branch where raw_id IS the content hash.
             acquired_via_sqlite_snapshot = path in raw_source_revisions
             raw_byte_sizes[path] = stat.st_size if acquired_via_sqlite_snapshot else blob_size
-            jsonl_boundary = None
+            jsonl_boundary: JsonlBoundary | JsonlFrontier | None = None
             if is_jsonl_source_path(str(path)):
                 jsonl_boundary = (
                     jsonl_complete_prefix(raw_payloads[raw_id])
