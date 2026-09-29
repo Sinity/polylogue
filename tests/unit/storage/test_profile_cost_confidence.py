@@ -21,27 +21,31 @@ def _row(**fields: object) -> sqlite3.Row:
     return row
 
 
-def test_a_profile_without_a_stated_cost_reports_an_estimate() -> None:
+_ESTIMATED = SessionEvidencePayload(cost_is_estimated=True, cost_provenance="unknown")
+_REPORTED = SessionEvidencePayload(cost_is_estimated=False, cost_provenance="provider_reported")
+
+
+def test_a_provenance_column_decides_before_the_payload() -> None:
     """Only a provider-reported figure makes a cost known.
 
-    Anti-vacuity: defaulting the absent column to False makes each of these
-    claim the session is known to have cost nothing, which is what a
-    subscription session -- priced only as an API equivalent -- never is.
+    Anti-vacuity: reading the payload first makes the second and third rows
+    claim a known cost for a subscription session, which is only ever priced
+    as an API equivalent.
     """
-    assert _cost_is_estimated(_row()) is True
-    assert _cost_is_estimated(_row(cost_provenance="unknown")) is True
-    assert _cost_is_estimated(_row(cost_provenance="mixed")) is True
-    assert _cost_is_estimated(_row(cost_provenance="provider_reported")) is False
+    assert _cost_is_estimated(_row(), _ESTIMATED) is True
+    assert _cost_is_estimated(_row(cost_provenance="unknown"), _REPORTED) is True
+    assert _cost_is_estimated(_row(cost_provenance="mixed"), _REPORTED) is True
+    assert _cost_is_estimated(_row(cost_provenance="provider_reported"), _ESTIMATED) is False
 
 
-def test_a_stored_flag_outranks_the_provenance_fallback() -> None:
-    """A materialized value is evidence; the fallback only fills its absence.
+def test_a_stored_flag_outranks_the_provenance_column() -> None:
+    """A materialized value is evidence; provenance only fills its absence.
 
     Anti-vacuity: reading provenance first would discard what the writer
     recorded, so a reported cost later marked estimated would silently flip.
     """
-    assert _cost_is_estimated(_row(cost_is_estimated=1, cost_provenance="provider_reported")) is True
-    assert _cost_is_estimated(_row(cost_is_estimated=0, cost_provenance="unknown")) is False
+    assert _cost_is_estimated(_row(cost_is_estimated=1, cost_provenance="provider_reported"), _REPORTED) is True
+    assert _cost_is_estimated(_row(cost_is_estimated=0, cost_provenance="unknown"), _ESTIMATED) is False
 
 
 def test_stored_evidence_supplies_absent_columns() -> None:
@@ -49,17 +53,12 @@ def test_stored_evidence_supplies_absent_columns() -> None:
 
     ``SESSION_PROFILE_INSERT_COLUMNS`` writes no ``cost_is_estimated`` and no
     ``cost_provenance``, so on the production ``SELECT * FROM session_profiles``
-    path (rebuild and thread reads) both lookups above miss and every row -- a
-    provider-reported charge included -- came back as an estimate. Portfolio and
-    postmortem read the field directly and relabel a whole rollup from one such
-    row.
+    path (rebuild and thread reads) both lookups above miss and the stored
+    evidence answers. Portfolio and postmortem read the field directly and
+    relabel a whole rollup from one such row.
 
-    Anti-vacuity: remove the ``stated_evidence`` arm and the first assertion
-    goes back to ``True``. The second and third assertions are the opposite
-    direction: a synthesized payload is not a statement about cost, and a
-    stored column still outranks the payload.
+    Anti-vacuity: return ``True`` when both columns are absent and the first
+    assertion fails; ignore the payload and one of the two fails either way.
     """
-    reported = SessionEvidencePayload(cost_is_estimated=False, cost_provenance="provider_reported")
-    assert _cost_is_estimated(_row(), reported) is False
-    assert _cost_is_estimated(_row(), None) is True
-    assert _cost_is_estimated(_row(cost_is_estimated=1), reported) is True
+    assert _cost_is_estimated(_row(), _REPORTED) is False
+    assert _cost_is_estimated(_row(), _ESTIMATED) is True

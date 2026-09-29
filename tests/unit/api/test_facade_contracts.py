@@ -82,6 +82,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 from tests.infra.frozen_clock import FrozenClock
 from tests.infra.identity import archive_message_id
 from tests.infra.live_ingest import write_index_session
+from tests.infra.session_profiles import write_session_profile
 from tests.infra.storage_records import db_setup
 from tests.infra.thread_state import seed_spawn_edges
 
@@ -5757,31 +5758,25 @@ async def test_archive_tiers_api_threads_read_index_tier(tmp_path: Path) -> None
             parent_id = write_index_session(archive_db, parent)
             child_id = write_index_session(archive_db, child)
         with sqlite3.connect(tmp_path / "index.db") as conn:
-            conn.execute(
-                """
-                INSERT INTO session_profiles (
-                    session_id, workflow_shape, workflow_shape_confidence,
-                    terminal_state, terminal_state_confidence, duration_ms,
-                    substantive_count,
-                    evidence_payload_json
-                ) VALUES (?, 'agentic_loop', 0.91, 'question_left', 0.88, 180000,
-                          2, ?)
-                """,
-                (
-                    parent_id,
-                    json.dumps(
-                        {
-                            "first_message_at": "2026-02-02T02:40:00Z",
-                            "last_message_at": "2026-02-02T02:41:00Z",
-                            "canonical_session_date": "2026-02-02",
-                            "repo_paths": ["https://example.test/polylogue.git"],
-                            "cwd_paths": ["/realm/project/polylogue"],
-                            "file_paths_touched": ["/realm/project/polylogue/polylogue/api/archive.py"],
-                            "branch_names": ["archive"],
-                            "tags": ["archive"],
-                        }
-                    ),
-                ),
+            write_session_profile(
+                conn,
+                parent_id,
+                workflow_shape="agentic_loop",
+                workflow_shape_confidence=0.91,
+                terminal_state="question_left",
+                terminal_state_confidence=0.88,
+                total_duration_ms=180000,
+                substantive_count=2,
+                first_message_at="2026-02-02T02:40:00Z",
+                last_message_at="2026-02-02T02:41:00Z",
+                canonical_session_date="2026-02-02",
+                repo_paths=("https://example.test/polylogue.git",),
+                tags=("archive",),
+                evidence={
+                    "cwd_paths": ["/realm/project/polylogue"],
+                    "file_paths_touched": ["/realm/project/polylogue/polylogue/api/archive.py"],
+                    "branch_names": ["archive"],
+                },
             )
 
         thread = await archive.get_thread_insight(parent_id)
@@ -6164,35 +6159,19 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
         with ArchiveStore(archive.config.archive_root) as archive_db:
             session_id = write_index_session(archive_db, session)
         with sqlite3.connect(tmp_path / "index.db") as conn:
-            conn.execute(
-                """
-                INSERT INTO session_profiles (
-                    session_id, workflow_shape, workflow_shape_confidence,
-                    terminal_state, terminal_state_confidence, total_duration_ms,
-                    substantive_count, attachment_count,
-                    tool_calls_per_minute, evidence_payload_json,
-                    inference_payload_json
-                ) VALUES (?, 'implementation', 0.82, 'completed', 0.91, 120000,
-                          1, 0, 3.5, ?, ?)
-                """,
-                (
-                    session_id,
-                    json.dumps(
-                        {
-                            "canonical_session_date": "2026-02-02",
-                            "total_duration_ms": 120000,
-                            "workflow_shape": "implementation",
-                            "workflow_shape_confidence": 0.82,
-                            "terminal_state": "completed",
-                            "terminal_state_confidence": 0.91,
-                        }
-                    ),
-                    json.dumps(
-                        {
-                            "workflow_shape": "implementation",
-                        }
-                    ),
-                ),
+            write_session_profile(
+                conn,
+                session_id,
+                materializer_version=5,
+                workflow_shape="implementation",
+                workflow_shape_confidence=0.82,
+                terminal_state="completed",
+                terminal_state_confidence=0.91,
+                total_duration_ms=120000,
+                substantive_count=1,
+                attachment_count=0,
+                tool_calls_per_minute=3.5,
+                canonical_session_date="2026-02-02",
             )
 
         merged = await archive.get_session_profile_insight(session_id)
@@ -6221,7 +6200,7 @@ async def test_archive_tiers_api_session_profiles_read_index_tier(tmp_path: Path
         assert merged.inference is not None
         assert merged.inference.workflow_shape == "implementation"
         assert merged.inference.terminal_state == "completed"
-        assert merged.enrichment is None
+        assert merged.enrichment is not None
         assert evidence_only is not None
         assert evidence_only.evidence is not None
         assert evidence_only.inference is None
@@ -6272,7 +6251,7 @@ async def test_archive_tiers_api_session_insight_status_reads_index_tier(tmp_pat
             first_id = write_index_session(archive_db, first)
             write_index_session(archive_db, second)
         with sqlite3.connect(tmp_path / "index.db") as conn:
-            conn.execute("INSERT INTO session_profiles (session_id) VALUES (?)", (first_id,))
+            write_session_profile(conn, first_id)
         status = await archive.get_session_insight_status()
 
         assert status.total_sessions == 2

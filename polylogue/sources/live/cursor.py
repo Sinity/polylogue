@@ -260,10 +260,6 @@ def _storage_route_from_payload(payload: dict[str, object] | None) -> str | None
     return route if isinstance(route, str) and route else None
 
 
-def _table_has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
-    return any(str(row[1]) == column for row in conn.execute(f"PRAGMA table_info({table})"))
-
-
 def _convergence_debt_priority(*, stage: str, subject_type: str, subject_id: str) -> int:
     if stage == "fts" and subject_type == "fts_surface" and subject_id == "messages_fts":
         return 100
@@ -1072,60 +1068,33 @@ class CursorStore:
 
         def write() -> None:
             with self._connect_ops() as conn:
-                if _table_has_column(conn, "ingest_attempts", "storage_route"):
-                    conn.execute(
-                        """
-                        UPDATE ingest_attempts
-                        SET heartbeat_at_ms = ?,
-                            status = ?,
-                            phase = ?,
-                            storage_route = COALESCE(?, storage_route),
-                            source_path = COALESCE(?, source_path),
-                            origin = COALESCE(?, origin),
-                            parsed_raw_count = COALESCE(?, parsed_raw_count),
-                            materialized_count = COALESCE(?, materialized_count),
-                            error_message = COALESCE(?, error_message)
-                        WHERE attempt_id = ?
-                        """,
-                        (
-                            now_ms,
-                            _archive_attempt_status(status),
-                            phase,
-                            storage_route,
-                            str(current_path) if current_path is not None else None,
-                            _origin_value_for_source_name(current_source),
-                            parsed_raw_count,
-                            materialized_count,
-                            error,
-                            attempt_id,
-                        ),
-                    )
-                else:
-                    conn.execute(
-                        """
-                        UPDATE ingest_attempts
-                        SET heartbeat_at_ms = ?,
-                            status = ?,
-                            phase = ?,
-                            source_path = COALESCE(?, source_path),
-                            origin = COALESCE(?, origin),
-                            parsed_raw_count = COALESCE(?, parsed_raw_count),
-                            materialized_count = COALESCE(?, materialized_count),
-                            error_message = COALESCE(?, error_message)
-                        WHERE attempt_id = ?
-                        """,
-                        (
-                            now_ms,
-                            _archive_attempt_status(status),
-                            phase,
-                            str(current_path) if current_path is not None else None,
-                            _origin_value_for_source_name(current_source),
-                            parsed_raw_count,
-                            materialized_count,
-                            error,
-                            attempt_id,
-                        ),
-                    )
+                conn.execute(
+                    """
+                    UPDATE ingest_attempts
+                    SET heartbeat_at_ms = ?,
+                        status = ?,
+                        phase = ?,
+                        storage_route = COALESCE(?, storage_route),
+                        source_path = COALESCE(?, source_path),
+                        origin = COALESCE(?, origin),
+                        parsed_raw_count = COALESCE(?, parsed_raw_count),
+                        materialized_count = COALESCE(?, materialized_count),
+                        error_message = COALESCE(?, error_message)
+                    WHERE attempt_id = ?
+                    """,
+                    (
+                        now_ms,
+                        _archive_attempt_status(status),
+                        phase,
+                        storage_route,
+                        str(current_path) if current_path is not None else None,
+                        _origin_value_for_source_name(current_source),
+                        parsed_raw_count,
+                        materialized_count,
+                        error,
+                        attempt_id,
+                    ),
+                )
                 payload: dict[str, object] = {
                     key: value
                     for key, value in {
@@ -1316,7 +1285,7 @@ class CursorStore:
 
         def write() -> None:
             with self._connect_ops() as conn:
-                if disposition is not None and _table_has_column(conn, "ingest_attempts", "outcome_code"):
+                if disposition is not None:
                     retryable = disposition.retryable
                     conn.execute(
                         """

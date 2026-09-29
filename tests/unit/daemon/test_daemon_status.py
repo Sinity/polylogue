@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
     upsert_ingest_cursor,
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from tests.infra.session_profiles import write_session_profile
 
 
 def test_status_fingerprint_changes_when_source_tier_changes(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -2486,14 +2487,7 @@ def test_insight_freshness_reads_archive_file_set_from_archive_tiers(tmp_path: P
             "INSERT INTO sessions (native_id, origin, content_hash) VALUES (?, ?, ?)",
             ("native-2", "codex-session", bytes(32)),
         )
-        conn.execute(
-            """
-            INSERT INTO session_profiles (
-                session_id, workflow_shape, search_text
-            ) VALUES (?, ?, ?)
-            """,
-            ("codex-session:native-1", "debugging", "profile"),
-        )
+        write_session_profile(conn, "codex-session:native-1", workflow_shape="debugging", search_text="profile")
         conn.commit()
 
     with patch("polylogue.daemon.status._active_status_db_path", return_value=archive_db):

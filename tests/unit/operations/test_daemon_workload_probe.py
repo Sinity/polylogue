@@ -30,6 +30,7 @@ from polylogue.storage.sqlite.archive_tiers.ops_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, upsert_assertion
+from tests.infra.session_profiles import write_session_profile
 
 
 def _seed_minimal_archive(db: Path, source: Path) -> str:
@@ -565,11 +566,7 @@ def test_daemon_workload_probe_reports_archive_tier_inventory(tmp_path: Path) ->
             ) VALUES ('codex-session:native-1:m1', 'codex-session:native-1', 0, 'text', 'hello')
             """
         )
-        conn.execute(
-            """
-            INSERT INTO session_profiles (session_id) VALUES ('codex-session:native-1')
-            """
-        )
+        write_session_profile(conn, "codex-session:native-1")
     initialize_archive_database(tmp_path / "user.db", ArchiveTier.USER)
     with sqlite3.connect(tmp_path / "user.db") as conn:
         upsert_assertion(

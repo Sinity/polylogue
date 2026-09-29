@@ -21,6 +21,7 @@ from polylogue.storage.usage import (
     provider_usage_coverage_matrix,
     provider_usage_event_identity,
 )
+from tests.infra.session_profiles import write_session_profile
 
 
 def _connect(path: Path, tier: ArchiveTier = ArchiveTier.INDEX) -> sqlite3.Connection:
@@ -317,19 +318,14 @@ def test_origin_usage_report_labels_physical_and_logical_model_rollups(tmp_path:
              5, 5, 1, 1, zeroblob(32))
         """
     )
-    conn.executemany(
-        """
-        INSERT INTO session_profiles (session_id, logical_session_id, materialized_at, source_name)
-        VALUES (?, ?, 'now', 'claude-code-session')
-        """,
-        [
-            ("claude-code-session:root", "claude-code-session:root"),
-            ("claude-code-session:child-a", "claude-code-session:root"),
-            ("claude-code-session:child-b", "claude-code-session:root"),
-            ("codex-session:codex-root", "codex-session:codex-root"),
-            ("codex-session:codex-child", "codex-session:codex-root"),
-        ],
-    )
+    for session_id, logical_session_id in (
+        ("claude-code-session:root", "claude-code-session:root"),
+        ("claude-code-session:child-a", "claude-code-session:root"),
+        ("claude-code-session:child-b", "claude-code-session:root"),
+        ("codex-session:codex-root", "codex-session:codex-root"),
+        ("codex-session:codex-child", "codex-session:codex-root"),
+    ):
+        write_session_profile(conn, session_id, logical_session_id=logical_session_id, materialized_at="now")
     conn.executemany(
         """
         INSERT INTO session_model_usage (
@@ -409,13 +405,8 @@ def test_logical_rollup_adds_normalized_prefix_tail_deltas(tmp_path: Path) -> No
             ("rollup-child", "child"),
         ],
     )
-    conn.executemany(
-        """
-        INSERT INTO session_profiles (session_id, logical_session_id, materialized_at, source_name)
-        VALUES (?, 'codex-session:rollup-parent', 'now', 'codex-session')
-        """,
-        [("codex-session:rollup-parent",), ("codex-session:rollup-child",)],
-    )
+    for session_id in ("codex-session:rollup-parent", "codex-session:rollup-child"):
+        write_session_profile(conn, session_id, logical_session_id="codex-session:rollup-parent", materialized_at="now")
     conn.executemany(
         """
         INSERT INTO session_model_usage (session_id, model_name, input_tokens, output_tokens,

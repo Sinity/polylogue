@@ -17,6 +17,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import archive_tier_spec
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.user_write import AssertionKind, AssertionStatus, list_assertions_for_target
 from tests.infra.live_ingest import write_index_session
+from tests.infra.session_profiles import write_session_profile
 
 USER_STATE_SESSION_ID = "claude-code-session:conv-user-state"
 ARCHIVE_USER_STATE_SESSION_ID = "claude-code-session:conv-v1-user-state"
@@ -315,10 +316,7 @@ async def test_user_state_target_resolution_reads_archive_file_set_from_archive_
         )
         envelope = archive.read_session(session_id)
     with sqlite3.connect(archive_root / "index.db") as conn:
-        conn.execute(
-            "INSERT INTO session_profiles (session_id, search_text) VALUES (?, '')",
-            (session_id,),
-        )
+        write_session_profile(conn, session_id)
         conn.commit()
     message_id = envelope.messages[0].message_id
 

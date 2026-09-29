@@ -1,11 +1,14 @@
 """Bounded route-latency observation (polylogue-jtwu / polylogue-20d.17 AC #4).
 
 Covers the routes ``mcp_call_log`` (whole MCP tool calls, durably delivered
-via an outbox) does not: CLI command invocations and MCP sub-route detail a
-caller wants to time without routing through it. Best-effort telemetry, not
-audit evidence -- a caller that cannot reach ``ops.db`` (no archive
-configured, disposable tier missing, locked) drops the observation rather
-than blocking or retrying the operation being observed.
+via an outbox) does not. Best-effort telemetry, not audit evidence -- a
+caller that cannot reach ``ops.db`` (no archive configured, disposable tier
+missing, locked) drops the observation rather than blocking or retrying the
+operation being observed.
+
+Only the ops tier's owner may persist a receipt. The CLI and MCP processes
+are not that owner and record none (polylogue-k5iaf): they used to write
+``ops.db`` here beside the daemon.
 
 :class:`RouteObservationSpec` and :class:`RouteObservationReceipt` are the one
 declared contract every latency product derives from

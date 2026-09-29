@@ -52,6 +52,7 @@ from polylogue.storage.sqlite.queries.message_query_reads import (
     iter_messages,
 )
 from tests.infra.identity import archive_message_id
+from tests.infra.session_profiles import write_session_profile
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -114,19 +115,25 @@ def _seed_fresh_session_products(conn: sqlite3.Connection, session_id: str, *, m
     ``publish_prepared_session_insight_partition``
     does."""
     binding = session_input_bindings(conn, (session_id,))[session_id]
-    conn.execute(
+    source_updated_at, source_sort_key, origin = conn.execute(
         """
-        INSERT INTO session_profiles (
-            session_id, materializer_version, materialized_at, source_updated_at,
-            source_sort_key, input_content_hash, input_row_count, source_name,
-            message_count
-        )
-        SELECT session_id, ?, '', datetime(updated_at_ms / 1000, 'unixepoch'),
-               CAST(sort_key_ms AS REAL) / 1000.0, ?, ?, origin, ?
+        SELECT datetime(updated_at_ms / 1000, 'unixepoch'), CAST(sort_key_ms AS REAL) / 1000.0, origin
         FROM sessions
         WHERE session_id = ?
         """,
-        (SESSION_INSIGHT_MATERIALIZER_VERSION, binding, message_count, message_count, session_id),
+        (session_id,),
+    ).fetchone()
+    write_session_profile(
+        conn,
+        session_id,
+        materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+        materialized_at="",
+        source_updated_at=source_updated_at,
+        source_sort_key=source_sort_key,
+        input_content_hash=binding,
+        input_row_count=message_count,
+        source_name=origin,
+        message_count=message_count,
     )
     conn.execute(
         "INSERT INTO session_latency_profiles (session_id, materializer_version, materialized_at, source_name)"

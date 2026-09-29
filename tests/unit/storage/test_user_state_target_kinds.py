@@ -37,16 +37,14 @@ from polylogue.core.user_state_targets import (
     validate_mark_type,
 )
 from polylogue.storage.sqlite.archive_tiers.user import USER_DDL
+from tests.infra.session_profiles import write_session_profile
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
 def _seed_session_profile(db_path: Path, session_id: str) -> None:
     """Materialize a minimal session_profiles row for the native session."""
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            "INSERT INTO session_profiles (session_id, search_text) VALUES (?, ?)",
-            (session_id, ""),
-        )
+        write_session_profile(conn, session_id)
         conn.commit()
 
 

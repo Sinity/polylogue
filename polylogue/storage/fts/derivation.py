@@ -141,10 +141,6 @@ def _generation(conn: sqlite3.Connection) -> int:
     return 0 if row is None else int(row[0] or 0)
 
 
-def _has_content_hash(conn: sqlite3.Connection) -> bool:
-    return any(str(row[1]) == "content_hash" for row in conn.execute("PRAGMA table_info(blocks)"))
-
-
 def _session_block_id_range(key: str) -> tuple[str, str]:
     """Half-open ``block_id`` range covering exactly one session's blocks.
 
@@ -328,12 +324,11 @@ class FtsDerivationAdapter:
         else:
             where = "b.session_id = ? AND b.search_text != ''"
             params = (key,)
-        hash_expr = "b.content_hash" if _has_content_hash(conn) else "NULL"
         row_count, digest = _digest(
             conn.execute(
                 f"""
                 SELECT b.rowid, b.block_id, b.message_id, b.session_id, b.block_type,
-                       b.search_text, {hash_expr}
+                       b.search_text, b.content_hash
                 FROM blocks AS b
                 WHERE {where}
                 ORDER BY b.rowid
@@ -429,10 +424,9 @@ class FtsDerivationAdapter:
                 ).fetchone()[0]
             )
             excess_rows = docsize_excess_rows + identity_excess_rows
-            wrong_rows = (
-                int(
-                    conn.execute(
-                        """
+            wrong_rows = int(
+                conn.execute(
+                    """
                     SELECT COUNT(*) FROM blocks AS b
                     JOIN messages_fts_docsize AS d ON d.id = b.rowid
                     LEFT JOIN messages_fts_identity AS i ON i.rowid = b.rowid
@@ -441,21 +435,8 @@ class FtsDerivationAdapter:
                         OR i.source_hash IS NOT b.content_hash OR i.recipe_id != ?
                     )
                     """,
-                        (self.recipe_id,),
-                    ).fetchone()[0]
-                )
-                if _has_content_hash(conn)
-                else int(
-                    conn.execute(
-                        """
-                    SELECT COUNT(*) FROM blocks AS b
-                    JOIN messages_fts_docsize AS d ON d.id = b.rowid
-                    LEFT JOIN messages_fts_identity AS i ON i.rowid = b.rowid
-                    WHERE b.search_text != '' AND (i.rowid IS NULL OR i.block_id != b.block_id OR i.recipe_id != ?)
-                    """,
-                        (self.recipe_id,),
-                    ).fetchone()[0]
-                )
+                    (self.recipe_id,),
+                ).fetchone()[0]
             )
         else:
             missing_rows = int(
@@ -483,13 +464,13 @@ class FtsDerivationAdapter:
             )
             wrong_rows = int(
                 conn.execute(
-                    f"""
+                    """
                     SELECT COUNT(*) FROM blocks AS b
                     JOIN messages_fts_docsize AS d ON d.id = b.rowid
                     LEFT JOIN messages_fts_identity AS i ON i.rowid = b.rowid
                     WHERE b.session_id = ? AND b.search_text != '' AND (
                         i.rowid IS NULL OR i.block_id != b.block_id OR i.recipe_id != ?
-                        OR {"i.source_hash IS NOT b.content_hash OR" if _has_content_hash(conn) else ""} 0
+                        OR i.source_hash IS NOT b.content_hash
                     )
                     """,
                     (key, self.recipe_id),
@@ -610,22 +591,13 @@ class FtsDerivationAdapter:
             """,
             params,
         )
-        if _has_content_hash(conn):
-            conn.execute(
-                f"""
-                INSERT OR REPLACE INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id)
-                SELECT b.rowid, b.block_id, b.content_hash, ? FROM blocks AS b WHERE {where}
-                """,
-                (self.recipe_id, *params),
-            )
-        else:
-            conn.execute(
-                f"""
-                INSERT OR REPLACE INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id)
-                SELECT b.rowid, b.block_id, NULL, ? FROM blocks AS b WHERE {where}
-                """,
-                (self.recipe_id, *params),
-            )
+        conn.execute(
+            f"""
+            INSERT OR REPLACE INTO messages_fts_identity(rowid, block_id, source_hash, recipe_id)
+            SELECT b.rowid, b.block_id, b.content_hash, ? FROM blocks AS b WHERE {where}
+            """,
+            (self.recipe_id, *params),
+        )
 
     # The following methods intentionally mirror the daemon kernel protocol
     # without importing it.  ``DerivationFrame`` and ``ReplacementLike`` are

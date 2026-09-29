@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.archive_tiers.query_unit_frame import (
     ALL_FRAME_RELATIONS,
     INDEX_FRAME_RELATIONS,
 )
+from tests.infra.session_profiles import write_session_profile
 
 _UNSCOPED_EXPRESSION = "messages where role:user"
 _ROW_PIPELINE_EXPRESSION = "messages where role:user | sort by time asc | offset 0 | limit 10"
@@ -97,10 +98,7 @@ def _seed(root: Path) -> None:
                 "INSERT INTO session_tags(session_id, tag, tag_source) VALUES (?, 'pinned', 'user')",
                 (session_id,),
             )
-            conn.execute(
-                "INSERT INTO session_profiles(session_id, first_message_at) VALUES (?, '1')",
-                (session_id,),
-            )
+            write_session_profile(conn, session_id, first_message_at="1")
 
 
 def _seed_filter_relations(root: Path) -> None:
@@ -178,13 +176,9 @@ def _resume(root: Path, expression: str, token: str) -> object:
 
 
 def _write_session_profile(root: Path, session_id: str) -> None:
-    """The session-profile derivation's DELETE+INSERT, verbatim in shape."""
+    """The session-profile derivation's DELETE+INSERT, through its own writer."""
     with sqlite3.connect(root / "index.db") as conn:
-        conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (session_id,))
-        conn.execute(
-            "INSERT INTO session_profiles(session_id, first_message_at) VALUES (?, '2')",
-            (session_id,),
-        )
+        write_session_profile(conn, session_id, first_message_at="2")
 
 
 def test_unrelated_write_keeps_continuation_valid(tmp_path: Path) -> None:

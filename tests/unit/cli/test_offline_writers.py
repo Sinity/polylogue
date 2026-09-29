@@ -280,12 +280,8 @@ def test_row_still_opens_a_writable_tier(
     Anti-vacuity for this test itself: point a row at ``find`` and it goes
     red, because no writable tier open reaches the interception seam.
 
-    ``find`` and not ``ops status``, which looks like the obvious read-only
-    control and is not one: ``status`` writes a route-observation receipt to
-    the disposable ``ops.db`` through
-    ``polylogue.operations.route_observation._emit_best_effort``, so it opens
-    a writable tier on every run and would make this test pass while proving
-    nothing.
+    ``test_status_and_agent_views_open_no_writable_tier`` below is the read
+    side of the same seam.
     """
     del machine_tail
     from polylogue.maintenance.offline_guard import refuse_writable_tier_opens
@@ -345,3 +341,36 @@ def test_machine_format_refusal_is_typed(
     assert details["archive_root"] == str(root), payload
     assert f"PID {resident_pid}" in str(details["resident_writer"]), payload
     assert "stop it" in str(details["remedy"]), payload
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [("status",), ("ops", "status"), ("agents", "status"), ("agents", "work-item")],
+    ids=["status", "ops status", "agents status", "agents work-item"],
+)
+def test_status_and_agent_views_open_no_writable_tier(
+    argv: tuple[str, ...],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The read-only views write no tier from the CLI process (polylogue-k5iaf).
+
+    They used to time themselves through ``observe_route`` and write the
+    receipt into ``ops.db`` with a plain ``sqlite3.connect``: a second writer
+    beside the daemon when none was resident, and a refused open (a dropped
+    receipt) when one was. The CLI process is not the ops tier's owner, so it
+    records no route observation at all.
+
+    Anti-vacuity: wrap any of these commands in ``observe_route`` again and
+    its row records ``ops.db`` here.
+    """
+    from polylogue.maintenance.offline_guard import refuse_writable_tier_opens
+
+    root = _prepare_root(monkeypatch, tmp_path, _NEEDS_TIERS)
+    before = _tier_digest(root)
+    opened: list[Path] = []
+    with refuse_writable_tier_opens(opened.append):
+        _invoke(argv, monkeypatch)
+
+    assert opened == []
+    assert _tier_digest(root) == before

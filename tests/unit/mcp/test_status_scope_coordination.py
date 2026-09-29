@@ -10,8 +10,6 @@ touched :func:`build_coordination_envelope`.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import cast
 
@@ -26,7 +24,6 @@ from polylogue.coordination.payloads import (
     CoordinationView,
     CoordinationWorkItemPayload,
 )
-from polylogue.operations.route_observation import RouteObservationContext
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface
 
 
@@ -104,24 +101,27 @@ def test_status_coordination_scope_detail_bypasses_cache(
     assert calls == [False, True]
 
 
-def test_status_coordination_observation_carries_checkout_head_context(
+def test_status_coordination_writes_no_tier_from_the_mcp_process(
     mcp_server: MCPServerUnderTest,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    observed: dict[str, object] = {}
+    """The MCP process is not the ops tier's owner, so it records no route receipt.
 
-    @contextmanager
-    def capture_observation(**kwargs: object) -> Iterator[RouteObservationContext]:
-        observed.update(kwargs)
-        yield RouteObservationContext()
+    ``status(scope="coordination")`` used to time itself through
+    ``observe_route`` and write the receipt into ``ops.db`` with a plain
+    ``sqlite3.connect`` from the MCP process (polylogue-k5iaf). The whole tool
+    call is already delivered to the daemon through the MCP call-log outbox.
 
-    monkeypatch.setattr("polylogue.operations.route_observation.observe_route", capture_observation)
+    Anti-vacuity: restore the ``observe_route`` wrapper and ``ops.db`` is
+    recorded here.
+    """
+    from polylogue.maintenance.offline_guard import refuse_writable_tier_opens
+
     monkeypatch.setattr("polylogue.coordination.build_coordination_envelope", lambda **kwargs: _payload())
     monkeypatch.setattr("polylogue.coordination.envelope.build_coordination_envelope", lambda **kwargs: _payload())
-
-    raw = invoke_surface(mcp_server._tool_manager._tools["status"].fn, scope="coordination")
+    opened: list[Path] = []
+    with refuse_writable_tier_opens(opened.append):
+        raw = invoke_surface(mcp_server._tool_manager._tools["status"].fn, scope="coordination", include=("detail",))
 
     assert json.loads(raw)["scope"] == "coordination"
-    assert observed["surface"] == "mcp"
-    assert observed["route"] == "mcp.status.coordination"
-    assert observed["git_head_cwd"] == Path.cwd()
+    assert opened == []

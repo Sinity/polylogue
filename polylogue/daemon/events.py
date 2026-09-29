@@ -62,9 +62,6 @@ def _ensure_events_db(path: Path | None = None) -> sqlite3.Connection:
         _CONVERGED_EVENT_DBS.add(path)
     conn = open_daemon_connection(path, archive_root=path.parent)
     conn.executescript(_DAEMON_EVENTS_DDL)
-    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(daemon_events)")}
-    if "idempotency_key" not in columns:
-        conn.execute("ALTER TABLE daemon_events ADD COLUMN idempotency_key TEXT")
     conn.execute(
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_daemon_events_idempotency "
         "ON daemon_events(kind, idempotency_key) WHERE idempotency_key IS NOT NULL"

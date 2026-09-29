@@ -65,7 +65,6 @@ from polylogue.analysis.archive_models import ThreadMemberEvidencePayload, Threa
 from polylogue.analysis.audit import InsightRigorAuditQuery, InsightRigorAuditReport, _audit_one
 from polylogue.analysis.command_shapes import CommandShapeUsage, CommandShapeUsageQuery
 from polylogue.analysis.confidence import ConfidenceBand
-from polylogue.analysis.confidence import from_score as confidence_from_score
 from polylogue.analysis.feedback import LearningCorrection, parse_correction_kind
 from polylogue.analysis.lineage_graph import CompactLineageGraph
 from polylogue.analysis.objective_posture import structural_objective_posture
@@ -8245,7 +8244,7 @@ class _SessionProfileComponents:
     provenance: ArchiveInsightProvenance | None
     evidence: SessionEvidencePayload
     inference: SessionInferencePayload
-    enrichment: SessionEnrichmentPayload | None
+    enrichment: SessionEnrichmentPayload
 
 
 def _session_profile_components_from_archive_row(
@@ -8261,10 +8260,11 @@ def _session_profile_components_from_archive_row(
     builder applies tier gating on top.
 
     Reads the typed *_payload_json columns written by the canonical
-    session-profile writer (replace_session_profiles_bulk_sync).  The legacy
-    provenance_json column has been dropped from the DDL.
+    session-profile writer (replace_session_profiles_bulk_sync), which stores
+    all three; a row without them is refused as corrupt rather than rebuilt
+    from sibling columns.
     """
-    from polylogue.storage.sqlite.queries.mappers_insight_fallback import parse_payload_model
+    from polylogue.storage.sqlite.queries.mappers_insight_payloads import parse_payload_model
 
     session_id = str(row["session_id"])
     provenance = _read_session_insight_provenance(conn, session_id)
@@ -8275,82 +8275,39 @@ def _session_profile_components_from_archive_row(
     terminal_confidence = float(row["terminal_state_confidence"] or 0.0)
 
     evidence = parse_payload_model(row, "evidence_payload_json", record_id=session_id, model=SessionEvidencePayload)
-    if evidence is None:
-        # Fallback for rows written before the typed-column migration: build
-        # a minimal payload from the direct session/profile row columns.
-        evidence = SessionEvidencePayload.model_validate(
-            {
-                "created_at": _iso_from_ms(row["created_at_ms"]),
-                "updated_at": _iso_from_ms(row["updated_at_ms"]),
-                "message_count": int(row["message_count"] or 0),
-                "substantive_count": int(row["substantive_count"] or 0),
-                "attachment_count": int(row["attachment_count"] or 0),
-                "tool_use_count": int(row["tool_use_count"] or 0),
-                "thinking_count": int(row["thinking_count"] or 0),
-                "word_count": int(row["word_count"] or 0),
-                "total_cost_usd": float(row["total_cost_usd"] or row["cost_usd"] or 0.0),
-                "total_duration_ms": int(row["total_duration_ms"] or row["duration_ms"] or 0),
-                "workflow_shape": workflow_shape,
-                "workflow_shape_confidence": workflow_confidence,
-                "terminal_state": terminal_state,
-                "terminal_state_confidence": terminal_confidence,
-                "cost_is_estimated": bool(row["cost_is_estimated"]),
-                "cost_provenance": str(row["cost_provenance"] or "unknown"),
-                "logical_session_id": str(row["root_session_id"] or session_id),
-                "tool_calls_per_minute": float(row["tool_calls_per_minute"] or 0.0),
-            }
-        )
-
     inference = parse_payload_model(row, "inference_payload_json", record_id=session_id, model=SessionInferencePayload)
-    if inference is None:
-        inference = SessionInferencePayload.model_validate(
-            {
-                "engaged_duration_ms": 0,
-                "engaged_minutes": 0.0,
-                "engaged_duration_source": "unknown",
-                "workflow_shape": workflow_shape,
-                "workflow_shape_confidence": workflow_confidence,
-                "terminal_state": terminal_state,
-                "terminal_state_method": terminal_method,
-                "terminal_state_confidence": terminal_confidence,
-                "support_level": confidence_from_score(max(workflow_confidence, terminal_confidence)),
-            }
-        )
-    else:
-        # The denormalized native session_profiles columns are the authoritative
-        # ranking signals; reconcile the JSON-derived payload onto them so resume
-        # ranking and aggregation read the queryable native columns rather than a
-        # divergent payload copy.
-        inference = inference.model_copy(
-            update={
-                "workflow_shape": workflow_shape,
-                "workflow_shape_confidence": workflow_confidence,
-                "terminal_state": terminal_state,
-                "terminal_state_method": terminal_method,
-                "terminal_state_confidence": terminal_confidence,
-            }
-        )
+    # The denormalized native session_profiles columns are the authoritative
+    # ranking signals; reconcile the JSON-derived payload onto them so resume
+    # ranking and aggregation read the queryable native columns rather than a
+    # divergent payload copy.
+    inference = inference.model_copy(
+        update={
+            "workflow_shape": workflow_shape,
+            "workflow_shape_confidence": workflow_confidence,
+            "terminal_state": terminal_state,
+            "terminal_state_method": terminal_method,
+            "terminal_state_confidence": terminal_confidence,
+        }
+    )
 
     enrichment = parse_payload_model(
         row, "enrichment_payload_json", record_id=session_id, model=SessionEnrichmentPayload
     )
-    if enrichment is not None:
-        # polylogue-37t.23: same reconciliation as `inference.terminal_state`
-        # above -- the structural_inference tier of `objective_posture` is a
-        # pure function of terminal_state, so it is recomputed onto the
-        # authoritative native columns rather than trusted from the
-        # enrichment JSON (which may have been materialized before a
-        # native-column repair/backfill).
-        enrichment = enrichment.model_copy(
-            update={
-                "objective_posture": structural_objective_posture(
-                    terminal_state=inference.terminal_state,
-                    terminal_state_confidence=inference.terminal_state_confidence,
-                    terminal_state_evidence=dict(evidence.terminal_state_evidence),
-                    as_of=None,
-                )
-            }
-        )
+    # polylogue-37t.23: same reconciliation as `inference.terminal_state`
+    # above -- the structural_inference tier of `objective_posture` is a
+    # pure function of terminal_state, so it is recomputed onto the
+    # authoritative native columns rather than trusted from the
+    # enrichment JSON.
+    enrichment = enrichment.model_copy(
+        update={
+            "objective_posture": structural_objective_posture(
+                terminal_state=inference.terminal_state,
+                terminal_state_confidence=inference.terminal_state_confidence,
+                terminal_state_evidence=dict(evidence.terminal_state_evidence),
+                as_of=None,
+            )
+        }
+    )
     return _SessionProfileComponents(
         provenance=provenance,
         evidence=evidence,
@@ -8375,7 +8332,7 @@ def _session_profile_insight_from_archive_row(
     inference = components.inference if include_inference else None
     enrichment = None
     enrichment_provenance = None
-    if include_enrichment and components.enrichment is not None:
+    if include_enrichment:
         enrichment = components.enrichment
         enrichment_provenance = _archive_enrichment_provenance(provenance)
     return SessionProfileInsight(
@@ -8412,7 +8369,7 @@ def _session_profile_record_from_archive_row(
     provenance = components.provenance
     evidence = components.evidence
     inference = components.inference
-    enrichment = components.enrichment if components.enrichment is not None else SessionEnrichmentPayload()
+    enrichment = components.enrichment
     logical_session_id = str(row["root_session_id"] or session_id)
     source_name = str(row["origin"])
     title = str(row["title"]) if row["title"] is not None else None

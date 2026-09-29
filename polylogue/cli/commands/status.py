@@ -263,7 +263,7 @@ def status_command(
         if strict_source and incomplete:
             raise click.exceptions.Exit(2)
         return
-    from polylogue.operations.route_observation import observe_route
+    from polylogue.cli.operation_kernel import OperationKernelError, OperationUnavailableError
     from polylogue.paths import archive_root as _resolve_archive_root
 
     try:
@@ -271,76 +271,60 @@ def status_command(
     except Exception:
         observed_archive_root = None
 
-    with observe_route(
-        archive_root=observed_archive_root,
-        surface="cli",
-        route="cli.status",
-        verb="full" if full_payload else "compact",
-    ) as obs:
-        from polylogue.cli.operation_kernel import OperationKernelError, OperationUnavailableError
-
-        try:
-            operation_result = _status_operation_result(
-                env,
-                daemon_url=daemon_url,
-                include_archive_readiness=exact_archive_readiness,
-            )
-        except (sqlite3.Error, ArchiveTierUnavailableError):
-            # A missing active index has no snapshot to hand to the canonical
-            # reader. Keep the retired direct-status aggregate out of this
-            # route, but retain its bounded first-run diagnostic. Other
-            # SQLite failures are an unavailable operation, not first-run.
-            # ``ArchiveTierUnavailableError`` is the typed form the read
-            # boundary now raises for an absent tier (polylogue-wwjy6); it is
-            # not a ``sqlite3.Error``, so it is named here explicitly.
-            from polylogue.cli.commands.status_diagnostics import diagnose_first_run
-
-            if _archive_snapshot_is_absent(observed_archive_root):
-                diagnostic = diagnose_first_run(daemon_alive=False)
-                if diagnostic.kind == "no_archive":
-                    _show_direct_status_diagnostic(env, diagnostic, output_format=output_format)
-                    return
-            # A failed status read proves nothing about daemon liveness; it
-            # must never be recorded or rendered as a reachable daemon.
-            obs.attributes["daemon_reachable"] = False
-            obs.daemon_path = "unreachable"
-            if output_format == "json":
-                _show_daemon_status_unavailable_json(env)
-            else:
-                _show_daemon_status_unavailable(env, compact=not full_payload)
-            raise click.exceptions.Exit(1) from None
-        except OperationUnavailableError as exc:
-            # No daemon socket answered for this archive, or the daemon route
-            # is disabled, so no status read was attempted. That differs from
-            # a read that failed in flight ("unreachable"): it renders as "not
-            # running", with the first-run hint when no archive exists yet.
-            obs.attributes["daemon_reachable"] = False
-            obs.daemon_path = "unreachable"
-            _show_daemon_absent(env, str(exc), archive_root=observed_archive_root, output_format=output_format)
-            raise SystemExit(1) from None
-        except OperationKernelError:
-            # A failed status read proves nothing about daemon liveness; it
-            # must never be recorded or rendered as a reachable daemon.
-            obs.attributes["daemon_reachable"] = False
-            obs.daemon_path = "unreachable"
-            if output_format == "json":
-                _show_daemon_status_unavailable_json(env)
-            else:
-                _show_daemon_status_unavailable(env, compact=not full_payload)
-            raise click.exceptions.Exit(1) from None
-        mode = operation_result.authority.get("mode")
-        obs.attributes["daemon_reachable"] = mode == "daemon"
-        obs.daemon_path = str(mode)
-        status = operation_result.value
-        status_ok = (
-            _show_status_json(env, status, full=full_payload or exact_archive_readiness, source=str(mode))
-            if output_format == "json"
-            else _render_direct_status_payload(env, status, compact=not full_payload)
-            if mode == "direct"
-            else _show_daemon_status(env, status)
+    try:
+        operation_result = _status_operation_result(
+            env,
+            daemon_url=daemon_url,
+            include_archive_readiness=exact_archive_readiness,
         )
-        if not status_ok:
-            raise click.exceptions.Exit(1)
+    except (sqlite3.Error, ArchiveTierUnavailableError):
+        # A missing active index has no snapshot to hand to the canonical
+        # reader. Keep the retired direct-status aggregate out of this
+        # route, but retain its bounded first-run diagnostic. Other
+        # SQLite failures are an unavailable operation, not first-run.
+        # ``ArchiveTierUnavailableError`` is the typed form the read
+        # boundary now raises for an absent tier (polylogue-wwjy6); it is
+        # not a ``sqlite3.Error``, so it is named here explicitly.
+        from polylogue.cli.commands.status_diagnostics import diagnose_first_run
+
+        if _archive_snapshot_is_absent(observed_archive_root):
+            diagnostic = diagnose_first_run(daemon_alive=False)
+            if diagnostic.kind == "no_archive":
+                _show_direct_status_diagnostic(env, diagnostic, output_format=output_format)
+                return
+        # A failed status read proves nothing about daemon liveness; it
+        # must never be rendered as a reachable daemon.
+        if output_format == "json":
+            _show_daemon_status_unavailable_json(env)
+        else:
+            _show_daemon_status_unavailable(env, compact=not full_payload)
+        raise click.exceptions.Exit(1) from None
+    except OperationUnavailableError as exc:
+        # No daemon socket answered for this archive, or the daemon route
+        # is disabled, so no status read was attempted. That differs from
+        # a read that failed in flight ("unreachable"): it renders as "not
+        # running", with the first-run hint when no archive exists yet.
+        _show_daemon_absent(env, str(exc), archive_root=observed_archive_root, output_format=output_format)
+        raise SystemExit(1) from None
+    except OperationKernelError:
+        # A failed status read proves nothing about daemon liveness; it
+        # must never be rendered as a reachable daemon.
+        if output_format == "json":
+            _show_daemon_status_unavailable_json(env)
+        else:
+            _show_daemon_status_unavailable(env, compact=not full_payload)
+        raise click.exceptions.Exit(1) from None
+    mode = operation_result.authority.get("mode")
+    status = operation_result.value
+    status_ok = (
+        _show_status_json(env, status, full=full_payload or exact_archive_readiness, source=str(mode))
+        if output_format == "json"
+        else _render_direct_status_payload(env, status, compact=not full_payload)
+        if mode == "direct"
+        else _show_daemon_status(env, status)
+    )
+    if not status_ok:
+        raise click.exceptions.Exit(1)
     return
 
 
