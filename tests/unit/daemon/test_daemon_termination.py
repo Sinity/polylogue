@@ -206,6 +206,23 @@ def test_a_stop_timeout_escalation_is_an_external_stop(archive: Path, frozen_clo
     assert _only(receipts).classification is TerminationClassification.EXTERNAL_STOP
 
 
+def test_a_signal_handler_exit_without_a_stop_marker_is_a_handled_signal(
+    archive: Path, frozen_clock: FrozenClock
+) -> None:
+    """Exit 143 after a recorded SIGTERM is the handler's own exit; any other status is a crash."""
+    _prior_run(archive, frozen_clock, signal_name="SIGTERM")
+    _current, receipts = _reconcile(archive, FakeEvidence(manager=[{"EXIT_CODE": "exited", "EXIT_STATUS": "143"}]))
+    assert _only(receipts).classification is TerminationClassification.HANDLED_SIGNAL
+
+
+def test_an_abnormal_exit_status_is_a_crash(archive: Path, frozen_clock: FrozenClock) -> None:
+    _prior_run(archive, frozen_clock)
+    _current, receipts = _reconcile(archive, FakeEvidence(manager=[{"EXIT_CODE": "exited", "EXIT_STATUS": "144"}]))
+    receipt = _only(receipts)
+    assert receipt.classification is TerminationClassification.CRASH
+    assert receipt.observed[f"{SOURCE_SERVICE_MANAGER}.exit_status"] == "144"
+
+
 def test_the_service_manager_watchdog_is_classified(archive: Path, frozen_clock: FrozenClock) -> None:
     _prior_run(archive, frozen_clock)
     evidence = FakeEvidence(manager=[{"UNIT_RESULT": "watchdog", "EXIT_CODE": "dumped", "EXIT_STATUS": "ABRT"}])

@@ -24,6 +24,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import sqlite3
 import subprocess
 from collections.abc import Mapping, Sequence
@@ -468,6 +469,13 @@ class TerminationReceipt:
         }
 
 
+def _signal_number(signal_name: str) -> int:
+    try:
+        return int(signal.Signals[signal_name])
+    except KeyError:
+        return -1
+
+
 def _signal_name(exit_status: str) -> str:
     return exit_status if exit_status.startswith("SIG") else f"SIG{exit_status}"
 
@@ -644,6 +652,11 @@ def classify_termination(
         if exit_status == "0":
             inferred["stop_marker"] = "missing: the process exited 0 without recording its stop"
             return receipt(TerminationClassification.CLEAN, ended_after_ms=ended_after)
+        if run.signal is not None and exit_status == str(128 + _signal_number(run.signal)):
+            # The signal handler exits 128+signum: the run handled the signal
+            # it recorded and only its stop marker was lost.
+            inferred["stop_marker"] = "missing: the run exited through its signal handler"
+            return receipt(TerminationClassification.HANDLED_SIGNAL, ended_after_ms=ended_after)
         return receipt(TerminationClassification.CRASH, ended_after_ms=ended_after)
     if run.signal is not None:
         inferred["shutdown"] = "incomplete: the signal row exists but no stop marker followed"

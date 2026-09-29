@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import sqlite3
 import subprocess
+import threading
 import time
 import uuid
 from collections import defaultdict
@@ -215,11 +216,13 @@ class RouteObservationDropLedger:
     belongs to no archive's sample and stays process-local.
     """
 
-    __slots__ = ("_pending",)
+    __slots__ = ("_lock", "_pending")
 
     def __init__(self) -> None:
         # Aggregated per (tier, reason, route): bounded by the declared
-        # reasons and routes, not by lifetime request volume.
+        # reasons and routes, not by lifetime request volume. Routes are
+        # observed from many threads; every read-modify-write holds the lock.
+        self._lock = threading.RLock()
         self._pending: dict[tuple[Path | None, str, str, str], list[int]] = {}
 
     def record(
@@ -235,22 +238,24 @@ class RouteObservationDropLedger:
         if count <= 0:
             return
         key = (ops_db, reason.value, surface, route)
-        entry = self._pending.get(key)
-        if entry is None:
-            self._pending[key] = [count, observed_at_ms, observed_at_ms]
-            _register_exit_flush()
-            return
-        entry[0] += count
-        entry[1] = min(entry[1], observed_at_ms)
-        entry[2] = max(entry[2], observed_at_ms)
+        with self._lock:
+            entry = self._pending.get(key)
+            if entry is None:
+                self._pending[key] = [count, observed_at_ms, observed_at_ms]
+                _register_exit_flush()
+                return
+            entry[0] += count
+            entry[1] = min(entry[1], observed_at_ms)
+            entry[2] = max(entry[2], observed_at_ms)
 
     def drain(self, ops_db: Path) -> tuple[RouteObservationDropRow, ...]:
         """Remove and return the pending drops that belong to ``ops_db``."""
         from polylogue.storage.sqlite.archive_tiers.ops_write import RouteObservationDropRow
 
         rows: list[RouteObservationDropRow] = []
-        for key in [key for key in self._pending if key[0] == ops_db]:
-            count, first_ms, last_ms = self._pending.pop(key)
+        with self._lock:
+            drained = [(key, self._pending.pop(key)) for key in [key for key in self._pending if key[0] == ops_db]]
+        for key, (count, first_ms, last_ms) in drained:
             rows.append(
                 RouteObservationDropRow(
                     surface=key[2],
@@ -265,30 +270,35 @@ class RouteObservationDropLedger:
 
     def restore(self, ops_db: Path, rows: Sequence[RouteObservationDropRow]) -> None:
         """Put drained drops back after the write that would have recorded them failed."""
-        for row in rows:
-            self.record(
-                RouteObservationDropReason(row.reason),
-                surface=row.surface,
-                route=row.route,
-                ops_db=ops_db,
-                observed_at_ms=row.first_observed_at_ms,
-                count=row.drop_count,
-            )
-            entry = self._pending[(ops_db, row.reason, row.surface, row.route)]
-            entry[2] = max(entry[2], row.last_observed_at_ms)
+        with self._lock:
+            for row in rows:
+                self.record(
+                    RouteObservationDropReason(row.reason),
+                    surface=row.surface,
+                    route=row.route,
+                    ops_db=ops_db,
+                    observed_at_ms=row.first_observed_at_ms,
+                    count=row.drop_count,
+                )
+                entry = self._pending[(ops_db, row.reason, row.surface, row.route)]
+                entry[2] = max(entry[2], row.last_observed_at_ms)
 
     def recordable_count(self) -> int:
         """Pending drops that belong to an ops tier (and so to some archive's sample)."""
-        return sum(entry[0] for key, entry in self._pending.items() if key[0] is not None)
+        with self._lock:
+            return sum(entry[0] for key, entry in self._pending.items() if key[0] is not None)
 
     def pending_tiers(self) -> tuple[Path, ...]:
-        return tuple(sorted({key[0] for key in self._pending if key[0] is not None}))
+        with self._lock:
+            return tuple(sorted({key[0] for key in self._pending if key[0] is not None}))
 
     def snapshot(self) -> RouteObservationDrops:
         """Return the drops this process holds unrecorded. Never claims completeness."""
         reasons: dict[str, int] = {}
         routes: dict[str, int] = {}
-        for (_ops_db, reason, surface, route), (count, _first, _last) in self._pending.items():
+        with self._lock:
+            pending = [(key, entry[0]) for key, entry in self._pending.items()]
+        for (_ops_db, reason, surface, route), count in pending:
             reasons[reason] = reasons.get(reason, 0) + count
             routes[route_key(surface, route)] = routes.get(route_key(surface, route), 0) + count
         return RouteObservationDrops(
@@ -298,7 +308,8 @@ class RouteObservationDropLedger:
         )
 
     def reset(self) -> None:
-        self._pending.clear()
+        with self._lock:
+            self._pending.clear()
 
 
 _DROP_LEDGER = RouteObservationDropLedger()
