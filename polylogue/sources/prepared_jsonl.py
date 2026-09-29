@@ -1917,18 +1917,18 @@ def prepare_jsonl_blob(
             session_count = 0
             member_count = 0
             with source.open("rb") as handle:
-                for member_index in (
+                for bundle_index in (
                     iter_container_member_files(handle, stream_prefix, member_path) if bundle_admitted else ()
                 ):
                     member_count += 1
-                    if member_index is None:
+                    if bundle_index is None:
                         # No bundle lowering reads a non-object member.
                         continue
                     streamed, member_sessions = _streamed_bundle_member(
                         provider,
                         member_path,
                         store,
-                        f"{fallback_id}-{member_index}",
+                        f"{fallback_id}-{bundle_index}",
                         all_browser_captures=bundle_browser_captures,
                     )
                     if streamed:
@@ -1941,7 +1941,7 @@ def prepare_jsonl_blob(
                             provider,
                             record,
                             fallback_id,
-                            member_index,
+                            bundle_index,
                             count=bundle_count,
                             all_browser_captures=bundle_browser_captures,
                             drift=drift,

@@ -22,7 +22,7 @@ from polylogue.sources.decoder_json import (
     scan_container_members,
 )
 from polylogue.sources.decoders import _iter_json_stream
-from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.dispatch import bundle_member_sessions, parse_payload, require_positive_conversational_evidence
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.claude import common as claude_common
 from polylogue.sources.prepared_jsonl import PreparedJsonl, prepare_jsonl_blob
@@ -111,7 +111,7 @@ def _assert_publication(artifact: PreparedJsonl, expected: list[ParsedSession], 
 def _collected_members(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     """Record which members reach the collecting bundle lowering."""
     collected: list[int] = []
-    original = prepared_jsonl.bundle_member_sessions
+    original = bundle_member_sessions
 
     def tracked(provider: Provider, record: object, fallback_id: str, index: int, **kwargs: object) -> object:
         collected.append(index)
@@ -179,7 +179,7 @@ def test_bundle_member_spills_before_the_container_ends(tmp_path: Path, monkeypa
     monkeypatch.setattr(prepared_jsonl, "iter_json_container_records", refuse_member_decode)
     members_written = 0
     first_spill_after: int | None = None
-    original_files = prepared_jsonl.iter_container_member_files
+    original_files = iter_container_member_files
     original_put = ClaudeChatEvidence.put
 
     def tracked_files(*args: object, **kwargs: object) -> Iterator[int | None]:
@@ -296,7 +296,7 @@ def test_bundle_source_mutation_between_passes_defers_without_artifact(
 ) -> None:
     source = tmp_path / "bundle.json"
     source.write_text(json.dumps([_conversation(8), {**_conversation(8), "uuid": "second"}]), encoding="utf-8")
-    original_scan = prepared_jsonl.scan_container_members
+    original_scan = scan_container_members
 
     def scan_then_append(*args: object, **kwargs: object) -> int | None:
         count = original_scan(*args, **kwargs)  # type: ignore[arg-type]
