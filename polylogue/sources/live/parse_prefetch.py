@@ -1101,7 +1101,11 @@ class LiveParseStage:
         return self._path_attempt_dirs.pop(source_path, None), observation
 
     def _attempt_bytes(self, paths: set[str]) -> int:
-        """Bytes the running preparations of ``paths`` have written so far."""
+        """Bytes the running preparations of ``paths`` have written so far.
+
+        The source snapshot a worker copies first sits one directory down
+        (``source_snapshot``); its growth is progress too.
+        """
         total = 0
         for source_path in paths:
             directory = self._path_attempt_dirs.get(source_path)
@@ -1110,7 +1114,12 @@ class LiveParseStage:
             try:
                 for entry in os.scandir(directory):
                     with suppress(OSError):
-                        total += entry.stat(follow_symlinks=False).st_size
+                        if entry.is_dir(follow_symlinks=False):
+                            total += sum(
+                                nested.stat(follow_symlinks=False).st_size for nested in os.scandir(entry.path)
+                            )
+                        else:
+                            total += entry.stat(follow_symlinks=False).st_size
             except OSError:
                 continue
         return total
