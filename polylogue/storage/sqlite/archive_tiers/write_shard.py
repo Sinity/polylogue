@@ -317,6 +317,12 @@ def build_session_shard(directory: Path, prepared_sessions: Sequence[object]) ->
     return builder.seal()
 
 
+#: Identity rows one random-access read fetches. Writers index the sequence
+#: in message order, so one read serves the next page of lookups; a lookup
+#: outside the held page replaces it, keeping at most one page resident.
+_IDENTITY_PAGE_ROWS = 4096
+
+
 class ShardIdentitySequence(Sequence[tuple[str, int]]):
     """Address identity rows on disk without rebuilding a whole-session tuple."""
 
@@ -324,6 +330,9 @@ class ShardIdentitySequence(Sequence[tuple[str, int]]):
         self.path = path
         self.lo = lo
         self.hi = hi
+        # (first index, rows): replaced as one value, so a concurrent reader
+        # never pairs one page's start with another page's rows.
+        self._window: tuple[int, tuple[tuple[str, int], ...]] = (0, ())
 
     def __len__(self) -> int:
         return max(0, self.hi - self.lo + 1)
@@ -341,14 +350,27 @@ class ShardIdentitySequence(Sequence[tuple[str, int]]):
             index += len(self)
         if index < 0 or index >= len(self):
             raise IndexError(index)
-        with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
-            row = conn.execute(
-                "SELECT content_identity, content_occurrence FROM messages WHERE rowid = ?",
-                (self.lo + index,),
-            ).fetchone()
-        if row is None:
-            raise ShardRefusedError("prepared message identity row disappeared")
-        return str(row[0]), int(row[1])
+        page_start, page = self._window
+        offset = index - page_start
+        if not 0 <= offset < len(page):
+            # One connection per page of lookups, not one per message: the
+            # writer resolves every message of a session through here.
+            start = index - index % _IDENTITY_PAGE_ROWS
+            end = min(start + _IDENTITY_PAGE_ROWS, len(self)) - 1
+            with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:
+                page = tuple(
+                    (str(identity), int(occurrence))
+                    for identity, occurrence in conn.execute(
+                        "SELECT content_identity, content_occurrence FROM messages "
+                        "WHERE rowid BETWEEN ? AND ? ORDER BY rowid",
+                        (self.lo + start, self.lo + end),
+                    )
+                )
+            if len(page) != end - start + 1:
+                raise ShardRefusedError("prepared message identity row disappeared")
+            self._window = (start, page)
+            offset = index - start
+        return page[offset]
 
     def __iter__(self) -> Iterator[tuple[str, int]]:
         with closing(sqlite3.connect(_read_only_uri(self.path), uri=True)) as conn:

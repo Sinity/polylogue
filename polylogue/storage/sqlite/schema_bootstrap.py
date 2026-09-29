@@ -107,7 +107,10 @@ def stamp_derived_schema_identity(conn: sqlite3.Connection, tier: str) -> None:
     )
 
     derived_tier = DerivedTier(tier)
-    conn.executescript(DERIVED_SCHEMA_META_DDL)
+    # ``execute``, not ``executescript``: the latter commits whatever
+    # transaction the caller holds, splitting a tier's initialization into
+    # separately synced commits.
+    conn.execute(DERIVED_SCHEMA_META_DDL)
     conn.execute(
         "INSERT INTO schema_identity(tier, identity) VALUES (?, ?) "
         "ON CONFLICT(tier) DO UPDATE SET identity=excluded.identity",

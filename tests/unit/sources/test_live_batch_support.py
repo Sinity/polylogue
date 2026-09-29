@@ -9961,3 +9961,100 @@ def test_claude_live_append_keeps_latest_relocated_directory_first(tmp_path: Pat
             ]
         assert paths[0] == moved
         assert "/a/original" in paths
+
+
+def _settled_proof_fixture(tmp_path: Path) -> tuple[Path, bytes, os.stat_result, CursorStore, LiveBatchProcessor]:
+    root = tmp_path / "sessions"
+    root.mkdir()
+    path = root / "settled-proof.jsonl"
+    captured = (
+        b'{"type":"session_meta","payload":{"id":"settled-proof"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"message-a","role":"user",'
+        b'"content":[{"type":"input_text","text":"alpha"}]}}\n'
+    )
+    path.write_bytes(captured)
+    index_db = tmp_path / "index.db"
+    cursor = CursorStore(index_db)
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=index_db))),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    return path, captured, path.stat(), cursor, processor
+
+
+def _observation(stat: os.stat_result) -> tuple[int, int, int, int, int]:
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
+@pytest.mark.parametrize("settled", [True, False], ids=["settled", "racy"])
+def test_full_cursor_reuses_a_settled_unchanged_capture_observation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, settled: bool
+) -> None:
+    """An unchanged source whose last change predates the capture is not re-hashed.
+
+    A change time within the timestamp margin of the observation is the racy
+    case and is proved by reading the bytes again. Anti-vacuity: drop the
+    margin comparison and the racy case skips its re-read too; drop the
+    settled shortcut and the settled case reads every byte.
+    """
+    path, captured, captured_stat, cursor, processor = _settled_proof_fixture(tmp_path)
+    hashed: list[int] = []
+    original_hash = live_batch.sha256_range_from_path
+
+    def counting_hash(source_path: Path, *, start_offset: int, end_offset: int) -> tuple[str, int]:
+        hashed.append(end_offset - start_offset)
+        return original_hash(source_path, start_offset=start_offset, end_offset=end_offset)
+
+    monkeypatch.setattr(live_batch, "sha256_range_from_path", counting_hash)
+    margin = live_batch._SETTLED_OBSERVATION_MARGIN_NS
+    observed_at_ns = captured_stat.st_ctime_ns + (margin + 1 if settled else margin // 2)
+
+    read_bytes = processor._record_full_cursor(
+        path,
+        raw_fingerprint=sha256(captured).hexdigest(),
+        raw_byte_size=len(captured),
+        source_name="codex",
+        captured_content_hash=sha256(captured).hexdigest(),
+        captured_file_observation=_observation(captured_stat),
+        captured_observed_at_ns=observed_at_ns,
+    )
+
+    assert processor._last_cursor_write_stale is False
+    record = cursor.get_record(path)
+    assert record is not None
+    assert record.byte_offset == len(captured)
+    assert record.content_fingerprint == sha256(captured).hexdigest()
+    assert read_bytes == (0 if settled else len(captured))
+    assert hashed == ([] if settled else [len(captured)])
+
+
+def test_settled_observation_does_not_hide_a_same_size_rewrite(tmp_path: Path) -> None:
+    """A rewrite after capture with its mtime restored still changes the change time.
+
+    Anti-vacuity: compare only size and mtime and the rewritten bytes are
+    accepted under the captured hash.
+    """
+    path, captured, captured_stat, cursor, processor = _settled_proof_fixture(tmp_path)
+    rewritten = captured.replace(b"alpha", b"bravo")
+    assert len(rewritten) == len(captured)
+    path.write_bytes(rewritten)
+    os.utime(path, ns=(captured_stat.st_atime_ns, captured_stat.st_mtime_ns))
+    after = path.stat()
+    if after.st_ctime_ns == captured_stat.st_ctime_ns:
+        pytest.skip("filesystem did not advance ctime for the rewrite within this test's resolution")
+
+    processor._record_full_cursor(
+        path,
+        raw_fingerprint=sha256(captured).hexdigest(),
+        raw_byte_size=len(captured),
+        source_name="codex",
+        captured_content_hash=sha256(captured).hexdigest(),
+        captured_file_observation=_observation(captured_stat),
+        captured_observed_at_ns=captured_stat.st_ctime_ns + live_batch._SETTLED_OBSERVATION_MARGIN_NS + 1,
+    )
+
+    assert processor._last_cursor_write_stale is True
+    record = cursor.get_record(path)
+    assert record is None or record.content_fingerprint != sha256(captured).hexdigest()

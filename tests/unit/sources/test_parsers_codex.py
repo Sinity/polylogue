@@ -3823,3 +3823,63 @@ def test_stream_replay_budget_charges_nested_payloads(monkeypatch: pytest.Monkey
 
     assert parse_stream(iter(payload), "fallback") == parse(payload, "fallback")
     assert spooled == [payload]
+
+
+@pytest.mark.parametrize("tier", ["memory", "spill-first"])
+def test_stream_parse_reads_its_records_once_then_replays_once(monkeypatch: pytest.MonkeyPatch, tier: str) -> None:
+    """The lookahead is fed while the stream is retained, so the only replay is materialization.
+
+    Anti-vacuity: run the lookahead as its own pass over the retained records
+    (the predecessor shape) and the spooled tier replays twice.
+    """
+    from polylogue.sources.parsers import codex as codex_module
+
+    if tier == "spill-first":
+        monkeypatch.setattr(codex_module, "_CODEX_REPLAY_MEMORY_BUDGET_BYTES", 0)
+    replays = 0
+    original_replay = codex_module._CodexLookaheadIndex.replay_records
+
+    def counting_replay(self: Any) -> Any:
+        nonlocal replays
+        replays += 1
+        return original_replay(self)
+
+    monkeypatch.setattr(codex_module._CodexLookaheadIndex, "replay_records", counting_replay)
+    pulled = 0
+
+    def source() -> Any:
+        nonlocal pulled
+        for record in _REPLAY_TIER_PAYLOAD:
+            pulled += 1
+            yield record
+
+    assert parse_stream(source(), "fallback") == parse(_REPLAY_TIER_PAYLOAD, "fallback")
+    assert pulled == len(_REPLAY_TIER_PAYLOAD)
+    assert replays == (1 if tier == "spill-first" else 0)
+
+
+def test_lookahead_signature_keys_are_fixed_size_digests() -> None:
+    """A message signature is keyed by 32 bytes, whatever its text length.
+
+    Keying the scratch B-tree by the pickled text put multi-kilobyte keys on
+    overflow pages, so every membership probe of a whale read them back.
+    Anti-vacuity: key by ``_sql_key(signature)`` and the stored key grows
+    with the text.
+    """
+    import sqlite3
+
+    from polylogue.sources.parsers import codex as codex_module
+
+    with sqlite3.connect("") as connection:
+        index = codex_module._CodexLookaheadIndex(connection)
+        long_text = "w" * 200_000
+        index.add_signature(("user", long_text))
+        index.add_signature(("assistant", "short"))
+        lengths = {row[0] for row in connection.execute("SELECT length(value) FROM codex_signatures")}
+        assert lengths == {32}
+        assert ("user", long_text) in index
+        assert ("assistant", "short") in index
+        assert ("assistant", long_text) not in index
+        assert ("user", long_text + "x") not in index
+        assert "not a signature" not in index
+        index.close()

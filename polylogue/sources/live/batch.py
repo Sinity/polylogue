@@ -482,6 +482,37 @@ def append_capability_receipt(
 _ARCHIVE_RUNTIME_TIERS = ",".join(spec.tier.value for spec in ARCHIVE_TIER_SPECS.values())
 _ARCHIVE_NATIVE_WRITE_TIERS = "source,index"
 _FULL_CAPTURE_PREFIX_PROOF_ATTEMPTS = 2
+#: How much older than its observation a file's last change must be before
+#: an unchanged ``stat`` proves unchanged bytes. Above any filesystem's
+#: timestamp granularity, plus slack for a small wall-clock step.
+_SETTLED_OBSERVATION_MARGIN_NS = 2_000_000_000
+
+
+def _settled_observation_unchanged(
+    stat: os.stat_result,
+    *,
+    captured_file_observation: tuple[int, int, int, int, int],
+    captured_observed_at_ns: int | None,
+) -> bool:
+    """Whether the capture's pre-read observation still proves the source's bytes.
+
+    The capture took ``captured_file_observation`` just before reading the
+    bytes it hashed. Any write after that ``stat`` sets the inode's change
+    time to the time of the write, which is later than the observation --
+    so when the file's recorded change time was already *settled* (older
+    than the observation by more than the timestamp granularity) and the
+    current observation is identical, no write happened since, and the
+    captured hash is the file's hash without reading it again. A change
+    time inside the margin is the racy case (a write in the same timestamp
+    tick is invisible to ``stat``) and falls back to re-hashing, as does any
+    difference in device, inode, size, mtime or ctime.
+    """
+    if captured_observed_at_ns is None:
+        return False
+    if _file_observation(stat) != captured_file_observation:
+        return False
+    captured_ctime_ns = captured_file_observation[4]
+    return captured_ctime_ns + _SETTLED_OBSERVATION_MARGIN_NS < captured_observed_at_ns
 
 
 @dataclass(frozen=True)
@@ -1777,6 +1808,7 @@ class LiveBatchProcessor:
                                     "source_fingerprint": full_result.raw_source_fingerprints.get(path),
                                     "captured_content_hash": full_result.captured_content_hashes.get(path),
                                     "captured_file_observation": full_result.captured_file_observations.get(path),
+                                    "captured_observed_at_ns": full_result.captured_observation_times_ns.get(path),
                                 },
                             )
                             for path in full_result.succeeded
@@ -2354,6 +2386,7 @@ class LiveBatchProcessor:
         source_fingerprint: str | None = None,
         captured_content_hash: str | None = None,
         captured_file_observation: tuple[int, int, int, int, int] | None = None,
+        captured_observed_at_ns: int | None = None,
     ) -> int:
         self._last_cursor_write_stale = False
         resolved_source_name = source_name or self._source_name_for(path)
@@ -2395,6 +2428,7 @@ class LiveBatchProcessor:
             byte_size=byte_size,
             captured_content_hash=captured_content_hash,
             captured_file_observation=captured_file_observation,
+            captured_observed_at_ns=captured_observed_at_ns,
         )
         bytes_read = prefix_proof.bytes_read
         if prefix_proof.outcome == "deferred":
@@ -2546,6 +2580,7 @@ class LiveBatchProcessor:
         byte_size: int,
         captured_content_hash: str | None,
         captured_file_observation: tuple[int, int, int, int, int] | None,
+        captured_observed_at_ns: int | None = None,
     ) -> _FullCapturePrefixProof:
         if captured_file_observation is None:
             try:
@@ -2574,6 +2609,12 @@ class LiveBatchProcessor:
         normalized_fingerprint = captured_content_hash.lower()
         if len(normalized_fingerprint) != 64 or any(char not in "0123456789abcdef" for char in normalized_fingerprint):
             return _FullCapturePrefixProof("rejected", stat, 0)
+        if _settled_observation_unchanged(
+            stat,
+            captured_file_observation=captured_file_observation,
+            captured_observed_at_ns=captured_observed_at_ns,
+        ):
+            return _FullCapturePrefixProof("verified", stat, 0)
 
         bytes_read = 0
         latest_stat = stat
@@ -3242,6 +3283,7 @@ class LiveBatchProcessor:
         raw_source_fingerprints: dict[Path, str] = {}
         captured_content_hashes: dict[Path, str] = {}
         captured_file_observations: dict[Path, tuple[int, int, int, int, int]] = {}
+        captured_observation_times_ns: dict[Path, int] = {}
         failed: list[Path] = []
         #: Antigravity ``.pb`` paths whose snapshot was refused as excised.
         antigravity_excised_paths: set[Path] = set()
@@ -3346,9 +3388,11 @@ class LiveBatchProcessor:
             # attempted instead of retrying it on every poll.
             for path in antigravity_pb_paths:
                 try:
+                    observed_at_ns = time.time_ns()
                     captured_file_observations[path] = _file_observation(path.stat())
                 except OSError:
                     continue
+                captured_observation_times_ns[path] = observed_at_ns
             try:
                 for raw_data, session in iter_antigravity_language_server_sessions(
                     source,
@@ -3415,11 +3459,13 @@ class LiveBatchProcessor:
             blob_hash: str | None = None
             blob_publication_receipt_id: str | None = None
             try:
+                observed_at_ns = time.time_ns()
                 stat = path.stat()
             except OSError:
                 failed.append(path)
                 continue
             captured_file_observations[path] = _file_observation(stat)
+            captured_observation_times_ns[path] = observed_at_ns
             # The production baseline applies this same decision to every
             # file discovery accepts, so a cold build requires retention of
             # exactly the files this route retains.
@@ -4223,6 +4269,7 @@ class LiveBatchProcessor:
             raw_source_fingerprints=raw_source_fingerprints,
             captured_content_hashes=captured_content_hashes,
             captured_file_observations=captured_file_observations,
+            captured_observation_times_ns=captured_observation_times_ns,
             summary=summary,
             excised_skips=archive_write.excised_skips if archive_write is not None else 0,
             excised_paths=(

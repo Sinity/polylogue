@@ -322,6 +322,8 @@ class _FullIngestResult:
     raw_source_fingerprints: dict[Path, str] = field(default_factory=dict)
     captured_content_hashes: dict[Path, str] = field(default_factory=dict)
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] = field(default_factory=dict)
+    #: Wall-clock ns taken just before each captured observation's ``stat``.
+    captured_observation_times_ns: dict[Path, int] = field(default_factory=dict)
     worker_count: int = 0
     ingested_session_count: int = 0
     ingested_message_count: int = 0
@@ -367,6 +369,7 @@ def _full_ingest_result_from_summary(
     raw_source_fingerprints: dict[Path, str] | None = None,
     captured_content_hashes: dict[Path, str] | None = None,
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
+    captured_observation_times_ns: dict[Path, int] | None = None,
     summary: object | None,
     excised_skips: int = 0,
     excised_paths: tuple[Path, ...] = (),
@@ -390,6 +393,7 @@ def _full_ingest_result_from_summary(
         raw_source_fingerprints=raw_source_fingerprints or {},
         captured_content_hashes=captured_content_hashes or {},
         captured_file_observations=captured_file_observations or {},
+        captured_observation_times_ns=captured_observation_times_ns or {},
         worker_count=int(getattr(summary, "worker_count", 0)) if summary is not None else 0,
         ingested_session_count=int(getattr(summary, "total_convos", 0)) if summary is not None else 0,
         ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
