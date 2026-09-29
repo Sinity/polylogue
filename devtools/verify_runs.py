@@ -367,6 +367,21 @@ class VerifyRun:
             if self.mirror_current:
                 _write_json(self.root / CURRENT_RUN_PATH, self._payload)
 
+    def declare_workload(self, spec: Mapping[str, Any]) -> None:
+        """Persist the complete intended plan before any step is admitted or run.
+
+        The terminal ``workload_receipt`` binds observations to this same
+        spec, so an interrupted, refused, or abandoned run still names the plan
+        it was executing rather than only the steps it reached.
+        """
+        self._payload["workload_spec"] = dict(spec)
+        self.write()
+
+    @property
+    def recorded_git_dirty(self) -> bool:
+        """The start-of-run dirty state; ``git_dirty`` fails closed to ``True``."""
+        return bool(self._payload.get("git_dirty", True))
+
     def record_execution_environment_key(self, key: str) -> None:
         """Bind the run to the caller environment that shaped its execution."""
         self._payload["execution_environment_key"] = key
@@ -1510,6 +1525,16 @@ def reconcile_abandoned_verify_runs(
             continue
         pid = _owning_pid(run_id)
         if pid is None or _process_owns_receipt(pid, payload.get("started_at"), is_live=is_live):
+            continue
+        # The owner may have published its own verdict and exited between the
+        # read above and the liveness check. Only a receipt still ``running``
+        # once the owner is proven gone is abandoned; a terminal one is the
+        # owner's authoritative result.
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, dict) or payload.get("run_id") != run_id or payload.get("status") != "running":
             continue
         job_id = payload.get("agentctl_job_id")
         outcome = read_agentctl_outcome(job_id, state_root=state_root) if isinstance(job_id, str) else None

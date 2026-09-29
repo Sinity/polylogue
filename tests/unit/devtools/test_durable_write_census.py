@@ -206,4 +206,5 @@ def test_excision_policy_projection_is_owned_by_canonical_source_ddl() -> None:
 
 def test_head_declaration_matches_the_census() -> None:
     """The checked-in declaration names every current checked runtime route."""
-    assert collect_violations(repo_root=repo_root()) == []
+    violations = collect_violations(repo_root=repo_root())
+    assert not violations, violations

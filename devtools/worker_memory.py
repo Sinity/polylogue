@@ -17,7 +17,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
+
+if TYPE_CHECKING:
+    import pytest
 
 __all__ = [
     "CHARGE_PROFILE_ENV",
@@ -707,6 +710,55 @@ def memory_bounded_worker_cap(
     }
 
 
+#: xdist's widths that it resolves itself, from the CPUs this process may use.
+_AUTOMATIC_WIDTHS = frozenset({"auto", "logical"})
+
+
+def _worker_requests(argv: list[str]) -> list[tuple[int, str, bool]]:
+    """Every place ``argv`` names an xdist width: ``(index, value, attached)``.
+
+    Every occurrence is read because argparse keeps the last one, so a
+    narrowed first ``-n`` followed by a wider one would still start the wider
+    run. After ``--`` every argument is a path, so nothing there is a width.
+    """
+    requests: list[tuple[int, str, bool]] = []
+    index = 0
+    while index < len(argv):
+        argument = argv[index]
+        if argument == "--":
+            break
+        if argument in {"-n", "--numprocesses"}:
+            if index + 1 < len(argv):
+                requests.append((index + 1, argv[index + 1], False))
+            index += 2
+            continue
+        if argument.startswith("--numprocesses="):
+            requests.append((index, argument.split("=", 1)[1], True))
+        elif argument.startswith("-n") and len(argument) > 2:
+            requests.append((index, argument[2:].removeprefix("="), True))
+        index += 1
+    return requests
+
+
+def _automatic_width(spelling: str, argv: list[str]) -> int:
+    """The width xdist itself would start for ``-n auto`` or ``-n logical``.
+
+    xdist's own default resolution answers (``PYTEST_XDIST_AUTO_NUM_WORKERS``,
+    then the CPUs this process may run on), and ``--pdb`` turns an automatic
+    width into no workers, exactly as xdist does.
+    """
+    options = argv[: argv.index("--")] if "--" in argv else argv
+    if "--pdb" in options:
+        return 0
+    from types import SimpleNamespace
+
+    from xdist.plugin import pytest_xdist_auto_num_workers
+
+    # The default resolution reads only ``config.option.numprocesses``.
+    config = cast("pytest.Config", SimpleNamespace(option=SimpleNamespace(numprocesses=spelling)))
+    return int(pytest_xdist_auto_num_workers(config))
+
+
 def resize_worker_argument(
     argv: list[str],
     *,
@@ -716,7 +768,7 @@ def resize_worker_argument(
     profile: ChargeProfile = MEASURED_CHARGE,
     max_workers: int | None = None,
 ) -> tuple[list[str], dict[str, Any] | None]:
-    """Narrow an ``-n <count>`` xdist argument to what memory allows.
+    """Narrow the xdist width ``argv`` requests to what memory allows.
 
     Always returns the observed budget as the basis -- selected width,
     requested width, and which budget source answered -- even when the
@@ -726,22 +778,24 @@ def resize_worker_argument(
     nothing to report. A missing flag, ``-n 0``, or ``-n 1`` are all read as
     a request for one worker, the width they already run at, and never
     rewrite ``argv``.
+
+    The width is the last ``-n``/``--numprocesses`` before ``--``, in any
+    spelling pytest accepts (``-n 8``, ``-n8``, ``-n=8``,
+    ``--numprocesses=8``). ``auto`` and ``logical`` are resolved to the count
+    xdist would start and always written back as that count, capped: left
+    symbolic, xdist would resolve them again after this cap and start every
+    CPU. A rewrite puts the selected width in every occurrence.
     """
-    index: int | None = None
-    requested_text: str | None = None
-    inline = False
-    for candidate, argument in enumerate(argv):
-        if argument in {"-n", "--numprocesses"} and candidate + 1 < len(argv):
-            index, requested_text = candidate + 1, argv[candidate + 1]
-            break
-        if argument.startswith("--numprocesses="):
-            index, requested_text, inline = candidate, argument.split("=", 1)[1], True
-            break
-        if argument.startswith("-n") and len(argument) > 2:
-            index, requested_text, inline = candidate, argument[2:].removeprefix("="), True
-            break
+    requests = _worker_requests(argv)
+    requested_text = requests[-1][1] if requests else None
+    automatic = requested_text in _AUTOMATIC_WIDTHS
     try:
-        requested = int(requested_text) if requested_text is not None else None
+        if requested_text is None:
+            requested = None
+        elif automatic:
+            requested = _automatic_width(requested_text, argv)
+        else:
+            requested = int(requested_text)
     except ValueError:
         return argv, None
     effective_requested = requested if requested is not None and requested > 1 else 1
@@ -753,14 +807,21 @@ def resize_worker_argument(
         profile=profile,
         max_workers=max_workers,
     )
-    if index is None or effective_requested <= 1 or not basis.get("narrowed"):
+    if requested is None:
         return argv, basis
+    if automatic:
+        # ``-n 0`` stays no xdist at all, not one worker.
+        width = workers if requested > 1 else requested
+    elif effective_requested <= 1 or not basis.get("narrowed"):
+        return argv, basis
+    else:
+        width = workers
     resized = list(argv)
-    resized[index] = (
-        f"{argv[index].split('=', 1)[0]}={workers}"
-        if inline and argv[index].startswith("--numprocesses=")
-        else f"-n{workers}"
-        if inline
-        else str(workers)
-    )
+    for index, _value, attached in requests:
+        if not attached:
+            resized[index] = str(width)
+        elif argv[index].startswith("--numprocesses="):
+            resized[index] = f"--numprocesses={width}"
+        else:
+            resized[index] = f"-n{width}"
     return resized, basis

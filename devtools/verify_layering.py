@@ -364,12 +364,11 @@ def _package_pass(
         paths = _python_files(repo_root / durable_write.load_declaration(durable_declaration).package)
         for path in paths:
             relative = path.relative_to(repo_root).as_posix()
-            if durable.reads_runtime_ddl(relative):
-                try:
-                    tree = parse_path(path)
-                except (SyntaxError, UnicodeDecodeError):
-                    continue
-                durable.observe_runtime_ddl(tree, relative=relative)
+            try:
+                tree = parse_path(path)
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            durable.observe_runtime_ddl(tree, relative=relative)
         durable_files = set(paths)
         wanted.update(dict.fromkeys(paths))
 

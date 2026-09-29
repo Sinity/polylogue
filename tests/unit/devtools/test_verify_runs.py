@@ -408,6 +408,36 @@ def test_a_running_run_with_a_live_owner_is_left_alone(tmp_path: Path) -> None:
     assert not (tmp_path / verify_runs.VERIFY_HISTORY_PATH).exists()
 
 
+def test_owner_that_finishes_before_the_liveness_check_keeps_its_verdict(tmp_path: Path) -> None:
+    """The owner can publish success and exit between the reconciler's read and its liveness check.
+
+    The liveness probe here is the moment the race resolves: the owner writes
+    its terminal receipt, then is gone. Its verdict is authoritative.
+
+    Anti-vacuity: drop the re-read after proving the owner dead and the stale
+    ``running`` copy is written back as abandoned over the owner's success.
+    """
+    runs_root = tmp_path / verify_runs.VERIFY_RUNS_DIR
+    path = _running_run(tmp_path, pid=4242)
+    finished = {
+        **cast(dict[str, object], verify_runs._read_json(path)),
+        "status": "success",
+        "exit_code": 0,
+        "finished_at": "2026-09-29T00:00:00+00:00",
+        "steps": [{"step_id": "01-pytest", "name": "pytest", "status": "success", "exit": 0}],
+    }
+
+    def owner_finishes_then_exits(pid: int) -> bool:
+        assert pid == 4242
+        verify_runs._write_json(path, finished)
+        return False
+
+    reconciled = verify_runs.reconcile_abandoned_verify_runs(runs_root=runs_root, is_live=owner_finishes_then_exits)
+
+    assert reconciled == []
+    assert verify_runs._read_json(path) == finished
+
+
 def test_reused_pid_started_after_receipt_is_not_treated_as_owner(monkeypatch: pytest.MonkeyPatch) -> None:
     """Anti-vacuity: PID existence alone must not keep an old receipt running."""
     real_read = Path.read_text

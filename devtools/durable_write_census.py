@@ -203,10 +203,11 @@ class WriteSite:
     kind: str
     line: int
     tier: str
+    occurrence: int
 
     @property
     def key(self) -> str:
-        return f"{self.file}::{self.function}::{self.table}::{self.kind}"
+        return f"{self.file}::{self.function}::{self.table}::{self.kind}::{self.occurrence}"
 
 
 @dataclass(frozen=True)
@@ -339,7 +340,12 @@ def _fragments(expression: ast.AST, values: Mapping[str, tuple[str, ...]]) -> tu
             return _fragments(expression.args[0], values)
         return ()
     if isinstance(expression, ast.IfExp):
-        return _fragments(expression.body, values) + _fragments(expression.orelse, values)
+        body = _fragments(expression.body, values)
+        orelse = _fragments(expression.orelse, values)
+        if not body and not orelse:
+            return ()
+        # A branch the census cannot read stays a visible hole beside one it can.
+        return (body or (_HOLE,)) + (orelse or (_HOLE,))
     return ()
 
 
@@ -524,11 +530,24 @@ def _classify_statement(
     return found
 
 
-def _memory_connection_names(tree: ast.Module) -> frozenset[str]:
-    """Return local connection names constructed as private in-memory SQLite."""
-    names: set[str] = set()
+def _memory_connection_names(
+    tree: ast.Module, scopes: Mapping[ast.AST, tuple[str, ast.AST | None]]
+) -> dict[tuple[str, str], int]:
+    """Prove single, unconditional private-memory bindings in their own scope."""
+    stores: dict[tuple[str, str], int] = {}
+    for node in walk_module(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del):
+            scope, _ = scopes.get(node, ("<module>", None))
+            key = (scope, node.id)
+            stores[key] = stores.get(key, 0) + 1
+    bindings: dict[tuple[str, str], int] = {}
     for node in walk_module(tree):
         if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            continue
+        scope, function = scopes.get(node, ("<module>", None))
+        body = function.body if isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef) else tree.body
+        key = (scope, node.targets[0].id)
+        if node not in body or stores.get(key) != 1:
             continue
         value = node.value
         if (
@@ -541,52 +560,65 @@ def _memory_connection_names(tree: ast.Module) -> frozenset[str]:
             and isinstance(value.args[0], ast.Constant)
             and value.args[0].value == ":memory:"
         ):
-            names.add(node.targets[0].id)
-    return frozenset(names)
+            bindings[key] = node.lineno
+    return bindings
 
 
-def _runtime_table_creation(
+def _runtime_table_creations(
     *,
     relative: str,
     function: str,
     receiver: ast.AST,
     statement: str,
     line: int,
-    memory_connections: frozenset[str],
+    memory_connections: Mapping[tuple[str, str], int],
     canonical_tables: Mapping[str, str],
-) -> RuntimeTableCreation | None:
-    """Classify one directly executed CREATE TABLE without assigning a tier."""
-    match = _RUNTIME_CREATE_RE.search(statement)
-    if match is None:
-        return None
-    table = match.group("table")
-    if table in canonical_tables:
-        return None
-    if match.group("temporary") is not None:
-        disposition = "temporary"
-    elif isinstance(receiver, ast.Name) and receiver.id in memory_connections:
-        disposition = "scratch"
-    else:
-        disposition = "persistent"
-    return RuntimeTableCreation(
-        file=relative,
-        function=function,
-        table=table,
-        disposition=disposition,
-        line=line,
-    )
+) -> Iterator[RuntimeTableCreation]:
+    """Classify every CREATE in one execution, including executescript batches."""
+    for match in _RUNTIME_CREATE_RE.finditer(statement):
+        table = match.group("table")
+        if table in canonical_tables:
+            continue
+        if match.group("temporary") is not None:
+            disposition = "temporary"
+        elif (
+            isinstance(receiver, ast.Name)
+            and (binding_line := memory_connections.get((function, receiver.id))) is not None
+            and binding_line < line
+        ):
+            disposition = "scratch"
+        else:
+            disposition = "persistent"
+        yield RuntimeTableCreation(file=relative, function=function, table=table, disposition=disposition, line=line)
 
 
-def _is_archive_tier_runtime_module(relative: str) -> bool:
-    """Whether direct runtime DDL can create one of the six archive tiers.
+def _is_archive_storage_module(relative: str) -> bool:
+    """Whether the module belongs to the archive persistence layer."""
+    return relative.startswith("polylogue/storage/")
 
-    Browser-capture registries and schema-observation journals intentionally
-    use SQLite too, but their tables are not archive tiers.  The census is not
-    a universal SQLite inventory; its bounded subject is runtime DDL in the
-    archive-tier implementation where a missing canonical source/user/audit
-    relation would otherwise be hidden.
+
+def _writes_archive_table(
+    tree: ast.Module, values: Mapping[str, tuple[str, ...]], table_tiers: Mapping[str, str]
+) -> bool:
+    """Whether the module executes any write against a canonical archive table.
+
+    Such a module holds an archive connection, so a table it creates at
+    runtime may live in an archive tier. A module whose statements name only
+    its own relations (a parser's spill database, a browser-capture registry)
+    is not an archive writer, and its private tables are not archive state.
     """
-    return relative.startswith("polylogue/storage/sqlite/archive_tiers/")
+    for node in walk_module(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _SQL_EXECUTION_METHODS
+            and node.args
+        ):
+            continue
+        for text in _fragments(node.args[0], values):
+            if any(match.group("table") in table_tiers for match in _REWRITE_RE.finditer(text)):
+                return True
+    return False
 
 
 #: One parsed module as the post-passes read it: path, tree, repository-relative
@@ -649,7 +681,7 @@ def _dynamic_table_targets(
         by_name.setdefault(descriptor[0], []).append((helper_key, descriptor[1]))
     targets: dict[tuple[str, str, str, int], DynamicTableTarget] = {}
     callers = [relative for relative, names in called_names.items() if not names.isdisjoint(by_name)]
-    for _path, tree, relative, values, _scopes in parse_modules(callers):
+    for _path, tree, relative, _values, _scopes in parse_modules(callers):
         for node in walk_module(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -667,12 +699,12 @@ def _dynamic_table_targets(
                         break
                 if argument is None and position is not None and len(node.args) > position:
                     argument = node.args[position]
-                if argument is None:
-                    continue
                 helper_file, helper_function = helper_key.split("::", 1)
-                for table in _fragments(argument, values):
-                    if table == _HOLE or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
-                        continue
+                # A module-wide name cache is not proof of a caller's local value.
+                # Keep missing, computed and partially unknown arguments visible.
+                fragments = _fragments(argument, {}) if argument is not None else ()
+                for fragment in fragments or (UNRESOLVED_TABLE,):
+                    table = fragment if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", fragment) else UNRESOLVED_TABLE
                     target = DynamicTableTarget(
                         helper_file=helper_file,
                         helper_function=helper_function,
@@ -684,45 +716,198 @@ def _dynamic_table_targets(
     return tuple(sorted(targets.values(), key=lambda item: (item.helper_key, item.caller_file, item.line, item.table)))
 
 
+def _dynamic_sql_identifiers(expression: ast.AST) -> tuple[ast.expr, ...]:
+    """Recover the table interpolation, not unrelated WHERE/value holes."""
+    if not isinstance(expression, ast.JoinedStr):
+        return ()
+    parts: list[str] = []
+    holes: dict[str, ast.expr] = {}
+    for part in expression.values:
+        if isinstance(part, ast.Constant) and isinstance(part.value, str):
+            parts.append(part.value)
+        elif isinstance(part, ast.FormattedValue):
+            marker = f"__census_identifier_{len(holes)}__"
+            holes[marker] = part.value
+            parts.append(marker)
+        else:
+            return ()
+    return tuple(holes[match["table"]] for match in _REWRITE_RE.finditer("".join(parts)) if match["table"] in holes)
+
+
+def _metadata_identifier(expression: ast.expr, loop: ast.For, *, row: bool) -> bool:
+    """Prove a table identifier from this loop's metadata binding.
+
+    Only transparent quoting and single-assignment aliases are accepted.
+    Rebinding the metadata name anywhere in the loop defeats the proof.
+    """
+    target = loop.target.elts[0] if isinstance(loop.target, ast.Tuple) else loop.target
+    if not isinstance(target, ast.Name):
+        return False
+    stores: dict[str, list[ast.AST]] = {}
+    assignments: dict[str, ast.AST] = {}
+    for statement in loop.body:
+        for node in ast.walk(statement):
+            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del):
+                stores.setdefault(node.id, []).append(node)
+            if (
+                node in loop.body
+                and isinstance(node, ast.Assign)
+                and len(node.targets) == 1
+                and isinstance(node.targets[0], ast.Name)
+                and node.lineno < expression.lineno
+            ):
+                assignments[node.targets[0].id] = node.value
+    if stores.get(target.id):
+        return False
+
+    def resolve(value: ast.AST, seen: frozenset[str] = frozenset()) -> bool:
+        if isinstance(value, ast.Name):
+            if value.id == target.id:
+                return not row
+            if value.id in seen or len(stores.get(value.id, ())) != 1 or value.id not in assignments:
+                return False
+            return resolve(assignments[value.id], seen | {value.id})
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id in {"_quote_identifier", "str"}
+            and len(value.args) == 1
+            and not value.keywords
+        ):
+            return resolve(value.args[0], seen)
+        return (
+            row
+            and isinstance(value, ast.Subscript)
+            and isinstance(value.value, ast.Name)
+            and value.value.id == target.id
+            and isinstance(value.slice, ast.Constant)
+            and value.slice.value == 0
+        )
+
+    return resolve(expression)
+
+
+def _metadata_loop_connection(loop: ast.For, function: ast.AST) -> tuple[ast.AST, bool] | None:
+    iterator = loop.iter
+    if (
+        isinstance(iterator, ast.Call)
+        and isinstance(iterator.func, ast.Name)
+        and iterator.func.id == "_session_foreign_key_actions"
+        and len(iterator.args) == 1
+        and isinstance(loop.target, ast.Tuple)
+        and len(loop.target.elts) == 3
+    ):
+        return iterator.args[0], False
+    if isinstance(iterator, ast.Name):
+        if not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+            return None
+        if (
+            sum(
+                isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del) and node.id == iterator.id
+                for node in ast.walk(function)
+            )
+            != 1
+        ):
+            return None
+        bindings = [
+            node.value
+            for node in function.body
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == iterator.id
+            and node.lineno < loop.lineno
+        ]
+        if len(bindings) != 1:
+            return None
+        iterator = bindings[0]
+    if isinstance(iterator, ast.Call) and isinstance(iterator.func, ast.Attribute) and iterator.func.attr == "fetchall":
+        iterator = iterator.func.value
+    if (
+        isinstance(iterator, ast.Call)
+        and isinstance(iterator.func, ast.Attribute)
+        and iterator.func.attr == "execute"
+        and iterator.args
+        and isinstance(iterator.args[0], ast.Constant)
+        and isinstance(iterator.args[0].value, str)
+        and re.fullmatch(
+            r"\s*SELECT\s+name\s+FROM\s+sqlite_master\s+WHERE\s+type\s*=\s*'table'\s*;?\s*",
+            iterator.args[0].value,
+            re.IGNORECASE,
+        )
+    ):
+        return iterator.func.value, True
+    return None
+
+
 def _index_foreign_key_cleanup_helpers(
     parsed_modules: Iterable[ParsedModule],
 ) -> frozenset[str]:
-    """Find helpers that derive both dynamic actions from current FK metadata."""
+    """Prove each dynamic write's identifier and connection from metadata."""
     helpers: set[str] = set()
-    for _path, tree, relative, values, _scopes in parsed_modules:
-        # A helper must call ``_session_foreign_key_actions`` itself, so a
-        # module that never calls it cannot hold one.
+    for _path, tree, relative, values, scopes in parsed_modules:
         if not any(
-            isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Name)
-            and call.func.id == "_session_foreign_key_actions"
-            for call in walk_module(tree)
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_session_foreign_key_actions"
+            for node in walk_module(tree)
         ):
             continue
-        for node in walk_module(tree):
-            if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-                continue
-            statements = [
-                statement
-                for call in ast.walk(node)
-                if isinstance(call, ast.Call)
+        parents = {child: parent for parent in ast.walk(tree) for child in ast.iter_child_nodes(parent)}
+        candidates: dict[str, list[bool]] = {}
+        for call in walk_module(tree):
+            if not (
+                isinstance(call, ast.Call)
                 and isinstance(call.func, ast.Attribute)
                 and call.func.attr in _SQL_EXECUTION_METHODS
                 and call.args
-                for statement in _fragments(call.args[0], values)
-            ]
-            has_fk_actions = any(
-                isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Name)
-                and call.func.id == "_session_foreign_key_actions"
-                for call in ast.walk(node)
-            )
-            if (
-                has_fk_actions
-                and any("DELETE FROM {}" in item for item in statements)
-                and any("UPDATE {}" in item for item in statements)
             ):
-                helpers.add(f"{relative}::{node.name}")
+                continue
+            if not any(
+                table == UNRESOLVED_TABLE
+                for text in _fragments(call.args[0], values)
+                for table, _kind, _tier in _classify_statement(text, table_tiers={})
+            ):
+                continue
+            qualified, function = scopes.get(call, ("<module>", None))
+            if function is None:
+                continue
+            identifiers = _dynamic_sql_identifiers(call.args[0])
+            proven = False
+            ancestor = parents.get(call)
+            while ancestor is not None and ancestor is not function:
+                if (
+                    isinstance(ancestor, ast.For)
+                    and (origin := _metadata_loop_connection(ancestor, function)) is not None
+                ):
+                    connection, row = origin
+                    if ast.dump(connection) == ast.dump(call.func.value) and identifiers:
+                        proven = all(_metadata_identifier(identifier, ancestor, row=row) for identifier in identifiers)
+                        if proven and row:
+                            # The catalog route must inspect the FK metadata of
+                            # this very table on this very connection too.
+                            proven = any(
+                                isinstance(query, ast.Call)
+                                and isinstance(query.func, ast.Attribute)
+                                and query.func.attr == "execute"
+                                and query.args
+                                and ast.dump(query.func.value) == ast.dump(connection)
+                                and isinstance(query.args[0], ast.JoinedStr)
+                                and any(
+                                    "PRAGMA foreign_key_list(" in text for text in _fragments(query.args[0], values)
+                                )
+                                and any(
+                                    isinstance(part, ast.FormattedValue)
+                                    and _metadata_identifier(part.value, ancestor, row=True)
+                                    for part in query.args[0].values
+                                )
+                                for query in ast.walk(ancestor)
+                            )
+                    if proven:
+                        break
+                ancestor = parents.get(ancestor)
+            candidates.setdefault(qualified, []).append(proven)
+        helpers.update(f"{relative}::{qualified}" for qualified, proofs in candidates.items() if all(proofs))
     return frozenset(helpers)
 
 
@@ -732,12 +917,11 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
     census = DurableWriteCensus()
     for path in paths:
         relative = path.relative_to(repo_root).as_posix()
-        if census.reads_runtime_ddl(relative):
-            try:
-                tree = parse_path(path)
-            except (SyntaxError, UnicodeDecodeError):
-                continue
-            census.observe_runtime_ddl(tree, relative=relative)
+        try:
+            tree = parse_path(path)
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+        census.observe_runtime_ddl(tree, relative=relative)
     for path in paths:
         try:
             tree = parse_path(path)
@@ -763,6 +947,7 @@ class DurableWriteCensus:
     def __init__(self) -> None:
         self._table_tiers = durable_table_tiers()
         self._sites: dict[str, WriteSite] = {}
+        self._occurrences: dict[tuple[str, str, str, str], int] = {}
         self._helpers: dict[str, HelperSite] = {}
         self._runtime_creations: dict[str, RuntimeTableCreation] = {}
         self._runtime_persistent_tables: frozenset[str] | None = None
@@ -770,20 +955,20 @@ class DurableWriteCensus:
         self._called_names: dict[str, frozenset[str]] = {}
         self._fk_cleanup_helpers: set[str] = set()
 
-    @staticmethod
-    def reads_runtime_ddl(relative: str) -> bool:
-        return _is_archive_tier_runtime_module(relative)
-
     def observe_runtime_ddl(self, tree: ast.Module, *, relative: str) -> None:
         if self._runtime_persistent_tables is not None:
             raise RuntimeError("every runtime DDL module must be observed before the first module")
-        if not _is_archive_tier_runtime_module(relative):
-            return
         table_tiers = self._table_tiers
         runtime_creations = self._runtime_creations
         values = _string_values(tree)
+        # Runtime DDL is archive state wherever an archive connection can be
+        # held: the storage layer, and any other module writing an archive
+        # table. A module outside both (a parser's spill database, a
+        # browser-capture registry) owns only private relations.
+        if not _is_archive_storage_module(relative) and not _writes_archive_table(tree, values, table_tiers):
+            return
         scopes = _scopes(tree)
-        memory_connections = _memory_connection_names(tree)
+        memory_connections = _memory_connection_names(tree, scopes)
         for node in walk_module(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -797,7 +982,7 @@ class DurableWriteCensus:
             statements = _fragments(argument, values)
             receiver = node.func.value
             for statement in statements:
-                creation = _runtime_table_creation(
+                for creation in _runtime_table_creations(
                     relative=relative,
                     function=qualified,
                     receiver=receiver,
@@ -805,8 +990,7 @@ class DurableWriteCensus:
                     line=node.lineno,
                     memory_connections=memory_connections,
                     canonical_tables=table_tiers,
-                )
-                if creation is not None:
+                ):
                     runtime_creations.setdefault(creation.key, creation)
 
     def observe(self, tree: ast.Module, *, path: Path, relative: str) -> None:
@@ -827,9 +1011,13 @@ class DurableWriteCensus:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name | ast.Attribute)
         )
         self._fk_cleanup_helpers.update(_index_foreign_key_cleanup_helpers(((path, tree, relative, values, scopes),)))
-        for node in walk_module(tree):
-            if not isinstance(node, ast.Call):
-                continue
+        # Occurrences are numbered in source order, so a statement's identity
+        # does not move when an unrelated statement is nested differently.
+        calls = sorted(
+            (node for node in walk_module(tree) if isinstance(node, ast.Call)),
+            key=lambda call: (call.lineno, call.col_offset),
+        )
+        for node in calls:
             if not isinstance(node.func, ast.Attribute) or node.func.attr not in _SQL_EXECUTION_METHODS:
                 continue
             if not node.args:
@@ -848,16 +1036,25 @@ class DurableWriteCensus:
                     )
                     helpers.setdefault(helper.key, helper)
                 continue
-            resolved = [
-                item
-                for statement in statements
+            # Texts are alternatives of one call (a conditional, a loop over
+            # tables); statements inside one text (a script) are sequential.
+            # Each write counts as often as the text naming it most often.
+            counts: dict[tuple[str, str, str], int] = {}
+            for statement in statements:
+                per_text: dict[tuple[str, str, str], int] = {}
                 for item in _classify_statement(
                     statement,
                     table_tiers,
                     runtime_persistent_tables=runtime_persistent_tables,
-                )
-            ]
-            for table, kind, tier in dict.fromkeys(resolved):
+                ):
+                    per_text[item] = per_text.get(item, 0) + 1
+                for item, count in per_text.items():
+                    counts[item] = max(counts.get(item, 0), count)
+            resolved = [item for item, count in counts.items() for _ in range(count)]
+            for table, kind, tier in resolved:
+                group = (relative, qualified, table, kind)
+                occurrence = self._occurrences.get(group, 0) + 1
+                self._occurrences[group] = occurrence
                 site = WriteSite(
                     file=relative,
                     function=qualified,
@@ -865,8 +1062,9 @@ class DurableWriteCensus:
                     kind=kind,
                     line=node.lineno,
                     tier=tier,
+                    occurrence=occurrence,
                 )
-                sites.setdefault(site.key, site)
+                sites[site.key] = site
 
     def finish(self) -> CensusObservation:
         sites = self._sites
@@ -920,6 +1118,7 @@ def load_declaration(path: Path) -> CensusDeclaration:
         raw = yaml.safe_load(handle)
     data: Mapping[str, object] = raw if isinstance(raw, dict) else {}
     entries: dict[str, CensusEntry] = {}
+    occurrences: dict[tuple[str, str, str, str], int] = {}
     malformed: list[str] = []
     rows = data.get("writes")
     for index, item in enumerate(list(rows) if isinstance(rows, list) else []):
@@ -933,8 +1132,11 @@ def load_declaration(path: Path) -> CensusDeclaration:
         if not all(isinstance(value, str) for value in (file, function, table, kind)):
             malformed.append(f"writes[{index}]")
             continue
+        group = (str(file), str(function), str(table), str(kind))
+        occurrence = occurrences.get(group, 0) + 1
+        occurrences[group] = occurrence
         entry = CensusEntry(
-            key=f"{file}::{function}::{table}::{kind}",
+            key=f"{file}::{function}::{table}::{kind}::{occurrence}",
             file=str(file),
             function=str(function),
             table=str(table),
@@ -1033,10 +1235,9 @@ def collect_violations(
         if creation is None:
             continue
         valid_disposable_ops = runtime_entry.disposition == "disposable_ops" and creation.file.endswith("/ops_write.py")
-        valid_disposable_scratch = (
-            runtime_entry.disposition == "disposable_scratch"
-            and creation.file == "polylogue/storage/sqlite/archive_tiers/write.py"
-        )
+        # Any censused writer module may keep a private scratch database; the
+        # declaration must say why the relation never reaches an archive tier.
+        valid_disposable_scratch = runtime_entry.disposition == "disposable_scratch"
         if not (valid_disposable_ops or valid_disposable_scratch) or not runtime_entry.reason:
             violations.append(
                 {
@@ -1045,7 +1246,7 @@ def collect_violations(
                     "file": creation.file,
                     "detail": (
                         "only an explained runtime relation in ops_write.py may be disposable_ops, or an explicitly "
-                        "declared private scratch relation in archive_tiers/write.py may be disposable_scratch"
+                        "declared private scratch relation may be disposable_scratch"
                     ),
                 }
             )
@@ -1261,6 +1462,7 @@ def iter_site_payloads(sites: Iterable[WriteSite]) -> list[dict[str, object]]:
             "kind": site.kind,
             "tier": site.tier,
             "line": site.line,
+            "occurrence": site.occurrence,
         }
         for site in sites
     ]

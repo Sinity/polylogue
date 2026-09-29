@@ -86,6 +86,7 @@ from devtools.verify_runs import (
     git_head,
     git_worktree_content_sha256,
     prune_successful_verify_runs,
+    pytest_command_worker_request,
     reconcile_and_record_abandoned_verify_runs,
     verify_history_path,
 )
@@ -998,6 +999,10 @@ def _emit(payload: Mapping[str, Any], *, use_json: bool, operation: str | None) 
         # evidence lane.  AgentCTL lifecycle fields remain outside this
         # projection and cannot turn process completion into semantic success.
         result["semantic_receipt"] = canonical_verification_receipt(payload)
+        # The workload receipt persisted in run.json, not a second derivation:
+        # stdout and the run record cite the same receipt id.
+        if isinstance(payload.get("workload_receipt"), Mapping):
+            result["workload_receipt"] = dict(payload["workload_receipt"])
     if use_json or operation:
         print(json.dumps(result, sort_keys=True, ensure_ascii=False))
         sys.stdout.flush()
@@ -1053,23 +1058,53 @@ def _emit_affected_admission_refusal(*, graph: Any, decision: AffectedAdmission,
     )
 
 
-def _verification_workload_receipt(
-    *,
-    tier: str,
-    git_head: str | None,
-    results: Sequence[Mapping[str, Any]],
-    exit_code: int,
-) -> dict[str, Any]:
-    """Adapt verifier step timing into the shared workload receipt contract."""
-    phases = tuple(str(result["name"]) for result in results) or ("finalization",)
-    spec = WorkloadEnvelopeSpec(
+def _verification_build_id(*, head: str | None, dirty: bool, content_sha256: str | None) -> str | None:
+    """Name the tree a verification runs against, never a HEAD it did not test.
+
+    A clean checkout is its commit. A dirty one is only its Git-visible
+    content, so the identity is the content digest the run already records;
+    without one the tree is unidentified rather than borrowed from HEAD.
+    """
+    if dirty:
+        return f"worktree-sha256:{content_sha256}" if content_sha256 else None
+    return f"git:{head}" if head else None
+
+
+def _planned_concurrency(steps: Sequence[tuple[str, Sequence[str]]]) -> int:
+    """Widest process fan-out the plan admits: the gate pool, then each pytest step's xdist width."""
+    gates = sum(not label.startswith("pytest") for label, _command in steps)
+    widths = [min(GATE_PARALLELISM, gates)] if gates else []
+    for label, command in steps:
+        if label.startswith("pytest"):
+            requested = pytest_command_worker_request(command)
+            # ``-n 0`` (or no ``-n``) is one in-process pytest.
+            widths.append(max(1, int(requested)) if requested and requested.isdigit() else 1)
+    return max(widths, default=1)
+
+
+def _verification_workload_spec(
+    *, tier: str, steps: Sequence[tuple[str, Sequence[str]]], build_id: str | None
+) -> WorkloadEnvelopeSpec:
+    """Declare the complete intended plan, before admission can withhold any of it."""
+    return WorkloadEnvelopeSpec(
         workload_id=f"devtools:verify:{tier}",
         family_id="verification",
         version=1,
-        inputs=(WorkloadInputRef(input_id=f"git:{git_head}" if git_head else "git:unavailable"),),
-        phases=phases,
+        inputs=(WorkloadInputRef(input_id=build_id or "checkout:unidentified"),),
+        phases=tuple(label for label, _command in steps),
         measurement_scope=MeasurementScope.PROCESS_TREE,
+        concurrency=_planned_concurrency(steps),
     )
+
+
+def _verification_workload_receipt(
+    *,
+    spec: WorkloadEnvelopeSpec,
+    build_id: str | None,
+    results: Sequence[Mapping[str, Any]],
+    status: WorkloadRunStatus,
+) -> dict[str, Any]:
+    """Bind the phases actually observed to the plan declared before they ran."""
     observations = tuple(
         WorkloadPhaseObservation(
             name=str(result["name"]),
@@ -1078,18 +1113,10 @@ def _verification_workload_receipt(
         )
         for result in results
     )
-    if not observations:
-        observations = (
-            WorkloadPhaseObservation(
-                name="finalization",
-                wall_ms=0.0,
-                unavailable=_UNMEASURED_WORKLOAD_DIMENSIONS,
-            ),
-        )
     receipt = WorkloadReceipt.from_observations(
         spec=spec,
-        status=WorkloadRunStatus.SUCCEEDED if exit_code == 0 else WorkloadRunStatus.FAILED,
-        build_id=f"git:{git_head}" if git_head else None,
+        status=status,
+        build_id=build_id,
         runtime_id=f"python:{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
         archive_id=None,
         generation_id=None,
@@ -1103,6 +1130,18 @@ def _verification_workload_receipt(
     return receipt.to_payload()
 
 
+def _recorded_step_results(run: VerifyRun) -> list[dict[str, Any]]:
+    """Steps the run finished with a measured duration, once each, in start order."""
+    seen: set[str] = set()
+    finished: list[dict[str, Any]] = []
+    for step in run._payload["steps"]:
+        name, duration = step.get("name"), step.get("duration_s")
+        if isinstance(name, str) and name not in seen and isinstance(duration, int | float):
+            seen.add(name)
+            finished.append({"name": name, "duration_s": duration})
+    return finished
+
+
 def _finish_interrupted_verification(
     *,
     run: VerifyRun,
@@ -1113,9 +1152,15 @@ def _finish_interrupted_verification(
     agentctl_operation: str | None,
     exit_code: int,
     termination_reason: str,
-    results: Sequence[Mapping[str, Any]] = (),
+    results: Sequence[Mapping[str, Any]],
+    workload_spec: WorkloadEnvelopeSpec,
+    build_id: str | None,
 ) -> int:
-    """Persist the terminal state when an outer runtime ends verification."""
+    """Persist the terminal state when an outer runtime ends verification.
+
+    The receipt keeps the plan declared before execution; the phases it
+    observes are the steps that finished before the interruption.
+    """
     run.finish_interrupted_steps(
         exit_code=exit_code,
         diagnosis="verification_interrupted",
@@ -1137,10 +1182,10 @@ def _finish_interrupted_verification(
             "termination_reason": termination_reason,
         },
         workload_receipt=_verification_workload_receipt(
-            tier="quick" if args.quick else selection,
-            git_head=git_head(ROOT),
-            results=(),
-            exit_code=exit_code,
+            spec=workload_spec,
+            build_id=build_id,
+            results=_recorded_step_results(run),
+            status=WorkloadRunStatus.INTERRUPTED,
         ),
     )
     _emit(payload, use_json=args.json, operation=agentctl_operation)
@@ -1156,16 +1201,9 @@ def _finish_and_record_verification(
     verification_scope: str | None = None,
     final_git_head: str | None = None,
     pytest_aggregate: Mapping[str, Any] | None = None,
-    workload_receipt: Mapping[str, Any] | None = None,
+    workload_receipt: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Finish, durably append, and prune every terminal verification path."""
-    if workload_receipt is None:
-        workload_receipt = _verification_workload_receipt(
-            tier=str(run._payload["tier"]),
-            git_head=run._payload.get("git_head"),
-            results=(),
-            exit_code=exit_code,
-        )
     payload = run.finish(
         exit_code=exit_code,
         duration_s=duration_s,
@@ -1361,6 +1399,14 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         return 125
     head = git_head(ROOT)
     tier = "quick" if args.quick else selection
+    # The complete plan, pytest included, is fixed before admission: a refusal
+    # or an interruption withholds steps from execution, never from the plan.
+    planned_steps = build_verify_steps(
+        quick=args.quick,
+        selection=selection,
+        hypothesis_profile=args.hypothesis_profile,
+        changed_paths=changed_paths,
+    )
     run = VerifyRun(
         tier=tier,
         argv=list(argv or []),
@@ -1369,6 +1415,9 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         mirror_current=agentctl_operation is None,
         agentctl_operation=agentctl_operation,
     )
+    build_id = _verification_build_id(head=head, dirty=run.recorded_git_dirty, content_sha256=started_content)
+    workload_spec = _verification_workload_spec(tier=tier, steps=planned_steps, build_id=build_id)
+    run.declare_workload(workload_spec.to_payload())
     results: list[dict[str, Any]] = []
     # Everything from receipt creation to the terminal verdict runs under the
     # interruption handlers: a signal during selection, admission or the
@@ -1406,11 +1455,10 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             if admission is not None and not admission.admitted:
                 refused = admission
         # A refused admission withholds pytest, not the static gates.
-        steps = build_verify_steps(
-            quick=args.quick or refused is not None,
-            selection=selection,
-            hypothesis_profile=args.hypothesis_profile,
-            changed_paths=changed_paths,
+        steps = (
+            [(label, command) for label, command in planned_steps if not label.startswith("pytest")]
+            if refused is not None
+            else planned_steps
         )
         exit_code = 0
         for label, (rc, elapsed, metadata) in _run_steps(steps, run=run, runner=args.runner):
@@ -1494,6 +1542,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             exit_code=128 + exc.signum,
             termination_reason=signal.Signals(exc.signum).name.lower(),
             results=results,
+            workload_spec=workload_spec,
+            build_id=build_id,
         )
     except KeyboardInterrupt:
         return _finish_interrupted_verification(
@@ -1506,6 +1556,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             exit_code=130,
             termination_reason="operator_interrupt",
             results=results,
+            workload_spec=workload_spec,
+            build_id=build_id,
         )
     payload = _finish_and_record_verification(
         run=run,
@@ -1516,10 +1568,11 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         final_git_head=final_head,
         pytest_aggregate=aggregate,
         workload_receipt=_verification_workload_receipt(
-            tier=tier,
-            git_head=head,
+            spec=workload_spec,
+            # A tree that moved under the run was not the declared build.
+            build_id=None if checkout_moved else build_id,
             results=results,
-            exit_code=exit_code,
+            status=WorkloadRunStatus.SUCCEEDED if exit_code == 0 else WorkloadRunStatus.FAILED,
         ),
     )
     if refused is not None:

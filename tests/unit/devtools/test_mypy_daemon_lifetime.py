@@ -406,3 +406,91 @@ def test_a_cache_disabled_configuration_never_stamps_stale_modules(
 
     assert not mypy_gate._is_complete(tmp_path / ".cache" / "mypy", mypy_gate._input_key(tmp_path))
     assert not (common / "polylogue-mypy" / "cache").exists()
+
+
+#: One whole-second mtime for every sibling source: mypy's stat check compares
+#: ``int(st_mtime)``, so equal stamps are what let a stale entry pass it.
+_SHARED_MTIME = 1_700_000_000
+
+
+def _sibling_with_real_checker(lane: Path, value: str, *, sqlite_cache: bool) -> None:
+    """A checkout whose ``pkg/mod.py`` assigns *value* to an ``int``, checked by the real mypy."""
+    (lane / "pkg").mkdir(parents=True)
+    (lane / "pyproject.toml").write_text(
+        f'[tool.mypy]\nfiles = ["pkg"]\nsqlite_cache = {str(sqlite_cache).lower()}\n', encoding="utf-8"
+    )
+    for module, text in (("__init__.py", ""), ("mod.py", f"value: int = {value}\n")):
+        (lane / "pkg" / module).write_text(text, encoding="utf-8")
+        os.utime(lane / "pkg" / module, (_SHARED_MTIME, _SHARED_MTIME))
+    checker = lane / ".venv" / "bin" / "mypy"
+    checker.parent.mkdir(parents=True)
+    checker.symlink_to(Path(sys.executable).with_name("mypy"))
+
+
+@pytest.mark.parametrize("sqlite_cache", [True, False], ids=["sqlite-cache", "filesystem-cache"])
+def test_a_seeded_sibling_rechecks_source_whose_bytes_differ_under_the_same_size_and_mtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, sqlite_cache: bool
+) -> None:
+    """A sibling's cache entry is reused only for the same source bytes.
+
+    ``a`` and ``b`` hold ``pkg/mod.py`` at the same relative path, size and
+    mtime; only ``b``'s assigns a ``str`` to an ``int``. ``b`` seeds from the
+    cache ``a`` published and must still report the error.
+
+    Anti-vacuity: run mypy on the configured relative ``files`` (drop the
+    gate's rooted targets) and ``b`` reuses ``a``'s clean entry without
+    reading its source, exiting 0.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    clean, broken = tmp_path / "a", tmp_path / "b"
+    _sibling_with_real_checker(clean, "12345", sqlite_cache=sqlite_cache)
+    _sibling_with_real_checker(broken, '"abc"', sqlite_cache=sqlite_cache)
+    assert (clean / "pkg" / "mod.py").stat().st_size == (broken / "pkg" / "mod.py").stat().st_size
+
+    assert mypy_gate.main(["--root", str(clean)]) == 0
+    assert mypy_gate._is_complete(common / "polylogue-mypy" / "cache", mypy_gate._input_key(broken))
+
+    assert mypy_gate.main(["--root", str(broken)]) == 1
+
+
+def test_a_seeded_sibling_with_the_same_source_reuses_the_seeded_entry(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Content validation keeps the seed warm: matching bytes are not re-analysed.
+
+    mypy rewrites a module's data file only when it re-checks the module, so
+    the seeded file keeping its copied mtime shows the entry was reused.
+
+    Anti-vacuity: make seeding a cold start (discard the seeded entries, or
+    fold the source bytes into the cache key) and ``b`` rewrites the data file.
+    """
+    common = tmp_path / ".git"
+    common.mkdir()
+    monkeypatch.setattr(mypy_gate, "_git_common_dir", lambda _root: common)
+    first, second = tmp_path / "a", tmp_path / "b"
+    for lane in (first, second):
+        _sibling_with_real_checker(lane, "12345", sqlite_cache=False)
+    assert mypy_gate.main(["--root", str(first)]) == 0
+    (published,) = (common / "polylogue-mypy" / "cache").glob("*/pkg/mod.data.ff")
+
+    assert mypy_gate.main(["--root", str(second)]) == 0
+
+    (seeded,) = (second / ".cache" / "mypy").glob("*/pkg/mod.data.ff")
+    assert seeded.stat().st_mtime_ns == published.stat().st_mtime_ns
+
+
+def test_the_gate_roots_every_configured_target_in_its_checkout(tmp_path: Path) -> None:
+    """Globs and plain entries both become absolute paths under the checkout.
+
+    Anti-vacuity: pass the entries through relative and none of them is
+    absolute.
+    """
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "__init__.py").write_text("", encoding="utf-8")
+    (tmp_path / "tests" / "unit").mkdir(parents=True)
+    (tmp_path / "tests" / "unit" / "test_a.py").write_text("", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text('[tool.mypy]\nfiles = ["pkg", "tests/**/*.py"]\n', encoding="utf-8")
+
+    assert mypy_gate._targets(tmp_path) == [str(tmp_path / "pkg"), str(tmp_path / "tests" / "unit" / "test_a.py")]

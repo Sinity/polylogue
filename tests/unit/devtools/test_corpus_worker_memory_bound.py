@@ -65,7 +65,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TypedDict
 
@@ -634,15 +634,108 @@ def test_resize_leaves_a_run_that_already_fits(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    "argv", [["pytest", "tests"], ["pytest", "-n", "0"], ["pytest", "-n", "auto"], ["pytest", "-n"]]
+    "argv", [["pytest", "tests"], ["pytest", "-n", "0"], ["pytest", "-n"], ["pytest", "--", "-n64"]]
 )
 def test_resize_leaves_commands_it_does_not_understand(argv: list[str], tmp_path: Path) -> None:
-    """No xdist, an explicit single process, or a form this does not parse."""
+    """No xdist, an explicit single process, a form this does not parse, or a path after ``--``."""
     resized, _basis = resize_worker_argument(
         list(argv),
         meminfo=_meminfo(tmp_path, STARVED_CGROUP_MIB),
         **_pytest_slice(tmp_path, current_mib=PYTEST_SLICE_HIGH_MIB),
     )
+    assert resized == argv
+
+
+#: What ``-n auto`` resolves to in these cases: wider than the corpus ceiling,
+#: so only the memory cap can bring it down.
+AUTOMATIC_WIDTH = CORPUS_MAX_WORKERS + 8
+
+
+def _narrowing_slice(tmp_path: Path) -> CgroupPaths:
+    """A slice that holds exactly one worker fewer than the corpus ceiling."""
+    return _pytest_slice(tmp_path, current_mib=_occupancy_for_width(CORPUS_MAX_WORKERS - 1))
+
+
+@pytest.mark.parametrize(
+    ("argv", "width_at"),
+    [
+        (["pytest", "-n", "auto", "tests"], lambda width: ["pytest", "-n", str(width), "tests"]),
+        (["pytest", "--numprocesses", "logical"], lambda width: ["pytest", "--numprocesses", str(width)]),
+        (["pytest", "-nauto"], lambda width: ["pytest", f"-n{width}"]),
+        (["pytest", "-n=logical"], lambda width: ["pytest", f"-n{width}"]),
+        (["pytest", "--numprocesses=auto"], lambda width: ["pytest", f"--numprocesses={width}"]),
+    ],
+    ids=["split", "long-split-logical", "attached", "equals-logical", "long-equals"],
+)
+def test_an_automatic_width_is_capped_and_written_as_a_count(
+    argv: list[str], width_at: Callable[[int], list[str]], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``-n auto`` in every spelling pytest accepts starts the capped width.
+
+    Anti-vacuity: return ``auto`` unchanged (the old behaviour) and xdist
+    resolves it again after the cap, starting every CPU; resolve it but keep
+    the symbolic text and the same happens.
+    """
+    monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", str(AUTOMATIC_WIDTH))
+    resized, basis = resize_worker_argument(
+        list(argv), meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **_narrowing_slice(tmp_path)
+    )
+    assert basis is not None
+    assert basis["requested_workers"] == AUTOMATIC_WIDTH
+    assert basis["workers"] == CORPUS_MAX_WORKERS - 1
+    assert resized == width_at(CORPUS_MAX_WORKERS - 1)
+
+
+def test_an_automatic_width_that_fits_is_still_written_as_a_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity: rewrite only narrowed widths and ``auto`` reaches xdist, which re-reads the CPUs."""
+    monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", "2")
+    resized, basis = resize_worker_argument(
+        ["pytest", "-n", "auto"], meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **_unbounded_cgroup(tmp_path)
+    )
+    assert basis is not None and basis["narrowed"] is False
+    assert resized == ["pytest", "-n", "2"]
+
+
+def test_an_automatic_width_under_pdb_stays_without_workers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """xdist turns ``-n auto --pdb`` into no workers; a count there would be a usage error.
+
+    Anti-vacuity: resolve ``auto`` from the CPUs regardless and ``--pdb``
+    meets a worker count, which xdist refuses.
+    """
+    monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", str(AUTOMATIC_WIDTH))
+    resized, _basis = resize_worker_argument(
+        ["pytest", "-n", "auto", "--pdb"],
+        meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB),
+        **_narrowing_slice(tmp_path),
+    )
+    assert resized == ["pytest", "-n", "0", "--pdb"]
+
+
+def test_a_later_wider_worker_argument_is_capped_too(tmp_path: Path) -> None:
+    """argparse keeps the last ``-n``, so every occurrence carries the capped width.
+
+    Anti-vacuity: size and rewrite only the first occurrence and ``-n 64``
+    after it starts sixty-four workers.
+    """
+    resized, basis = resize_worker_argument(
+        ["pytest", "-n", "2", "--numprocesses=64", "tests"],
+        meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB),
+        **_narrowing_slice(tmp_path),
+    )
+    assert basis is not None and basis["requested_workers"] == 64
+    width = CORPUS_MAX_WORKERS - 1
+    assert resized == ["pytest", "-n", str(width), f"--numprocesses={width}", "tests"]
+
+
+def test_a_later_single_process_request_is_left_alone(tmp_path: Path) -> None:
+    """``-n 64 -n 0`` runs without xdist; there is nothing to narrow."""
+    argv = ["pytest", "-n", "64", "-n", "0"]
+    resized, basis = resize_worker_argument(
+        list(argv), meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **_narrowing_slice(tmp_path)
+    )
+    assert basis is not None and basis["requested_workers"] == 1
     assert resized == argv
 
 

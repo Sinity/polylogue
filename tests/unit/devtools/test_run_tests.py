@@ -29,7 +29,7 @@ from devtools.verify_runs import (
     git_worktree_content_sha256,
     pytest_command_worker_request,
 )
-from devtools.worker_memory import CHARGE_PROFILE_ENV, FOCUSED_MAX_WORKERS
+from devtools.worker_memory import CHARGE_PROFILE_ENV, CORPUS_MAX_WORKERS, FOCUSED_MAX_WORKERS, resize_worker_argument
 
 _HOLD_SELECTION_LOCK = run_tests._hold_selection_lock
 
@@ -1778,6 +1778,28 @@ def test_a_clustered_capture_flag_keeps_xdist_off() -> None:
     cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", "-sv"])
 
     assert "-n" not in cmd
+
+
+def test_an_explicit_automatic_width_starts_pytest_at_the_capped_count(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The caller's ``-vnauto`` passes through ``devtools test``; the slot's resizer caps it.
+
+    Anti-vacuity: leave ``auto`` for xdist to resolve (the resizer used to
+    return it unchanged) and the started command asks for every CPU after the
+    memory cap has run.
+    """
+    monkeypatch.setenv("PYTEST_XDIST_AUTO_NUM_WORKERS", str(CORPUS_MAX_WORKERS + 8))
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", "-vnauto"])
+    assert pytest_command_worker_request(cmd) == "auto"
+
+    started, basis = resize_worker_argument(
+        cmd, meminfo=tmp_path / "meminfo", process_cgroup=tmp_path / "cgroup", cgroup_root=tmp_path
+    )
+
+    assert basis is not None and basis["requested_workers"] == CORPUS_MAX_WORKERS + 8
+    assert pytest_command_worker_request(started) == str(basis["workers"])
+    assert basis["workers"] <= CORPUS_MAX_WORKERS
 
 
 def test_pruned_red_history_is_read_from_the_configured_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

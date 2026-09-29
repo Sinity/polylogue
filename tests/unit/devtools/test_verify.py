@@ -1149,6 +1149,15 @@ def test_affected_admission_refuses_without_launching_pytest(
     assert history["testmon_selection"]["admission"]["status"] == expected_status
     assert history["pytest_aggregate"]["selected_union_count"] == selected_count
     assert history["pytest_aggregate"]["terminal_union_count"] == 0
+    # The refusal withholds pytest from execution, not from the declared plan.
+    receipt = history["workload_receipt"]
+    assert "pytest (affected)" in receipt["spec"]["phases"]
+    # Gates finish in any order; the receipt observes them in declared order.
+    assert [phase["name"] for phase in receipt["phases"]] == [
+        phase for phase in receipt["spec"]["phases"] if not phase.startswith("pytest")
+    ]
+    assert sorted(launched) == sorted(phase["name"] for phase in receipt["phases"])
+    assert receipt["status"] == "failed"
     output = capsys.readouterr().err
     assert "refused before pytest launch" in output
     assert "next boundary" in output
@@ -1321,6 +1330,145 @@ def test_verify_emits_shared_workload_receipt_for_step_timing(
             "unavailable": list(verify._UNMEASURED_WORKLOAD_DIMENSIONS),
         }
     ]
+
+
+_PLANNED_STEPS: list[tuple[str, list[str]]] = [
+    ("gate a", ["a"]),
+    ("gate b", ["b"]),
+    ("pytest (all)", ["pytest", "--dist=loadgroup", "-n", "8"]),
+]
+
+
+def _drive_planned_verification(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    interrupt_pytest: bool,
+    dirty: bool = False,
+    operation: str | None = None,
+) -> tuple[int, dict[str, Any], dict[str, Any]]:
+    """Run ``_main`` over ``_PLANNED_STEPS``; return exit, history row, and the spec persisted before any step."""
+    history: dict[str, Any] = {}
+    declared: dict[str, Any] = {}
+
+    def run_step(
+        label: str, command: list[str], *, run: VerifyRun, runner: str = "managed"
+    ) -> tuple[int, float, dict[str, object]]:
+        del runner
+        declared.setdefault("spec", json.loads((run.run_dir / "run.json").read_text()).get("workload_spec"))
+        artifacts = run.start_step(label=label, cmd=command)
+        if interrupt_pytest and label.startswith("pytest"):
+            raise verify.VerificationInterrupted(signal.SIGTERM)
+        run.finish_step(step_id=artifacts.step_id, result={"duration_s": 0.5, "exit": 0})
+        return 0, 0.5, {}
+
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(verify, "git_head", lambda _root: "head")
+    monkeypatch.setattr(verify, "git_worktree_content_sha256", lambda _root: "content")
+    monkeypatch.setattr(verify_runs, "git_dirty", lambda *_args, **_kwargs: dirty)
+    monkeypatch.setattr(verify, "build_verify_steps", lambda **_kwargs: list(_PLANNED_STEPS))
+    monkeypatch.setattr(verify, "_run", run_step)
+    monkeypatch.setattr(verify, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
+    monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
+    monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
+
+    exit_code = verify._main(["--quick"], agentctl_operation=operation)
+    return exit_code, history, declared["spec"]
+
+
+def test_interrupted_verification_receipt_keeps_the_plan_declared_before_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """One workload identity names one plan, however far the run got.
+
+    Anti-vacuity: derive the spec's phases from the executed results again and
+    the interrupted receipt's spec loses ``pytest (all)``, so its ``spec_id``
+    differs from the completed run's and from the spec persisted before the
+    first step.
+    """
+    exit_code, interrupted, declared = _drive_planned_verification(monkeypatch, tmp_path, interrupt_pytest=True)
+    assert exit_code == 143
+    receipt = interrupted["workload_receipt"]
+    assert declared == receipt["spec"]
+    assert receipt["spec"]["phases"] == [label for label, _command in _PLANNED_STEPS]
+    assert receipt["status"] == "interrupted"
+    assert [phase["name"] for phase in receipt["phases"]] == ["gate a", "gate b"]
+
+    exit_code, completed, _declared = _drive_planned_verification(monkeypatch, tmp_path, interrupt_pytest=False)
+    assert exit_code == 0
+    assert completed["workload_receipt"]["spec_id"] == receipt["spec_id"]
+    assert completed["workload_receipt"]["status"] == "succeeded"
+    assert [phase["name"] for phase in completed["workload_receipt"]["phases"]] == receipt["spec"]["phases"]
+
+
+@pytest.mark.parametrize(
+    ("dirty", "expected_build"),
+    [(False, "git:head"), (True, "worktree-sha256:content")],
+)
+def test_workload_receipt_names_a_dirty_tree_by_content_not_head(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    dirty: bool,
+    expected_build: str,
+) -> None:
+    """A dirty run executed its working tree, not the immutable HEAD build.
+
+    Anti-vacuity: build the identity from ``git_head`` alone and the dirty case
+    claims ``git:head``.
+    """
+    _exit, history, _declared = _drive_planned_verification(monkeypatch, tmp_path, interrupt_pytest=False, dirty=dirty)
+    receipt = history["workload_receipt"]
+    assert receipt["build_id"] == expected_build
+    assert [ref["input_id"] for ref in receipt["spec"]["inputs"]] == [expected_build]
+
+
+def test_agentctl_result_carries_the_persisted_workload_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The operation's stdout cites the same workload receipt run.json holds.
+
+    Anti-vacuity: drop the ``workload_receipt`` projection from ``_emit`` and
+    the AgentCTL result has no receipt to compare.
+    """
+    _exit, history, _declared = _drive_planned_verification(
+        monkeypatch, tmp_path, interrupt_pytest=False, operation="verify_quick"
+    )
+    result = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    persisted = json.loads((tmp_path / str(history["artifact_dir"]) / "run.json").read_text())
+    assert result["kind"] == "polylogue.verification-result"
+    assert result["workload_receipt"] == persisted["workload_receipt"]
+    assert result["workload_receipt"]["receipt_id"] == history["workload_receipt"]["receipt_id"]
+
+
+def test_workload_spec_concurrency_is_the_planned_worker_width(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """The declared concurrency is the plan's widest fan-out, not a constant 1.
+
+    Anti-vacuity: leave ``WorkloadEnvelopeSpec.concurrency`` at its default and
+    both the xdist plan and the gate-pool plan declare 1.
+    """
+    monkeypatch.setattr(verify, "GATE_PARALLELISM", 4)
+    xdist = verify._verification_workload_spec(tier="all", steps=_PLANNED_STEPS, build_id=None)
+    assert xdist.concurrency == 8
+    gates_only = verify._verification_workload_spec(
+        tier="quick",
+        steps=[("gate a", ["a"]), ("gate b", ["b"]), ("pytest (all)", ["pytest", "-n", "0"])],
+        build_id=None,
+    )
+    assert gates_only.concurrency == 2
+
+    # The production plan: the capped xdist width its pytest command carries.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "3")
+    planned = verify.build_verify_steps(quick=False, selection="all")
+    (pytest_command,) = [command for label, command in planned if label.startswith("pytest")]
+    width = int(verify_runs.pytest_command_worker_request(pytest_command) or 0)
+    assert width == min(3, worker_memory.CORPUS_MAX_WORKERS)
+    assert verify._verification_workload_spec(tier="all", steps=planned, build_id=None).concurrency >= max(1, width)
 
 
 def test_git_dirty_fails_closed_when_status_cannot_be_read(monkeypatch: pytest.MonkeyPatch) -> None:
