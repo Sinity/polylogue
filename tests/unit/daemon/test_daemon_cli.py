@@ -4074,7 +4074,7 @@ async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
         assert metrics.succeeded_file_count == 1, metrics
     assert session_ids(resolve_active_index_path(archive_root)) == served
 
-    daemon_sources = (WatchSource("codex", source_root, suffixes=(".jsonl",)),)
+    daemon_sources: tuple[WatchSource, ...] = (WatchSource("codex", source_root, suffixes=(".jsonl",)),)
     if imported_source_kept:
         daemon_sources += (WatchSource("imports", imports_root, suffixes=(".jsonl",)),)
     else:
