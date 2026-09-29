@@ -567,6 +567,13 @@ class _FutureTypeFrame:
             return None
         return self.first_child
 
+    def adopt_child(self, selected: str | None) -> None:
+        """Record a closed child container's candidate under this frame."""
+        if self.kind == "map":
+            self.child_types[self.key or ""] = selected
+        elif selected is not None and self.first_child is None:
+            self.first_child = selected
+
 
 def _future_wire_type(value: object) -> str | None:
     if not isinstance(value, str):
@@ -602,11 +609,7 @@ class _FirstFutureType:
         elif event in {"end_map", "end_array"}:
             selected = self._frames.pop().selected()
             if self._frames:
-                parent = self._frames[-1]
-                if parent.kind == "map":
-                    parent.child_types[parent.key or ""] = selected
-                elif selected is not None and parent.first_child is None:
-                    parent.first_child = selected
+                self._frames[-1].adopt_child(selected)
             else:
                 self.value = selected
         elif frame.kind == "map":
@@ -788,13 +791,14 @@ def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | Non
             if event in {"end_array", "end_map"}:
                 selected = frames.pop().selected()
                 if frames:
-                    if selected is not None and frames[-1].first_child is None:
-                        frames[-1].first_child = selected
+                    frames[-1].adopt_child(selected)
                 else:
                     first_future_type = selected
                 continue
-            if frames[-1].kind == "map" and frames[-1].key in {"type", "content_type", "kind", "record_type"}:
-                frames[-1].own_types[frames[-1].key or ""] = _future_wire_type(value) if event == "string" else None
+            if frames[-1].kind == "map":
+                if frames[-1].key in {"type", "content_type", "kind", "record_type"}:
+                    frames[-1].own_types[frames[-1].key or ""] = _future_wire_type(value) if event == "string" else None
+                frames[-1].child_types[frames[-1].key or ""] = None
             if len(frames) == 1 and prefix == current_key:
                 if current_key in scalar_fields:
                     envelope[current_key] = cast(JsonValue, normalize_ijson_stdlib_numbers(value))

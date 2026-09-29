@@ -36,3 +36,20 @@ def _streamed(document: str) -> str | None:
 def test_streamed_probe_follows_last_value_wins(document: str) -> None:
     """Anti-vacuity: keeping the first value's candidate reports future_x / future_b."""
     assert _streamed(document) == _unknown_wire_type(json.loads(document))
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        '{"session_id": "s", "platform": "linux", "nested": {"type": "future_inner"}, "messages": []}',
+        '{"session_id": "s", "platform": "linux", "nested": {"type": "future_inner"}, "nested": {}, "messages": []}',
+        '{"session_id": "s", "platform": "linux", "list": [{"kind": "ok"}, {"kind": "unknown_z"}], "messages": []}',
+    ],
+)
+def test_hermes_snapshot_probe_matches_the_parser_future_type(document: str) -> None:
+    """Anti-vacuity: a map frame that ignores nested candidates drops ``future_inner``."""
+    from polylogue.sources.decoder_json import hermes_snapshot_envelope
+
+    envelope = hermes_snapshot_envelope(io.BytesIO(document.encode()))
+    assert envelope is not None
+    assert envelope.get("__admission_future_type") == _unknown_wire_type(json.loads(document))
