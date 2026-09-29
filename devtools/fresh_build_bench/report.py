@@ -10,6 +10,7 @@ materialize / index / fts / derived is declared once in :data:`STAGE_ROLLUP`.
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import re
@@ -519,9 +520,8 @@ def projection(manifest: dict[str, Any], by_source: dict[str, Any], intake_wall_
     sampled MiB, times the population's MiB. The per-origin times are writer
     publication plus the parse wait of each source group, so their sum is the
     serial-equivalent intake time; ``wall_scale`` rescales it to the measured
-    intake wall so overlap between groups is not double counted. Whales are
-    excluded from a default sample and priced at the sample's per-MiB rate,
-    which the separate whale qualifications must confirm. This is intake
+    intake wall so overlap between groups is not double counted. Large units
+    are sampled at their stratum's fraction like any other. This is intake
     only: promotion and derived convergence are reported beside it, measured,
     not scaled.
     """
@@ -664,11 +664,55 @@ def benchmark_implementation_sha256() -> str:
     """
     digest = hashlib.sha256()
     package = Path(__file__).resolve().parent
-    for path in (*sorted(package.glob("*.py")), *_FINGERPRINT_DEPENDENCIES):
-        digest.update(path.name.encode() + b"\0")
+    for path in (*sorted(package.glob("*.py")), *_FINGERPRINT_DEPENDENCIES, *_reducer_dependencies()):
+        digest.update(str(path.relative_to(_CHECKOUT_ROOT)).encode() + b"\0")
         digest.update(path.read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+_CHECKOUT_ROOT: Final = Path(__file__).resolve().parents[2]
+
+
+@functools.cache
+def _reducer_dependencies() -> tuple[Path, ...]:
+    """Every ``polylogue`` module the benchmark package imports, transitively.
+
+    Readiness, FTS and census rules live in production modules; a change
+    there changes what a receipt means even when this package does not.
+    """
+    import ast
+
+    package = Path(__file__).resolve().parent
+    pending = list(package.glob("*.py"))
+    seen: set[Path] = set()
+    found: set[Path] = set()
+    while pending:
+        path = pending.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            continue
+        for node in ast.walk(tree):
+            names = (
+                [alias.name for alias in node.names]
+                if isinstance(node, ast.Import)
+                else [node.module]
+                if isinstance(node, ast.ImportFrom) and node.module and node.level == 0
+                else []
+            )
+            for name in names:
+                if name.split(".")[0] != "polylogue":
+                    continue
+                module = _CHECKOUT_ROOT / Path(*name.split("."))
+                for candidate in (module.with_suffix(".py"), module / "__init__.py"):
+                    if candidate.is_file() and candidate not in found:
+                        found.add(candidate)
+                        pending.append(candidate)
+    return tuple(sorted(found))
 
 
 #: Modules outside the package whose code decides the output fingerprint
@@ -676,6 +720,12 @@ def benchmark_implementation_sha256() -> str:
 _FINGERPRINT_DEPENDENCIES: Final = (
     Path(__file__).resolve().parents[2] / "tests" / "infra" / "reindex_differential.py",
 )
+
+
+def _source_timing_recorded(manifest: dict[str, Any], by_source: dict[str, Any]) -> bool:
+    measured = projection(manifest, by_source, None)["origins"]
+    sampled = manifest.get("by_origin") or {}
+    return all(origin in measured for origin, stats in sampled.items() if stats.get("bytes"))
 
 
 def evidence_digests(work: Path) -> dict[str, str | None]:
@@ -690,7 +740,13 @@ def evidence_digests(work: Path) -> dict[str, str | None]:
                 hasher.update(chunk)
         return hasher.hexdigest()
 
-    return {"events": digest(work / "events.jsonl"), "ops": digest(work / "archive" / "ops.db")}
+    # SQLite's read view is the main file plus its WAL: a committed row that
+    # lives only in ``ops.db-wal`` changes what the stages reduce from.
+    return {
+        "events": digest(work / "events.jsonl"),
+        "ops": digest(work / "archive" / "ops.db"),
+        "ops_wal": digest(work / "archive" / "ops.db-wal"),
+    }
 
 
 def config_digest(config: Any) -> str:
@@ -775,7 +831,10 @@ def build_receipt(
     batches = analyse_batches(paths["archive"] / "ops.db")
     milestones = events.get("milestones_s", {})
     promoted = milestones.get("promoted_s")
-    census = archive_census(paths["archive"], final.promoted_index)
+    # An interrupted run has seconds before its supervisor escalates: the
+    # census's full-table counts and the fingerprint are skipped, and the
+    # receipt (already unqualified) is written in time.
+    census = archive_census(paths["archive"], final.promoted_index) if outcome != "interrupted" else {}
     fingerprint: dict[str, Any] | None = None
     # An interrupted run has seconds before its supervisor escalates; the
     # fingerprint is the one step that scales with the archive.
@@ -830,6 +889,11 @@ def build_receipt(
         "positive_output": total_bytes == 0
         or bool(census.get("rows", {}).get("sessions"))
         and bool(census.get("rows", {}).get("messages")),
+        # Every sampled origin with bytes has a measured source timing: a
+        # candidate that predates ``live.ingest.source_group`` settles the
+        # build but leaves the projection unmeasured, and must not compare
+        # beside one that records it.
+        "source_timing_recorded": _source_timing_recorded(manifest, events.get("by_source") or {}),
     }
     receipt: dict[str, Any] = {
         "format": RECEIPT_FORMAT,

@@ -961,6 +961,7 @@ def _scripted_run(
     *,
     stall_timeout_s: float,
     wall_jump: float = 0.0,
+    wall_restore: bool = False,
     interrupt_at_stop: bool = False,
 ) -> dict[str, Any]:
     """Drive ``_measure_and_write_receipt`` through scripted observations, one per 600 s poll."""
@@ -980,6 +981,8 @@ def _scripted_run(
         observe_kwargs.append(kwargs)
         clock["now"] += 600.0
         clock["wall"] += 600.0 + (wall_jump if index["i"] == 0 else 0.0)
+        if wall_restore and index["i"] == 1:
+            clock["wall"] -= wall_jump
         frame = frames[min(index["i"], len(frames) - 1)]
         index["i"] += 1
         return Observation(clock["now"] - started, cursor_rows=1, **frame)
@@ -1723,3 +1726,221 @@ def test_deep_stacks_keep_every_frame() -> None:
     recurse(200)
 
     assert sum(1 for frame in captured[0] if frame[1].endswith("recurse")) == 201
+
+
+def test_a_wall_clock_step_restored_before_the_end_is_still_seen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A transient step displaces the milestones logged while it lasted.
+
+    Anti-vacuity (Codex P2, #5678): compare wall and monotonic only at the
+    endpoints and a step restored before the end reads as a steady clock.
+    """
+    captured = _scripted_run(
+        tmp_path,
+        monkeypatch,
+        [{}, {}, _terminal_frame()],
+        stall_timeout_s=7200.0,
+        wall_jump=3600.0,
+        wall_restore=True,
+    )
+
+    assert abs(captured["clock_step_s"]) >= 3600.0
+
+
+def test_shutdown_progress_ignores_the_stack_sampler_cpu(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hung daemon whose only moving counter is the sampler's CPU is not progressing.
+
+    Anti-vacuity (Codex P1, #5678): count process CPU as shutdown progress and
+    the injected sampler's 50 ms wakeups keep a hung shutdown waiting forever.
+    """
+    from devtools.fresh_build_bench import run
+
+    probes: list[Any] = []
+
+    def capture_stop(_process: object, **kwargs: Any) -> tuple[int, float]:
+        probes.append(kwargs["progress"])
+        return 0, 0.0
+
+    captured = _scripted_run(tmp_path, monkeypatch, [_terminal_frame()], stall_timeout_s=7200.0)
+    del captured
+    monkeypatch.setattr(run, "_stop", capture_stop)
+
+    class Sampler:
+        samples: list[tuple[float, int, float, int, int, int]] = [(0.0, 1, 1.0, 5, 6, 7)]
+        daemon_rss_hwm_bytes = 0
+
+        def __init__(self, *_args: object, **_kwargs: object) -> None: ...
+
+        def start(self) -> None: ...
+
+        def finish(self) -> None: ...
+
+    monkeypatch.setattr(run, "TreeSampler", Sampler)
+    config = RunConfig(corpus=tmp_path, work=tmp_path, candidate=tmp_path, python="python", label="l")
+    paths = {
+        "daemon_log": tmp_path / "daemon.log",
+        "archive": tmp_path,
+        "receipt": tmp_path / "receipt.json",
+        "events": tmp_path / "events.jsonl",
+    }
+    run._measure_and_write_receipt(
+        config,
+        manifest={},
+        paths=paths,
+        identity={"git_sha": None, "dirty": None, "tracked_diff_sha256": None},
+        candidate_files={},
+        env_summary={},
+        command=[],
+        daemon_env={},
+        interrupted=[],
+        progress=lambda _line: None,
+    )
+    (probe,) = probes
+    before = probe()
+    Sampler.samples.append((1.0, 1, 99.0, 5, 6, 7))  # only CPU moved
+
+    assert probe() == before
+
+
+def test_a_full_fraction_sample_takes_zero_byte_units(tmp_path: Path) -> None:
+    """``--fraction 1`` copies every unit, an empty transcript included.
+
+    Anti-vacuity (Codex P1, #5678): stop a stratum once its byte goal (0) is met
+    and the empty file is in the population but not the corpus.
+    """
+    root = tmp_path / "src"
+    root.mkdir()
+    (root / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl").write_bytes(b"")
+    sources = (SampleSource("codex", root, "home/.codex/sessions", (".jsonl",)),)
+
+    manifest = sample_real(tmp_path / "corpus", seed=1, fraction=1.0, sources=sources)
+
+    assert manifest["file_count"] == 1
+
+
+def test_a_source_rewritten_after_its_copy_refuses_the_sample(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A same-size in-place rewrite after copying is caught at the end of sampling.
+
+    Anti-vacuity (Codex P2, #5678): recount only keys and sizes and the corpus
+    seals the old bytes as a sample of the newer population.
+    """
+    from devtools.fresh_build_bench import corpus
+
+    root = tmp_path / "src"
+    root.mkdir()
+    first = root / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000001.jsonl"
+    first.write_bytes(b"aaaa\n")
+    (root / "rollout-2026-01-01T00-00-00-00000000-0000-0000-0000-000000000002.jsonl").write_bytes(b"bbbb\n")
+    real_copy = corpus._copy_private
+    copies: list[Path] = []
+
+    def copy_then_rewrite_the_first(source: Path, destination: Path) -> None:
+        real_copy(source, destination)
+        copies.append(source)
+        if len(copies) == 2:
+            first.write_bytes(b"cccc\n")
+
+    monkeypatch.setattr(corpus, "_copy_private", copy_then_rewrite_the_first)
+    sources = (SampleSource("codex", root, "home/.codex/sessions", (".jsonl",)),)
+
+    with pytest.raises(ValueError, match="changed after it was copied"):
+        sample_real(tmp_path / "corpus", seed=1, fraction=1.0, sources=sources)
+
+
+def test_ops_wal_is_part_of_the_sealed_evidence(tmp_path: Path) -> None:
+    """A committed row living only in the WAL changes the evidence digest.
+
+    Anti-vacuity (Codex P2, #5678): hash only ``ops.db`` and a WAL-only change
+    keeps ``evidence_unchanged`` true.
+    """
+    from devtools.fresh_build_bench.report import evidence_digests
+
+    (tmp_path / "archive").mkdir()
+    (tmp_path / "archive" / "ops.db").write_bytes(b"main")
+    (tmp_path / "archive" / "ops.db-wal").write_bytes(b"wal-1")
+    before = evidence_digests(tmp_path)
+    (tmp_path / "archive" / "ops.db-wal").write_bytes(b"wal-2")
+
+    assert evidence_digests(tmp_path) != before
+
+
+def test_component_preparations_are_bounded_in_flight() -> None:
+    """At most twice the workers are submitted and unconsumed at once.
+
+    Anti-vacuity (Codex P2, #5678): submit the whole corpus up front and all
+    ten preparations are in flight before the first is consumed.
+    """
+    import threading
+
+    from devtools.fresh_build_bench.components import _timed_map
+
+    lock = threading.Lock()
+    state = {"live": 0, "peak": 0}
+
+    def work(_item: tuple[Path, str, int]) -> Any:
+        with lock:
+            state["live"] += 1
+            state["peak"] = max(state["peak"], state["live"])
+
+        def finish() -> dict[str, int]:
+            with lock:
+                state["live"] -= 1
+            return {}
+
+        return finish
+
+    _timed_map(work, [(Path(f"{index}"), "codex", 1) for index in range(10)], workers=2)
+
+    assert state["peak"] <= 4
+
+
+def test_the_benchmark_identity_covers_production_reducers() -> None:
+    """Readiness and FTS rules imported from production are part of the identity.
+
+    Anti-vacuity (Codex P2, #5678): hash only the package and one helper and a
+    changed readiness rule keeps the same implementation digest.
+    """
+    from devtools.fresh_build_bench.report import _reducer_dependencies
+
+    names = {path.as_posix() for path in _reducer_dependencies()}
+
+    assert any(name.endswith("polylogue/storage/archive_readiness.py") for name in names)
+
+
+def test_source_timing_coverage_is_required(tmp_path: Path) -> None:
+    """A sampled origin without a measured source timing does not qualify.
+
+    Anti-vacuity (Codex P1, #5678): qualify without it and a candidate that
+    never emits ``live.ingest.source_group`` compares beside one that does.
+    """
+    from devtools.fresh_build_bench.report import _source_timing_recorded
+
+    manifest = {"by_origin": {"codex": {"bytes": 2**20}}, "parameters": {"population": {}}}
+
+    assert _source_timing_recorded(manifest, {}) is False
+    assert _source_timing_recorded(manifest, {"codex": {"seconds": 1.0}}) is True
+
+
+def test_the_python_probe_runs_from_the_candidate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A relative ``--python`` is resolved where the daemon launches.
+
+    Anti-vacuity (Codex P2, #5678): probe from the driver's cwd and a
+    candidate-relative interpreter is identified as another build.
+    """
+    from devtools.fresh_build_bench import run
+
+    seen: list[object] = []
+
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        seen.append(kwargs.get("cwd"))
+        raise RuntimeError("stop after the probe")
+
+    monkeypatch.setattr("devtools.fresh_build_bench.run.subprocess.run", fake_run)
+    config = RunConfig(
+        corpus=tmp_path, work=tmp_path, candidate=tmp_path / "cand", python=".venv/bin/python", label="l"
+    )
+    with pytest.raises(RuntimeError, match="stop after the probe"):
+        run.environment(config)
+
+    assert seen == [tmp_path / "cand"]

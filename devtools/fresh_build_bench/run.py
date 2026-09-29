@@ -447,6 +447,8 @@ def _cpu_model() -> str:
 
 
 def environment(config: RunConfig) -> dict[str, Any]:
+    # Probed from the candidate, where the daemon is launched: a relative
+    # ``--python`` names the same file for both.
     probe = json.loads(
         subprocess.run(
             [
@@ -458,6 +460,7 @@ def environment(config: RunConfig) -> dict[str, Any]:
             capture_output=True,
             text=True,
             check=True,
+            cwd=config.candidate,
         ).stdout
     )
     from polylogue.pipeline.parsed_tree_size import effective_physical_memory_bytes
@@ -513,6 +516,13 @@ def candidate_identity(candidate: Path) -> dict[str, Any]:
         # build must not compare equal to itself.
         "tracked_diff_sha256": digest.hexdigest() if dirty else None,
     }
+
+
+def _file_size(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
 
 
 def candidate_stamp(candidate: Path) -> dict[str, tuple[int, ...]]:
@@ -780,6 +790,9 @@ def _measure_and_write_receipt(
     last_report = 0.0
     last_progress_key: tuple[object, ...] | None = None
     last_progress_at = 0.0
+    # Wall minus monotonic elapsed, sampled every poll: a step that is
+    # restored before the end still displaced the milestones logged meanwhile.
+    clock_steps: list[float] = [0.0]
     try:
         while True:
             if interrupted:
@@ -795,6 +808,7 @@ def _measure_and_write_receipt(
                 paths["archive"], started, readiness_max_age_s=min(_READINESS_POLL_S, config.stall_timeout_s / 2)
             )
             observations.append(observation)
+            clock_steps.append((time.time() - started_wall) - (time.monotonic() - started))
             if observation.error is not None and not observation.error_retryable:
                 # The archive cannot be read by this driver at all (a
                 # candidate whose schema predates a column it reads): a typed
@@ -863,7 +877,13 @@ def _measure_and_write_receipt(
         exit_code, shutdown_s = _stop(
             process,
             stall_s=config.stall_timeout_s,
-            progress=lambda: sampler.samples[-1][2:] if sampler.samples else None,
+            # I/O and the event log move while shutdown drains or
+            # checkpoints; CPU is left out, since the injected stack sampler
+            # keeps it moving even when the daemon is hung.
+            progress=lambda: (
+                sampler.samples[-1][3:] if sampler.samples else None,
+                _file_size(paths["events"]),
+            ),
             interrupted=interrupted,
         )
         sampler.finish()
@@ -912,7 +932,7 @@ def _measure_and_write_receipt(
         tree_samples=sampler.samples,
         daemon_rss_hwm_bytes=sampler.daemon_rss_hwm_bytes,
         corpus_unchanged=corpus_unchanged,
-        clock_step_s=(finished_wall - started_wall) - (finished - started),
+        clock_step_s=max([*clock_steps, (finished_wall - started_wall) - (finished - started)], key=abs),
         cancelled=lambda: bool(interrupted),
     )
     # Atomic: a receipt is either absent or complete.

@@ -334,7 +334,16 @@ def default_sample_sources(home: Path) -> tuple[SampleSource, ...]:
 
 
 def _admitted(source: SampleSource, path: Path) -> bool:
-    if path.suffix.lower() in source.suffixes:
+    """Production's own admission predicate, plus the unit's parser sidecars.
+
+    A file the daemon discovers (a Claude ``workflows/run.json`` admitted by
+    the provider's declared artifact rules) is in the sample's population;
+    sidecars the parser joins from ``tool-results/`` travel with their unit.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.source_walk import _is_supported_source_path
+
+    if _is_supported_source_path(path, provider=Provider(source.origin)):
         return True
     return any(part in source.sidecar_dirs for part in path.relative_to(source.root).parts[:-1])
 
@@ -399,6 +408,7 @@ def sample_real(
         raise ValueError(f"corpus directory must be absent or empty: {out}")
     _private_root(out)
     rng = random.Random(seed)
+    observed: dict[Path, tuple[int, int, int, int]] = {}
     population: dict[str, dict[str, int]] = {}
     census: dict[str, list[tuple[str, list[Path], int]]] = {}
     for source in sources:
@@ -414,7 +424,8 @@ def sample_real(
             goal = fraction * sum(unit[2] for unit in members)
             taken = 0
             for _key, paths, size in members:
-                if taken >= goal:
+                # A full fraction takes every unit, zero-byte ones included.
+                if fraction < 1 and taken >= goal:
                     break
                 # Stochastic rounding keeps each stratum's expected sampled
                 # bytes at its fraction, so rare large buckets are not
@@ -422,7 +433,7 @@ def sample_real(
                 # that crosses the goal is the one boundary draw: accepted or
                 # not, the stratum ends there. Redrawing on every later unit
                 # would make selection near certain.
-                boundary = taken + size > goal
+                boundary = fraction < 1 and taken + size > goal
                 if boundary and rng.random() > (goal - taken) / size:
                     break
                 copied = 0
@@ -430,6 +441,10 @@ def sample_real(
                     destination = out / source.target / path.relative_to(source.root)
                     _copy_private(path, destination)
                     copied += destination.stat().st_size
+                    # Kept for the end of the sampling interval: a source
+                    # rewritten in place (same size) after its copy is a
+                    # change the recount of sizes alone cannot see.
+                    observed[path] = _file_observation(path)
                 if copied != size:
                     # The census (population and stratum goal) saw other bytes
                     # than the sample now holds: a live transcript grew. Report
@@ -449,6 +464,13 @@ def sample_real(
         recount = {key: size for key, _paths, size in _units(source)}
         if recount != {key: size for key, _paths, size in census[source.origin]}:
             raise ValueError(f"{source.origin} sources changed while sampling; sample a quiescent tree")
+    for path, before in observed.items():
+        try:
+            unchanged = _file_observation(path) == before
+        except OSError:
+            unchanged = False
+        if not unchanged:
+            raise ValueError("a sampled source changed after it was copied; sample a quiescent tree")
     return seal(
         out,
         kind="sample",

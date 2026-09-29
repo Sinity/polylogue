@@ -20,13 +20,14 @@ summary attributes throughput to the sealed byte counts.
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import shutil
 import tempfile
 import time
 from collections import defaultdict
 from collections.abc import Callable, Iterable
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any
 
@@ -146,9 +147,18 @@ def _timed_map(
         for item in files:
             consume(run(item))
     else:
+        # At most ``2 * workers`` files are submitted and unconsumed at once:
+        # a preparation holds its attempt scratch until consumed, so faster
+        # workers than one consumer must not queue the whole corpus.
         with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="component") as pool:
-            for future in as_completed([pool.submit(run, item) for item in files]):
-                consume(future.result())
+            pending_items = iter(files)
+            in_flight = {pool.submit(run, item) for item in itertools.islice(pending_items, 2 * workers)}
+            while in_flight:
+                done, in_flight = wait(in_flight, return_when=FIRST_COMPLETED)
+                for future in done:
+                    consume(future.result())
+                    for item in itertools.islice(pending_items, 1):
+                        in_flight.add(pool.submit(run, item))
     wall = last_ended - began
     return rows, wall, dict(counts)
 
