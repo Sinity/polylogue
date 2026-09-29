@@ -1975,7 +1975,12 @@ def test_an_interrupted_receipt_skips_the_archive_census(tmp_path: Path, monkeyp
     from devtools.fresh_build_bench import report
 
     entered: list[object] = []
-    monkeypatch.setattr(report, "archive_census", lambda *args: entered.append(args) or {})
+
+    def census(*args: object) -> dict[str, Any]:
+        entered.append(args)
+        return {}
+
+    monkeypatch.setattr(report, "archive_census", census)
     arguments: dict[str, Any] = {
         "config": RunConfig(
             corpus=tmp_path, work=tmp_path, candidate=tmp_path, python="python", label="l", fingerprint=False
