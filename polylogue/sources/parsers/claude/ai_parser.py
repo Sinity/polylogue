@@ -839,12 +839,19 @@ def _conversation_level_identity(
     once with no owner at all. The export still supplies the descriptors
     ``attachment_from_meta`` seeds that identity with, so match on those --
     and only when exactly one message-level record answers to them, because
-    two make the owner a guess.
+    two make the owner a guess. Two records that both carry bytes and
+    disagree are two files, whatever their descriptors say.
     """
     if meta_carries_provider_attachment_id(meta) or not attachment.name:
         return attachment
     owned = rows.unique_by_descriptor(attachment.name, attachment.mime_type)
     if owned is None:
+        return attachment
+    if (
+        owned.inline_bytes is not None
+        and attachment.inline_bytes is not None
+        and owned.inline_bytes != attachment.inline_bytes
+    ):
         return attachment
     return attachment.model_copy(update={"provider_attachment_id": owned.provider_attachment_id})
 
