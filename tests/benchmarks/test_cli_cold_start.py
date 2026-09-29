@@ -69,8 +69,8 @@ def test_bench_cli_status_cold(
         # No daemon is reachable by construction, so status answers with its
         # typed daemon-absent snapshot and exits 1. Anything else (a crash, a
         # non-JSON answer) is not the path this lane measures.
-        payload = json.loads(result.stdout)
         assert result.returncode == 1, result.stderr.decode(errors="replace")
+        payload = json.loads(result.stdout)
         assert payload["status_snapshot"]["reason"] == "daemon_absent", payload
         imported_modules = result.stderr.count(b"import time:")
         record_metrics(
