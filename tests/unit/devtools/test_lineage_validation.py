@@ -16,6 +16,7 @@ from polylogue.storage.sqlite.archive_tiers.index import INDEX_SCHEMA_VERSION
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
 from tests.infra.frozen_clock import FrozenClock
 
 
@@ -125,6 +126,7 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 session_id TEXT,
                 native_id TEXT,
                 content_identity TEXT,
+                fields_digest BLOB,
                 content_occurrence INTEGER DEFAULT 0,
                 role TEXT,
                 position INTEGER,
@@ -232,6 +234,9 @@ def _make_index_db(root: Path, *, with_gap: bool = False, with_unresolved: bool 
                 WHERE src_session_id = 'child';
                 """
             )
+        # Every reader refuses an unstamped derived tier as SchemaSkew; the
+        # fixture stands for a current index, so it carries the current stamp.
+        stamp_derived_schema_identity(conn, "index")
         conn.commit()
     finally:
         conn.close()
