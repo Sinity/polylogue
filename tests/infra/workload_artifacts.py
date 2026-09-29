@@ -624,6 +624,8 @@ def build_immutable_tree(
             return None
         try:
             payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return None
             if payload.get("protocol_version") != _ARTIFACT_PROTOCOL_VERSION or payload.get("key") != key:
                 return None
             files = _manifest_file_entries(tuple(payload["files"]))
@@ -1603,6 +1605,8 @@ def _manifest_file_entries(files: tuple[dict[str, object], ...]) -> tuple[tuple[
     """Validate manifest file records before any keyed access or filesystem use."""
     entries: list[tuple[str, int, str]] = []
     for item in files:
+        if not isinstance(item, dict):
+            raise ValueError("seeded archive manifest file record must be an object")
         reject_semantic_metadata(item, location="seeded archive manifest file")
         path_value = item.get("path")
         size_value = item.get("size")

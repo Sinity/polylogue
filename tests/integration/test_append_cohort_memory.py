@@ -20,10 +20,13 @@ from __future__ import annotations
 import hashlib
 import sqlite3
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import patch
+
+import pytest
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
 from polylogue.core.enums import Provider
@@ -176,15 +179,29 @@ def test_watcher_append_uses_durable_replay_metadata_without_historical_full_rea
     def unexpected_worker_start(_worker: threading.Thread, *_args: object, **_kwargs: object) -> None:
         raise AssertionError("append-cohort collection must not start a parallel reader")
 
-    # The canary measures the same synchronous call stack it exercises.  A
-    # collector refactor that starts a background reader would make this fail
-    # before it can hide historical reads from the route assertions below.
-    with (
-        patch.object(threading.Thread, "start", autospec=True, side_effect=unexpected_worker_start),
-        append_cohort_memory_counter() as counter,
-    ):
-        result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
-        counter.snapshot("quiescent")
+    # Warm the worker before the no-new-thread guard. This is the escape
+    # that Thread.start alone cannot detect.
+    with ThreadPoolExecutor(max_workers=1) as warm_executor:
+        warm_executor.submit(lambda: None).result()
+        # Starting a worker is only one way to escape this synchronous route;
+        # an already-warmed executor must be caught at the measured callbacks too.
+        invoking_thread = threading.get_ident()
+        with (
+            patch.object(threading.Thread, "start", autospec=True, side_effect=unexpected_worker_start),
+            append_cohort_memory_counter() as counter,
+        ):
+            record = counter.record
+
+            def record_on_invoking_thread(site: str, byte_count: int = 0) -> None:
+                assert threading.get_ident() == invoking_thread, "append-cohort callback escaped the invoking thread"
+                record(site, byte_count)
+
+            with patch.object(counter, "record", side_effect=record_on_invoking_thread):
+                escaped = warm_executor.submit(counter.record, "thread-affinity-canary")
+                with pytest.raises(AssertionError, match="escaped the invoking thread"):
+                    escaped.result()
+                result = ingest_append_plans(cast(Any, _owner(tmp_path)), [plan])
+                counter.snapshot("quiescent")
 
     receipt = counter.workload_receipt(
         profile_id="workload-profile:append-cohort-canary",

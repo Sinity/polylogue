@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
-from hypothesis import HealthCheck, Phase, given, settings
+import pytest
+from hypothesis import Phase, given, settings
 from hypothesis import strategies as st
 
 from tests.infra.convergence_harness import (
@@ -29,13 +28,16 @@ from tests.infra.convergence_laws import (
     max_examples=8,
     phases=(Phase.explicit, Phase.reuse, Phase.generate, Phase.target, Phase.shrink),
     deadline=None,
-    suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(
     st.integers(min_value=1, max_value=len(generated_convergence_workload().sources.sessions) - 1),
     st.integers(min_value=1, max_value=len(generated_convergence_workload().sources.sessions) - 1),
 )
-def test_convergence_property_append_prefix_matches_full(tmp_path: Path, shift: int, split: int) -> None:
+def test_convergence_property_append_prefix_matches_full(
+    tmp_path_factory: pytest.TempPathFactory, shift: int, split: int
+) -> None:
+    tmp_path = tmp_path_factory.mktemp("convergence-example")
+    assert not any(tmp_path.iterdir()), "each generated example must start empty"
     workload = generated_convergence_workload()
     composed = workload.sources
     order = rotated_session_order(composed, shift)

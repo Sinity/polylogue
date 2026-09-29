@@ -30,7 +30,6 @@ import polylogue.daemon.convergence_stages as convergence_stages
 import polylogue.pipeline.services.ingest_batch._core as ingest_batch_core
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
-from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import (
     DaemonConverger,
     SessionProfileConvergenceOwner,
@@ -431,13 +430,9 @@ def converge_convergence_archive(archive: ConvergenceArchive) -> None:
 def assert_archive_verification_green(root: Path) -> ArchiveVerificationReport:
     """Require every currently registered archive verification predicate to be green."""
     report = verify_archive(root)
-    # A typed not-applicable SKIP (absent population) is coherent, per the
-    # accepted conservation semantics; anything warning-or-worse is not.
-    non_green = [
-        (check.name, check.status.value, check.summary, check.details, check.breakdown)
-        for check in report.checks
-        if check.status not in {OutcomeStatus.OK, OutcomeStatus.SKIP}
-    ]
+    from polylogue.maintenance.archive_verification import strict_acceptance_failures
+
+    non_green = strict_acceptance_failures(report, allow_not_applicable=True)
     if non_green:
         raise AssertionError(f"archive verification registry is not green: {non_green}")
     return report

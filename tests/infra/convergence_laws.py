@@ -23,8 +23,6 @@ from functools import lru_cache
 from pathlib import Path
 
 from polylogue.archive.models import Session
-from polylogue.core.enums import Provider
-from polylogue.pipeline.ids import session_id as make_session_id
 from tests.infra.source_composer import ComposedSources
 
 
@@ -37,7 +35,6 @@ class ConvergenceLaw(StrEnum):
     APPEND_PREFIX = "append-prefix-containment"
 
 
-_PROVIDER = Provider.CODEX
 _PROBE_TERMS = ("revision", "shared", "orphaned", "toolonly")
 _TOKEN_RE = re.compile(r"[^\W_]+", re.UNICODE)
 
@@ -61,7 +58,7 @@ class AuthoritativeSession:
 
     @property
     def session_id(self) -> str:
-        return str(make_session_id(_PROVIDER, self.native_id))
+        return f"codex-session:{self.native_id}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,9 +242,12 @@ def execute_convergence_plan(
     """
     if law not in plan.laws:
         raise ValueError(f"law {law.value!r} is not declared by {plan.declaration_id!r}")
+    if not archive_roots:
+        raise ValueError("a convergence plan requires at least one archive root")
+    probe_terms = tuple(term for term, _members in plan.expected.fts_membership)
     for root in archive_roots:
         assert_projection_matches_oracle(
-            read_semantic_projection(root),
+            read_semantic_projection(root, probe_terms=probe_terms),
             plan.expected,
             law=law,
         )
@@ -265,8 +265,7 @@ def read_semantic_projection(
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     root = Path(archive_root).resolve()
-    # Hypothesis rebuilds fixed throwaway roots within one test invocation. The
-    # production cache therefore cannot distinguish successive examples here.
+    # Observe the current derived storage, not an earlier memoized projection.
     search_messages_cached.cache_clear()
     fts_membership = tuple(
         (

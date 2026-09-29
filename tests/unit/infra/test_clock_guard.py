@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -146,3 +147,96 @@ def test_module_level_real_clock_marker_exempts_managed_collection() -> None:
         shutil.rmtree(temporary_root)
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def _collect_guarded_module(source: str) -> subprocess.CompletedProcess[str]:
+    root = Path(__file__).resolve().parents[3]
+    directory = root / "tests" / f".clock-guard-{uuid4().hex}"
+    directory.mkdir()
+    module = directory / "test_guard_regression.py"
+    module.write_text(source, encoding="utf-8")
+    try:
+        return subprocess.run(
+            [sys.executable, "-m", "devtools", "test", "--collect-only", "--rootdir", str(root), str(module)],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PYTEST_DISABLE_PLUGIN_AUTOLOAD": "1"},
+            check=False,
+        )
+    finally:
+        shutil.rmtree(directory)
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "import time, pytest\n"
+        "CLOCK = time.time()\n"
+        "pytestmark = pytest.mark.uses_real_clock('whole module')\n"
+        "def test_collected(): pass\n",
+        "import time, pytest\n"
+        "@pytest.mark.parametrize('epoch', [time.time()])\n"
+        "@pytest.mark.uses_real_clock('decorator evaluates a clock')\n"
+        "def test_collected(epoch): pass\n",
+    ),
+    ids=("module-marker-covers-whole-source", "marker-below-clock-reading-decorator"),
+)
+def test_collection_clock_exemption_covers_declared_source(source: str) -> None:
+    """Both cases fail collection when an exemption starts/ends at the wrong line."""
+    result = _collect_guarded_module(source)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_caught_clock_read_cannot_disarm_collection_profile() -> None:
+    """Raising from the profiler lets the first caught read disable the second."""
+    result = _collect_guarded_module(
+        "import time\n"
+        "try:\n"
+        "    time.time()\n"
+        "except RuntimeError:\n"
+        "    pass\n"
+        "time.monotonic()\n"
+        "def test_collected(): pass\n"
+    )
+    output = result.stdout + result.stderr
+    assert result.returncode != 0
+    assert "time.time()" in output and "time.monotonic()" in output
+
+
+@pytest.mark.uses_real_clock("checks real interpreter profile callbacks on a worker thread")
+def test_collection_guard_chains_each_threads_own_previous_profile() -> None:
+    from tests.infra import clock_guard
+
+    main_calls: list[int] = []
+    worker_calls: list[int] = []
+
+    def probe() -> None:
+        pass
+
+    def main_profile(frame: object, event: str, arg: object) -> None:
+        if event == "call" and getattr(frame, "f_code", None) is probe.__code__:
+            main_calls.append(threading.get_ident())
+
+    def worker_profile(frame: object, event: str, arg: object) -> None:
+        if event == "call" and getattr(frame, "f_code", None) is probe.__code__:
+            worker_calls.append(threading.get_ident())
+
+    previous_main = sys.getprofile()
+    previous_worker = threading.getprofile()
+    invoking_thread = threading.get_ident()
+    try:
+        sys.setprofile(main_profile)
+        threading.setprofile(worker_profile)
+        clock_guard._install_collection_guard()
+        probe()
+        worker = threading.Thread(target=probe)
+        worker.start()
+        worker.join()
+    finally:
+        clock_guard._remove_collection_guard()
+        sys.setprofile(previous_main)
+        threading.setprofile(previous_worker)
+
+    assert main_calls == [invoking_thread]
+    assert len(worker_calls) == 1 and worker_calls[0] != invoking_thread

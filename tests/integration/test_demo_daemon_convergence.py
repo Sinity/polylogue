@@ -198,13 +198,6 @@ async def _wait_for_demo_searchable(archive_root: Path, *, timeout_s: float = 30
     raise AssertionError(f"pytest query never surfaced {DEMO_CLAUDE_CODE_SESSION_ID}: last hits={sorted(hit_ids)}")
 
 
-@pytest.mark.xfail(
-    reason=(
-        "live daemon demo corpus still has the independently tracked incremental raw-census gap "
-        "(polylogue-52l2), which can prevent base semantic convergence"
-    ),
-    strict=False,
-)
 async def test_import_demo_converges_through_live_daemon_path(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,

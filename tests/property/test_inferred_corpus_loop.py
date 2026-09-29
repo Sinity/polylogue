@@ -394,7 +394,9 @@ def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
     green = verify_archive(archive_root)
     green_summary = [(check.name, check.status.value, check.summary) for check in green.checks]
     assert green.blocking is False, green_summary
-    assert all(check.status in (OutcomeStatus.OK, OutcomeStatus.SKIP) for check in green.checks), green_summary
+    from polylogue.maintenance.archive_verification import strict_acceptance_failures
+
+    assert not strict_acceptance_failures(green, allow_not_applicable=True), green_summary
 
     broken_root = tmp_path / "broken"
     shutil.copytree(archive_root, broken_root)

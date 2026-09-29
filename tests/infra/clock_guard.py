@@ -15,10 +15,12 @@ This module removes the capability instead of scanning for its use:
   duration of every guarded test with a wrapper that raises immediately when
   called from test-file code (frame-checked, so production code under test
   is untouched — it still reads the real clock exactly as before).
-- A session-start profile is armed before test-module collection. It catches
-  the original built-in ``time`` calls and immutable ``datetime`` methods at
-  module import, while using the same caller boundary and structured
-  ``uses_real_clock`` exemptions as the fixture.
+- A session-start profile is armed before test-module collection. It records
+  original built-in ``time`` calls and immutable ``datetime`` methods at
+  module import, then refuses collection before tests run. Reporting outside
+  the profile callback prevents a caught exception from disarming CPython's
+  profiler. It uses the fixture's caller boundary and structured
+  ``uses_real_clock`` exemptions.
 - The same fixture patches the ``datetime`` symbol inside the *test's own
   module* to a subclass whose ``.now()``/``.utcnow()`` raise, mirroring the
   technique ``frozen_clock`` already uses to pin ``datetime.now`` in
@@ -83,6 +85,7 @@ _SOURCE_EXEMPTIONS: dict[Path, tuple[tuple[int, int], ...]] = {}
 _PROFILE_PREVIOUS: _ProfileHook | None = None
 _THREAD_PROFILE_PREVIOUS: _ProfileHook | None = None
 _PROFILE_INSTALLED = False
+_COLLECTION_VIOLATIONS: set[str] = set()
 
 _GUIDANCE = (
     "{name}() reads the host clock directly from test code ({path}), which "
@@ -127,20 +130,25 @@ def _source_exemption_ranges(path: Path) -> tuple[tuple[int, int], ...]:
     if cached is not None:
         return cached
     try:
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
     except (OSError, SyntaxError):
         ranges: tuple[tuple[int, int], ...] = ()
     else:
         found: list[tuple[int, int]] = []
         for statement in tree.body:
-            if isinstance(statement, (ast.Assign, ast.AnnAssign)) and _uses_real_clock_marker(statement):
-                found.append((1, getattr(tree, "end_lineno", 1)))
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+                if any(
+                    isinstance(target, ast.Name) and target.id == "pytestmark" for target in targets
+                ) and _uses_real_clock_marker(statement):
+                    found.append((1, len(source.splitlines())))
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 continue
             markers = [decorator for decorator in node.decorator_list if _uses_real_clock_marker(decorator)]
             if markers:
-                start = min(getattr(marker, "lineno", node.lineno) for marker in markers)
+                start = min(decorator.lineno for decorator in node.decorator_list)
                 found.append((start, getattr(node, "end_lineno", node.lineno)))
         ranges = tuple(found)
     _SOURCE_EXEMPTIONS[path] = ranges
@@ -160,7 +168,7 @@ def _source_is_exempt(frame: Any, path: Path) -> bool:
     return False
 
 
-def _clock_profile(frame: Any, event: str, arg: Any) -> Any:
+def _record_collection_clock(frame: Any, event: str, arg: Any) -> None:
     if event == "c_call":
         name = _REAL_CLOCK_CALLS.get(arg)
         if name is None and getattr(arg, "__self__", None) is datetime:
@@ -168,21 +176,37 @@ def _clock_profile(frame: Any, event: str, arg: Any) -> Any:
         if name:
             caller_path = Path(frame.f_code.co_filename)
             if _is_guarded_path(caller_path) and not _source_is_exempt(frame, caller_path):
-                raise RuntimeError(_GUIDANCE.format(name=name, path=caller_path))
+                # Raising inside a CPython profile hook removes that hook. An
+                # importing module can catch the exception and disable the guard
+                # for all following imports, so refuse collection outside it.
+                _COLLECTION_VIOLATIONS.add(_GUIDANCE.format(name=name, path=caller_path))
+
+
+def _clock_profile(frame: Any, event: str, arg: Any) -> Any:
+    _record_collection_clock(frame, event, arg)
     previous = _PROFILE_PREVIOUS
     if previous is not None and callable(previous):
         previous(frame, event, arg)
     return _clock_profile
 
 
+def _thread_clock_profile(frame: Any, event: str, arg: Any) -> Any:
+    _record_collection_clock(frame, event, arg)
+    previous = _THREAD_PROFILE_PREVIOUS
+    if previous is not None and callable(previous):
+        previous(frame, event, arg)
+    return _thread_clock_profile
+
+
 def _install_collection_guard() -> None:
     global _PROFILE_INSTALLED, _PROFILE_PREVIOUS, _THREAD_PROFILE_PREVIOUS
     if _PROFILE_INSTALLED:
         return
+    _COLLECTION_VIOLATIONS.clear()
     _PROFILE_PREVIOUS = cast(_ProfileHook | None, sys.getprofile())
     _THREAD_PROFILE_PREVIOUS = cast(_ProfileHook | None, threading.getprofile())
     sys.setprofile(_clock_profile)
-    threading.setprofile(_clock_profile)
+    threading.setprofile(_thread_clock_profile)
     _PROFILE_INSTALLED = True
 
 
@@ -324,6 +348,10 @@ def pytest_sessionstart(session: pytest.Session) -> None:
 def pytest_collection_finish(session: pytest.Session) -> None:
     del session
     _remove_collection_guard()
+    if _COLLECTION_VIOLATIONS:
+        violations = "\n".join(sorted(_COLLECTION_VIOLATIONS))
+        _COLLECTION_VIOLATIONS.clear()
+        raise pytest.UsageError("Import-time clock reads prevent collection:\n" + violations)
 
 
 def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
