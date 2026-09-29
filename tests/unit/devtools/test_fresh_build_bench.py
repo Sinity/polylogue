@@ -1536,6 +1536,7 @@ def test_a_permanent_observation_error_is_a_typed_refusal(tmp_path: Path, monkey
     from devtools.fresh_build_bench.run import _retryable_observation_error
 
     assert _retryable_observation_error(sqlite3.OperationalError("database is locked"))
+    assert _retryable_observation_error(sqlite3.OperationalError("locking protocol"))
     assert not _retryable_observation_error(sqlite3.OperationalError("no such column: deferred_end_offset"))
     captured = _scripted_run(
         tmp_path,
@@ -1545,6 +1546,12 @@ def test_a_permanent_observation_error_is_a_typed_refusal(tmp_path: Path, monkey
     )
 
     assert captured["outcome"] == "observation_refused"
+    # The receipt names the error that refused the run.
+    from devtools.fresh_build_bench.report import _observation_errors
+
+    assert _observation_errors(captured["observations"]) == {
+        "OperationalError: no such column: deferred_end_offset": {"count": 1, "retryable": False}
+    }
 
 
 def test_linked_top_level_corpus_roots_are_refused(tmp_path: Path) -> None:

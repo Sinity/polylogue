@@ -370,7 +370,10 @@ def observe(archive: Path, started: float, *, readiness_max_age_s: float | None 
 def _retryable_observation_error(exc: BaseException) -> bool:
     if isinstance(exc, sqlite3.OperationalError):
         message = str(exc).lower()
-        return any(token in message for token in ("locked", "busy", "unable to open", "disk i/o"))
+        # ``locking protocol`` is SQLITE_PROTOCOL: a WAL reader lost its race
+        # for a read lock to a concurrent checkpoint or restart, and the next
+        # attempt normally succeeds.
+        return any(token in message for token in ("locked", "busy", "unable to open", "disk i/o", "locking protocol"))
     # Corruption or a schema this driver cannot read never heals by polling.
     return isinstance(exc, OSError)
 
