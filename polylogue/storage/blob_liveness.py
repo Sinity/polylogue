@@ -211,10 +211,19 @@ def _ledger_surfaces(source_conn: sqlite3.Connection, blob_bytes: bytes, *, pref
     return surfaces
 
 
-def _direct_surfaces(conn: sqlite3.Connection, blob_bytes: bytes, *, tier: str, prefix: str) -> list[str]:
+def _direct_surfaces(
+    conn: sqlite3.Connection,
+    blob_bytes: bytes,
+    *,
+    tier: str,
+    prefix: str,
+    exclude_tables: frozenset[str] = frozenset(),
+) -> list[str]:
     surfaces: list[str] = []
     for owner in _owners(tier=tier, ledger=False):
         assert owner.blob_column is not None
+        if owner.table in exclude_tables:
+            continue
         if not _table_exists(conn, owner.table) or not _column_exists(conn, owner.table, owner.blob_column):
             continue
         if (
@@ -287,6 +296,69 @@ def inspect_blob_liveness(
         return BlobLiveness(LivenessState.LIVE, tuple(surfaces))
     if index_authority_blocker is not None:
         return BlobLiveness(LivenessState.BLOCKED, blockers=(index_authority_blocker,))
+    return BlobLiveness(LivenessState.UNREFERENCED)
+
+
+#: Source owners that are not a session's reference to its bytes.
+#: ``source_attachments`` is a generation-local census of what an acquisition
+#: fetched, keyed by (generation, reference); no session key reaches it, so
+#: session excision never removes it, and counting it would make every blob
+#: it names look shared with a session that does not exist.
+_CENSUS_OWNER_TABLES: frozenset[str] = frozenset({"source_attachments"})
+
+
+def inspect_session_blob_reference(
+    source_conn: sqlite3.Connection,
+    blob_hash: bytes,
+    *,
+    index_conn: sqlite3.Connection | None,
+    excluding_session_ids: frozenset[str],
+) -> BlobLiveness:
+    """Whether a session outside ``excluding_session_ids`` still references a blob.
+
+    Session excision owns a blob only while no other session references it:
+    blobs are content-addressed, so two sessions with the same tool output or
+    the same attachment share one hash. Excision calls this after deleting
+    the excised session's source rows, in the same transaction, and marks the
+    hash forgotten only when the answer is ``unreferenced``.
+
+    Source owners come from :data:`BLOB_OWNERS` (direct columns and ledger
+    rows whose referent still exists), minus :data:`_CENSUS_OWNER_TABLES`.
+    The live batch records attachments only in ``index.attachments``, so the
+    index is asked too: an attachment still linked through ``attachment_refs``
+    to a session outside the excision is a live reference. The index only
+    withholds a marker here; it never causes one.
+
+    ``blocked`` means the answer cannot be decided (an unknown ``blob_refs``
+    type, a missing owner table), and the caller must refuse rather than
+    guess in either direction.
+    """
+    blockers = _source_global_blockers(source_conn)
+    if index_conn is not None:
+        blockers.extend(_schema_blockers(index_conn, tier="index", required=True))
+        if not _table_exists(index_conn, "attachment_refs"):
+            blockers.append("index.attachment_refs is missing")
+    if blockers:
+        return BlobLiveness(LivenessState.BLOCKED, blockers=tuple(dict.fromkeys(blockers)))
+    try:
+        surfaces = _direct_surfaces(
+            source_conn, blob_hash, tier="source", prefix="source.db", exclude_tables=_CENSUS_OWNER_TABLES
+        )
+        surfaces.extend(_ledger_surfaces(source_conn, blob_hash, prefix="source.db"))
+        if index_conn is not None:
+            excluded = tuple(sorted(excluding_session_ids))
+            outside = f" AND r.session_id NOT IN ({','.join('?' for _ in excluded)})" if excluded else ""
+            row = index_conn.execute(
+                "SELECT 1 FROM attachments AS a JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id "
+                f"WHERE a.blob_hash = ?{outside} LIMIT 1",
+                (blob_hash, *excluded),
+            ).fetchone()
+            if row is not None:
+                surfaces.append("index.db.attachment_refs")
+    except sqlite3.Error as exc:
+        return BlobLiveness(LivenessState.BLOCKED, blockers=(f"blob reference query is unreadable: {exc}",))
+    if surfaces:
+        return BlobLiveness(LivenessState.LIVE, tuple(dict.fromkeys(surfaces)))
     return BlobLiveness(LivenessState.UNREFERENCED)
 
 
@@ -389,6 +461,7 @@ __all__ = [
     "index_tier_blob_population",
     "inspect_blob_liveness",
     "inspect_blob_reservation",
+    "inspect_session_blob_reference",
     "project_live_blob_hashes",
     "validated_blob_ref_liveness_joins",
 ]

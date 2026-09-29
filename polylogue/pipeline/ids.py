@@ -121,11 +121,27 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
 #: hashed block for session evidence (``drive_support_blocks``); they are
 #: provider attestations re-issued on replay, like a block ``signature``, so a
 #: signature-only change must not move the session or event identity.
+#: Session-event families whose payload names a tool-result sidecar. Both
+#: carry the same ``{acquisition_status, tool_use_id, content_replaced}``
+#: payload shape, and the ingest batch publishes each matched sidecar's text
+#: as a content-addressed blob.
+SIDECAR_BLOB_EVENT_TYPES: frozenset[str] = frozenset({"claude_tool_result_sidecar", "gemini_cli_tool_output_sidecar"})
+#: A sidecar event's stored row also carries where the ingest batch published
+#: the sidecar's bytes. That locator is publication metadata added after
+#: identity binding, never parsed content (polylogue-bgnxh), so a stored
+#: payload hashes to the identity its session was bound under. The writer
+#: stores no other locator key.
+_SIDECAR_LOCATOR_KEYS: dict[str, str] = {
+    "blob_hash": "publication locator of the sidecar's content-addressed copy, added after identity binding",
+    "blob_refusal": "typed refusal to republish durably excised sidecar bytes, added after identity binding",
+}
+SIDECAR_LOCATOR_KEYS: frozenset[str] = frozenset(_SIDECAR_LOCATOR_KEYS)
 _EVENT_PAYLOAD_EXCLUDED_KEYS: dict[str, dict[str, str]] = {
     "gemini_thinking_evidence": {
         "thoughtSignature": "provider cryptographic signatures are re-issued on replay",
         "thoughtSignatures": "provider cryptographic signatures are re-issued on replay",
     },
+    **dict.fromkeys(sorted(SIDECAR_BLOB_EVENT_TYPES), _SIDECAR_LOCATOR_KEYS),
 }
 
 

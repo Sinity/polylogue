@@ -8,11 +8,13 @@ excision:
 2. Deletes the session's ``blob_refs`` and ``raw_sessions`` rows from
    ``source.db`` (cascading to ``raw_session_memberships``/
    ``raw_membership_census``), then records a durable removed-hash marker in
-   ``excised_content`` for *every distinct blob hash* grouped under that raw
+   ``excised_content`` for every distinct blob hash grouped under that raw
    ingestion's ``ref_id`` -- not just the raw payload's own hash. ``blob_refs``
    shares one ``ref_id`` across ``ref_type IN ('raw_payload', 'attachment',
    'sidecar')``, so a session's inline attachments (whose content hash can
    differ from the raw payload's) get their own non-resurrection marker too.
+   A hash that a session outside the excision still references is the
+   exception (see "Shared blobs" below).
    That marker is what makes re-ingest non-resurrecting: both acquire-time
    raw-session write functions (``write_source_raw_session`` and
    ``write_source_raw_session_blob_ref`` -- the payload-in-memory and
@@ -22,7 +24,8 @@ excision:
 3. Deletes the session's durable hook events (``raw_hook_events`` +
    ``hook_event_carriers`` + their ``hook_payload`` blob refs, through
    ``delete_source_hook_event``) and records an ``excised_content`` marker
-   for every blob hash they owned. Hook payloads are session-addressable by
+   for every blob hash they owned that no other session references. Hook
+   payloads are session-addressable by
    ``(origin, session_native_id)`` and carry no ``raw_sessions`` row, so no
    raw target above reaches them; without this step a completed excision
    left every PreToolUse/PostToolUse payload readable (polylogue-bhhsa).
@@ -60,6 +63,19 @@ them from that declared identity and folds them into the seed set *before*
 the revision closure runs, so every retained revision of the same plan file
 is covered too.
 
+**Shared blobs.** Excision forgets the excised session, not every session
+whose content shares a content-addressed blob with it. Two sessions with the
+same tool output or the same attachment own one blob hash. After the excised
+session's source rows are deleted, each hash they named is marked in
+``excised_content`` only when
+:func:`polylogue.storage.blob_liveness.inspect_session_blob_reference`
+finds no other session's reference to it (a retained raw, a live ledger row,
+a hook event, a material, a retained container, or an index attachment
+linked to another session). A shared hash stays unmarked and readable for
+that session and is named on the receipt as ``shared_blob_hashes``;
+excising the last session that references it marks it. Forgetting content
+wherever it appears is the secret-scanning route's job, not this one.
+
 **Attachments referenced from elsewhere.** ``attachment_refs.session_id``/
 ``message_id`` carry ``ON DELETE CASCADE`` to ``sessions``/``messages``, so
 deleting the excised session's row already removes only *its own*
@@ -67,9 +83,7 @@ attachment references. A content-hash-deduplicated ``attachments`` row that
 is still referenced by another, non-excised session's ``attachment_refs`` is
 untouched -- excision never deletes shared attachment metadata still in
 legitimate use elsewhere; it only unlinks the excised session's reference to
-it (and, per the point above, marks that raw ingestion's attachment blob
-hash as durably excised so an identical copy re-attached under this same
-raw ingestion cannot resurrect).
+it, and by the rule above its blob hash is not marked.
 
 Blob *bytes* are never force-unlinked out from under a lease here. Removing
 the ``blob_refs``/``raw_sessions`` rows un-references the blob; the existing
@@ -122,6 +136,7 @@ from polylogue.storage.accepted_marker_inputs import (
     excise_marker_input_targets_sync,
     marker_input_excision_targets_sync,
 )
+from polylogue.storage.blob_liveness import LivenessState, inspect_session_blob_reference
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     delete_source_hook_event,
@@ -750,6 +765,24 @@ def find_lineage_dependents(archive_root: Path, session_id: str) -> tuple[str, .
         conn.close()
 
 
+class ExcisionBlobReferenceUnknownError(RuntimeError):
+    """Raised when excision cannot tell whether another session references a blob.
+
+    Marking a blob another session still references would forget that
+    session's content; leaving an unreferenced blob unmarked would let the
+    excised session's bytes be re-acquired. With the answer blocked (an
+    unknown ``blob_refs`` type, a missing owner table), the apply refuses and
+    its source transaction rolls back.
+    """
+
+    def __init__(self, *, blob_hash: bytes, blockers: tuple[str, ...]) -> None:
+        self.blob_hash = blob_hash
+        self.blockers = blockers
+        super().__init__(
+            f"cannot decide whether blob {blob_hash.hex()} is referenced outside the excision: {'; '.join(blockers)}"
+        )
+
+
 class LineageDependentsError(RuntimeError):
     """Raised when excising a session would break composed reads of its lineage.
 
@@ -982,6 +1015,11 @@ class ExcisionReceipt:
     excised_at_ms: int | None = None
     receipt_assertion_id: str | None = None
     removed_blob_hashes: tuple[str, ...] = ()
+    #: Blob hashes the excised session owned that a session outside the
+    #: excision still references. They stay readable for that session and get
+    #: no ``excised_content`` marker; excising the last referencing session
+    #: marks them.
+    shared_blob_hashes: tuple[str, ...] = ()
     marker_input_digests: tuple[str, ...] = ()
     counts: dict[str, int] = field(default_factory=dict)
     # Populated only when apply_session_excision cascaded across a
@@ -1018,6 +1056,7 @@ class ExcisionReceipt:
             "excised_at_ms": self.excised_at_ms,
             "receipt_assertion_id": self.receipt_assertion_id,
             "removed_blob_hashes": list(self.removed_blob_hashes),
+            "shared_blob_hashes": list(self.shared_blob_hashes),
             "marker_input_digests": list(self.marker_input_digests),
             "counts": dict(self.counts),
             "cascaded_session_ids": list(self.cascaded_session_ids),
@@ -1145,6 +1184,9 @@ def _apply_single_session_excision(
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
     removed_hashes: list[str] = []
+    #: Hashes this session owned that another session still references; kept
+    #: unmarked and named on the receipt.
+    shared_hashes: list[str] = []
     marker_input_digests = tuple(dict.fromkeys(marker.carrier_digest for marker in target.marker_input_targets))
     retained_hook_events: tuple[str, ...] = ()
     retained_source_containers = tuple(item.label for item in target.containers.retained_items)
@@ -1153,7 +1195,13 @@ def _apply_single_session_excision(
     ):
         conn = _connect_rw(source_db, archive_root=archive_root)
         conn.execute("PRAGMA foreign_keys = ON")
+        # The live batch records attachments only in the index; read it to
+        # find another session's reference to a blob this session owned.
+        index_conn = _connect_ro(index_db) if index_db.exists() else None
         try:
+            #: Every blob hash this session's deleted rows named, with the
+            #: first row that named it as the marker's prior revision.
+            owned_hashes: dict[bytes, str | None] = {}
             with conn:
                 marker_counts = excise_marker_input_targets_sync(
                     conn, target.marker_input_targets, excised_at_ms=timestamp
@@ -1172,16 +1220,7 @@ def _apply_single_session_excision(
                         (member.source_generation_id, member.source_item_id, member.record_coordinate),
                     )
                     counts["source_container_members"] += 1
-                    record_excised_blob_hash(
-                        conn,
-                        blob_hash=member.raw_blob_hash,
-                        reason=reason,
-                        actor=actor,
-                        prior_revision=f"{member.source_item_id}:{member.record_coordinate}",
-                        span=None,
-                        excised_at_ms=timestamp,
-                    )
-                    removed_hashes.append(member.raw_blob_hash.hex())
+                    owned_hashes.setdefault(member.raw_blob_hash, f"{member.source_item_id}:{member.record_coordinate}")
                 for item in target.containers.removable_items:
                     conn.execute(
                         "DELETE FROM source_items WHERE source_generation_id = ? AND source_item_id = ?",
@@ -1189,16 +1228,7 @@ def _apply_single_session_excision(
                     )
                     counts["source_container_items"] += 1
                     if item.blob_hash is not None:
-                        record_excised_blob_hash(
-                            conn,
-                            blob_hash=item.blob_hash,
-                            reason=reason,
-                            actor=actor,
-                            prior_revision=item.label,
-                            span=None,
-                            excised_at_ms=timestamp,
-                        )
-                        removed_hashes.append(item.blob_hash.hex())
+                        owned_hashes.setdefault(item.blob_hash, item.label)
 
                 for raw_target in target.raw_targets:
                     # blob_refs groups every blob published under this raw
@@ -1206,11 +1236,10 @@ def _apply_single_session_excision(
                     # ('raw_payload', 'attachment', 'sidecar'). An
                     # attachment's own content hash can differ from the raw
                     # payload's, so read every distinct hash under this
-                    # ref_id BEFORE deleting: each one needs its own durable
-                    # excised_content marker, or a re-attached copy of that
-                    # exact attachment content (elsewhere it happens to be
-                    # re-acquired under the same content hash) would not be
-                    # recognized as already-excised.
+                    # ref_id BEFORE deleting: each one this session alone
+                    # owned needs its own durable excised_content marker, or
+                    # a re-acquired copy of that exact attachment content
+                    # would not be recognized as already-excised.
                     sibling_hashes = {
                         bytes(row[0])
                         for row in conn.execute(
@@ -1232,16 +1261,7 @@ def _apply_single_session_excision(
                             cursor.rowcount, 0
                         )
                     for blob_hash in sibling_hashes:
-                        record_excised_blob_hash(
-                            conn,
-                            blob_hash=blob_hash,
-                            reason=reason,
-                            actor=actor,
-                            prior_revision=raw_target.raw_id,
-                            span=None,
-                            excised_at_ms=timestamp,
-                        )
-                        removed_hashes.append(blob_hash.hex())
+                        owned_hashes.setdefault(blob_hash, raw_target.raw_id)
 
                 for hook_event_id in target.hook_event_ids:
                     # A hook event owns its payload bytes through three
@@ -1251,7 +1271,7 @@ def _apply_single_session_excision(
                     # written before the v22 blob_hash backfill has a NULL
                     # there and would otherwise leave an unmarked,
                     # re-ingestible payload behind.
-                    owned_hashes: set[bytes] = set()
+                    hook_hashes: set[bytes] = set()
                     row = conn.execute(
                         "SELECT blob_hash FROM raw_hook_events WHERE hook_event_id = ?",
                         (hook_event_id,),
@@ -1259,8 +1279,8 @@ def _apply_single_session_excision(
                     if row is None:
                         continue
                     if row[0]:
-                        owned_hashes.add(bytes(row[0]))
-                    owned_hashes.update(
+                        hook_hashes.add(bytes(row[0]))
+                    hook_hashes.update(
                         bytes(r[0])
                         for r in conn.execute(
                             "SELECT DISTINCT blob_hash FROM hook_event_carriers WHERE hook_event_id = ?",
@@ -1268,7 +1288,7 @@ def _apply_single_session_excision(
                         ).fetchall()
                         if r[0]
                     )
-                    owned_hashes.update(
+                    hook_hashes.update(
                         bytes(r[0])
                         for r in conn.execute(
                             "SELECT DISTINCT blob_hash FROM blob_refs WHERE ref_type = 'hook_payload' AND ref_id = ?",
@@ -1281,35 +1301,15 @@ def _apply_single_session_excision(
                     # durable row is left pinning the blob.
                     delete_source_hook_event(conn, hook_event_id, manage_transaction=False)
                     counts["source_hook_events"] += 1
-                    for blob_hash in owned_hashes:
-                        record_excised_blob_hash(
-                            conn,
-                            blob_hash=blob_hash,
-                            reason=reason,
-                            actor=actor,
-                            prior_revision=hook_event_id,
-                            span=None,
-                            excised_at_ms=timestamp,
-                        )
-                        removed_hashes.append(blob_hash.hex())
+                    for blob_hash in sorted(hook_hashes):
+                        owned_hashes.setdefault(blob_hash, hook_event_id)
 
                 # Materials retained under this session id own their bytes
-                # through material_observations.blob_hash alone. Mark every
-                # hash excised BEFORE deleting the rows that name it, or the
-                # bytes stay both readable in the blob store and
-                # re-admissible under the same content hash. The evidence
-                # links cascade with the row (foreign_keys is ON above).
+                # through material_observations.blob_hash alone; the target
+                # read those hashes before the rows that name them go. The
+                # evidence links cascade with the row (foreign_keys is ON).
                 for material_blob_hash in target.material_blob_hashes:
-                    record_excised_blob_hash(
-                        conn,
-                        blob_hash=material_blob_hash,
-                        reason=reason,
-                        actor=actor,
-                        prior_revision=None,
-                        span=None,
-                        excised_at_ms=timestamp,
-                    )
-                    removed_hashes.append(material_blob_hash.hex())
+                    owned_hashes.setdefault(material_blob_hash, None)
                 if target.material_ids:
                     # supersedes_material_id is a plain (non-deferred) FK
                     # between materials, and a superseded revision of the
@@ -1328,6 +1328,33 @@ def _apply_single_session_excision(
                         (material_id,),
                     )
                     counts["source_materials"] += max(cursor.rowcount, 0)
+                # Every row this session owned is gone. A hash is forgotten
+                # (marked, so acquisition refuses it) only when no session
+                # outside this excision still references it: excision forgets
+                # this session, not every session whose content shares a
+                # content-addressed blob with it.
+                for blob_hash, prior_revision in owned_hashes.items():
+                    reference = inspect_session_blob_reference(
+                        conn,
+                        blob_hash,
+                        index_conn=index_conn,
+                        excluding_session_ids=frozenset({session_id}),
+                    )
+                    if reference.state is LivenessState.BLOCKED:
+                        raise ExcisionBlobReferenceUnknownError(blob_hash=blob_hash, blockers=reference.blockers)
+                    if reference.state is LivenessState.LIVE:
+                        shared_hashes.append(blob_hash.hex())
+                        continue
+                    record_excised_blob_hash(
+                        conn,
+                        blob_hash=blob_hash,
+                        reason=reason,
+                        actor=actor,
+                        prior_revision=prior_revision,
+                        span=None,
+                        excised_at_ms=timestamp,
+                    )
+                    removed_hashes.append(blob_hash.hex())
                 # A publication reservation is a durable claim on a blob by
                 # hash. Left standing it keeps an excised blob reserved --- and
                 # named --- after the evidence it published is gone
@@ -1355,6 +1382,8 @@ def _apply_single_session_excision(
             )
         finally:
             conn.close()
+            if index_conn is not None:
+                index_conn.close()
 
     # The receipt commits before index cleanup. Record the exact witness
     # target count now, so a crash after the receipt does not leave a durable
@@ -1392,8 +1421,12 @@ def _apply_single_session_excision(
                 value = json.loads(str(row[1]))
                 if isinstance(value, dict):
                     existing_receipt = (str(row[0]), value)
-                    prior_hashes = value.get("removed_blob_hashes")
-                    prior_hash_set = {str(item) for item in prior_hashes} if isinstance(prior_hashes, list) else set()
+                    prior_hash_set = {
+                        str(item)
+                        for key in ("removed_blob_hashes", "shared_blob_hashes")
+                        if isinstance(prior := value.get(key), list)
+                        for item in prior
+                    }
                     current_hashes = {raw.blob_hash.hex() for raw in target.raw_targets}
                     # A receipt for the same stable session ID is only a retry
                     # when it proves this source revision was already removed.
@@ -1441,6 +1474,7 @@ def _apply_single_session_excision(
                         "actor": actor,
                         "mode": "standalone",
                         "removed_blob_hashes": removed_hashes,
+                        "shared_blob_hashes": shared_hashes,
                         "marker_input_digests": list(marker_input_digests),
                         "counts": counts,
                         "excised_at_ms": timestamp,
@@ -1494,6 +1528,7 @@ def _apply_single_session_excision(
         stored_counts = value.get("counts")
         stored_timestamp = value.get("excised_at_ms")
         stored_hashes = value.get("removed_blob_hashes")
+        stored_shared = value.get("shared_blob_hashes")
         stored_marker_digests = value.get("marker_input_digests")
         return ExcisionReceipt(
             session_id=session_id,
@@ -1504,6 +1539,9 @@ def _apply_single_session_excision(
             receipt_assertion_id=receipt_id,
             removed_blob_hashes=(
                 tuple(str(item) for item in stored_hashes) if isinstance(stored_hashes, (list, tuple)) else ()
+            ),
+            shared_blob_hashes=(
+                tuple(str(item) for item in stored_shared) if isinstance(stored_shared, (list, tuple)) else ()
             ),
             marker_input_digests=(
                 tuple(str(item) for item in stored_marker_digests)
@@ -1523,6 +1561,7 @@ def _apply_single_session_excision(
         excised_at_ms=timestamp,
         receipt_assertion_id=receipt_id,
         removed_blob_hashes=tuple(removed_hashes),
+        shared_blob_hashes=tuple(shared_hashes),
         marker_input_digests=marker_input_digests,
         counts=counts,
         retained_hook_events=retained_hook_events,
@@ -1607,6 +1646,16 @@ def apply_session_excision(
             merged_counts[key] = merged_counts.get(key, 0) + value
         merged_removed_hashes.extend(receipt.removed_blob_hashes)
         merged_marker_digests.extend(receipt.marker_input_digests)
+    # A hash one lineage member shared with another member is marked when the
+    # last of them is excised; it is shared only if no member marked it.
+    marked = set(merged_removed_hashes)
+    merged_shared_hashes = tuple(
+        blob_hash
+        for blob_hash in dict.fromkeys(
+            [*primary.shared_blob_hashes, *(item for r in cascaded_receipts for item in r.shared_blob_hashes)]
+        )
+        if blob_hash not in marked
+    )
 
     return ExcisionReceipt(
         session_id=primary.session_id,
@@ -1616,6 +1665,7 @@ def apply_session_excision(
         excised_at_ms=primary.excised_at_ms,
         receipt_assertion_id=primary.receipt_assertion_id,
         removed_blob_hashes=tuple(merged_removed_hashes),
+        shared_blob_hashes=merged_shared_hashes,
         marker_input_digests=tuple(dict.fromkeys(merged_marker_digests)),
         counts=merged_counts,
         cascaded_session_ids=actually_cascaded,
@@ -1636,6 +1686,7 @@ def apply_session_excision(
 
 
 __all__ = [
+    "ExcisionBlobReferenceUnknownError",
     "ExcisionPolicyError",
     "ExcisionPolicySnapshot",
     "ExcisionPlan",

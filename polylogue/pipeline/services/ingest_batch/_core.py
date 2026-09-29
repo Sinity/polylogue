@@ -52,7 +52,7 @@ from polylogue.markers.preparation import (
     marker_recipe_fingerprint,
     retired_marker_assertion_ids,
 )
-from polylogue.pipeline.ids import bound_session_content_hash, session_content_hash
+from polylogue.pipeline.ids import SIDECAR_BLOB_EVENT_TYPES, bound_session_content_hash, session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.ingest_outcomes import (
     parser_defect_disposition,
@@ -105,7 +105,7 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     classify_raw_revision_cohort_for_live_watch,
     raw_membership_raw_ids,
 )
-from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef
+from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, is_blob_hash_excised
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
     LineageSignatureCache,
@@ -660,17 +660,13 @@ def _incoming_write_carries_distinct_messages(
     return any(count > existing_signatures[signature] for signature, count in incoming_signatures.items())
 
 
-#: Session-event families whose payload names a tool-result sidecar this
-#: function must give a durable content-addressed home. Both carry the same
-#: ``{acquisition_status, tool_use_id, content_replaced}`` payload shape.
-_SIDECAR_EVENT_TYPES = ("claude_tool_result_sidecar", "gemini_cli_tool_output_sidecar")
-
-
 def _preacquire_sidecar_blobs(
     session_to_write: ParsedSession,
     blob_publisher: ArchiveBlobPublisher,
     publication_receipts: list[tuple[str, bytes]],
-) -> tuple[ParsedSession, dict[str, int]]:
+    *,
+    source_conn: sqlite3.Connection | None,
+) -> tuple[dict[str, dict[str, str]], dict[str, int]]:
     """Content-address + dedup acquired tool-result sidecar text (polylogue-rujy AC4).
 
     ``apply_tool_result_sidecars`` / ``apply_gemini_tool_output_sidecars``
@@ -686,27 +682,34 @@ def _preacquire_sidecar_blobs(
 
     This mirrors the existing attachment-blob path (``_acquire_attachment_blob``
     / the ``preacquired_attachment_blobs`` loop above): it publishes the exact
-    bytes the matched block now carries through the archive's content-addressed
-    blob store, records the resulting ``blob_hash`` back onto the event so a
-    reader can locate the durable copy, and returns per-run byte counts
-    (new vs. deduplicated) for the ingest batch's own accounting. It never
-    touches ``blocks.text`` -- that already carries the full text for FTS --
-    this only adds a deduplicated, content-addressed second home for it.
+    bytes the matched block carries through the archive's content-addressed
+    blob store and returns per-run byte counts (new vs. deduplicated) for the
+    ingest batch's own accounting. It never touches ``blocks.text`` -- that
+    already carries the full text for FTS -- this only adds a deduplicated,
+    content-addressed second home for it.
 
-    A no-op (returns ``session_to_write`` unchanged) unless the session
-    actually carries a matched+replaced sidecar event, so a session from an
-    origin without sidecars never pays this cost.
+    The returned locators, keyed by ``tool_use_id``, are publication metadata,
+    not session content (polylogue-bgnxh): the session's identity was bound
+    over its parsed events before this runs, so this never rewrites the
+    session. The writer stores each locator beside its sidecar event
+    (``sidecar_blob_locators``). A sidecar whose bytes are durably excised is
+    not published again; its locator records the typed refusal
+    ``blob_refusal: content_excised`` and the rest of the session still
+    writes.
+
+    A no-op unless the session actually carries a matched+replaced sidecar
+    event, so a session from an origin without sidecars never pays this cost.
     """
     matched_tool_use_ids = {
         tool_use_id
         for event in session_to_write.session_events
-        if event.event_type in _SIDECAR_EVENT_TYPES
+        if event.event_type in SIDECAR_BLOB_EVENT_TYPES
         and event.payload.get("acquisition_status") == "matched"
         and event.payload.get("content_replaced")
         and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
     }
     if not matched_tool_use_ids:
-        return session_to_write, {}
+        return {}, {}
 
     text_by_tool_use_id: dict[str, str] = {
         block.tool_id: block.text
@@ -718,17 +721,27 @@ def _preacquire_sidecar_blobs(
         and block.text is not None
     }
     if not text_by_tool_use_id:
-        return session_to_write, {}
+        return {}, {}
 
-    blob_hash_by_tool_use_id: dict[str, str] = {}
+    locators: dict[str, dict[str, str]] = {}
     bytes_new = 0
     bytes_dedup = 0
+    written = 0
+    refused = 0
     for tool_use_id, text in text_by_tool_use_id.items():
         encoded = unicodedata.normalize("NFC", text).encode("utf-8")
         precomputed_hash = hashlib.sha256(encoded).hexdigest()
+        if source_conn is not None and is_blob_hash_excised(source_conn, bytes.fromhex(precomputed_hash)):
+            # Excision forgets whole sessions; a blob it marked had no other
+            # referencing session then. Publishing it again would put the
+            # forgotten bytes back on disk, so this sidecar alone is refused.
+            locators[tool_use_id] = {"blob_refusal": "content_excised"}
+            refused += 1
+            continue
         already_present = blob_publisher.exists(precomputed_hash)
         hash_hex, size = blob_publisher.write_from_bytes(encoded)
-        blob_hash_by_tool_use_id[tool_use_id] = hash_hex
+        locators[tool_use_id] = {"blob_hash": hash_hex}
+        written += 1
         if already_present:
             bytes_dedup += size
         else:
@@ -737,20 +750,13 @@ def _preacquire_sidecar_blobs(
         if receipt_id is not None:
             publication_receipts.append((receipt_id, bytes.fromhex(hash_hex)))
 
-    updated_events = [
-        event.model_copy(update={"payload": {**event.payload, "blob_hash": blob_hash_by_tool_use_id[tool_use_id]}})
-        if event.event_type in _SIDECAR_EVENT_TYPES
-        and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
-        and tool_use_id in blob_hash_by_tool_use_id
-        else event
-        for event in session_to_write.session_events
-    ]
     counts = {
         "sidecar_blob_bytes_new": bytes_new,
         "sidecar_blob_bytes_dedup": bytes_dedup,
-        "sidecar_blobs_written": len(blob_hash_by_tool_use_id),
+        "sidecar_blobs_written": written,
+        "sidecar_blobs_refused_excised": refused,
     }
-    return session_to_write.model_copy(update={"session_events": updated_events}), counts
+    return locators, counts
 
 
 # polylogue-ojjet: the Drive revision-cohort classifier
@@ -1166,6 +1172,7 @@ def _write_session(
         "sidecar_blob_bytes_new": 0,
         "sidecar_blob_bytes_dedup": 0,
         "sidecar_blobs_written": 0,
+        "sidecar_blobs_refused_excised": 0,
     }
 
     existing_row = None
@@ -1408,6 +1415,7 @@ def _write_session(
         return False, counts
 
     preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None
+    sidecar_blob_locators: dict[str, dict[str, str]] = {}
     publication_receipts: list[tuple[str, bytes]] = []
     if blob_publisher is not None:
         preacquired_attachment_blobs = {}
@@ -1427,8 +1435,8 @@ def _write_session(
             preacquired_attachment_blobs[attachment.acquisition_key] = (blob_hash, size, "acquired")
             if receipt_id is not None:
                 publication_receipts.append((receipt_id, blob_hash))
-        session_to_write, sidecar_blob_counts = _preacquire_sidecar_blobs(
-            session_to_write, blob_publisher, publication_receipts
+        sidecar_blob_locators, sidecar_blob_counts = _preacquire_sidecar_blobs(
+            session_to_write, blob_publisher, publication_receipts, source_conn=source_conn
         )
         counts.update(sidecar_blob_counts)
         blob_publisher.flush()
@@ -1494,6 +1502,7 @@ def _write_session(
         signature_cache=signature_cache,
         stage_timings_s=stage_timings_s,
         preacquired_attachment_blobs=preacquired_attachment_blobs,
+        sidecar_blob_locators=sidecar_blob_locators,
         # Guard-gated bulk FTS for any prefix-tail re-extraction this write
         # cascades into (polylogue-crd8). Byte-identical to per-row trigger
         # mode (tests/unit/storage/test_bulk_fts_prefix_reextract.py) but
@@ -3493,6 +3502,7 @@ async def process_ingest_batch(
             sidecar_blob_new_mb=round(batch_summary.counts["sidecar_blob_bytes_new"] / (1024 * 1024), 2),
             sidecar_blob_dedup_mb=round(batch_summary.counts["sidecar_blob_bytes_dedup"] / (1024 * 1024), 2),
             sidecar_blobs_written=batch_summary.counts["sidecar_blobs_written"],
+            sidecar_blobs_refused_excised=batch_summary.counts["sidecar_blobs_refused_excised"],
         )
 
     succeeded_raw_ids = successful_raw_ids(batch_summary)
