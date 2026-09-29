@@ -340,7 +340,12 @@ def _fragments(expression: ast.AST, values: Mapping[str, tuple[str, ...]]) -> tu
             return _fragments(expression.args[0], values)
         return ()
     if isinstance(expression, ast.IfExp):
-        return (_fragments(expression.body, values) or (_HOLE,)) + (_fragments(expression.orelse, values) or (_HOLE,))
+        body = _fragments(expression.body, values)
+        orelse = _fragments(expression.orelse, values)
+        if not body and not orelse:
+            return ()
+        # A branch the census cannot read stays a visible hole beside one it can.
+        return (body or (_HOLE,)) + (orelse or (_HOLE,))
     return ()
 
 
@@ -587,6 +592,35 @@ def _runtime_table_creations(
         yield RuntimeTableCreation(file=relative, function=function, table=table, disposition=disposition, line=line)
 
 
+def _is_archive_storage_module(relative: str) -> bool:
+    """Whether the module belongs to the archive persistence layer."""
+    return relative.startswith("polylogue/storage/")
+
+
+def _writes_archive_table(
+    tree: ast.Module, values: Mapping[str, tuple[str, ...]], table_tiers: Mapping[str, str]
+) -> bool:
+    """Whether the module executes any write against a canonical archive table.
+
+    Such a module holds an archive connection, so a table it creates at
+    runtime may live in an archive tier. A module whose statements name only
+    its own relations (a parser's spill database, a browser-capture registry)
+    is not an archive writer, and its private tables are not archive state.
+    """
+    for node in walk_module(tree):
+        if not (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in _SQL_EXECUTION_METHODS
+            and node.args
+        ):
+            continue
+        for text in _fragments(node.args[0], values):
+            if any(match.group("table") in table_tiers for match in _REWRITE_RE.finditer(text)):
+                return True
+    return False
+
+
 #: One parsed module as the post-passes read it: path, tree, repository-relative
 #: path, resolved string bindings and node scopes.
 ParsedModule = tuple[Path, ast.Module, str, dict[str, tuple[str, ...]], dict[ast.AST, tuple[str, ast.AST | None]]]
@@ -682,12 +716,12 @@ def _dynamic_table_targets(
     return tuple(sorted(targets.values(), key=lambda item: (item.helper_key, item.caller_file, item.line, item.table)))
 
 
-def _dynamic_sql_identifiers(expression: ast.AST) -> tuple[ast.AST, ...]:
+def _dynamic_sql_identifiers(expression: ast.AST) -> tuple[ast.expr, ...]:
     """Recover the table interpolation, not unrelated WHERE/value holes."""
     if not isinstance(expression, ast.JoinedStr):
         return ()
     parts: list[str] = []
-    holes: dict[str, ast.AST] = {}
+    holes: dict[str, ast.expr] = {}
     for part in expression.values:
         if isinstance(part, ast.Constant) and isinstance(part.value, str):
             parts.append(part.value)
@@ -700,7 +734,7 @@ def _dynamic_sql_identifiers(expression: ast.AST) -> tuple[ast.AST, ...]:
     return tuple(holes[match["table"]] for match in _REWRITE_RE.finditer("".join(parts)) if match["table"] in holes)
 
 
-def _metadata_identifier(expression: ast.AST, loop: ast.For, *, row: bool) -> bool:
+def _metadata_identifier(expression: ast.expr, loop: ast.For, *, row: bool) -> bool:
     """Prove a table identifier from this loop's metadata binding.
 
     Only transparent quoting and single-assignment aliases are accepted.
@@ -927,6 +961,12 @@ class DurableWriteCensus:
         table_tiers = self._table_tiers
         runtime_creations = self._runtime_creations
         values = _string_values(tree)
+        # Runtime DDL is archive state wherever an archive connection can be
+        # held: the storage layer, and any other module writing an archive
+        # table. A module outside both (a parser's spill database, a
+        # browser-capture registry) owns only private relations.
+        if not _is_archive_storage_module(relative) and not _writes_archive_table(tree, values, table_tiers):
+            return
         scopes = _scopes(tree)
         memory_connections = _memory_connection_names(tree, scopes)
         for node in walk_module(tree):
@@ -971,9 +1011,13 @@ class DurableWriteCensus:
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name | ast.Attribute)
         )
         self._fk_cleanup_helpers.update(_index_foreign_key_cleanup_helpers(((path, tree, relative, values, scopes),)))
-        for node in walk_module(tree):
-            if not isinstance(node, ast.Call):
-                continue
+        # Occurrences are numbered in source order, so a statement's identity
+        # does not move when an unrelated statement is nested differently.
+        calls = sorted(
+            (node for node in walk_module(tree) if isinstance(node, ast.Call)),
+            key=lambda call: (call.lineno, call.col_offset),
+        )
+        for node in calls:
             if not isinstance(node.func, ast.Attribute) or node.func.attr not in _SQL_EXECUTION_METHODS:
                 continue
             if not node.args:
@@ -1001,7 +1045,8 @@ class DurableWriteCensus:
                     runtime_persistent_tables=runtime_persistent_tables,
                 )
             ]
-            for table, kind, tier in resolved:
+            # One call is one statement, however many texts it can take.
+            for table, kind, tier in dict.fromkeys(resolved):
                 group = (relative, qualified, table, kind)
                 occurrence = self._occurrences.get(group, 0) + 1
                 self._occurrences[group] = occurrence
@@ -1185,10 +1230,9 @@ def collect_violations(
         if creation is None:
             continue
         valid_disposable_ops = runtime_entry.disposition == "disposable_ops" and creation.file.endswith("/ops_write.py")
-        valid_disposable_scratch = (
-            runtime_entry.disposition == "disposable_scratch"
-            and creation.file == "polylogue/storage/sqlite/archive_tiers/write.py"
-        )
+        # Any censused writer module may keep a private scratch database; the
+        # declaration must say why the relation never reaches an archive tier.
+        valid_disposable_scratch = runtime_entry.disposition == "disposable_scratch"
         if not (valid_disposable_ops or valid_disposable_scratch) or not runtime_entry.reason:
             violations.append(
                 {
@@ -1197,7 +1241,7 @@ def collect_violations(
                     "file": creation.file,
                     "detail": (
                         "only an explained runtime relation in ops_write.py may be disposable_ops, or an explicitly "
-                        "declared private scratch relation in archive_tiers/write.py may be disposable_scratch"
+                        "declared private scratch relation may be disposable_scratch"
                     ),
                 }
             )

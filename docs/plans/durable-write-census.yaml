@@ -7,6 +7,21 @@
 # says why no permitted member fits -- those are findings, not pending work.
 package: polylogue
 runtime_tables:
+  - file: "polylogue/analysis/delegation_work_evidence_materializer.py"
+    function: "_create_scratch_graph"
+    table: "nodes"
+    disposition: disposable_scratch
+    reason: "Created on the graph.db connection materialize_delegation_work_evidence_archive opens under its own tempfile.TemporaryDirectory; pages fold into it and publication streams it into index.db, after which the directory is removed. No archive connection reaches this relation."
+  - file: "polylogue/analysis/delegation_work_evidence_materializer.py"
+    function: "_create_scratch_graph"
+    table: "edges"
+    disposition: disposable_scratch
+    reason: "Created on the graph.db connection materialize_delegation_work_evidence_archive opens under its own tempfile.TemporaryDirectory; pages fold into it and publication streams it into index.db, after which the directory is removed. No archive connection reaches this relation."
+  - file: "polylogue/analysis/delegation_work_evidence_materializer.py"
+    function: "_create_scratch_graph"
+    table: "node_evidence_refs"
+    disposition: disposable_scratch
+    reason: "Created on the graph.db connection materialize_delegation_work_evidence_archive opens under its own tempfile.TemporaryDirectory; pages fold into it and publication streams it into index.db, after which the directory is removed. No archive connection reaches this relation."
   - file: "polylogue/storage/sqlite/archive_tiers/ops_write.py"
     function: "_record_ops_schema_state"
     table: "polylogue_ops_schema_state"
@@ -107,6 +122,13 @@ writes:
     classification: lifecycle_transition
     reason: "audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
   - file: "polylogue/operations/audit.py"
+    function: "AuditRepository._bind_machine_batch"
+    table: "machine_requests"
+    kind: "update"
+    tier: "audit"
+    classification: lifecycle_transition
+    reason: "Separate statement 2 of this function on machine_requests (UPDATE machine_requests SET artifact_kind = ?, artifact_ref = ?, accepted_at_ms = ?,). audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
+  - file: "polylogue/operations/audit.py"
     function: "AuditRepository._bind_machine_result"
     table: "machine_request_parts"
     kind: "update"
@@ -129,6 +151,13 @@ writes:
     reason: "audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
   - file: "polylogue/operations/audit.py"
     function: "AuditRepository._consume_authorization"
+    table: "operation_authorizations"
+    kind: "update"
+    tier: "audit"
+    classification: lifecycle_transition
+    reason: "Separate statement 2 of this function on operation_authorizations (UPDATE operation_authorizations SET state =). audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
+  - file: "polylogue/operations/audit.py"
+    function: "AuditRepository._consume_authorization"
     table: "operation_previews"
     kind: "update"
     tier: "audit"
@@ -274,6 +303,13 @@ writes:
     tier: "audit"
     classification: lifecycle_transition
     reason: "audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
+  - file: "polylogue/operations/audit.py"
+    function: "AuditRepository.stop_machine_batch"
+    table: "operation_authorizations"
+    kind: "update"
+    tier: "audit"
+    classification: lifecycle_transition
+    reason: "Separate statement 2 of this function on operation_authorizations (UPDATE operation_authorizations SET state =). audit.db mutation-authority state machine: every statement carries its own prior state in the WHERE (state IN ('prepared'|'active'|'running'|'pending'), COALESCE first-write-wins on stop_reason, or operation_id/authorization_ref IS NULL), and the guarded ones assert rowcount == 1 and raise MachineRequestConflictError/AuthorizationMismatchError rather than proceeding; no column carries a producer judgement that a later pass recomputes"
   - file: "polylogue/pipeline/services/ingest_batch/_core.py"
     function: "_delete_sessions_without_fk_cascade"
     table: "?"
@@ -281,6 +317,13 @@ writes:
     tier: "unresolved"
     classification: index_foreign_key_cleanup
     reason: "The helper gets table names only from PRAGMA foreign_key_list over the active index.db connection while bulk ingest has foreign keys disabled; its two statements apply the index relation's declared ON DELETE action to the same selected session ids. A durable target would require a new caller or a different connection owner, both of which remain census-visible rather than being inferred from prose."
+  - file: "polylogue/pipeline/services/ingest_batch/_core.py"
+    function: "_delete_sessions_without_fk_cascade"
+    table: "?"
+    kind: "delete"
+    tier: "unresolved"
+    classification: index_foreign_key_cleanup
+    reason: "Separate statement 2 of this function on ? (DELETE FROM {_quote_identifier(table_name)} WHERE {_quote_identifier(). The helper gets table names only from PRAGMA foreign_key_list over the active index.db connection while bulk ingest has foreign keys disabled; its two statements apply the index relation's declared ON DELETE action to the same selected session ids. A durable target would require a new caller or a different connection owner, both of which remain census-visible rather than being inferred from prose."
   - file: "polylogue/pipeline/services/ingest_batch/_core.py"
     function: "_delete_sessions_without_fk_cascade"
     table: "?"
@@ -302,6 +345,13 @@ writes:
     tier: "source"
     classification: lifecycle_transition
     reason: "the schema-verification producer recording its own verdict on the row it just verified: the first statement sets validation_status = FAILED with the decode reason through compile_raw_state_update, the second fills parse_error via COALESCE guarded by parsed_at_ms IS NULL so a parsed row's diagnostic is never replaced"
+  - file: "polylogue/schemas/validation/corpus.py"
+    function: "apply_quarantine_updates"
+    table: "raw_sessions"
+    kind: "update"
+    tier: "source"
+    classification: lifecycle_transition
+    reason: "Separate statement 2 of this function on raw_sessions (UPDATE raw_sessions). the schema-verification producer recording its own verdict on the row it just verified: the first statement sets validation_status = FAILED with the decode reason through compile_raw_state_update, the second fills parse_error via COALESCE guarded by parsed_at_ms IS NULL so a parsed row's diagnostic is never replaced"
   - file: "polylogue/security/excision.py"
     function: "_apply_single_session_excision"
     table: "assertions"
@@ -395,6 +445,13 @@ writes:
     reason: "operator-invoked excision of promoted query evidence: the user-tier tombstone ledger is written before any row is removed, then the planned query/result-set identities are deleted. The two UPDATEs are part of the same destruction -- assertions are tombstoned to status='deleted' with value_json and body_text nulled, and query_names.supersedes_query_hash is nulled to break the FK chain into the rows being dropped"
   - file: "polylogue/security/query_excision.py"
     function: "apply_query_excision"
+    table: "query_evaluation_receipts"
+    kind: "delete"
+    tier: "user"
+    classification: deliberate_redaction
+    reason: "Separate statement 2 of this function on query_evaluation_receipts (DELETE FROM query_evaluation_receipts WHERE query_hash IN ({marks})). operator-invoked excision of promoted query evidence: the user-tier tombstone ledger is written before any row is removed, then the planned query/result-set identities are deleted. The two UPDATEs are part of the same destruction -- assertions are tombstoned to status='deleted' with value_json and body_text nulled, and query_names.supersedes_query_hash is nulled to break the FK chain into the rows being dropped"
+  - file: "polylogue/security/query_excision.py"
+    function: "apply_query_excision"
     table: "query_names"
     kind: "delete"
     tier: "user"
@@ -407,6 +464,13 @@ writes:
     tier: "user"
     classification: deliberate_redaction
     reason: "operator-invoked excision of promoted query evidence: the user-tier tombstone ledger is written before any row is removed, then the planned query/result-set identities are deleted. The two UPDATEs are part of the same destruction -- assertions are tombstoned to status='deleted' with value_json and body_text nulled, and query_names.supersedes_query_hash is nulled to break the FK chain into the rows being dropped"
+  - file: "polylogue/security/query_excision.py"
+    function: "apply_query_excision"
+    table: "query_names"
+    kind: "update"
+    tier: "user"
+    classification: deliberate_redaction
+    reason: "Separate statement 2 of this function on query_names (UPDATE query_names SET supersedes_query_hash = NULL WHERE supersedes_query_hash IN ({marks})). operator-invoked excision of promoted query evidence: the user-tier tombstone ledger is written before any row is removed, then the planned query/result-set identities are deleted. The two UPDATEs are part of the same destruction -- assertions are tombstoned to status='deleted' with value_json and body_text nulled, and query_names.supersedes_query_hash is nulled to break the FK chain into the rows being dropped"
   - file: "polylogue/security/query_excision.py"
     function: "apply_query_excision"
     table: "result_set_holdout_policies"
@@ -437,11 +501,25 @@ writes:
     reason: "operator-invoked excision of promoted query evidence: the user-tier tombstone ledger is written before any row is removed, then the planned query/result-set identities are deleted. The two UPDATEs are part of the same destruction -- assertions are tombstoned to status='deleted' with value_json and body_text nulled, and query_names.supersedes_query_hash is nulled to break the FK chain into the rows being dropped"
   - file: "polylogue/security/query_excision.py"
     function: "apply_query_excision"
+    table: "retained_query_runs"
+    kind: "delete"
+    tier: "user"
+    classification: deliberate_redaction
+    reason: "Separate statement 2 of this function on retained_query_runs (DELETE FROM retained_query_runs WHERE query_hash IN ({marks})). operator-invoked excision of promoted query evidence: the user-tier tombstone ledger is written before any row is removed, then the planned query/result-set identities are deleted. The two UPDATEs are part of the same destruction -- assertions are tombstoned to status='deleted' with value_json and body_text nulled, and query_names.supersedes_query_hash is nulled to break the FK chain into the rows being dropped"
+  - file: "polylogue/security/query_excision.py"
+    function: "apply_query_excision"
     table: "watched_query_baselines"
     kind: "delete"
     tier: "user"
     classification: deliberate_redaction
     reason: "operator-invoked excision of promoted query evidence: the user-tier tombstone ledger is written before any row is removed, then the planned query/result-set identities are deleted. The two UPDATEs are part of the same destruction -- assertions are tombstoned to status='deleted' with value_json and body_text nulled, and query_names.supersedes_query_hash is nulled to break the FK chain into the rows being dropped"
+  - file: "polylogue/security/query_excision.py"
+    function: "apply_query_excision"
+    table: "watched_query_baselines"
+    kind: "delete"
+    tier: "user"
+    classification: deliberate_redaction
+    reason: "Separate statement 2 of this function on watched_query_baselines (DELETE FROM watched_query_baselines WHERE query_hash IN ({marks})). operator-invoked excision of promoted query evidence: the user-tier tombstone ledger is written before any row is removed, then the planned query/result-set identities are deleted. The two UPDATEs are part of the same destruction -- assertions are tombstoned to status='deleted' with value_json and body_text nulled, and query_names.supersedes_query_hash is nulled to break the FK chain into the rows being dropped"
   - file: "polylogue/sinex/obligations.py"
     function: "mark_attempt"
     table: "sinex_publication_obligations"
@@ -610,6 +688,13 @@ writes:
     tier: "source"
     classification: unclassified
     reason: "raw_authority_verdicts is a cohort-scoped projection cache. Its cohort_fingerprint covers cohort rows, not the derive_raw_authority_verdict implementation, so producer changes can leave cached judgments stale. Do not classify delete-and-reinsert as content-keyed row_supersession unless cache validity is also bound to the derivation version or fingerprint."
+  - file: "polylogue/storage/raw_authority_verdict_cache.py"
+    function: "write_raw_authority_verdict_cache"
+    table: "raw_authority_verdicts"
+    kind: "delete"
+    tier: "source"
+    classification: unclassified
+    reason: "Separate statement 2 of this function on raw_authority_verdicts (DELETE FROM raw_authority_verdicts WHERE raw_id IN ({). raw_authority_verdicts is a cohort-scoped projection cache. Its cohort_fingerprint covers cohort rows, not the derive_raw_authority_verdict implementation, so producer changes can leave cached judgments stale. Do not classify delete-and-reinsert as content-keyed row_supersession unless cache validity is also bound to the derivation version or fingerprint."
   - file: "polylogue/storage/raw_reconciler.py"
     function: "_reconcile_frontier_obligations"
     table: "raw_authority_blockers"
@@ -631,6 +716,13 @@ writes:
     tier: "source"
     classification: declared_retention
     reason: "cleanup_superseded_raw_snapshots deletes only raws that superseded_raw_snapshot_candidates ranked outside the declared keep_full_snapshots/keep_append_snapshots window, minus the caller's protected_raw_ids and outside its eligible_raw_ids set; it is dry-run by default and reports skipped_referenced_count rather than deleting a protected row"
+  - file: "polylogue/storage/raw_retention.py"
+    function: "cleanup_superseded_raw_snapshots"
+    table: "blob_refs"
+    kind: "delete"
+    tier: "source"
+    classification: declared_retention
+    reason: "Separate statement 2 of this function on blob_refs (DELETE FROM blob_refs WHERE raw_id IN ({placeholders})). cleanup_superseded_raw_snapshots deletes only raws that superseded_raw_snapshot_candidates ranked outside the declared keep_full_snapshots/keep_append_snapshots window, minus the caller's protected_raw_ids and outside its eligible_raw_ids set; it is dry-run by default and reports skipped_referenced_count rather than deleting a protected row"
   - file: "polylogue/storage/raw_retention.py"
     function: "cleanup_superseded_raw_snapshots"
     table: "raw_sessions"
@@ -680,6 +772,13 @@ writes:
     tier: "source"
     classification: lifecycle_transition
     reason: "raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
+  - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
+    function: "apply_raw_membership_classification"
+    table: "raw_sessions"
+    kind: "update"
+    tier: "source"
+    classification: lifecycle_transition
+    reason: "Separate statement 2 of this function on raw_sessions (). raw revision-authority governance is the owning producer of revision_kind/revision_authority/predecessor lineage: it re-decides those columns for a cohort from that cohort's byte evidence, and every promotion or retirement names its exact admissible prior state in the WHERE ('unknown'+'quarantined'+NULL lineage for promote_reconstructed_legacy_append_revisions and bind-time release, rowcount == 1 or ValueError). No column it writes is another producer's output"
   - file: "polylogue/storage/sqlite/archive_tiers/revision_governance.py"
     function: "promote_reconstructed_legacy_append_revisions"
     table: "raw_authority_parser_census"
@@ -890,6 +989,13 @@ writes:
     reason: "acquisition-time NULL/placeholder fill inside the raw writer itself: each statement carries its own guard in the WHERE -- file_mtime_ms IS NULL, capture_mode IS NULL, addressing_mode IS NULL, or origin = 'unknown-export' -- so a value already established by a better-informed route is never overwritten. refine_raw_origin's docstring states the rule and _assert_existing_raw_identity raises on two confident but different origins instead of picking one"
   - file: "polylogue/storage/sqlite/archive_tiers/source_write.py"
     function: "record_raw_container_coordinate"
+    table: "raw_container_coordinates"
+    kind: "update"
+    tier: "source"
+    classification: guarded_producer_refinement
+    reason: "Separate statement 2 of this function on raw_container_coordinates (UPDATE raw_container_coordinates SET content_identity = ? WHERE raw_id = ?). acquisition-time NULL/placeholder fill inside the raw writer itself: each statement carries its own guard in the WHERE -- file_mtime_ms IS NULL, capture_mode IS NULL, addressing_mode IS NULL, or origin = 'unknown-export' -- so a value already established by a better-informed route is never overwritten. refine_raw_origin's docstring states the rule and _assert_existing_raw_identity raises on two confident but different origins instead of picking one"
+  - file: "polylogue/storage/sqlite/archive_tiers/source_write.py"
+    function: "record_raw_container_coordinate"
     table: "raw_sessions"
     kind: "update"
     tier: "source"
@@ -1063,6 +1169,20 @@ writes:
     tier: "source"
     classification: guarded_producer_refinement
     reason: "acquisition-time NULL/placeholder fill inside the raw writer itself: each statement carries its own guard in the WHERE -- file_mtime_ms IS NULL, capture_mode IS NULL, addressing_mode IS NULL, or origin = 'unknown-export' -- so a value already established by a better-informed route is never overwritten. refine_raw_origin's docstring states the rule and _assert_existing_raw_identity raises on two confident but different origins instead of picking one"
+  - file: "polylogue/storage/sqlite/queries/raw_writes.py"
+    function: "execute_raw_admission_plan_async"
+    table: "raw_sessions"
+    kind: "update"
+    tier: "source"
+    classification: guarded_producer_refinement
+    reason: "Separate statement 2 of this function on raw_sessions (UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL). acquisition-time NULL/placeholder fill inside the raw writer itself: each statement carries its own guard in the WHERE -- file_mtime_ms IS NULL, capture_mode IS NULL, addressing_mode IS NULL, or origin = 'unknown-export' -- so a value already established by a better-informed route is never overwritten. refine_raw_origin's docstring states the rule and _assert_existing_raw_identity raises on two confident but different origins instead of picking one"
+  - file: "polylogue/storage/sqlite/queries/raw_writes.py"
+    function: "execute_raw_admission_plan_async"
+    table: "raw_sessions"
+    kind: "update"
+    tier: "source"
+    classification: guarded_producer_refinement
+    reason: "Separate statement 3 of this function on raw_sessions (UPDATE raw_sessions SET file_mtime_ms = ? WHERE raw_id = ? AND file_mtime_ms IS NULL). Separate statement 2 of this function on raw_sessions (UPDATE raw_sessions SET capture_mode = ? WHERE raw_id = ? AND capture_mode IS NULL). acquisition-time NULL/placeholder fill inside the raw writer itself: each statement carries its own guard in the WHERE -- file_mtime_ms IS NULL, capture_mode IS NULL, addressing_mode IS NULL, or origin = 'unknown-export' -- so a value already established by a better-informed route is never overwritten. refine_raw_origin's docstring states the rule and _assert_existing_raw_identity raises on two confident but different origins instead of picking one"
   - file: "polylogue/storage/sqlite/query_objects.py"
     function: "promote_query"
     table: "queries"

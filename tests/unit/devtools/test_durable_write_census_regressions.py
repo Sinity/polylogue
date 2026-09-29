@@ -95,13 +95,27 @@ def test_known_index_caller_does_not_hide_unknown_caller(tmp_path: Path, argumen
     }
 
 
-def test_runtime_creation_outside_archive_tiers_reaches_cross_module_writer(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "creator, creator_source",
+    [
+        # The finding's own shape: a storage-layer module outside archive_tiers/.
+        (
+            "polylogue/storage/sqlite/queries/foo.py",
+            'def create(conn):\n    conn.execute("CREATE TABLE hidden (value TEXT)")\n',
+        ),
+        # Any module that also writes an archive table holds an archive connection.
+        (
+            "polylogue/other_store.py",
+            'def create(conn):\n    conn.execute("CREATE TABLE hidden (value TEXT)")\n'
+            '    conn.execute("INSERT INTO assertions (id) VALUES (1)")\n',
+        ),
+    ],
+)
+def test_runtime_creation_outside_archive_tiers_reaches_cross_module_writer(
+    tmp_path: Path, creator: str, creator_source: str
+) -> None:
     """04.F024: ownership cannot be evaded by moving a creator's module."""
-    _source(
-        tmp_path,
-        'def create(conn):\n    conn.execute("CREATE TABLE hidden (value TEXT)")\n',
-        "polylogue/other_store.py",
-    )
+    _source(tmp_path, creator_source, creator)
     _source(tmp_path, 'def mutate(conn):\n    conn.execute("UPDATE hidden SET value = 1")\n')
     declaration = tmp_path / "census.yaml"
     declaration.write_text("package: polylogue\nwrites: []\n", encoding="utf-8")
@@ -109,6 +123,19 @@ def test_runtime_creation_outside_archive_tiers_reaches_cross_module_writer(tmp_
     assert [(item["rule"], item["file"]) for item in violations] == [
         ("runtime_persistent_table_rewrite_undeclared", MODULE)
     ]
+
+
+def test_private_store_outside_the_archive_layer_is_not_archive_state(tmp_path: Path) -> None:
+    """A parser spill database that never names an archive table owns its relations."""
+    _source(
+        tmp_path,
+        'def spill(conn):\n    conn.execute("CREATE TABLE spill (value TEXT)")\n'
+        '    conn.execute("UPDATE spill SET value = 1")\n',
+        "polylogue/sources/parsers/spill.py",
+    )
+    observation = census_package(tmp_path / "polylogue", repo_root=tmp_path)
+    assert observation.runtime_creations == ()
+    assert observation.sites == ()
 
 
 @pytest.mark.parametrize("first", ["CREATE TEMP TABLE transient (id TEXT);", "CREATE TABLE assertions (id TEXT);"])
@@ -158,3 +185,20 @@ def test_fk_classification_requires_the_actual_identifier_provenance(
     declaration = _declared(tmp_path, "cleanup", "?", "delete", classification="index_foreign_key_cleanup")
     rules = {item["rule"] for item in collect_violations(repo_root=tmp_path, declaration_path=declaration)}
     assert ("index_foreign_key_cleanup_shape_invalid" in rules) is not expected
+
+
+def test_occurrences_follow_source_order_across_nesting(tmp_path: Path) -> None:
+    """04.F021: a nested statement keeps its place; walk order would renumber it.
+
+    Anti-vacuity: number occurrences in ``ast.walk`` order and the top-level
+    second statement becomes occurrence 1 ahead of the nested first one.
+    """
+    _source(
+        tmp_path,
+        "def mutate(conn, flag):\n"
+        "    if flag:\n"
+        '        conn.execute("UPDATE assertions SET value = 1")\n'
+        '    conn.execute("UPDATE assertions SET value = 2")\n',
+    )
+    observation = census_package(tmp_path / "polylogue", repo_root=tmp_path)
+    assert sorted((site.line, site.occurrence) for site in observation.sites) == [(3, 1), (4, 2)]
