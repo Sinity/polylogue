@@ -2164,11 +2164,16 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
         )
         stack.enter_context(patch.object(daemon_cli, "_periodic_heartbeat", lambda **_kwargs: fake_loop("heartbeat")))
 
-        def fake_periodic_convergence(_sources: tuple[WatchSource, ...], **kwargs: object) -> object:
-            periodic_profile_callbacks.append(kwargs["session_profile_callback"])
-            return fake_loop("convergence")
+        def fake_session_profile_audit(callback: object, **_kwargs: object) -> object:
+            periodic_profile_callbacks.append(callback)
+            return fake_loop("session-profile-audit")
 
-        stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", fake_periodic_convergence))
+        stack.enter_context(
+            patch.object(
+                daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: fake_loop("convergence")
+            )
+        )
+        stack.enter_context(patch.object(daemon_cli, "_periodic_session_profile_audit", fake_session_profile_audit))
         stack.enter_context(patch.object(daemon_cli, "_periodic_health_check", lambda **_kwargs: fake_loop("health")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_db_optimize", lambda: fake_loop("optimize")))
         stack.enter_context(patch.object(daemon_cli, "_periodic_status_snapshot_refresh", lambda: fake_loop("status")))
@@ -2241,8 +2246,8 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
     Each pass enters ``run_daemon_services`` with the production watcher and
     composition callback. The first pass catches up a physical JSONL source;
     the second starts after a synthetic, output-only profile removal. Both
-    passes terminate only after the real periodic convergence loop invokes
-    its post-catch-up no-hint callback. No manual operation invokes the owner.
+    passes terminate only after the real periodic session-profile audit loop
+    invokes its post-catch-up no-hint callback. No manual operation invokes the owner.
 
     Anti-vacuity: omit the watcher callback, run the sweep before catch-up,
     replace it with a scoped live-source call, or retain output rows across
@@ -2378,6 +2383,7 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
             )
             stack.enter_context(patch.object(daemon_cli, "_retry_convergence_debt_once", noop_periodic_work))
             stack.enter_context(patch.object(daemon_cli, "_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS", 0.05))
+            stack.enter_context(patch.object(daemon_cli, "_SESSION_PROFILE_AUDIT_INTERVAL_SECONDS", 0.05))
             await run_until_observed_sweep()
             # This fixture writes derived output out from under the daemon and
             # retains the matching transaction-owned demand obligation. The
@@ -3016,6 +3022,7 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         patch.object(daemon_cli, "_periodic_db_optimize", wait_forever),
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", wait_forever),
         patch.object(daemon_cli, "_periodic_convergence_check", lambda _sources, **_kwargs: wait_forever()),
+        patch.object(daemon_cli, "_periodic_session_profile_audit", lambda _callback, **_kwargs: wait_forever()),
         patch.object(daemon_cli, "_mark_interrupted_live_ingest_attempts_on_shutdown", mark_interrupted_cleanup),
         patch("polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check", lambda **_kwargs: wait_forever()),
         patch("polylogue.daemon.convergence.DaemonConverger", return_value=FakeConverger()),
@@ -3107,6 +3114,7 @@ def test_run_daemon_services_schema_block_skips_write_but_starts_health_check() 
         patch.object(daemon_cli, "_periodic_heartbeat", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_lifecycle_heartbeat", lifecycle_heartbeat),
         patch.object(daemon_cli, "_periodic_convergence_check", side_effect=fail_background_work),
+        patch.object(daemon_cli, "_periodic_session_profile_audit", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_health_check", fake_health_check),
         patch.object(daemon_cli, "_periodic_db_optimize", side_effect=fail_background_work),
         patch.object(daemon_cli, "_periodic_status_snapshot_refresh", side_effect=fail_background_work),
@@ -4356,6 +4364,7 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
         ):
             stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", lambda *_a, **_k: idle_loop()))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_session_profile_audit", lambda *_a, **_k: idle_loop()))
         for target in (
             "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
             "polylogue.daemon.embedding_backlog.periodic_embedding_orphan_reconcile_check",
@@ -4491,6 +4500,7 @@ def test_a_watcher_with_no_roots_is_unavailable_on_the_production_route(tmp_path
         ):
             stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", lambda *_a, **_k: idle_loop()))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_session_profile_audit", lambda *_a, **_k: idle_loop()))
         for target in (
             "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
             "polylogue.daemon.embedding_backlog.periodic_embedding_orphan_reconcile_check",
@@ -4608,6 +4618,7 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
         ):
             stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
         stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", lambda *_a, **_k: idle_loop()))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_session_profile_audit", lambda *_a, **_k: idle_loop()))
         for target in (
             "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
             "polylogue.daemon.embedding_backlog.periodic_embedding_orphan_reconcile_check",
