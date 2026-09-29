@@ -54,8 +54,9 @@ _BUDGET_STREAM_RECORD_FILLER = "s" * 900
 _BUDGET_STREAM_SMALL_RECORDS = 12_000
 _BUDGET_STREAM_LARGE_RECORDS = 120_000
 # Measured 2026-09-22 on this fixture. Head: 11.2 MB traced peak at BOTH
-# record counts -- lookahead facts are held in the parser's disk-backed index,
-# not as a second in-memory copy of the source stream. With ``list(records)``
+# record counts -- both streams exceed the in-memory replay budget, so their
+# records and lookahead facts are held in the parser's disk-backed index rather
+# than as a second in-memory copy of the source stream. With ``list(records)``
 # retained for the lookahead pass, the peak was 137.6 MB at 120,000 records.
 _BUDGET_STREAM_PEAK_BYTES_MAX = 40 * 1024 * 1024
 
@@ -104,7 +105,8 @@ def test_stream_dispatch_retention_stays_within_memory_bound() -> None:
     """Lookahead retention is bounded, not proportional to the input size.
 
     The parser needs lookahead-derived indexes before its materializing pass,
-    so it stores the source records and derived facts in a disk-backed index.
+    so it keeps the source records in memory up to a byte budget and spills
+    them, with the derived facts, to a disk-backed index above it.
 
     This replaces an earlier control that asserted *zero* retention by
     counting simultaneously-live decoded records (at most four). That

@@ -4239,9 +4239,9 @@ def _parse_records(
                     event_sink=event_sink,
                     _index=index_store,
                 )
-            retained = index_store.retain_records(records, _CODEX_REPLAY_MEMORY_BUDGET_BYTES)
+            in_memory = index_store.retain_records(records, _CODEX_REPLAY_MEMORY_BUDGET_BYTES)
             return _parse_records(
-                retained if retained is not None else index_store,
+                in_memory if in_memory is not None else index_store,
                 fallback_id,
                 message_sink=message_sink,
                 event_sink=event_sink,
