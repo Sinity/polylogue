@@ -546,17 +546,12 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
     db.touch()
     drains: list[Path] = []
     fts_scopes: list[object] = []
-    profile_scopes: list[tuple[str, ...] | None] = []
     raw_retention_calls: list[None] = []
     drained = asyncio.Event()
 
     def fake_drain(drain_db: Path, **_kwargs: object) -> tuple[int, int]:
         drains.append(drain_db)
         return 0, 0
-
-    async def fake_session_profiles(scope: tuple[str, ...] | None) -> object:
-        profile_scopes.append(scope)
-        return SimpleNamespace()
 
     async def fake_fts_converge() -> object:
         fts_scopes.append(None)
@@ -583,13 +578,11 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
                 (),
                 fts_owner=cast(Any, SimpleNamespace(converge=fake_fts_converge)),
                 watcher_registered=watcher_registered,
-                session_profile_callback=fake_session_profiles,
                 raw_retention_callback=fake_raw_retention,
             )
         )
         await asyncio.sleep(0)
         assert drains == []
-        assert profile_scopes == []
         watcher_registered.set()
         await asyncio.wait_for(drained.wait(), timeout=1)
         task.cancel()
@@ -601,7 +594,6 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
 
     assert drains == [db]
     assert fts_scopes == [None]
-    assert profile_scopes == [None]
     assert raw_retention_calls == [None]
     failures = [record for record in records if record["event"] == "daemon.raw_retention.retry_failed"]
     assert len(failures) == int(raw_failure)
@@ -5122,3 +5114,37 @@ def test_owned_source_roots_are_decided_by_role_not_resolved_location(tmp_path: 
     )
     assert primary and all(_is_polylogue_owned_source(source) for source in primary)
     assert legacy and not any(_is_polylogue_owned_source(source) for source in legacy)
+
+
+def test_session_profile_audit_resumes_the_promoted_audit_each_tick(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The periodic audit service drives demand plus bounded audit passes.
+
+    Anti-vacuity: without this service a profile that runs intake but not
+    ``convergence_check`` (INTAKE) never resumes a promoted audit.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
+
+    budgets: list[float] = []
+    ran = asyncio.Event()
+
+    class _Profiles(ComposedSessionProfiles):
+        async def converge_backlog(self, budget_s: float) -> Any:
+            budgets.append(budget_s)
+            ran.set()
+            return SimpleNamespace()
+
+    async def unused(_scope: object) -> Any:
+        raise AssertionError("the audit service drives converge_backlog, not a bare demand call")
+
+    profiles = _Profiles(unused, unused, cast(Any, None))
+
+    async def exercise() -> None:
+        task = asyncio.create_task(daemon_cli._periodic_session_profile_audit(profiles))
+        await asyncio.wait_for(ran.wait(), timeout=2)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(exercise())
+    assert budgets == [daemon_cli._SESSION_PROFILE_BACKLOG_SECONDS]

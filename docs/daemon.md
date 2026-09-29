@@ -647,13 +647,14 @@ run_daemon_services                           run_daemon_services
 ├─ create_task × 2   heartbeat, health         └─ DaemonSupervisor (profile, capabilities, halts)
 ├─ create_task       schema recheck (blocked)     ├─ resident: lifecycle_heartbeat, health_check,
 ├─ _start_server_task browser/api/uds             │            schema_preflight_recheck
-├─ create_task × 16  periodic_loops:              ├─ sockets:  browser_capture_server, api_server,
+├─ create_task × 17  periodic_loops:              ├─ sockets:  browser_capture_server, api_server,
 │    raw materialization, convergence, WAL,       │            uds_server, browser_host
 │    FTS merge, metrics heartbeat, embedding      ├─ intake:   fair_intake (file, remote, raw and
 │    backlog, embedding orphans, db optimize,     │            Drive catch-up adapters), watcher,
 │    status snapshot, judgment, blob GC, blob     │            watcher_registered_bridge
-│    publications, secret scan, Drive catch-up    └─ derived:  convergence_check, raw_observation_convergence,
-├─ create_task       catch-up bridge                           wal_checkpoint, fts_merge, heartbeat,
+│    publications, secret scan, Drive catch-up    └─ derived:  convergence_check, session_profile_audit,
+├─ create_task       catch-up bridge                           raw_observation_convergence,
+│                                                              wal_checkpoint, fts_merge, heartbeat,
 └─ create_task       watcher.run                               embedding_backlog, embedding_orphan_reconcile,
                                                                db_optimize, status_snapshot_refresh,
                                                                judgment_automation, blob_gc,

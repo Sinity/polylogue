@@ -134,6 +134,7 @@ _CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS = 60
 #: Wall budget for back-to-back bounded session-derivation passes in one
 #: periodic convergence tick; the tick interval leaves the rest for the others.
 _SESSION_PROFILE_BACKLOG_SECONDS = 45.0
+_SESSION_PROFILE_AUDIT_INTERVAL_SECONDS = 60
 #: Debt rows one retry tick inspects, shared by the admitted pass and the
 #: lease-free embedding pass that precedes it so both see the same window.
 _CONVERGENCE_DEBT_RETRY_LIMIT = 100
@@ -897,12 +898,9 @@ async def _periodic_convergence_check(
     *,
     fts_owner: FtsConvergenceOwner,
     watcher_registered: asyncio.Event | None = None,
-    session_profile_callback: Callable[[tuple[str, ...] | None], Awaitable[object]] | None = None,
     raw_retention_callback: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Periodically retry recorded convergence debt."""
-    from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
-
     db = _active_index_db_path()
 
     async def once() -> None:
@@ -920,10 +918,6 @@ async def _periodic_convergence_check(
                     error_detail=str(exc),
                 )
         await fts_owner.converge()
-        if isinstance(session_profile_callback, ComposedSessionProfiles):
-            await session_profile_callback.converge_backlog(_SESSION_PROFILE_BACKLOG_SECONDS)
-        elif session_profile_callback is not None:
-            await session_profile_callback(None)
         if debt_error is not None:
             raise debt_error
 
@@ -931,6 +925,29 @@ async def _periodic_convergence_check(
         "convergence_check",
         once,
         interval_s=_CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS,
+        gate=watcher_registered_gate(watcher_registered),
+        run_first=True,
+    )
+
+
+async def _periodic_session_profile_audit(
+    session_profile_callback: Callable[[tuple[str, ...] | None], Awaitable[object]],
+    *,
+    watcher_registered: asyncio.Event | None = None,
+) -> None:
+    """Converge profile demand, then resume the promoted session audit in bounded passes."""
+    from polylogue.daemon.session_profile_composition import ComposedSessionProfiles
+
+    async def once() -> None:
+        if isinstance(session_profile_callback, ComposedSessionProfiles):
+            await session_profile_callback.converge_backlog(_SESSION_PROFILE_BACKLOG_SECONDS)
+        else:
+            await session_profile_callback(None)
+
+    await daemon_periodic_runner().run(
+        "session_profile_audit",
+        once,
+        interval_s=_SESSION_PROFILE_AUDIT_INTERVAL_SECONDS,
         gate=watcher_registered_gate(watcher_registered),
         run_first=True,
     )
@@ -2551,7 +2568,13 @@ async def _run_daemon_services_under_active_writer_lease(
         watcher_holder: list[LiveWatcher] = []
         archive_work_scheduled = any(
             supervisor.is_schedulable(name)
-            for name in ("fair_intake", "watcher", "convergence_check", "raw_observation_convergence")
+            for name in (
+                "fair_intake",
+                "watcher",
+                "convergence_check",
+                "session_profile_audit",
+                "raw_observation_convergence",
+            )
         )
         if not schema_blocked and (archive_work_scheduled or enable_api):
             await _run_startup_embedding_lifecycle(write_coordinator, archive_root_path)
@@ -2795,8 +2818,13 @@ async def _run_daemon_services_under_active_writer_lease(
                         sources,
                         fts_owner=fts_owner,
                         watcher_registered=gate,
-                        session_profile_callback=session_profile_callback,
                         raw_retention_callback=retry_raw_retention,
+                    ),
+                ),
+                (
+                    "session_profile_audit",
+                    functools.partial(
+                        _periodic_session_profile_audit, session_profile_callback, watcher_registered=gate
                     ),
                 ),
                 (

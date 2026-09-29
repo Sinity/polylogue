@@ -505,12 +505,17 @@ class BoundedComputeAdapter:
     ) -> SubmittedOperation[T]:
         if admission_class not in self._classes:
             raise ValueError(f"unknown daemon admission class: {admission_class!r}")
-        if units < 1 or estimated_bytes < 0 or estimated_bytes > self.capacity_bytes:
+        if units < 1 or estimated_bytes < 0:
             raise DaemonBackpressureError(
-                "operation exceeds the daemon compute admission envelope",
+                "operation declares an invalid compute admission demand",
                 admission_class=admission_class,
-                evidence={"capacity_bytes": self.capacity_bytes, "estimated_bytes": max(0, estimated_bytes)},
+                evidence={"units": units, "estimated_bytes": estimated_bytes},
             )
+        # A unit larger than the whole byte envelope reserves all of it, and
+        # so runs with no other byte-holding work, instead of being refused:
+        # the envelope bounds concurrency, not the size of an input the daemon
+        # must eventually process.
+        estimated_bytes = min(estimated_bytes, self.capacity_bytes)
         handle = cancellation or CancellationHandle()
         future: Future[T] = Future()
         future.add_done_callback(lambda done: handle.cancel() if done.cancelled() else None)
@@ -577,6 +582,11 @@ class BoundedComputeAdapter:
             task = queue[0]
             state = self._classes[name]
             if self._active_slots + task.slots > self.max_workers - self._unmet_other_slot_reserves(name):
+                # A background head waits for capacity rather than being
+                # overtaken: a later one-slot background turn fits the same
+                # remainder every time and would starve a multi-slot head.
+                if background_turn is not None:
+                    return None
                 continue
             if self._group_active_slots(name) + task.slots > state.ceiling_slots:
                 # Do not backfill a background slot with a later turn while

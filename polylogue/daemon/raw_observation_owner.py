@@ -63,7 +63,22 @@ class RawObservationConvergenceOwner:
                 budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
                 domains=(RAW_OBSERVATION_DOMAIN,),
                 resume=False,
+                estimated_bytes=self._retained_payload_bytes(raw_id),
             )
+
+    def _retained_payload_bytes(self, raw_id: str) -> int:
+        """The retained payload size the parse will hold, for the pool's byte reservation.
+
+        A read fault propagates: it is retryable, and admitting the parse as a
+        zero-byte task would let it run beside a full byte reservation.
+        """
+        from contextlib import closing
+
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        with closing(open_readonly_connection(self._archive_root / "source.db")) as conn:
+            row = conn.execute("SELECT blob_size FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+        return int(row[0]) if row is not None else 0
 
     def _require_source_frontier_authority(self, raw_id: str) -> None:
         """Refuse exactly the raw paths the durable frontier cannot authorize.
