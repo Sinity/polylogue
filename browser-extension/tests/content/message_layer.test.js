@@ -13,6 +13,7 @@ import { readFileSync } from "node:fs";
 
 import { JSDOM } from "jsdom";
 import { afterEach, describe, expect, it } from "vitest";
+import { dispatchTrusted } from "../support/trusted_events.js";
 
 const moduleSource = readFileSync("src/content/message_layer.js", "utf8");
 const openDoms = [];
@@ -155,7 +156,7 @@ describe("mount() DOM behavior", () => {
     const container = document.querySelector("article");
     const badgeHost = [...container.children].find((child) => child.shadowRoot);
     const button = badgeHost.shadowRoot.querySelector("button");
-    button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    dispatchTrusted(button, new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
 
     expect(saveCalls).toBe(1);
     expect(handle.isPending()).toBe(true);
@@ -205,6 +206,30 @@ describe("mount() DOM behavior", () => {
     handle.stop();
   });
 
+  // Anti-vacuity: drop the isTrusted guard in activate() and a page script's
+  // synthetic click triggers a capture with no operator gesture.
+  it("ignores synthetic clicks dispatched by page scripts", () => {
+    const dom = freshDom(
+      '<!DOCTYPE html><html><body><article data-message-author-role="user">Hi</article></body></html>',
+    );
+    const { document } = dom.window;
+    let saveCalls = 0;
+    const handle = dom.window.polylogueMessageLayer.mount({
+      containerSelector: "article",
+      onSave: () => {
+        saveCalls += 1;
+      },
+      doc: document,
+    });
+    const badgeHost = [...document.querySelector("article").children].find((child) => child.shadowRoot);
+    const button = badgeHost.shadowRoot.querySelector("button");
+    button.dispatchEvent(new dom.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+    button.click();
+    button.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    expect(saveCalls).toBe(0);
+    handle.stop();
+  });
+
   it("activates on Enter and Space keydown, not other keys", () => {
     const dom = freshDom('<!DOCTYPE html><html><body><article>Hi</article></body></html>');
     const { document } = dom.window;
@@ -219,13 +244,13 @@ describe("mount() DOM behavior", () => {
     const badgeHost = [...document.querySelector("article").children].find((child) => child.shadowRoot);
     const button = badgeHost.shadowRoot.querySelector("button");
 
-    button.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    dispatchTrusted(button, new dom.window.KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
     expect(saveCalls).toBe(0);
 
-    button.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    dispatchTrusted(button, new dom.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     expect(saveCalls).toBe(1);
 
-    button.dispatchEvent(new dom.window.KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+    dispatchTrusted(button, new dom.window.KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
     expect(saveCalls).toBe(2);
     handle.stop();
   });

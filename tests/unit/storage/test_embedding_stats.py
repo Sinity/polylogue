@@ -24,7 +24,7 @@ def _create_embedding_stats_tables(conn: sqlite3.Connection) -> None:
             needs_reindex INTEGER NOT NULL,
             error_message TEXT
         );
-        CREATE TABLE message_embeddings (message_id TEXT);
+        CREATE TABLE message_embedding_refs (message_id TEXT PRIMARY KEY, vector_derivation_hash BLOB);
         CREATE TABLE sessions (session_id TEXT PRIMARY KEY);
         CREATE TABLE messages (
             message_id TEXT PRIMARY KEY,
@@ -60,7 +60,7 @@ async def _create_embedding_stats_tables_async(conn: aiosqlite.Connection) -> No
             needs_reindex INTEGER NOT NULL,
             error_message TEXT
         );
-        CREATE TABLE message_embeddings (message_id TEXT);
+        CREATE TABLE message_embedding_refs (message_id TEXT PRIMARY KEY, vector_derivation_hash BLOB);
         CREATE TABLE sessions (session_id TEXT PRIMARY KEY);
         CREATE TABLE messages (
             message_id TEXT PRIMARY KEY,
@@ -111,7 +111,7 @@ def test_read_embedding_stats_sync_counts_available_tables() -> None:
             [("conv-1", 1, 0), ("conv-2", 1, 0), ("conv-3", 0, 1)],
         )
         conn.executemany(
-            "INSERT INTO message_embeddings (message_id) VALUES (?)",
+            "INSERT INTO message_embedding_refs (message_id, vector_derivation_hash) VALUES (?, zeroblob(32))",
             [("msg-1",), ("msg-2",), ("msg-3",)],
         )
         conn.commit()
@@ -348,7 +348,7 @@ async def test_read_embedding_stats_async_counts_available_tables() -> None:
             [("conv-1", 1, 0), ("conv-2", 0, 1)],
         )
         await conn.executemany(
-            "INSERT INTO message_embeddings (message_id) VALUES (?)",
+            "INSERT INTO message_embedding_refs (message_id, vector_derivation_hash) VALUES (?, zeroblob(32))",
             [("msg-1",), ("msg-2",)],
         )
         await conn.commit()

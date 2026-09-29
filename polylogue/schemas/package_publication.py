@@ -55,6 +55,30 @@ def read_provider_snapshot(provider_dir: Path) -> dict[str, bytes]:
         return _read_provider_tree(provider_dir) if provider_dir.is_dir() else {}
 
 
+def _exchange_paths(first: Path, second: Path) -> None:
+    """Atomically exchange two directory entries on the same filesystem.
+
+    Linux ``renameat2(RENAME_EXCHANGE)``; macOS ``renamex_np(RENAME_SWAP)``.
+    Both flags are ``2``. A platform with neither refuses typed.
+    """
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is not None:
+        renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(-100, os.fsencode(first), -100, os.fsencode(second), 2)
+    else:
+        renamex_np = getattr(libc, "renamex_np", None)
+        if renamex_np is None:
+            raise NotImplementedError("Atomic schema replacement requires renameat2 or renamex_np")
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        result = renamex_np(os.fsencode(first), os.fsencode(second), 2)
+    if result != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), str(second))
+
+
 def publish_provider_tree(staged: Path, destination: Path, *, expected_snapshot: dict[str, bytes]) -> None:
     """Publish a complete staged tree; after exchange, staged holds the old tree."""
     for path in sorted(staged.rglob("*")):
@@ -69,15 +93,7 @@ def publish_provider_tree(staged: Path, destination: Path, *, expected_snapshot:
         if current != expected_snapshot:
             raise RuntimeError("Schema packages changed during preparation; retry from the current catalog")
         if destination.exists():
-            libc = ctypes.CDLL(None, use_errno=True)
-            rename = getattr(libc, "renameat2", None)
-            if rename is None:
-                raise NotImplementedError("Atomic schema replacement requires renameat2")
-            rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
-            rename.restype = ctypes.c_int
-            if rename(-100, os.fsencode(staged), -100, os.fsencode(destination), 2) != 0:
-                error = ctypes.get_errno()
-                raise OSError(error, os.strerror(error), str(destination))
+            _exchange_paths(staged, destination)
         else:
             os.rename(staged, destination)
         sync_directory(destination.parent)

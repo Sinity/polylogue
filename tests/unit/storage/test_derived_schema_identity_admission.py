@@ -85,10 +85,10 @@ def test_writable_fresh_initialization_remains_readable(tmp_path: Path) -> None:
 def test_schema_identity_stamp_survives_the_connection_that_wrote_it(tmp_path: Path) -> None:
     """The stamp is committed, not left in the writer's open transaction.
 
-    Anti-vacuity: drop the ``conn.commit()`` after
-    ``stamp_derived_schema_identity`` in ``initialize_archive_tier`` and this
-    fails -- the stamp lands after the materialisation commit, so closing
-    without committing rolls it back and the reopened tier reads ``None``.
+    Anti-vacuity: move ``stamp_derived_schema_identity`` in
+    ``_apply_archive_tier_convergence`` after that function's ``conn.commit()``
+    and this fails -- closing without committing rolls the stamp back and the
+    reopened tier reads ``None``.
     """
     path = tmp_path / "ops.db"
     conn = sqlite3.connect(path)

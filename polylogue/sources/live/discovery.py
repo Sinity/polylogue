@@ -149,7 +149,8 @@ def _ordered_children(
             [WalkFault(directory, f"scandir failed: {exc}")],
         ) from exc
     with entries:
-        for entry in entries:
+        # Alias ownership must not depend on filesystem enumeration order.
+        for entry in sorted(entries, key=lambda child: child.name):
             if on_inspected is not None:
                 on_inspected()
             path = Path(entry.path)

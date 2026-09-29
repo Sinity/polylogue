@@ -51,7 +51,11 @@ loopback ports.
 1. **Separate machine and browser credentials.** When `--api-auth-token`
    is configured, machine clients present `Authorization: Bearer <token>`.
    The first-party shell instead rotates a short-lived `read`/`user_state`/
-   `events` credential through `POST /api/web-auth/session`. It can update
+   `events` credential through `POST /api/web-auth/session`.
+   Shell HTML routes (`/`, `/sessions`, `/search` ...) require the same
+   bearer or web credential; a browser without one is shown the sign-in page
+   with `401`, and the CLI signs it in through a one-time fragment ticket
+   exchanged at `/web-auth/sign-in`. It can update
    marks, annotations, saved views, recall packs, and workspaces, but archive
    reset, ingest, and maintenance operations remain machine-bearer capabilities.
    The opaque value
@@ -318,15 +322,11 @@ key — a `raw_id` column, or an `(origin, session_native_id)` pair — must hav
 a declared reach: `raw-cascade` (removed by the database when the
 `raw_sessions` row goes, re-checked against the live
 `PRAGMA foreign_key_list`), `excised` (deleted by the apply by name),
-`container` (per-member disposition below), or `retired`. A session-keyed
+`container` (per-member disposition below), or `tombstone` (content-free
+terminal evidence kept on purpose). A session-keyed
 table with no declared reach makes `resolve_session_excision_target` raise
 `UnclassifiedSessionCarrierError` naming it, so a newly added evidence class
 is either covered or loudly refused — never silently exempt.
-
-**Telemetry spans.** `otlp_spans` is `retired`: fresh source generations
-omit it entirely. Where a migrated historical tier still carries it, it holds
-the same `(origin, session_native_id)` key as hook evidence and no raw row,
-so the apply deletes its attributes/events with the session by name.
 
 **Container payloads.** One `source_items` row can be a container export
 covering many sessions, and it is a blob-liveness owner, so deleting the

@@ -22,11 +22,10 @@ from polylogue.storage.sqlite.schema_bootstrap import (
     SCHEMA_DDL,
     SCHEMA_VERSION,
     assert_derived_schema_identity,
+    assert_derived_schema_identity_async,
     capture_schema_snapshot,
     capture_schema_snapshot_async,
     decide_schema_bootstrap,
-    ensure_derived_schema_identity,
-    ensure_derived_schema_identity_async,
     ensure_vec0_table,
     ensure_vec0_table_async,
     schema_version_mismatch_message,
@@ -159,8 +158,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         ensure_runtime_indexes_sync(conn)
         conn.executescript(PLANNER_STAT1_SEED_SQL)
         conn.execute("PRAGMA optimize")
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        # Stamp before the version write so both commit together: a current
+        # version always carries its identity, and an interrupted create stays
+        # at version 0 and is re-created on the next open.
         stamp_derived_schema_identity(conn, "index")
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
         return
 
@@ -172,13 +174,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             expected_version=SCHEMA_VERSION,
         )
 
-    # open_as_is — adopt legacy current-version indexes that predate identity
-    # metadata. A present, wrong identity remains a schema skew.
-    ensure_derived_schema_identity(conn, ArchiveTier.INDEX.value)
+    # open_as_is — an absent or foreign identity is a typed schema skew.
+    assert_derived_schema_identity(conn, ArchiveTier.INDEX.value)
 
     # vec0 still needs to be ensured per-connection because the
     # extension may have been newly loaded since fresh init.
-    assert_derived_schema_identity(conn, "index")
     ensure_vec0_table(conn)
     ensure_runtime_indexes_sync(conn)
 
@@ -195,14 +195,15 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
         await ensure_runtime_indexes_async(conn)
         await conn.executescript(PLANNER_STAT1_SEED_SQL)
         await conn.execute("PRAGMA optimize")
-        await conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, derived_schema_identity
 
+        # Same ordering as the sync route: identity and version commit together.
         await conn.execute(
             "INSERT INTO schema_identity(tier, identity) VALUES (?, ?) "
             "ON CONFLICT(tier) DO UPDATE SET identity=excluded.identity",
             (DerivedTier.INDEX.value, derived_schema_identity(DerivedTier.INDEX)),
         )
+        await conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         await conn.commit()
         return
 
@@ -214,7 +215,7 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
             expected_version=SCHEMA_VERSION,
         )
 
-    await ensure_derived_schema_identity_async(conn, ArchiveTier.INDEX.value)
+    await assert_derived_schema_identity_async(conn, ArchiveTier.INDEX.value)
     await ensure_vec0_table_async(conn)
     await ensure_runtime_indexes_async(conn)
 

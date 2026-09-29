@@ -30,14 +30,6 @@ class RepositoryRawMixin:
     if TYPE_CHECKING:
         _backend: RepositoryBackendProtocol
 
-    async def save_raw_session(self, record: RawSessionRecord) -> bool:
-        async with self._backend.connection() as conn:
-            return await raw_queries.save_raw_session(
-                conn,
-                record,
-                self._backend.transaction_depth,
-            )
-
     async def admit_raw(self, request: RawAdmissionRequest) -> RawAdmissionExecution:
         """Apply normal pre-parse acquisition through the admission planner."""
         plan = plan_raw_admission(request)

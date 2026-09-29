@@ -82,8 +82,8 @@ def test_reclamation_resume_removes_only_planned_renamed_generation(
     assert not list((tmp_path / ".embeddings-generations").glob("retired-gen-*"))
 
 
-def test_pre_lifecycle_active_database_is_retained_on_first_replacement(tmp_path: Path) -> None:
-    _sqlite(tmp_path / "embeddings.db", "legacy")
+def test_bootstrap_active_database_is_retained_on_first_replacement(tmp_path: Path) -> None:
+    _sqlite(tmp_path / "embeddings.db", "bootstrap")
     candidate = tmp_path / "candidate.db"
     _sqlite(candidate, "new")
     EmbeddingGenerationStore(tmp_path).replace(candidate)
@@ -94,30 +94,30 @@ def test_pre_lifecycle_active_database_is_retained_on_first_replacement(tmp_path
     assert states == {EmbeddingGenerationState.ACTIVE.value, EmbeddingGenerationState.RETAINED.value}
 
 
-def test_adopting_wal_mode_legacy_database_leaves_sealed_generation_without_sidecars(tmp_path: Path) -> None:
+def test_adopting_wal_mode_bootstrap_database_leaves_sealed_generation_without_sidecars(tmp_path: Path) -> None:
     """Ordinary read-only validation creates sidecars that the next scan refuses."""
-    legacy = tmp_path / "embeddings.db"
-    _sqlite(legacy, "legacy")
-    with closing(sqlite3.connect(legacy)) as conn:
+    bootstrap = tmp_path / "embeddings.db"
+    _sqlite(bootstrap, "bootstrap")
+    with closing(sqlite3.connect(bootstrap)) as conn:
         assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
 
     ensure_embedding_lifecycle(tmp_path)
 
-    active = legacy.resolve()
-    assert legacy.is_symlink()
+    active = bootstrap.resolve()
+    assert bootstrap.is_symlink()
     assert not active.with_name(active.name + "-wal").exists()
     assert not active.with_name(active.name + "-shm").exists()
     with EmbeddingGenerationStore(tmp_path).writer_lock() as binding:
         assert Path(binding.database_path) == active
 
 
-def test_failure_admission_prepares_legacy_database_under_lifecycle_lock(
+def test_failure_admission_prepares_bootstrap_database_under_lifecycle_lock(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A competing lifecycle owner cannot enter while WAL preparation runs."""
-    legacy = tmp_path / "embeddings.db"
-    _sqlite(legacy, "legacy")
-    with closing(sqlite3.connect(legacy)) as conn:
+    bootstrap = tmp_path / "embeddings.db"
+    _sqlite(bootstrap, "bootstrap")
+    with closing(sqlite3.connect(bootstrap)) as conn:
         assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
     store = EmbeddingGenerationStore(tmp_path)
     original = EmbeddingGenerationStore.prepare_active_database_for_writer
@@ -143,12 +143,12 @@ def test_failure_admission_prepares_already_adopted_generation_sidecars(tmp_path
     """An ordinary semantic reader can leave sidecars beside the active generation."""
     from polylogue.storage.sqlite.managed_connection import sqlite_connection
 
-    legacy = tmp_path / "embeddings.db"
-    _sqlite(legacy, "legacy")
-    with closing(sqlite3.connect(legacy)) as conn:
+    bootstrap = tmp_path / "embeddings.db"
+    _sqlite(bootstrap, "bootstrap")
+    with closing(sqlite3.connect(bootstrap)) as conn:
         assert conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
     ensure_embedding_lifecycle(tmp_path)
-    active = legacy.resolve()
+    active = bootstrap.resolve()
 
     with sqlite_connection(f"file:{active}?mode=ro", uri=True) as reader:
         assert reader.execute("SELECT COUNT(*) FROM values_").fetchone()[0] == 1
@@ -389,8 +389,8 @@ def test_rejects_uncheckpointed_candidate_wal(tmp_path: Path) -> None:
             EmbeddingGenerationStore(tmp_path).replace(candidate)
 
 
-def test_legacy_adoption_runs_on_ensure_route(tmp_path: Path) -> None:
-    _sqlite(tmp_path / "embeddings.db", "legacy")
+def test_bootstrap_adoption_runs_on_ensure_route(tmp_path: Path) -> None:
+    _sqlite(tmp_path / "embeddings.db", "bootstrap")
     ensure_embedding_lifecycle(tmp_path)
     assert (tmp_path / "embeddings.db").is_symlink()
     metadata = list((tmp_path / ".embeddings-generations").glob("gen-*/generation.json"))
@@ -398,9 +398,9 @@ def test_legacy_adoption_runs_on_ensure_route(tmp_path: Path) -> None:
     assert json.loads(metadata[0].read_text(encoding="utf-8"))["state"] == "active"
 
 
-def test_legacy_adoption_rejects_sidecars_that_sqlite_cannot_clear(tmp_path: Path) -> None:
+def test_bootstrap_adoption_rejects_sidecars_that_sqlite_cannot_clear(tmp_path: Path) -> None:
     active = tmp_path / "embeddings.db"
-    _sqlite(active, "legacy")
+    _sqlite(active, "bootstrap")
     writer = sqlite3.connect(active)
     try:
         writer.execute("PRAGMA journal_mode=WAL")

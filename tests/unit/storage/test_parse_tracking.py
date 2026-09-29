@@ -26,6 +26,7 @@ from polylogue.storage.sqlite.schema import (
     SCHEMA_VERSION,
     _ensure_schema,
 )
+from tests.infra.storage_records import admit_raw_record
 
 # ─── Backend method tests ──────────────────────────────────────────────────
 
@@ -46,7 +47,7 @@ class TestMarkRawParsed:
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
         )
-        await backend.save_raw_session(record)
+        await admit_raw_record(backend, record)
 
     async def test_mark_success(self, backend: SQLiteBackend) -> None:
         """Marking as parsed sets parsed_at and clears parse_error."""
@@ -99,7 +100,8 @@ class TestRawBlobAddress:
         backend = SQLiteBackend(db_path=tmp_path / "test.db")
         blob_hash = "a" * 64
 
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             RawSessionRecord(
                 raw_id="raw-row-identity",
                 blob_hash=blob_hash,
@@ -107,7 +109,7 @@ class TestRawBlobAddress:
                 source_path="/test.json",
                 blob_size=len(b'{"test": true}'),
                 acquired_at="2026-01-01T00:00:00Z",
-            )
+            ),
         )
 
         rec = await backend.get_raw_session("raw-row-identity")
@@ -125,7 +127,8 @@ class TestUpdateRawState:
         return SQLiteBackend(db_path=tmp_path / "test.db")
 
     async def _save_raw(self, backend: SQLiteBackend, raw_id: str = "update-raw") -> None:
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             RawSessionRecord(
                 raw_id=raw_id,
                 source_name="test",
@@ -133,7 +136,7 @@ class TestUpdateRawState:
                 blob_size=len(b'{"test": true}'),
                 acquired_at="2026-01-01T00:00:00Z",
                 file_mtime="2026-01-01T00:00:00Z",
-            )
+            ),
         )
 
     async def test_update_raw_state_applies_only_requested_fields(self, backend: SQLiteBackend) -> None:
@@ -286,7 +289,7 @@ class TestMarkRawValidated:
             acquired_at="2026-01-01T00:00:00Z",
             file_mtime="2026-01-01T00:00:00Z",
         )
-        await backend.save_raw_session(record)
+        await admit_raw_record(backend, record)
 
     async def test_mark_passed(self, backend: SQLiteBackend) -> None:
         await self._save_raw(backend)
@@ -342,7 +345,8 @@ class TestGetKnownSourceMtimes:
     async def test_returns_mtime_mapping(self, backend: SQLiteBackend) -> None:
         """Returns {source_path: file_mtime} for records with mtimes."""
         for i in range(3):
-            await backend.save_raw_session(
+            await admit_raw_record(
+                backend,
                 RawSessionRecord(
                     raw_id=f"raw-{i}",
                     source_name="test",
@@ -350,7 +354,7 @@ class TestGetKnownSourceMtimes:
                     blob_size=len(f'{{"i": {i}}}'.encode()),
                     acquired_at="2026-01-01T00:00:00Z",
                     file_mtime=f"2026-01-0{i + 1}T00:00:00Z",
-                )
+                ),
             )
 
         mtimes = await backend.get_known_source_mtimes()
@@ -360,7 +364,8 @@ class TestGetKnownSourceMtimes:
 
     async def test_excludes_null_mtimes(self, backend: SQLiteBackend) -> None:
         """Records without file_mtime are excluded from the mapping."""
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             RawSessionRecord(
                 raw_id="with-mtime",
                 source_name="test",
@@ -368,9 +373,10 @@ class TestGetKnownSourceMtimes:
                 blob_size=len(b"{}"),
                 acquired_at="2026-01-01T00:00:00Z",
                 file_mtime="2026-01-01T00:00:00Z",
-            )
+            ),
         )
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             RawSessionRecord(
                 raw_id="no-mtime",
                 source_name="test",
@@ -378,7 +384,7 @@ class TestGetKnownSourceMtimes:
                 blob_size=len(b'{"b": 1}'),
                 acquired_at="2026-01-01T00:00:00Z",
                 file_mtime=None,
-            )
+            ),
         )
 
         mtimes = await backend.get_known_source_mtimes()
@@ -407,7 +413,8 @@ class TestResetParseStatus:
             ("claude-ai", "inbox-a"),
         ]
         for i, (provider, source_name) in enumerate(rows):
-            await backend.save_raw_session(
+            await admit_raw_record(
+                backend,
                 RawSessionRecord(
                     raw_id=f"raw-{i}",
                     source_name=source_name,
@@ -415,7 +422,7 @@ class TestResetParseStatus:
                     source_path=f"/path/{i}.json",
                     blob_size=len(f'{{"i": {i}}}'.encode()),
                     acquired_at="2026-01-01T00:00:00Z",
-                )
+                ),
             )
         # Origin-scoped selection projects detected_provider (raw_state.py's
         # raw_provider_origin_sql), not payload_provider, so a row without a
@@ -472,7 +479,8 @@ class TestResetParseStatus:
 
     async def test_reset_by_beads_origin_uses_detected_provider_projection(self, backend: SQLiteBackend) -> None:
         """A Beads classification scopes rows even when acquisition was unknown."""
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             RawSessionRecord(
                 raw_id="historical-beads",
                 source_name="historical",
@@ -480,7 +488,7 @@ class TestResetParseStatus:
                 source_path="/captures/historical.json",
                 blob_size=2,
                 acquired_at="2026-01-01T00:00:00Z",
-            )
+            ),
         )
         await backend.mark_raw_parsed("historical-beads")
         with sqlite3.connect(backend.db_path.with_name("source.db")) as conn:
@@ -497,14 +505,15 @@ class TestResetParseStatus:
 
     async def test_reset_returns_zero_when_nothing_to_reset(self, backend: SQLiteBackend) -> None:
         """Reset returns 0 when no records have parsed_at set."""
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             RawSessionRecord(
                 raw_id="unparsed",
                 source_name="test",
                 source_path="/test.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-01-01T00:00:00Z",
-            )
+            ),
         )
         count = await backend.reset_parse_status()
         assert count == 0
@@ -524,7 +533,8 @@ class TestResetValidationStatus:
             ("claude-ai", "inbox-a"),
         ]
         for i, (provider, source_name) in enumerate(rows):
-            await backend.save_raw_session(
+            await admit_raw_record(
+                backend,
                 RawSessionRecord(
                     raw_id=f"raw-{i}",
                     source_name=source_name,
@@ -532,7 +542,7 @@ class TestResetValidationStatus:
                     source_path=f"/path/{i}.json",
                     blob_size=len(f'{{"i": {i}}}'.encode()),
                     acquired_at="2026-01-01T00:00:00Z",
-                )
+                ),
             )
         await backend.mark_raw_validated(
             "raw-0",

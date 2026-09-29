@@ -192,8 +192,36 @@ def _iter_source_entries(base: Path, *, onerror: Callable[[OSError], None] | Non
     follow-link behavior cannot drift between the two routes.
     """
     entries: list[Path] = []
+    # Directory links are followed, so a linked export tree is acquired. A
+    # link to a directory already entered on this walk -- an ancestor, or a
+    # tree a sorted-earlier link already reached -- is recorded as a
+    # non-regular entry and not entered again; without that, a cycle never
+    # terminates. Real directories are always entered.
+    visited: set[tuple[int, int]] = set()
+    try:
+        base_stat = os.stat(base)
+    except OSError:
+        pass
+    else:
+        visited.add((base_stat.st_dev, base_stat.st_ino))
     for root, dirs, files in os.walk(base, followlinks=True, onerror=onerror):
-        dirs[:] = [directory for directory in dirs if directory not in _SKIP_DIRS]
+        descend: list[str] = []
+        for directory in sorted(dirs):
+            if directory in _SKIP_DIRS:
+                continue
+            path = Path(root) / directory
+            try:
+                directory_stat = os.stat(path)
+            except OSError:
+                descend.append(directory)
+                continue
+            identity = (directory_stat.st_dev, directory_stat.st_ino)
+            if identity in visited and path.is_symlink():
+                entries.append(path)
+                continue
+            visited.add(identity)
+            descend.append(directory)
+        dirs[:] = descend
         entries.extend(Path(root) / filename for filename in files)
     return sorted(entries)
 

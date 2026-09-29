@@ -6,8 +6,8 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
-import socket
 import sqlite3
 import stat as stat_module
 import subprocess
@@ -17,11 +17,12 @@ from collections.abc import Collection, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
-from glob import glob
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
+
+from pydantic import ValidationError
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.archive.message.artifacts import classify_material_origin
@@ -29,6 +30,8 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.core.json import JSONDocument, dumps_bytes, loads
+from polylogue.core.timestamps import iso_from_epoch_ms
+from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base import (
     AdmissionDisposition,
@@ -86,6 +89,10 @@ def trajectory_raw_id(source_path: Path | str, logical_revision: str) -> str:
     return hashlib.sha256(identity.encode("utf-8", errors="surrogateescape")).hexdigest()
 
 
+#: Language-server RPCs carry the CSRF token and go to loopback only; an
+#: environment ``HTTP_PROXY`` does not bypass ``127.0.0.1`` on its own and
+#: would hand the token to whoever runs the proxy.
+_LOOPBACK_OPENER = build_opener(ProxyHandler({}))
 _SEARCH_ENDPOINT = "/exa.language_server_pb.LanguageServerService/SearchConversations"
 _MARKDOWN_ENDPOINT = "/exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown"
 _SECTION_RE = re.compile(r"^### (?P<title>User Input|Planner Response)\s*$", re.MULTILINE)
@@ -543,7 +550,11 @@ def _step_timestamp(row: Mapping[str, object], payload: Mapping[str, object]) ->
     for values in (payload, row):
         for key in ("timestamp", "occurred_at", "occurred_at_ms", "created_at", "createdAt", "updated_at"):
             value = values.get(key)
-            if isinstance(value, (str, int, float)) and str(value).strip():
+            if key == "occurred_at_ms":
+                timestamp = iso_from_epoch_ms(value)
+                if timestamp is not None:
+                    return timestamp
+            elif isinstance(value, (str, int, float)) and not isinstance(value, bool) and str(value).strip():
                 return str(value)
     return None
 
@@ -554,7 +565,10 @@ def _tool_outcome(
     status = payload.get("status", row.get("status"))
     error = payload.get("error", row.get("error"))
     error_details = payload.get("error_details", row.get("error_details"))
-    exit_code = payload.get("exit_code", payload.get("exitCode"))
+    exit_code = next(
+        (values[key] for values in (payload, row) for key in ("exit_code", "exitCode") if values.get(key) is not None),
+        None,
+    )
     if isinstance(exit_code, bool):
         exit_code = None
     if isinstance(exit_code, (int, float)):
@@ -562,6 +576,8 @@ def _tool_outcome(
         return code != 0, code, None
     if isinstance(error, bool):
         return error, None, None
+    if isinstance(error, (str, Mapping, list)) and error:
+        return True, None, None
     if isinstance(status, str):
         normalized = status.strip().lower()
         if normalized in {"ok", "success", "succeeded", "completed", "complete", "done"}:
@@ -570,7 +586,14 @@ def _tool_outcome(
             return True, None, None
     if error_details not in (None, "", {}, []):
         return True, None, None
-    return None, None, "unsupported_construct"
+    return (
+        None,
+        None,
+        unknown_reason(
+            is_error=None,
+            outcome_field_present=any(value is not None for value in (status, error, error_details, exit_code)),
+        ),
+    )
 
 
 def _tool_input(payload: Mapping[str, object]) -> dict[str, object]:
@@ -597,14 +620,19 @@ def _file_edit(payload: Mapping[str, object]) -> ParsedFileEdit | None:
             "original_file",
             "replace_all",
             "user_modified",
+            "oldString",
+            "newString",
+            "originalFile",
+            "replaceAll",
+            "userModified",
         }
     )
     if not edit_fields & payload.keys():
         return None
-    replace_all = payload.get("replace_all")
+    replace_all = payload.get("replace_all", payload.get("replaceAll"))
     if not isinstance(replace_all, bool):
         replace_all = None
-    user_modified = payload.get("user_modified")
+    user_modified = payload.get("user_modified", payload.get("userModified"))
     if not isinstance(user_modified, bool):
         user_modified = None
     structured_patch = payload.get("structured_patch", payload.get("structuredPatch"))
@@ -612,8 +640,8 @@ def _file_edit(payload: Mapping[str, object]) -> ParsedFileEdit | None:
         file_path=_string(payload.get("file_path") or payload.get("filePath") or payload.get("path")),
         structured_patch=structured_patch if isinstance(structured_patch, list) else None,
         original_file=_string(payload.get("original_file") or payload.get("originalFile")),
-        old_string=_string(payload.get("old_string")),
-        new_string=_string(payload.get("new_string")),
+        old_string=_string(payload.get("old_string", payload.get("oldString"))),
+        new_string=_string(payload.get("new_string", payload.get("newString"))),
         replace_all=replace_all,
         user_modified=user_modified,
     )
@@ -627,7 +655,10 @@ def _normalized_step_payload(row: Mapping[str, object]) -> dict[str, object] | N
     # mapping; opaque values remain refused rather than guessed into text.
     nested = payload.get("payload")
     if isinstance(nested, Mapping):
-        return {str(key): value for key, value in nested.items()}
+        return {
+            **{key: value for key, value in payload.items() if key != "payload"},
+            **{str(key): value for key, value in nested.items()},
+        }
     return payload
 
 
@@ -723,7 +754,7 @@ def _trajectory_message(
     tool_name = payload.get("tool_name") or payload.get("toolName") or payload.get("name")
     tool_id = payload.get("tool_id") or payload.get("toolId") or payload.get("call_id") or payload.get("callId")
     if toolish and normalized_type in {"tool_result", "tool_output", "command_result"}:
-        is_error, exit_code, unknown_reason = _tool_outcome(payload, row)
+        is_error, exit_code, outcome_unknown = _tool_outcome(payload, row)
         blocks.append(
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
@@ -732,7 +763,7 @@ def _trajectory_message(
                 tool_id=str(tool_id) if tool_id is not None else None,
                 is_error=is_error,
                 exit_code=exit_code,
-                outcome_unknown_reason=unknown_reason,
+                outcome_unknown_reason=outcome_unknown,
                 file_edit=_file_edit(payload),
             )
         )
@@ -868,6 +899,18 @@ def parse_trajectory_db(
             for value in (meta["trajectory_id"], meta["cascade_id"])
             if value not in (None, "")
         }
+        # An alias may have multiple claimants; retain that ambiguity rather
+        # than allowing the last meta row to choose a parent.
+        alias_claimants: dict[str, set[str]] = {}
+        for meta in meta_rows:
+            if meta is None:
+                continue
+            canonical = meta["trajectory_id"] or meta["cascade_id"]
+            if canonical in (None, ""):
+                continue
+            for alias in (meta["trajectory_id"], meta["cascade_id"]):
+                if alias not in (None, ""):
+                    alias_claimants.setdefault(str(alias), set()).add(str(canonical))
         # A summary with no owning meta row is later yielded as its own
         # session keyed by its summary_key (the unmatched-summary branch
         # below), so that key occupies this parser's session-ID namespace
@@ -1002,14 +1045,38 @@ def parse_trajectory_db(
                         )
                     )
                     continue
-                message = _trajectory_message(
-                    row=row_map,
-                    payload=payload,
-                    position=len(messages),
-                    step_ordinal=step_ordinal,
-                    step_type=step_type,
-                    step_format=step_format,
-                )
+                try:
+                    message = _trajectory_message(
+                        row=row_map,
+                        payload=payload,
+                        position=len(messages),
+                        step_ordinal=step_ordinal,
+                        step_type=step_type,
+                        step_format=step_format,
+                    )
+                except ValidationError:
+                    # A malformed known step must not discard valid siblings.
+                    outcomes.append(
+                        AdmissionOutcome(
+                            unit=AdmissionUnit.PART,
+                            ordinal=ordinal,
+                            key=key,
+                            disposition=AdmissionDisposition.TYPED_REFUSAL,
+                            reason=AdmissionRefusalReason.MALFORMED,
+                        )
+                    )
+                    events.append(
+                        ParsedSessionEvent(
+                            event_type="antigravity_unsupported_step",
+                            payload={
+                                "idx": step_ordinal,
+                                "step_type": step_type,
+                                "step_format": step_format,
+                                "reason": "invalid_typed_step",
+                            },
+                        )
+                    )
+                    continue
                 if message is None:
                     outcomes.append(
                         AdmissionOutcome(
@@ -1067,10 +1134,11 @@ def parse_trajectory_db(
             if trajectory_id and trajectory_id != cascade_id:
                 matching_parent_refs.extend(parent_refs.get(trajectory_id, ()))
             parent_ids = {
-                resolved
+                claimant
                 for reference in matching_parent_refs
                 for resolved in (_parent_reference_id(reference),)
                 if resolved is not None
+                for claimant in alias_claimants.get(resolved, {resolved})
             }
             # Two references naming different parents are an ambiguity, not a
             # choice: asserting whichever row the unordered SELECT returned
@@ -1194,7 +1262,14 @@ class AntigravityLanguageServerClient:
         self.root = root.expanduser()
         self.language_server_path = language_server_path
         self.startup_timeout_s = startup_timeout_s
-        self.port = _free_local_port()
+        # The vendor server picks its own port (``-http_server_port=0``) and
+        # publishes it in its discovery file, so no port is reserved and
+        # released ahead of the child (the old TOCTOU). Every request carries a
+        # per-run CSRF token; the server answers 401 without it, so another
+        # local uid that finds the loopback port cannot search or export the
+        # operator's conversations (polylogue-dahse).
+        self.port: int | None = None
+        self._csrf_token = secrets.token_urlsafe(32)
         self._process: subprocess.Popen[bytes] | None = None
         self.server_info: AntigravityLanguageServerInfo | None = None
 
@@ -1223,11 +1298,13 @@ class AntigravityLanguageServerClient:
             str(binary),
             "-standalone",
             "-persistent_mode",
-            f"-http_server_port={self.port}",
+            "-http_server_port=0",
+            f"-csrf_token={self._csrf_token}",
             f"-gemini_dir={self.root.parent}",
             f"-app_data_dir={self.root.name}",
             "-override_ide_name=antigravity",
         ]
+        before_launch = self._discovery_snapshot()
         self._process = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -1235,7 +1312,14 @@ class AntigravityLanguageServerClient:
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
-        self._wait_until_ready()
+        try:
+            self.port = self._await_discovered_port(before_launch=before_launch)
+            self._wait_until_ready()
+        except BaseException:
+            # A start that does not complete (a refusal, a cancellation) must
+            # not leave its child running; a retry would accumulate servers.
+            self.close()
+            raise
         self.server_info = AntigravityLanguageServerInfo(
             binary_path=binary,
             version=version,
@@ -1273,6 +1357,57 @@ class AntigravityLanguageServerClient:
             raise AntigravityExportError(f"Antigravity returned no markdown for cascade {cascade_id}")
         return markdown
 
+    def _discovery_snapshot(self) -> dict[str, tuple[int, int, int, int]]:
+        """``{name: (inode, mtime_ns, ctime_ns, size)}`` of the discovery files present now."""
+        discovery_dir = self.root / "daemon"
+        snapshot: dict[str, tuple[int, int, int, int]] = {}
+        for candidate in discovery_dir.glob("ls_*.json") if discovery_dir.is_dir() else ():
+            try:
+                status = candidate.stat()
+            except OSError:
+                continue
+            snapshot[candidate.name] = (status.st_ino, status.st_mtime_ns, status.st_ctime_ns, status.st_size)
+        return snapshot
+
+    def _await_discovered_port(self, *, before_launch: Mapping[str, tuple[int, int, int, int]]) -> int:
+        """Read the port our own child published in its persistent-mode discovery file.
+
+        The directory can also hold a discovery file from the operator's
+        running IDE, so only the file naming this child's pid is accepted. A
+        file left by a crashed server whose pid the child has since reused
+        also names that pid, so a file is accepted only once it differs from
+        the directory as it stood before this launch (new, replaced or
+        rewritten); an unchanged one is watched until the child rewrites it.
+        Comparing against that snapshot, not a clock cutoff, holds on a
+        filesystem whose timestamps are coarser than the launch instant.
+
+        There is no deadline: a slow child that is still alive is still
+        starting. The child's exit ends the wait, and a cancellation of the
+        caller ends it through ``start``, which then stops the child.
+        """
+        process = self._process
+        if process is None:
+            raise AntigravityExportError("Antigravity language server is not running")
+        discovery_dir = self.root / "daemon"
+        while True:
+            if process.poll() is not None:
+                raise AntigravityExportError(f"Antigravity language server exited with code {process.returncode}")
+            for candidate in sorted(discovery_dir.glob("ls_*.json")) if discovery_dir.is_dir() else ():
+                try:
+                    status = candidate.stat()
+                    fingerprint = (status.st_ino, status.st_mtime_ns, status.st_ctime_ns, status.st_size)
+                    if before_launch.get(candidate.name) == fingerprint:
+                        continue
+                    published = loads(candidate.read_bytes())
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(published, dict) or published.get("pid") != process.pid:
+                    continue
+                port = published.get("httpPort")
+                if isinstance(port, int) and not isinstance(port, bool) and port > 0:
+                    return port
+            time.sleep(_READY_RETRY_SLEEP_S)
+
     def _wait_until_ready(self) -> None:
         """Probe the vendor surface until it answers a search call.
 
@@ -1299,15 +1434,17 @@ class AntigravityLanguageServerClient:
         )
 
     def _post(self, endpoint: str, payload: JSONDocument, *, timeout: float | None = None) -> JSONDocument:
+        if self.port is None:
+            raise AntigravityExportError("Antigravity language server has not published its port")
         request = Request(
             f"http://127.0.0.1:{self.port}{endpoint}",
             data=dumps_bytes(payload),
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "x-codeium-csrf-token": self._csrf_token},
             method="POST",
         )
         budget = _REQUEST_TIMEOUT_S if timeout is None else timeout
         try:
-            with urlopen(request, timeout=budget) as response:
+            with _LOOPBACK_OPENER.open(request, timeout=budget) as response:
                 loaded = loads(response.read())
         except (OSError, TimeoutError, ValueError) as exc:
             raise AntigravityExportError(str(exc)) from exc
@@ -1521,13 +1658,35 @@ def discover_language_server() -> Path | None:
     if binary_path := shutil.which("language_server_linux_x64"):
         return Path(binary_path)
 
-    candidates = sorted(
-        Path(match)
-        for match in glob(
-            "/nix/store/*-antigravity-*/lib/antigravity/resources/app/extensions/antigravity/bin/language_server_linux_x64"
-        )
-    )
-    return candidates[-1] if candidates else None
+    return _nix_store_language_server()
+
+
+_NIX_STORE = Path("/nix/store")
+_PACKAGED_LANGUAGE_SERVER_PATHS = (
+    "lib/antigravity/resources/app/extensions/antigravity/bin/language_server_linux_x64",
+    "lib/antigravity-ide/resources/app/extensions/antigravity/bin/language_server_linux_x64",
+)
+
+
+def _nix_store_language_server() -> Path | None:
+    """Find a packaged binary by streaming the store's top level once.
+
+    The store holds hundreds of thousands of entries; one ``scandir`` pass
+    filtered by name reads it without expanding a glob per pattern.
+    """
+    candidates: list[Path] = []
+    try:
+        with os.scandir(_NIX_STORE) as entries:
+            for entry in entries:
+                if "-antigravity-" not in entry.name:
+                    continue
+                for relative in _PACKAGED_LANGUAGE_SERVER_PATHS:
+                    binary = Path(entry.path) / relative
+                    if binary.is_file():
+                        candidates.append(binary)
+    except OSError:
+        return None
+    return sorted(candidates)[-1] if candidates else None
 
 
 def _discover_language_server_version(binary: Path) -> str:
@@ -1750,12 +1909,6 @@ def _strip_markdown_preamble(markdown: str) -> str:
 
 def _message_kind(heading: str) -> str:
     return heading.lower().replace(" ", "_")
-
-
-def _free_local_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind(("127.0.0.1", 0))
-        return int(sock.getsockname()[1])
 
 
 def _string(value: object) -> str | None:

@@ -39,8 +39,6 @@ from polylogue.storage.accepted_marker_inputs import (
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.schema_inventory import canonical_schema_objects
-from polylogue.storage.sqlite.archive_tiers.source import RETIRED_SOURCE_SCHEMA_OBJECTS
 from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.unit.sinex.test_ingest_atomicity import _AsyncConnection
@@ -145,26 +143,6 @@ def _source_conn(tmp_path: Path) -> sqlite3.Connection:
     return sqlite3.connect(tmp_path / "source.db")
 
 
-#: The shape a migrated historical source tier still carries for the retired
-#: inbound span table (polylogue-enrpa). Fresh generations omit it.
-_MIGRATED_OTLP_SPANS_DDL = """
-CREATE TABLE otlp_spans (
-    span_id           TEXT PRIMARY KEY,
-    trace_id          TEXT NOT NULL,
-    parent_span_id    TEXT,
-    origin            TEXT,
-    session_native_id TEXT,
-    name              TEXT NOT NULL,
-    kind              TEXT,
-    attributes_json   TEXT NOT NULL DEFAULT '{}',
-    events_json       TEXT NOT NULL DEFAULT '[]',
-    started_at_ms     INTEGER,
-    ended_at_ms       INTEGER,
-    received_at_ms    INTEGER NOT NULL
-) STRICT
-"""
-
-
 def test_every_session_keyed_relation_in_the_live_schema_is_declared(tmp_path: Path) -> None:
     """A fresh source tier must have a declared reach for every session key.
 
@@ -193,40 +171,6 @@ def test_every_session_keyed_relation_in_the_live_schema_is_declared(tmp_path: P
         "accepted_marker_inputs",
         "excised_marker_inputs",
     } <= set(audit.declared)
-    # ``otlp_spans`` is retired from fresh DDL (polylogue-enrpa), so a fresh
-    # tier has nothing to classify under that name.
-    assert "otlp_spans" not in set(audit.declared)
-
-
-def test_fresh_source_tier_omits_the_retired_inbound_span_storage(tmp_path: Path) -> None:
-    """``otlp_spans`` is declared retired, not silently dropped.
-
-    It had canonical DDL, two indexes and migration fixtures but no
-    production writer and no production reader other than excision, and no
-    inbound OTLP receiver route was reachable (polylogue-enrpa). Fresh
-    generations omit it; migrated historical tiers keep it and stay readable
-    because durable fresh-DDL parity excludes the explicitly retired set.
-
-    Anti-vacuity: put the table back into ``SOURCE_DDL`` and the fresh live
-    schema grows it again, which the ``sqlite_master`` assertion catches;
-    delete the ``RETIRED_SOURCE_SCHEMA_OBJECTS`` entries instead and the
-    migrated-tier parity proof reports them as unexpected objects.
-    """
-    for ref in ("table:otlp_spans", "index:idx_otlp_spans_trace", "index:idx_otlp_spans_session"):
-        assert ref in RETIRED_SOURCE_SCHEMA_OBJECTS
-    declared = {obj.object_ref for obj in canonical_schema_objects(ArchiveTier.SOURCE)}
-    assert not declared & {"table:otlp_spans", "index:idx_otlp_spans_trace", "index:idx_otlp_spans_session"}
-
-    source_db = tmp_path / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
-    conn = _source_conn(tmp_path)
-    try:
-        live = {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master")}
-    finally:
-        conn.close()
-    assert "otlp_spans" not in live
-    assert "idx_otlp_spans_trace" not in live
-    assert "idx_otlp_spans_session" not in live
 
 
 def test_excision_erases_marker_carriers_and_keeps_only_terminal_evidence(tmp_path: Path) -> None:
@@ -414,47 +358,6 @@ def test_a_raw_cascade_declaration_is_checked_against_the_live_foreign_key() -> 
     assert audit.misdeclared == (cascade_declared,)
     with pytest.raises(UnclassifiedSessionCarrierError, match="ON DELETE CASCADE"):
         audit.raise_if_unreachable()
-
-
-def test_excision_removes_the_sessions_telemetry_spans(tmp_path: Path) -> None:
-    """A migrated tier that still carries ``otlp_spans`` is still excised.
-
-    ``otlp_spans`` is retired from fresh DDL (polylogue-enrpa), so this seeds
-    the table the way a migrated historical source tier carries it. The
-    session key is ``(origin, session_native_id)`` and there is no raw row,
-    so nothing cascades it away.
-
-    Anti-vacuity: drop the ``otlp_spans`` deletion from the apply and the
-    excised session's span attributes stay readable under its native id,
-    while the unrelated session's span must survive either way.
-    """
-    session_id, _other = _seed_archive(tmp_path)
-    conn = _source_conn(tmp_path)
-    try:
-        conn.execute(_MIGRATED_OTLP_SPANS_DDL)
-        for span_id, native_id in (("span-a", _NATIVE_ID), ("span-b", _OTHER_NATIVE_ID)):
-            conn.execute(
-                "INSERT INTO otlp_spans (span_id, trace_id, origin, session_native_id, name, "
-                "attributes_json, received_at_ms) VALUES (?, 'trace-1', 'chatgpt-export', ?, "
-                "'tool.call', '{\"prompt\": \"private\"}', 1000)",
-                (span_id, native_id),
-            )
-        conn.commit()
-    finally:
-        conn.close()
-
-    plan = plan_session_excision(tmp_path, session_id)
-    assert plan.source_otlp_spans == 1
-
-    receipt = apply_session_excision(tmp_path, session_id, reason="test", actor="user:local")
-    assert receipt.counts["source_otlp_spans"] == 1
-
-    conn = _source_conn(tmp_path)
-    try:
-        remaining = {str(row[0]) for row in conn.execute("SELECT span_id FROM otlp_spans")}
-    finally:
-        conn.close()
-    assert remaining == {"span-b"}
 
 
 def test_container_membership_is_excised_per_member(tmp_path: Path) -> None:

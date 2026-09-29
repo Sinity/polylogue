@@ -25,7 +25,6 @@ from polylogue.pipeline.parsed_tree_size import estimate_parsed_tree_bytes
 from polylogue.sources import revision_backfill
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
-from polylogue.sources.parsers import codex_state
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import (
     LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
@@ -36,7 +35,6 @@ from polylogue.sources.revision_backfill import (
     backfill_historical_revision_evidence,
     census_historical_revision_evidence,
     uncensused_historical_revision_raw_ids,
-    validate_frozen_source_authority,
 )
 from polylogue.sources.sqlite_export import logical_export_bytes
 from polylogue.sources.sqlite_snapshot import member_export_scope
@@ -779,7 +777,6 @@ def test_fragment_repair_preserves_durable_membership_while_refreshing_legacy_re
     assert receipt is not None
     assert receipt[0] == "complete"
     assert parser_census_logical_keys(receipt[1]) == ("codex-session:legacy-fragment",)
-    validate_frozen_source_authority(tmp_path, selected_raw_ids=[baseline_raw_id, raw_id])
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == ()
 
@@ -821,7 +818,6 @@ def test_terminal_non_session_reselection_repairs_legacy_parser_receipt(tmp_path
     assert status == "complete"
     assert parser_census_logical_keys(keys) == ()
 
-    validate_frozen_source_authority(tmp_path, selected_raw_ids=[raw_id])
     census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
     assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == ()
 
@@ -1062,59 +1058,6 @@ def test_unknown_retained_jsonl_detection_caps_total_scan_before_typed_failure(
             revision_backfill.parse_retained_raw_sessions(archive, raw_id)
 
     assert read_bytes <= revision_backfill._REPLAY_PROVIDER_DETECTION_MAX_SCAN_BYTES
-
-
-def test_frozen_source_validation_treats_codex_state_as_non_session_evidence(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Frozen validation must route Codex state SQLite past the JSON parser."""
-    bootstrap_archive_root(tmp_path)
-    payload = _codex_thread_state_snapshot_bytes(tmp_path, "frozen state")
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=payload,
-            source_path=str(tmp_path / "codex" / "state_5.sqlite"),
-            acquired_at_ms=1,
-        )
-
-    census_historical_revision_evidence(tmp_path)
-    parsed_raw_ids: list[str] = []
-
-    def record_parse_dispatch(_archive: ArchiveStore, raw_ids: list[str], **_kwargs: object) -> dict[object, object]:
-        parsed_raw_ids.extend(raw_ids)
-        return {}
-
-    monkeypatch.setattr(revision_backfill, "_parse_retained_raws", record_parse_dispatch)
-
-    validate_frozen_source_authority(tmp_path)
-    assert parsed_raw_ids == []
-
-
-def test_frozen_codex_state_budget_blocks_before_sqlite_classification(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Frozen-source validation rejects an oversized state snapshot before opening it."""
-    bootstrap_archive_root(tmp_path)
-    payload = _codex_thread_state_snapshot_bytes(tmp_path, "frozen oversized state")
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CODEX,
-            payload=payload,
-            source_path=str(tmp_path / "codex" / "state_5.sqlite"),
-            acquired_at_ms=1,
-        )
-
-    monkeypatch.setattr(
-        codex_state,
-        "classify_codex_sqlite_path",
-        lambda *_args, **_kwargs: pytest.fail("payload budget must block before Codex SQLite classification"),
-    )
-
-    with pytest.raises(revision_backfill.RawRevisionReplayResourceBlockedError) as blocked:
-        validate_frozen_source_authority(tmp_path, max_payload_bytes=1)
-
-    assert blocked.value.raw_ids == (raw_id,)
 
 
 def test_unknown_retained_stream_census_worker_scans_past_oversized_first_record(
@@ -1612,13 +1555,12 @@ def _codex_thread_state_page_image_bytes(tmp_path: Path, title: str) -> bytes:
     return state_path.read_bytes()
 
 
-def test_legacy_codex_page_image_does_not_abort_frozen_validation(tmp_path: Path) -> None:
+def test_legacy_codex_page_image_does_not_abort_census(tmp_path: Path) -> None:
     """A retained legacy page image is terminal non-session, not a run abort.
 
-    Anti-vacuity: revert the page-image guard in ``_legacy_page_image_raw_ids``
-    and this raises FrozenSourceRemediationRequiredError, because the SQLite
-    bytes reach the JSON parser and that exception is promoted to a whole-run
-    refusal.
+    Anti-vacuity: revert the page-image guard and this census either raises,
+    because the SQLite bytes reach the JSON parser, or leaves no terminal
+    page-image receipt.
     """
     bootstrap_archive_root(tmp_path)
     payload = _codex_thread_state_page_image_bytes(tmp_path, "legacy page image")
@@ -1631,7 +1573,6 @@ def test_legacy_codex_page_image_does_not_abort_frozen_validation(tmp_path: Path
         )
 
     census_historical_revision_evidence(tmp_path)
-    validate_frozen_source_authority(tmp_path)
 
     with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
         detail = archive.source_connection.execute(
@@ -1646,7 +1587,7 @@ def test_antigravity_trajectory_page_image_is_terminal_during_frozen_backfill(tm
 
     The SQLite bytes deliberately carry a valid trajectory schema and message,
     so removing the Antigravity page-image refusal parses a session and fails
-    both the zero-membership assertion and frozen validation.
+    the zero-membership assertion.
     """
     bootstrap_archive_root(tmp_path)
     trajectory_path = tmp_path / "antigravity" / "conversations" / "page-image.sqlite"
@@ -1687,7 +1628,6 @@ def test_antigravity_trajectory_page_image_is_terminal_during_frozen_backfill(tm
         )
 
     result = backfill_historical_revision_evidence(tmp_path)
-    validate_frozen_source_authority(tmp_path)
 
     assert result.scanned == 2
     assert result.replayed_logical_sources == 1

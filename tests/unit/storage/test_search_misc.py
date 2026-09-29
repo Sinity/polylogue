@@ -28,7 +28,13 @@ from polylogue.sources.parsers.claude import (
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.schema import _ensure_schema
-from tests.infra.storage_records import make_hash, make_raw_session, make_session, save_session_to_archive
+from tests.infra.storage_records import (
+    admit_raw_record,
+    make_hash,
+    make_raw_session,
+    make_session,
+    save_session_to_archive,
+)
 
 
 class TestEnsureVec0Table:
@@ -178,14 +184,15 @@ class TestRawSessionEdgeCases:
 
         # raw_sessions lives in the source durability tier (#1743); write it
         # through the backend rather than a direct INSERT.
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             make_raw_session(
                 raw_id="raw-123",
                 source_name="claude-ai",
                 source_path="/path/to/file.jsonl",
                 blob_size=blob_size,
                 acquired_at="2024-01-01T00:00:00Z",
-            )
+            ),
         )
 
         # Create session linked to raw data

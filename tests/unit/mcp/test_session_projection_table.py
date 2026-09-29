@@ -229,4 +229,25 @@ async def test_capability_explanation_is_derived_from_session_projection_table(
             )
         )
 
-    assert payload["read_views"] == list(SESSION_LIST_PROJECTION_NAMES)
+    assert payload["read_views"] == list(mcp_read_view_names())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("view", tuple(SESSION_LIST_PROJECTIONS))
+async def test_read_list_views_honor_limit_offset_and_next_page(mcp_server: MCPServerUnderTest, view: str) -> None:
+    """Without the shared read slice, the handler returns all five rows on every page."""
+    projection = SESSION_LIST_PROJECTIONS[view]
+    poly = make_polylogue_mock()
+    rows = [{"event_index": i} for i in range(5)]
+    setattr(poly, projection.method, AsyncMock(return_value=rows))
+    read = mcp_server._tool_manager._tools["read"].fn
+    with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
+        pages = [
+            json.loads(
+                await invoke_surface_async(read, ref="session:codex-session:w13", view=view, limit=2, offset=offset)
+            )
+            for offset in (0, 2, 4)
+        ]
+    assert [page["total"] for page in pages] == [5, 5, 5]
+    assert [page["next_offset"] for page in pages] == [2, 4, None]
+    assert [item for page in pages for item in page[projection.payload_key]] == rows

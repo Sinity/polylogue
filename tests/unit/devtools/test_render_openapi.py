@@ -66,7 +66,8 @@ def test_openapi_publishes_typed_first_party_credential_contract() -> None:
     schemas = document["components"]["schemas"]
 
     assert lifecycle["post"]["operationId"] == "bootstrapWebCredential"
-    assert lifecycle["post"]["security"] == []
+    assert lifecycle["post"]["security"] == [{"machineBearer": []}, {"webCredentialCookie": []}]
+    assert "401" in lifecycle["post"]["responses"]
     assert lifecycle["post"]["responses"]["201"]["content"]["application/json"]["schema"] == {
         "$ref": "#/components/schemas/WebCredentialBootstrapPayload"
     }

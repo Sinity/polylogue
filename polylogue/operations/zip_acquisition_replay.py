@@ -60,7 +60,7 @@ class MemberCandidate:
 
     @property
     def byte_identity(self) -> str:
-        """Legacy raw-byte identity retained for pre-migration rows."""
+        """Raw-byte identity for rows recorded without a content identity."""
         return hashlib.sha256(self.payload_bytes).hexdigest()
 
 
@@ -127,12 +127,11 @@ def _digest(candidate: MemberCandidate) -> str:
 def _matches_expected(candidate: MemberCandidate, expected_digest: str, *, structural_only: bool = False) -> bool:
     """Match the declared identity without weakening a structural claim.
 
-    ``blob_hash`` is the compatibility identity for rows written before
-    member content identities existed.  Once a row carries
-    ``content_identity``, however, accepting a byte hash as an alternative
-    would let a deliberately colliding/mutated row pass replay verification.
-    The caller therefore marks structural identities explicitly; the public
-    resolver keeps its historical byte-hash fallback for legacy callers.
+    ``blob_hash`` is the only identity of a row whose coordinate was recorded
+    without a content identity.  Once a row carries ``content_identity``,
+    however, accepting a byte hash as an alternative would let a deliberately
+    colliding/mutated row pass replay verification, so the caller marks
+    structural identities explicitly.
     """
     if structural_only:
         return candidate.content_identity == expected_digest
@@ -181,7 +180,7 @@ def zip_reacquisition_payload(
 ) -> tuple[bytes | None, str | None]:
     """Replay one ZIP member and return the recorded value it still holds."""
     coordinate = _zip_coordinate(row)
-    hint_index = coordinate[1] if coordinate is not None else _legacy_split_index(row)
+    hint_index = coordinate[1] if coordinate is not None else None
     hint_mode = _recorded_addressing_mode(row)
     zip_path_text, _separator, member = source_path.partition(":")
     if not zip_path_text or not member:
@@ -243,7 +242,7 @@ def zip_reacquisition_payload(
         # the backup. Any unreadable or unparseable container therefore
         # leaves this reference unproven and lets verification fail closed.
         return None, f"error:{exc}"
-    structural_identity = _has_valid_digest(row.get("content_identity")) or _has_valid_digest(row.get("content_digest"))
+    structural_identity = _has_valid_digest(row.get("content_identity"))
     resolution = resolve_member_candidate(
         candidates,
         expected_digest=_expected_digest(row),
@@ -255,14 +254,9 @@ def zip_reacquisition_payload(
 
 
 def _expected_digest(row: Mapping[str, object]) -> str | None:
-    for key in ("content_identity", "content_digest"):
-        value = row.get(key)
-        if isinstance(value, str) and len(value) == 64:
-            try:
-                bytes.fromhex(value)
-            except ValueError:
-                continue
-            return value.lower()
+    value = row.get("content_identity")
+    if isinstance(value, str) and _has_valid_digest(value):
+        return value.lower()
     blob_hash = row.get("blob_hash")
     if isinstance(blob_hash, (bytes, bytearray)) and len(blob_hash) == 32:
         return bytes(blob_hash).hex()
@@ -272,9 +266,8 @@ def _expected_digest(row: Mapping[str, object]) -> str | None:
         bytes.fromhex(blob_hash)
     except ValueError:
         return None
-    # Legacy rows predate the durable structural digest.  Their raw byte hash
-    # remains a safe compatibility identity (and is never used for migrated
-    # rows, which carry ``content_identity``).
+    # A coordinate may be recorded without a reading (``content_identity``
+    # NULL); the retained byte hash is then the only recorded identity.
     return blob_hash.lower()
 
 
@@ -324,18 +317,6 @@ def _zip_coordinate(row: Mapping[str, object]) -> tuple[int, int] | None:
         source_index=int(source_index),
         blob_hash=blob_hash_hex,
     )
-
-
-def _legacy_split_index(row: Mapping[str, object]) -> int | None:
-    source_index = row.get("source_index")
-    if source_index is None:
-        return 0
-    if not isinstance(source_index, (int, str)):
-        return None
-    try:
-        return int(source_index)
-    except ValueError:
-        return None
 
 
 __all__ = [

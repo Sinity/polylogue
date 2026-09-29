@@ -25,8 +25,6 @@ from polylogue.storage.sqlite.archive_tiers import (
     ARCHIVE_VERSION_BY_TIER,
 )
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ARCHIVE_FORMAT_LINEAGE
-from polylogue.storage.sqlite.archive_tiers.schema_identity import _normalize_schema_sql
-from polylogue.storage.sqlite.archive_tiers.schema_inventory import _objects_from_connection
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.schema_manifest import SchemaManifest, canonical_schema_manifest, schema_manifest_diff
 
@@ -248,19 +246,6 @@ def _added_migration_versions(base: str, tier: ArchiveTier) -> tuple[dict[int, t
     return {version: tuple(paths) for version, paths in versions.items()}, invalid
 
 
-def _ddl_objects(ddl: str, tier: ArchiveTier) -> dict[str, str] | None:
-    """Return object_ref -> definition digest, or None if the DDL does not render."""
-    connection = sqlite3.connect(":memory:")
-    connection.row_factory = sqlite3.Row
-    try:
-        connection.executescript(ddl)
-        return {obj.object_ref: obj.definition_sha256 for obj in _objects_from_connection(connection, tier)}
-    except sqlite3.Error:
-        return None
-    finally:
-        connection.close()
-
-
 def _semantic_ddl_objects(ddl: str, tier: ArchiveTier) -> dict[tuple[str, str], str] | None:
     """Render the normalized schema manifest projection for arbitrary DDL."""
     connection = sqlite3.connect(":memory:")
@@ -272,107 +257,6 @@ def _semantic_ddl_objects(ddl: str, tier: ArchiveTier) -> dict[tuple[str, str], 
         return None
     finally:
         connection.close()
-
-
-def _is_retirement_only(old_ddl: str, new_ddl: str, tier: ArchiveTier) -> bool:
-    """True when the rendered DDL differs solely by declared retired removals.
-
-    A retired object is omitted from fresh generations while migrated
-    historical tiers keep it, so no migration runs and no database changes.
-    Anything added or redefined is an ordinary durable evolution.
-    """
-    from polylogue.storage.sqlite.migration_runner import _retired_schema_objects_for_parity
-
-    retired = _retired_schema_objects_for_parity(tier)
-    if not retired:
-        return False
-    old_objects = _ddl_objects(old_ddl, tier)
-    new_objects = _ddl_objects(new_ddl, tier)
-    if old_objects is None or new_objects is None:
-        return False
-    if set(new_objects) - set(old_objects):
-        return False
-    retired_tables = {ref.split(":", 1)[1] for ref in retired if ref.startswith("table:")}
-    removed = set(old_objects) - set(new_objects)
-    # Tables that lost a declared-retired column of their own. Their
-    # ``CREATE TABLE`` text necessarily differs, so the table object's digest
-    # moves even though the table itself was not redefined (polylogue-48bos).
-    tables_losing_a_retired_column: set[str] = set()
-    for ref in removed:
-        kind_and_name = ref.split(":", 1)[1]
-        owning_table = kind_and_name.split(":", 1)[1].split(".", 1)[0] if kind_and_name.startswith("column:") else ""
-        if kind_and_name in retired:
-            if owning_table:
-                tables_losing_a_retired_column.add(owning_table)
-            continue
-        if owning_table and owning_table in retired_tables:
-            continue
-        return False
-    for ref in set(old_objects) & set(new_objects):
-        if old_objects[ref] == new_objects[ref]:
-            continue
-        _tier_token, kind, name = ref.split(":", 2)
-        # Only the owning table's own declaration may move, and only when
-        # every column it kept is byte-identical -- so the digest change is
-        # the retired column's removal and nothing else rode along with it.
-        if kind != "table" or name not in tables_losing_a_retired_column:
-            return False
-        prefix = f"{tier.value}:column:{name}."
-        if any(
-            old_objects[column_ref] != new_objects[column_ref]
-            for column_ref in set(old_objects) & set(new_objects)
-            if column_ref.startswith(prefix)
-        ):
-            return False
-        # Removing a retired column necessarily changes sqlite_schema.sql.
-        # Recreate the old table, apply precisely the declared DROP COLUMN
-        # operation(s), and require SQLite's resulting definition to match
-        # the candidate. This includes CHECKs, foreign keys and table options.
-        old_table_sql = _table_sql(old_ddl, name)
-        new_table_sql = _table_sql(new_ddl, name)
-        if old_table_sql is None or new_table_sql is None:
-            return False
-        retired_columns = [
-            ref.split(":", 1)[1].split(".", 1)[1]
-            for ref in retired
-            if ref.startswith(f"column:{name}.")
-            and f"{tier.value}:{ref}" in old_objects
-            and f"{tier.value}:{ref}" not in new_objects
-        ]
-        conn: sqlite3.Connection | None = None
-        try:
-            conn = sqlite3.connect(":memory:")
-            conn.execute(old_table_sql)
-            for column in retired_columns:
-                quoted_table = name.replace('"', '""')
-                quoted_column = column.replace('"', '""')
-                conn.execute(f'ALTER TABLE "{quoted_table}" DROP COLUMN "{quoted_column}"')
-            expected_row = conn.execute(
-                "SELECT sql FROM sqlite_schema WHERE type='table' AND name=?", (name,)
-            ).fetchone()
-            expected_sql = expected_row[0] if expected_row else None
-        except sqlite3.Error:
-            return False
-        finally:
-            if conn is not None:
-                conn.close()
-        if not isinstance(expected_sql, str):
-            return False
-        if _normalize_schema_sql(expected_sql) != _normalize_schema_sql(new_table_sql):
-            return False
-    return True
-
-
-def _table_sql(ddl: str, name: str) -> str | None:
-    conn = sqlite3.connect(":memory:")
-    try:
-        conn.executescript(ddl)
-        row = conn.execute("SELECT sql FROM sqlite_schema WHERE type='table' AND name=?", (name,)).fetchone()
-        return str(row[0]) if row else None
-    except sqlite3.Error:
-        return None
-    finally:
-        conn.close()
 
 
 def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[str]:
@@ -461,12 +345,7 @@ def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[
             if old_manifest is not None and new_manifest is not None
             else old_ddl != new_ddl
         )
-        if (
-            schema_changed
-            and old_version == new_version
-            and not new_fresh_lineage
-            and not _is_retirement_only(old_ddl, new_ddl, tier)
-        ):
+        if schema_changed and old_version == new_version and not new_fresh_lineage:
             violations.append(f"{tier.value}: rendered DDL changed without a schema-version bump")
     return violations
 

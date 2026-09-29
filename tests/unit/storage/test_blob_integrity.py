@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 import zipfile
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -30,27 +31,51 @@ from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 
-def _make_db(path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
-    conn.executescript(
+def _make_db(root: Path) -> sqlite3.Connection:
+    """Bootstrap fresh v1 source and index tiers under ``root``; return a source writer."""
+    root.mkdir(parents=True, exist_ok=True)
+    initialize_archive_database(root / "source.db", ArchiveTier.SOURCE)
+    initialize_archive_database(root / "index.db", ArchiveTier.INDEX)
+    return sqlite3.connect(root / "source.db")
+
+
+def _insert_raw(
+    conn: sqlite3.Connection,
+    raw_id: str,
+    blob_hash: str,
+    size: int,
+    *,
+    origin: str = "codex-session",
+    native_id: str | None = None,
+    source_path: str = "/tmp/session.jsonl",
+    validation_status: str | None = None,
+) -> None:
+    conn.execute(
         """
-        CREATE TABLE raw_sessions (
-            raw_id TEXT PRIMARY KEY,
-            source_name TEXT NOT NULL DEFAULT '',
-            source_path TEXT NOT NULL DEFAULT '',
-            blob_hash BLOB,
-            blob_size INTEGER NOT NULL DEFAULT 0,
-            acquired_at TEXT NOT NULL DEFAULT ''
-        );
-        CREATE TABLE blob_refs (
-            blob_hash BLOB NOT NULL,
-            raw_id TEXT NOT NULL,
-            ref_type TEXT NOT NULL DEFAULT 'raw_payload'
-        );
-        """
+        INSERT INTO raw_sessions (
+            raw_id, origin, native_id, source_path, blob_hash, blob_size, acquired_at_ms, validation_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (raw_id, origin, native_id, source_path, bytes.fromhex(blob_hash), size, 1, validation_status),
     )
-    conn.commit()
-    return conn
+
+
+def _insert_blob_ref(
+    conn: sqlite3.Connection,
+    blob_hash: str,
+    ref_id: str,
+    ref_type: str,
+    *,
+    source_path: str | None = None,
+    size: int = 0,
+) -> None:
+    conn.execute(
+        """
+        INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (bytes.fromhex(blob_hash), ref_id, ref_type, source_path, size, 1),
+    )
 
 
 def test_scan_blob_integrity_classifies_missing_orphan_and_hash_mismatch(tmp_path: Path) -> None:
@@ -62,9 +87,9 @@ def test_scan_blob_integrity_classifies_missing_orphan_and_hash_mismatch(tmp_pat
     (polylogue-v7e0 — no production ingest caller ever populated the lease
     payload keys), so the leased-blob assertions were removed with it.
     """
-    db_path = tmp_path / "archive.db"
+    db_path = tmp_path / "source.db"
     store = BlobStore(tmp_path / "blob")
-    conn = _make_db(db_path)
+    conn = _make_db(tmp_path)
 
     referenced_ok, ok_size = store.write_from_bytes(b"referenced")
     orphan_hash, _ = store.write_from_bytes(b"orphan")
@@ -73,10 +98,7 @@ def test_scan_blob_integrity_classifies_missing_orphan_and_hash_mismatch(tmp_pat
     missing_hash = "0" * 64
 
     for blob_hash, size in ((referenced_ok, ok_size), (missing_hash, 128), (corrupt_hash, corrupt_size)):
-        conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size, acquired_at) VALUES (?, ?, ?, ?)",
-            (f"raw-{blob_hash[:8]}", bytes.fromhex(blob_hash), size, "2026-05-24T00:00:00+00:00"),
-        )
+        _insert_raw(conn, f"raw-{blob_hash[:8]}", blob_hash, size)
     conn.commit()
     conn.close()
 
@@ -89,9 +111,9 @@ def test_scan_blob_integrity_classifies_missing_orphan_and_hash_mismatch(tmp_pat
 
 
 def test_scan_blob_integrity_reports_invalid_namespace_entries(tmp_path: Path) -> None:
-    db_path = tmp_path / "archive.db"
+    db_path = tmp_path / "source.db"
     store = BlobStore(tmp_path / "blob")
-    _make_db(db_path).close()
+    _make_db(tmp_path).close()
     blob_hash, _ = store.write_from_bytes(b"valid")
     sidecar = store.root / f"{blob_hash}-wal"
     sidecar.write_bytes(b"not a blob")
@@ -105,10 +127,10 @@ def test_scan_blob_integrity_reports_invalid_namespace_entries(tmp_path: Path) -
 
 
 def test_scan_blob_integrity_reports_file_backed_root(tmp_path: Path) -> None:
-    db_path = tmp_path / "archive.db"
+    db_path = tmp_path / "source.db"
     root = tmp_path / "blob"
     root.write_bytes(b"not a directory")
-    _make_db(db_path).close()
+    _make_db(tmp_path).close()
 
     report = scan_blob_integrity(db_path, store=BlobStore(root), full=True)
 
@@ -119,15 +141,12 @@ def test_scan_blob_integrity_reports_file_backed_root(tmp_path: Path) -> None:
 
 
 def test_scan_blob_integrity_bounds_default_probe_but_full_scans_everything(tmp_path: Path) -> None:
-    db_path = tmp_path / "archive.db"
+    db_path = tmp_path / "source.db"
     store = BlobStore(tmp_path / "blob")
-    conn = _make_db(db_path)
+    conn = _make_db(tmp_path)
     hashes = [store.write_from_bytes(f"payload-{idx}".encode())[0] for idx in range(3)]
     for blob_hash in hashes:
-        conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size, acquired_at) VALUES (?, ?, ?, ?)",
-            (f"raw-{blob_hash[:8]}", bytes.fromhex(blob_hash), 9, "2026-05-24T00:00:00+00:00"),
-        )
+        _insert_raw(conn, f"raw-{blob_hash[:8]}", blob_hash, 9)
     conn.commit()
     conn.close()
 
@@ -146,45 +165,16 @@ def test_scan_blob_integrity_reads_source_tier_blob_refs(tmp_path: Path) -> None
     raw_hash, raw_size = store.write_from_bytes(b"raw payload")
     attachment_hash, attachment_size = store.write_from_bytes(b"attachment")
     orphan_hash, _ = store.write_from_bytes(b"orphan")
-    with sqlite3.connect(source_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                blob_hash BLOB NOT NULL,
-                blob_size INTEGER NOT NULL
-            );
-            CREATE TABLE blob_refs (
-                blob_hash BLOB NOT NULL,
-                raw_id TEXT NOT NULL,
-                ref_type TEXT NOT NULL,
-                source_path TEXT,
-                size_bytes INTEGER NOT NULL,
-                acquired_at_ms INTEGER NOT NULL,
-                PRIMARY KEY(blob_hash, raw_id, ref_type)
-            );
-            """
-        )
-        conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
-            ("raw-v1", bytes.fromhex(raw_hash), raw_size),
-        )
-        conn.execute(
-            """
-            INSERT INTO blob_refs (
-                blob_hash, raw_id, ref_type, source_path, size_bytes, acquired_at_ms
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (bytes.fromhex(attachment_hash), "raw-v1", "attachment", "/tmp/a.bin", attachment_size, 1),
-        )
+    with closing(_make_db(tmp_path)) as conn, conn:
+        _insert_raw(conn, "raw-v1", raw_hash, raw_size)
+        _insert_blob_ref(conn, attachment_hash, "raw-v1", "attachment", source_path="/tmp/a.bin", size=attachment_size)
 
     report = scan_blob_integrity(source_db, store=store, full=True)
 
     by_kind = {finding.kind: finding for finding in report.findings}
-    assert report.total_references_seen == 1
-    assert set(by_kind["orphan_blobs"].sample) == {attachment_hash, orphan_hash}
-    assert raw_hash not in by_kind["orphan_blobs"].sample
-    assert attachment_hash in by_kind["orphan_blobs"].sample
+    # The typed ledger row keeps the attachment live while its raw referent exists.
+    assert report.total_references_seen == 2
+    assert set(by_kind["orphan_blobs"].sample) == {orphan_hash}
 
 
 def test_scan_blob_reference_debt_counts_all_missing_refs_with_bounded_sample(tmp_path: Path) -> None:
@@ -192,31 +182,10 @@ def test_scan_blob_reference_debt_counts_all_missing_refs_with_bounded_sample(tm
     store = BlobStore(tmp_path / "blob")
     present_hash, present_size = store.write_from_bytes(b"present")
     missing_hashes = [f"{idx:064x}" for idx in range(5)]
-    with sqlite3.connect(source_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                blob_hash BLOB NOT NULL,
-                blob_size INTEGER NOT NULL
-            );
-            CREATE TABLE blob_refs (
-                blob_hash BLOB NOT NULL,
-                raw_id TEXT NOT NULL,
-                ref_type TEXT NOT NULL,
-                PRIMARY KEY(blob_hash, raw_id, ref_type)
-            );
-            """
-        )
-        conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
-            ("raw-present", bytes.fromhex(present_hash), present_size),
-        )
+    with closing(_make_db(tmp_path)) as conn, conn:
+        _insert_raw(conn, "raw-present", present_hash, present_size)
         for idx, blob_hash in enumerate(missing_hashes):
-            conn.execute(
-                "INSERT INTO blob_refs (blob_hash, raw_id, ref_type) VALUES (?, ?, ?)",
-                (bytes.fromhex(blob_hash), f"raw-{idx}", "attachment"),
-            )
+            _insert_blob_ref(conn, blob_hash, f"raw-{idx}", "attachment")
 
     report = scan_blob_reference_debt(source_db, store=store, sample_size=2)
 
@@ -228,86 +197,12 @@ def test_scan_blob_reference_debt_counts_all_missing_refs_with_bounded_sample(tm
     assert referenced_blob_hashes(source_db) == [present_hash]
 
 
-def test_source_capabilities_choose_current_shape_over_zero_user_version(tmp_path: Path) -> None:
+def test_source_tier_without_index_authority_is_refused(tmp_path: Path) -> None:
     source_db = tmp_path / "source.db"
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
-    with sqlite3.connect(source_db) as conn:
-        conn.execute("PRAGMA user_version = 0")
-        capabilities = blob_integrity._source_schema_capabilities(conn)
 
-    assert capabilities.kind == "current_unversioned"
-    assert capabilities.current_authority is True
     with pytest.raises(RuntimeError, match="canonical blob liveness projection blocked"):
         referenced_blob_hashes(source_db)
-
-
-def test_source_capabilities_keep_versioned_schema_fail_closed(tmp_path: Path) -> None:
-    source_db = tmp_path / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
-    with sqlite3.connect(source_db) as conn:
-        capabilities = blob_integrity._source_schema_capabilities(conn)
-
-    assert capabilities.kind == "current_versioned"
-    assert capabilities.current_authority is True
-
-
-def test_source_capabilities_project_legacy_raw_only_carrier(tmp_path: Path) -> None:
-    source_db = tmp_path / "source.db"
-    expected_hash = "a" * 64
-    with sqlite3.connect(source_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY, blob_hash BLOB NOT NULL);
-            """
-        )
-        conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_hash) VALUES (?, ?)", ("raw-1", bytes.fromhex(expected_hash))
-        )
-
-        capabilities = blob_integrity._source_schema_capabilities(conn)
-
-    assert capabilities.kind == "legacy_raw_only"
-    assert capabilities.legacy_carriers == ("raw_sessions",)
-    assert referenced_blob_hashes(source_db, require_index=False) == [expected_hash]
-
-
-def test_source_capabilities_conserve_mixed_legacy_and_typed_references(tmp_path: Path) -> None:
-    source_db = tmp_path / "source.db"
-    raw_hash = "b" * 64
-    sidecar_hash = "c" * 64
-    ledger_hash = "d" * 64
-    with sqlite3.connect(source_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE raw_sessions (raw_id TEXT PRIMARY KEY, blob_hash BLOB NOT NULL);
-            CREATE TABLE raw_hook_events (hook_event_id TEXT PRIMARY KEY);
-            CREATE TABLE history_sidecars (sidecar_id TEXT PRIMARY KEY, blob_hash BLOB NOT NULL);
-            CREATE TABLE blob_refs (
-                blob_hash BLOB NOT NULL,
-                ref_id TEXT NOT NULL,
-                ref_type TEXT NOT NULL,
-                PRIMARY KEY (blob_hash, ref_type, ref_id)
-            );
-            """
-        )
-        conn.execute("INSERT INTO raw_sessions (raw_id, blob_hash) VALUES (?, ?)", ("raw-1", bytes.fromhex(raw_hash)))
-        conn.execute(
-            "INSERT INTO history_sidecars (sidecar_id, blob_hash) VALUES (?, ?)",
-            ("sidecar-1", bytes.fromhex(sidecar_hash)),
-        )
-        conn.execute(
-            "INSERT INTO blob_refs (blob_hash, ref_id, ref_type) VALUES (?, ?, ?)",
-            (bytes.fromhex(raw_hash), "raw-1", "raw_payload"),
-        )
-        conn.execute(
-            "INSERT INTO blob_refs (blob_hash, ref_id, ref_type) VALUES (?, ?, ?)",
-            (bytes.fromhex(ledger_hash), "raw-gone", "attachment"),
-        )
-        capabilities = blob_integrity._source_schema_capabilities(conn)
-
-    assert capabilities.kind == "mixed_transitional"
-    assert capabilities.legacy_carriers == ("raw_sessions", "history_sidecars", "blob_refs")
-    assert referenced_blob_hashes(source_db, require_index=False) == sorted((raw_hash, sidecar_hash, ledger_hash))
 
 
 def test_source_catalog_failure_is_not_an_empty_reference_projection(tmp_path: Path) -> None:
@@ -688,68 +583,31 @@ def test_classify_blob_reference_debt_groups_recovery_evidence(tmp_path: Path) -
     missing_attachment_hash = "2" * 64
     orphan_ref_hash = "3" * 64
 
-    with sqlite3.connect(source_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                origin TEXT,
-                native_id TEXT,
-                source_path TEXT,
-                blob_hash BLOB,
-                blob_size INTEGER NOT NULL,
-                parse_error TEXT,
-                validation_status TEXT
-            );
-            CREATE TABLE blob_refs (
-                blob_hash BLOB NOT NULL,
-                raw_id TEXT NOT NULL,
-                ref_type TEXT NOT NULL,
-                source_path TEXT,
-                size_bytes INTEGER NOT NULL,
-                PRIMARY KEY(blob_hash, raw_id, ref_type)
-            );
-            """
+    with closing(_make_db(tmp_path)) as conn, conn:
+        _insert_raw(
+            conn,
+            "raw-present",
+            present_hash,
+            present_size,
+            native_id="native-present",
+            source_path=str(source_file),
+            validation_status="passed",
         )
-        conn.execute(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, blob_hash, blob_size, validation_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "raw-present",
-                "codex-session",
-                "native-present",
-                str(source_file),
-                bytes.fromhex(present_hash),
-                present_size,
-                "passed",
-            ),
+        _insert_raw(
+            conn,
+            "raw-missing",
+            missing_raw_hash,
+            123,
+            origin="chatgpt-export",
+            native_id="native-missing",
+            source_path=str(source_file),
+            validation_status="passed",
         )
-        conn.execute(
-            """
-            INSERT INTO raw_sessions (
-                raw_id, origin, native_id, source_path, blob_hash, blob_size, validation_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                "raw-missing",
-                "chatgpt-export",
-                "native-missing",
-                str(source_file),
-                bytes.fromhex(missing_raw_hash),
-                123,
-                "passed",
-            ),
+        _insert_blob_ref(
+            conn, missing_attachment_hash, "raw-missing", "attachment", source_path=str(source_file), size=456
         )
-        conn.execute(
-            "INSERT INTO blob_refs (blob_hash, raw_id, ref_type, source_path, size_bytes) VALUES (?, ?, ?, ?, ?)",
-            (bytes.fromhex(missing_attachment_hash), "raw-missing", "attachment", str(source_file), 456),
-        )
-        conn.execute(
-            "INSERT INTO blob_refs (blob_hash, raw_id, ref_type, source_path, size_bytes) VALUES (?, ?, ?, ?, ?)",
-            (bytes.fromhex(orphan_ref_hash), "raw-gone", "raw_payload", str(tmp_path / "missing.json"), 789),
+        _insert_blob_ref(
+            conn, orphan_ref_hash, "raw-gone", "raw_payload", source_path=str(tmp_path / "missing.json"), size=789
         )
 
     report = classify_blob_reference_debt(source_db, store=store, sample_size=2, group_limit=3)
@@ -840,25 +698,10 @@ def test_blob_recovery_rejects_oversized_container_member_before_open(
 
 def test_scan_blob_integrity_uses_sibling_archive_source_from_index_db(tmp_path: Path) -> None:
     index_db = tmp_path / "index.db"
-    source_db = tmp_path / "source.db"
     store = BlobStore(tmp_path / "blob")
     raw_hash, raw_size = store.write_from_bytes(b"raw payload")
-    with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
-    with sqlite3.connect(source_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                blob_hash BLOB NOT NULL,
-                blob_size INTEGER NOT NULL
-            );
-            """
-        )
-        conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
-            ("raw-v1", bytes.fromhex(raw_hash), raw_size),
-        )
+    with closing(_make_db(tmp_path)) as conn, conn:
+        _insert_raw(conn, "raw-v1", raw_hash, raw_size)
 
     report = scan_blob_integrity(index_db, store=store, full=True)
 
@@ -971,33 +814,13 @@ def test_generation_resolved_index_scans_the_configured_blob_root(tmp_path: Path
     store = BlobStore(archive_root / "blob")
     present_hash, present_size = store.write_from_bytes(b"durable blob bytes")
 
-    source_db = archive_root / "source.db"
-    with sqlite3.connect(source_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE raw_sessions (
-                raw_id TEXT PRIMARY KEY,
-                blob_hash BLOB NOT NULL,
-                blob_size INTEGER NOT NULL
-            );
-            CREATE TABLE blob_refs (
-                blob_hash BLOB NOT NULL,
-                raw_id TEXT NOT NULL,
-                ref_type TEXT NOT NULL,
-                PRIMARY KEY(blob_hash, raw_id, ref_type)
-            );
-            """
-        )
-        conn.execute(
-            "INSERT INTO raw_sessions (raw_id, blob_hash, blob_size) VALUES (?, ?, ?)",
-            ("raw-present", bytes.fromhex(present_hash), present_size),
-        )
+    with closing(_make_db(archive_root)) as conn, conn:
+        _insert_raw(conn, "raw-present", present_hash, present_size)
 
     generation_dir = archive_root / ".index-generations" / "gen-1"
     generation_dir.mkdir(parents=True, exist_ok=True)
     index_db = generation_dir / "index.db"
-    with sqlite3.connect(index_db) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+    initialize_archive_database(index_db, ArchiveTier.INDEX)
 
     report = scan_blob_reference_debt(index_db, configured_root=archive_root)
 

@@ -53,7 +53,8 @@ from polylogue.schemas.operator.receipt import (
     load_schema_inference_receipt,
     write_schema_inference_receipt,
 )
-from polylogue.schemas.package_publication import provider_tree_lock
+from polylogue.schemas.package_publication import provider_tree_lock, publish_provider_tree, read_provider_snapshot
+from polylogue.schemas.promotion_audit import PromotionAuditFinding, audit_schema_artifacts
 from polylogue.schemas.registry import SchemaRegistry
 from polylogue.schemas.runtime_registry import canonical_schema_provider
 from polylogue.schemas.type_narrowing import added_paths, narrowed_paths
@@ -82,6 +83,73 @@ class SchemaCommitPrivacyError(ValueError):
         super().__init__(
             f"{provider}: generated schema bundle retains private values before staging\n" + "\n".join(violations)
         )
+
+
+class SchemaCommitAuditError(Exception):
+    """Raised when the persisted provider tree fails the promotion audit.
+
+    ``schema commit`` publishes a package only after the same audit that gates
+    promotion passes on the exact bytes written. On a blocker the provider's
+    previous tree is restored, so an unaudited package is never left behind
+    (polylogue-mdlft).
+    """
+
+    def __init__(self, provider: str, blockers: tuple[PromotionAuditFinding, ...]) -> None:
+        self.provider = provider
+        self.blockers = blockers
+        categories = sorted({item.category for item in blockers})
+        super().__init__(
+            f"{provider}: committed package failed the promotion audit with {len(blockers)} blocker(s): "
+            + ", ".join(categories)
+        )
+
+
+def _persist_audited(output_dir: Path, provider_token: str, bundle: _ProviderBundle) -> None:
+    """Render *bundle* to a staging tree, audit it there, and publish only on a pass.
+
+    The rendered tree is never written to the live ``provider_dir`` before its
+    audit completes: a kill between publication and the audit gate could
+    otherwise leave an unaudited package — including one carrying a promotion
+    blocker such as retained private material — as the tree subsequent reads
+    see, with the prior tree surviving only in an orphaned temp directory
+    (polylogue findings on this module). Rendering into a same-filesystem
+    staging directory and publishing with :func:`publish_provider_tree`'s
+    atomic exchange means the live tree only ever transitions directly from
+    "prior, audited" to "new, audited"; a failed or interrupted run leaves it
+    exactly as it was.
+
+    Only publication and its audit hold the exclusive tree lock; the caller
+    builds *bundle* (the potentially long inference run) before this point, so
+    concurrent schema reads are not blocked for the duration of generation.
+    """
+    provider_dir = output_dir / provider_token
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (
+        provider_tree_lock(output_dir, exclusive=True),
+        tempfile.TemporaryDirectory(prefix=f".{provider_token}.stage-", dir=output_dir) as stage_root,
+    ):
+        stage_root_path = Path(stage_root)
+        staged_dir = stage_root_path / provider_token
+        live_snapshot = read_provider_snapshot(provider_dir)
+        if provider_dir.is_dir():
+            # Persistence merges into the provider's existing catalog, carrying
+            # historical versions and elements forward; it must see the live
+            # tree, or publishing the stage would drop them.
+            shutil.copytree(provider_dir, staged_dir, symlinks=True)
+        seeded_snapshot = read_provider_snapshot(staged_dir)
+        persist_generated_provider_bundle(stage_root_path, provider_token, bundle)
+        if not staged_dir.exists() or read_provider_snapshot(staged_dir) == seeded_snapshot:
+            # bundle.result.success was False: nothing rendered to publish.
+            return
+        report = audit_schema_artifacts(staged_dir)
+        if report.blockers:
+            raise SchemaCommitAuditError(provider_token, report.blockers)
+        publish_provider_tree(staged_dir, provider_dir, expected_snapshot=live_snapshot)
+        # Persistence retires the provider's legacy single-file schema; in the
+        # stage that happened beside the staged tree, so the live copy is
+        # retired here, once the audited tree is published.
+        for legacy_name in (f"{provider_token}.schema.json.gz", f"{provider_token}.schema.json"):
+            (output_dir / legacy_name).unlink(missing_ok=True)
 
 
 def _refuse_private_retained_values(provider: str, bundle: _ProviderBundle) -> None:
@@ -149,6 +217,8 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
         )
         generation_results = [source_bundle.result]
     else:
+        # Generation runs unlocked; only the audited publication of its bundle
+        # takes the exclusive tree lock, with the prior tree restored on a blocker.
         generation_results = generate_all_schemas(
             output_dir,
             db_path=request.db_path,
@@ -157,6 +227,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
             privacy_config=privacy_config_from_payload(request.privacy_config),
             full_corpus=request.full_corpus,
             archive_location=request.archive_location,
+            persist=lambda root, _provider, bundle: _persist_audited(root, provider_token, bundle),
         )
     generation = (
         generation_results[0]
@@ -176,7 +247,7 @@ def _commit_into(request: SchemaCommitRequest, output_dir: Path) -> SchemaCommit
                 if source_bundle is None:
                     raise AssertionError("source schema generation did not produce a bundle")
                 _refuse_private_retained_values(provider_token, source_bundle)
-                persist_generated_provider_bundle(output_dir, provider_token, source_bundle)
+                _persist_audited(output_dir, provider_token, source_bundle)
             registry_after = SchemaRegistry(storage_root=output_dir)
             catalog_after = registry_after.load_package_catalog(provider_token)
             if catalog_after is not None:
@@ -276,6 +347,7 @@ def commit_provider_schema(request: SchemaCommitRequest) -> SchemaCommitResult:
 
 
 __all__ = [
+    "SchemaCommitAuditError",
     "SchemaCommitPrivacyError",
     "SchemaCommitRequest",
     "SchemaCommitResult",

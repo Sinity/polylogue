@@ -19,10 +19,6 @@ class RawFailureEvidenceKind(StrEnum):
     DEFERRED_HOT_JSONL_CAPTURE = "deferred_hot_jsonl_capture"
     DEFERRED_CLAUDE_CODE_PARTIAL_JSONL = "deferred_claude_code_partial_jsonl"
     DEFERRED_CAS_FRONTIER = "deferred_cas_frontier"
-    # Historical rows written before CAS evidence was made provider-neutral.
-    # Keep this token readable until a backup-gated migration or re-observation
-    # receipt has converted every retained row.
-    DEFERRED_CODEX_CAS_FRONTIER = "deferred_codex_cas_frontier"
     TERMINAL_CORRUPT_INPUT = "terminal_corrupt_input"
     TERMINAL_SUPERSEDED_DEFERRED_CAS_FRONTIER = "terminal_superseded_deferred_cas_frontier"
     TERMINAL_UNKNOWN_JSON_DECODE = "terminal_unknown_json_decode"
@@ -37,7 +33,6 @@ class RawFailureEvidenceKind(StrEnum):
             RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE,
             RawFailureEvidenceKind.DEFERRED_CLAUDE_CODE_PARTIAL_JSONL,
             RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER,
-            RawFailureEvidenceKind.DEFERRED_CODEX_CAS_FRONTIER,
         }:
             return ArtifactSupportStatus.PARTIAL_DECODE
         if self in {
@@ -154,19 +149,13 @@ RAW_FAILURE_DEFERRED_EVIDENCE_KINDS = frozenset(
         RawFailureEvidenceKind.DEFERRED_HOT_JSONL_CAPTURE.value,
         RawFailureEvidenceKind.DEFERRED_CLAUDE_CODE_PARTIAL_JSONL.value,
         RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
-        RawFailureEvidenceKind.DEFERRED_CODEX_CAS_FRONTIER.value,
     }
 )
 # Only frontier conflicts authorize retained-raw replay. Hot captures remain
 # deferred until a complete source observation arrives; replaying their
 # truncated blob would advance the cursor past the record that later bytes
 # complete.
-RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS = frozenset(
-    {
-        RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
-        RawFailureEvidenceKind.DEFERRED_CODEX_CAS_FRONTIER.value,
-    }
-)
+RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS = frozenset({RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value})
 # Every deferred raw-failure carrier represents a partial decode. Consumers
 # selecting retry authority must validate this companion field as well as the
 # closed kind, or contradictory rows can authorize replay.
