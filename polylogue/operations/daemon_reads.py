@@ -1479,11 +1479,14 @@ def _session_messages_payload(
             ),
         )
 
+    # A projection is part of the continuation identity only when one was
+    # requested, so a default-projection token resumes across surfaces while
+    # a token minted under a different projection is still refused.
     window = read_transcript_window_sync(
         archive,
         request,
         read=read,
-        extra_arguments={"projection": dict(raw_projection) if raw_projection else {}},
+        extra_arguments={"projection": dict(raw_projection)} if raw_projection else None,
     )
     result: dict[str, object] = {
         "outcome": lineage_page_outcome(
