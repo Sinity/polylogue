@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -34,12 +35,13 @@ def test_identity_lookups_open_one_connection_per_page(tmp_path: Path, monkeypat
     opened = 0
     real_connect = sqlite3.connect
 
-    def counting_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+    def counting_connect(*args: Any, **kwargs: Any) -> sqlite3.Connection:
         nonlocal opened
         opened += 1
-        return real_connect(*args, **kwargs)  # type: ignore[arg-type]
+        connection: sqlite3.Connection = real_connect(*args, **kwargs)
+        return connection
 
-    monkeypatch.setattr(write_shard.sqlite3, "connect", counting_connect)
+    monkeypatch.setattr(sqlite3, "connect", counting_connect)
     # Rows 11..35 of the shard are this session's messages.
     sequence = ShardIdentitySequence(path, 11, 35)
 

@@ -3928,7 +3928,7 @@ async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
     bound is re-acquired and refused forever.
     """
     from polylogue.core.write_hold import enter_write_hold, exit_write_hold
-    from polylogue.sources.live import batch as live_batch
+    from polylogue.sources.live.batch_support import classify_pre_acquisition
 
     root = tmp_path / "sessions"
     root.mkdir()
@@ -3946,13 +3946,12 @@ async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
                 ),
             ],
         )
-    original_classify = live_batch.classify_pre_acquisition
 
     def slow_classify(*args: Any, **kwargs: Any) -> Any:
         frozen_clock.advance(31)
-        return original_classify(*args, **kwargs)
+        return classify_pre_acquisition(*args, **kwargs)
 
-    monkeypatch.setattr(live_batch, "classify_pre_acquisition", slow_classify)
+    monkeypatch.setattr("polylogue.sources.live.batch.classify_pre_acquisition", slow_classify)
     cursor = CursorStore(tmp_path / "live.sqlite")
     processor = LiveBatchProcessor(
         cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),

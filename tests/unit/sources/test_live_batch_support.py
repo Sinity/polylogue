@@ -10001,13 +10001,12 @@ def test_full_cursor_reuses_a_settled_unchanged_capture_observation(
     """
     path, captured, captured_stat, cursor, processor = _settled_proof_fixture(tmp_path)
     hashed: list[int] = []
-    original_hash = live_batch.sha256_range_from_path
 
     def counting_hash(source_path: Path, *, start_offset: int, end_offset: int) -> tuple[str, int]:
         hashed.append(end_offset - start_offset)
-        return original_hash(source_path, start_offset=start_offset, end_offset=end_offset)
+        return sha256_range_from_path(source_path, start_offset=start_offset, end_offset=end_offset)
 
-    monkeypatch.setattr(live_batch, "sha256_range_from_path", counting_hash)
+    monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", counting_hash)
     margin = live_batch._SETTLED_OBSERVATION_MARGIN_NS
     observed_at_ns = captured_stat.st_ctime_ns + (margin + 1 if settled else margin // 2)
 
