@@ -72,6 +72,10 @@ def _write_all(fd: int, data: bytes) -> None:
         offset += written
 
 
+class BlobVerificationCancelledError(Exception):
+    """A blob re-hash stopped at a chunk boundary because its caller was cancelled."""
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedBlob:
     """Hashed bytes staged outside the content-addressed namespace."""
@@ -298,7 +302,12 @@ class BlobStore:
                 self.discard_staging_path(temporary_path)
             raise
 
-    def prepare_from_writer(self, write: Callable[[IO[bytes]], None]) -> PreparedBlob:
+    def prepare_from_writer(
+        self,
+        write: Callable[[IO[bytes]], None],
+        *,
+        heartbeat: Heartbeat | None = None,
+    ) -> PreparedBlob:
         """Stage the bytes a producer writes, then hash them in place.
 
         For a producer that can only write, such as a streaming download that
@@ -324,6 +333,9 @@ class BlobStore:
                 while chunk := handle.read(_CHUNK_SIZE):
                     hasher.update(chunk)
                     size += len(chunk)
+                    if heartbeat is not None:
+                        with suppress(Exception):
+                            heartbeat()
             os.chmod(temporary_path, 0o600)
             return PreparedBlob(hasher.hexdigest(), size, temporary_path)
         except BaseException:
@@ -485,6 +497,23 @@ class BlobStore:
         finally:
             self.discard_prepared(prepared)
 
+    def write_from_writer(
+        self,
+        write: Callable[[IO[bytes]], None],
+        *,
+        heartbeat: Heartbeat | None = None,
+    ) -> tuple[str, int]:
+        """Publish the bytes a producer writes, staged once on disk.
+
+        Unlike exporting to a work file and then ``write_from_path``, no
+        second full-size staging copy ever coexists with the first.
+        """
+        prepared = self.prepare_from_writer(write, heartbeat=heartbeat)
+        try:
+            return self.publish_prepared(prepared)
+        finally:
+            self.discard_prepared(prepared)
+
     def write_from_bytes(self, data: bytes) -> tuple[str, int]:
         """Hash in-memory bytes and write to the store.
 
@@ -519,14 +548,20 @@ class BlobStore:
     # Integrity
     # ------------------------------------------------------------------
 
-    def verify(self, hash_hex: str) -> bool:
-        """Re-hash the blob on disk and verify it matches the expected hash."""
+    def verify(self, hash_hex: str, *, stop: Callable[[], bool] | None = None) -> bool:
+        """Re-hash the blob on disk and verify it matches the expected hash.
+
+        ``stop`` is polled between chunks; when it returns true the scan
+        raises ``BlobVerificationCancelledError`` instead of answering.
+        """
         path = self.blob_path(hash_hex)
         if not path.exists():
             return False
         hasher = hashlib.sha256()
         with builtins_open(path, "rb") as f:
             while True:
+                if stop is not None and stop():
+                    raise BlobVerificationCancelledError(hash_hex)
                 chunk = f.read(_CHUNK_SIZE)
                 if not chunk:
                     break

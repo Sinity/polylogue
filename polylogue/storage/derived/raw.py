@@ -11,14 +11,15 @@ import hashlib
 import json
 import sqlite3
 import tempfile
+import weakref
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from multiprocessing import get_context
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 from polylogue.archive.revision_authority import (
     RAW_AUTHORITY_PARSER_FINGERPRINT,
@@ -26,15 +27,17 @@ from polylogue.archive.revision_authority import (
     durable_authority_logical_keys,
     parser_census_is_complete,
 )
+from polylogue.core.compute_cancel import compute_cancel, compute_cancel_requested
 from polylogue.core.enums import Origin
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
     RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
     RAW_FAILURE_TERMINAL_EVIDENCE_SUPPORT_STATUS_PAIRS,
 )
+from polylogue.logging import WARNING, emit
 from polylogue.pipeline.services.process_pool import terminate_process_pool
 from polylogue.storage.archive_identity import ArchiveLocation
-from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError
 from polylogue.storage.raw_authority import (
     SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
     build_raw_replay_plan,
@@ -516,6 +519,7 @@ class RawObservationDerivation:
     def compute(self, frame: RawFrame, key: str) -> RawObservationReplacement:
         from polylogue.operations.operation_context import open_operation_read
         from polylogue.sources.dispatch import is_jsonl_source_path
+        from polylogue.sources.prepared_jsonl import VerificationCancelledError
         from polylogue.sources.revision_backfill import (
             PreparedRetainedInput,
             RetainedPreparationRetryableError,
@@ -610,6 +614,12 @@ class RawObservationDerivation:
                     prefix=".raw-prepared-", dir=Path(frame.source_revision).resolve().parent
                 )
                 scratch = Path(scratch_owner.name)
+                # Whatever path removes the scratch tree (publication, an
+                # exception, or the directory's own finalizer when publication
+                # is bypassed), the decodes cached from it go with it.
+                from polylogue.sources.prepared_message_sink import discard_decoded_sessions_under
+
+                weakref.finalize(scratch_owner, discard_decoded_sessions_under, scratch)
                 prepared: dict[str, PreparedRetainedInput] = {}
                 aggregates: dict[str, PreparedRetainedAggregate] = {}
                 prepared_writes: dict[tuple[str, str], PreparedSessionWrite] = {}
@@ -627,7 +637,7 @@ class RawObservationDerivation:
                                 raise RetainedPreparationRetryableError(
                                     f"retained raw blob disappeared: {raw_id}"
                                 ) from exc
-                            if not blob_store.verify(blob_hash):
+                            if not blob_store.verify(blob_hash, stop=compute_cancel_requested):
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
                             native_id = archive.raw_native_id(raw_id) if kind.value == "append" else None
                             fallback_timestamp = archive.raw_revision_file_mtime(raw_id)
@@ -645,7 +655,7 @@ class RawObservationDerivation:
                                         raise RetainedPreparationRetryableError(
                                             "non-JSON retained preparation requires an operations worker"
                                         )
-                                    artifact = pool.submit(
+                                    submitted = pool.submit(
                                         worker,
                                         raw_id,
                                         provider.value,
@@ -658,17 +668,13 @@ class RawObservationDerivation:
                                         frame.source_revision,
                                         str(scratch),
                                         fallback_timestamp,
-                                    ).result(timeout=600)
-                                except TimeoutError as exc:
-                                    terminate_process_pool(pool)
-                                    raise RetainedPreparationRetryableError(
-                                        f"retained preparation timed out for raw {raw_id}"
-                                    ) from exc
+                                    )
+                                    artifact = _await_reporting_stalls(submitted, subject=f"raw {raw_id}", pool=pool)
                                 except BrokenProcessPool as exc:
                                     raise RetainedPreparationRetryableError(
                                         f"retained worker exited before preparing raw {raw_id}"
                                     ) from exc
-                            if not blob_store.verify(blob_hash):
+                            if not blob_store.verify(blob_hash, stop=compute_cancel_requested):
                                 raise RetainedPreparationRetryableError(f"retained raw blob changed: {raw_id}")
                             try:
                                 after = self._blob_stat_identity(blob_path)
@@ -689,7 +695,9 @@ class RawObservationDerivation:
                                 )
                             if artifact.error is None:
                                 try:
-                                    artifact.verify_files(full=artifact_key not in prepared_artifacts)
+                                    artifact.verify_files(
+                                        full=artifact_key not in prepared_artifacts, stop=compute_cancel_requested
+                                    )
                                 except (OSError, ValueError) as exc:
                                     raise RetainedPreparationRetryableError(
                                         f"retained preparation seal changed for raw {raw_id}"
@@ -725,6 +733,7 @@ class RawObservationDerivation:
                                 if retained_artifact is None or archive.index_connection is None:
                                     continue
                                 for parsed_session in retained_artifact.iter_sessions():
+                                    _raise_if_compute_cancelled(f"raw {raw_id}")
                                     session_id = (
                                         f"{origin_from_provider(parsed_session.source_name).value}:"
                                         f"{parsed_session.provider_session_id}"
@@ -752,14 +761,11 @@ class RawObservationDerivation:
                             if len(ordered) != len(accepted_raw_ids):
                                 continue
                             try:
-                                aggregate = pool.submit(prepare_retained_cohort_artifact, ordered, scratch).result(
-                                    timeout=600
+                                aggregate = _await_reporting_stalls(
+                                    pool.submit(prepare_retained_cohort_artifact, ordered, scratch),
+                                    subject=f"cohort {logical_key}",
+                                    pool=pool,
                                 )
-                            except TimeoutError as exc:
-                                terminate_process_pool(pool)
-                                raise RetainedPreparationRetryableError(
-                                    f"retained cohort preparation timed out for {logical_key}"
-                                ) from exc
                             except BrokenProcessPool as exc:
                                 raise RetainedPreparationRetryableError(
                                     f"retained cohort worker exited before preparing {logical_key}"
@@ -773,7 +779,7 @@ class RawObservationDerivation:
                                     f"retained cohort source dependency changed for {logical_key}"
                                 )
                             try:
-                                aggregate.verify_files(full=True)
+                                aggregate.verify_files(full=True, stop=compute_cancel_requested)
                             except (OSError, ValueError) as exc:
                                 raise RetainedPreparationRetryableError(
                                     f"retained cohort preparation seal changed for {logical_key}"
@@ -806,6 +812,7 @@ class RawObservationDerivation:
                                 continue
                             selected_session: ParsedSession | None = None
                             for candidate_session in selected_artifact.iter_sessions():
+                                _raise_if_compute_cancelled(f"cohort {logical_key}")
                                 if selected_session is not None:
                                     raise RetainedPreparationRetryableError(
                                         f"retained replay plan has no single prepared session for {logical_key}"
@@ -826,7 +833,9 @@ class RawObservationDerivation:
                                 archive.source_connection, logical_key
                             ):
                                 continue
-                            selected = selected_prepared_membership_head(archive, logical_key, prepared)
+                            selected = selected_prepared_membership_head(
+                                archive, logical_key, prepared, stop=compute_cancel_requested
+                            )
                             if selected is None:
                                 continue
                             accepted_raw_id, accepted_session = selected
@@ -837,6 +846,7 @@ class RawObservationDerivation:
                                     membership_artifact,
                                 )
                         for (tip_raw_id, session_id), (session, artifact) in selected_writes.items():
+                            _raise_if_compute_cancelled(f"raw {tip_raw_id}")
                             existing = archive.index_connection.execute(
                                 "SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)
                             ).fetchone()
@@ -866,10 +876,17 @@ class RawObservationDerivation:
                                 force_replace=True,
                                 prepared_rows=prepared_session_rows_from_shard(artifact.shard_path, session_id),
                             )
+                except (BlobVerificationCancelledError, VerificationCancelledError) as exc:
+                    for prepared_write in prepared_writes.values():
+                        prepared_write.close()
+                    _cleanup_scratch(scratch_owner)
+                    raise RetainedPreparationRetryableError(
+                        "retained preparation cancelled during verification"
+                    ) from exc
                 except BaseException:
                     for prepared_write in prepared_writes.values():
                         prepared_write.close()
-                    scratch_owner.cleanup()
+                    _cleanup_scratch(scratch_owner)
                     raise
                 return RawObservationReplacement(
                     key,
@@ -1002,4 +1019,85 @@ class RawObservationDerivation:
                         prepared_write.close()
                 finally:
                     if replacement.scratch_owner is not None:
-                        replacement.scratch_owner.cleanup()
+                        _cleanup_scratch(replacement.scratch_owner)
+
+
+def _cleanup_scratch(scratch_owner: tempfile.TemporaryDirectory[str]) -> None:
+    """Remove a replay scratch tree and the decodes cached from its carriers."""
+    from polylogue.sources.prepared_message_sink import discard_decoded_sessions_under
+
+    discard_decoded_sessions_under(Path(scratch_owner.name))
+    scratch_owner.cleanup()
+
+
+T = TypeVar("T")
+
+#: Seconds without a result before a retained preparation is reported
+#: stalled. A report, not a deadline (polylogue-slc55): terminating the pool
+#: at a fixed time discarded a large raw's preparation and retried it from
+#: scratch, so it never finished.
+_RETAINED_PREPARATION_STALL_REPORT_SECONDS = 600.0
+
+
+_STILL_RUNNING = object()
+
+
+def _raise_if_compute_cancelled(subject: str) -> None:
+    """A checkpoint between retained-preparation phases (hashing, reconciliation)."""
+    if compute_cancel_requested():
+        from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+
+        raise RetainedPreparationRetryableError(f"retained preparation cancelled for {subject}")
+
+
+#: How often a wait checks its caller's cancellation.
+_RETAINED_PREPARATION_CANCEL_POLL_SECONDS = 1.0
+
+
+def _await_reporting_stalls(future: Future[T], *, subject: str, pool: ProcessPoolExecutor) -> T:
+    """Wait for ``future``; report every window it runs without finishing.
+
+    A retained preparation has no deadline, so the compute owner's
+    cancellation (``compute_cancel``) is what stops a worker stuck in a source
+    read: it terminates ``pool`` and raises a retryable refusal, and the raw
+    stays retained for a later pass.
+    """
+    from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+
+    cancelled = compute_cancel.get()
+    window = _RETAINED_PREPARATION_STALL_REPORT_SECONDS
+    step = window if cancelled is None else min(window, _RETAINED_PREPARATION_CANCEL_POLL_SECONDS)
+
+    def refuse_if_cancelled() -> None:
+        if cancelled is not None and cancelled.is_set():
+            terminate_process_pool(pool)
+            raise RetainedPreparationRetryableError(f"retained preparation cancelled for {subject}")
+
+    waited = 0.0
+    unreported = 0.0
+    while True:
+        # Checked before each wait and before a finished result is accepted,
+        # so a run of fast preparations cannot carry a cancelled pass on.
+        refuse_if_cancelled()
+        result: object
+        try:
+            result = future.result(timeout=step)
+        except TimeoutError:
+            # A future that finished between the wait expiring and this
+            # check is re-read for its value, or for the worker's exception.
+            result = future.result() if future.done() else _STILL_RUNNING
+        if result is not _STILL_RUNNING:
+            refuse_if_cancelled()
+            return cast(T, result)
+        waited += step
+        unreported += step
+        if unreported >= window:
+            unreported = 0.0
+            emit(
+                "storage.raw_observation.preparation_stalled",
+                level=WARNING,
+                outcome="degraded",
+                reason="no_result_in_window",
+                subject_kind=subject.split(" ", 1)[0],
+                wait_ms=round(waited * 1000),
+            )

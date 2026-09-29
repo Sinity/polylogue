@@ -1142,13 +1142,23 @@ def mutation_annotation_import_batch(
             return resolve_ref_against_archive(snapshot.archive, ref, archive_root=context.archive_root)
 
     delegation = delegate_write_lease()
+    runtime = context.runtime
+
+    def accept() -> None:
+        # Validation can outlive the exchange's deadline. Cross the acceptance
+        # boundary only if the exchange is still live, so the runtime never
+        # reports timed-out or disconnected-before-acceptance for a write that
+        # then commits.
+        runtime.begin_unbound_write(request)
 
     async def _run() -> AnnotationBatchImportResult:
         with adopt_write_lease(delegation):
             handle = cast(Any, _DaemonImportArchiveHandle())
             if registry is None:
-                return await import_annotation_batch(handle, product_request)
-            return await import_annotation_batch(handle, product_request, registry=registry)
+                return await import_annotation_batch(handle, product_request, before_durable_execution=accept)
+            return await import_annotation_batch(
+                handle, product_request, registry=registry, before_durable_execution=accept
+            )
 
     result = asyncio.run(_run())
     return {

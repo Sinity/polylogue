@@ -37,7 +37,7 @@ from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
-    replay_zip_entry_acquisition_payloads,
+    replay_zip_entry_acquisition_revisions,
     sniff_zip_provider,
 )
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_member_revision_and_size
@@ -431,22 +431,24 @@ def _archive_members(
                     entry_provider,
                     None,  # type: ignore[arg-type]
                 )
-                for payload in replay_zip_entry_acquisition_payloads(archive, context):
+                for unit in replay_zip_entry_acquisition_revisions(
+                    archive, context, checkpoint=lambda: _check_observation_cancelled(cancelled)
+                ):
                     _check_observation_cancelled(cancelled)
-                    split = payload.source_index or 0
+                    split = unit.source_index or 0
                     members.append(
                         SourceDecision(
                             source_name,
                             f"{path}:{info.filename}",
                             "accepted",
                             "archive_member",
-                            hashlib.sha256(payload.payload_bytes).hexdigest(),
+                            unit.revision,
                             zip_member_source_index(entry_ordinal=ordinals[id(info)], split_index=split),
-                            len(payload.payload_bytes),
+                            unit.size_bytes,
                         )
                     )
                     if progress is not None:
-                        progress("baseline_hash", revisions=1, hashed_bytes=len(payload.payload_bytes))
+                        progress("baseline_hash", revisions=1, hashed_bytes=unit.size_bytes)
             except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile) as exc:
                 reason = "revision_io_unavailable" if retryable_read_fault(exc) else "archive_member_unreadable"
                 fault(info, f"{reason}:{exc}")

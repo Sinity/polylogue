@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import re
 import sqlite3
+import threading
 import uuid
+from collections import OrderedDict
 from collections.abc import Iterable, Iterator, Mapping, MutableSequence, Set
 from contextlib import closing, contextmanager
 from dataclasses import asdict
@@ -15,8 +19,18 @@ from urllib.parse import quote
 
 import ijson
 
+from polylogue.core.hashing import hash_text
+from polylogue.core.json import JSONDocument, json_document
 from polylogue.sources.decoder_json import _json_subtree, normalize_ijson_stdlib_numbers
+from polylogue.sources.live.tool_result_sidecars import (
+    _MAX_SIDECAR_AGGREGATE_BYTES,
+    _MAX_SIDECAR_FILE_BYTES,
+    _SIDECAR_SIZE_EXCEEDED,
+    SidecarDebt,
+    SidecarMatch,
+)
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 
 _ACTIVE_PARENT_LOOKUP_SQL = (
     "SELECT parent_id FROM prepared_message INDEXED BY prepared_message_provider "
@@ -26,6 +40,83 @@ _ACTIVE_PARENT_LOOKUP_SQL = (
 
 def _read_uri(path: Path) -> str:
     return f"file:{quote(str(path))}?mode=ro"
+
+
+#: Byte budget, counted in sealed ``message_json`` bytes, for decoded sessions
+#: kept across passes. A session larger than half of it is never retained and
+#: keeps streaming from disk, so whale memory stays bounded as before.
+DECODED_SESSION_BUDGET_BYTES = 64 * 1024 * 1024
+
+_DecodedKey = tuple[str, int, int, int, int, int, int]
+
+
+class _DecodedSessions:
+    """A small process-wide LRU of fully decoded sealed sessions.
+
+    Publishing one session walks its messages about twenty times (content
+    identities, timestamps, messages, blocks, file edits, events, links,
+    paste spans, ...). Each walk re-read the sealed carrier and re-ran pydantic
+    validation of every message: on the fresh-build benchmark that was 45% of
+    the ingest writer's CPU. A sealed carrier is immutable, so its first
+    complete walk is retained for the following ones.
+
+    Retained messages are shared between walks. The writer treats parsed
+    messages as values -- it derives rows and ``model_copy`` for changes --
+    and never assigns to one in place.
+    """
+
+    def __init__(self, budget_bytes: int) -> None:
+        self.budget_bytes = budget_bytes
+        self._entries: OrderedDict[_DecodedKey, tuple[tuple[ParsedMessage, ...], int]] = OrderedDict()
+        self._bytes = 0
+        self._lock = threading.Lock()
+
+    def get(self, key: _DecodedKey) -> tuple[ParsedMessage, ...] | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            self._entries.move_to_end(key)
+            return entry[0]
+
+    def put(self, key: _DecodedKey, messages: tuple[ParsedMessage, ...], size: int) -> None:
+        with self._lock:
+            if key in self._entries or size > self.budget_bytes // 2:
+                return
+            self._entries[key] = (messages, size)
+            self._bytes += size
+            while self._bytes > self.budget_bytes and self._entries:
+                _key, (_messages, evicted) = self._entries.popitem(last=False)
+                self._bytes -= evicted
+
+    def discard_path(self, path: str) -> None:
+        with self._lock:
+            for key in [key for key in self._entries if key[0] == path]:
+                self._bytes -= self._entries.pop(key)[1]
+
+    def discard_under(self, directory: str) -> None:
+        prefix = directory.rstrip(os.sep) + os.sep
+        with self._lock:
+            for key in [key for key in self._entries if key[0].startswith(prefix)]:
+                self._bytes -= self._entries.pop(key)[1]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._bytes = 0
+
+
+_DECODED_SESSIONS = _DecodedSessions(DECODED_SESSION_BUDGET_BYTES)
+
+
+def discard_decoded_sessions(path: Path) -> None:
+    """Release retained decodes of one sealed carrier before it is removed."""
+    _DECODED_SESSIONS.discard_path(str(path))
+
+
+def discard_decoded_sessions_under(directory: Path) -> None:
+    """Release retained decodes of every carrier in a scratch tree being removed."""
+    _DECODED_SESSIONS.discard_under(str(directory))
 
 
 def _message_json(value: ParsedMessage) -> str:
@@ -61,6 +152,193 @@ def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachmen
     return ParsedAttachment.model_validate(payload).model_copy(
         update={"prepared_carrier_key": (str(path), session_ordinal, attachment_ordinal)}
     )
+
+
+# The envelope's pointer line, and the bare path as it also appears inside the
+# retained head/tail excerpt. Both spellings resolve to the same basename.
+_POINTER_RE = re.compile(r"tool-outputs/[^\s\"'\\,)]+")
+
+# Gemini CLI's masking envelope. Either marker alone identifies a truncated
+# inline rendering: the wrapper tag is absent on some tools that emit only the
+# "Output too large" preamble.
+_MASK_RE = re.compile(
+    r"<tool_output_masked>|Output too large\. Showing first [\d,]+ and last [\d,]+ characters",
+)
+
+
+def is_masked_tool_output(text: str | None) -> bool:
+    """True when ``text`` is Gemini CLI's truncated rendering of a larger output."""
+    return bool(text) and _MASK_RE.search(text or "") is not None
+
+
+def _tool_call_texts(tool_record: JSONDocument) -> list[str]:
+    """Every string a tool call could carry a sidecar pointer in."""
+    texts: list[str] = []
+    results = tool_record.get("result")
+    for result_item in results if isinstance(results, list) else []:
+        response = json_document(json_document(result_item).get("functionResponse")).get("response")
+        texts.extend(value for value in json_document(response).values() if isinstance(value, str))
+    display = tool_record.get("resultDisplay")
+    if isinstance(display, str):
+        texts.append(display)
+    elif display is not None:
+        texts.append(json.dumps(display))
+    return texts
+
+
+class GeminiToolOutputIndex:
+    """Disk-backed owner, pointer, and replacement state for one checkpoint."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        conn.executescript("""
+            CREATE TABLE gemini_tool_owner (
+                tool_id TEXT PRIMARY KEY, first_ordinal INTEGER NOT NULL,
+                inline_len INTEGER NOT NULL, masked INTEGER NOT NULL
+            );
+            CREATE TABLE gemini_tool_pointer (filename TEXT PRIMARY KEY, tool_id TEXT NOT NULL);
+            CREATE TABLE gemini_tool_present (filename TEXT PRIMARY KEY);
+            CREATE TABLE gemini_tool_matched (tool_id TEXT PRIMARY KEY);
+            CREATE TABLE gemini_tool_debt (
+                ordinal INTEGER PRIMARY KEY, filename TEXT NOT NULL, byte_size INTEGER NOT NULL,
+                reason TEXT NOT NULL, file_mtime_ms INTEGER
+            );
+            CREATE TABLE gemini_tool_replacement (tool_id TEXT PRIMARY KEY, full_text TEXT NOT NULL);
+        """)
+        self._tool_ordinal = 0
+
+    def observe(self, message: object) -> None:
+        raw_calls = json_document(message).get("toolCalls")
+        for item in raw_calls if isinstance(raw_calls, list) else []:
+            tool_record = json_document(item)
+            tool_id = tool_record.get("id")
+            if not isinstance(tool_id, str) or not tool_id:
+                continue
+            inline = ""
+            masked = False
+            results = tool_record.get("result")
+            for result_item in results if isinstance(results, list) else []:
+                response = json_document(json_document(result_item).get("functionResponse")).get("response")
+                output = json_document(response).get("output")
+                if isinstance(output, str):
+                    inline = output if len(output) > len(inline) else inline
+                    masked = masked or is_masked_tool_output(output)
+            self.conn.execute(
+                "INSERT INTO gemini_tool_owner VALUES (?, ?, ?, ?) ON CONFLICT(tool_id) "
+                "DO UPDATE SET inline_len = excluded.inline_len, masked = excluded.masked",
+                (tool_id, self._tool_ordinal, len(inline), int(masked)),
+            )
+            self._tool_ordinal += 1
+            for text in _tool_call_texts(tool_record):
+                for pointer in _POINTER_RE.findall(text):
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO gemini_tool_pointer VALUES (?, ?)",
+                        (os.path.basename(pointer), tool_id),
+                    )
+
+    def _owner_for_stem(self, stem: str) -> str | None:
+        exact = self.conn.execute("SELECT tool_id FROM gemini_tool_owner WHERE tool_id = ?", (stem,)).fetchone()
+        if exact is not None:
+            return str(exact[0])
+        row = self.conn.execute(
+            "SELECT tool_id FROM gemini_tool_owner WHERE instr(?, '_' || tool_id || '_') > 0 "
+            "OR substr(?, -length(tool_id) - 1) = '_' || tool_id "
+            "OR substr(?, 1, length(tool_id) + 1) = tool_id || '_' "
+            "ORDER BY length(tool_id) DESC, first_ordinal LIMIT 1",
+            (stem, stem, stem),
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def _pointer_owner(self, filename: str, stem: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT tool_id FROM gemini_tool_pointer WHERE filename IN (?, ?) "
+            "ORDER BY CASE filename WHEN ? THEN 0 ELSE 1 END LIMIT 1",
+            (filename, stem, filename),
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def join(self, scope: RetainedSidecarScope) -> Iterator[SidecarMatch | SidecarDebt]:
+        """Yield ordered matches, then ordered debt, keeping only one file in memory."""
+        if not scope.available:
+            return
+        aggregate_bytes = 0
+        debt_ordinal = 0
+        for entry in sorted(scope.files, key=lambda candidate: candidate.filename):
+            self.conn.execute("INSERT OR IGNORE INTO gemini_tool_present VALUES (?)", (entry.filename,))
+            stem = entry.filename.rsplit(".", 1)[0]
+            tool_id = self._owner_for_stem(stem) or self._pointer_owner(entry.filename, stem)
+            owner = (
+                self.conn.execute(
+                    "SELECT inline_len, masked FROM gemini_tool_owner WHERE tool_id = ?", (tool_id,)
+                ).fetchone()
+                if tool_id is not None
+                else None
+            )
+            reason = None
+            full_text = ""
+            if owner is None:
+                reason = "no_owning_tool_call"
+            elif (
+                entry.byte_size > _MAX_SIDECAR_FILE_BYTES
+                or aggregate_bytes + entry.byte_size > _MAX_SIDECAR_AGGREGATE_BYTES
+            ):
+                reason = _SIDECAR_SIZE_EXCEEDED
+            else:
+                try:
+                    full_text = entry.read_text()
+                except OSError as exc:
+                    reason = f"read_error:{type(exc).__name__}"
+            if reason is not None:
+                self.conn.execute(
+                    "INSERT INTO gemini_tool_debt VALUES (?, ?, ?, ?, ?)",
+                    (debt_ordinal, entry.filename, entry.byte_size, reason, entry.file_mtime_ms),
+                )
+                debt_ordinal += 1
+                continue
+            assert tool_id is not None and owner is not None
+            aggregate_bytes += entry.byte_size
+            was_truncated = bool(owner[1]) or len(full_text) > int(owner[0])
+            self.conn.execute("INSERT OR IGNORE INTO gemini_tool_matched VALUES (?)", (tool_id,))
+            if was_truncated:
+                self.conn.execute(
+                    "INSERT INTO gemini_tool_replacement VALUES (?, ?) "
+                    "ON CONFLICT(tool_id) DO UPDATE SET full_text = excluded.full_text",
+                    (tool_id, full_text),
+                )
+            yield SidecarMatch(
+                tool_use_id=tool_id,
+                filename=entry.filename,
+                byte_size=entry.byte_size,
+                content_hash=hash_text(full_text),
+                was_truncated=was_truncated,
+                full_text=full_text,
+                file_mtime_ms=entry.file_mtime_ms,
+            )
+        for filename, tool_id in self.conn.execute(
+            "SELECT filename, tool_id FROM gemini_tool_pointer ORDER BY filename"
+        ):
+            present = self.conn.execute("SELECT 1 FROM gemini_tool_present WHERE filename = ?", (filename,)).fetchone()
+            matched = self.conn.execute("SELECT 1 FROM gemini_tool_matched WHERE tool_id = ?", (tool_id,)).fetchone()
+            if present is None and matched is None:
+                self.conn.execute(
+                    "INSERT INTO gemini_tool_debt VALUES (?, ?, 0, 'expected_sidecar_not_retained', NULL)",
+                    (debt_ordinal, filename),
+                )
+                debt_ordinal += 1
+        for filename, byte_size, reason, file_mtime_ms in self.conn.execute(
+            "SELECT filename, byte_size, reason, file_mtime_ms FROM gemini_tool_debt ORDER BY ordinal"
+        ):
+            yield SidecarDebt(filename, byte_size, reason, file_mtime_ms)
+
+    def replacement_for(self, tool_id: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT full_text FROM gemini_tool_replacement WHERE tool_id = ?", (tool_id,)
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def close(self) -> None:
+        for name in ("owner", "pointer", "present", "matched", "debt", "replacement"):
+            self.conn.execute(f"DROP TABLE gemini_tool_{name}")
 
 
 class SqliteMessageSink(MutableSequence[ParsedMessage]):
@@ -104,6 +382,10 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 (self.session_ordinal, ordinal),
             ).fetchone()
         else:
+            key = self._decoded_key()
+            decoded = _DECODED_SESSIONS.get(key) if key is not None else None
+            if decoded is not None:
+                return decoded[ordinal]
             with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
                 row = conn.execute(
                     "SELECT message_json FROM prepared_message WHERE session_ordinal = ? AND message_ordinal = ?",
@@ -181,14 +463,51 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             for row in cursor:
                 yield ParsedMessage.model_validate_json(row[0])
             return
+        key = self._decoded_key()
+        decoded = _DECODED_SESSIONS.get(key) if key is not None else None
+        if decoded is not None:
+            yield from decoded[start:]
+            return
+        retained: list[ParsedMessage] | None = [] if key is not None and start == 0 else None
+        retained_bytes = 0
         with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
+            # The budget is in stored bytes: ``len`` of the decoded text
+            # counts code points and undercounts non-ASCII transcripts.
             cursor = conn.execute(
-                "SELECT message_json FROM prepared_message WHERE session_ordinal = ? "
-                "AND message_ordinal >= ? ORDER BY message_ordinal",
+                "SELECT message_json, length(CAST(message_json AS BLOB)) FROM prepared_message "
+                "WHERE session_ordinal = ? AND message_ordinal >= ? ORDER BY message_ordinal",
                 (self.session_ordinal, start),
             )
             for row in cursor:
-                yield ParsedMessage.model_validate_json(row[0])
+                message = ParsedMessage.model_validate_json(row[0])
+                if retained is not None:
+                    retained_bytes += int(row[1])
+                    if retained_bytes > _DECODED_SESSIONS.budget_bytes // 2:
+                        retained = None
+                    else:
+                        retained.append(message)
+                yield message
+        # Only a walk that reached the end holds the whole session.
+        # An empty session costs nothing to decode and would occupy an LRU
+        # entry the byte budget never charges for.
+        if key is not None and retained and len(retained) == self._count:
+            _DECODED_SESSIONS.put(key, tuple(retained), retained_bytes)
+
+    def _decoded_key(self) -> _DecodedKey | None:
+        """Identify this sealed session's bytes, or ``None`` when unreadable."""
+        try:
+            stat = os.stat(self.path)
+        except OSError:
+            return None
+        return (
+            str(self.path),
+            self.session_ordinal,
+            stat.st_dev,
+            stat.st_ino,
+            stat.st_mtime_ns,
+            stat.st_ctime_ns,
+            stat.st_size,
+        )
 
     def normalize_active_path(self) -> SqliteMessageSink:
         """Apply the writer's leaf/path normalization without a message list."""
@@ -1102,6 +1421,7 @@ def _read_chatgpt_node(
 
 
 __all__ = [
+    "GeminiToolOutputIndex",
     "SqliteMessageSink",
     "SqliteMessageStore",
     "SqliteAttachmentSink",

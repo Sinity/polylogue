@@ -412,6 +412,93 @@ def test_rich_receipt_operation_without_terminal_receipt_stays_indeterminate(
     ]
 
 
+@pytest.mark.parametrize("final_summary", [True, False], ids=["summarized", "unsummarized"])
+def test_completed_insight_rebuild_state_carries_its_declared_result(tmp_path: Path, final_summary: bool) -> None:
+    """A completed rebuild answers with the summary its final page's receipt closed.
+
+    ``operation.await`` and the executing request both return
+    ``state.get("result", state)``; that value must satisfy the operation's
+    declared ``InsightRebuildResult``, or the client raises a protocol error
+    after the rebuild has already committed.
+
+    Anti-vacuity: remove the insight-rebuild branch from
+    ``machine_request_state`` and the summarized case returns the generic
+    lifecycle state, which ``validate_operation_result`` refuses; the
+    unsummarized case then reports ``completed`` with no result at all.
+    """
+    from polylogue.operations.daemon_protocol import validate_operation_result
+    from polylogue.operations.machine_receipts import InsightTerminalSummaryHistorical
+
+    operation_name = "maintenance.insights.rebuild"
+    audit = _audit(tmp_path)
+    actuator = _Actuator(operation=operation_name)
+    operation_binding = _binding(actuator, operation_name=operation_name)
+    executor = OperationExecutor(audit=audit)
+    preview = executor.prepare_bound(
+        operation_binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:insight-result",
+        archive_identity_digest="identity:insight-result",
+        parameter_digest="params:insight-result",
+    )
+    authorization = executor.authorize_bound(operation_binding, preview, _principal())
+    assert authorization.authorization_id is not None
+    binding = MachineRequestBinding(
+        "identity:insight-result", "request:insight-result", "actor:test", "f" * 64, operation_name
+    )
+    with audit.bind_machine_request(binding, transition="accept_execution_batch"):
+        audit.accept_execution_batch((str(authorization.authorization_id),), _principal())
+    with audit.bind_machine_request(binding, transition="consume_authorization_and_start", part=0):
+        started = executor.begin_bound(operation_binding, preview, authorization, object())
+    history = InsightPartHistoricalReceipt(
+        ordinal=0,
+        page_count=1,
+        manifest_digest="a" * 64,
+        index_generation="index-generation:fixture",
+        recipe_version="fixture-recipe",
+        targets=[
+            InsightTargetHistoricalReceipt(
+                target_ref="session:fixture",
+                disposition="published",
+                input_binding="input:fixture",
+                output_binding="output:fixture",
+                certified_counts=InsightCertifiedCountsHistorical(profiles=1),
+                publication_known_committed=True,
+            )
+        ],
+        terminal_summary=(
+            InsightTerminalSummaryHistorical(profiles=1, threads=2, tag_rollups=3) if final_summary else None
+        ),
+    )
+    executor.finalize_bound(
+        started,
+        receipt=MutationReceipt(
+            operation=started.plan.operation,
+            plan_hash=started.plan.plan_hash,
+            status="applied",
+            target_refs=started.plan.target_refs,
+            affected_count=1,
+            detail=None,
+            receipt_ref=None,
+            applied_at="now",
+            historical_receipt=history,
+        ),
+    )
+
+    record = audit.machine_request(binding)
+    assert record is not None
+    state = machine_request_state(audit, record)
+    validate_operation_result("operation.await", state)
+    if final_summary:
+        assert state["outcome"] == "completed"
+        assert state["result"] == {"profiles": 1, "threads": 2, "tag_rollups": 3}
+        validate_operation_result(operation_name, state.get("result", state))
+    else:
+        assert state["outcome"] == "indeterminate"
+        assert "result" not in state
+
+
 def test_compound_preview_and_authorization_recovery_retains_exact_refs(tmp_path: Path) -> None:
     """Losing any part reference or reserving at authorization creation breaks the next acceptance."""
     audit = _audit(tmp_path)

@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 import ijson
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
@@ -59,14 +59,16 @@ from polylogue.sources.parsers.base_support import _unknown_wire_type
 from polylogue.sources.parsers.claude.ai_parser import parse_design_stream
 from polylogue.sources.prepared_message_sink import (
     ChatGPTNodeMapping,
+    GeminiToolOutputIndex,
     SqliteAttachmentSink,
     SqliteMessageSink,
     SqliteMessageStore,
     SqliteSessionEventSink,
+    discard_decoded_sessions,
     prepare_simple_chatgpt_mapping,
     read_chatgpt_mapping_object,
 )
-from polylogue.sources.sidecar_evidence import SidecarResolver
+from polylogue.sources.sidecar_evidence import RetainedSidecarScope, SidecarResolver
 from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionWrite,
     append_session_to_shard,
@@ -127,10 +129,16 @@ def _append_gemini_raw_message(conn: sqlite3.Connection, ordinal: int, item: obj
     )
 
 
-def _source_digest(path: Path) -> str:
+class VerificationCancelledError(Exception):
+    """A digest pass stopped at a chunk boundary because its caller was cancelled."""
+
+
+def _source_digest(path: Path, *, stop: Callable[[], bool] | None = None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            if stop is not None and stop():
+                raise VerificationCancelledError(str(path))
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -172,12 +180,12 @@ class PreparedFileSeal:
             raise ValueError(f"prepared file changed while sealing: {path}")
         return cls(digest, *_file_identity(after))
 
-    def verify(self, path: Path, *, full: bool) -> None:
+    def verify(self, path: Path, *, full: bool, stop: Callable[[], bool] | None = None) -> None:
         before = path.stat()
         if _file_identity(before) != self.identity:
             raise ValueError(f"prepared file identity changed: {path}")
         if full:
-            if _source_digest(path) != self.sha256:
+            if _source_digest(path, stop=stop) != self.sha256:
                 raise ValueError(f"prepared file content changed: {path}")
             after = path.stat()
             if _file_identity(after) != self.identity:
@@ -240,8 +248,12 @@ class PreparedJsonl:
             attempt_directory=attempt_directory,
         )
 
-    def verify_files(self, *, full: bool) -> None:
-        """Scan bytes before admission; recheck inode identity at publication."""
+    def verify_files(self, *, full: bool, stop: Callable[[], bool] | None = None) -> None:
+        """Scan bytes before admission; recheck inode identity at publication.
+
+        ``stop`` is polled between digest chunks; when it returns true the
+        scan raises ``VerificationCancelledError``.
+        """
         if (
             self.sessions_path is None
             or self.shard_path is None
@@ -249,12 +261,14 @@ class PreparedJsonl:
             or self.shard_seal is None
         ):
             raise ValueError("JSONL preparation lacks closed-file seals")
-        self.sessions_seal.verify(self.sessions_path, full=full)
-        self.shard_seal.verify(self.shard_path, full=full)
+        self.sessions_seal.verify(self.sessions_path, full=full, stop=stop)
+        self.shard_seal.verify(self.shard_path, full=full, stop=stop)
 
     def discard(self) -> None:
         for prepared in self.prepared_writes:
             prepared.close()
+        if self.sessions_path is not None:
+            discard_decoded_sessions(self.sessions_path)
         if self.attempt_directory is not None:
             try:
                 shutil.rmtree(self.attempt_directory)
@@ -638,6 +652,7 @@ def prepare_jsonl_blob(
         chatgpt_envelope: dict[str, object] | None = None
         chatgpt_mapping: ChatGPTNodeMapping | None = None
         gemini_envelope: dict[str, JSONValue] | None = None
+        gemini_sidecar_scope: RetainedSidecarScope | None = None
         grok_count: int | None = None
         grok_positive_marker = False
         if not is_stream and provider is Provider.CHATGPT and Path(source_path).name.lower().endswith(".json"):
@@ -680,9 +695,8 @@ def prepare_jsonl_blob(
                 store.conn.execute("DROP TABLE gemini_raw_message")
             elif sidecar_resolver is not None:
                 session_id = gemini_envelope.get("sessionId")
-                if isinstance(session_id, str) and sidecar_resolver.gemini_cli_scope(source_path, session_id).available:
-                    gemini_envelope = None
-                    store.conn.execute("DROP TABLE gemini_raw_message")
+                if isinstance(session_id, str):
+                    gemini_sidecar_scope = sidecar_resolver.gemini_cli_scope(source_path, session_id)
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
         if (
@@ -780,6 +794,25 @@ def prepare_jsonl_blob(
                 )
                 admitted = local_agent.parse_gemini_cli(gemini_envelope, fallback_id)
                 gemini_session = gemini_session.model_copy(update={"unit_accounting": admitted.unit_accounting})
+                if gemini_sidecar_scope is not None and gemini_sidecar_scope.available:
+                    index = GeminiToolOutputIndex(store.conn)
+                    for row in store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal"):
+                        index.observe(json.loads(row[0]))
+                    for outcome in index.join(gemini_sidecar_scope):
+                        gemini_session.session_events.append(local_agent.gemini_sidecar_event(outcome))
+                    for position in range(len(gemini_session.messages)):
+                        message = gemini_session.messages[position]
+                        updated_blocks = [
+                            block.model_copy(update={"text": replacement})
+                            if block.type is BlockType.TOOL_RESULT
+                            and block.tool_id is not None
+                            and (replacement := index.replacement_for(block.tool_id)) is not None
+                            else block
+                            for block in message.blocks
+                        ]
+                        if updated_blocks != message.blocks:
+                            gemini_session.messages[position] = message.model_copy(update={"blocks": updated_blocks})
+                    index.close()
             store.conn.execute("DROP TABLE gemini_raw_message")
             if gemini_session is not None and require_positive_conversational_evidence(
                 [gemini_session], provider=provider, source_path=source_path

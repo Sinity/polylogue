@@ -9,7 +9,11 @@ from collections.abc import Iterable
 from polylogue.core.enums import AssertionStatus, AssertionVisibility
 from polylogue.markers.models import MarkerCandidate, marker_provenance
 from polylogue.markers.registry import MARKER_REGISTRY, MarkerRegistry
-from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+from polylogue.storage.sqlite.archive_tiers.user_write import (
+    mark_assertion_status,
+    record_retired_marker_assertion,
+    upsert_assertion,
+)
 
 
 def candidates_for_block(
@@ -55,6 +59,9 @@ def lower_markers(
         assertion_id = assertion_id_for_marker(candidate)
         if assertion_id is None:
             continue
+        if conn.execute("SELECT 1 FROM retired_marker_assertions WHERE assertion_id = ?", (assertion_id,)).fetchone():
+            # A later carrier re-owned this evidence before this one arrived.
+            continue
         existing = conn.execute(
             "SELECT author_kind, status FROM assertions WHERE assertion_id = ?",
             (assertion_id,),
@@ -92,4 +99,33 @@ def lower_markers(
     return tuple(ids)
 
 
-__all__ = ["assertion_id_for_marker", "candidates_for_block", "lower_markers"]
+def retire_marker_assertions(
+    conn: sqlite3.Connection, assertion_ids: Iterable[str], *, now_ms: int | None = None
+) -> tuple[str, ...]:
+    """Record re-owned marker ids and supersede their live agent candidates.
+
+    The retirement is durable, so delivery order does not matter: a carrier
+    lowered later skips a retired id in :func:`lower_markers`. Only an
+    untouched agent ``candidate`` is superseded; a human's assertion or any
+    judgment already made at that id is preserved.
+    """
+    from polylogue.storage.sqlite.archive_tiers.user_write import _now_ms
+
+    timestamp = _now_ms() if now_ms is None else now_ms
+    retired: list[str] = []
+    for assertion_id in assertion_ids:
+        record_retired_marker_assertion(conn, assertion_id, now_ms=timestamp)
+        existing = conn.execute(
+            "SELECT author_kind, status FROM assertions WHERE assertion_id = ?",
+            (assertion_id,),
+        ).fetchone()
+        if existing is None or str(existing[0]) != "agent":
+            continue
+        if existing[1] is not None and str(existing[1]) != AssertionStatus.CANDIDATE.value:
+            continue
+        if mark_assertion_status(conn, assertion_id, AssertionStatus.SUPERSEDED, now_ms=timestamp):
+            retired.append(assertion_id)
+    return tuple(retired)
+
+
+__all__ = ["assertion_id_for_marker", "candidates_for_block", "lower_markers", "retire_marker_assertions"]
