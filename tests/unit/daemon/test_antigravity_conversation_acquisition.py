@@ -287,3 +287,43 @@ def test_common_live_batch_retries_a_failed_vendor_conversion(
     assert recovered_cursor is not None
     assert recovered_cursor.failure_count == 0
     assert recovered_cursor.next_retry_at is None
+
+
+def test_an_excised_conversation_snapshot_is_reported_as_excised(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused ``.pb`` snapshot is named to the caller as excised, not merely missing.
+
+    Anti-vacuity (Codex P1, #5696): swallow the refusal without telling the
+    caller and the live batch records a retryable failed cursor, retrying the
+    forbidden file forever.
+    """
+    import polylogue.sources.source_parsing as source_parsing
+    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+    root = tmp_path / "antigravity"
+    conversation = root / "conversations" / "cascade.pb"
+    conversation.parent.mkdir(parents=True)
+    conversation.write_bytes(b"opaque")
+    session = antigravity.parse_markdown_export(
+        "### User Input\n\nhello", antigravity.AntigravitySessionSummary(cascade_id="cascade")
+    )
+
+    def outcomes(*_args: object, **_kwargs: object) -> Iterator[antigravity.AntigravityExportOutcome]:
+        yield antigravity.AntigravityExportOutcome(conversation, "cascade", session)
+
+    def refused(*_args: object, **_kwargs: object) -> object:
+        raise ContentExcisedError(blob_hash=bytes(32), source_path=str(conversation))
+
+    monkeypatch.setattr(antigravity, "iter_language_server_export_results", outcomes)
+    monkeypatch.setattr(source_parsing, "_antigravity_raw_snapshot", refused)
+    excised: set[Path] = set()
+
+    admitted = list(
+        iter_antigravity_language_server_sessions(
+            Source(name="antigravity", path=root), capture_raw=True, excised=excised
+        )
+    )
+
+    assert admitted == []
+    assert excised == {conversation}

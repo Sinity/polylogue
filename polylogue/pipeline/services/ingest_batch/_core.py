@@ -25,7 +25,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from contextlib import AsyncExitStack, closing
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -87,7 +87,13 @@ from polylogue.storage.accepted_marker_inputs import (
     finalize_pending_accepted_marker_input,
     prepare_accepted_marker_input,
 )
-from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
+from polylogue.storage.blob_publication import (
+    ArchiveBlobPublisher,
+    _archive_blob_publisher_slot,
+    consume_blob_publication_receipt,
+    publication_refused,
+    refuse_excised_attachment_blobs,
+)
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.runtime import RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.ingest_precedence import (
@@ -105,7 +111,11 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     classify_raw_revision_cohort_for_live_watch,
     raw_membership_raw_ids,
 )
-from polylogue.storage.sqlite.archive_tiers.source_write import ArchiveSourceBlobRef, is_blob_hash_excised
+from polylogue.storage.sqlite.archive_tiers.source_write import (
+    ArchiveSourceBlobRef,
+    ContentExcisedError,
+    is_blob_hash_excised,
+)
 from polylogue.storage.sqlite.archive_tiers.write import (
     ArchiveWriteOutcome,
     LineageSignatureCache,
@@ -666,7 +676,7 @@ def _preacquire_sidecar_blobs(
     publication_receipts: list[tuple[str, bytes]],
     *,
     source_conn: sqlite3.Connection | None,
-) -> tuple[dict[str, dict[str, str]], dict[str, int]]:
+) -> tuple[dict[str, dict[str, str]], list[tuple[str, str, int, bool]]]:
     """Content-address + dedup acquired tool-result sidecar text (polylogue-rujy AC4).
 
     ``apply_tool_result_sidecars`` / ``apply_gemini_tool_output_sidecars``
@@ -697,6 +707,10 @@ def _preacquire_sidecar_blobs(
     ``blob_refusal: content_excised`` and the rest of the session still
     writes.
 
+    Returns the locators and the queued ``(tool_use_id, blob_hash, size,
+    already_present)`` publications; ``_settle_sidecar_blobs`` counts them
+    after the flush, which may still refuse excised bytes.
+
     A no-op unless the session actually carries a matched+replaced sidecar
     event, so a session from an origin without sidecars never pays this cost.
     """
@@ -709,7 +723,7 @@ def _preacquire_sidecar_blobs(
         and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
     }
     if not matched_tool_use_ids:
-        return {}, {}
+        return {}, []
 
     text_by_tool_use_id: dict[str, str] = {
         block.tool_id: block.text
@@ -721,13 +735,10 @@ def _preacquire_sidecar_blobs(
         and block.text is not None
     }
     if not text_by_tool_use_id:
-        return {}, {}
+        return {}, []
 
     locators: dict[str, dict[str, str]] = {}
-    bytes_new = 0
-    bytes_dedup = 0
-    written = 0
-    refused = 0
+    queued: list[tuple[str, str, int, bool]] = []
     for tool_use_id, text in text_by_tool_use_id.items():
         encoded = unicodedata.normalize("NFC", text).encode("utf-8")
         precomputed_hash = hashlib.sha256(encoded).hexdigest()
@@ -736,27 +747,52 @@ def _preacquire_sidecar_blobs(
             # referencing session then. Publishing it again would put the
             # forgotten bytes back on disk, so this sidecar alone is refused.
             locators[tool_use_id] = {"blob_refusal": "content_excised"}
-            refused += 1
             continue
         already_present = blob_publisher.exists(precomputed_hash)
         hash_hex, size = blob_publisher.write_from_bytes(encoded)
         locators[tool_use_id] = {"blob_hash": hash_hex}
+        queued.append((tool_use_id, hash_hex, size, already_present))
+        receipt_id = blob_publisher.receipt_id(hash_hex)
+        if receipt_id is not None:
+            publication_receipts.append((receipt_id, bytes.fromhex(hash_hex)))
+
+    return locators, queued
+
+
+def _settle_sidecar_blobs(
+    locators: dict[str, dict[str, str]],
+    queued: list[tuple[str, str, int, bool]],
+    blob_publisher: ArchiveBlobPublisher,
+) -> dict[str, int]:
+    """Count the sidecar blobs the flush published; record the ones it refused.
+
+    The flush reads the excision ledger in its own reservation transaction, so
+    it can refuse bytes the pre-check passed (no ``source_conn``, or an
+    excision committed in between). Such a locator gets the same typed
+    refusal as a pre-checked one instead of naming a discarded blob.
+    """
+    if not locators:
+        return {}
+    bytes_new = 0
+    bytes_dedup = 0
+    written = 0
+    for tool_use_id, hash_hex, size, already_present in queued:
+        if publication_refused(blob_publisher, hash_hex):
+            locators[tool_use_id] = {"blob_refusal": "content_excised"}
+            continue
         written += 1
         if already_present:
             bytes_dedup += size
         else:
             bytes_new += size
-        receipt_id = blob_publisher.receipt_id(hash_hex)
-        if receipt_id is not None:
-            publication_receipts.append((receipt_id, bytes.fromhex(hash_hex)))
-
-    counts = {
+    return {
         "sidecar_blob_bytes_new": bytes_new,
         "sidecar_blob_bytes_dedup": bytes_dedup,
         "sidecar_blobs_written": written,
-        "sidecar_blobs_refused_excised": refused,
+        "sidecar_blobs_refused_excised": sum(
+            1 for locator in locators.values() if locator.get("blob_refusal") == "content_excised"
+        ),
     }
-    return locators, counts
 
 
 # polylogue-ojjet: the Drive revision-cohort classifier
@@ -1435,11 +1471,11 @@ def _write_session(
             preacquired_attachment_blobs[attachment.acquisition_key] = (blob_hash, size, "acquired")
             if receipt_id is not None:
                 publication_receipts.append((receipt_id, blob_hash))
-        sidecar_blob_locators, sidecar_blob_counts = _preacquire_sidecar_blobs(
+        sidecar_blob_locators, queued_sidecar_blobs = _preacquire_sidecar_blobs(
             session_to_write, blob_publisher, publication_receipts, source_conn=source_conn
         )
-        counts.update(sidecar_blob_counts)
         blob_publisher.flush()
+        counts.update(_settle_sidecar_blobs(sidecar_blob_locators, queued_sidecar_blobs, blob_publisher))
     for attachment in session_to_write.attachments if blob_publisher is None else ():
         # bd polylogue-8ac0: bytes for this attachment were already streamed
         # into the blob store during sidecar discovery (e.g. ChatGPT ``.dat``
@@ -1452,6 +1488,14 @@ def _write_session(
             preacquired_attachment_blobs = {}
         hash_hex, size = attachment.precomputed_blob
         preacquired_attachment_blobs[attachment.acquisition_key] = (bytes.fromhex(hash_hex), size, "acquired")
+
+    if preacquired_attachment_blobs:
+        # A flush that refused excised bytes discarded them; bytes published
+        # earlier may have been excised since. Neither may be recorded as an
+        # acquired attachment whose blob is absent.
+        preacquired_attachment_blobs = refuse_excised_attachment_blobs(
+            preacquired_attachment_blobs, publisher=blob_publisher, source_conn=source_conn
+        )
 
     prepared_write = payload.prepared_write
     if prepared_write is None and isinstance(session_to_write.messages, SqliteMessageSink):
@@ -1926,6 +1970,29 @@ def _write_session_entry(
             }
             summary.marker_sessions_by_raw_id.setdefault(raw_id, []).append(marker_session)
         return True
+    except ContentExcisedError as exc:
+        # A deliberate, permanent refusal (the operator excised content this
+        # session carries), never a parse failure to retry: the raw's outcome
+        # is the non-retryable ``validation_rejected`` with a
+        # ``content_excised`` diagnostic -- an existing durable outcome, so
+        # ``source_items`` records it without a vocabulary change. The raw is
+        # settled as skipped, never failed: a ``parse_error`` would count the
+        # intentionally absent session as an unexplained parser failure.
+        if batch_owns_transaction:
+            conn.execute(f"ROLLBACK TO {_SESSION_WRITE_SAVEPOINT}")
+            conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
+        emit(
+            "ingest.batch.session_excised",
+            outcome="refused",
+            raw_id=raw_id,
+            reason="content_excised",
+            error_detail=str(exc)[:512],
+        )
+        summary.excised_skips += 1
+        # The raw is classified once all its sessions have drained: a grouped
+        # raw whose sibling session still writes is not a skipped raw.
+        summary.excised_raw_diagnostics.setdefault(raw_id, f"content_excised: {exc}"[:500])
+        return False
     except Exception as exc:
         # A storage fault fails every session alike; recording it as this
         # raw's parse failure would persist a durable ``parse_error`` on input
@@ -2494,8 +2561,17 @@ def _drain_ingest_result(
             drive_plans=drive_plans,
             drive_cohort_cache=drive_cohort_cache,
         )
+    excised_diagnostic = summary.excised_raw_diagnostics.pop(ir.raw_id, None)
     if written_count == 0:
         summary.skipped_raw_ids.add(ir.raw_id)
+        outcome = summary.outcomes.get(ir.raw_id)
+        if excised_diagnostic is not None and outcome is not None:
+            summary.outcomes[ir.raw_id] = replace(
+                outcome,
+                outcome_code=IngestOutcome.VALIDATION_REJECTED.value,
+                retryable=False,
+                diagnostic=excised_diagnostic,
+            )
     # Keep the reconciled payload for both changed and duplicate revisions.
     # The source-tier raw acceptance transaction restages duplicates
     # idempotently, which also provides a safe backfill path when an operator
@@ -3141,6 +3217,13 @@ def _process_ingest_batch_sync(
         )
     _observe_current_rss(summary)
     transaction_started = False
+    # Blob publication's shared slot is held from before the index transaction
+    # begins until it commits or rolls back. Excision takes the same slot
+    # exclusively before it writes index.db, so both routes take the slot
+    # before the index writer (one lock order, no inversion), and an excision
+    # cannot commit between this batch's excision checks and its index commit.
+    publisher_exclusion = contextlib.ExitStack()
+    publisher_exclusion.enter_context(_archive_blob_publisher_slot(blob_publisher.source_db_path))
     try:
         if marker_acceptance_enabled:
             _ensure_ingest_index_incarnation(conn)
@@ -3330,6 +3413,7 @@ def _process_ingest_batch_sync(
         conn.close()
         if source_conn is not None:
             source_conn.close()
+        publisher_exclusion.close()
     summary.worker_progress_in_flight = len(progress.in_flight_raw_ids)
     summary.worker_progress_completed = progress.completed_raw_count
     summary.worker_progress_total = progress.total_raw_count
@@ -3578,12 +3662,19 @@ def _skipped_raw_state_update(
     parsed_at: str,
     validation_mode: str,
 ) -> RawSessionStateUpdate:
+    # A deliberate refusal carries its own durable reason (``content_excised:
+    # ...``); an ordinary skip the generic one.
+    diagnostic = outcome.diagnostic if outcome is not None else None
     return RawSessionStateUpdate(
         parsed_at=parsed_at,
         parse_error=None,
         payload_provider=outcome.payload_provider if outcome is not None else None,
         validation_status="skipped",
-        validation_error="parsed raw payload produced no new materialized sessions",
+        validation_error=(
+            diagnostic
+            if diagnostic is not None and diagnostic.startswith("content_excised")
+            else "parsed raw payload produced no new materialized sessions"
+        ),
         validation_mode=validation_mode,
     )
 

@@ -18,7 +18,7 @@ from typing import IO
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import WARNING, emit, get_logger
-from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_publication import ArchiveBlobPublisher, publication_refused
 from polylogue.storage.blob_store import PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceBlobRef,
@@ -487,6 +487,26 @@ def converge_drive_attachments(
 
         def _publish(index_conn: sqlite3.Connection, source_conn: sqlite3.Connection) -> None:
             publisher.flush()
+            # An excision can commit between a download's ledger check and
+            # this flush; the flush then refuses and discards those bytes.
+            # Their rows end ``unavailable`` like any excised payload, and
+            # their references are never written (``write_source_blob_refs``
+            # would refuse the excised hash and abort the pass).
+            # An excision committed after a successful flush is read from the
+            # ledger on this source connection before any reference is written.
+            from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+            refused_hashes = {
+                blob_hash
+                for _attachment_id, blob_hash, _size in acquired_rows
+                if publication_refused(publisher, blob_hash.hex()) or is_blob_hash_excised(source_conn, blob_hash)
+            }
+            if refused_hashes:
+                excised_ids.extend(
+                    attachment_id for attachment_id, blob_hash, _size in acquired_rows if blob_hash in refused_hashes
+                )
+                acquired_rows[:] = [row for row in acquired_rows if row[1] not in refused_hashes]
+                acquired_refs[:] = [ref for ref in acquired_refs if bytes(ref.blob_hash) not in refused_hashes]
             if acquired_refs:
                 by_raw_id: dict[str, list[ArchiveSourceBlobRef]] = {}
                 for ref in acquired_refs:

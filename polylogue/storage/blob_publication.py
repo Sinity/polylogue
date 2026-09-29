@@ -10,7 +10,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, BinaryIO
+from typing import IO, Any, BinaryIO
 from uuid import uuid4
 
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
@@ -121,14 +121,23 @@ class BlobPublicationReservationStore:
         """
         return open_source_tier_write_connection(self.source_db_path, archive_root=self.source_db_path.parent)
 
-    def reserve_many(self, receipts: Sequence[BlobPublicationReceipt]) -> None:
+    def reserve_many(self, receipts: Sequence[BlobPublicationReceipt]) -> frozenset[str]:
+        """Reserve ``receipts`` and return the blob hashes refused as excised.
+
+        The excision ledger is read in the same write transaction, so no
+        route can publish bytes the operator excised: a refused hash gets no
+        reservation, and its caller discards the staged file instead of
+        exposing it (polylogue-u6jyu).
+        """
         if not receipts:
-            return
+            return frozenset()
         now_ms = int(time.time() * 1000)
         require_write_lease(f"blob publication({self.source_db_path})", archive_root=self.source_db_path.parent)
         conn = self._open_connection()
         try:
             conn.execute("BEGIN IMMEDIATE")
+            excised = _excised_hashes(conn, {receipt.blob_hash for receipt in receipts})
+            receipts = [receipt for receipt in receipts if receipt.blob_hash not in excised]
             conn.executemany(
                 """
                 INSERT INTO blob_publication_reservations (
@@ -152,6 +161,24 @@ class BlobPublicationReservationStore:
             raise
         finally:
             conn.close()
+        return excised
+
+
+def _excised_hashes(conn: sqlite3.Connection, blob_hashes: set[str]) -> frozenset[str]:
+    """Return which of ``blob_hashes`` (hex) the durable excision ledger names."""
+    if not blob_hashes or not _table_exists(conn, "excised_content"):
+        return frozenset()
+    excised: set[str] = set()
+    ordered = sorted(blob_hashes)
+    for start in range(0, len(ordered), 500):
+        chunk = ordered[start : start + 500]
+        placeholders = ", ".join("?" for _ in chunk)
+        rows = conn.execute(
+            f"SELECT removed_hash FROM excised_content WHERE hash_kind = 'blob_hash' AND removed_hash IN ({placeholders})",
+            [bytes.fromhex(blob_hash) for blob_hash in chunk],
+        ).fetchall()
+        excised.update(bytes(row[0]).hex() for row in rows)
+    return frozenset(excised)
 
 
 class AdoptedBlobEvictedError(ArchiveStorageFaultError):
@@ -184,6 +211,7 @@ class ArchiveBlobPublisher(BlobStore):
         self._adoptions: list[BlobPublicationReceipt] = []
         self._latest_receipt_by_hash: dict[str, str] = {}
         self._pending_by_hash: dict[str, PreparedBlob] = {}
+        self._refused_as_excised: set[str] = set()
 
     def _queue(self, prepared: PreparedBlob) -> tuple[str, int]:
         receipt = BlobPublicationReceipt(
@@ -289,12 +317,52 @@ class ArchiveBlobPublisher(BlobStore):
             if missing:
                 self.discard_pending()
                 raise AdoptedBlobEvictedError(missing)
-            BlobPublicationReservationStore(self.source_db_path).reserve_many(receipts)
-            self._store.publish_many(prepared for _receipt, prepared in pending)
+            excised = BlobPublicationReservationStore(self.source_db_path).reserve_many(receipts)
+            for receipt, prepared in pending:
+                if receipt.blob_hash in excised:
+                    self._store.discard_prepared(prepared)
+                    self._latest_receipt_by_hash.pop(receipt.blob_hash, None)
+            for receipt in adoptions:
+                if receipt.blob_hash in excised:
+                    self._latest_receipt_by_hash.pop(receipt.blob_hash, None)
+            self._store.publish_many(prepared for receipt, prepared in pending if receipt.blob_hash not in excised)
+        self._refused_as_excised.update(excised)
         self._pending.clear()
         self._adoptions.clear()
         self._pending_by_hash.clear()
-        return receipts
+        return tuple(receipt for receipt in receipts if receipt.blob_hash not in excised)
+
+    def refused_as_excised(self, blob_hash: str) -> bool:
+        """Whether a flush() refused *blob_hash* because it is excised."""
+        return blob_hash in self._refused_as_excised
+
+    def excised_now(self, blob_hash: str) -> bool:
+        """Whether the durable ledger names *blob_hash*, read under publisher exclusion.
+
+        A flush's refusals cover only excisions committed before it; one that
+        committed after the flush released its slot is visible only in the
+        ledger. The shared slot orders this read against any excision that
+        is still running, and a hit is remembered like a flush refusal.
+        """
+        if blob_hash in self._refused_as_excised:
+            return True
+        with _archive_blob_publisher_slot(self.source_db_path):
+            conn = open_readonly_connection(self.source_db_path, timeout_class="background-read", validate_schema=False)
+            try:
+                excised = bool(_excised_hashes(conn, {blob_hash}))
+            finally:
+                conn.close()
+        if excised:
+            self._refused_as_excised.add(blob_hash)
+        return excised
+
+    def forget_refusals(self) -> None:
+        """Drop the refusals a caller has already reconciled.
+
+        A long-lived publisher (one accepted source's page walk) otherwise
+        keeps one hash per refused file for the whole operation.
+        """
+        self._refused_as_excised.clear()
 
     def discard_pending_receipt(self, publication_id: str) -> bool:
         """Drop one queued publication or adoption by its receipt, before any flush.
@@ -343,11 +411,23 @@ class ArchiveBlobPublisher(BlobStore):
     def blob_path(self, hash_hex: str) -> Path:
         final_path = self._store.blob_path(hash_hex)
         if final_path.exists():
+            # Still retained for another session: a refused publication of
+            # the same hash does not make its existing bytes unreadable.
             return final_path
+        if hash_hex in self._refused_as_excised:
+            # The staged bytes were discarded at flush. A reader gets the typed
+            # excision instead of a path that does not exist.
+            from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+            raise ContentExcisedError(blob_hash=bytes.fromhex(hash_hex), source_path=f"blob:{hash_hex}")
         prepared = self._pending_by_hash.get(hash_hex)
         return prepared.temporary_path if prepared is not None else final_path
 
     def exists(self, hash_hex: str) -> bool:
+        if self._store.blob_path(hash_hex).exists():
+            return True
+        if hash_hex in self._refused_as_excised:
+            return False
         return self.blob_path(hash_hex).exists()
 
     def open(self, hash_hex: str) -> BinaryIO:
@@ -368,6 +448,96 @@ def publication_receipt_id(blob_store: BlobStore, blob_hash: str) -> str | None:
         return None
     receipt_id = receipt_getter(blob_hash)
     return str(receipt_id) if receipt_id is not None else None
+
+
+def publication_refused(blob_store: BlobStore, blob_hash: str) -> bool:
+    """Whether a flush of *blob_store* refused *blob_hash* as excised.
+
+    A plain ``BlobStore`` publishes immediately and never refuses.
+    """
+    refused = getattr(blob_store, "refused_as_excised", None)
+    return bool(callable(refused) and refused(blob_hash))
+
+
+def refuse_excised_attachment_blobs(
+    preacquired: dict[Any, tuple[bytes | None, int, str]],
+    *,
+    publisher: BlobStore | None = None,
+    source_conn: sqlite3.Connection | None = None,
+) -> dict[Any, tuple[bytes | None, int, str]]:
+    """Downgrade acquired attachments whose bytes are excised to ``unavailable``.
+
+    Excision is decided at two places: a flush that refused the staged bytes
+    (``publisher``), and the durable ledger for bytes published earlier and
+    excised since (``source_conn``). Either way the blob is not on disk, so the
+    attachment row must not claim it: it keeps its identity and size with no
+    blob hash, in the declared terminal ``unavailable`` state.
+    """
+    from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+    result: dict[Any, tuple[bytes | None, int, str]] = {}
+    for key, (blob_hash, size, status) in preacquired.items():
+        if (
+            status == "acquired"
+            and blob_hash is not None
+            and (
+                (publisher is not None and publication_refused(publisher, blob_hash.hex()))
+                or (source_conn is not None and is_blob_hash_excised(source_conn, blob_hash))
+            )
+        ):
+            result[key] = (None, size, "unavailable")
+        else:
+            result[key] = (blob_hash, size, status)
+    return result
+
+
+def reconcile_refused_attachments(
+    acquired: dict[Any, tuple[bytes | None, int, str]],
+    refs: tuple[Any, ...],
+    publisher: BlobStore | None,
+    *,
+    source_conn: sqlite3.Connection | None = None,
+) -> tuple[dict[Any, tuple[bytes | None, int, str]], tuple[Any, ...]]:
+    """Drop what a flush refused, or the ledger now excises, from queued attachments and their refs.
+
+    An excision can commit between the caller's ledger check and its flush
+    (the flush then refuses and discards the bytes), or after a successful
+    flush and before the caller writes its references. Either way the
+    attachment is recorded ``unavailable`` and its reference is not written,
+    exactly as when the ledger check itself saw the excision, instead of the
+    reference write failing the whole replay.
+    """
+    from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+    if publisher is None and source_conn is None:
+        return acquired, refs
+
+    def excised(blob_hash: bytes) -> bool:
+        return (publisher is not None and publication_refused(publisher, blob_hash.hex())) or (
+            source_conn is not None and is_blob_hash_excised(source_conn, blob_hash)
+        )
+
+    return (
+        refuse_excised_attachment_blobs(acquired, publisher=publisher, source_conn=source_conn),
+        tuple(ref for ref in refs if not excised(bytes(ref.blob_hash))),
+    )
+
+
+def require_published(blob_store: BlobStore, blob_hash: str, *, source_path: str) -> None:
+    """Raise ContentExcisedError when *blob_hash* is excised, by the flush or since.
+
+    A caller that reads its snapshot back from the store after flushing must
+    stop here: the refused bytes were discarded, so the path it would open
+    does not exist, and the outcome is the typed excision, not a parse
+    failure. An archive publisher also rechecks the durable ledger under
+    publisher exclusion, so an excision committed after the flush is refused
+    here too.
+    """
+    excised_now = getattr(blob_store, "excised_now", None)
+    if publication_refused(blob_store, blob_hash) or (callable(excised_now) and excised_now(blob_hash)):
+        from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+        raise ContentExcisedError(blob_hash=bytes.fromhex(blob_hash), source_path=source_path)
 
 
 def flush_blob_publications(blob_store: BlobStore) -> tuple[BlobPublicationReceipt, ...]:
