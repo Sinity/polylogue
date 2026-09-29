@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from io import BytesIO
 from pathlib import Path
 
@@ -25,6 +25,7 @@ from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import bundle_member_sessions, parse_payload, require_positive_conversational_evidence
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.parsers.claude import common as claude_common
+from polylogue.sources.parsers.claude.lineage_graph import ClaudeLineageGraph, LineageNode
 from polylogue.sources.prepared_jsonl import PreparedJsonl, prepare_jsonl_blob
 from polylogue.sources.prepared_message_sink import ClaudeChatEvidence
 from polylogue.storage.blob_store import BlobStore
@@ -428,17 +429,17 @@ def test_claude_lineage_graph_and_attachments_stay_in_scratch(tmp_path: Path, mo
     assert "attachments" not in envelope and "files" not in envelope and "chat_messages" not in envelope
 
     graph_writes: list[bool] = []
-    original_observe = claude_common._ClaudeLineageGraph.observe
+    original_observe = ClaudeLineageGraph.observe
 
-    def tracked_observe(self: claude_common._ClaudeLineageGraph, evidence: object, store: object) -> None:
+    def tracked_observe(self: ClaudeLineageGraph, node: LineageNode, richer_on_tie: Callable[[int, int], bool]) -> None:
         # ``_owned`` marks the object parser's in-memory graph.
         graph_writes.append(self._owned)
-        original_observe(self, evidence, store)  # type: ignore[arg-type]
+        original_observe(self, node, richer_on_tie)
 
     def refuse_resident(self: object, _value: object) -> None:
         raise AssertionError("streamed attachment rows were held resident")
 
-    monkeypatch.setattr(claude_common._ClaudeLineageGraph, "observe", tracked_observe)
+    monkeypatch.setattr(ClaudeLineageGraph, "observe", tracked_observe)
     monkeypatch.setattr(claude_common._ResidentAttachmentRows, "put", refuse_resident)
     artifact = prepare_jsonl_blob(
         str(source),
