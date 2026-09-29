@@ -2585,7 +2585,7 @@ def _stored_messages(session: ParsedSession) -> list[dict[str, object]]:
     write time. Comparing this form compares what either route publishes.
     """
     from polylogue.core.sources import origin_from_provider
-    from polylogue.sources.active_branch import normalize_active_branch
+    from polylogue.sources.prepared_message_sink import normalize_active_branch
     from polylogue.sources.tool_outcomes import derive_tool_outcomes
 
     if isinstance(session.messages, SqliteMessageSink):

@@ -12,13 +12,12 @@ import pytest
 
 from polylogue.core.enums import Provider, Role
 from polylogue.pipeline.ids import session_content_hash
-from polylogue.sources.active_branch import normalize_active_branch
 from polylogue.sources.decoder_json import claude_ai_object_envelope
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.claude import common as claude_common
 from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
-from polylogue.sources.prepared_message_sink import ClaudeChatEvidence, SqliteMessageStore
+from polylogue.sources.prepared_message_sink import ClaudeChatEvidence, SqliteMessageStore, normalize_active_branch
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier

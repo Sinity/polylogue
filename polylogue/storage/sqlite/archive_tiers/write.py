@@ -87,7 +87,6 @@ from polylogue.pipeline.ids import (
     message_content_identity,
     message_owner_resolution,
 )
-from polylogue.sources.active_branch import normalize_active_branch
 from polylogue.sources.origin_specs import lowering_fingerprint, origin_specs, parser_fingerprint_for_origin
 from polylogue.sources.parsers.base import (
     ParseAccounting,
@@ -105,7 +104,7 @@ from polylogue.sources.parsers.claude.orchestration import (
     parse_claude_orchestration_artifact,
 )
 from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
-from polylogue.sources.prepared_message_sink import SqliteMessageSink
+from polylogue.sources.prepared_message_sink import SqliteMessageSink, normalize_active_branch
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
 from polylogue.storage.archive_identity import archive_root_for_index_path
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason

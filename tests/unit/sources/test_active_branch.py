@@ -7,9 +7,8 @@ from pathlib import Path
 import pytest
 
 from polylogue.core.enums import Role
-from polylogue.sources.active_branch import normalize_active_branch
 from polylogue.sources.parsers.base import ParsedMessage
-from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore
+from polylogue.sources.prepared_message_sink import SqliteMessageSink, SqliteMessageStore, normalize_active_branch
 
 
 def _message(
