@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -284,10 +285,21 @@ def gemini_cli_path() -> Path:
     return Path.home() / ".gemini" / "tmp"
 
 
+def hermes_home(environment: Mapping[str, str] | None = None, *, home: Path | None = None) -> Path:
+    """Hermes's runtime root: its own ``HERMES_HOME``, else ``<home>/.hermes``.
+
+    The one reader of that variable, shared by source discovery, runtime
+    config resolution, and the agent-integration installer.
+    """
+    raw = (os.environ if environment is None else environment).get("HERMES_HOME", "").strip()
+    if raw:
+        return Path(raw).expanduser()
+    return (home if home is not None else Path.home()) / ".hermes"
+
+
 def hermes_sessions_path() -> Path:
-    """Hermes agent state directory: Hermes's own ``HERMES_HOME``, else ``~/.hermes``."""
-    raw = os.environ.get("HERMES_HOME", "").strip()
-    return Path(raw).expanduser() if raw else Path.home() / ".hermes"
+    """Hermes agent state directory (see :func:`hermes_home`)."""
+    return hermes_home()
 
 
 def antigravity_path() -> Path:

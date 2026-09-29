@@ -36,6 +36,7 @@ from polylogue.agent_integration.spec import (
 from polylogue.core.digest import REFERENCE, canonical_bytes
 from polylogue.core.durable_fs import atomic_replace
 from polylogue.mcp.declarations import MCPCapabilities
+from polylogue.paths import hermes_home
 
 #: v2 (polylogue-800m): per-client record carries "capabilities"
 #: (write/judge/maintenance independent booleans) instead of the retired
@@ -484,7 +485,7 @@ def _profile_paths(client: AgentClient, *, home: Path, environment: Mapping[str,
         containing_root = Path(environment.get("GEMINI_CLI_HOME", str(home))).expanduser()
         root = containing_root / ".gemini"
         return ResolvedPaths(root, root / "settings.json", root / "GEMINI.md", root / "polylogue-reference.md")
-    root = Path(environment.get("HERMES_HOME", str(home / ".hermes"))).expanduser()
+    root = hermes_home(environment, home=home)
     skill_root = root / "skills" / "productivity" / "polylogue"
     return ResolvedPaths(
         root, root / "config.yaml", skill_root / "SKILL.md", skill_root / "references" / "reference.md"

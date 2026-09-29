@@ -22,7 +22,7 @@ import tomllib
 from .core.errors import PolylogueError
 from .core.loopback import bind_hosts_overlap, is_loopback_host
 from .logging import WARNING, emit
-from .paths import GEMINI_DRIVE_FOLDER
+from .paths import GEMINI_DRIVE_FOLDER, hermes_home
 from .storage.archive_identity import archive_file_set_root, resolve_active_index_path
 
 
@@ -2097,12 +2097,7 @@ def resolve_runtime_config(
         codex=bootstrap.home / ".codex" / "sessions",
         codex_memories=bootstrap.home / ".codex" / "memories",
         gemini_cli=bootstrap.home / ".gemini" / "tmp",
-        # Hermes's own HERMES_HOME names its runtime root.
-        hermes=_resolved_runtime_path(
-            bootstrap.environment.get("HERMES_HOME"),
-            bootstrap=bootstrap,
-            fallback=bootstrap.home / ".hermes",
-        ),
+        hermes=hermes_home(bootstrap.environment, home=bootstrap.home),
         antigravity=bootstrap.home / ".gemini" / "antigravity",
         browser_capture=browser_spool,
         inbox=paths.inbox_root,
