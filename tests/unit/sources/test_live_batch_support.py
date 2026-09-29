@@ -7969,7 +7969,7 @@ def test_single_session_full_terminally_supersedes_older_membership_prefix(
             (str(older),),
         ).fetchone() == ("superseded_prefix", 1, None, None, "unknown")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        _unclassified, revision_keys = archive.raw_revision_rebuild_selection([rejected_raw_id])
+        revision_keys = archive.raw_revision_rebuild_logical_keys([rejected_raw_id])
         _membership_raws, membership_keys = archive.expand_raw_membership_selection([rejected_raw_id])
     assert revision_keys == ()
     assert "codex-session:shared" in membership_keys

@@ -171,11 +171,10 @@ def archive_display_text(blocks: Iterable[ArchiveBlockRow]) -> str:
 def archive_provider_title(title: str | None, title_source: str | None) -> str | None:
     """Return the title a *full session* read may present as its own title.
 
-    ``TitleSource.PATH`` is a legacy structural fallback, not provider title
-    evidence, so the detail route suppresses it and lets the display-label
-    projection speak instead. ``TitleSource.HEURISTIC`` is suppressed for the
-    same reason (polylogue-4p1.6): it marks a title the parser already
-    recognized as an echo of the user's own opening prompt, so presenting it
+    Only ``TitleSource.ORIGIN`` is provider title evidence; the detail route
+    suppresses anything else and lets the display-label projection speak
+    instead. ``TitleSource.HEURISTIC`` is suppressed (polylogue-4p1.6): it
+    marks a title the parser already recognized as an echo of the user's own opening prompt, so presenting it
     as the session's title republishes the prompt as if the provider had named
     the session. Summaries deliberately keep the stored title as stored
     (``ArchiveSessionSummary.title`` is the row value and ``display_label``
