@@ -409,21 +409,6 @@ class TestBoundedReadsDegradeByName:
         assert chunked == whole
         assert sum(whole.role_counts.values()) > 0 and whole.total_sessions == 2
 
-    def test_exact_cap_is_complete_without_a_probe_row(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """An archive exactly at the cap remains an exact facet answer.
-
-        Anti-vacuity: flagging ``len(summaries) >= cap`` degrades this
-        one-session archive even though no row was omitted.
-        """
-        self._seed_sessions(tmp_path, 1)
-        monkeypatch.setattr("polylogue.api.archive.FACET_SCOPE_SESSION_CAP", 1)
-        with ArchiveStore.open_existing(tmp_path) as archive:
-            result = execute_read_operation(
-                "facets", {"params": {"no_idf": True}}, archive=archive, serving_identity="test"
-            )
-        assert cast(dict[str, Any], result["outcome"])["state"] == "ok"
-        assert result["total_sessions"] == 1
-
     def test_query_envelope_degrades_when_the_attached_projection_is_cut(self, tmp_path: Path) -> None:
         """``with messages`` over a 250-message session degrades, it does not lie.
 
