@@ -640,6 +640,16 @@ BLOCKS_SPEC = _make_table_spec(
             domain_name="tool_result_outcome_unknown_reason",
         ),
         _raw_column("signature", "signature TEXT", record_name="signature", domain_name="signature"),
+        # The block's semantic extras (metadata, file edit, web constructs)
+        # exactly as ``content_hash`` digested them, NULL when they are the
+        # empty default. Storage-only: it exists so a writer that re-derives
+        # ``content_hash`` from a stored row (tool-outcome reconciliation,
+        # cross-acquisition coalescing) digests the same evidence a fresh
+        # lowering did.
+        _raw_column(
+            "semantic_extra_json",
+            f"semantic_extra_json TEXT CHECK ({json_object_check('semantic_extra_json', nullable=True)})",
+        ),
         _raw_column(
             "content_hash",
             "content_hash BLOB CHECK(content_hash IS NULL OR length(content_hash) = 32)",

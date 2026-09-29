@@ -135,7 +135,7 @@ from polylogue.pipeline.ids import SessionRevisionProjection
 from polylogue.security.excision_policy import build_excision_policy_snapshot
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.blob_store import Heartbeat, PreparedBlob
+from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 from polylogue.storage.derived.session.records import SessionProfileRecord
 from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.derived.session.status import session_insight_status_sync
@@ -935,6 +935,9 @@ class ArchiveStore:
         # from a single assignment site would otherwise mistype these).
         self._source_conn: sqlite3.Connection | None = None
         self._blob_publisher: ArchiveBlobPublisher | None = None
+        # This archive's own CAS for read-side availability. One instance for
+        # the store's lifetime, so its read-verification memo spans reads.
+        self._read_blob_store = BlobStore(archive_root / "blob")
         self._pending_index_blob_receipts: list[tuple[str, bytes]] = []
         #: The shared blob-publisher slot held by a retained replay from its
         #: first excision check until its index/source commit (or rollback).
@@ -2654,7 +2657,7 @@ class ArchiveStore:
 
     def read_session(self, session_id: str) -> ArchiveSessionEnvelope:
         """Read a session envelope from index.db."""
-        return read_archive_session_envelope(self._conn, session_id)
+        return read_archive_session_envelope(self._conn, session_id, blob_store=self._read_blob_store)
 
     def read_compact_lineage(
         self,
@@ -2692,7 +2695,9 @@ class ArchiveStore:
         requested window, and the envelope's ``total_message_count`` carries
         the true composed transcript length.
         """
-        return read_archive_session_page(self._conn, session_id, limit=limit, offset=offset)
+        return read_archive_session_page(
+            self._conn, session_id, limit=limit, offset=offset, blob_store=self._read_blob_store
+        )
 
     def locate_composed_message(self, session_id: str, message_id: str) -> int | None:
         """Return a message's index in a session's composed transcript.
@@ -2789,7 +2794,10 @@ class ArchiveStore:
         composed = compose_session_topology(resolved_session_id, nodes, links)
         if composed is None:
             return []
-        return [read_archive_session_envelope(self._conn, str(node.session_id)) for node in composed.nodes]
+        return [
+            read_archive_session_envelope(self._conn, str(node.session_id), blob_store=self._read_blob_store)
+            for node in composed.nodes
+        ]
 
     def _topology_node_input(self, session_id: str) -> TopologyNodeInput | None:
         row = self._conn.execute(

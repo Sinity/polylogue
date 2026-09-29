@@ -9,6 +9,7 @@ from types import TracebackType
 
 import pytest
 
+from polylogue.archive.attachment.availability import AttachmentAvailabilityState
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_INGEST_FLAG
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
@@ -31,6 +32,7 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
 )
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
+from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.action_relation import action_relation_select_sql
 from polylogue.storage.sqlite.archive_tiers.archive import (
     ArchiveQueryUnitAggregateRow,
@@ -91,6 +93,70 @@ def test_replay_result_reports_typed_unresolved_attachment_owner(tmp_path: Path)
 
     assert result.unresolved_attachment_owners
     assert result.unresolved_attachment_owners[0][1] is AttachmentOwnerResolutionReason.OWNER_AMBIGUOUS
+
+
+def test_session_reads_resolve_attachment_bytes_in_the_opened_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Availability is answered by the archive being read, not the configured one.
+
+    The process is configured for one archive while the store is opened on
+    another. The opened archive holds one attachment's bytes; the other's
+    bytes exist only in the configured archive. Anti-vacuity: resolve
+    availability through ``get_blob_store()`` again and both verdicts flip --
+    the opened archive's own bytes read as missing, and the configured
+    archive's copy is borrowed for the other.
+    """
+    configured = tmp_path / "configured"
+    initialize_active_archive_root(configured)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(configured))
+    selected = tmp_path / "selected"
+    held, borrowed = b"bytes the opened archive holds", b"bytes only the configured archive holds"
+
+    def _attachment(name: str, payload: bytes) -> ParsedAttachment:
+        return ParsedAttachment(
+            provider_attachment_id=name,
+            message_provider_id="m1",
+            name=name,
+            mime_type="text/plain",
+            direction="user_input",
+            inline_bytes=payload,
+        )
+
+    session = ParsedSession(
+        source_name=Provider.CHATGPT,
+        provider_session_id="opened-archive-attachments",
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                text="two files",
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text="two files")],
+            )
+        ],
+        attachments=[_attachment("held.txt", held), _attachment("borrowed.txt", borrowed)],
+    )
+    with ArchiveStore(selected) as archive:
+        session_id = archive.write_raw_and_parsed_result(
+            session,
+            payload=b"opened-archive-attachments",
+            source_path="/tmp/opened-archive-attachments.json",
+            acquired_at_ms=1_767_000_000_000,
+        ).session_id
+        BlobStore(selected / "blob").blob_path(sha256(borrowed).hexdigest()).unlink()
+        BlobStore(configured / "blob").write_from_bytes(borrowed)
+        envelopes = (archive.read_session(session_id), archive.read_session_page(session_id, limit=10, offset=0))
+
+    for envelope in envelopes:
+        states = {
+            attachment.display_name: attachment.availability.state if attachment.availability else None
+            for message in envelope.messages
+            for attachment in message.attachments
+        }
+        assert states == {
+            "held.txt": AttachmentAvailabilityState.AVAILABLE,
+            "borrowed.txt": AttachmentAvailabilityState.MISSING,
+        }
 
 
 def test_read_open_rejects_stale_index_with_generation_and_lifecycle_action(tmp_path: Path) -> None:

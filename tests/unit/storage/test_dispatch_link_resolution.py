@@ -15,6 +15,7 @@ block where none may be bound.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -24,10 +25,12 @@ from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.claude import parse_code
-from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.blob_store import blob_store_for_connection
+from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from tests.infra.archive_templates import bootstrap_archive_root
 
 _PARENT = "0d9f1c2e-parent-uuid"
 _T0 = "2026-05-28T00:59:00.000Z"
@@ -260,22 +263,45 @@ def test_conflicting_witnesses_are_contradicted_not_guessed(tmp_path: Path) -> N
     assert _dispatch_reason(link) == "dispatch-identity-contradiction"
 
 
-def _seed_sidecar(source: sqlite3.Connection, *, parent_dir: str, agent_id: str, tool_use_id: str) -> None:
-    payload = json.dumps(
+def _sidecar_payload(tool_use_id: str) -> bytes:
+    return json.dumps(
         {"agentType": "general-purpose", "description": "worker", "toolUseId": tool_use_id, "spawnDepth": 1}
     ).encode()
-    hash_hex, size = get_blob_store().write_from_bytes(payload)
+
+
+def _seed_raw(source: sqlite3.Connection, *, raw_id: str, source_path: str, payload: bytes) -> str:
+    """One Claude Code raw acquisition, its bytes in this archive's own CAS."""
+    hash_hex, size = blob_store_for_connection(source).write_from_bytes(payload)
     source.execute(
         """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
            VALUES (?, 'claude-code-session', ?, ?, ?, 0)""",
-        (
-            f"raw-{parent_dir}-{agent_id}",
-            f"/x/.claude/projects/proj/{parent_dir}/subagents/agent-{agent_id}.meta.json",
-            bytes.fromhex(hash_hex),
-            size,
-        ),
+        (raw_id, source_path, bytes.fromhex(hash_hex), size),
     )
     source.commit()
+    return raw_id
+
+
+def _subagent_path(parent_dir: str, agent_id: str, suffix: str) -> str:
+    return f"/x/.claude/projects/proj/{parent_dir}/subagents/agent-{agent_id}{suffix}"
+
+
+def _seed_sidecar(source: sqlite3.Connection, *, parent_dir: str, agent_id: str, tool_use_id: str) -> None:
+    _seed_raw(
+        source,
+        raw_id=f"raw-{parent_dir}-{agent_id}",
+        source_path=_subagent_path(parent_dir, agent_id, ".meta.json"),
+        payload=_sidecar_payload(tool_use_id),
+    )
+
+
+def _seed_child_transcript(source: sqlite3.Connection, agent_id: str, *, parent_dir: str = _PARENT) -> str:
+    """The child's own transcript acquisition; its sidecar is this file's sibling."""
+    return _seed_raw(
+        source,
+        raw_id=f"raw-transcript-{parent_dir}-{agent_id}",
+        source_path=_subagent_path(parent_dir, agent_id, ".jsonl"),
+        payload=b"\n".join(json.dumps(record).encode() for record in _child_records(agent_id)),
+    )
 
 
 def test_sidecar_tool_use_id_binds_when_the_parent_result_is_silent(tmp_path: Path) -> None:
@@ -284,8 +310,9 @@ def test_sidecar_tool_use_id_binds_when_the_parent_result_is_silent(tmp_path: Pa
     A decoy sidecar for the same child stem under a different parent
     directory names another tool id; it must not bind, or contradict, this
     edge. Red if ``parse_claude_orchestration_artifact`` drops ``toolUseId``
-    or if the parent-directory binding is removed (the decoy would then
-    contradict the real witness).
+    or if the sidecar is looked up by child stem alone rather than at the
+    path the child's own acquisition names (the decoy would then contradict
+    the real witness).
     """
     index = _index_conn(tmp_path / "index.db")
     source = _source_conn(tmp_path / "source.db")
@@ -293,7 +320,7 @@ def test_sidecar_tool_use_id_binds_when_the_parent_result_is_silent(tmp_path: Pa
     _seed_sidecar(source, parent_dir="some-other-parent", agent_id="a1", tool_use_id="call_9")
 
     _write_parent(index, _parent_records([("call_1", "a1")], with_result=False), source_conn=source)
-    child_id = _write_child(index, "a1", source_conn=source)
+    child_id = _write_child(index, "a1", source_conn=source, raw_id=_seed_child_transcript(source, "a1"))
 
     link = _link(index, child_id)
     assert link["parent_tool_use_block_id"] == _tool_use_block_id(index, "call_1")
@@ -307,7 +334,7 @@ def test_sidecar_and_parent_result_disagreeing_is_a_contradiction(tmp_path: Path
     _seed_sidecar(source, parent_dir=_PARENT, agent_id="a1", tool_use_id="call_2")
 
     _write_parent(index, _parent_records([("call_1", "a1"), ("call_2", "a2")]), source_conn=source)
-    child_id = _write_child(index, "a1", source_conn=source)
+    child_id = _write_child(index, "a1", source_conn=source, raw_id=_seed_child_transcript(source, "a1"))
 
     assert _link(index, child_id)["parent_tool_use_block_id"] is None
     assert _dispatch_reason(_link(index, child_id)) == "dispatch-identity-contradiction"
@@ -363,3 +390,118 @@ def test_origin_without_dispatch_identity_is_typed(tmp_path: Path) -> None:
     assert link["resolved_dst_session_id"] is not None
     assert link["parent_tool_use_block_id"] is None
     assert _dispatch_reason(link) == "origin-no-dispatch-identity"
+
+
+def _seed_unrelated_claude_raws(source: sqlite3.Connection, count: int) -> None:
+    """Other sessions' sidecars: rows an exact lookup never visits."""
+    source.executemany(
+        """INSERT INTO raw_sessions (raw_id, origin, source_path, blob_hash, blob_size, acquired_at_ms)
+           VALUES (?, 'claude-code-session', ?, ?, 0, 0)""",
+        [
+            (
+                f"raw-unrelated-{index}",
+                _subagent_path(f"other-parent-{index}", "a1", ".meta.json"),
+                hashlib.sha256(f"unrelated-{index}".encode()).digest(),
+            )
+            for index in range(count)
+        ],
+    )
+    source.commit()
+
+
+def _source_tier_steps_writing_child(tmp_path: Path, *, unrelated: int) -> int:
+    """SQLite VM instructions the child's write runs on the source tier."""
+    root = tmp_path / f"unrelated-{unrelated}"
+    root.mkdir()
+    index = _index_conn(root / "index.db")
+    source = _source_conn(root / "source.db")
+    _seed_unrelated_claude_raws(source, unrelated)
+    _seed_sidecar(source, parent_dir=_PARENT, agent_id="a1", tool_use_id="call_1")
+    _write_parent(index, _parent_records([("call_1", "a1")], with_result=False), source_conn=source)
+    raw_id = _seed_child_transcript(source, "a1")
+    steps = 0
+
+    def _count() -> int:
+        nonlocal steps
+        steps += 1
+        return 0
+
+    source.set_progress_handler(_count, 1)
+    try:
+        child_id = _write_child(index, "a1", source_conn=source, raw_id=raw_id)
+    finally:
+        source.set_progress_handler(None, 1)
+    assert _link(index, child_id)["parent_tool_use_block_id"] == _tool_use_block_id(index, "call_1")
+    index.close()
+    source.close()
+    return steps
+
+
+def test_sidecar_lookup_work_does_not_grow_with_the_archives_claude_raws(tmp_path: Path) -> None:
+    """Binding one edge probes the child's own sidecar path, not every Claude raw.
+
+    SQLite's progress handler counts executed VM instructions, so the two
+    archives are compared exactly rather than by timing. Anti-vacuity: look
+    the sidecar up by a leading-wildcard ``source_path LIKE`` (or filter it by
+    ``origin`` through the origin index) and the count grows with the
+    unrelated rows.
+    """
+    assert _source_tier_steps_writing_child(tmp_path, unrelated=400) == _source_tier_steps_writing_child(
+        tmp_path, unrelated=4
+    )
+
+
+def test_retained_replay_binds_the_dispatch_the_sidecar_names(tmp_path: Path) -> None:
+    """A replay of the same raws rebuilds the edge live ingest bound.
+
+    The dispatch witness is the child's ``agent-*.meta.json`` sidecar in the
+    source tier; the parent's result record is silent. Live ingest hands the
+    writer its source handle. Anti-vacuity: drop ``source_conn`` from the
+    retained-raw replay's writer call and the edge is rebuilt with no dispatch
+    block and ``dispatch-evidence-absent``.
+    """
+    root = bootstrap_archive_root(tmp_path / "archive")
+    parent_records = _parent_records([("call_1", "a1")], with_result=False)
+    parent_path = f"/x/.claude/projects/proj/{_PARENT}.jsonl"
+    child_path = _subagent_path(_PARENT, "a1", ".jsonl")
+
+    def _jsonl(records: list[dict[str, object]]) -> bytes:
+        return b"\n".join(json.dumps(record).encode() for record in records)
+
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+
+        def _retained(source_path: str, payload: bytes) -> str:
+            return archive.write_raw_payload(
+                provider=Provider.CLAUDE_CODE, payload=payload, source_path=source_path, acquired_at_ms=1
+            )
+
+        parent_raw = _retained(parent_path, _jsonl(parent_records))
+        _retained(_subagent_path(_PARENT, "a1", ".meta.json"), _sidecar_payload("call_1"))
+        child_raw = _retained(child_path, _jsonl(_child_records("a1")))
+        archive.write_parsed_for_retained_raw_result(
+            parse_code(parent_records, _PARENT),
+            raw_id=parent_raw,
+            source_path=parent_path,
+            acquired_at_ms=1,
+            revision_authoritative=True,
+        )
+        child_id = archive.write_parsed_for_retained_raw_result(
+            parse_code(_child_records("a1"), "agent-a1"),
+            raw_id=child_raw,
+            source_path=child_path,
+            acquired_at_ms=1,
+            revision_authoritative=True,
+        ).session_id
+        index = archive.index_connection
+        assert index is not None
+        edge = index.execute(
+            """SELECT l.parent_tool_use_block_id, l.method, json_extract(l.evidence_json, '$.dispatch_reason'),
+                      (SELECT b.block_id FROM blocks b WHERE b.tool_id = 'call_1' AND b.block_type = 'tool_use')
+               FROM session_links l WHERE l.src_session_id = ?""",
+            (child_id,),
+        ).fetchall()
+
+    assert len(edge) == 1
+    block_id, method, reason, dispatch_block = tuple(edge[0])
+    assert dispatch_block is not None
+    assert (block_id, method, reason) == (dispatch_block, "parent-tool-use-id", None)

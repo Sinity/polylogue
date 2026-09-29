@@ -562,6 +562,11 @@ def _write_parsed_precedence_result(
                 prepared_required=prepared_required,
                 prepared_write=prepared_write,
                 write_outcome=writer_outcomes,
+                # Lineage, hook-parent and dispatch-sidecar evidence live in
+                # the source tier. Live ingest hands the writer this handle; a
+                # replay of the same raws must too, or it rebuilds edges
+                # without the witnesses the first acquisition bound them by.
+                source_conn=store._ensure_source_conn(),
             )
             if not (writer_outcomes and writer_outcomes[-1].suppression_skipped):
                 _bind_retained_enrichment(store, session, session_id=session_id, raw_id=raw_id)

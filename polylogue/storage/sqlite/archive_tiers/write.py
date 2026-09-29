@@ -21,7 +21,7 @@ import unicodedata
 import uuid
 from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence, Set
-from contextlib import closing, contextmanager, nullcontext, suppress
+from contextlib import AbstractContextManager, closing, contextmanager, nullcontext, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass, field, fields
 from datetime import date, datetime
@@ -108,7 +108,7 @@ from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
 from polylogue.storage.archive_identity import archive_root_for_index_path
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
-from polylogue.storage.blob_store import get_blob_store
+from polylogue.storage.blob_store import BlobStore, blob_store_for_connection
 from polylogue.storage.derived.session.summary import SESSION_SUMMARY_MEASURES, refresh_session_summary
 from polylogue.storage.fts.fts_lifecycle import message_fts_triggers_present_sync
 from polylogue.storage.fts.pl_fold import pl_fold_sql_expr
@@ -287,16 +287,25 @@ class ArchiveAttachmentRow:
 
 
 def _attachment_availability(
+    blob_store: BlobStore | None,
     blob_hash: bytes | None,
     acquisition_status: str | None,
     generation_id: str | None = None,
-) -> AttachmentAvailability:
-    store = get_blob_store()
+) -> AttachmentAvailability | None:
+    """Resolve an attachment's bytes against the blob store of the archive being read.
+
+    The store is the read archive's own CAS, never the process-configured one:
+    an ``ArchiveStore`` opened on another root must not report its bytes
+    missing, or borrow another archive's copy of the same hash. A reader that
+    supplies no store does not resolve availability at all (``None``).
+    """
+    if blob_store is None:
+        return None
     return resolve_attachment_availability(
         blob_hash=blob_hash,
         acquisition_status=acquisition_status,
-        verify=store.verify_for_read,
-        exists=store.exists,
+        verify=blob_store.verify_for_read,
+        exists=blob_store.exists,
         generation_id=generation_id,
     )
 
@@ -926,6 +935,10 @@ class PreparedMessageContext:
     lineage_inheritance: str | None
     lineage_prefix_digest: bytes | None
     inherited_source_message_ids: Mapping[str, str]
+    #: The parent rows the inherited prefix resolves to, by prefix ordinal:
+    #: ``messages`` is a ``_MessageTail`` whose ``start`` is this length.
+    #: Evidence an inherited message owns (attachments) resolves through it.
+    inherited_prefix_message_ids: Sequence[str] = ()
     #: The identity scope a materialized prefix recorded on this child's edge
     #: (``_IdentityScope``) and the content identities it assigns, index-aligned
     #: with ``messages``. ``None`` for every other write.
@@ -971,6 +984,188 @@ class _MessageTail(Sequence[ParsedMessage]):
         for ordinal, message in enumerate(self.messages):
             if ordinal >= self.start:
                 yield message
+
+
+class _MessagePrefix(Sequence[ParsedMessage]):
+    """Ordinal view of the leading ``stop`` messages of a prepared sequence.
+
+    The inherited prefix a ``_MessageTail`` slices away, kept addressable so
+    evidence an inherited message owns resolves against the prefix ordinals.
+    """
+
+    def __init__(self, messages: Sequence[ParsedMessage], stop: int) -> None:
+        self.messages = messages
+        self.stop = max(0, min(stop, len(messages)))
+        self.path = getattr(messages, "path", None)
+
+    def __len__(self) -> int:
+        return self.stop
+
+    @overload
+    def __getitem__(self, index: int) -> ParsedMessage: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[ParsedMessage]: ...
+
+    def __getitem__(self, index: int | slice) -> ParsedMessage | list[ParsedMessage]:
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(len(self)))]
+        ordinal = index + len(self) if index < 0 else index
+        if ordinal < 0 or ordinal >= len(self):
+            raise IndexError(index)
+        return self.messages[ordinal]
+
+    def __iter__(self) -> Iterator[ParsedMessage]:
+        for ordinal, message in enumerate(self.messages):
+            if ordinal >= self.stop:
+                return
+            yield message
+
+
+class _PrefixMessageIds(Sequence[str]):
+    """The composed parent row each inherited prefix ordinal resolves to.
+
+    A view over the parent's composed ``(message_id, signature)`` sequence
+    rather than a copy, so a disk-backed composition stays on disk.
+    """
+
+    def __init__(self, composed: Sequence[tuple[str, str]], count: int) -> None:
+        self._composed = composed
+        self._count = count
+
+    def __len__(self) -> int:
+        return self._count
+
+    @overload
+    def __getitem__(self, index: int) -> str: ...
+
+    @overload
+    def __getitem__(self, index: slice) -> list[str]: ...
+
+    def __getitem__(self, index: int | slice) -> str | list[str]:
+        if isinstance(index, slice):
+            return [self[position] for position in range(*index.indices(self._count))]
+        ordinal = index + self._count if index < 0 else index
+        if ordinal < 0 or ordinal >= self._count:
+            raise IndexError(index)
+        return self._composed[ordinal][0]
+
+
+@contextmanager
+def _prefix_attachment_owner_ordinals(
+    messages: Sequence[ParsedMessage],
+    prefix_count: int,
+    attachments: Sequence[ParsedAttachment],
+) -> Iterator[tuple[dict[object, int], frozenset[object]]]:
+    """Resolve attachments to the inherited prefix message that owns them.
+
+    Owner keys are resolved over the first ``prefix_count`` of ``messages``
+    with the same private contract ``_write_attachments`` applies to a tail,
+    so an inherited message owns exactly the attachments it would own as a
+    stored message. Yields ``(prefix ordinal by acquisition key, acquisition
+    keys whose prefix owner is ambiguous)``; an attachment no prefix message
+    owns is in neither.
+    """
+    prefix = _MessagePrefix(messages, prefix_count)
+    if not attachments or not len(prefix):
+        yield {}, frozenset()
+        return
+    scope: AbstractContextManager[MessageOwnerResolution] = (
+        disk_message_owner_resolution(prefix)
+        if isinstance(messages, SqliteMessageSink)
+        else nullcontext(message_owner_resolution(list(prefix)))
+    )
+    with scope as resolution:
+        wanted: defaultdict[str, list[object]] = defaultdict(list)
+        ambiguous: set[object] = set()
+        for attachment in attachments:
+            try:
+                owner_key = attachment_message_owner_key(attachment, resolution)
+            except MessageOwnerAmbiguityError:
+                ambiguous.add(attachment.acquisition_key)
+                continue
+            if owner_key is None or owner_key in resolution.ambiguous_keys:
+                continue
+            wanted[owner_key].append(attachment.acquisition_key)
+        ordinals: dict[object, int] = {}
+        if wanted:
+            for ordinal, owner_key in enumerate(resolution.keys):
+                for acquisition_key in wanted.pop(owner_key, ()):
+                    ordinals[acquisition_key] = ordinal
+                if not wanted:
+                    break
+        yield ordinals, frozenset(ambiguous)
+
+
+def _message_references_attachment(conn: sqlite3.Connection, message_id: str, attachment_id: str) -> bool:
+    return (
+        conn.execute(
+            "SELECT 1 FROM attachment_refs WHERE message_id = ? AND attachment_id = ? LIMIT 1",
+            (message_id, attachment_id),
+        ).fetchone()
+        is not None
+    )
+
+
+def _attachment_shared_prefix_limit(
+    conn: sqlite3.Connection,
+    messages: Sequence[ParsedMessage],
+    parent_composed: Sequence[tuple[str, str]],
+    shared: int,
+    attachments: Sequence[ParsedAttachment],
+) -> int:
+    """End a signature-aligned prefix before an inherited message the parent cannot represent.
+
+    A message signature covers the role and blocks, not the attachments, so a
+    replayed message can carry an attachment its parent row does not
+    reference. Inheriting that message would leave the attachment without an
+    owner any composed read reaches; ending the shared prefix before it keeps
+    the message, and its attachment, in the child's own tail. An attachment the
+    parent row already references is the parent's observation and inherits
+    with its message.
+    """
+    if not attachments or shared <= 0:
+        return shared
+    limit = shared
+    with _prefix_attachment_owner_ordinals(messages, shared, attachments) as (ordinals, _ambiguous):
+        for attachment in attachments:
+            ordinal = ordinals.get(attachment.acquisition_key)
+            if ordinal is None or ordinal >= limit:
+                continue
+            if not _message_references_attachment(conn, parent_composed[ordinal][0], _attachment_id("", attachment)):
+                limit = ordinal
+    return limit
+
+
+def _stored_attachment_shared_prefix_limit(
+    conn: sqlite3.Connection,
+    child_composed: Sequence[tuple[str, str]],
+    parent_composed: Sequence[tuple[str, str]],
+    shared: int,
+) -> int:
+    """``_attachment_shared_prefix_limit`` for a child whose rows are already stored.
+
+    A child written before its parent owns its whole transcript, including the
+    attachment references of the messages its parent later turns out to share.
+    Those rows are deleted when the prefix is extracted, so the prefix must end
+    before the first one holding a reference its parent row lacks -- the same
+    boundary the child would have taken had the parent been written first.
+    """
+    limit = shared
+    ordinal_by_message = {child_composed[ordinal][0]: ordinal for ordinal in range(shared)}
+    message_ids = iter(ordinal_by_message)
+    while batch := tuple(islice(message_ids, 500)):
+        placeholders = ",".join("?" for _ in batch)
+        for message_id, attachment_id in conn.execute(
+            f"SELECT message_id, attachment_id FROM attachment_refs WHERE message_id IN ({placeholders})",
+            batch,
+        ).fetchall():
+            ordinal = ordinal_by_message[str(message_id)]
+            if ordinal < limit and not _message_references_attachment(
+                conn, parent_composed[ordinal][0], str(attachment_id)
+            ):
+                limit = ordinal
+    return limit
 
 
 def _scoped_identities(
@@ -1476,6 +1671,7 @@ def _prepared_message_context(
     lineage_inheritance: str | None = None
     lineage_prefix_digest: bytes | None = None
     inherited_source_message_ids: Mapping[str, str] = {}
+    inherited_prefix_message_ids: Sequence[str] = ()
     # A child whose prefix was materialized owns its whole transcript and the
     # IDs recorded for it; a replay keeps it spawned-fresh rather than slicing
     # it against whatever the parent holds now, which would move those IDs.
@@ -1531,12 +1727,14 @@ def _prepared_message_context(
                     messages,
                     inherited_source_message_ids,
                     lineage_prefix_digest,
+                    inherited_prefix_message_ids,
                 ) = _extract_prefix_tail(
                     conn,
                     parent_session_id,
                     messages,
                     cache=signature_cache,
                     parent_composed=parent_composed,
+                    attachments=session.attachments,
                 )
             if branch_point_message_id is not None:
                 branch_point_content_address = _message_content_address_for_id(conn, branch_point_message_id)
@@ -1562,6 +1760,7 @@ def _prepared_message_context(
         lineage_inheritance=lineage_inheritance,
         lineage_prefix_digest=lineage_prefix_digest,
         inherited_source_message_ids=inherited_source_message_ids,
+        inherited_prefix_message_ids=inherited_prefix_message_ids,
     )
 
 
@@ -2310,6 +2509,22 @@ def write_parsed_session_to_archive(
                         or _lineage_prefix_digest(islice(signatures, inherited_count)) != context.lineage_prefix_digest
                     ):
                         raise PreparedSessionWriteRefusedError("prepared replay lineage prefix changed")
+                    # The prefix boundary also depended on which attachments the
+                    # parent rows referenced; a parent write since preparation
+                    # can drop one, and inheriting past it would leave that
+                    # attachment without an owner. Re-prepare instead.
+                    if (
+                        isinstance(context.messages, _MessageTail)
+                        and _attachment_shared_prefix_limit(
+                            conn,
+                            context.messages.messages,
+                            signatures,
+                            inherited_count,
+                            context.effective_session.attachments,
+                        )
+                        < inherited_count
+                    ):
+                        raise PreparedSessionWriteRefusedError("prepared replay lineage prefix attachments changed")
             conn.execute("INSERT OR REPLACE INTO derived_refresh_guard(guard_name) VALUES ('session-write')")
             if bulk_build:
                 # polylogue-v6i3: gate the messages_fts trigger
@@ -2642,6 +2857,7 @@ def write_parsed_session_to_archive(
                 refresh_attachment_ids=refresh_attachment_ids,
                 preacquired_blobs=preacquired_attachment_blobs,
                 content_identities=content_identities,
+                inherited_prefix_message_ids=context.inherited_prefix_message_ids,
             )
             add_timing("index.attachments", t0)
             t0 = time.perf_counter()
@@ -3248,7 +3464,9 @@ def _read_session_working_directories(conn: sqlite3.Connection, session_id: str)
     )
 
 
-def _read_orphan_attachments(conn: sqlite3.Connection, session_id: str) -> tuple[ArchiveAttachmentRow, ...]:
+def _read_orphan_attachments(
+    conn: sqlite3.Connection, session_id: str, *, blob_store: BlobStore | None
+) -> tuple[ArchiveAttachmentRow, ...]:
     """Read a session's message-less attachment refs.
 
     Same construction as the per-message rows -- including ``blob_hash`` and
@@ -3271,10 +3489,12 @@ def _read_orphan_attachments(conn: sqlite3.Connection, session_id: str) -> tuple
         """,
         (session_id,),
     ).fetchall()
-    return tuple(_archive_attachment_row(row, message_id=None) for row in rows)
+    return tuple(_archive_attachment_row(row, message_id=None, blob_store=blob_store) for row in rows)
 
 
-def _archive_attachment_row(row: sqlite3.Row, *, message_id: str | None) -> ArchiveAttachmentRow:
+def _archive_attachment_row(
+    row: sqlite3.Row, *, message_id: str | None, blob_store: BlobStore | None
+) -> ArchiveAttachmentRow:
     blob_hash = bytes(row["blob_hash"]) if row["blob_hash"] is not None else None
     return ArchiveAttachmentRow(
         attachment_id=row["attachment_id"],
@@ -3289,7 +3509,7 @@ def _archive_attachment_row(row: sqlite3.Row, *, message_id: str | None) -> Arch
         caption=row["caption"],
         blob_hash=blob_hash,
         acquisition_status=row["acquisition_status"],
-        availability=_attachment_availability(blob_hash, row["acquisition_status"]),
+        availability=_attachment_availability(blob_store, blob_hash, row["acquisition_status"]),
     )
 
 
@@ -3334,8 +3554,16 @@ def _composed_session_envelope(
     )
 
 
-def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> ArchiveSessionEnvelope:
+def read_archive_session_envelope(
+    conn: sqlite3.Connection,
+    session_id: str,
+    *,
+    blob_store: BlobStore | None = None,
+) -> ArchiveSessionEnvelope:
     """Read a compact archive envelope, holding one read snapshot across composition.
+
+    ``blob_store`` is the CAS of the archive ``conn`` belongs to; attachment
+    availability is resolved against it and left ``None`` without one.
 
     For a prefix-sharing lineage child (#2467) the inherited prefix is not stored
     under this session; the returned ``messages`` compose the parent's transcript
@@ -3354,7 +3582,7 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
     if not conn.in_transaction:
         conn.execute("BEGIN DEFERRED")
         try:
-            return read_archive_session_envelope(conn, session_id)
+            return read_archive_session_envelope(conn, session_id, blob_store=blob_store)
         finally:
             conn.execute("ROLLBACK")
     conn.row_factory = sqlite3.Row
@@ -3368,6 +3596,7 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
                 segment.session_id,
                 upto_position=segment.upto_position,
                 upto_variant_index=segment.upto_variant_index,
+                blob_store=blob_store,
             )
         )
     return _composed_session_envelope(
@@ -3375,7 +3604,7 @@ def read_archive_session_envelope(conn: sqlite3.Connection, session_id: str) -> 
         plan=plan,
         messages=tuple(messages),
         working_directories=_read_session_working_directories(conn, session_id),
-        orphan_attachments=_read_orphan_attachments(conn, session_id),
+        orphan_attachments=_read_orphan_attachments(conn, session_id, blob_store=blob_store),
         # An unbounded read already holds every composed message, so the
         # bounded-page count stays absent (see ``ArchiveSessionEnvelope``).
         total_message_count=None,
@@ -3388,6 +3617,7 @@ def _fetch_session_rows(
     *,
     upto_position: int | None = None,
     upto_variant_index: int | None = None,
+    blob_store: BlobStore | None,
 ) -> list[ArchiveMessageRow]:
     """Every row one session contributes to a composed transcript, in order.
 
@@ -3414,7 +3644,7 @@ def _fetch_session_rows(
     attachments_by_message: dict[str, list[ArchiveAttachmentRow]] = {}
     for attachment in attachment_rows:
         attachments_by_message.setdefault(attachment["message_id"], []).append(
-            _archive_attachment_row(attachment, message_id=attachment["message_id"])
+            _archive_attachment_row(attachment, message_id=attachment["message_id"], blob_store=blob_store)
         )
 
     upto_clause = ""
@@ -3497,6 +3727,7 @@ def _fetch_message_window(
     *,
     offset: int,
     limit: int,
+    blob_store: BlobStore | None,
 ) -> list[ArchiveMessageRow]:
     """Bounded ``[offset, offset + limit)`` window of a session's OWN rows.
 
@@ -3555,24 +3786,7 @@ def _fetch_message_window(
     attachments_by_message: dict[str, list[ArchiveAttachmentRow]] = {}
     for attachment in attachment_rows:
         attachments_by_message.setdefault(attachment["message_id"], []).append(
-            ArchiveAttachmentRow(
-                attachment_id=attachment["attachment_id"],
-                message_id=attachment["message_id"],
-                display_name=attachment["display_name"],
-                media_type=attachment["media_type"],
-                byte_count=int(attachment["byte_count"] or 0),
-                upload_origin=attachment["upload_origin"],
-                direction=attachment["direction"],
-                producer_ref=attachment["producer_ref"],
-                source_url=attachment["source_url"],
-                caption=attachment["caption"],
-                blob_hash=bytes(attachment["blob_hash"]) if attachment["blob_hash"] is not None else None,
-                acquisition_status=attachment["acquisition_status"],
-                availability=_attachment_availability(
-                    bytes(attachment["blob_hash"]) if attachment["blob_hash"] is not None else None,
-                    attachment["acquisition_status"],
-                ),
-            )
+            _archive_attachment_row(attachment, message_id=attachment["message_id"], blob_store=blob_store)
         )
     return [
         _row_to_archive_message(
@@ -3591,6 +3805,7 @@ def _fetch_planned_window(
     *,
     offset: int,
     limit: int,
+    blob_store: BlobStore | None,
 ) -> list[ArchiveMessageRow]:
     """Fetch ``[offset, offset + limit)`` of a composed transcript.
 
@@ -3611,7 +3826,9 @@ def _fetch_planned_window(
             remaining_offset -= segment.message_count
             continue
         take = min(remaining, segment.message_count - remaining_offset)
-        window.extend(_fetch_message_window(conn, segment.session_id, offset=remaining_offset, limit=take))
+        window.extend(
+            _fetch_message_window(conn, segment.session_id, offset=remaining_offset, limit=take, blob_store=blob_store)
+        )
         remaining -= take
         remaining_offset = 0
     return window
@@ -3623,6 +3840,7 @@ def read_archive_session_page(
     *,
     limit: int,
     offset: int,
+    blob_store: BlobStore | None = None,
 ) -> ArchiveSessionEnvelope:
     """Read a bounded ``[offset, offset + limit)`` PAGE of a session's transcript.
 
@@ -3641,12 +3859,13 @@ def read_archive_session_page(
     ``total_message_count`` on the returned envelope always carries the TRUE
     composed transcript length; ``messages`` holds only the requested window.
     A negative ``offset`` is clamped to zero rather than wrapping a window
-    onto the end of the transcript.
+    onto the end of the transcript. ``blob_store`` resolves attachment
+    availability exactly as ``read_archive_session_envelope`` does.
     """
     if not conn.in_transaction:
         conn.execute("BEGIN DEFERRED")
         try:
-            return read_archive_session_page(conn, session_id, limit=limit, offset=offset)
+            return read_archive_session_page(conn, session_id, limit=limit, offset=offset, blob_store=blob_store)
         finally:
             conn.execute("ROLLBACK")
     conn.row_factory = sqlite3.Row
@@ -3655,9 +3874,9 @@ def read_archive_session_page(
     return _composed_session_envelope(
         session,
         plan=plan,
-        messages=tuple(_fetch_planned_window(conn, plan.segments, offset=offset, limit=limit)),
+        messages=tuple(_fetch_planned_window(conn, plan.segments, offset=offset, limit=limit, blob_store=blob_store)),
         working_directories=_read_session_working_directories(conn, session_id),
-        orphan_attachments=_read_orphan_attachments(conn, session_id),
+        orphan_attachments=_read_orphan_attachments(conn, session_id, blob_store=blob_store),
         total_message_count=plan.total_message_count,
     )
 
@@ -4156,6 +4375,34 @@ def _block_content_hash(
     )
 
 
+#: ``semantic_extra_json`` of a block with no metadata, file edit or web
+#: constructs -- ``_json_dumps`` of that value, spelled out because the
+#: module's JSON helper is defined below. ``content_hash`` still digests it;
+#: only the stored column is NULL, so an ordinary block carries no copy.
+_EMPTY_SEMANTIC_EXTRA_JSON = '{"file_edit":null,"metadata":null,"web_constructs":[]}'
+
+
+def _block_semantic_extra_json(block: ParsedContentBlock) -> str:
+    """The semantic extras ``_block_content_hash`` digests for a parsed block."""
+    return _json_dumps(
+        {
+            "metadata": block.metadata,
+            "file_edit": block.file_edit.model_dump(mode="json") if block.file_edit else None,
+            "web_constructs": [item.model_dump(mode="json") for item in block.web_constructs],
+        }
+    )
+
+
+def _stored_semantic_extra_json(semantic_extra_json: str) -> str | None:
+    """The ``blocks.semantic_extra_json`` value for a block's digested extras."""
+    return None if semantic_extra_json == _EMPTY_SEMANTIC_EXTRA_JSON else semantic_extra_json
+
+
+def _hashed_semantic_extra_json(stored: object) -> str:
+    """The extras a stored block row's ``content_hash`` digests."""
+    return _EMPTY_SEMANTIC_EXTRA_JSON if stored is None else cast(str, stored)
+
+
 def _build_block_rows(
     session_id: str,
     messages: Sequence[ParsedMessage],
@@ -4207,6 +4454,7 @@ def _iter_block_rows(
             tool_outcome = getattr(block, "tool_outcome", None)
             outcome_unknown_reason = _enum_value(block.outcome_unknown_reason)
             signature = getattr(block, "signature", None)
+            semantic_extra_json = _block_semantic_extra_json(block)
             values: dict[str, object] = {
                 "message_id": message_id,
                 "session_id": session_id,
@@ -4224,6 +4472,7 @@ def _iter_block_rows(
                 "tool_outcome": getattr(block, "tool_outcome", None),
                 "tool_result_outcome_unknown_reason": outcome_unknown_reason,
                 "signature": _sqlite_text(signature),
+                "semantic_extra_json": _stored_semantic_extra_json(semantic_extra_json),
                 "content_hash": _block_content_hash(
                     block_type=block_type.value,
                     text=block.text,
@@ -4236,13 +4485,7 @@ def _iter_block_rows(
                     exit_code=exit_code,
                     tool_outcome=tool_outcome,
                     outcome_unknown_reason=outcome_unknown_reason,
-                    semantic_extra_json=_json_dumps(
-                        {
-                            "metadata": block.metadata,
-                            "file_edit": block.file_edit.model_dump(mode="json") if block.file_edit else None,
-                            "web_constructs": [item.model_dump(mode="json") for item in block.web_constructs],
-                        }
-                    ),
+                    semantic_extra_json=semantic_extra_json,
                 ),
             }
             yield archive_tiers_specs.BLOCKS_SPEC.extract_tuple(values)
@@ -4303,7 +4546,7 @@ def _reconcile_tool_use_outcomes(conn: sqlite3.Connection, session_id: str) -> N
                b.text, b.tool_name, b.tool_input, b.semantic_type,
                b.media_type, b.language, b.tool_result_is_error,
                b.tool_result_exit_code, b.tool_result_outcome_unknown_reason,
-               b.signature, m.position, m.variant_index, b.position
+               b.signature, b.semantic_extra_json, m.position, m.variant_index, b.position
         FROM blocks AS b
         JOIN messages AS m ON m.message_id = b.message_id
         WHERE b.session_id = ? AND b.tool_id IS NOT NULL
@@ -4339,6 +4582,7 @@ def _reconcile_tool_use_outcomes(conn: sqlite3.Connection, session_id: str) -> N
                 exit_code=use["tool_result_exit_code"],
                 tool_outcome=outcome,
                 outcome_unknown_reason=use["tool_result_outcome_unknown_reason"],
+                semantic_extra_json=_hashed_semantic_extra_json(use["semantic_extra_json"]),
             )
             conn.execute(
                 "UPDATE blocks SET tool_outcome = ?, content_hash = ? WHERE block_id = ?",
@@ -4752,6 +4996,7 @@ def _coalesce_block_row(
         exit_code=cast("int | None", merged_values[b_idx["tool_result_exit_code"]]),
         tool_outcome=cast("str | None", merged_values[b_idx["tool_outcome"]]),
         outcome_unknown_reason=cast("str | None", merged_values[b_idx["tool_result_outcome_unknown_reason"]]),
+        semantic_extra_json=_hashed_semantic_extra_json(merged_values[b_idx["semantic_extra_json"]]),
     )
     return tuple(merged_values)
 
@@ -6571,7 +6816,18 @@ def _write_attachments(
     refresh_attachment_ids: Iterable[str] | None = None,
     preacquired_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
     owner_resolution: MessageOwnerResolution | None = None,
+    inherited_prefix_message_ids: Sequence[str] = (),
 ) -> tuple[tuple[str, AttachmentOwnerResolutionReason], ...]:
+    """Write attachment rows and their message references.
+
+    An attachment the tail does not own may belong to an inherited prefix
+    message (``inherited_prefix_message_ids`` names those parent rows by
+    ordinal). The parent row is then its owner: when it references the
+    attachment, that reference is what the composed child reads, so the child
+    adds none -- its bytes can still complete the shared ``attachments`` row.
+    A prefix owner that does not reference it is a typed
+    ``INHERITED_OWNER_UNREFERENCED``, never an orphaned metadata row.
+    """
     attachments = tuple(attachments)
     if not attachments:
         refresh_and_sweep_attachment_rows(conn, refresh_attachment_ids or ())
@@ -6590,6 +6846,7 @@ def _write_attachments(
                 refresh_attachment_ids=refresh_attachment_ids,
                 preacquired_blobs=preacquired_blobs,
                 owner_resolution=resolution,
+                inherited_prefix_message_ids=inherited_prefix_message_ids,
             )
     wanted_owner_keys: set[str] | None = None
     if owner_resolution is not None:
@@ -6614,6 +6871,7 @@ def _write_attachments(
     resolved_message_ids: dict[object, str] = {}
     attachments_by_message: defaultdict[str, list[ParsedAttachment]] = defaultdict(list)
     unresolved: dict[str, AttachmentOwnerResolutionReason] = {}
+    tail_unowned: list[ParsedAttachment] = []
     for attachment in attachments:
         try:
             owner_key = attachment_message_owner_key(attachment, owner_resolution)
@@ -6627,7 +6885,31 @@ def _write_attachments(
             resolved_message_ids[attachment.acquisition_key] = message_id
             attachments_by_message[message_id].append(attachment)
         else:
+            tail_unowned.append(attachment)
             unresolved[_attachment_id(session_id, attachment)] = AttachmentOwnerResolutionReason.PROVIDER_NEVER_LINKED
+    # Acquisition keys whose owner is an inherited parent row: referenced by
+    # it (the parent owns the observation), or not (typed, nothing written).
+    inherited_owned: set[object] = set()
+    inherited_unreferenced: set[object] = set()
+    if tail_unowned and isinstance(messages, _MessageTail) and len(inherited_prefix_message_ids):
+        with _prefix_attachment_owner_ordinals(messages.messages, messages.start, tail_unowned) as (
+            prefix_ordinals,
+            prefix_ambiguous,
+        ):
+            for attachment in tail_unowned:
+                attachment_id = _attachment_id(session_id, attachment)
+                if attachment.acquisition_key in prefix_ambiguous:
+                    unresolved[attachment_id] = AttachmentOwnerResolutionReason.OWNER_AMBIGUOUS
+                    continue
+                ordinal = prefix_ordinals.get(attachment.acquisition_key)
+                if ordinal is None:
+                    continue
+                if _message_references_attachment(conn, inherited_prefix_message_ids[ordinal], attachment_id):
+                    inherited_owned.add(attachment.acquisition_key)
+                    unresolved.pop(attachment_id, None)
+                else:
+                    inherited_unreferenced.add(attachment.acquisition_key)
+                    unresolved[attachment_id] = AttachmentOwnerResolutionReason.INHERITED_OWNER_UNREFERENCED
     for message_id, message_group in attachments_by_message.items():
         current_ids = {_attachment_id(session_id, attachment) for attachment in message_group}
         occupied = (
@@ -6648,6 +6930,14 @@ def _write_attachments(
     for attachment in attachments:
         attachment_id = _attachment_id(session_id, attachment)
         message_id = resolved_message_ids.get(attachment.acquisition_key)
+        if message_id is None and attachment.acquisition_key in inherited_owned:
+            # The inherited parent row references this attachment; the child
+            # composes it through that row. The child's copy can still carry
+            # bytes the shared row lacks, and nothing here adds a reference.
+            _write_attachment_row(conn, attachment_id, attachment, preacquired_blobs)
+            continue
+        if message_id is None and attachment.acquisition_key in inherited_unreferenced:
+            continue
         if message_id is None:
             # An attachment carrying inline or precomputed bytes whose owner
             # is absent from this ingest cannot be represented by a reachable
@@ -11130,6 +11420,7 @@ def _reextract_prefix_tail_db(
     limit = min(len(parent_composed), len(child_composed))
     while k < limit and parent_composed[k][1] == child_composed[k][1]:
         k += 1
+    k = _stored_attachment_shared_prefix_limit(conn, child_composed, parent_composed, k)
     record_substage("signature_compare", t0)
 
     if k == 0:
@@ -12797,12 +13088,17 @@ def _extract_prefix_tail(
     *,
     cache: _SignatureCacheLike | None = None,
     parent_composed: Sequence[tuple[str, str]] | None = None,
-) -> tuple[str | None, str | None, Sequence[ParsedMessage], Mapping[str, str], bytes | None]:
+    attachments: Sequence[ParsedAttachment] = (),
+) -> tuple[str | None, str | None, Sequence[ParsedMessage], Mapping[str, str], bytes | None, Sequence[str]]:
     """Align ``messages`` (the child's full parsed messages, which replay the
     parent's prefix) against the parent's composed transcript. Returns
-    ``(branch_point_message_id, inheritance, tail_messages, inherited_refs)``.
+    ``(branch_point_message_id, inheritance, tail_messages, inherited_refs,
+    prefix_digest, inherited_prefix_message_ids)``.
     ``inherited_refs`` maps unambiguous provider-local child message ids to the
-    canonical parent message rows that physically own the replayed prefix.
+    canonical parent message rows that physically own the replayed prefix;
+    ``inherited_prefix_message_ids`` names those rows by prefix ordinal. The
+    shared prefix also ends before a message carrying one of ``attachments``
+    its parent row does not reference (``_attachment_shared_prefix_limit``).
     """
     if parent_composed is None:
         source = messages.messages if isinstance(messages, _MessageTail) else messages
@@ -12812,14 +13108,21 @@ def _extract_prefix_tail(
             else _composed_db_signatures(conn, parent_session_id, cache=cache)
         )
     if not parent_composed:
-        return (None, "spawned-fresh", messages, {}, None)
+        return (None, "spawned-fresh", messages, {}, None, ())
     k = 0
     for message, (_, parent_signature) in zip(messages, parent_composed, strict=False):
         if parent_signature != _parsed_message_signature(message):
             break
         k += 1
+    k = _attachment_shared_prefix_limit(
+        conn,
+        messages.messages if isinstance(messages, _MessageTail) else messages,
+        parent_composed,
+        k,
+        attachments,
+    )
     if k == 0:
-        return (None, "spawned-fresh", messages, {}, None)
+        return (None, "spawned-fresh", messages, {}, None, ())
     branch_point_message_id = parent_composed[k - 1][0]
     duplicate_native_ids = _duplicate_message_native_ids(messages)
     source = messages.messages if isinstance(messages, _MessageTail) else messages
@@ -12838,6 +13141,7 @@ def _extract_prefix_tail(
         _MessageTail(messages, k),
         inherited_refs,
         _lineage_prefix_digest(islice(parent_composed, k)),
+        _PrefixMessageIds(parent_composed, k),
     )
 
 
@@ -13085,24 +13389,79 @@ def _session_provider_values(conn: sqlite3.Connection, session_id: str) -> set[s
     return values
 
 
-def _escape_like(value: str) -> str:
-    """Escape SQL LIKE wildcards so a provider-derived value matches literally."""
-    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+def _session_acquisition_path(conn: sqlite3.Connection, source_conn: sqlite3.Connection, session_id: str) -> str | None:
+    """The source path of the raw acquisition a stored session was written from."""
+    row = conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    if row is None or row[0] is None:
+        return None
+    raw = source_conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (str(row[0]),)).fetchone()
+    return None if raw is None else str(raw[0])
+
+
+def _split_source_path(path: str) -> tuple[str, str, str]:
+    """Split a source path into its directory prefix, file name and separator.
+
+    The prefix keeps its trailing separator and the path's own separator
+    style, so a derived sibling path compares equal to the stored one.
+    """
+    cut = max(path.rfind("/"), path.rfind("\\"))
+    separator = path[cut] if cut >= 0 else "/"
+    return path[: cut + 1], path[cut + 1 :], separator
+
+
+def _sidecar_candidate_paths(
+    conn: sqlite3.Connection,
+    source_conn: sqlite3.Connection,
+    *,
+    parent_session_id: str,
+    child_session_id: str,
+    parent_values: set[str],
+    stems: set[str],
+) -> set[str]:
+    """Exact source paths where the child's dispatch sidecar can be stored.
+
+    Claude Code writes ``<dir>/<parent>.jsonl``, and the child's transcript
+    and sidecar side by side under ``<dir>/<parent>/subagents/``. Both
+    sessions' own acquisition paths therefore name the sidecar exactly: it is
+    the child transcript's sibling, and it sits in the parent transcript's
+    ``subagents`` directory. A session with no recorded acquisition path
+    contributes no candidate.
+    """
+    candidates: set[str] = set()
+    child_path = _session_acquisition_path(conn, source_conn, child_session_id)
+    if child_path is not None:
+        directory, _name, _separator = _split_source_path(child_path)
+        candidates.update(f"{directory}{stem}.meta.json" for stem in stems)
+    parent_path = _session_acquisition_path(conn, source_conn, parent_session_id)
+    if parent_path is not None:
+        directory, name, separator = _split_source_path(parent_path)
+        parent_stem = name.removesuffix(".jsonl").removesuffix(".ndjson")
+        if parent_stem in parent_values:
+            candidates.update(
+                f"{directory}{parent_stem}{separator}subagents{separator}{stem}.meta.json" for stem in stems
+            )
+    return candidates
 
 
 def _sidecar_dispatch_tool_ids(
+    conn: sqlite3.Connection,
     source_conn: sqlite3.Connection | None,
     *,
     origin: str,
+    parent_session_id: str,
+    child_session_id: str,
     parent_values: set[str],
     child_values: set[str],
 ) -> set[str]:
     """Tool ids the child's ``agent-*.meta.json`` sidecar names, bound to this parent.
 
     The sidecar lives at ``<parent>/subagents/<child stem>.meta.json`` in the
-    durable source tier; the parent directory must be one of the parent's own
-    provider names, so a sidecar can never bind to a different session that
-    happens to share a child stem.
+    durable source tier. Its candidate paths come from the two sessions' own
+    acquisitions (``_sidecar_candidate_paths``), and each is probed by exact
+    ``source_path``, which ``idx_raw_sessions_source_path`` serves: resolving
+    one edge costs a few index lookups however many Claude raws the archive
+    holds, where a leading-wildcard pattern scanned every one of them per
+    edge on the single writer.
     """
     if source_conn is None or origin != Origin.CLAUDE_CODE_SESSION.value:
         return set()
@@ -13114,21 +13473,49 @@ def _sidecar_dispatch_tool_ids(
         is None
     ):
         return set()
+    return _sidecar_paths_dispatch_tool_ids(
+        source_conn,
+        origin=origin,
+        sidecar_paths=_sidecar_candidate_paths(
+            conn,
+            source_conn,
+            parent_session_id=parent_session_id,
+            child_session_id=child_session_id,
+            parent_values=parent_values,
+            stems=stems,
+        ),
+        parent_values=parent_values,
+    )
+
+
+def _sidecar_paths_dispatch_tool_ids(
+    source_conn: sqlite3.Connection,
+    *,
+    origin: str,
+    sidecar_paths: Iterable[str],
+    parent_values: set[str],
+) -> set[str]:
+    """Read the dispatch tool ids the sidecars stored at ``sidecar_paths`` name.
+
+    The parent directory must be one of the parent's own provider names, so a
+    sidecar can never bind to a different session that happens to share a
+    child stem. The bytes are read from the CAS of the archive ``source_conn``
+    belongs to, never the process-configured one.
+    """
     tool_ids: set[str] = set()
-    store = get_blob_store()
-    for stem in sorted(stems):
+    store = blob_store_for_connection(source_conn)
+    for sidecar_path in sorted(sidecar_paths):
+        # Only ``source_path`` is constrained in SQL, so the planner can serve
+        # the probe from ``idx_raw_sessions_source_path`` alone; an ``origin``
+        # term would let it walk every Claude raw through the origin index.
         rows = source_conn.execute(
-            # The stem is provider-derived, so its LIKE wildcards must be
-            # escaped: an unescaped `_` matches any character and an
-            # unescaped `%` matches anything at all, pulling a sibling
-            # session's sidecar into this parent's dispatch resolution. More
-            # than one tool id is read as a dispatch-identity contradiction,
-            # so the stray match does not mis-bind the edge -- it refuses a
-            # correct one.
-            "SELECT source_path, blob_hash FROM raw_sessions WHERE origin = ? AND source_path LIKE ? ESCAPE '\\'",
-            (origin, f"%/subagents/{_escape_like(stem)}.meta.json"),
+            "SELECT source_path, blob_hash, origin FROM raw_sessions WHERE source_path = ? "
+            "ORDER BY source_index, raw_id",
+            (sidecar_path,),
         ).fetchall()
-        for source_path, blob_hash in rows:
+        for source_path, blob_hash, row_origin in rows:
+            if row_origin != origin:
+                continue
             parts = str(source_path).replace("\\", "/").split("/")
             if len(parts) < 3 or parts[-3] not in parent_values:
                 continue
@@ -13231,8 +13618,11 @@ def _resolve_parent_dispatch_block(
             continue
         tool_ids.add(observation.provider_tool_id)
     tool_ids |= _sidecar_dispatch_tool_ids(
+        conn,
         source_conn,
         origin=origin,
+        parent_session_id=parent_session_id,
+        child_session_id=child_session_id,
         parent_values=_session_provider_values(conn, parent_session_id),
         child_values=_session_provider_values(conn, child_session_id),
     )
