@@ -90,9 +90,20 @@ def _from_text_json(model: type[_ModelT], encoded: str) -> _ModelT:
     differently in JSON mode (a paste digest's hex) read the
     :data:`SINK_JSON_CONTEXT` flag and parse as JSON mode would.
     """
-    if _ESCAPED_SURROGATE.search(encoded) is None:
+    if not _may_hold_escaped_surrogate(encoded) or _ESCAPED_SURROGATE.search(encoded) is None:
         return model.model_validate_json(encoded)
     return model.model_validate(json.loads(encoded), context=SINK_JSON_CONTEXT)
+
+
+def _may_hold_escaped_surrogate(encoded: str) -> bool:
+    """Whether ``encoded`` contains the ``\\u`` + ``d``/``D`` an escaped surrogate starts with.
+
+    Every ``_ESCAPED_SURROGATE`` match contains one of these two substrings,
+    so their absence -- a C substring scan -- decides the common case. The
+    regex alone, with its backslash-run prefix, tried a match at every
+    offset of every decoded row: 40 s of a 440 MB rollout's preparation.
+    """
+    return "\\ud" in encoded or "\\uD" in encoded
 
 
 def _read_uri(path: Path) -> str:
