@@ -12,7 +12,8 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Iterator
+import zipfile
+from collections.abc import Iterator, Sequence
 from pathlib import Path
 
 import pytest
@@ -757,3 +758,65 @@ async def test_retained_replay_archives_every_duplicate_asset_rendition(blob_sto
     assert {attachment.provider_attachment_id.rsplit("#", 1)[-1] for attachment in attachments} == {
         key.rsplit("#", 1)[-1] for key in live_keys
     }
+
+
+def _write_chatgpt_zip(zip_path: Path, library_names: Sequence[str]) -> None:
+    """A ChatGPT export ZIP whose ``library_files.json`` may repeat."""
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("conversations.json", _chatgpt_export_document())
+        for index, name in enumerate(library_names):
+            payload = json.dumps([{"file_id": _CHATGPT_ASSET_ID, "file_name": name}])
+            if index == 0:
+                archive.writestr("library_files.json", payload)
+                continue
+            with pytest.warns(UserWarning, match="Duplicate name"):
+                archive.writestr("library_files.json", payload)
+
+
+def _resolved_library_names(archive_root: Path, zip_path: Path) -> tuple[str | None, str | None]:
+    """The asset name live assembly and retained replay each resolve."""
+    import sqlite3
+
+    from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
+    from polylogue.sources.retained_assembly import retained_chatgpt_sidecars
+
+    live_index = ChatGPTAssemblySpec().discover_sidecars([zip_path])["chatgpt_asset_index"]
+    conn = sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True)
+    try:
+        retained = retained_chatgpt_sidecars(
+            conn,
+            BlobStore(archive_root / "blob"),
+            session_source_path=f"{zip_path}:conversations.json",
+        )
+    finally:
+        conn.close()
+    live = live_index.resolve_dat(_CHATGPT_ASSET_ID)
+    replayed = retained["chatgpt_asset_index"].resolve_dat(_CHATGPT_ASSET_ID)
+    return (live.name if live else None, replayed.name if replayed else None)
+
+
+@pytest.mark.asyncio
+async def test_retained_zip_sidecar_binds_the_member_live_assembly_binds(blob_store: BlobStore, tmp_path: Path) -> None:
+    """Replay binds the first duplicate member of one acquisition, as live does.
+
+    A later acquisition of the export still supersedes the earlier one.
+
+    Anti-vacuity: rank the duplicates by receipt order alone and replay binds
+    the later-received ``second.png`` member while live assembly binds the
+    first in central-directory order.
+    """
+    from polylogue.sources.live import WatchSource
+
+    archive_root = tmp_path / "archive"
+    root = tmp_path / "live" / "exports"
+    root.mkdir(parents=True)
+    zip_path = root / "chatgpt-export.zip"
+    source = WatchSource(name="chatgpt", root=root, suffixes=(".json", ".zip"))
+
+    _write_chatgpt_zip(zip_path, ["first.png", "second.png"])
+    await _acquire_evidence(archive_root, source, [zip_path])
+    assert _resolved_library_names(archive_root, zip_path) == ("first.png", "first.png")
+
+    _write_chatgpt_zip(zip_path, ["reexported.png"])
+    await _acquire_evidence(archive_root, source, [zip_path])
+    assert _resolved_library_names(archive_root, zip_path) == ("reexported.png", "reexported.png")

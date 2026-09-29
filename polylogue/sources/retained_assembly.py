@@ -106,10 +106,15 @@ def _select_retained(
     where: str,
     parameters: list[object],
 ) -> dict[str, RetainedArtifact]:
-    """Return the newest retained observation per exact ``source_path``.
+    """Return the current retained observation per exact ``source_path``.
 
     One row per coordinate: an older observation of the same coordinate is
-    still archived and readable, it is simply not the current value.
+    still archived and readable, it is simply not the current value. The
+    newest durable receipt names the current acquisition. Within that
+    acquisition -- the observations its pass stamped with one acquisition
+    time -- a ZIP can hold several members at one path, and live assembly
+    binds the first in central-directory order, so the lowest member ordinal
+    wins there.
     """
     # The coordinate predicate is expressed on ``raw_artifacts`` so
     # ``idx_raw_artifacts_source_identity`` (origin, source_path, source_index)
@@ -122,28 +127,43 @@ def _select_retained(
             lower(hex(r.blob_hash)),
             r.blob_size,
             COALESCE(({_RECEIPT_ORDER.format(column="acquired_at_ms")}), r.acquired_at_ms),
-            COALESCE(({_RECEIPT_ORDER.format(column="rowid")}), r.rowid)
+            COALESCE(({_RECEIPT_ORDER.format(column="rowid")}), r.rowid),
+            c.entry_ordinal
         FROM raw_artifacts AS a
         JOIN raw_sessions AS r ON r.raw_id = a.raw_id
+        LEFT JOIN raw_container_coordinates AS c ON c.raw_id = r.raw_id
         WHERE a.origin = ?
           AND ({where})
           AND a.artifact_kind = ?
           AND r.blob_hash IS NOT NULL
           AND r.parse_error IS NULL
-        ORDER BY 6 DESC, r.raw_id DESC
     """
     # A read failure here is infrastructure state, not an answer: it
     # propagates so the ingesting pass records a retryable outcome instead of
     # resolving to "no evidence" and writing a session that silently lost its
     # provider metadata.
     rows = source_conn.execute(sql, [origin.value, *parameters, artifact_kind.value]).fetchall()
-    newest: dict[str, RetainedArtifact] = {}
-    for raw_id, source_path, blob_hash, blob_size, _observed, _order in rows:
+    by_path: dict[str, list[tuple[int, int, int, str, RetainedArtifact]]] = {}
+    for raw_id, source_path, blob_hash, blob_size, observed, order, entry_ordinal in rows:
         path = str(source_path)
-        if path in newest:
-            continue
-        newest[path] = RetainedArtifact(str(raw_id), path, str(blob_hash), int(blob_size))
-    return newest
+        by_path.setdefault(path, []).append(
+            (
+                int(order),
+                int(observed),
+                int(entry_ordinal or 0),
+                str(raw_id),
+                RetainedArtifact(str(raw_id), path, str(blob_hash), int(blob_size)),
+            )
+        )
+    current: dict[str, RetainedArtifact] = {}
+    for path, observations in by_path.items():
+        # The newest durable receipt names the current acquisition; the clock
+        # only groups the observations that one pass stamped together, and
+        # among those the first member in central-directory order wins.
+        newest = max(observations, key=lambda item: (item[0], item[3]))
+        same_pass = [item for item in observations if item[1] == newest[1]]
+        current[path] = min(same_pass, key=lambda item: (item[2], -item[0]))[4]
+    return current
 
 
 def _read(blob_store: BlobStore, artifact: RetainedArtifact) -> bytes | None:
