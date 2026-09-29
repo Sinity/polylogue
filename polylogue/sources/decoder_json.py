@@ -678,6 +678,10 @@ def _root_envelope_without(
     envelope = normalize_ijson_stdlib_numbers(builder.value)
     if not isinstance(envelope, dict):
         return None
+    if "__admission_future_type" in envelope:
+        # The streamed parsers read this key as probe metadata; a source
+        # document that carries it stays on the object parser.
+        return None
     if future_type.value is not None:
         envelope["__admission_future_type"] = future_type.value
     return cast(dict[str, JsonValue], envelope), arrays

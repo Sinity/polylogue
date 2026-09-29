@@ -322,3 +322,11 @@ def test_repeated_ancestor_key_keeps_the_document_on_the_object_parser() -> None
         b'"chunkedPrompt":{"pendingInputs":[]}}'
     )
     assert drive_chunked_prompt_envelope(BytesIO(document)) is None
+
+
+def test_a_source_key_named_like_probe_metadata_stays_on_the_object_parser() -> None:
+    """Anti-vacuity: keeping the envelope lets the streamed parser read the source value as probe metadata."""
+    document = (
+        b'{"id":"p","__admission_future_type":"future_x","chunkedPrompt":{"chunks":[{"role":"user","text":"hello"}]}}'
+    )
+    assert drive_chunked_prompt_envelope(BytesIO(document)) is None
