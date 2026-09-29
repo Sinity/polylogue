@@ -521,9 +521,9 @@ def test_frozen_inactive_generation_replays_through_sealed_session_shards(
         copies += 1
         return original_copy(*args, **kwargs)  # type: ignore[arg-type]
 
+    binding_calls: list[str] = []
     if padded_native_id:
         original_binding = revision_backfill._required_shard_prepared_rows
-        binding_calls: list[str] = []
 
         def bind_padded_native_id(raw_id: str, session: ParsedSession, bindings: Any) -> Any:
             # The shard already holds the canonical identity. Exercise the

@@ -1024,6 +1024,6 @@ def test_dispatch_retains_unprojected_span_fields_in_evidence() -> None:
         for event in session.session_events
         if event.event_type == "otel_span_evidence" and event.payload["span_id"] == span["spanId"]
     )
-    unprojected = event.payload["unprojected_span_fields"]
+    unprojected = cast(dict[str, object], event.payload["unprojected_span_fields"])
     assert {key: unprojected[key] for key in extra} == extra
     assert "attributes" not in unprojected

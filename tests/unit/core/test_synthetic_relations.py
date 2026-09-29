@@ -16,7 +16,7 @@ import pytest
 
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.build_records import _coerce_schema
-from polylogue.schemas.synthetic.models import SchemaRecord
+from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.relations import (
     ForeignKeyGraph,
     MutualExclusionGroup,
@@ -614,7 +614,7 @@ class TestRelationConstraintSolverIntegration:
 def test_relation_solver_honors_in_place_annotation_changes_between_generations() -> None:
     """An object-ID cache returns the first parsed constraint after append or nested mutation."""
     first: SchemaRecord = {"source": "$.parent", "target": "$.id"}
-    annotations = [first]
+    annotations: list[SchemaValue] = [first]
     schema: SchemaRecord = {"x-polylogue-foreign-keys": annotations}
     warm = _RelationConstraintSolver(schema)
     warm.register_generated_id("$.id", "first")

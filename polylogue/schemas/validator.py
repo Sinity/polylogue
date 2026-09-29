@@ -133,7 +133,9 @@ def _resolve_local_ref(schema: object, root: Mapping[str, object] | None) -> obj
     # declarations join the observation view instead of being discarded.
     # The result stays one node, so item, type and union readers see the
     # target's own keywords.
-    resolved: dict[str, object] = dict(schema) if isinstance(schema, Mapping) else {}
+    resolved: dict[str, object] = {}
+    if isinstance(schema, Mapping):
+        resolved.update(schema)
     for sibling in siblings:
         for key, value in sibling.items():
             current = resolved.get(key)
@@ -180,8 +182,10 @@ def _schema_branch_for_value(schema: object, value: object, root: Mapping[str, o
                 branches.append(selected)
         if branches:
             merged = _merge_pattern_observation_schemas(branches)
+            # An annotation absent from one conjunct does not negate an
+            # explicit dynamic-key declaration on another.
             if any(branch.get("x-polylogue-dynamic-keys") is True for branch in branches):
-                merged["x-polylogue-dynamic-keys"] = True
+                return {**merged, "x-polylogue-dynamic-keys": True}
             return merged
     for key in ("anyOf", "oneOf"):
         union_branches = schema.get(key)

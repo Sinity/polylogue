@@ -2140,20 +2140,21 @@ def test_source_walk_propagates_inspection_fault_and_census_records_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The old lstat exception handler returns an empty success and loses the candidate."""
-    from polylogue.sources import source_walk
+    from polylogue.config import Source
+    from polylogue.sources.source_walk import _resolve_source_paths
 
     source = tmp_path / "unreadable.jsonl"
     source.write_text("{}\n", encoding="utf-8")
-    real_stat = source_walk.os.stat
+    real_stat = os.stat
 
-    def failed_stat(path: object, *args: object, **kwargs: object) -> os.stat_result:
+    def failed_stat(path: Any, *args: Any, **kwargs: Any) -> os.stat_result:
         if path == source and kwargs.get("follow_symlinks") is False:
             raise PermissionError("synthetic transient inspection fault", str(source))
-        return real_stat(path, *args, **kwargs)  # type: ignore[arg-type]
+        return real_stat(path, *args, **kwargs)
 
-    monkeypatch.setattr(source_walk.os, "stat", failed_stat)
+    monkeypatch.setattr(os, "stat", failed_stat)
     with pytest.raises(PermissionError):
-        source_walk._resolve_source_paths(source_walk.Source(name="claude-code", path=tmp_path))
+        _resolve_source_paths(Source(name="claude-code", path=tmp_path))
     census = census_source_root(tmp_path, provider=Provider.CLAUDE_CODE)
     assert census.candidate_count == 1
     assert census.unexplained_candidates == (source,)
