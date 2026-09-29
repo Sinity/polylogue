@@ -83,6 +83,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | Document | Description |
 |----------|-------------|
 | [Developer Tools](devtools.md) | Generated surfaces, validation, and repo hygiene. |
+| [Fresh-Build Benchmark](fresh-build-benchmark.md) | End-to-end cold-build measurement through the daemon route: corpora, receipts, budgets, comparison. |
 | [Artifact Publication](artifact-publication.md) | Filesystem contract shared by the cache and reusable-fixture publication routes. |
 | [Verification Authority](verification-authority.md) | Sole ownership matrix for AgentCTL execution and Polylogue semantic verification. |
 | [AgentCTL Development-Loop Proof](dev-loop.md) | Declared browser-capture proof with AgentCTL-owned host lifecycle. |

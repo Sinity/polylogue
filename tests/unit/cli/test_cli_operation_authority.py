@@ -170,7 +170,12 @@ def test_judge_accept_refuses_without_a_daemon(authority_archive: Path) -> None:
 #: argv reaches a verb; kept honest by
 #: :func:`test_the_matrix_covers_every_cli_bound_mutating_operation`, which
 #: fails when a new mutating operation gains a CLI binding without a row here.
+#: A real provider export: ``import`` stages it and runs the admissibility
+#: preflight before it reaches the daemon probe.
+_IMPORTABLE_EXPORT = Path(__file__).parents[2] / "fixtures" / "origin-capability" / "codex-session.jsonl"
+
 _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    ("import", ("import", str(_IMPORTABLE_EXPORT)), "ingest"),
     ("mark-star", ("find", f"id:{_SESSION_ID}", "then", "mark", "--star"), "mutation.session.mark"),
     ("mark-tag-add", ("find", f"id:{_SESSION_ID}", "then", "mark", "--tag-add", "X"), "mutation.session.tag"),
     ("mark-note", ("find", f"id:{_SESSION_ID}", "then", "mark", "--note", "n"), "mutation.annotation.save"),
@@ -247,7 +252,6 @@ _MUTATING_INVOCATIONS: tuple[tuple[str, tuple[str, ...], str], ...] = (
 #: staged export, a live blob-GC generation id), so the row would be asserting
 #: the argument check rather than the authority check.
 _MATRIX_EXEMPT: Mapping[str, str] = {
-    "ingest": "needs a real staged export path; `import` refuses an absent path first",
     "maintenance.demo.augment": "only reachable behind `import --demo`, which seeds a fixture world first",
     "maintenance.blob-publications.abandon": "needs live publication ids read from source.db",
     "mutation.raw-authority-blocker.resolve": "needs a live blocker id read from source.db",
@@ -293,7 +297,7 @@ def test_daemon_down_refusal_names_polylogued_run_in_terminal_format(
     """Every mutating verb refuses by name, never as a traceback or a no-op.
 
     Anti-vacuity: give ``submit_cli_mutation`` a local writer and these exit 0;
-    drop ``polylogued run`` from ``_mutation_refusal`` and every row goes red
+    drop ``polylogued run`` from ``mutation_refusal`` and every row goes red
     on the remedy assertion while still exiting non-zero, which is the failure
     mode worth separating -- a refusal with no next action is barely better
     than a traceback.
@@ -335,7 +339,7 @@ def test_daemon_down_refusal_is_typed_daemon_required_in_machine_format(
 
     Anti-vacuity: route ``DaemonRequiredError`` back through ``error_runtime``
     in ``machine_main`` (or drop the typed exception from
-    ``_mutation_refusal``) and every row here goes red on the ``code``
+    ``mutation_refusal``) and every row here goes red on the ``code``
     assertion while the terminal test above stays green -- the exact asymmetry
     that let the gap survive.
     """

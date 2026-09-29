@@ -164,17 +164,18 @@ def _materialize_demo_source() -> Path:
     return materialize_demo_source(archive_root(), force=True)
 
 
-def _wait_for_demo_ingest(env: AppEnv, accepted: dict[str, object], *, timeout_s: float) -> None:
-    """Wait for the accepted demo ingest's terminal receipt from the daemon.
+def _wait_for_ingest(env: AppEnv, accepted: dict[str, object], *, timeout_s: float) -> None:
+    """Wait for the accepted ingest's terminal receipt from the daemon.
 
     The ingest operation reaches ``completed`` only after its material is
     parsed, materialized and its session profiles converged, so its receipt is
     the convergence signal; no archive file is re-read on a timer. A
     ``degraded`` ingest committed its rows but stopped converging on a
-    retryable target, so it is refused here rather than verified early. The
-    demo-only constructs (provider usage, synthetic embeddings, the canonical
-    repo name) are layered on by ``apply_demo_post_ingest_augmentation`` after
-    this returns, which is why the final verification runs after that.
+    retryable target, so it is refused here rather than reported done. For
+    ``--demo`` the demo-only constructs (provider usage, synthetic embeddings,
+    the canonical repo name) are layered on by
+    ``apply_demo_post_ingest_augmentation`` after this returns, which is why the
+    demo verification runs after that.
     """
     from polylogue.cli.operation_kernel import OperationKernelError, configured_follow_operation
     from polylogue.cli.shared.helpers import load_effective_config
@@ -182,28 +183,27 @@ def _wait_for_demo_ingest(env: AppEnv, accepted: dict[str, object], *, timeout_s
     try:
         receipt = configured_follow_operation(load_effective_config(env), "ingest", accepted, wait_s=timeout_s)
     except OperationKernelError as exc:
-        fail("import", f"Lost the demo ingest before its receipt ({exc}); refusing to claim a verified archive.")
+        fail("import", f"Lost the ingest before its receipt ({exc}); refusing to claim it finished.")
     outcome = receipt.get("outcome")
     if outcome == "completed":
         return
     if outcome == "indeterminate":
         fail(
             "import",
-            f"Timed out waiting {timeout_s:g}s for the demo ingest to converge; it is still the daemon's "
-            "work. Check `polylogued status`, then re-run with --wait to verify.",
+            f"Timed out waiting {timeout_s:g}s for the ingest to converge; it is still the daemon's "
+            "work. Check `polylogued status`.",
         )
     if outcome == "degraded":
         fail(
             "import",
-            "The demo ingest committed its sessions but did not finish converging their profiles and "
-            "insights; the daemon's convergence continues it. Check `polylogued status`, then re-run "
-            "with --wait to verify.",
+            "The ingest committed its sessions but did not finish converging their profiles and "
+            "insights; the daemon's convergence continues it. Check `polylogued status`.",
         )
     error = receipt.get("error")
     detail = error.get("detail") if isinstance(error, dict) else None
     fail(
         "import",
-        f"Demo ingest ended {outcome!r}{f': {detail}' if detail else ''}; refusing to claim a verified archive.",
+        f"Ingest ended {outcome!r}{f': {detail}' if detail else ''}; refusing to claim it finished.",
     )
 
 
@@ -384,7 +384,7 @@ def _daemon_required(archive: object, *, operation: str) -> DaemonRequiredError:
 @click.option(
     "--wait",
     is_flag=True,
-    help="With --demo, wait for daemon convergence and verify the demo archive.",
+    help="Wait for the daemon to finish the ingest; with --demo, also verify the demo archive.",
 )
 @click.option(
     "--timeout",
@@ -392,7 +392,7 @@ def _daemon_required(archive: object, *, operation: str) -> DaemonRequiredError:
     type=click.FloatRange(min=0.001),
     default=30.0,
     show_default=True,
-    help="Seconds to wait for --demo --wait convergence.",
+    help="Seconds to wait for --wait convergence.",
 )
 @click.option(
     "--with-overlays",
@@ -451,8 +451,6 @@ def import_command(
         click.echo(payload.to_json(exclude_none=True))
         return
 
-    if wait and not demo:
-        fail("import", "--wait is currently supported only with --demo.")
     if with_overlays and not demo:
         fail("import", "--with-overlays is currently supported only with --demo.")
     if with_overlays and not wait:
@@ -500,25 +498,29 @@ def import_command(
         f"                Verify archive:    polylogue status --full"
     )
 
-    if wait:
-        env.ui.console.print(f"[bold]Waiting:[/bold] demo archive convergence (timeout {wait_timeout_s:g}s)")
-        _wait_for_demo_ingest(env, accepted_envelope, timeout_s=wait_timeout_s)
+    if not wait:
+        return
+    env.ui.console.print(f"[bold]Waiting:[/bold] ingest convergence (timeout {wait_timeout_s:g}s)")
+    _wait_for_ingest(env, accepted_envelope, timeout_s=wait_timeout_s)
+    if not demo:
+        env.ui.console.print(f"[bold green]Ingested:[/bold green] {staged}")
+        return
 
-        # Ingest alone (whichever path scheduled it) only produces the parsed
-        # session/message tree. Demo-only enrichments -- provider usage,
-        # insight materialization, the canonical repo name, synthetic
-        # embeddings -- are layered on afterward so a daemon-ingested demo
-        # archive matches ``polylogue demo seed``'s semantic contract exactly
-        # (polylogue-z1c6). Idempotent: safe even if a prior --wait already
-        # applied it against this archive root.
-        _request_demo_augmentation(env, with_overlays=with_overlays)
+    # Ingest alone (whichever path scheduled it) only produces the parsed
+    # session/message tree. Demo-only enrichments -- provider usage,
+    # insight materialization, the canonical repo name, synthetic
+    # embeddings -- are layered on afterward so a daemon-ingested demo
+    # archive matches ``polylogue demo seed``'s semantic contract exactly
+    # (polylogue-z1c6). Idempotent: safe even if a prior --wait already
+    # applied it against this archive root.
+    _request_demo_augmentation(env, with_overlays=with_overlays)
 
-        result = _verify_demo_now(require_overlays=with_overlays)
-        env.ui.console.print(
-            "[bold green]Demo archive verified:[/bold green] "
-            f"sessions={result.session_count} messages={result.message_count} "
-            f"overlays={'yes' if with_overlays else 'no'}"
-        )
+    result = _verify_demo_now(require_overlays=with_overlays)
+    env.ui.console.print(
+        "[bold green]Demo archive verified:[/bold green] "
+        f"sessions={result.session_count} messages={result.message_count} "
+        f"overlays={'yes' if with_overlays else 'no'}"
+    )
 
 
 __all__ = ["import_command"]
