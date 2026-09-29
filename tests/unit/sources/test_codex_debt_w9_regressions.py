@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+import tempfile
 import threading
+import time
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
@@ -25,6 +27,7 @@ from polylogue.sources.live import WatchSource, cold_build, hook_paste_enrichmen
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.batch_support import jsonl_complete_prefix
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.parsers import local_agent
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.write_lease import arm_write_lease_enforcement, write_lease
 from tests.infra.archive_templates import bootstrap_archive_root
@@ -117,14 +120,14 @@ def test_w9_drive_lowering_preserves_gemini_source_path(
     for _ in range(wrapper_depth):
         payload = [payload]
     source_path = str(tmp_path / "chats" / "session.json")
-    original = dispatch.local_agent.parse_gemini_cli
+    original = local_agent.parse_gemini_cli
     seen: list[str | Path | None] = []
 
     def record_path(*args: Any, **kwargs: Any) -> Any:
         seen.append(kwargs.get("source_path"))
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(dispatch.local_agent, "parse_gemini_cli", record_path)
+    monkeypatch.setattr(local_agent, "parse_gemini_cli", record_path)
     sessions = dispatch.parse_payload(Provider.GEMINI, payload, "fallback", source_path=source_path)
     assert sessions
     assert seen == [source_path]
@@ -188,7 +191,7 @@ def test_w9_drive_failed_cache_publication_removes_temporary(
     source, cache, client = _cached_drive_source(tmp_path / "cache", "session.json", b"{")
     client.payload = b'{"replacement":true}'
     before = set(cache.parent.iterdir())
-    original = drive.tempfile.NamedTemporaryFile
+    original = tempfile.NamedTemporaryFile
 
     class FailingTemporary:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -209,7 +212,7 @@ def test_w9_drive_failed_cache_publication_removes_temporary(
             if failure_at == "close":
                 raise OSError("injected cache close failure")
 
-    monkeypatch.setattr(drive.tempfile, "NamedTemporaryFile", FailingTemporary)
+    monkeypatch.setattr(tempfile, "NamedTemporaryFile", FailingTemporary)
     with pytest.raises(OSError, match="injected cache"):
         list(
             drive.iter_drive_raw_data(
@@ -375,7 +378,7 @@ def test_w9_completed_cold_build_eta_does_not_expire(
     generation._accepted_progress_started_at = 0.0
     generation._accepted_progress_last_advanced_at = 1.0
     generation._accepted_progress_denominator_sealed = sealed
-    monkeypatch.setattr(cold_build.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(time, "monotonic", lambda: 1000.0)
     assert generation.accepted_progress[3] == expected_eta
 
 

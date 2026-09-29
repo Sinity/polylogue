@@ -35,7 +35,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from polylogue.core.enums import Provider
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.storage.blob_store import BlobStore
 
 from .assembly import SidecarData
@@ -229,11 +229,25 @@ def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore) -> di
                 if not stat.S_ISREG(observed.st_mode):
                     continue
                 if observed.st_size > MAX_UNCOMPRESSED_SIZE:
-                    logger.warning("chatgpt_asset_oversized", path=str(asset_path), size=observed.st_size)
+                    emit(
+                        "sources.chatgpt.asset_refused",
+                        level=WARNING,
+                        outcome="refused",
+                        reason="oversized",
+                        path=str(asset_path),
+                        size=observed.st_size,
+                    )
                     continue
                 blob_hash, size = store.write_from_fileobj(handle)
         except OSError as exc:
-            logger.warning("chatgpt_asset_read_failed", path=str(asset_path), error=str(exc))
+            emit(
+                "sources.chatgpt.asset_refused",
+                level=WARNING,
+                outcome="error",
+                reason="read_failed",
+                path=str(asset_path),
+                error_type=type(exc).__name__,
+            )
             continue
         _record_asset_blob(
             acquired,
@@ -260,7 +274,14 @@ def _walk_asset_files(directory: Path) -> list[Path]:
                 if stat.S_ISREG(candidate.lstat().st_mode):
                     found.append(candidate)
             except OSError as exc:
-                logger.warning("chatgpt_asset_stat_failed", path=str(candidate), error=str(exc))
+                emit(
+                    "sources.chatgpt.asset_refused",
+                    level=WARNING,
+                    outcome="error",
+                    reason="stat_failed",
+                    path=str(candidate),
+                    error_type=type(exc).__name__,
+                )
     return found
 
 
