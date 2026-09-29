@@ -2,17 +2,17 @@
 
 ## Runtime ownership
 
-The daemon holds writer/rebuild exclusion for its lifetime. `DaemonWriteCoordinator` serializes publication and retains ownership until a cancelled operation actually terminates. `DaemonAPIHTTPServer.execution_kernel` is passed to the UDS server and to daemon derivation owners; their `DaemonWriteThreadBridge` instances use the same coordinator (`polylogue/daemon/cli.py:2713-2734`; `polylogue/daemon/cli.py:2774-2801`; `polylogue/daemon/http.py:6318-6347`; `polylogue/daemon/write_coordinator.py:784-807`).
+The daemon holds writer/rebuild exclusion for its lifetime. `DaemonWriteCoordinator` serializes publication and retains ownership until a cancelled operation actually terminates. `DaemonAPIHTTPServer.execution_kernel` is passed to the UDS server and to daemon derivation owners; their `DaemonWriteThreadBridge` instances use the same coordinator (`polylogue/daemon/cli.py:2653-2658`; `polylogue/daemon/cli.py:2725-2750`; `polylogue/daemon/http.py:5697-5734`; `polylogue/daemon/write_coordinator.py:772-790`).
 
-`run_daemon_services` is the service composition entry point (`polylogue/daemon/cli.py:2156-2156`). Its composition state declares `session_profile_callback` and `embedding_callback` (`polylogue/daemon/cli.py:2655-2656`), and constructs the `FtsConvergenceOwner` for startup work (`polylogue/daemon/cli.py:2833-2844`). FTS runs at startup and periodically; session profiles run after admitted ingest and during the periodic sweep; embeddings use watcher scopes and the periodic backlog owner (`polylogue/daemon/cli.py:2824-2854`). These are source-route facts, not live deployment evidence.
+`run_daemon_services` is the service composition entry point (`polylogue/daemon/cli.py:1944`). Its composition state declares `session_profile_callback` and `embedding_callback` (`polylogue/daemon/cli.py:2557-2558`), and constructs the `FtsConvergenceOwner` for startup work (`polylogue/daemon/cli.py:2785-2798`). FTS runs at startup and periodically; session profiles run after admitted ingest and during the periodic sweep; embeddings use watcher scopes and the periodic backlog owner. The daemon hands both callbacks to the live watcher (`polylogue/daemon/cli.py:2939-2952`); after an admitted batch the intake adapter calls the watcher's lease-free embedding and profile convergence (`polylogue/operations/intake_adapters.py:1041-1049`; `polylogue/sources/live/watcher.py:1282-1302`); the periodic sweep and backlog services are registered in `periodic_services` (`polylogue/daemon/cli.py:2845-2877`). These are source-route facts, not live deployment evidence.
 
-Convergence emits structured events (`emit`/`span` from `polylogue/logging.py`) rather than free-form log lines: field names pass an allowlist and quarantined names are stripped from both rendered forms when `POLYLOGUE_LOG_REDACT=1` is set, so a rebuild is read from named events such as `daemon.barrier.failed` and their typed fields (`polylogue/logging.py:349-364`; `polylogue/logging.py:400-409`; `polylogue/daemon/convergence.py:959-975`).
+Convergence emits structured events (`emit`/`span` from `polylogue/logging.py`) rather than free-form log lines: field names pass an allowlist and quarantined names are stripped from both rendered forms when `POLYLOGUE_LOG_REDACT=1` is set, so a rebuild is read from named events such as `daemon.barrier.failed` and their typed fields (`polylogue/logging.py:482-486`; `polylogue/logging.py:770-781`; `polylogue/daemon/convergence.py:1120-1126`).
 
 Correlation crosses the compute boundary explicitly. Neither `threading.Thread`
 nor `ThreadPoolExecutor.submit` copies contextvars, so both derivation-kernel
 submits wrap their `partial` in `propagate(...)`; without it the work runs on a
 pool thread with an empty context and its events lose the run's correlation id
-(`polylogue/daemon/convergence.py:185-195`; `polylogue/daemon/convergence.py:283-294`; `polylogue/logging.py:325-345`).
+(`polylogue/daemon/convergence.py:176-190`; `polylogue/daemon/convergence.py:280-284`; `polylogue/logging.py:441-445`).
 
 Read this as a statement about the daemon's convergence path, not about the
 tree. The ratchet is a `devtools gate patterns` rule, `legacy-stdlib-logger`,
