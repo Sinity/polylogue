@@ -715,3 +715,19 @@ def test_the_identity_pass_calls_the_checkpoint_per_window(monkeypatch: pytest.M
 
     with pytest.raises(StopError):
         stream_payload_content_identity(io.BytesIO(json.dumps({"a": "x" * 64}).encode()), checkpoint=checkpoint)
+
+
+def test_an_integer_the_decoder_refuses_is_not_json_before_it_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An integer past both the digit limit and the value limit is not JSON.
+
+    Anti-vacuity: record the value-limit refusal first and the later duplicate
+    key replaces it, giving the member the identity of ``{"a": 1}`` although
+    ``json.loads`` rejects its bytes.
+    """
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
+    payload = b'{"a": ' + b"9" * 5000 + b', "a": 1}'
+    assert payload_content_identity(payload) == sha256(payload).hexdigest()
+    monkeypatch.setattr(content_identity, "_HOLD_NUMBER_BYTES", 64)
+    assert payload_content_identity(payload) == sha256(payload).hexdigest()

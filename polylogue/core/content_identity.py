@@ -632,7 +632,19 @@ class _TokenReader:
         if complete:
             self._spills.number_tokens += 1
         long = self._bare_long
-        if complete and self._bare_len > physical_value_limit():
+        digit_limit = sys.get_int_max_str_digits()
+        if (
+            complete
+            and digit_limit
+            and self._bare_state in (_NUM_ZERO, _NUM_INT)
+            and (long.integer_digits if long is not None else len(self._bare_held.lstrip(b"-"))) > digit_limit
+        ):
+            # An integer the decoder refuses to convert makes the member not
+            # JSON; that verdict precedes any refusal a duplicate could lift.
+            if long is not None:
+                long.close()
+            out += b"x"
+        elif complete and self._bare_len > physical_value_limit():
             # Refused where it stands; raised only if the document parses
             # and no later duplicate key replaces it.
             if long is not None:
@@ -658,11 +670,7 @@ class _TokenReader:
         if not long.is_integer:
             long.close()
             return long.float_token()
-        digit_limit = sys.get_int_max_str_digits()
-        if digit_limit and long.integer_digits > digit_limit:
-            # The decoder refuses to convert it, so the member is not JSON.
-            long.close()
-            return b"x"
+        # Within the runtime's digit limit (checked by the caller): exact.
         self._spills.long_integers[self._spills.number_tokens] = long.take_digits()
         return b"0"
 
