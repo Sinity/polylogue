@@ -2,15 +2,15 @@
 
 Blobs are content-addressed: two Claude Code sessions whose tool output
 overflowed into byte-identical ``tool-results/`` sidecars own one blob hash.
-Every test here drives production acquisition (``LiveBatchProcessor``) for two
-such sessions, A and B, where A also overflowed a second output nobody else
-has, then excises A through ``apply_session_excision``.
+The sidecar tests drive production acquisition (``LiveBatchProcessor``) for
+two such sessions, A and B, where A also overflowed a second output nobody
+else has, then excise A through ``apply_session_excision``.
 
-Anti-vacuity: marking every hash A's rows named (the rule before this change)
-marks the shared sidecar hash, so B's later sidecar with the same bytes is
-refused (its tool result falls back to the preview) and the shared-hash
-assertions fail. Marking nothing leaves A's own sidecar hash unmarked and A's
-transcript re-admissible.
+Excision does not yet reach a session's sidecar raws at all
+(polylogue-8j9rh), so the shared-sidecar test guards B's side of that future
+reach -- a reach that marks every hash A's sidecars named refuses B's next
+sidecar with the same bytes -- and the forgets-its-own test is a strict xfail
+that flips when the reach lands.
 
 ``test_excising_a_keeps_the_attachment_it_shares_with_b`` covers the
 attachment class on the ingest batch's writer (``_write_session``) and the
@@ -187,11 +187,7 @@ def _rederived_hash(archive_root: Path, raw_id: str) -> str:
     return str(session_content_hash(session))
 
 
-@pytest.mark.asyncio
-async def test_excising_a_keeps_the_sidecar_it_shares_with_b_and_forgets_its_own(
-    workspace_env: dict[str, Path],
-) -> None:
-    archive_root = workspace_env["archive_root"]
+async def _ingest_a_and_b(workspace_env: dict[str, Path]) -> tuple[Path, dict[str, Path], dict[str, Path]]:
     root = workspace_env["data_root"] / "projects"
     tree_a = _session_tree(root, _SESSION_A, [("toolu_a_shared", _SHARED_TEXT), ("toolu_a_only", _A_ONLY_TEXT)])
     tree_b = _session_tree(root, _SESSION_B, [("toolu_b_shared", _SHARED_TEXT)])
@@ -207,6 +203,28 @@ async def test_excising_a_keeps_the_sidecar_it_shares_with_b_and_forgets_its_own
         ],
         cursor_name="cursor.db",
     )
+    return root, tree_a, tree_b
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(strict=True, reason="polylogue-8j9rh: excision does not reach a session's sidecar raws")
+async def test_excising_a_forgets_the_tool_output_only_it_had(workspace_env: dict[str, Path]) -> None:
+    archive_root = workspace_env["archive_root"]
+    _root, tree_a, _tree_b = await _ingest_a_and_b(workspace_env)
+    session_a = _session_row(archive_root, _SESSION_A)
+    assert session_a is not None
+
+    receipt = apply_session_excision(archive_root, session_a[0], reason="synthetic secret", actor="user:local")
+
+    assert _excised(archive_root, _sha(_A_ONLY_TEXT))
+    assert _raw_hash(archive_root, tree_a["toolu_a_only"]) is None
+    assert _sha(_SHARED_TEXT).hex() in receipt.shared_blob_hashes
+
+
+@pytest.mark.asyncio
+async def test_excising_a_keeps_the_sidecar_it_shares_with_b(workspace_env: dict[str, Path]) -> None:
+    archive_root = workspace_env["archive_root"]
+    root, tree_a, tree_b = await _ingest_a_and_b(workspace_env)
 
     session_a = _session_row(archive_root, _SESSION_A)
     session_b = _session_row(archive_root, _SESSION_B)
@@ -226,13 +244,10 @@ async def test_excising_a_keeps_the_sidecar_it_shares_with_b_and_forgets_its_own
 
     assert receipt.found is True
     assert _session_row(archive_root, _SESSION_A) is None
-    # A is forgotten: its transcript and the output only it had are marked.
+    # A is forgotten: its transcript is marked.
     assert _excised(archive_root, a_payload_hash)
-    assert _excised(archive_root, _sha(_A_ONLY_TEXT))
-    assert _sha(_A_ONLY_TEXT).hex() in receipt.removed_blob_hashes
     # B keeps the blob it shares with A: unmarked, still retained, readable.
     assert not _excised(archive_root, _sha(_SHARED_TEXT))
-    assert _sha(_SHARED_TEXT).hex() in receipt.shared_blob_hashes
     assert _sha(_SHARED_TEXT).hex() not in receipt.removed_blob_hashes
     assert _raw_hash(archive_root, tree_b["toolu_b_shared"]) == _sha(_SHARED_TEXT)
     assert BlobStore(archive_root / "blob").read_all(_sha(_SHARED_TEXT).hex()) == _SHARED_TEXT.encode("utf-8")

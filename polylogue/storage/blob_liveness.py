@@ -335,7 +335,8 @@ def inspect_session_blob_references(
     :func:`inspect_blob_liveness`, it blocks only a hash no surface claims.
 
     Each owner is queried once per chunk of hashes, not once per hash: an
-    owner without a ``blob_hash`` index is scanned per query.
+    owner without a ``blob_hash`` index is scanned per query. A query that
+    fails propagates, so the caller's transaction rolls back.
     """
     hashes = tuple(dict.fromkeys(blob_hashes))
     blockers = _source_global_blockers(source_conn)
@@ -349,43 +350,39 @@ def inspect_session_blob_references(
     surfaces: dict[bytes, list[str]] = {blob_hash: [] for blob_hash in hashes}
     excluded = tuple(sorted(excluding_session_ids))
     outside = f" AND r.session_id NOT IN ({','.join('?' for _ in excluded)})" if excluded else ""
-    try:
-        for start in range(0, len(hashes), _REFERENCE_QUERY_CHUNK):
-            chunk = hashes[start : start + _REFERENCE_QUERY_CHUNK]
-            marks = ",".join("?" for _ in chunk)
-            for owner in _owners(tier="source", ledger=False):
-                assert owner.blob_column is not None
-                if (
-                    owner.table in _CENSUS_OWNER_TABLES
-                    or not _table_exists(source_conn, owner.table)
-                    or not _column_exists(source_conn, owner.table, owner.blob_column)
-                ):
-                    continue
-                for (found,) in source_conn.execute(
-                    f"SELECT DISTINCT {owner.blob_column} FROM {owner.table} WHERE {owner.blob_column} IN ({marks})",
-                    chunk,
-                ):
-                    surfaces[bytes(found)].append(f"source.db.{owner.table}")
-            for owner in _owners(tier="source", ledger=True):
-                assert owner.ref_type is not None and owner.referent_column is not None
-                for (found,) in source_conn.execute(
-                    f"""SELECT DISTINCT ref.blob_hash FROM blob_refs AS ref
-                    WHERE ref.blob_hash IN ({marks}) AND ref.ref_type = ?
-                    AND EXISTS (SELECT 1 FROM {owner.table} AS owner WHERE owner.{owner.referent_column} = ref.ref_id)""",
-                    (*chunk, owner.ref_type),
-                ):
-                    surfaces[bytes(found)].append("source.db.blob_refs")
-            if index_conn is not None:
-                for (found,) in index_conn.execute(
-                    "SELECT DISTINCT a.blob_hash FROM attachments AS a "
-                    "JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id "
-                    f"WHERE a.blob_hash IN ({marks}){outside}",
-                    (*chunk, *excluded),
-                ):
-                    surfaces[bytes(found)].append("index.db.attachment_refs")
-    except sqlite3.Error as exc:
-        unreadable = BlobLiveness(LivenessState.BLOCKED, blockers=(f"blob reference query is unreadable: {exc}",))
-        return dict.fromkeys(hashes, unreadable)
+    for start in range(0, len(hashes), _REFERENCE_QUERY_CHUNK):
+        chunk = hashes[start : start + _REFERENCE_QUERY_CHUNK]
+        marks = ",".join("?" for _ in chunk)
+        for owner in _owners(tier="source", ledger=False):
+            assert owner.blob_column is not None
+            if (
+                owner.table in _CENSUS_OWNER_TABLES
+                or not _table_exists(source_conn, owner.table)
+                or not _column_exists(source_conn, owner.table, owner.blob_column)
+            ):
+                continue
+            for (found,) in source_conn.execute(
+                f"SELECT DISTINCT {owner.blob_column} FROM {owner.table} WHERE {owner.blob_column} IN ({marks})",
+                chunk,
+            ):
+                surfaces[bytes(found)].append(f"source.db.{owner.table}")
+        for owner in _owners(tier="source", ledger=True):
+            assert owner.ref_type is not None and owner.referent_column is not None
+            for (found,) in source_conn.execute(
+                f"""SELECT DISTINCT ref.blob_hash FROM blob_refs AS ref
+                WHERE ref.blob_hash IN ({marks}) AND ref.ref_type = ?
+                AND EXISTS (SELECT 1 FROM {owner.table} AS owner WHERE owner.{owner.referent_column} = ref.ref_id)""",
+                (*chunk, owner.ref_type),
+            ):
+                surfaces[bytes(found)].append("source.db.blob_refs")
+        if index_conn is not None:
+            for (found,) in index_conn.execute(
+                "SELECT DISTINCT a.blob_hash FROM attachments AS a "
+                "JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id "
+                f"WHERE a.blob_hash IN ({marks}){outside}",
+                (*chunk, *excluded),
+            ):
+                surfaces[bytes(found)].append("index.db.attachment_refs")
     decisions: dict[bytes, BlobLiveness] = {}
     for blob_hash, found_surfaces in surfaces.items():
         if found_surfaces:

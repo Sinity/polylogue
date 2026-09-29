@@ -31,9 +31,8 @@ from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.blob_publication import ArchiveBlobPublisher
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.source_write import record_excised_blob_hash
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite, prepare_session_write
 from polylogue.storage.sqlite.connection import open_connection
 
@@ -154,18 +153,19 @@ def test_excised_sidecar_is_refused_alone_and_the_session_still_writes(tmp_path:
     session meeting that hash is refused per sidecar: its bytes are not put
     back on disk, its own block text stays, and nothing hashed is rewritten.
     """
-    source_db = tmp_path / "source.db"
-    initialize_archive_database(source_db, ArchiveTier.SOURCE)
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    source_db = archive_root / "source.db"
     excised_hash = sha256(_FULL_TEXT.encode("utf-8")).digest()
     with sqlite3.connect(source_db) as ledger:
         record_excised_blob_hash(
             ledger, blob_hash=excised_hash, reason="synthetic", actor="user:local", excised_at_ms=1
         )
     payload = _bound_payload()
-    publisher = ArchiveBlobPublisher(source_db, tmp_path / "blob")
+    publisher = ArchiveBlobPublisher(source_db, archive_root / "blob")
     source_conn = sqlite3.connect(source_db)
     try:
-        with open_connection(tmp_path / "index.db") as conn:
+        with open_connection(archive_root / "index.db") as conn:
             changed, counts = ingest_batch_core._write_session(
                 conn, payload, blob_publisher=publisher, source_conn=source_conn
             )
@@ -177,7 +177,7 @@ def test_excised_sidecar_is_refused_alone_and_the_session_still_writes(tmp_path:
     assert changed is True
     assert counts["sidecar_blobs_refused_excised"] == 1
     assert counts["sidecar_blobs_written"] == 0
-    assert not (tmp_path / "blob" / excised_hash.hex()[:2] / excised_hash.hex()[2:]).exists()
+    assert not (archive_root / "blob" / excised_hash.hex()[:2] / excised_hash.hex()[2:]).exists()
     [parsed_event] = payload.parsed_session.session_events
     assert stored_event == {**parsed_event.payload, "blob_refusal": "content_excised"}
     assert block_text == _FULL_TEXT
