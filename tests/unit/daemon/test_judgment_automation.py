@@ -466,8 +466,8 @@ def test_post_receipt_ack_failure_keeps_one_authoritative_receipt(tmp_path: Path
 
     connections: list[_FailSecondCommit] = []
 
-    def open_with_failing_ack(path: Path) -> _FailSecondCommit:
-        wrapped = _FailSecondCommit(real_open_connection(path))
+    def open_with_failing_ack(path: Path, *, archive_root: Path) -> _FailSecondCommit:
+        wrapped = _FailSecondCommit(real_open_connection(path, archive_root=archive_root))
         connections.append(wrapped)
         return wrapped
 
