@@ -2585,6 +2585,11 @@ def write_parsed_session_to_archive(
                     raise AssertionError("fresh_build requires an empty archive generation")
                 if fresh_build_batch is not None:
                     fresh_build_batch.add(session_id)
+            # Whether any row this save replaces can already exist. Every
+            # session-owned projection cascades from ``sessions`` or
+            # ``messages``, so a session with neither (every session of a
+            # from-empty build) has nothing for a replace prelude to delete.
+            prior_session_rows = merge_append or session_membership_existed
             t0 = time.perf_counter()
             session_row_values = {
                 "native_id": native_id,
@@ -2645,7 +2650,9 @@ def write_parsed_session_to_archive(
             )
             add_timing("index.session_upsert", t0)
             if not event_only:
-                invalidated_identity_children = _write_session_identity_claims(conn, session_id, origin.value, session)
+                invalidated_identity_children = _write_session_identity_claims(
+                    conn, session_id, origin.value, session, prior_claims=prior_session_rows
+                )
             position_offset = 0
             stale_attachment_ids: set[str] = set()
             projection_carry_forward: _ProjectionCarryForward | None = None
@@ -2931,6 +2938,7 @@ def write_parsed_session_to_archive(
                 branch_point_content_address=branch_point_content_address,
                 inheritance=lineage_inheritance,
                 source_conn=source_conn,
+                prior_links=prior_session_rows,
             )
             add_timing("index.session_link", t0)
             t0 = time.perf_counter()
@@ -3031,7 +3039,10 @@ def write_parsed_session_to_archive(
                 add_timing("index.ingest_flags", t0)
             elif not merge_append:
                 t0 = time.perf_counter()
-                _replace_ingest_flag_tags(conn, session_id, session.ingest_flags)
+                if prior_session_rows:
+                    _replace_ingest_flag_tags(conn, session_id, session.ingest_flags)
+                else:
+                    _write_ingest_flag_tags(conn, session_id, session.ingest_flags)
                 add_timing("index.ingest_flags", t0)
     except sqlite3.IntegrityError as exc:
         raise sqlite3.IntegrityError(
@@ -4755,13 +4766,19 @@ def _write_web_constructs(
     position_offset: int = 0,
     duplicate_native_ids: frozenset[str] = frozenset(),
     replace_session: bool = True,
+    prior_rows: bool = True,
 ) -> None:
+    """Write web constructs, replacing the session's (or, merging, each block's) prior rows.
+
+    ``prior_rows`` is false when every message is new: there is nothing to
+    replace, so neither the session-wide nor the per-block delete runs.
+    """
     origin = origin_from_provider(session.source_name)
     session_id = archive_session_id(origin.value, session.provider_session_id)
     provider = _enum_value(session.source_name)
     rows: list[tuple[object, ...]] = []
     block_ids: list[str] = []
-    if replace_session:
+    if replace_session and prior_rows:
         conn.execute("DELETE FROM web_content_constructs WHERE session_id = ?", (session_id,))
 
     def _flush_rows() -> None:
@@ -4798,7 +4815,7 @@ def _write_web_constructs(
         blocks = _message_blocks(message)
         for block_position, block in enumerate(blocks):
             block_id = f"{message_id}:{block_position}"
-            if not replace_session:
+            if not replace_session and prior_rows:
                 block_ids.append(block_id)
             for construct_position, construct in enumerate(block.web_constructs):
                 rows.append(
@@ -6651,7 +6668,7 @@ def _replace_full_session_messages_and_blocks(
         add_timing("file_edits", t0)
         t0 = time.perf_counter()
         if not bulk_build:
-            refresh_action_pairs(conn, session_id)
+            refresh_action_pairs(conn, session_id, prior_rows=session_membership_existed)
         add_timing("action_pairs", t0)
         t0 = time.perf_counter()
         _write_web_constructs(
@@ -6659,6 +6676,7 @@ def _replace_full_session_messages_and_blocks(
             session,
             messages,
             duplicate_native_ids=duplicate_native_ids,
+            prior_rows=session_membership_existed,
             content_identities=content_identities,
         )
         add_timing("web_constructs", t0)
@@ -7932,6 +7950,7 @@ def _write_session_link(
     branch_point_content_address: bytes | None = None,
     inheritance: str | None = None,
     source_conn: sqlite3.Connection | None = None,
+    prior_links: bool = True,
 ) -> None:
     """Write this child's outbound parent edge, honouring hook authority.
 
@@ -7965,7 +7984,9 @@ def _write_session_link(
         session = session.model_copy(update={"parent_session_provider_id": parent_native_id})
         if parent_native_id is None:
             return
-    _retire_stale_parser_assertions(conn, session_id, parent_native_id)
+    if prior_links:
+        # A session saved for the first time has no earlier claims to retire.
+        _retire_stale_parser_assertions(conn, session_id, parent_native_id)
     hook_claim = _authoritative_parent_claim(
         conn,
         source_conn,
@@ -13845,24 +13866,33 @@ def _record_lineage_prefix_debt(conn: sqlite3.Connection, session_ids: set[str],
 
 
 def _write_session_identity_claims(
-    conn: sqlite3.Connection, session_id: str, origin: str, session: ParsedSession
+    conn: sqlite3.Connection, session_id: str, origin: str, session: ParsedSession, *, prior_claims: bool = True
 ) -> set[str]:
-    """Persist exact parser-emitted names that can address this session."""
-    previous_values = {
-        str(row[0])
-        for row in conn.execute(
-            """SELECT provider_value FROM session_identity_claims
-               WHERE claimant_session_id = ? AND identity_namespace = 'provider-session'""",
-            (session_id,),
-        ).fetchall()
-    }
+    """Persist exact parser-emitted names that can address this session.
+
+    ``prior_claims`` is false when the session is saved for the first time:
+    it can hold no claims yet, so there are none to read back or delete.
+    """
+    previous_values = (
+        {
+            str(row[0])
+            for row in conn.execute(
+                """SELECT provider_value FROM session_identity_claims
+                   WHERE claimant_session_id = ? AND identity_namespace = 'provider-session'""",
+                (session_id,),
+            ).fetchall()
+        }
+        if prior_claims
+        else set()
+    )
     values = {
         str(value).strip()
         for value in [session.provider_session_id, *session.provider_session_aliases]
         if str(value).strip()
     }
     retired_values = previous_values - values
-    conn.execute("DELETE FROM session_identity_claims WHERE claimant_session_id = ?", (session_id,))
+    if prior_claims:
+        conn.execute("DELETE FROM session_identity_claims WHERE claimant_session_id = ?", (session_id,))
     canonical_value = str(session.provider_session_id).strip()
     for value in sorted(values):
         conn.execute(

@@ -761,3 +761,59 @@ def test_bulk_build_anti_vacuity_repopulate_is_load_bearing(tmp_path: Path) -> N
     assert fts_bulk == []
     assert fts_trickle, "trickle-mode reference produced no rows -- comparison would be vacuous"
     conn_bulk.close()
+
+
+#: Session-owned projections a full replace clears before rewriting. Each
+#: cascades from ``sessions`` or ``messages``, so none can hold rows for a
+#: session saved for the first time.
+_REPLACE_PRELUDE_TABLES = (
+    "session_identity_claims",
+    "action_pairs",
+    "web_content_constructs",
+    "session_links",
+    "session_tags",
+)
+
+
+def _prelude_deletes(statements: list[str]) -> set[str]:
+    return {
+        table
+        for statement in statements
+        for table in _REPLACE_PRELUDE_TABLES
+        if statement.lstrip().upper().startswith("DELETE") and f"DELETE FROM {table} " in statement
+    }
+
+
+@pytest.mark.parametrize("fresh", [True, False], ids=["fresh-build", "ordinary"])
+def test_a_first_save_issues_no_replace_prelude_deletes(tmp_path: Path, fresh: bool) -> None:
+    """polylogue-ctha5: a from-empty build deletes nothing it cannot match.
+
+    A later save of an existing session still clears what it replaces.
+    Anti-vacuity: run the replace prelude unconditionally (the predecessor)
+    and every first save deletes from each of these tables.
+    """
+    conn = _connect(tmp_path / "prelude.db")
+    statements: list[str] = []
+    conn.set_trace_callback(statements.append)
+    seen: set[str] = set()
+    for session in (_session("prelude-alpha"), _session("prelude-beta", n_pairs=1)):
+        write_parsed_session_to_archive(
+            conn,
+            session,
+            content_hash=str(session_content_hash(session)),
+            fresh_build=fresh,
+            fresh_build_batch=seen if fresh else None,
+        )
+    conn.commit()
+    assert _prelude_deletes(statements) == set()
+
+    statements.clear()
+    revised = _session("prelude-alpha", n_pairs=1)
+    write_parsed_session_to_archive(conn, revised, content_hash=str(session_content_hash(revised)))
+    conn.commit()
+    conn.set_trace_callback(None)
+    assert {"session_identity_claims", "action_pairs", "web_content_constructs", "session_tags"} <= _prelude_deletes(
+        statements
+    )
+    assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 2
+    conn.close()
