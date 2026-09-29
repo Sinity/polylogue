@@ -20,6 +20,7 @@ cgroup a slot decision depends on is stubbed for the same reason.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import signal
@@ -1370,3 +1371,52 @@ def test_a_completed_held_run_writes_no_interrupted_receipt(tmp_path: Path) -> N
     assert returncode == 0
     assert receipt["status"] == "success"
     assert not pytest_slot._slot_result_path(result).exists()
+
+
+def test_a_group_left_with_only_zombies_counts_as_reaped() -> None:
+    """A process group whose only members are unreaped zombies is gone.
+
+    Anti-vacuity (#5708): decide liveness with ``killpg(pgid, 0)``, which
+    succeeds on a zombie, and the reap spends both escalation graces and
+    reports the group as surviving -- the signal handler then outlives its
+    caller's stop deadline.
+    """
+    import ctypes
+
+    from devtools.pytest_slot import STOP_ESCALATION_BUDGET_S, _group_reaped
+
+    if not Path("/proc").is_dir():
+        pytest.skip("zombie membership is read from /proc")
+    libc = ctypes.CDLL(None, use_errno=True)
+    pr_set_child_subreaper = 36
+    if libc.prctl(pr_set_child_subreaper, 1, 0, 0, 0) != 0:
+        pytest.skip("cannot become a child subreaper here")
+    orphan = 0
+    try:
+        leader = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import os, sys, time\n"
+                "pid = os.fork()\n"
+                "if pid == 0:\n"
+                "    os._exit(0)\n"
+                "print(pid, flush=True)\n"
+                "time.sleep(60)\n",
+            ],
+            stdout=subprocess.PIPE,
+            start_new_session=True,
+        )
+        assert leader.stdout is not None
+        orphan = int(leader.stdout.readline())
+        leader.kill()
+        leader.wait(timeout=5)
+        # The exited grandchild now belongs to this (never-waiting) subreaper.
+        started = time.monotonic()
+        assert _group_reaped(leader.pid)
+        assert time.monotonic() - started < STOP_ESCALATION_BUDGET_S / 2
+    finally:
+        libc.prctl(pr_set_child_subreaper, 0, 0, 0, 0)
+        if orphan:
+            with contextlib.suppress(ChildProcessError):
+                os.waitpid(orphan, 0)

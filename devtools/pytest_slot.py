@@ -1474,13 +1474,34 @@ def _rerun_failures_in_slot(
 
 
 def _group_alive(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
+    """Whether any process of group ``pgid`` still runs.
+
+    A zombie is not running: it holds no slot state and is waiting only on a
+    reaper this launch does not own (a subreaper that never waits can keep
+    one for the life of the job). ``killpg(pgid, 0)`` succeeds on a
+    zombie-only group, so where ``/proc`` exists, members are read from it.
+    """
+    proc = Path("/proc")
+    if not proc.is_dir():
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
         return True
-    return True
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat_line = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        # ``pid (comm) state ppid pgrp ...``; comm may itself contain ")".
+        fields = stat_line[stat_line.rfind(")") + 2 :].split()
+        if len(fields) >= 3 and fields[2] == str(pgid) and fields[0] not in {"Z", "X"}:
+            return True
+    return False
 
 
 def _group_reaped(pgid: int) -> bool:

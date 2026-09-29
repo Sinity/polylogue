@@ -874,17 +874,18 @@ def _run(
         env[WORKTREE_PROVENANCE_ENV] = "1"
         # A queued job reruns its own failures before releasing the slot, so a
         # red run is adjudicated without a second queue wait.
-        env[RERUN_IN_SLOT_ENV] = json.dumps(
-            {
-                "report_path": str(report_path),
-                "step_dir": str(artifacts.step_dir),
-                "root": str(ROOT),
-                # The slot derives the rerun's options inside its admitted job:
-                # reading pytest's option table configures pytest and imports
-                # the suite's conftests, which is test work.
-                "command": command,
-            }
-        )
+        if artifacts is not None:
+            env[RERUN_IN_SLOT_ENV] = json.dumps(
+                {
+                    "report_path": str(report_path),
+                    "step_dir": str(artifacts.step_dir),
+                    "root": str(ROOT),
+                    # The slot derives the rerun's options inside its admitted
+                    # job: reading pytest's option table configures pytest and
+                    # imports the suite's conftests, which is test work.
+                    "command": command,
+                }
+            )
         output_option = {"stdout": stdout} if stdout is not None else {}
         outcome = executor(command, cwd=cwd, env=env, root=ROOT, **output_option)
     except PytestSlotUnavailableError as exc:
