@@ -699,7 +699,9 @@ class _TokenReader:
             return
         assert self._string is not None
         self._string += piece
-        if len(self._string) > _SPILL_STRING_BYTES:
+        # Never above the physical limit: a key past it must reach the
+        # spilled route, where it is measured and refused by name.
+        if len(self._string) > min(_SPILL_STRING_BYTES, physical_value_limit()):
             self._spill = tempfile.TemporaryFile()  # noqa: SIM115 -- closed by its reader or _SpilledStrings
             self._spill.write(self._string)
             self._string = None
@@ -740,45 +742,50 @@ class _TokenReader:
         normalized: IO[bytes] | None = None
         size = 0
         over = False
-        stream = _StreamingNfc()
+
+        def emit(text: str) -> None:
+            nonlocal size
+            part = text.encode("utf-8", "surrogatepass")
+            size += len(part)
+            if normalized is None:
+                normalized_parts.append(part)
+            else:
+                normalized.write(part)
+
+        stream = _StreamingNfc(emit, self._spills.checkpoint)
         try:
             for piece in _iter_decoded_windows(spill, self._spills.checkpoint):
                 if over:
                     continue
                 encoded = piece.encode("utf-8", "surrogatepass")
-                part = stream.feed(piece).encode("utf-8", "surrogatepass")
-                size += len(part)
-                over = size + stream.pending_bytes > limit
                 if raw_hash is None:
                     pieces.append(piece)
-                    normalized_parts.append(part)
                     held += len(encoded)
-                    if held > _SPILL_STRING_BYTES:
-                        raw_hash = sha256()
-                        for kept in pieces:
-                            raw_hash.update(kept.encode("utf-8", "surrogatepass"))
-                        pieces.clear()
-                        normalized = tempfile.TemporaryFile()  # noqa: SIM115 -- owned by the long key
-                        normalized.writelines(normalized_parts)
-                        normalized_parts.clear()
                 else:
                     raw_hash.update(encoded)
-                    assert normalized is not None
-                    normalized.write(part)
+                stream.feed(piece)
+                over = size + stream.pending_bytes > limit
+                if raw_hash is None and held > _SPILL_STRING_BYTES:
+                    raw_hash = sha256()
+                    for kept in pieces:
+                        raw_hash.update(kept.encode("utf-8", "surrogatepass"))
+                    pieces.clear()
+                    normalized = tempfile.TemporaryFile()  # noqa: SIM115 -- owned by the long key
+                    normalized.writelines(normalized_parts)
+                    normalized_parts.clear()
             if over:
                 return size + stream.pending_bytes
-            tail = stream.finish().encode("utf-8", "surrogatepass")
-            size += len(tail)
+            stream.finish()
             if size > limit:
                 return size
             if raw_hash is None:
                 return "".join(pieces)
             assert normalized is not None
-            normalized.write(tail)
-            key = _LongKey(raw_hash.digest(), _SpooledKey.from_file(normalized, size))
+            key = _LongKey(raw_hash.digest(), _SpooledKey.from_file(normalized, size, self._spills.checkpoint))
             normalized = None
             return key
         finally:
+            stream.close()
             spill.close()
             if normalized is not None:
                 normalized.close()
@@ -828,6 +835,86 @@ class _TokenReader:
 _ESCAPE_TOKEN = re.compile(rb'\\(?:u([0-9a-fA-F]{4})|["\\/bfnrt])')
 
 
+def _is_nfd_starter(char: str) -> bool:
+    """Whether ``char`` decomposes to a starter first (canonical combining class 0)."""
+    return unicodedata.combining(char) == 0 and unicodedata.combining(unicodedata.normalize("NFD", char)[0]) == 0
+
+
+class _SpilledMarkRun:
+    """A starter and its run of combining marks, too long to hold, normalized on disk.
+
+    NFC of such a run is its canonical decomposition, stably sorted by
+    combining class, then composed with the starter. A stable sort by class is
+    a bucketing, so the marks go to one scratch file per class in arrival
+    order; composition only ever consumes a prefix of each bucket, so it reads
+    one character at a time until the first that stays.
+    """
+
+    def __init__(self, unsettled: str, checkpoint: Callable[[], None] | None) -> None:
+        decomposed = unicodedata.normalize("NFD", unsettled)
+        self._starter: str | None = None
+        if decomposed and unicodedata.combining(decomposed[0]) == 0:
+            self._starter, decomposed = decomposed[0], decomposed[1:]
+        self._checkpoint = checkpoint
+        self._buckets: dict[int, IO[bytes]] = {}
+        self.add(decomposed)
+
+    def add(self, marks: str) -> None:
+        grouped: dict[int, list[str]] = {}
+        for char in unicodedata.normalize("NFD", marks):
+            grouped.setdefault(unicodedata.combining(char), []).append(char)
+        for combining_class, chars in grouped.items():
+            bucket = self._buckets.get(combining_class)
+            if bucket is None:
+                bucket = self._buckets[combining_class] = tempfile.TemporaryFile()  # noqa: SIM115 -- closed by close()
+            bucket.write("".join(chars).encode("utf-8", "surrogatepass"))
+
+    def finish(self, emit: Callable[[str], None]) -> str:
+        """Emit the run's NFC form; return the starter instead when nothing follows it.
+
+        A composed starter with no mark left after it can still compose with
+        the next character, so it goes back to the caller's unsettled text.
+        """
+        try:
+            starter = self._starter
+            remainders: list[tuple[IO[bytes], int]] = []
+            for combining_class in sorted(self._buckets):
+                bucket = self._buckets[combining_class]
+                bucket.seek(0)
+                consumed = 0
+                if starter is not None:
+                    reader = codecs.getreader("utf-8")(bucket, "surrogatepass")
+                    while char := reader.read(1):
+                        composed = unicodedata.normalize("NFC", starter + char)
+                        if len(composed) != 1:
+                            break
+                        starter = composed
+                        consumed += len(char.encode("utf-8", "surrogatepass"))
+                bucket.seek(0, 2)
+                if bucket.tell() > consumed:
+                    remainders.append((bucket, consumed))
+            if not remainders:
+                return starter or ""
+            if starter is not None:
+                emit(starter)
+            for bucket, offset in remainders:
+                bucket.seek(offset)
+                decoder = codecs.getincrementaldecoder("utf-8")("surrogatepass")
+                while chunk := bucket.read(_STREAM_READ_BYTES):
+                    if self._checkpoint is not None:
+                        self._checkpoint()
+                    emit(decoder.decode(chunk))
+                emit(decoder.decode(b"", final=True))
+            return ""
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        for bucket in self._buckets.values():
+            bucket.close()
+        self._buckets.clear()
+
+
 class _StreamingNfc:
     """NFC of a text fed in pieces, each part emitted once it is final.
 
@@ -835,31 +922,69 @@ class _StreamingNfc:
     canonical combining class 0) of what it has produced: later input can only
     compose with that starter or reorder the marks after it. So the output up
     to the last starter is final and only the rest is held. A piece with no
-    starter at all is held unnormalized, so a long run of marks costs one
-    normalization, not one per piece.
+    starter at all is held unnormalized, as a list of pieces, so a long run of
+    marks costs one normalization, not one per piece; past
+    :data:`_UNSETTLED_HOLD_CHARS` the run moves to disk (:class:`_SpilledMarkRun`).
     """
 
-    def __init__(self) -> None:
-        self._pending = ""
+    def __init__(self, emit: Callable[[str], None], checkpoint: Callable[[], None] | None = None) -> None:
+        self._emit = emit
+        self._checkpoint = checkpoint
+        self._pending: list[str] = []
+        self._pending_chars = 0
+        self._run: _SpilledMarkRun | None = None
         #: UTF-8 bytes held back, not yet final.
         self.pending_bytes = 0
 
-    def feed(self, piece: str) -> str:
+    def _hold(self, text: str) -> None:
+        self._pending.append(text)
+        self._pending_chars += len(text)
+        self.pending_bytes += len(text.encode("utf-8", "surrogatepass"))
+        if self._pending_chars > _UNSETTLED_HOLD_CHARS:
+            self._run = _SpilledMarkRun("".join(self._pending), self._checkpoint)
+            self._pending, self._pending_chars = [], 0
+
+    def feed(self, piece: str) -> None:
+        if self._run is not None:
+            boundary = next((index for index, char in enumerate(piece) if _is_nfd_starter(char)), len(piece))
+            self._run.add(piece[:boundary])
+            self.pending_bytes += len(piece[:boundary].encode("utf-8", "surrogatepass"))
+            if boundary == len(piece):
+                return
+            leftover, self._run = self._run.finish(self._emit), None
+            self._pending, self._pending_chars, self.pending_bytes = [], 0, 0
+            if leftover:
+                self._hold(leftover)
+            piece = piece[boundary:]
         if not any(unicodedata.combining(char) == 0 for char in piece):
-            self._pending += piece
-            self.pending_bytes += len(piece.encode("utf-8", "surrogatepass"))
-            return ""
-        normalized = nfc(self._pending + piece)
+            self._hold(piece)
+            return
+        normalized = nfc("".join(self._pending) + piece)
         index = len(normalized) - 1
         while index > 0 and unicodedata.combining(normalized[index]) != 0:
             index -= 1
-        final, self._pending = normalized[:index], normalized[index:]
-        self.pending_bytes = len(self._pending.encode("utf-8", "surrogatepass"))
-        return final
+        self._emit(normalized[:index])
+        self._pending, self._pending_chars, self.pending_bytes = [], 0, 0
+        self._hold(normalized[index:])
 
-    def finish(self) -> str:
-        final, self._pending, self.pending_bytes = nfc(self._pending), "", 0
-        return final
+    def finish(self) -> None:
+        if self._run is not None:
+            leftover, self._run = self._run.finish(self._emit), None
+            self._pending = [leftover]
+        self._emit(nfc("".join(self._pending)))
+        self._pending, self._pending_chars, self.pending_bytes = [], 0, 0
+
+    def close(self) -> None:
+        if self._run is not None:
+            self._run.close()
+            self._run = None
+
+
+#: Ordered object members written between two cancellation checks.
+_CHECKPOINT_MEMBERS = 4096
+
+#: Characters of a starter-free run held in memory before it moves to disk.
+_UNSETTLED_HOLD_CHARS = 1 << 20
 
 
 def _utf8_boundary(data: bytes, cut: int) -> int:
@@ -930,24 +1055,29 @@ def _encode_spilled_text(raw: IO[bytes], sink: _Sink, spills: _SpilledStrings) -
     limit = physical_value_limit()
     with tempfile.TemporaryFile() as normalized:
         length = 0
-        stream = _StreamingNfc()
-        draining = False
-        windows = _iter_decoded_windows(raw, spills.checkpoint)
-        for piece in windows:
-            if draining:
-                continue
-            encoded = stream.feed(piece).encode("utf-8", errors="surrogatepass")
+
+        def emit(text: str) -> None:
+            nonlocal length
+            encoded = text.encode("utf-8", errors="surrogatepass")
             normalized.write(encoded)
             length += len(encoded)
-            if stream.pending_bytes > limit:
-                spills.refuse_value("combining character sequence", stream.pending_bytes)
-                draining = True
-        if draining:
-            sink.update(b"s0:;")
-            return
-        encoded = stream.finish().encode("utf-8", errors="surrogatepass")
-        normalized.write(encoded)
-        length += len(encoded)
+
+        stream = _StreamingNfc(emit, spills.checkpoint)
+        draining = False
+        try:
+            for piece in _iter_decoded_windows(raw, spills.checkpoint):
+                if draining:
+                    continue
+                stream.feed(piece)
+                if stream.pending_bytes > limit:
+                    spills.refuse_value("combining character sequence", stream.pending_bytes)
+                    draining = True
+            if draining:
+                sink.update(b"s0:;")
+                return
+            stream.finish()
+        finally:
+            stream.close()
         sink.update(b"s%d:" % length)
         normalized.seek(0)
         while chunk := normalized.read(_STREAM_READ_BYTES):
@@ -980,8 +1110,10 @@ class _EntryStore:
     every spilled object shares one scratch connection, keyed by object id.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, checkpoint: Callable[[], None] | None = None) -> None:
         self.retained = 0
+        #: Called per scratch window and per page of ordered members.
+        self.checkpoint = checkpoint
         self._connection: sqlite3.Connection | None = None
         self._next_id = 0
 
@@ -1024,26 +1156,35 @@ class _SpooledKey:
 
     _PREFIX_BYTES = 4096
 
-    def __init__(self, handle: IO[bytes], length: int, prefix: bytes) -> None:
+    def __init__(
+        self, handle: IO[bytes], length: int, prefix: bytes, checkpoint: Callable[[], None] | None = None
+    ) -> None:
         self._file = handle
         self.length = length
         self._prefix = prefix
+        self._checkpoint = checkpoint
 
     @classmethod
-    def of(cls, normalized: bytes) -> _SpooledKey:
+    def of(cls, normalized: bytes, checkpoint: Callable[[], None] | None = None) -> _SpooledKey:
         handle = tempfile.TemporaryFile()  # noqa: SIM115 -- owned by the key, closed with its object
         handle.write(normalized)
-        return cls(handle, len(normalized), normalized[: cls._PREFIX_BYTES])
+        return cls(handle, len(normalized), normalized[: cls._PREFIX_BYTES], checkpoint)
 
     @classmethod
-    def from_file(cls, handle: IO[bytes], length: int) -> _SpooledKey:
+    def from_file(cls, handle: IO[bytes], length: int, checkpoint: Callable[[], None] | None = None) -> _SpooledKey:
         """Take ownership of a scratch file holding a normalized key."""
         handle.seek(0)
-        return cls(handle, length, handle.read(cls._PREFIX_BYTES))
+        return cls(handle, length, handle.read(cls._PREFIX_BYTES), checkpoint)
 
     def chunks(self) -> Iterator[bytes]:
+        """The key's bytes in windows, checking for cancellation before each."""
         self._file.seek(0)
-        while chunk := self._file.read(_STREAM_READ_BYTES):
+        while True:
+            if self._checkpoint is not None:
+                self._checkpoint()
+            chunk = self._file.read(_STREAM_READ_BYTES)
+            if not chunk:
+                return
             yield chunk
 
     def _compare(self, other: bytes | _SpooledKey) -> int:
@@ -1174,7 +1315,7 @@ class _Entries:
             previous = self._spooled.pop(key_hash, None)
             if previous is not None:
                 previous[0].close()
-            self._spooled[key_hash] = (_SpooledKey.of(normalized), digest)
+            self._spooled[key_hash] = (_SpooledKey.of(normalized, self._budget.checkpoint), digest)
             return
         self._budget.connection().execute(
             "INSERT OR REPLACE INTO entries VALUES (?, ?, ?, ?)", (self._id, key_hash, normalized, digest)
@@ -1231,7 +1372,12 @@ class _Entries:
             if connection is not None
             else iter(())
         )
-        for normalized, digest in heapq.merge(rows, held, spooled, key=lambda item: (item[0], item[1])):
+        checkpoint = self._budget.checkpoint
+        for ordinal, (normalized, digest) in enumerate(
+            heapq.merge(rows, held, spooled, key=lambda item: (item[0], item[1]))
+        ):
+            if checkpoint is not None and not ordinal % _CHECKPOINT_MEMBERS:
+                checkpoint()
             if isinstance(normalized, _SpooledKey):
                 sink.update(b"k%d:" % normalized.length)
                 for chunk in normalized.chunks():
@@ -1294,7 +1440,7 @@ class _Frame:
 
 
 def _stream_identity(events: Iterator[tuple[str, object]], spills: _SpilledStrings) -> str:
-    store = _EntryStore()
+    store = _EntryStore(spills.checkpoint)
     try:
         return _stream_identity_into(events, spills, store)
     finally:
@@ -1456,7 +1602,20 @@ class _EncodingMismatchError(Exception):
 
 
 _RAW_SURROGATE = re.compile("[\ud800-\udfff]")
-_ESCAPE_BEHIND = re.compile(r"\\u[0-9a-fA-F]{4}\Z")
+#: A high-surrogate escape ending just before a position, and a low one
+#: starting just after it.
+_HIGH_ESCAPE_BEHIND = re.compile(r"\\u[dD][89abAB][0-9a-fA-F]{2}\Z")
+_LOW_ESCAPE_AHEAD = re.compile(r"\\u[dD][c-fC-F][0-9a-fA-F]{2}")
+
+
+def _backslashes_before(text: str, position: int, carried: int) -> int:
+    """The run of backslashes ending just before ``position``, continuing
+    into the ``carried`` run that preceded ``text``."""
+    index = position - 1
+    while index >= 0 and text[index] == "\\":
+        index -= 1
+    run = position - 1 - index
+    return run + carried if index < 0 else run
 
 
 class _DecodedText:
@@ -1471,9 +1630,12 @@ class _DecodedText:
 
     An encoded lone surrogate decodes to the same character its ``\\uD800``
     escape does, so it is handed on as that escape and the two spellings
-    share an identity. Where re-spelling could change the value -- a raw
-    surrogate next to another surrogate or an escape, or after a backslash --
-    the member keeps its byte identity instead (:class:`_NotJsonError`).
+    share an identity. Where re-spelling would change the value, the member
+    keeps its byte identity instead (:class:`_NotJsonError`): a raw high
+    surrogate before a raw or escaped low one, or a raw low one after an
+    escaped high one, would pair; after an odd run of backslashes the
+    escape would itself be escaped. Backslash runs are counted across
+    windows, so parity is exact.
     """
 
     def __init__(
@@ -1492,8 +1654,10 @@ class _DecodedText:
         self._eof = False
         #: Decoded characters held back as lookahead for a raw surrogate.
         self._held = ""
-        #: The last characters handed on, as lookbehind for a raw surrogate.
+        #: The last characters handed on, as lookbehind for a raw surrogate,
+        #: and the backslash run that ended just before them.
         self._behind = ""
+        self._behind_run = 0
         self._opaque = False
 
     def read(self, size: int = -1) -> bytes:
@@ -1521,31 +1685,40 @@ class _DecodedText:
     def _escape_raw_surrogates(self, text: str) -> str:
         text = self._held + text
         self._held = ""
-        if not self._eof and _RAW_SURROGATE.search(text, max(0, len(text) - 2)):
-            # Two characters of lookahead decide whether it stands alone.
-            text, self._held = text[:-2], text[-2:]
-        if not _RAW_SURROGATE.search(text):
-            self._behind = (self._behind + text[-6:])[-6:]
-            return text
+        if not self._eof and _RAW_SURROGATE.search(text, max(0, len(text) - 6)):
+            # Six characters of lookahead hold an escape that could pair with it.
+            text, self._held = text[:-6], text[-6:]
+        context = self._behind + text
+        offset = len(self._behind)
         parts: list[str] = []
         last = 0
         for match in _RAW_SURROGATE.finditer(text):
             index = match.start()
-            behind = (self._behind + text[max(0, index - 6) : index])[-6:]
-            ahead = text[index + 1 : index + 3]
-            if (
-                behind.endswith("\\")
-                or _ESCAPE_BEHIND.search(behind)
-                or _RAW_SURROGATE.match(ahead)
-                or ahead.startswith("\\u")
-            ):
+            position = offset + index
+            unit = ord(match.group())
+            ahead = text[index + 1 : index + 7]
+            escape_start = position - 6
+            pairs = (
+                unit <= 0xDBFF
+                and ((ahead[:1] and 0xDC00 <= ord(ahead[0]) <= 0xDFFF) or _LOW_ESCAPE_AHEAD.match(ahead) is not None)
+            ) or (
+                unit >= 0xDC00
+                and escape_start >= 0
+                and _HIGH_ESCAPE_BEHIND.search(context, escape_start, position) is not None
+                and _backslashes_before(context, escape_start + 1, self._behind_run) % 2 == 1
+            )
+            if pairs or _backslashes_before(context, position, self._behind_run) % 2 == 1:
                 self._opaque = True
                 raise _NotJsonError
             parts.append(text[last:index])
-            parts.append(f"\\u{ord(match.group()):04x}")
+            parts.append(f"\\u{unit:04x}")
             last = index + 1
         parts.append(text[last:])
-        self._behind = (self._behind + text[-6:])[-6:]
+        if len(context) > 6:
+            self._behind_run = _backslashes_before(context, len(context) - 6, self._behind_run)
+            self._behind = context[-6:]
+        else:
+            self._behind = context
         return "".join(parts)
 
     def drain(self) -> None:

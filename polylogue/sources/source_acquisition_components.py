@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
-import tempfile
 import time
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, TypeAlias
+from typing import IO, TypeAlias, cast
 
 import ijson
 
@@ -745,27 +745,82 @@ class ReplayedZipRevision:
     size_bytes: int
 
 
+class _HashingZipEntry:
+    """A ZIP entry the identity pass can seek, hashed as its frontier advances.
+
+    The identity pass reads the member through this, so the revision is the
+    SHA-256 of the same one decompression, and no member-sized scratch copy
+    is made. Seeking back reopens the entry (re-decompression, not storage);
+    bytes before the hashed frontier are never hashed twice.
+    """
+
+    def __init__(self, zf: zipfile.ZipFile, entry: zipfile.ZipInfo, checkpoint: Callable[[], None] | None) -> None:
+        self._zf = zf
+        self._entry = entry
+        self._checkpoint = checkpoint
+        self._stack = contextlib.ExitStack()
+        self._handle = self._stack.enter_context(_decoders.open_bounded_zip_entry(zf, entry))
+        self._position = 0
+        self.digest = hashlib.sha256()
+        #: Bytes hashed so far: the member's size once drained.
+        self.hashed = 0
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._handle.read(size if size >= 0 else _REVISION_CHUNK_BYTES)
+        start = self._position
+        self._position += len(data)
+        if self._position > self.hashed:
+            self.digest.update(data[self.hashed - start :])
+            self.hashed = self._position
+        return data
+
+    def tell(self) -> int:
+        return self._position
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        target = offset if whence == 0 else self._position + offset
+        if whence not in (0, 1) or target < 0:
+            raise ValueError("a ZIP entry reader seeks only to a known position")
+        if target < self._position:
+            self._stack.close()
+            self._stack = contextlib.ExitStack()
+            self._handle = self._stack.enter_context(_decoders.open_bounded_zip_entry(self._zf, self._entry))
+            self._position = 0
+        while self._position < target:
+            if self._checkpoint is not None:
+                self._checkpoint()
+            if not self.read(min(_REVISION_CHUNK_BYTES, target - self._position)):
+                break
+        return self._position
+
+    def drain(self) -> None:
+        """Hash whatever the identity pass did not read."""
+        self.seek(self.hashed)
+        while True:
+            if self._checkpoint is not None:
+                self._checkpoint()
+            if not self.read(_REVISION_CHUNK_BYTES):
+                return
+
+    def close(self) -> None:
+        self._stack.close()
+
+
 def _stream_member_revision(
     zf: zipfile.ZipFile,
     entry: zipfile.ZipInfo,
     checkpoint: Callable[[], None] | None,
 ) -> ReplayedZipRevision:
-    digest = hashlib.sha256()
-    size = 0
     # Acquisition refuses a member whose content identity cannot be stored,
-    # so the replay does too: the member is spooled as it is hashed and its
-    # identity streamed from the spool, raising the same refusal.
-    with tempfile.TemporaryFile() as spool:
-        with _decoders.open_bounded_zip_entry(zf, entry) as handle:
-            while chunk := handle.read(_REVISION_CHUNK_BYTES):
-                if checkpoint is not None:
-                    checkpoint()
-                digest.update(chunk)
-                spool.write(chunk)
-                size += len(chunk)
-        spool.seek(0)
-        stream_payload_content_identity(spool, checkpoint=checkpoint)
-    return ReplayedZipRevision(None, digest.hexdigest(), size)
+    # so the replay does too: the identity streams from the entry itself,
+    # which is hashed for the revision as it is read.
+    reader = _HashingZipEntry(zf, entry, checkpoint)
+    try:
+        stream_payload_content_identity(cast(IO[bytes], reader), checkpoint=checkpoint)
+        reader.drain()
+    finally:
+        reader.close()
+    return ReplayedZipRevision(None, reader.digest.hexdigest(), reader.hashed)
 
 
 def replay_zip_entry_acquisition_revisions(

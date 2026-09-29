@@ -305,3 +305,30 @@ def test_the_parse_route_captures_elements_after_a_refused_one(tmp_path: Path, m
     )
     source_indexes = sorted(int(raw.source_index or 0) for raw, _session in yielded if raw is not None)
     assert source_indexes == [0, 1, 3]
+
+
+def test_member_revision_hashes_through_the_identity_reader(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The baseline revision needs no member-sized scratch copy.
+
+    Anti-vacuity: spool the decompressed member to a temporary file before
+    its identity pass and the patched ``TemporaryFile`` fails the replay.
+    """
+    import hashlib
+    import tempfile
+    import zipfile
+
+    from polylogue.sources.source_acquisition_components import _stream_member_revision
+
+    payload = b'{"mapping": {"a": [1, 2.5, "text"]}, "title": "t"}'
+    archive = tmp_path / "export.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("conversations.json", payload)
+
+    def no_scratch(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("staged the member in scratch")
+
+    monkeypatch.setattr(tempfile, "TemporaryFile", no_scratch)
+    with zipfile.ZipFile(archive) as zf:
+        revision = _stream_member_revision(zf, zf.getinfo("conversations.json"), None)
+    assert revision.revision == hashlib.sha256(payload).hexdigest()
+    assert revision.size_bytes == len(payload)

@@ -13,6 +13,7 @@ import json
 import unicodedata
 from hashlib import sha256
 from pathlib import Path
+from typing import Any
 
 import pytest
 from hypothesis import given, settings
@@ -538,9 +539,9 @@ def test_keys_too_long_for_a_row_are_spooled_not_held(monkeypatch: pytest.Monkey
     spooled: list[int] = []
     real_of = content_identity._SpooledKey.of
 
-    def counting(normalized: bytes) -> content_identity._SpooledKey:
+    def counting(normalized: bytes, checkpoint: Any = None) -> content_identity._SpooledKey:
         spooled.append(len(normalized))
-        return real_of(normalized)
+        return real_of(normalized, checkpoint)
 
     monkeypatch.setattr(content_identity._SpooledKey, "of", counting)
     monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 300)
@@ -731,3 +732,73 @@ def test_an_integer_the_decoder_refuses_is_not_json_before_it_is_refused(monkeyp
     assert payload_content_identity(payload) == sha256(payload).hexdigest()
     monkeypatch.setattr(content_identity, "_HOLD_NUMBER_BYTES", 64)
     assert payload_content_identity(payload) == sha256(payload).hexdigest()
+
+
+def test_an_encoded_surrogate_after_an_escaped_backslash_keeps_its_identity() -> None:
+    """Backslash parity decides whether a raw surrogate can be re-spelled.
+
+    Anti-vacuity: refuse every raw surrogate after a backslash and the
+    escaped-backslash form falls back to its byte digest while the escaped
+    surrogate form of the same value keeps its structural identity.
+    """
+    encoded = b'{"x":"\\\\\xed\xa0\x80"}'
+    escaped = b'{"x":"\\\\\\ud800"}'
+    assert json.loads(encoded) == json.loads(escaped)
+    assert payload_content_identity(encoded) == payload_content_identity(escaped) == _decoded_identity(escaped)
+
+
+def test_a_long_starter_free_run_normalizes_on_disk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run of combining marks past the hold bound moves to scratch buckets.
+
+    Anti-vacuity: concatenate the run in memory and ``nfc`` sees all of it at
+    once; bucket it wrongly and the identity differs from the decoder's.
+    """
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "_SPILL_STRING_BYTES", 16)
+    monkeypatch.setattr(content_identity, "_STREAM_READ_BYTES", 8)
+    monkeypatch.setattr(content_identity, "_UNSETTLED_HOLD_CHARS", 16)
+    from polylogue.core.text_identity import nfc as real_nfc
+
+    def bounded(text: str) -> str:
+        assert len(text) <= 4 * (16 + 8), "normalized an unsettled run whole"
+        return real_nfc(text)
+
+    monkeypatch.setattr("polylogue.core.content_identity.nfc", bounded)
+    for value in ("a" + "́" * 300 + "̧" * 50 + "b", "̈́" * 200, "é" + "̧" * 90):
+        payload = json.dumps([value], ensure_ascii=False).encode()
+        with monkeypatch.context() as unbounded:
+            unbounded.setattr("polylogue.core.content_identity.nfc", real_nfc)
+            expected = _decoded_identity(payload)
+        assert payload_content_identity(payload) == expected
+
+
+def test_spooled_keys_check_the_checkpoint_per_window() -> None:
+    """Anti-vacuity: reread a spooled key without the checkpoint and a
+    cancellation waits for every window of every long key."""
+    from polylogue.core import content_identity
+
+    calls = 0
+
+    def checkpoint() -> None:
+        nonlocal calls
+        calls += 1
+
+    key = content_identity._SpooledKey.of(b"k" * 10, checkpoint)
+    assert b"".join(key.chunks()) == b"k" * 10
+    key.close()
+    assert calls >= 1
+
+
+def test_a_key_past_a_small_physical_limit_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A runtime whose value limit is below the spill bound still refuses a key past it.
+
+    Anti-vacuity: spill only at ``_SPILL_STRING_BYTES`` and this key reaches
+    the tokenizer whole, receiving a structural identity.
+    """
+    from polylogue.core import content_identity
+
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
+    with pytest.raises(content_identity.ContentIdentityRefusal) as refusal:
+        payload_content_identity(json.dumps({"k" * 40: 1}).encode())
+    assert refusal.value.token == "object key"
