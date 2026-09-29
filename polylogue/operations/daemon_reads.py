@@ -211,6 +211,10 @@ def execute_read_operation(
         from polylogue.operations.read_view_chronicle import execute_chronicle_read
 
         result = execute_chronicle_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
+    elif name == "read.compact":
+        from polylogue.operations.read_view_compact import execute_compact_read
+
+        result = execute_compact_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
     elif name == "read.effective_context":
         from polylogue.operations.read_view_extras import execute_effective_context_read
 
@@ -310,7 +314,7 @@ def _cacheable_read(name: str, payload: Mapping[str, object]) -> bool:
 def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:
     """Return whether this declared read needs a coherent vector handle."""
 
-    if name not in {"cli.query", "read.temporal", "read.chronicle"}:
+    if name not in {"cli.query", "read.temporal", "read.chronicle", "read.compact"}:
         return False
     spec = _cli_query_spec(_params(payload))
     return bool(spec.similar_text or spec.similar_session_id or spec.retrieval_lane == "hybrid")
