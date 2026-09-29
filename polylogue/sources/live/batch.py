@@ -746,8 +746,8 @@ class _ArchiveFullWriteResult:
     # The archive can forget on purpose (polylogue-27m): a record whose blob
     # hash is durably excised is a deliberate skip, not a failure -- tracked
     # separately from ordinary parse/write failures so operators can tell
-    # the two apart (mirrors ParseResult.excised_skips on the CLI import
-    # path in pipeline/services/archive_ingest.py).
+    # the two apart (summed into ParseResult.excised_skips by the one-shot
+    # route in operations/canonical_archive_ingest.py).
     excised_skips: int = 0
     excised_paths: set[Path] = field(default_factory=set)
     # polylogue-11cg9: raw ids never attempted this pass because the declared
@@ -4653,7 +4653,6 @@ class LiveBatchProcessor:
                             fallback_id,
                             source_path=record.source_path,
                         )
-
                     # polylogue-9ykn: a session requires positive
                     # conversational evidence -- a parse that produced only
                     # zero-message sessions is treated exactly like a parse
@@ -4662,7 +4661,7 @@ class LiveBatchProcessor:
                     # written phantom session.
                     if path_preparation is None:
                         sessions = require_positive_conversational_evidence(
-                            sessions,
+                            cast(list[ParsedSession], sessions),
                             provider=provider,
                             source_path=record.source_path,
                         )
