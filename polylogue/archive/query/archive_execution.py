@@ -21,6 +21,7 @@ from polylogue.archive.hydration import archive_envelope_to_session, archive_sum
 from polylogue.archive.query.filter_kwargs import (
     plan_filter_kwargs,
 )
+from polylogue.archive.query.search_contract import ArchiveSearchResult, LaneFailure, SearchExecution
 from polylogue.archive.query.sorting import OffsetSampledPage
 from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT
 from polylogue.archive.query.transaction import archive_read_context, run_archive_read
@@ -686,6 +687,36 @@ async def count_archive(
     return len(sessions)
 
 
+def _fts_lane_candidates(
+    archive: ArchiveStore,
+    plan: SessionQueryPlan,
+    *,
+    text: str,
+    limit: int,
+    actions_only: bool,
+) -> list[ArchiveSessionSearchHit]:
+    """Read block hits over one cursor until ``limit`` distinct sessions are seen.
+
+    Block hits repeat their session, so a SQL ``LIMIT`` over blocks cannot
+    bound distinct sessions; the stream stops as soon as the page is full.
+    """
+    candidates: dict[str, ArchiveSessionSearchHit] = {}
+    if limit <= 0:
+        return []
+    for hit in archive.iter_search_summaries(
+        text,
+        limit=None,
+        actions_only=actions_only,
+        sort=plan.sort,
+        reverse=plan.reverse,
+        **plan_filter_kwargs(plan),
+    ):
+        candidates.setdefault(hit.session_id, hit)
+        if len(candidates) == limit:
+            break
+    return list(candidates.values())
+
+
 def archive_search_hits(
     plan: SessionQueryPlan,
     *,
@@ -693,98 +724,154 @@ def archive_search_hits(
     config: Config | None,
     default_limit: int = DEFAULT_SESSION_LIST_LIMIT,
     archive: ArchiveStore | None = None,
-) -> tuple[list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]], str]:
-    """Resolve a search plan to archive session hits paired with summaries.
+    vector_failure: LaneFailure | None = None,
+) -> ArchiveSearchResult:
+    """Execute requested lanes once and return their actual outcome with hits.
 
-    Returns ``(hits, resolved_lane)`` where each hit carries its
-    :class:`ArchiveSessionSearchHit` plus the session summary, and ``resolved_lane``
-    is the concrete lane that ran (``dialogue``/``semantic``/``hybrid``).
+    Hybrid keeps its request identity even when vector retrieval is unavailable
+    or fails; text and action lanes still fuse. A supplied vector failure is
+    setup evidence from an operation-scoped reader, not a request to retry
+    construction outside that reader's snapshot.
     """
-    from polylogue.storage.search_providers import create_vector_provider, reciprocal_rank_fusion
+    from dataclasses import replace as _replace
+
+    from polylogue.archive.query.execution_control import (
+        QueryCancelledError,
+        QueryTimeoutError,
+        QueryWorkBudgetExceededError,
+    )
+    from polylogue.archive.query.search_contract import resolve_vector_provider
+    from polylogue.core.errors import EmbeddingRetrievalNotReadyError
+    from polylogue.storage.search_providers import reciprocal_rank_fusion
+    from polylogue.storage.sqlite.connection_profile import ReadFrameCancelledError, ReadFrameExpiredError
 
     text = plan.similar_text or _plan_text_query(plan) or ""
     limit = plan.limit if plan.limit is not None else default_limit
     offset = plan.offset
     filter_kwargs = plan_filter_kwargs(plan)
 
-    def read(archive: ArchiveStore) -> tuple[list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]], str]:
+    def read(archive: ArchiveStore) -> ArchiveSearchResult:
         if plan.similar_session_id is not None:
-            pool = max(limit + offset, limit) * 3
-            scored = _session_seed_scored(plan, config=config, archive_root=archive_root, pool=pool)
-            semantic_hits = archive.semantic_summaries(scored, limit=pool, offset=0, **filter_kwargs)
-            return _pair_hits(archive, semantic_hits[offset : offset + limit]), "semantic"
-
-        if plan.similar_text is None and plan.retrieval_lane in {"auto", "dialogue"}:
-            hits = archive.search_summaries(
-                text,
-                limit=limit,
-                offset=offset,
-                sort=plan.sort,
-                reverse=plan.reverse,
-                **filter_kwargs,
-            )
-            return _pair_hits(archive, hits), "dialogue"
-
-        vector_provider = plan.vector_provider
-        if vector_provider is None and config is not None:
-            vector_provider = create_vector_provider(config, db_path=archive_root / "embeddings.db")
-        if vector_provider is None:
-            from polylogue.core.errors import EmbeddingRetrievalNotReadyError
-
-            if plan.retrieval_lane != "hybrid":
-                raise EmbeddingRetrievalNotReadyError(
-                    "semantic retrieval is unavailable: no configured/constructible vector backend; "
-                    "configure Voyage/sqlite-vec and retry",
-                    readiness_status="disabled",
+            # A session seed has no lexical leg to degrade to: an unusable
+            # vector backend is a typed readiness refusal, as for text semantic.
+            seed_plan = plan
+            if plan.vector_provider is None:
+                seed_provider, seed_failure = (
+                    (None, vector_failure)
+                    if vector_failure is not None
+                    else resolve_vector_provider(config, archive_root=archive_root)
                 )
-            # Hybrid is explicitly allowed to degrade, but must retain the
-            # lexical evidence.  The envelope records the missing vector lane.
+                if seed_failure is not None:
+                    raise EmbeddingRetrievalNotReadyError(
+                        seed_failure.advisory,
+                        readiness_status="disabled" if seed_failure.kind == "unavailable" else "failed",
+                    )
+                seed_plan = _replace(plan, vector_provider=seed_provider)
             pool = max(limit + offset, limit) * 3
-            lexical_hits = archive.search_summaries(
-                text, limit=pool, offset=0, sort=plan.sort, reverse=plan.reverse, **filter_kwargs
+            seed_scored = _session_seed_scored(seed_plan, config=config, archive_root=archive_root, pool=pool)
+            seed_hits = archive.semantic_summaries(seed_scored, limit=pool, offset=0, **filter_kwargs)
+            return ArchiveSearchResult(
+                _pair_hits(archive, seed_hits[offset : offset + limit]),
+                "semantic",
+                SearchExecution(("vector",), ("vector",)),
             )
-            return _pair_hits(archive, lexical_hits[offset : offset + limit]), "dialogue"
 
-        semantic_query = plan.similar_text or text
+        if plan.similar_text is None and plan.retrieval_lane in {"auto", "dialogue", "actions"}:
+            if plan.retrieval_lane == "actions":
+                candidates = _fts_lane_candidates(archive, plan, text=text, limit=offset + limit, actions_only=True)
+                hits = [
+                    _replace(hit, rank=offset + rank)
+                    for rank, hit in enumerate(candidates[offset : offset + limit], start=1)
+                ]
+                return ArchiveSearchResult(
+                    _pair_hits(archive, hits), "actions", SearchExecution(("action",), ("action",))
+                )
+            hits = archive.search_summaries(
+                text, limit=limit, offset=offset, sort=plan.sort, reverse=plan.reverse, **filter_kwargs
+            )
+            return ArchiveSearchResult(_pair_hits(archive, hits), "dialogue", SearchExecution(("text",), ("text",)))
+
+        failure = vector_failure
+        provider = plan.vector_provider
+        if failure is not None and provider is not None:
+            raise ValueError("vector setup cannot supply both a provider and a failure")
+        if failure is None:
+            provider, failure = resolve_vector_provider(config, archive_root=archive_root, provider=provider)
         pool = max(limit + offset, limit) * 3
-        scored = vector_provider.query(semantic_query, limit=pool)
-        semantic_hits = archive.semantic_summaries(scored, limit=pool, offset=0, **filter_kwargs)
+        semantic_hits: list[ArchiveSessionSearchHit] = []
+        if provider is not None:
+            scored: list[tuple[str, float]] | None = None
+            try:
+                scored = provider.query(plan.similar_text or text, limit=pool)
+            except (
+                QueryCancelledError,
+                QueryTimeoutError,
+                QueryWorkBudgetExceededError,
+                ReadFrameCancelledError,
+                ReadFrameExpiredError,
+            ):
+                raise
+            except EmbeddingRetrievalNotReadyError as exc:
+                if plan.retrieval_lane != "hybrid":
+                    raise
+                failure = LaneFailure(
+                    "vector",
+                    "unavailable",
+                    exc.readiness_status,
+                    "vector retrieval has no current embedded evidence; run embedding status and backfill before retrying",
+                )
+            except Exception as exc:
+                failure = LaneFailure(
+                    "vector",
+                    "execution_failed",
+                    type(exc).__name__,
+                    "vector retrieval failed; inspect the embedding backend and retry",
+                )
+            # The archive's own read is not the optional vector lane: its
+            # failure must not be relabelled as a degraded vector leg.
+            if scored is not None:
+                semantic_hits = archive.semantic_summaries(scored, limit=pool, offset=0, **filter_kwargs)
         if plan.retrieval_lane != "hybrid":
-            return _pair_hits(archive, semantic_hits[offset : offset + limit]), "semantic"
+            if failure is not None:
+                raise EmbeddingRetrievalNotReadyError(
+                    failure.advisory,
+                    readiness_status="disabled" if failure.kind == "unavailable" else "failed",
+                )
+            return ArchiveSearchResult(
+                _pair_hits(archive, semantic_hits[offset : offset + limit]),
+                "semantic",
+                SearchExecution(("vector",), ("vector",)),
+            )
 
-        lexical_hits = archive.search_summaries(
-            text,
-            limit=pool,
-            offset=0,
-            sort=plan.sort,
-            reverse=plan.reverse,
-            **filter_kwargs,
-        )
-        from dataclasses import replace as _replace
-
+        lexical_hits = _fts_lane_candidates(archive, plan, text=text, limit=pool, actions_only=False)
+        action_hits = _fts_lane_candidates(archive, plan, text=text, limit=pool, actions_only=True)
+        lanes = {"text": lexical_hits, "action": action_hits, "vector": semantic_hits}
         hit_by_session: dict[str, ArchiveSessionSearchHit] = {}
-        for hit in [*lexical_hits, *semantic_hits]:
-            hit_by_session.setdefault(hit.session_id, hit)
-        fused = reciprocal_rank_fusion(
-            [(hit.session_id, 0.0) for hit in lexical_hits],
-            [(hit.session_id, 0.0) for hit in semantic_hits],
-        )
-        page = fused[offset : offset + limit]
-        text_ranks = {hit.session_id: rank for rank, hit in enumerate(lexical_hits, start=1)}
-        vector_ranks = {hit.session_id: rank for rank, hit in enumerate(semantic_hits, start=1)}
+        ranks: dict[str, dict[str, int]] = {}
+        for lane, lane_hits in lanes.items():
+            ranks[lane] = {}
+            for rank, hit in enumerate(lane_hits, start=1):
+                hit_by_session.setdefault(hit.session_id, hit)
+                ranks[lane].setdefault(hit.session_id, rank)
+        fused = reciprocal_rank_fusion(*[[(hit.session_id, 0.0) for hit in lane_hits] for lane_hits in lanes.values()])
         ranked = [
             _replace(
                 hit_by_session[session_id],
                 rank=offset + index,
-                lane_ranks={
-                    "text": text_ranks.get(session_id),
-                    "vector": vector_ranks.get(session_id),
-                },
+                lane_ranks={lane: lane_ranks.get(session_id) for lane, lane_ranks in ranks.items()},
             )
-            for index, (session_id, _score) in enumerate(page, start=1)
-            if session_id in hit_by_session
+            for index, (session_id, _score) in enumerate(fused[offset : offset + limit], start=1)
         ]
-        return _pair_hits(archive, ranked), "hybrid"
+        return ArchiveSearchResult(
+            _pair_hits(archive, ranked),
+            "hybrid",
+            SearchExecution(
+                requested_lanes=("text", "action", "vector"),
+                executed_lanes=("text", "action", "vector") if failure is None else ("text", "action"),
+                unavailable_lanes=("vector",) if failure is not None and failure.kind == "unavailable" else (),
+                failed_lanes=(failure,) if failure is not None and failure.kind != "unavailable" else (),
+            ),
+        )
 
     if archive is not None:
         return read(archive)

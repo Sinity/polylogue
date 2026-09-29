@@ -213,8 +213,8 @@ def test_hybrid_query_names_an_absent_vector_provider_as_a_degraded_lane(tmp_pat
         )
 
     assert result["outcome"]["state"] == "degraded"
-    assert result["requested_lanes"] == ["text", "vector"]
-    assert result["executed_lanes"] == ["text"]
+    assert result["requested_lanes"] == ["text", "action", "vector"]
+    assert result["executed_lanes"] == ["text", "action"]
     assert result["unavailable_lanes"] == ["vector"]
     assert result["failed_lanes"] == []
 
@@ -222,6 +222,7 @@ def test_hybrid_query_names_an_absent_vector_provider_as_a_degraded_lane(tmp_pat
 def test_search_projection_hydrates_storage_rows_and_describes_real_lanes() -> None:
     """Mutation: duplicate surface projection with rank-as-score or phantom lanes."""
     from polylogue.archive.query.plan import SessionQueryPlan
+    from polylogue.archive.query.search_contract import ArchiveSearchResult, SearchExecution
     from polylogue.archive.query.search_hits import project_search_hits
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 
@@ -247,15 +248,20 @@ def test_search_projection_hydrates_storage_rows_and_describes_real_lanes() -> N
         lane_ranks={"text": 2, "vector": 3},
     )
     hits = project_search_hits(
-        SessionQueryPlan(query_terms=("needle",), retrieval_lane="hybrid"), [(native, summary)], "hybrid"
+        SessionQueryPlan(query_terms=("needle",), retrieval_lane="hybrid"),
+        ArchiveSearchResult(
+            [(native, summary)],
+            "hybrid",
+            SearchExecution(("text", "action", "vector"), ("text", "action", "vector")),
+        ),
     )
 
     assert hits[0].session_id == summary.session_id
     assert hits[0].matched_terms == ("needle",)
     assert hits[0].score_components == {"text_rank": 2.0, "vector_rank": 3.0}
     assert hits[0].raw_score is None
-    assert hits.execution.requested_lanes == ("text", "vector")
-    assert hits.execution.executed_lanes == ("text", "vector")
+    assert hits.execution.requested_lanes == ("text", "action", "vector")
+    assert hits.execution.executed_lanes == ("text", "action", "vector")
 
 
 def test_archive_backed_completion_answers_from_the_pinned_reader(tmp_path: Path) -> None:

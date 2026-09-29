@@ -118,7 +118,7 @@ if TYPE_CHECKING:
     from polylogue.archive.filter.filters import SessionFilter
     from polylogue.archive.message.models import Message
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
-    from polylogue.archive.query.search_hits import SessionSearchHit
+    from polylogue.archive.query.search_hits import SearchHitResults, SessionSearchHit
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
@@ -4009,7 +4009,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             return sessions
         return [session.with_content_projection(content_projection) for session in sessions]
 
-    async def search_session_hits(self, spec: SessionQuerySpec) -> builtins.list[SessionSearchHit]:
+    async def search_session_hits(self, spec: SessionQuerySpec) -> SearchHitResults:
         """Return archive FTS/hybrid search-hit projections for a query spec.
 
         The hit projection carries match snippets and ranking metadata the
