@@ -54,7 +54,8 @@ def _text_json(value: object) -> str:
     exact through a round trip instead of failing the insert.
     """
     encoded = json.dumps(value, ensure_ascii=False)
-    if encoded.isascii():
+    if encoded.isascii() or _LONE_SURROGATE.search(encoded) is None:
+        # No substitution, so no second full-size copy of a large row.
         return encoded
     return _LONE_SURROGATE.sub(lambda match: f"\\u{ord(match.group()):04x}", encoded)
 

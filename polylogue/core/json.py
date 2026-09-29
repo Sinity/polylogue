@@ -520,24 +520,6 @@ __all__ = [
 ]
 
 
-_SURROGATE_PAIR = re.compile("[\ud800-\udbff][\udc00-\udfff]")
-
-
-def combine_surrogate_pairs(text: str) -> str:
-    """Join each adjacent high/low surrogate code-unit pair into its character.
-
-    A CESU-8 pair (each half encoded directly) decodes under ``surrogatepass``
-    to two code units; kept apart they would be stored as two adjacent JSON
-    escapes, which every JSON reader combines. A lone surrogate is kept.
-    """
-    if text.isascii():
-        return text
-    return _SURROGATE_PAIR.sub(
-        lambda match: chr(0x10000 + ((ord(match.group()[0]) - 0xD800) << 10) + (ord(match.group()[1]) - 0xDC00)),
-        text,
-    )
-
-
 _ENCODED_SURROGATE_PAIR = re.compile(rb"\xed([\xa0-\xaf])([\x80-\xbf])\xed([\xb0-\xbf])([\x80-\xbf])")
 _ENCODED_SURROGATE = re.compile(rb"\xed([\xa0-\xbf])([\x80-\xbf])")
 _PROVIDER_SURROGATES = "polylogue-provider-surrogates"

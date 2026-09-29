@@ -3658,18 +3658,49 @@ def test_provider_decode_consumes_a_bom_before_a_surrogate() -> None:
     assert loads(raw) == {"a": "\ud800"}
 
 
-def test_provider_decode_pairs_cesu8_in_one_decode(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Encoded pairs are combined while decoding, so a whale record is never
-    held as a surrogatepass string and a second, combined copy.
+def test_provider_decode_pairs_cesu8_in_one_decode() -> None:
+    """Encoded pairs are combined while decoding, by the registered error
+    handler, so a whale record is never held as a surrogatepass string and a
+    second, combined copy.
 
-    Anti-vacuity: decode with ``surrogatepass`` and then combine the pairs over
-    the whole text, and the patched whole-text combiner fails the decode.
+    Anti-vacuity: leave the pair to ``surrogatepass`` and the result holds two
+    code units instead of U+1F600; treat any encoded surrogate as malformed and
+    the lone one raises.
     """
     from polylogue.core import json as core_json
 
-    def no_second_pass(_text: str) -> str:
-        raise AssertionError("combined pairs over a second full-size string")
-
-    monkeypatch.setattr(core_json, "combine_surrogate_pairs", no_second_pass)
     raw = b'{"a": "' + b"x" * 4096 + b'\xed\xa0\xbd\xed\xb8\x80 \xed\xa0\x80"}'
     assert core_json.decode_provider_utf8(raw) == '{"a": "' + "x" * 4096 + '\U0001f600 \ud800"}'
+
+
+def test_js_literal_pairs_surrogates_as_consumed_across_runs() -> None:
+    """Plain runs are consumed whole, and a pair formed by an escaped high half
+    and the following low half is still one character.
+
+    Anti-vacuity: stop pairing as the low half is consumed and the escaped
+    ``\\uD83D`` before ``\\uDE00`` stays two code units; pair across a plain
+    run and ``\\uD83D`` before ``x\\uDE00`` wrongly becomes one character.
+    """
+    from polylogue.sources.parsers.codex import _parse_js_literal
+
+    value, ok = _parse_js_literal('"plain run \\uD83D\\uDE00 then \\uD83Dx\\uDE00 end"')
+    assert ok and value == "plain run \U0001f600 then \ud83dx\ude00 end"
+    template, ok = _parse_js_literal("`cost $5 \\uD83D\\uDE00`")
+    assert ok and template == "cost $5 \U0001f600"
+
+
+def test_markdown_rendering_escapes_a_lone_surrogate() -> None:
+    """A session holding a lone surrogate still renders to UTF-8.
+
+    Anti-vacuity: render the exact code point and encoding the Markdown for a
+    UTF-8 destination raises ``UnicodeEncodeError``.
+    """
+    from polylogue.rendering.semantic_card_models import SemanticTranscript, SemanticTranscriptEntry, TranscriptProse
+    from polylogue.rendering.semantic_markdown import render_semantic_transcript_markdown
+
+    prose = TranscriptProse(message_id="m1", role="user", message_type="message", text="edit \ud800 here")
+    rendered = render_semantic_transcript_markdown(
+        SemanticTranscript(session_id="s1", entries=(SemanticTranscriptEntry(prose=prose),))
+    )
+    rendered.encode("utf-8")
+    assert "\\ud800" in rendered

@@ -25,7 +25,6 @@ from polylogue.archive.message.types import MessageType
 from polylogue.archive.provider.semantics import extract_codex_text
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider
-from polylogue.core.json import combine_surrogate_pairs
 from polylogue.core.timestamps import parse_timestamp_pair
 from polylogue.logging import DEBUG, WARNING, emit, get_logger
 from polylogue.sources.providers.codex import CodexRecord
@@ -507,6 +506,15 @@ class _CodexExecEnvelope:
     # Positionally aligned with ``children``; ``None`` where no result evidence
     # was recovered for that child.
     results: tuple[_CodexExecChildResult | None, ...] = ()
+
+
+#: A run of characters that close nothing and start no escape, per quote.
+_JS_PLAIN_RUNS = {
+    '"': re.compile(r'[^"\\]+'),
+    "'": re.compile(r"[^'\\]+"),
+    "`": re.compile(r"[^`\\$]+"),
+}
+_JS_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 class _JsLiteralError(ValueError):
@@ -1767,6 +1775,9 @@ class _CodexTextConservation:
             for insert_at, timestamp, source_index, entry_blob, role_blob, phase_blob, text, occurrences in rows:
                 entry_type, role, phase = (pickle.loads(blob) for blob in (entry_blob, role_blob, phase_blob))
                 content = pickle.loads(text)
+                # Release the pickled scratch value before the event is
+                # encoded: only the decoded text and its JSON row coexist.
+                del text
                 payload: dict[str, object] = {
                     "source_index": source_index,
                     "context_kind": "replacement_history",
@@ -2036,22 +2047,53 @@ class _JsLiteralParser:
         return self.text[start : self.position]
 
     def _parse_string(self) -> str:
+        """One JavaScript string literal, consumed in runs, not character by character.
+
+        JavaScript strings are UTF-16: an escaped high/low pair such as
+        \\uD83D\\uDE00 is one character. A pair is combined as its low half is
+        consumed, so the value equals what any JSON reader of the stored,
+        escaped payload decodes without a second pass over the whole literal;
+        a lone surrogate stays as it is.
+        """
         quote = self.text[self.position]
         self.position += 1
+        plain = _JS_PLAIN_RUNS[quote]
         parts: list[str] = []
+
+        def push(piece: str) -> None:
+            if _JS_SURROGATE.search(piece) is None:
+                parts.append(piece)
+                return
+            # Surrogates stand alone in ``parts``, so the one before a low
+            # half is exactly ``parts[-1]``.
+            last = 0
+            for match in _JS_SURROGATE.finditer(piece):
+                if match.start() > last:
+                    parts.append(piece[last : match.start()])
+                unit = ord(match.group())
+                if 0xDC00 <= unit <= 0xDFFF and parts and len(parts[-1]) == 1 and 0xD800 <= ord(parts[-1]) <= 0xDBFF:
+                    parts[-1] = chr(0x10000 + ((ord(parts[-1]) - 0xD800) << 10) + (unit - 0xDC00))
+                else:
+                    parts.append(match.group())
+                last = match.end()
+            if last < len(piece):
+                parts.append(piece[last:])
+
         while self.position < len(self.text):
+            run = plain.match(self.text, self.position)
+            if run is not None:
+                push(run.group())
+                self.position = run.end()
+                continue
             char = self.text[self.position]
             self.position += 1
             if char == quote:
-                # JavaScript strings are UTF-16: an escaped high/low pair such
-                # as \uD83D\uDE00 is one character. Combining it here keeps
-                # the value equal to what any JSON reader of the stored,
-                # escaped payload decodes; a lone surrogate stays as it is.
-                return combine_surrogate_pairs("".join(parts))
-            if quote == "`" and char == "$" and self._peek() == "{":
-                raise _JsLiteralError("template interpolation is not a literal")
-            if char != "\\":
-                parts.append(char)
+                return "".join(parts)
+            if char == "$":
+                # Only reached inside a template literal.
+                if self._peek() == "{":
+                    raise _JsLiteralError("template interpolation is not a literal")
+                push(char)
                 continue
             if self.position >= len(self.text):
                 raise _JsLiteralError("unterminated JavaScript string escape")
@@ -2071,14 +2113,14 @@ class _JsLiteralParser:
                 "`": "`",
             }
             if escaped in escapes:
-                parts.append(escapes[escaped])
+                push(escapes[escaped])
                 continue
             if escaped in {"\n", "\r"}:
                 if escaped == "\r" and self._peek() == "\n":
                     self.position += 1
                 continue
             if escaped == "x":
-                parts.append(self._parse_hex_escape(2))
+                push(self._parse_hex_escape(2))
                 continue
             if escaped == "u":
                 if self._peek() == "{":
@@ -2089,15 +2131,15 @@ class _JsLiteralParser:
                     token = self.text[self.position : end]
                     self.position = end + 1
                     try:
-                        parts.append(chr(int(token, 16)))
+                        push(chr(int(token, 16)))
                     except (ValueError, OverflowError) as exc:
                         raise _JsLiteralError("invalid JavaScript Unicode escape") from exc
                 else:
-                    parts.append(self._parse_hex_escape(4))
+                    push(self._parse_hex_escape(4))
                 continue
             # JavaScript treats an otherwise-unknown escaped character as the
             # character itself. Preserving it is safer than rejecting evidence.
-            parts.append(escaped)
+            push(escaped)
         raise _JsLiteralError("unterminated JavaScript string")
 
     def _parse_hex_escape(self, width: int) -> str:
