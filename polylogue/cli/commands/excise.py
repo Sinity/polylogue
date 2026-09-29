@@ -223,7 +223,6 @@ def excise_command(
                 f"  source.db raw rows: {plan.source_raw_rows}"
                 + (f" (including {plan.source_fact_rows} fact/plan snapshot row(s))" if plan.source_fact_rows else ""),
                 f"  source.db hook events: {plan.source_hook_events}",
-                f"  source.db telemetry spans: {plan.source_otlp_spans}",
                 f"  source.db container members: {plan.source_container_members}"
                 + (
                     f" (releasing {plan.source_container_items} container item(s))"

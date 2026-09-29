@@ -366,6 +366,16 @@ def _aggregate_result_outcome(aggregate_result: object) -> tuple[bool | None, bo
     appears on a successful run as readily as on a failed one, so it is never
     read as error evidence.
     """
+    if isinstance(aggregate_result, list):
+        if not aggregate_result:
+            return None, False
+        outcomes = [_aggregate_result_outcome(item)[0] for item in aggregate_result]
+        if any(outcome is True for outcome in outcomes):
+            return True, True
+        if all(outcome is False for outcome in outcomes):
+            return False, True
+        # An admitted but unrecognized run is not successful delivery.
+        return None, True
     if not isinstance(aggregate_result, Mapping):
         return None, False
     if isinstance(aggregate_result.get("in_kernel_exception"), Mapping):
@@ -589,7 +599,7 @@ def _real_author(author: object) -> str | None:
 #: conversation's own native id -- the join key a cross-session edge needs,
 #: kept resolvable on the construct so the edge can be built later without
 #: reparsing.
-_CHATGPT_CONVERSATION_URL_RE = re.compile(r"^https?://chatgpt\.com/c/([0-9a-fA-F-]+)")
+_CHATGPT_CONVERSATION_URL_RE = re.compile(r"^https?://chatgpt\.com/(?:g/g-p-[^/]+/)?c/([0-9a-fA-F-]+)")
 
 
 def _conversation_context_citation_construct(
@@ -1773,6 +1783,8 @@ def _collect_message_entries(
         content_blocks: list[ParsedContentBlock] = []
         forced_message_type: MessageType | None = None
         content_type = content.get("content_type", "text")
+        if not isinstance(content_type, str):
+            content_type = "unknown"
         # ``metadata["language"]`` is the sole input to ``blocks.language``
         # (``storage/sqlite/archive_tiers/write.py:_block_language``). A
         # ``code`` content states its language on every record and reaches a
@@ -2072,13 +2084,18 @@ def _collect_message_entries(
                             producer_ref=image_producer,
                             dedupe=message_attachment_ids,
                         )
-                elif isinstance(part, dict) and part.get("content_type") in {
-                    "audio_asset_pointer",
-                    "audio_transcription",
-                    "real_time_user_audio_video_asset_pointer",
-                    "video_asset_pointer",
-                    "video_container_asset_pointer",
-                }:
+                elif (
+                    isinstance(part, dict)
+                    and isinstance(part.get("content_type"), str)
+                    and part.get("content_type")
+                    in {
+                        "audio_asset_pointer",
+                        "audio_transcription",
+                        "real_time_user_audio_video_asset_pointer",
+                        "video_asset_pointer",
+                        "video_container_asset_pointer",
+                    }
+                ):
                     part_text = part.get("text")
                     content_type = str(part.get("content_type"))
                     media_mime_type = _string_value(part, "mime_type", "media_type")
@@ -2124,7 +2141,13 @@ def _collect_message_entries(
                                 # Make that absence explicit instead of
                                 # emitting a construct whose only useful
                                 # fields are its type and provider spelling.
-                                status="unavailable",
+                                status=(
+                                    None
+                                    if content_type == "audio_transcription"
+                                    and isinstance(part_text, str)
+                                    and part_text
+                                    else "unavailable"
+                                ),
                             )
                         )
                     content_blocks.append(
@@ -2210,6 +2233,7 @@ def _collect_message_entries(
             for part_ordinal, part in enumerate(parts):
                 if isinstance(part, str) or (
                     isinstance(part, dict)
+                    and isinstance(part.get("content_type"), str)
                     and part.get("content_type")
                     in {
                         "image_asset_pointer",
@@ -2569,42 +2593,41 @@ def _aggregate_result_events(
             continue
         metadata = message.get("metadata")
         aggregate_result = metadata.get("aggregate_result") if isinstance(metadata, Mapping) else None
-        if not isinstance(aggregate_result, Mapping):
-            continue
         message_id = str(message.get("id") or node_id)
         if message_id not in emitted_message_ids:
             continue
         content = message.get("content")
         node_text = _string_value(content, "text") if isinstance(content, Mapping) else None
-        stream_text = _run_stream_text(aggregate_result)
-        exception = aggregate_result.get("in_kernel_exception")
-        exception = exception if isinstance(exception, Mapping) else {}
-        system_exception = aggregate_result.get("system_exception")
-        payload: dict[str, object] = {"status": _string_value(aggregate_result, "status")}
-        for key in ("run_id", "start_time", "end_time", "update_time", "timeout_triggered"):
-            value = aggregate_result.get(key)
-            if value is not None:
-                payload[key] = value
-        final_expression_output = aggregate_result.get("final_expression_output")
-        if final_expression_output is not None:
-            payload["final_expression_output"] = final_expression_output
-        if exception:
-            payload["in_kernel_exception_name"] = _string_value(exception, "name")
-            if exception.get("args") is not None:
-                payload["in_kernel_exception_args"] = exception["args"]
-        if isinstance(system_exception, Mapping):
-            payload["system_exception"] = dict(system_exception)
-        if stream_text:
-            payload["stream_chars"] = len(stream_text)
-            payload["stream_retained_as_message_text"] = stream_text == node_text
-            if stream_text != node_text:
-                payload["stream_text"] = stream_text
-        yield ParsedSessionEvent(
-            event_type="chatgpt_code_interpreter_run",
-            timestamp=_string_value(aggregate_result, "end_time", "update_time", "start_time"),
-            source_message_provider_id=message_id,
-            payload=payload,
-        )
+        for run in _iter_mapping_items(aggregate_result):
+            stream_text = _run_stream_text(run)
+            exception = run.get("in_kernel_exception")
+            exception = exception if isinstance(exception, Mapping) else {}
+            system_exception = run.get("system_exception")
+            payload: dict[str, object] = {"status": _string_value(run, "status")}
+            for key in ("run_id", "start_time", "end_time", "update_time", "timeout_triggered", "output", "exit_code"):
+                value = run.get(key)
+                if value is not None:
+                    payload[key] = value
+            final_expression_output = run.get("final_expression_output")
+            if final_expression_output is not None:
+                payload["final_expression_output"] = final_expression_output
+            if exception:
+                payload["in_kernel_exception_name"] = _string_value(exception, "name")
+                if exception.get("args") is not None:
+                    payload["in_kernel_exception_args"] = exception["args"]
+            if isinstance(system_exception, Mapping):
+                payload["system_exception"] = dict(system_exception)
+            if stream_text:
+                payload["stream_chars"] = len(stream_text)
+                payload["stream_retained_as_message_text"] = stream_text == node_text
+                if stream_text != node_text:
+                    payload["stream_text"] = stream_text
+            yield ParsedSessionEvent(
+                event_type="chatgpt_code_interpreter_run",
+                timestamp=_string_value(run, "end_time", "update_time", "start_time"),
+                source_message_provider_id=message_id,
+                payload=payload,
+            )
 
 
 def _message_authorship_events(

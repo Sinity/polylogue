@@ -19,6 +19,13 @@ entry belongs to exactly one of three tables:
     Deliberately not a CLI concern (transport-owned control verbs, or
     operations whose only consumers are other surfaces).
 
+:data:`CLI_OFFLINE_WRITERS` is the complement on the command side: the CLI
+commands that write archive tiers in their own process instead of lowering to
+a declared operation.  Each builds a root no daemon serves and holds
+``scoped_offline_archive_writer`` for the whole write, so it refuses while
+``polylogued`` owns the root; ``tests/unit/cli/test_offline_writers.py`` proves
+both directions for every entry.
+
 References are dotted ``module:attribute`` strings rather than imports so this
 module stays import-light on the CLI's cold path; the registry test resolves
 every one of them.
@@ -300,6 +307,16 @@ CLI_EXTERNAL_OPERATIONS: Mapping[str, str] = {
         "best-effort context-delivery receipt the `read context` views submit after the read; "
         "no verb requests it and a refusal is dropped"
     ),
+}
+
+
+CLI_OFFLINE_WRITERS: Mapping[str, str] = {
+    "demo seed": (
+        "builds the synthetic demo archive in an empty or demo-owned root through "
+        "polylogue.operations.canonical_archive_ingest.ingest_one_shot_archive"
+    ),
+    "demo receipts": "seeds through the same guarded seed_demo_archive route as `demo seed`",
+    "demo tour": "seeds through the same guarded seed_demo_archive route as `demo seed`",
 }
 
 

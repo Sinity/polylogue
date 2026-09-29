@@ -23,12 +23,16 @@ from types import TracebackType
 from typing import Protocol
 from urllib.request import Request, urlopen
 
+from pydantic import ValidationError
+
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
 from polylogue.archive.message.types import MessageType
 from polylogue.core.enums import BlockType, Provider, TitleSource
 from polylogue.core.json import JSONDocument, dumps_bytes, loads
+from polylogue.core.timestamps import iso_from_epoch_ms
+from polylogue.sources.tool_result_reasons import unknown_reason
 
 from .base import (
     AdmissionDisposition,
@@ -543,7 +547,11 @@ def _step_timestamp(row: Mapping[str, object], payload: Mapping[str, object]) ->
     for values in (payload, row):
         for key in ("timestamp", "occurred_at", "occurred_at_ms", "created_at", "createdAt", "updated_at"):
             value = values.get(key)
-            if isinstance(value, (str, int, float)) and str(value).strip():
+            if key == "occurred_at_ms":
+                timestamp = iso_from_epoch_ms(value)
+                if timestamp is not None:
+                    return timestamp
+            elif isinstance(value, (str, int, float)) and not isinstance(value, bool) and str(value).strip():
                 return str(value)
     return None
 
@@ -554,7 +562,10 @@ def _tool_outcome(
     status = payload.get("status", row.get("status"))
     error = payload.get("error", row.get("error"))
     error_details = payload.get("error_details", row.get("error_details"))
-    exit_code = payload.get("exit_code", payload.get("exitCode"))
+    exit_code = next(
+        (values[key] for values in (payload, row) for key in ("exit_code", "exitCode") if values.get(key) is not None),
+        None,
+    )
     if isinstance(exit_code, bool):
         exit_code = None
     if isinstance(exit_code, (int, float)):
@@ -562,6 +573,8 @@ def _tool_outcome(
         return code != 0, code, None
     if isinstance(error, bool):
         return error, None, None
+    if isinstance(error, (str, Mapping, list)) and error:
+        return True, None, None
     if isinstance(status, str):
         normalized = status.strip().lower()
         if normalized in {"ok", "success", "succeeded", "completed", "complete", "done"}:
@@ -570,7 +583,14 @@ def _tool_outcome(
             return True, None, None
     if error_details not in (None, "", {}, []):
         return True, None, None
-    return None, None, "unsupported_construct"
+    return (
+        None,
+        None,
+        unknown_reason(
+            is_error=None,
+            outcome_field_present=any(value is not None for value in (status, error, error_details, exit_code)),
+        ),
+    )
 
 
 def _tool_input(payload: Mapping[str, object]) -> dict[str, object]:
@@ -597,14 +617,19 @@ def _file_edit(payload: Mapping[str, object]) -> ParsedFileEdit | None:
             "original_file",
             "replace_all",
             "user_modified",
+            "oldString",
+            "newString",
+            "originalFile",
+            "replaceAll",
+            "userModified",
         }
     )
     if not edit_fields & payload.keys():
         return None
-    replace_all = payload.get("replace_all")
+    replace_all = payload.get("replace_all", payload.get("replaceAll"))
     if not isinstance(replace_all, bool):
         replace_all = None
-    user_modified = payload.get("user_modified")
+    user_modified = payload.get("user_modified", payload.get("userModified"))
     if not isinstance(user_modified, bool):
         user_modified = None
     structured_patch = payload.get("structured_patch", payload.get("structuredPatch"))
@@ -612,8 +637,8 @@ def _file_edit(payload: Mapping[str, object]) -> ParsedFileEdit | None:
         file_path=_string(payload.get("file_path") or payload.get("filePath") or payload.get("path")),
         structured_patch=structured_patch if isinstance(structured_patch, list) else None,
         original_file=_string(payload.get("original_file") or payload.get("originalFile")),
-        old_string=_string(payload.get("old_string")),
-        new_string=_string(payload.get("new_string")),
+        old_string=_string(payload.get("old_string", payload.get("oldString"))),
+        new_string=_string(payload.get("new_string", payload.get("newString"))),
         replace_all=replace_all,
         user_modified=user_modified,
     )
@@ -627,7 +652,10 @@ def _normalized_step_payload(row: Mapping[str, object]) -> dict[str, object] | N
     # mapping; opaque values remain refused rather than guessed into text.
     nested = payload.get("payload")
     if isinstance(nested, Mapping):
-        return {str(key): value for key, value in nested.items()}
+        return {
+            **{key: value for key, value in payload.items() if key != "payload"},
+            **{str(key): value for key, value in nested.items()},
+        }
     return payload
 
 
@@ -723,7 +751,7 @@ def _trajectory_message(
     tool_name = payload.get("tool_name") or payload.get("toolName") or payload.get("name")
     tool_id = payload.get("tool_id") or payload.get("toolId") or payload.get("call_id") or payload.get("callId")
     if toolish and normalized_type in {"tool_result", "tool_output", "command_result"}:
-        is_error, exit_code, unknown_reason = _tool_outcome(payload, row)
+        is_error, exit_code, outcome_unknown = _tool_outcome(payload, row)
         blocks.append(
             ParsedContentBlock(
                 type=BlockType.TOOL_RESULT,
@@ -732,7 +760,7 @@ def _trajectory_message(
                 tool_id=str(tool_id) if tool_id is not None else None,
                 is_error=is_error,
                 exit_code=exit_code,
-                outcome_unknown_reason=unknown_reason,
+                outcome_unknown_reason=outcome_unknown,
                 file_edit=_file_edit(payload),
             )
         )
@@ -868,6 +896,18 @@ def parse_trajectory_db(
             for value in (meta["trajectory_id"], meta["cascade_id"])
             if value not in (None, "")
         }
+        # An alias may have multiple claimants; retain that ambiguity rather
+        # than allowing the last meta row to choose a parent.
+        alias_claimants: dict[str, set[str]] = {}
+        for meta in meta_rows:
+            if meta is None:
+                continue
+            canonical = meta["trajectory_id"] or meta["cascade_id"]
+            if canonical in (None, ""):
+                continue
+            for alias in (meta["trajectory_id"], meta["cascade_id"]):
+                if alias not in (None, ""):
+                    alias_claimants.setdefault(str(alias), set()).add(str(canonical))
         # A summary with no owning meta row is later yielded as its own
         # session keyed by its summary_key (the unmatched-summary branch
         # below), so that key occupies this parser's session-ID namespace
@@ -1002,14 +1042,38 @@ def parse_trajectory_db(
                         )
                     )
                     continue
-                message = _trajectory_message(
-                    row=row_map,
-                    payload=payload,
-                    position=len(messages),
-                    step_ordinal=step_ordinal,
-                    step_type=step_type,
-                    step_format=step_format,
-                )
+                try:
+                    message = _trajectory_message(
+                        row=row_map,
+                        payload=payload,
+                        position=len(messages),
+                        step_ordinal=step_ordinal,
+                        step_type=step_type,
+                        step_format=step_format,
+                    )
+                except ValidationError:
+                    # A malformed known step must not discard valid siblings.
+                    outcomes.append(
+                        AdmissionOutcome(
+                            unit=AdmissionUnit.PART,
+                            ordinal=ordinal,
+                            key=key,
+                            disposition=AdmissionDisposition.TYPED_REFUSAL,
+                            reason=AdmissionRefusalReason.MALFORMED,
+                        )
+                    )
+                    events.append(
+                        ParsedSessionEvent(
+                            event_type="antigravity_unsupported_step",
+                            payload={
+                                "idx": step_ordinal,
+                                "step_type": step_type,
+                                "step_format": step_format,
+                                "reason": "invalid_typed_step",
+                            },
+                        )
+                    )
+                    continue
                 if message is None:
                     outcomes.append(
                         AdmissionOutcome(
@@ -1067,10 +1131,11 @@ def parse_trajectory_db(
             if trajectory_id and trajectory_id != cascade_id:
                 matching_parent_refs.extend(parent_refs.get(trajectory_id, ()))
             parent_ids = {
-                resolved
+                claimant
                 for reference in matching_parent_refs
                 for resolved in (_parent_reference_id(reference),)
                 if resolved is not None
+                for claimant in alias_claimants.get(resolved, {resolved})
             }
             # Two references naming different parents are an ambiguity, not a
             # choice: asserting whichever row the unordered SELECT returned

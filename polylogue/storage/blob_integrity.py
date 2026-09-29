@@ -31,14 +31,11 @@ from polylogue.core.json import JSONDecodeError as CoreJSONDecodeError
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.json import loads as json_loads
 from polylogue.core.raw_coordinates import zip_member_coordinate, zip_member_identity_coordinate
-from polylogue.core.sqlite_introspection import column_exists as _column_exists
-from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.logging import get_logger
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.blob_liveness import (
     BlobLivenessProjection,
     acquired_attachment_missing_ref_predicate,
-    project_index_blob_hashes,
     project_live_blob_hashes,
 )
 from polylogue.storage.blob_store import BlobNamespaceEntry, BlobStore
@@ -56,36 +53,6 @@ BlobIntegritySeverity = Literal["warning", "critical"]
 
 _DEFAULT_SAMPLE_SIZE = 100
 _MAX_FINDING_SAMPLE = 10
-
-SourceBlobSchemaKind = Literal[
-    "current_versioned",
-    "current_unversioned",
-    "legacy_raw_only",
-    "legacy",
-    "mixed_transitional",
-    "unreadable",
-]
-
-
-@dataclass(frozen=True, slots=True)
-class SourceBlobCapabilityProjection:
-    """The source-tier schema evidence used by integrity read routes.
-
-    ``user_version`` is a useful positive current-schema signal, but imported
-    files and minimal fixtures commonly leave it at zero. The catalog shape
-    therefore decides whether canonical liveness is available. Fallback
-    carriers are selected by columns, not by a version guess, and are used
-    only when canonical liveness is unavailable for a genuinely historical
-    or transitional source.
-    """
-
-    kind: SourceBlobSchemaKind
-    user_version: int | None
-    catalog_readable: bool
-    current_authority: bool
-    current_blob_refs: bool
-    legacy_carriers: tuple[str, ...]
-    blockers: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -262,150 +229,12 @@ def _blob_hash_text(value: object) -> str | None:
     return text if text else None
 
 
-_LEGACY_DIRECT_BLOB_CARRIERS = ("raw_sessions", "raw_hook_events", "history_sidecars")
-_CURRENT_SOURCE_COLUMNS = {
-    "raw_sessions": ("raw_id", "blob_hash"),
-    "raw_hook_events": ("hook_event_id", "blob_hash"),
-    "blob_refs": ("blob_hash", "ref_id", "ref_type"),
-}
+def _require_canonical_projection(projection: BlobLivenessProjection) -> BlobLivenessProjection:
+    """Return a complete canonical projection or refuse incomplete evidence."""
 
-
-def _source_schema_capabilities(conn: sqlite3.Connection) -> SourceBlobCapabilityProjection:
-    """Project source blob-reference capabilities from readable catalog facts.
-
-    The projection intentionally describes only the evidence needed by the
-    integrity routes. A source schema can be older than the runtime and still
-    carry a complete typed blob-ref ledger, or it can be a minimal imported
-    fixture whose ``blob_refs`` relation has only a legacy ``raw_id`` key.
-    Those are different contracts even when both report ``user_version=0``.
-    """
-
-    from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
-    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-
-    # The only version a source tier of this format lineage carries is the one
-    # bootstrap stamps. ``user_version`` was renumbered from one by the archive
-    # format floor, so it no longer orders across lineages: a historical 29 is
-    # not "newer" than a current 1. Exact equality is therefore the only honest
-    # version statement -- any other stamp is a file this runtime did not write,
-    # and its catalog, not its integer, has to earn authority below.
-    stamped_source_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
-
-    try:
-        row = conn.execute("PRAGMA user_version").fetchone()
-        user_version = int(row[0] or 0) if row is not None else 0
-        columns = {
-            table: all(_table_exists(conn, table) and _column_exists(conn, table, column) for column in required)
-            for table, required in _CURRENT_SOURCE_COLUMNS.items()
-        }
-        current_blob_refs = columns["blob_refs"]
-        current_capabilities = all(columns.values())
-        legacy_carriers = [
-            table
-            for table in _LEGACY_DIRECT_BLOB_CARRIERS
-            if _table_exists(conn, table) and _column_exists(conn, table, "blob_hash")
-        ]
-        # A typed blob_refs table is a valid conservative carrier for an old
-        # source, even when a later referent relation is absent. It is added to
-        # fallback only when canonical authority is not selected below.
-        # The stamp alone cannot confer authority. ``user_version`` was
-        # renumbered from one by the archive format floor, so a historical
-        # source database can carry the integer this runtime stamps today
-        # while holding only the legacy direct-carrier shape -- and this
-        # projection has no format marker to separate the two lineages
-        # (polylogue, PR #5369). Trusting the integer sent such a file to the
-        # canonical query, which is blocked for it, so its existing blob
-        # references became unavailable to integrity and recovery tooling.
-        # ``blob_refs`` is the typed ledger only this lineage writes, so the
-        # stamp earns authority alongside it -- or where the catalog offers no
-        # historical carrier at all to contradict it, since then there is no
-        # legacy classification to preserve.
-        current_authority = current_capabilities or (
-            user_version == stamped_source_version and (current_blob_refs or not legacy_carriers)
-        )
-        if not current_authority and current_blob_refs:
-            legacy_carriers.append("blob_refs")
-        if current_authority:
-            kind: SourceBlobSchemaKind = (
-                "current_versioned" if user_version == stamped_source_version else "current_unversioned"
-            )
-        elif current_blob_refs and legacy_carriers:
-            kind = "mixed_transitional"
-        elif legacy_carriers == ["raw_sessions"]:
-            kind = "legacy_raw_only"
-        else:
-            kind = "legacy"
-        return SourceBlobCapabilityProjection(
-            kind=kind,
-            user_version=user_version,
-            catalog_readable=True,
-            current_authority=current_authority,
-            current_blob_refs=current_blob_refs,
-            legacy_carriers=tuple(dict.fromkeys(legacy_carriers)),
-        )
-    except sqlite3.Error as exc:
-        return SourceBlobCapabilityProjection(
-            kind="unreadable",
-            user_version=None,
-            catalog_readable=False,
-            current_authority=True,
-            current_blob_refs=False,
-            legacy_carriers=(),
-            blockers=(f"source schema catalog is unreadable: {exc}",),
-        )
-
-
-def _legacy_source_owner_hashes(conn: sqlite3.Connection) -> dict[str, frozenset[str]]:
-    """Read each proven historical carrier once, retaining all its hashes."""
-
-    capabilities = _source_schema_capabilities(conn)
-    if not capabilities.catalog_readable:
-        raise RuntimeError("; ".join(capabilities.blockers))
-    owner_hashes: dict[str, frozenset[str]] = {}
-    for table in capabilities.legacy_carriers:
-        try:
-            rows = conn.execute(f"SELECT DISTINCT blob_hash FROM {table} WHERE blob_hash IS NOT NULL")
-            hashes = frozenset(value.hex() for (value,) in rows if isinstance(value, bytes) and len(value) == 32)
-        except sqlite3.Error as exc:
-            raise RuntimeError(f"historical source blob carrier {table}.blob_hash is unreadable: {exc}") from exc
-        if hashes:
-            owner_hashes[f"source.db.{table}"] = hashes
-    return owner_hashes
-
-
-def _historical_projection(
-    conn: sqlite3.Connection,
-    projection: BlobLivenessProjection,
-    *,
-    index_conn: sqlite3.Connection | None = None,
-    require_index: bool = False,
-) -> BlobLivenessProjection:
-    """Complete a historical source fallback with readable index ownership."""
-
-    if not projection.blockers:
-        return projection
-    capabilities = _source_schema_capabilities(conn)
-    if capabilities.current_authority or not capabilities.catalog_readable:
-        blockers = capabilities.blockers or projection.blockers
-        raise RuntimeError(f"canonical blob liveness projection blocked: {'; '.join(blockers)}")
-    owner_hashes = _legacy_source_owner_hashes(conn)
-    if index_conn is None:
-        if require_index:
-            raise RuntimeError("canonical blob liveness projection blocked: index tier is unavailable")
-    else:
-        index_projection = project_index_blob_hashes(index_conn)
-        if index_projection.blockers:
-            if require_index:
-                raise RuntimeError(
-                    "canonical blob liveness projection blocked: "
-                    f"historical source fallback cannot resolve index ownership: {'; '.join(index_projection.blockers)}"
-                )
-        else:
-            owner_hashes.update(dict(index_projection.owner_hashes))
-    return BlobLivenessProjection(
-        frozenset().union(*owner_hashes.values()) if owner_hashes else frozenset(),
-        owner_hashes=tuple(sorted(owner_hashes.items())),
-    )
+    if projection.blockers:
+        raise RuntimeError(f"canonical blob liveness projection blocked: {'; '.join(projection.blockers)}")
+    return projection
 
 
 def project_source_blob_liveness(
@@ -423,8 +252,8 @@ def project_source_blob_liveness(
         else:
             with closing(open_readonly_connection(index_db, immutable=immutable, validate_schema=False)) as index_conn:
                 projection = project_live_blob_hashes(source_conn, index_conn=index_conn, require_index=True)
-                return _historical_projection(source_conn, projection, index_conn=index_conn, require_index=True)
-        return _historical_projection(source_conn, projection, index_conn=index_conn)
+                return _require_canonical_projection(projection)
+        return _require_canonical_projection(projection)
 
 
 def _referenced_blob_hashes(
@@ -442,13 +271,7 @@ def _referenced_blob_hashes(
             source_conn = open_readonly_connection(source_db, timeout_class="background-read", validate_schema=False)
             try:
                 projection = project_live_blob_hashes(source_conn, index_conn=conn, require_index=True)
-                if projection.blockers:
-                    logger.warning(
-                        "blob integrity using non-current fixture schema: %s", "; ".join(projection.blockers)
-                    )
-                    historical = _historical_projection(source_conn, projection, index_conn=conn)
-                    return sorted(historical.live_hashes)
-                return sorted(projection.live_hashes)
+                return sorted(_require_canonical_projection(projection).live_hashes)
             finally:
                 source_conn.close()
         except sqlite3.Error as exc:
@@ -464,11 +287,6 @@ def _referenced_blob_hashes(
         try:
             with closing(open_readonly_connection(index_db, immutable=immutable, validate_schema=False)) as index_conn:
                 projection = project_live_blob_hashes(conn, index_conn=index_conn, require_index=True)
-                if projection.blockers:
-                    logger.warning(
-                        "blob integrity using non-current fixture schema: %s", "; ".join(projection.blockers)
-                    )
-                    return sorted(_historical_projection(conn, projection, index_conn=index_conn).live_hashes)
         except sqlite3.Error as exc:
             raise RuntimeError(f"source tier referenced-hash query failed for {db_path}: {exc}") from exc
     else:
@@ -476,10 +294,7 @@ def _referenced_blob_hashes(
             projection = project_live_blob_hashes(conn, require_index=require_index)
         except sqlite3.Error as exc:
             raise RuntimeError(f"source tier referenced-hash query failed for {db_path}: {exc}") from exc
-    if projection.blockers:
-        logger.warning("blob integrity using non-current fixture schema: %s", "; ".join(projection.blockers))
-        return sorted(_historical_projection(conn, projection).live_hashes)
-    return sorted(projection.live_hashes)
+    return sorted(_require_canonical_projection(projection).live_hashes)
 
 
 def _reference_source_counts(
@@ -491,10 +306,8 @@ def _reference_source_counts(
             source_conn = open_readonly_connection(source_db, timeout_class="background-read", validate_schema=False)
             try:
                 projection = project_live_blob_hashes(source_conn, index_conn=conn, require_index=True)
-                if not projection.blockers:
-                    return {owner: len(hashes) for owner, hashes in projection.owner_hashes}
-                historical = _historical_projection(source_conn, projection, index_conn=conn)
-                return {owner: len(hashes) for owner, hashes in historical.owner_hashes}
+                canonical = _require_canonical_projection(projection)
+                return {owner: len(hashes) for owner, hashes in canonical.owner_hashes}
             finally:
                 source_conn.close()
         except sqlite3.Error as exc:
@@ -513,15 +326,10 @@ def _reference_source_counts(
             open_readonly_connection(index_db, timeout_class="background-read", validate_schema=False)
         ) as index_conn:
             projection = project_live_blob_hashes(conn, index_conn=index_conn, require_index=True)
-            if projection.blockers:
-                historical = _historical_projection(conn, projection, index_conn=index_conn)
-                return {owner: len(hashes) for owner, hashes in historical.owner_hashes}
     else:
         projection = project_live_blob_hashes(conn, require_index=True)
-    if projection.blockers:
-        historical = _historical_projection(conn, projection)
-        return {owner: len(hashes) for owner, hashes in historical.owner_hashes}
-    return {owner: len(hashes) for owner, hashes in projection.owner_hashes}
+    canonical = _require_canonical_projection(projection)
+    return {owner: len(hashes) for owner, hashes in canonical.owner_hashes}
 
 
 def referenced_blob_hashes(
@@ -612,94 +420,36 @@ def _counter_dict(counter: Counter[str]) -> dict[str, int]:
     return dict(sorted(counter.items()))
 
 
-def _blob_ref_source_path_column(conn: sqlite3.Connection) -> str:
-    return "source_path" if _column_exists(conn, "blob_refs", "source_path") else "NULL"
-
-
-def _blob_ref_size_column(conn: sqlite3.Connection) -> str:
-    return "size_bytes" if _column_exists(conn, "blob_refs", "size_bytes") else "0"
-
-
-def _blob_ref_id_column(conn: sqlite3.Connection) -> str:
-    if _column_exists(conn, "blob_refs", "ref_id"):
-        return "ref_id"
-    if _column_exists(conn, "blob_refs", "raw_id"):
-        return "raw_id"
-    return "NULL"
-
-
 def _raw_session_reference_rows(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    if not _table_exists(conn, "raw_sessions"):
-        return []
     conn.row_factory = sqlite3.Row
-    origin_column = "origin" if _column_exists(conn, "raw_sessions", "origin") else "NULL"
-    detected_provider_column = (
-        "detected_provider" if _column_exists(conn, "raw_sessions", "detected_provider") else "NULL"
-    )
-    native_id_column = "native_id" if _column_exists(conn, "raw_sessions", "native_id") else "NULL"
-    source_path_column = "source_path" if _column_exists(conn, "raw_sessions", "source_path") else "NULL"
-    source_index_column = "source_index" if _column_exists(conn, "raw_sessions", "source_index") else "NULL"
-    revision_kind_column = "revision_kind" if _column_exists(conn, "raw_sessions", "revision_kind") else "NULL"
-    append_start_offset_column = (
-        "append_start_offset" if _column_exists(conn, "raw_sessions", "append_start_offset") else "NULL"
-    )
-    append_end_offset_column = (
-        "append_end_offset" if _column_exists(conn, "raw_sessions", "append_end_offset") else "NULL"
-    )
-    capture_mode_column = "capture_mode" if _column_exists(conn, "raw_sessions", "capture_mode") else "NULL"
-    acquired_at_ms_column = "acquired_at_ms" if _column_exists(conn, "raw_sessions", "acquired_at_ms") else "NULL"
-    has_container_coordinates = _table_exists(conn, "raw_container_coordinates")
-    coordinate_join = (
-        "LEFT JOIN raw_container_coordinates coordinate ON coordinate.raw_id = raw_sessions.raw_id"
-        if has_container_coordinates
-        else ""
-    )
-    coordinate_format_column = "coordinate.coordinate_format" if has_container_coordinates else "NULL"
-    entry_ordinal_column = "coordinate.entry_ordinal" if has_container_coordinates else "NULL"
-    split_index_column = "coordinate.split_index" if has_container_coordinates else "NULL"
-    addressing_mode_column = (
-        "coordinate.addressing_mode"
-        if has_container_coordinates and _column_exists(conn, "raw_container_coordinates", "addressing_mode")
-        else "NULL"
-    )
-    content_identity_column = (
-        "coordinate.content_identity"
-        if has_container_coordinates and _column_exists(conn, "raw_container_coordinates", "content_identity")
-        else "NULL"
-    )
-    blob_size_column = "blob_size" if _column_exists(conn, "raw_sessions", "blob_size") else "0"
-    parse_error_column = "parse_error" if _column_exists(conn, "raw_sessions", "parse_error") else "NULL"
-    validation_status_column = (
-        "validation_status" if _column_exists(conn, "raw_sessions", "validation_status") else "NULL"
-    )
     rows = conn.execute(
-        f"""
+        """
         SELECT lower(hex(raw_sessions.blob_hash)) AS blob_hash,
                'raw_sessions' AS table_name,
                'raw_payload' AS ref_type,
                raw_sessions.raw_id AS ref_id,
                raw_sessions.raw_id AS raw_id,
-               {origin_column} AS origin,
-               {detected_provider_column} AS detected_provider,
-               {native_id_column} AS native_id,
-               {capture_mode_column} AS capture_mode,
-               {acquired_at_ms_column} AS acquired_at_ms,
-               {source_path_column} AS source_path,
-               {source_index_column} AS source_index,
-               {revision_kind_column} AS revision_kind,
-               {append_start_offset_column} AS append_start_offset,
-               {append_end_offset_column} AS append_end_offset,
-               {blob_size_column} AS size_bytes,
-               {parse_error_column} AS parse_error,
-               {validation_status_column} AS validation_status,
-               {coordinate_format_column} AS coordinate_format,
-               {entry_ordinal_column} AS entry_ordinal,
-               {split_index_column} AS split_index,
-               {addressing_mode_column} AS addressing_mode,
-               {content_identity_column} AS content_identity,
+               raw_sessions.origin AS origin,
+               raw_sessions.detected_provider AS detected_provider,
+               raw_sessions.native_id AS native_id,
+               raw_sessions.capture_mode AS capture_mode,
+               raw_sessions.acquired_at_ms AS acquired_at_ms,
+               raw_sessions.source_path AS source_path,
+               raw_sessions.source_index AS source_index,
+               raw_sessions.revision_kind AS revision_kind,
+               raw_sessions.append_start_offset AS append_start_offset,
+               raw_sessions.append_end_offset AS append_end_offset,
+               raw_sessions.blob_size AS size_bytes,
+               raw_sessions.parse_error AS parse_error,
+               raw_sessions.validation_status AS validation_status,
+               coordinate.coordinate_format AS coordinate_format,
+               coordinate.entry_ordinal AS entry_ordinal,
+               coordinate.split_index AS split_index,
+               coordinate.addressing_mode AS addressing_mode,
+               coordinate.content_identity AS content_identity,
                1 AS ref_id_has_raw_session
         FROM raw_sessions
-        {coordinate_join}
+        LEFT JOIN raw_container_coordinates coordinate ON coordinate.raw_id = raw_sessions.raw_id
         WHERE raw_sessions.blob_hash IS NOT NULL
         """
     ).fetchall()
@@ -711,20 +461,15 @@ def _blob_ref_reference_rows(
     *,
     raw_by_id: dict[str, dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    if not _table_exists(conn, "blob_refs"):
-        return []
     conn.row_factory = sqlite3.Row
-    ref_id_column = _blob_ref_id_column(conn)
-    source_path_column = _blob_ref_source_path_column(conn)
-    size_column = _blob_ref_size_column(conn)
     rows = conn.execute(
-        f"""
+        """
         SELECT lower(hex(blob_hash)) AS blob_hash,
                'blob_refs' AS table_name,
                ref_type,
-               {ref_id_column} AS ref_id,
-               {source_path_column} AS source_path,
-               {size_column} AS size_bytes
+               ref_id,
+               source_path,
+               size_bytes
         FROM blob_refs
         WHERE blob_hash IS NOT NULL
         """

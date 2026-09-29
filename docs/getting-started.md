@@ -167,6 +167,9 @@ exports are imported deliberately, with the daemon running:
 polylogue import /path/to/exports
 ```
 
+The command returns once the daemon has accepted the request. Add `--wait` to
+block until the daemon reports the ingest finished (bounded by `--timeout`).
+
 ## Next steps
 
 - [Search reference](search.md) -- query grammar, filters, verbs, output formats

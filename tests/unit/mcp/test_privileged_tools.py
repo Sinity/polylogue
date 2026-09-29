@@ -877,7 +877,10 @@ class TestJudgeTool:
 
                 single = json.loads(
                     await invoke_surface_async(
-                        judge_fn, candidate_ref="assertion:contract-candidate", decision="accept"
+                        judge_fn,
+                        candidate_ref="assertion:contract-candidate",
+                        decision="accept",
+                        expected_evidence_digest="a" * 64,
                     )
                 )
                 assert single.get("is_error") is not True, single
@@ -888,6 +891,8 @@ class TestJudgeTool:
                 assert len(items) == 1
                 assert items[0].candidate_ref == "assertion:contract-candidate"
                 assert items[0].decision == "accept"
+                # Removing the singular digest parameter or its forwarding breaks this production adapter call.
+                assert items[0].expected_evidence_digest == "a" * 64
 
     @pytest.mark.asyncio
     async def test_actor_ref_is_not_a_caller_controllable_argument(self, tmp_path: Path) -> None:
@@ -1272,3 +1277,84 @@ async def test_cancelled_daemon_submission_cancels_the_same_request(
     # every call names the same request.
     assert [name for name, _ in calls] == ["operation.cancel", "maintenance.insights.rebuild", "operation.cancel"]
     assert len({request_id for _, request_id in calls}) == 1
+
+
+@pytest.mark.asyncio
+async def test_search_continuation_preserves_query_sort_and_omitted_limit(tmp_path: Path) -> None:
+    """Without restoring the framed request, page two loses query/sort or widens its limit."""
+    from tests.infra.mcp import build_tools
+
+    root = tmp_path / "archive"
+    _seed_paged_archive(root)
+    query = build_tools()["query"]
+    with installed_runtime_services(root):
+        first = json.loads(
+            await invoke_surface_async(query, expression="pagination", projection="sessions", sort="date", limit=2)
+        )
+        assert first["continuation"]
+        second = json.loads(
+            await invoke_surface_async(query, projection="sessions", continuation=first["continuation"])
+        )
+    assert second.get("is_error") is not True, second
+    assert second["query"] == first["query"] == "pagination"
+    assert second["sort"] == first["sort"] == "date"
+    assert second["limit"] == 2
+    assert second["offset"] == 2
+    assert {hit["session"]["id"] for hit in first["hits"]}.isdisjoint(hit["session"]["id"] for hit in second["hits"])
+
+
+@pytest.mark.asyncio
+async def test_missing_messages_session_is_not_found(tmp_path: Path) -> None:
+    """Without the typed catch, the registered read reports polylogue_error."""
+    from tests.infra.mcp import build_tools
+
+    root = tmp_path / "archive"
+    _seed_archive(root)
+    read = build_tools()["read"]
+    with installed_runtime_services(root):
+        body = json.loads(
+            await invoke_surface_async(read, ref="session:chatgpt-export:does-not-exist", view="messages")
+        )
+    assert body["is_error"] is True
+    assert body["code"] == "not_found"
+
+
+@pytest.mark.asyncio
+async def test_reference_relation_query_advances_requested_offset(tmp_path: Path) -> None:
+    """Without offset slicing, every registered query call repeats the first two refs."""
+    import sqlite3
+
+    from polylogue.storage.sqlite.query_objects import put_query, put_result_set
+    from tests.infra.mcp import build_tools
+
+    root = tmp_path / "archive"
+    ids = _seed_paged_archive(root, count=5)
+    with sqlite3.connect(root / "user.db") as conn:
+        query_object = put_query(
+            conn,
+            {"field": "origin", "value": "chatgpt-export"},
+            grain="session",
+            lane="dialogue",
+            rank_policy="mixed",
+            created_at_ms=1,
+        )
+        put_result_set(
+            conn,
+            result_set_id="w13-page",
+            query_hash=query_object.query_hash,
+            grain="session",
+            corpus_epoch="e1",
+            member_refs=tuple(f"session:{sid}" for sid in ids),
+            exactness="exact",
+            persistence_class="pinned",
+            created_at_ms=2,
+        )
+    query = build_tools()["query"]
+    with installed_runtime_services(root):
+        pages = [
+            json.loads(await invoke_surface_async(query, expression="from result-set:w13-page", limit=2, offset=offset))
+            for offset in (0, 2, 4)
+        ]
+    assert [p["offset"] for p in pages] == [0, 2, 4]
+    assert [p["next_offset"] for p in pages] == [2, 4, None]
+    assert [ref for page in pages for ref in page["members"]] == [f"session:{sid}" for sid in ids]

@@ -816,22 +816,51 @@ def test_import_demo_wait_never_verifies_an_unfinished_ingest(
     assert "Demo archive verified" not in combined
 
 
-def test_import_wait_requires_demo(tmp_path: Path) -> None:
-    """Waiting is tied to the deterministic demo verifier, not arbitrary imports."""
+@pytest.mark.parametrize(("receipt", "exit_ok"), [({"outcome": "completed"}, True), ({"outcome": "degraded"}, False)])
+def test_import_wait_follows_a_path_ingest_to_its_receipt(
+    workspace_env: dict[str, Path], tmp_path: Path, receipt: dict[str, object], exit_ok: bool
+) -> None:
+    """``import PATH --wait`` follows the accepted ingest, the same wait ``--demo`` uses.
+
+    ``--wait`` used to refuse without ``--demo``, which sent a caller who only
+    wanted to know the import finished to status polling. The demo-only
+    augmentation still runs only for ``--demo``.
+
+    Anti-vacuity: restore the ``--demo``-only refusal and the completed row
+    exits non-zero before the daemon is asked anything.
+    """
     from click.testing import CliRunner
 
     from polylogue.cli.click_app import cli
 
-    source = tmp_path / "source.jsonl"
-    source.write_text('{"type":"session"}\n')
+    del workspace_env
+    source = _write_supported_source(tmp_path / "source.jsonl")
+    events: list[str] = []
 
-    runner = CliRunner()
-    result = runner.invoke(cli, ["import", str(source), "--wait"])
+    def fake_submit(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config, payload
+        events.append(operation)
+        return _accepted_envelope("import-path")
 
-    assert result.exit_code != 0
-    combined = (result.output + (result.stderr if result.stderr_bytes else "")).lower()
-    assert "--wait" in combined
-    assert "--demo" in combined
+    def fake_follow(config: Any, operation: str, accepted: Any, *, wait_s: float) -> dict[str, object]:
+        del config, accepted
+        events.append(f"wait:{operation}:{wait_s:g}")
+        return receipt
+
+    def fake_augment(config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
+        del config, payload
+        events.append(operation)
+        return {"outcome": "completed", "effect": "committed", "sequence": 1}
+
+    with (
+        patch("polylogue.cli.operation_kernel.configured_accepted_operation", new=fake_submit),
+        patch("polylogue.cli.operation_kernel.configured_follow_operation", new=fake_follow),
+        patch("polylogue.cli.operation_kernel.configured_mutation_operation", new=fake_augment),
+    ):
+        result = CliRunner().invoke(cli, ["import", str(source), "--wait", "--timeout", "7"])
+
+    assert (result.exit_code == 0) is exit_ok, result.output
+    assert events == ["ingest", "wait:ingest:7"]
 
 
 def test_import_demo_with_overlays_requires_wait() -> None:

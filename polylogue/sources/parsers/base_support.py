@@ -673,6 +673,16 @@ def content_blocks_from_segments(
         "input_image",
     }
     for part_ordinal, seg in enumerate(content):
+        if (
+            isinstance(seg, dict)
+            and seg.get("type") == "tool_use"
+            and not (seg.get("name") or seg.get("id") or (isinstance(seg.get("input"), dict) and seg["input"]))
+        ):
+            if admission is not None:
+                admission.refusal(
+                    AdmissionUnit.PART, part_offset + part_ordinal, "tool_use", AdmissionRefusalReason.MALFORMED
+                )
+            continue
         if admission is not None:
             if isinstance(seg, str):
                 admission.materialized(AdmissionUnit.PART, part_offset + part_ordinal, "text")

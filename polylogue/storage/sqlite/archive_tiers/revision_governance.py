@@ -4467,7 +4467,7 @@ def _supersede_deferred_cas_evidence(
           AND origin IS ?
           AND source_path IS ?
           AND source_index IS ?
-          AND artifact_kind IN (?, ?)
+          AND artifact_kind = ?
           AND support_status = ?
         LIMIT 1
         """,
@@ -4477,7 +4477,6 @@ def _supersede_deferred_cas_evidence(
             source_path,
             source_index,
             RawFailureEvidenceKind.DEFERRED_CAS_FRONTIER.value,
-            RawFailureEvidenceKind.DEFERRED_CODEX_CAS_FRONTIER.value,
             RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
         ),
     ).fetchone()

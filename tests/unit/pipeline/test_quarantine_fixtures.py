@@ -41,6 +41,7 @@ from polylogue.storage.blob_store import get_blob_store
 from polylogue.storage.raw.artifacts import RawIngestArtifactState
 from polylogue.storage.raw.models import RawSessionState
 from polylogue.storage.runtime import RawSessionRecord
+from tests.infra.storage_records import admit_raw_record
 
 pytestmark = pytest.mark.uses_real_clock("Quarantine-fixture acquired_at is opaque metadata for the test corpus.")
 
@@ -292,7 +293,7 @@ async def test_quarantine_state_round_trip_through_mark_raw_parsed(tmp_path: Pat
 
     backend = SQLiteBackend(db_path=tmp_path / "archive.db")
     try:
-        await backend.save_raw_session(record)
+        await admit_raw_record(backend, record)
         await backend.mark_raw_parsed(record.raw_id, error=result.error)
 
         stored = await backend.get_raw_session(record.raw_id)
@@ -340,7 +341,7 @@ async def test_validation_flow_persists_decode_quarantine_state(tmp_path: Path) 
     backend = SQLiteBackend(db_path=tmp_path / "archive.db")
     try:
         for record, _expected_error in cases:
-            await backend.save_raw_session(record)
+            await admit_raw_record(backend, record)
 
         result = await validate_raw_ids(
             repository=backend,

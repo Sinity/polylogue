@@ -547,7 +547,7 @@ def iter_codex_state_parts(
                             successor = next(chunks[field], None)
                             yield CodexStatePart(
                                 thread_id,
-                                f"{item_id}:{source_rowid}:{field}:{offset}",
+                                f"{item_id}:{field}:{offset}",
                                 "text_chunk",
                                 {
                                     "record_type": state_kind,

@@ -13,9 +13,11 @@ from polylogue.core.enums import ArtifactSupportStatus, Provider
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import ArtifactObservationRecord, RawSessionRecord
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.raw_admission import plan_raw_admission
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.queries.artifacts import save_artifact_observation
-from polylogue.storage.sqlite.queries.raw_writes import save_raw_session
+from polylogue.storage.sqlite.queries.raw_writes import execute_raw_admission_plan_async
+from tests.infra.storage_records import raw_admission_request
 
 
 @pytest.mark.asyncio
@@ -42,16 +44,20 @@ async def test_hook_artifact_materializes_event_rows(
     monkeypatch.setattr("polylogue.storage.sqlite.queries.artifacts.get_blob_store", lambda: store)
 
     async with aiosqlite.connect(source_db) as conn:
-        await save_raw_session(
+        await execute_raw_admission_plan_async(
             conn,
-            RawSessionRecord(
-                raw_id=blob_hash,
-                blob_hash=blob_hash,
-                source_name="claude-code",
-                source_path="/hooks/claude-code-session-1.jsonl",
-                source_index=0,
-                blob_size=blob_size,
-                acquired_at="2026-07-10T10:00:02+00:00",
+            plan_raw_admission(
+                raw_admission_request(
+                    RawSessionRecord(
+                        raw_id=blob_hash,
+                        blob_hash=blob_hash,
+                        source_name="claude-code",
+                        source_path="/hooks/claude-code-session-1.jsonl",
+                        source_index=0,
+                        blob_size=blob_size,
+                        acquired_at="2026-07-10T10:00:02+00:00",
+                    )
+                )
             ),
             0,
         )

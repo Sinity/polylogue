@@ -83,11 +83,12 @@ def run_machine_entry(
 ) -> None:
     """Run the CLI, emitting JSON machine errors when requested."""
     from polylogue.cli.operation_kernel import OperationUnavailableError
-    from polylogue.cli.shared.helper_support import DaemonRequiredError
+    from polylogue.cli.shared.helper_support import DaemonRequiredError, OperationIndeterminateRefusal
     from polylogue.cli.shared.machine_errors import (
         error_archive_writer_ownership,
         error_daemon_required,
         error_invalid_arguments,
+        error_operation_indeterminate,
         error_runtime,
         extract_command,
         wants_json,
@@ -161,6 +162,16 @@ def run_machine_entry(
             command=command,
             operation=exc.operation,
             archive_root=exc.archive_root,
+        ).emit(exit_code=exc.exit_code)
+    except OperationIndeterminateRefusal as exc:
+        # Before ``ClickException``: ``runtime_error`` would read as an
+        # ordinary failure a client may retry, and this write may have applied.
+        error_operation_indeterminate(
+            exc.format_message(),
+            command=command,
+            operation=exc.operation,
+            recovery=exc.recovery,
+            request_id=exc.request_id,
         ).emit(exit_code=exc.exit_code)
     except OperationUnavailableError as exc:
         from polylogue.cli.render.outcome import FAILED_READ_EXIT_CODE

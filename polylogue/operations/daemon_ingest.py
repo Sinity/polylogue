@@ -9,7 +9,7 @@ import sqlite3
 import tempfile
 from collections.abc import Callable
 from contextlib import closing
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from time import monotonic, time
 from typing import TypeVar
@@ -60,9 +60,14 @@ from polylogue.operations.mutation_transaction import (
 )
 from polylogue.operations.operation_context import OperationContext, PinnedOperationRead, open_operation_read
 from polylogue.sources.origin_specs import retained_enumeration_fingerprint
-from polylogue.sources.revision_backfill import parse_retained_raw_sessions
+from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.revision_backfill import enrich_sessions_from_archive, parse_retained_raw_sessions
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
-from polylogue.storage.blob_publication import ArchiveBlobPublisher, publication_refused
+from polylogue.storage.blob_publication import (
+    ArchiveBlobPublisher,
+    consume_blob_publication_receipt,
+    publication_refused,
+)
 from polylogue.storage.ingest_governance import (
     CensusPublication,
     CohortMembershipRefusalError,
@@ -97,16 +102,61 @@ from polylogue.storage.sqlite.connection_profile import open_isolated_write_conn
 _T = TypeVar("_T")
 
 
-def _excised_member(
-    connection: sqlite3.Connection, publisher: ArchiveBlobPublisher, prepared: PreparedSourceRecord
-) -> bool:
-    """Whether a prepared container member's bytes are excised."""
-    from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+@dataclass(slots=True)
+class _ExcisedRecords:
+    """Records of one source item the source tier refused as durably excised.
 
-    blob_hash = prepared.record.blob_hash
-    if prepared.member.entry_ordinal is None or not blob_hash:
-        return False
-    return publication_refused(publisher, blob_hash) or is_blob_hash_excised(connection, bytes.fromhex(blob_hash))
+    An excised record never becomes a raw member, so it leaves the item's
+    record denominator. A ZIP member whose every record was excised keeps its
+    central-directory ordinal accounted as a refused disposition.
+    """
+
+    coordinates: set[str] = field(default_factory=set)
+    members: dict[int, str] = field(default_factory=dict)
+
+    def add(self, prepared: PreparedSourceRecord) -> None:
+        self.coordinates.add(prepared.member.record_coordinate)
+        if prepared.member.entry_ordinal is not None:
+            self.members[prepared.member.entry_ordinal] = str(prepared.record.source_path)
+
+    def record_member_dispositions(
+        self, connection: sqlite3.Connection, *, source_generation_id: str, source_item_id: str, observed_at_ms: int
+    ) -> None:
+        from polylogue.storage.sqlite.archive_tiers.source_items import (
+            SourceItemMemberDisposition,
+            record_source_item_member_disposition,
+        )
+
+        for ordinal, member_name in sorted(self.members.items()):
+            admitted = connection.execute(
+                "SELECT 1 FROM source_item_raw_members m JOIN raw_container_coordinates c ON c.raw_id=m.raw_id "
+                "WHERE m.source_generation_id=? AND m.source_item_id=? AND c.entry_ordinal=?",
+                (source_generation_id, source_item_id, ordinal),
+            ).fetchone()
+            if admitted is None:
+                record_source_item_member_disposition(
+                    connection,
+                    source_generation_id=source_generation_id,
+                    source_item_id=source_item_id,
+                    entry_ordinal=ordinal,
+                    member_name=member_name,
+                    disposition=SourceItemMemberDisposition.REFUSED,
+                    diagnostic="content excised",
+                    observed_at_ms=observed_at_ms,
+                )
+
+
+def _parse_assembled_retained_raw(archive: ArchiveStore, raw_id: str) -> list[ParsedSession]:
+    """Parse one retained raw and apply its provider's session assembly.
+
+    The same composition the live writer uses
+    (``LiveBatchProcessor._parse_retained_raw_sessions``), so a session
+    admitted through this operation carries the same assembled title and
+    enrichment as one admitted by the watcher or a from-empty build.
+    """
+    sessions = parse_retained_raw_sessions(archive, raw_id)
+    provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+    return enrich_sessions_from_archive(archive, provider, source_path, sessions)
 
 
 class IngestStoppedError(RuntimeError):
@@ -662,6 +712,7 @@ class IngestExecution:
         member_ordinals: set[int] = set()
         member_count: int | None = None
         published_terminal = False
+        excised = _ExcisedRecords()
         try:
             current = await self.runtime.compute_phase(lambda: next(iterator, None))
             while current is not None:
@@ -683,6 +734,7 @@ class IngestExecution:
                     acquired_at_ms,
                     tuple(sorted(member_ordinals)) if following is None else None,
                     member_count if following is None else None,
+                    excised=excised,
                 )
                 published_terminal = following is None
                 current = following
@@ -704,6 +756,8 @@ class IngestExecution:
         observed_at_ms: int,
         completed_member_ordinals: tuple[int, ...] | None = None,
         member_count: int | None = None,
+        *,
+        excised: _ExcisedRecords,
     ) -> None:
         def publish(connection: sqlite3.Connection) -> None:
             if isinstance(prepared, PreparedSourceMemberDisposition):
@@ -722,41 +776,31 @@ class IngestExecution:
                     diagnostic=prepared.diagnostic,
                     observed_at_ms=observed_at_ms,
                 )
-            elif prepared is not None and _excised_member(connection, self.publisher, prepared):
-                # A container member whose bytes are excised -- refused by
-                # this page's flush, or excised since -- is a permanent skip
-                # of that one member, never an abort of the accepted ingest.
-                from polylogue.storage.sqlite.archive_tiers.source_items import (
-                    SourceItemMemberDisposition,
-                    record_source_item_member_disposition,
-                )
-
-                assert prepared.member.entry_ordinal is not None
-                record_source_item_member_disposition(
+            elif prepared is not None:
+                try:
+                    execute_source_item_admission(connection, prepared.admission, prepared.member)
+                except ContentExcisedError:
+                    # The archive forgets on purpose: durably excised bytes are
+                    # a skip, not a failed ingest. The admission savepoint left
+                    # no raw row; release the publication reservation so blob
+                    # GC reclaims the staged bytes, as the live batch does.
+                    request = prepared.admission.request
+                    consume_blob_publication_receipt(connection, request.blob_publication_receipt_id, request.blob_hash)
+                    excised.add(prepared)
+                    emit("ingest.excised_record.skipped", raw_id=prepared.admission.raw_id, outcome="skipped")
+            if completed_coordinates is not None:
+                excised.record_member_dispositions(
                     connection,
-                    source_generation_id=prepared.member.source_generation_id,
-                    source_item_id=prepared.member.source_item_id,
-                    entry_ordinal=prepared.member.entry_ordinal,
-                    member_name=prepared.record.source_path,
-                    disposition=SourceItemMemberDisposition.REFUSED,
-                    diagnostic="content_excised",
+                    source_generation_id=generation.source_generation_id,
+                    source_item_id=item.source_item_id,
                     observed_at_ms=observed_at_ms,
                 )
-                emit(
-                    "ingest.accepted_input.content_excised",
-                    outcome="skipped",
-                    reason="content_excised",
-                    blob_hash=prepared.record.blob_hash,
-                )
-            elif prepared is not None:
-                execute_source_item_admission(connection, prepared.admission, prepared.member)
-            if completed_coordinates is not None:
                 complete_source_item_enumeration(
                     connection,
                     source_generation_id=generation.source_generation_id,
                     source_item_id=item.source_item_id,
                     enumeration_fingerprint=generation.enumeration_fingerprint,
-                    record_coordinates=completed_coordinates,
+                    record_coordinates=tuple(c for c in completed_coordinates if c not in excised.coordinates),
                     enumerated_at_ms=observed_at_ms,
                     member_ordinals=completed_member_ordinals,
                     member_count=member_count,
@@ -864,7 +908,7 @@ class IngestExecution:
                             logical_source_key=cohort_key,
                             source_generation_id=generation_id,
                             parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-                            parse_retained_raw=parse_retained_raw_sessions,
+                            parse_retained_raw=_parse_assembled_retained_raw,
                             acquired_at_ms=cohort_observed_at_ms,
                         )
 

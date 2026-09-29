@@ -113,7 +113,7 @@ from polylogue.archive.semantic.pricing import (
     model_cohort_key,
 )
 from polylogue.archive.semantic.subscription_pricing import compute_credit_cost, credits_to_usd
-from polylogue.archive.session_revision_membership import MembershipClassification, MembershipDecision
+from polylogue.archive.session_revision_membership import MembershipClassification
 from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
@@ -221,7 +221,6 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     finalize_raw_parse_state,
     mark_raw_parse_failed,
     mark_raw_parse_succeeded,
-    membership_decisions_for_classification,
     open_raw_revision_material,
     pending_raw_revision_logical_keys,
     promote_reconstructed_legacy_append_revisions,
@@ -251,7 +250,6 @@ from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     record_raw_failure_evidence,
     release_provisional_full_revisions,
     replace_raw_membership_census,
-    require_frozen_membership_authority,
     write_parsed_for_retained_raw,
     write_parsed_for_retained_raw_result,
     write_raw_and_parsed,
@@ -719,7 +717,6 @@ class ArchiveStore:
         read_timeout: float = 5.0,
         owned_inactive_generation: tuple[str, str] | None = None,
         source_tier_acquisition: bool = False,
-        frozen_source_validation: bool = False,
         frozen_index_path: Path | None = None,
         opened_index_fd: int | None = None,
         validate_index_layout: bool = True,
@@ -731,8 +728,6 @@ class ArchiveStore:
             raise ValueError("index-layout validation may only be waived for read-only archive access")
         if source_tier_acquisition and read_only:
             raise ValueError("source_tier_acquisition mode is a writer mode; read_only must be False")
-        if frozen_source_validation and (not read_only or owned_inactive_generation is not None):
-            raise ValueError("frozen source validation requires a read-only active archive")
         if frozen_index_path is not None and not read_only:
             raise ValueError("a pinned index path is valid only for read-only archive access")
         if opened_index_fd is not None and not read_only:
@@ -747,7 +742,6 @@ class ArchiveStore:
         self._active_cold_build_engaged = False
         self._source_tier_acquisition = source_tier_acquisition
         self._owned_inactive_generation = owned_inactive_generation
-        self._frozen_source_validation = frozen_source_validation
         self._frozen_index_path = frozen_index_path
         self._opened_index_fd = opened_index_fd
         self._pinned_read = frozen_index_path is not None
@@ -760,9 +754,7 @@ class ArchiveStore:
         # single writer and the durable tiers are exactly as protected as on
         # an ordinary live write.
         self._durable_writer = durable_writer
-        self._inactive_candidate_durable_read_only = (
-            owned_inactive_generation is not None and not durable_writer
-        ) or frozen_source_validation
+        self._inactive_candidate_durable_read_only = owned_inactive_generation is not None and not durable_writer
         # An inactive candidate is physically rooted below the generation
         # lifecycle directory, but its read-through durable members belong to
         # the configured archive.  Bind the write lease to that authoritative
@@ -877,7 +869,7 @@ class ArchiveStore:
                 # ruinous on a partially built one.
                 skip_runtime_index_ensure=defer_secondary_indexes,
             )
-            if not read_only and not source_tier_acquisition and not frozen_source_validation:
+            if not read_only and not source_tier_acquisition:
                 # Read once, before this store writes anything: it is the
                 # proof that licenses fresh-build writes, and every later
                 # read of it would be answering about this writer's own rows.
@@ -987,21 +979,6 @@ class ArchiveStore:
             from polylogue.storage.archive_identity import resolve_active_index_path
 
             self.index_db_path = resolve_active_index_path(archive_root)
-        if self._frozen_source_validation:
-            # Candidate admission derives every decision from source.db and
-            # frozen blob bytes. Requiring an index handle here would make the
-            # derived tier being rebuilt a prerequisite for its own rebuild.
-            self._conn = cast(
-                sqlite3.Connection,
-                _SourceTierOnlyIndexConnection("frozen source validation"),
-            )
-            self._user_tier_attached = False
-            self._tags_relation = "session_tags"
-            self._blob_publisher = _InactiveCandidateBlobPublisher(
-                self.source_db_path,
-                self.archive_root / "blob",
-            )
-            return
         if initialize:
             initialize_active_archive_root(archive_root)
         if read_only:
@@ -1253,22 +1230,6 @@ class ArchiveStore:
         return cls(archive_root, initialize=False, read_only=False, source_tier_acquisition=True)
 
     @classmethod
-    def open_frozen_source_validation(
-        cls,
-        archive_root: Path,
-        *,
-        active_index_path: Path | None = None,
-    ) -> ArchiveStore:
-        """Open the live tiers without repairing or mutating any durable or pointer state."""
-        return cls(
-            archive_root,
-            initialize=False,
-            read_only=True,
-            frozen_source_validation=True,
-            frozen_index_path=active_index_path,
-        )
-
-    @classmethod
     def open_owned_inactive_generation(
         cls,
         archive_root: Path,
@@ -1471,9 +1432,9 @@ class ArchiveStore:
     def index_connection(self) -> sqlite3.Connection | None:
         """The index-tier handle, or ``None`` while the derived tier is closed.
 
-        Acquire-only ingestion and frozen source validation hold no index
-        handle at all, so a derived projection asks here rather than writing
-        through a stale-schema connection.
+        Acquire-only ingestion holds no index handle at all, so a derived
+        projection asks here rather than writing through a stale-schema
+        connection.
         """
         if isinstance(self._conn, _SourceTierOnlyIndexConnection):
             return None
@@ -2256,19 +2217,6 @@ class ArchiveStore:
 
     def classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key: str) -> RevisionReplayPlan:
         return classify_raw_revision_cohort_for_frozen_candidate(self, logical_source_key)
-
-    def require_frozen_membership_authority(
-        self,
-        logical_source_key: str,
-        classification: MembershipClassification,
-        decisions: dict[str, MembershipDecision] | None = None,
-    ) -> None:
-        require_frozen_membership_authority(
-            self,
-            logical_source_key,
-            classification,
-            decisions if decisions is not None else membership_decisions_for_classification(classification),
-        )
 
     def classify_raw_revision_cohort_for_live_watch(
         self,

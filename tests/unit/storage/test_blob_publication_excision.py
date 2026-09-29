@@ -481,39 +481,3 @@ def test_membership_and_single_retained_writes_hold_the_publisher_slot(tmp_path:
         monkeypatch.undo()
 
     assert seen == [False, False]
-
-
-def test_an_excised_container_member_is_recognized_for_a_skip(tmp_path: Path) -> None:
-    """A ZIP member whose bytes are excised is skipped, never admitted.
-
-    Anti-vacuity (Codex P1, #5696): check only the top-level input and the
-    member reaches admission, whose blob-ref write raises and aborts the
-    accepted ingest on every retry.
-    """
-    from types import SimpleNamespace
-
-    from polylogue.operations.daemon_ingest import _excised_member
-
-    payload = b"excised zip member"
-    root = tmp_path / "archive"
-    with ArchiveStore(root, initialize=True, read_only=False):
-        pass
-    with sqlite3.connect(root / "source.db") as source:
-        record_excised_blob_hash(
-            source,
-            blob_hash=hashlib.sha256(payload).digest(),
-            reason="synthetic excision",
-            actor="test",
-            excised_at_ms=1,
-        )
-    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
-
-    def prepared(entry_ordinal: int | None) -> object:
-        return SimpleNamespace(
-            record=SimpleNamespace(blob_hash=hashlib.sha256(payload).hexdigest()),
-            member=SimpleNamespace(entry_ordinal=entry_ordinal),
-        )
-
-    with sqlite3.connect(root / "source.db") as source:
-        assert _excised_member(source, publisher, prepared(3)) is True  # type: ignore[arg-type]
-        assert _excised_member(source, publisher, prepared(None)) is False  # type: ignore[arg-type]
