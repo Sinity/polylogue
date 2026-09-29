@@ -136,7 +136,7 @@ def test_proof_daemon_runs_in_an_isolated_home(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setenv("HOME", str(host))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(host / ".config"))
     monkeypatch.setenv("POLYLOGUE_CONFIG", str(host / "polylogue.toml"))
-    monkeypatch.setenv("POLYLOGUE_HERMES_ROOT", str(host / ".hermes"))
+    monkeypatch.setenv("HERMES_HOME", str(host / ".hermes"))
     artifact_root = tmp_path / "artifacts"
 
     environment = dev_loop_service._proof_environment(
@@ -153,7 +153,7 @@ def test_proof_daemon_runs_in_an_isolated_home(tmp_path: Path, monkeypatch: pyte
     assert environment["POLYLOGUE_CONFIG"] != str(host / "polylogue.toml")
     assert Path(environment["POLYLOGUE_CONFIG"]).is_relative_to(home)
     assert not Path(environment["POLYLOGUE_CONFIG"]).exists()
-    assert "POLYLOGUE_HERMES_ROOT" not in environment
+    assert "HERMES_HOME" not in environment
     assert environment["POLYLOGUE_ARCHIVE_ROOT"] == str(tmp_path / "archive")
 
 

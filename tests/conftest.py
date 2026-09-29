@@ -725,6 +725,9 @@ def _clear_polylogue_env(
     for key in (
         # Prevent tests from hitting external Voyage API
         "VOYAGE_API_KEY",
+        # Hermes's own runtime-root variable; inherited, it points source
+        # discovery at the operator's real Hermes state.
+        "HERMES_HOME",
         "XDG_DATA_HOME",
         "XDG_STATE_HOME",
         "XDG_CONFIG_HOME",
@@ -1007,54 +1010,6 @@ def _bootstrap_archive_template_root(
         yield
     finally:
         register_bootstrap_template_root(None)
-
-
-@pytest.fixture
-def mock_drive_credentials(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, object]:
-    """
-    Mock Google Drive OAuth credentials for testing.
-
-    Creates mock credentials.json and token.json files and sets up
-    environment variables to point to them.
-
-    Returns:
-        dict with paths: credentials_path, token_path, and MockCredentials instance
-    """
-    from tests.infra.drive_mocks import MockCredentials
-
-    creds_dir = tmp_path / "drive_creds"
-    creds_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create mock credentials.json (OAuth client config)
-    creds_path = creds_dir / "credentials.json"
-    creds_path.write_text(
-        json.dumps(
-            {
-                "installed": {
-                    "client_id": "mock_client_id.apps.googleusercontent.com",
-                    "client_secret": "mock_client_secret",
-                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                    "token_uri": "https://oauth2.googleapis.com/token",
-                    "redirect_uris": ["http://localhost"],
-                }
-            }
-        )
-    )
-
-    # Create mock token.json (OAuth access/refresh tokens)
-    token_path = creds_dir / "token.json"
-    mock_creds = MockCredentials()
-    token_path.write_text(mock_creds.to_json())
-
-    # Set environment variables
-    monkeypatch.setenv("POLYLOGUE_CREDENTIAL_PATH", str(creds_path))
-    monkeypatch.setenv("POLYLOGUE_TOKEN_PATH", str(token_path))
-
-    return {
-        "credentials_path": creds_path,
-        "token_path": token_path,
-        "mock_credentials": mock_creds,
-    }
 
 
 @pytest.fixture

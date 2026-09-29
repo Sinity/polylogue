@@ -27,7 +27,7 @@ def test_isolated_environment_disables_the_cwd_config_fallback(tmp_path: Path, m
     project_cwd = tmp_path / "checkout"
     project_cwd.mkdir()
     (project_cwd / "polylogue.toml").write_text(
-        '[sources.hermes]\nroot = "/an/operators/real/hermes"\n', encoding="utf-8"
+        '[maintenance]\nbackup_verify_tmpdir = "/an/operators/real/scratch"\n', encoding="utf-8"
     )
 
     env = isolated_home_environment({}, home=home)
@@ -37,4 +37,4 @@ def test_isolated_environment_disables_the_cwd_config_fallback(tmp_path: Path, m
     for key, value in env.items():
         monkeypatch.setenv(key, value)
     config = resolve_runtime_config()
-    assert str(config.source_paths.hermes) != "/an/operators/real/hermes"
+    assert config.backup_verify_tmpdir is None

@@ -79,7 +79,10 @@ class ChunkPositions:
                 "position": self.offset + ordinal,
                 "parent_message_position": self.position(message.parent_message_position),
                 "owner_coordinate": owner,
+                # The concatenation chooses its own leaf; a chunk's
+                # storage-default leaf marker does not survive into it.
                 "is_active_leaf": False,
+                "active_leaf_fallback": False,
             }
         )
 

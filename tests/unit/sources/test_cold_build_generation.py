@@ -27,14 +27,6 @@ from polylogue.maintenance.candidate_capacity import (
     InsufficientCapacityError,
     read_capacity_receipts,
 )
-from polylogue.maintenance.source_manifest_continuity import (
-    WANTED_SOURCE_RECEIPT_DIRNAME,
-    WANTED_SOURCE_RECEIPT_FILENAME,
-    SourceDeclaration,
-    SourceRole,
-    WantedSourceReceiptError,
-    write_wanted_source_receipt,
-)
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cold_build import (
@@ -1047,20 +1039,6 @@ def test_a_failed_capacity_observation_does_not_block_promotion(
     assert _active_session_count(tmp_path) == 1
 
 
-def _declare_sources(monkeypatch: pytest.MonkeyPatch, *roots: Path) -> tuple[SourceDeclaration, ...]:
-    """Build the historical wanted-source declarations for one test.
-
-    Manual wanted-source receipts are historical evidence the cold build still
-    validates when one is published; these tests write one directly.
-    """
-    declarations = tuple(
-        SourceDeclaration(f"configured-{position}", SourceRole.DIRECTORY, root, True)
-        for position, root in enumerate(roots)
-    )
-    del monkeypatch
-    return declarations
-
-
 def _declared_source_root(tmp_path: Path) -> Path:
     root = tmp_path / "declared"
     root.mkdir()
@@ -1074,11 +1052,7 @@ def _fresh_archive_root(tmp_path: Path) -> Path:
     return archive
 
 
-def _receipt_path(archive_root: Path) -> Path:
-    return archive_root / MAINTENANCE_STATE_DIRNAME / WANTED_SOURCE_RECEIPT_DIRNAME / WANTED_SOURCE_RECEIPT_FILENAME
-
-
-def test_cold_build_captures_effective_source_without_manual_receipt(tmp_path: Path) -> None:
+def test_cold_build_captures_effective_source_baseline(tmp_path: Path) -> None:
     """Removing the production source capture leaves the accepted revision unbound."""
     archive = _fresh_archive_root(tmp_path)
     source_root = _declared_source_root(tmp_path)
@@ -1089,80 +1063,6 @@ def test_cold_build_captures_effective_source_without_manual_receipt(tmp_path: P
         assert generation.source_baseline.accepted[0].path == str(source_root / "one.jsonl")
         receipt = json.loads((generation.generation_root / "source-baseline.json").read_text())
         assert receipt["generation_id"] == generation.generation_id
-    finally:
-        generation.discard()
-
-
-def test_cold_build_refuses_a_tampered_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A published receipt is re-verified by the build, not trusted by presence.
-
-    Anti-vacuity: accepting the receipt on existence (or catching the
-    ``WantedSourceReceiptError`` and continuing) makes this red -- the edited
-    denominator authorizes a build whose conservation proof would then be
-    measured against a number nobody enumerated.
-    """
-    archive = _fresh_archive_root(tmp_path)
-    declarations = _declare_sources(monkeypatch, _declared_source_root(tmp_path))
-    write_wanted_source_receipt(archive, declarations)
-    receipt_path = _receipt_path(archive)
-    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
-    payload["item_count"] = int(payload["item_count"]) + 41
-    receipt_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-
-    with pytest.raises(WantedSourceReceiptError) as refusal:
-        ColdBuildGeneration.begin(
-            archive, reason="explicit cold build", sources=(WatchSource("fixture", tmp_path / "absent-source"),)
-        )
-
-    assert "denominators mismatch" in str(refusal.value)
-    assert list((archive / GENERATIONS_DIRNAME).glob("gen-*")) == []
-
-
-def test_a_frozen_receipt_authorizes_the_cold_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The authorized case still builds: the guard refuses defects, not work.
-
-    Anti-vacuity: a guard that refused whenever declarations exist -- or one
-    that re-enumerated the roots instead of reading the frozen receipt, which
-    would see the file added after the freeze -- makes this red.
-    """
-    source_root = _declared_source_root(tmp_path)
-    archive = _fresh_archive_root(tmp_path)
-    declarations = _declare_sources(monkeypatch, source_root)
-    receipt = write_wanted_source_receipt(archive, declarations)
-    assert receipt.item_count == 1
-    (source_root / "two.jsonl").write_bytes(_codex_session("declared-two", "later"))
-
-    generation = ColdBuildGeneration.begin(
-        archive, reason="explicit cold build", sources=(WatchSource("fixture", archive / "absent-source"),)
-    )
-    try:
-        assert generation.generation.state == "inactive"
-    finally:
-        generation.discard()
-
-
-def test_an_undeclared_denominator_still_builds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """No declared root means no receipt can exist, so requiring one is a deadlock.
-
-    ``build_wanted_source_receipt`` refuses an empty selection ("no source is
-    declared: the rebuild denominator would be empty"), so a strictly
-    unconditional receipt requirement would make every live-capture-only
-    archive permanently unbuildable -- the freeze route could never produce
-    the receipt the build demands.
-
-    Anti-vacuity: requiring a receipt regardless of the declarations makes
-    this red, and ``--freeze`` cannot make it green again.
-    """
-    archive = _fresh_archive_root(tmp_path)
-    _declare_sources(monkeypatch)
-    with pytest.raises(WantedSourceReceiptError):
-        write_wanted_source_receipt(archive, ())
-
-    generation = ColdBuildGeneration.begin(
-        archive, reason="empty active index generation", sources=(WatchSource("fixture", archive / "absent-source"),)
-    )
-    try:
-        assert generation.generation.state == "inactive"
     finally:
         generation.discard()
 

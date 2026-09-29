@@ -994,7 +994,13 @@ def prepare_jsonl_blob(
     classify_bundle_members: Callable[[Sequence[JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
-    """Parse and seal one source without transferring a parsed tree over IPC."""
+    """Parse and seal one source without transferring a parsed tree over IPC.
+
+    Every sealed session is admitted: the positive-conversational-evidence
+    rule (``require_positive_conversational_evidence``) runs here, before any
+    ``prepare_session``/``prepare_sessions`` callback, on every provider
+    branch. A caller consuming the artifact does not apply it again.
+    """
     directory = Path(shard_directory)
     directory.mkdir(parents=True, exist_ok=True)
     artifact_directory = attempt_directory if attempt_directory is not None else directory
@@ -1879,6 +1885,10 @@ def prepare_jsonl_blob(
                                 "unit_accounting": admitted.unit_accounting,
                             }
                         )
+                        if not require_positive_conversational_evidence(
+                            [session], provider=provider, source_path=source_path
+                        ):
+                            continue
                         if prepare_sessions is not None:
                             selected = prepare_sessions([session])
                             if len(selected) > 1:
@@ -1887,10 +1897,6 @@ def prepare_jsonl_blob(
                                 continue
                             session = selected[0]
                         elif prepare_session is not None:
-                            if not require_positive_conversational_evidence(
-                                [session], provider=provider, source_path=source_path
-                            ):
-                                continue
                             session = prepare_session(session)
                         session.content_hash = session_content_hash(session)
                         append_session_to_shard(shard_builder, session)
@@ -2014,14 +2020,11 @@ def prepare_jsonl_blob(
             after_hash = _source_digest(source)
             if before_hash != after_hash:
                 raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            sessions = require_positive_conversational_evidence(sessions, provider=provider, source_path=source_path)
             if prepare_sessions is not None:
                 sessions = prepare_sessions(sessions)
             elif prepare_session is not None:
-                sessions = [
-                    prepare_session(session)
-                    for session in sessions
-                    if require_positive_conversational_evidence([session], provider=provider, source_path=source_path)
-                ]
+                sessions = [prepare_session(session) for session in sessions]
             for session in sessions:
                 session.content_hash = session_content_hash(session)
             shard_path = prepare_session_shard(artifact_directory, sessions).path
@@ -2045,18 +2048,8 @@ def prepare_jsonl_blob(
             enrichment_index_path=enrichment_index_path,
             parsed_prefix_size=parse_prefix_size,
             resolved_provider=provider,
-            positive_evidence_filtered=stream_prefix is not None
-            or chatgpt_envelope is not None
-            or gemini_envelope is not None
-            or generic_envelope is not None
-            or hermes_envelope is not None
-            or design_envelope is not None
-            or claude_ai_envelope is not None
-            or drive_chunked is not None
-            or atif is not None
-            or otel is not None
-            or (grok_count is not None and classify_grok_export is not None)
-            or (prepare_sessions is None and prepare_session is not None),
+            # Every branch above admits its sessions before sealing.
+            positive_evidence_filtered=True,
             attempt_directory=attempt_directory,
         )
         sealed = True

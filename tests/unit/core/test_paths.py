@@ -286,6 +286,7 @@ class TestPathsPublicBoundary:
             "drive_token_path",
             "embeddings_db_path",
             "gemini_cli_path",
+            "hermes_home",
             "hermes_sessions_path",
             "hooks_sidecar_dir",
             "index_db_path",

@@ -17,9 +17,8 @@ from polylogue.sources.dispatch import parse_payload, require_positive_conversat
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.sources.parsers.claude import common as claude_common
 from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
-from polylogue.sources.prepared_message_sink import ClaudeChatEvidence, SqliteMessageStore
+from polylogue.sources.prepared_message_sink import ClaudeChatEvidence, SqliteMessageStore, normalize_active_branch
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
@@ -345,11 +344,13 @@ def test_sink_active_path_walk_starts_at_the_leaf_row(tmp_path: Path) -> None:
         ),
     ]
     messages[1] = messages[1].model_copy(update={"is_active_leaf": True})
-    resident = archive_tier_write._normalized_messages(list(messages))
+    resident = normalize_active_branch(list(messages))
     store = SqliteMessageStore(tmp_path / "scratch.db")
     sink = store.new_sink()
     sink.extend(messages)
     normalized = list(sink.normalize_active_path())
     store.close()
     assert [message.is_active_path for message in normalized] == [message.is_active_path for message in resident]
-    assert [message.is_active_path for message in resident] == [True, True, None, True]
+    # Only the leaf occurrence and its own parent chain: the later "b"
+    # (parent "x") is a different message that repeats the provider id.
+    assert [message.is_active_path for message in resident] == [True, True, None, None]

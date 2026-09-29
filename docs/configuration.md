@@ -165,7 +165,7 @@ configured Voyage key.
 
 | Class | Where it lives | Examples | Reload behavior |
 | --- | --- | --- | --- |
-| Static startup config | TOML/env/CLI | archive root, API host/port/token, browser-capture host/port/spool/origins | Restart `polylogued` after changing. |
+| Static startup config | TOML/env/CLI | archive root, API host/port/token, browser-capture host/port/origins | Restart `polylogued` after changing. |
 | Deployment policy | TOML/env/Nix/HM/systemd | remote-bind opt-in, auth requirements, systemd memory/IO limits, schema validation mode | Restart the managed service; policy is outside archive content hashes. |
 | Runtime mutable user state | `user.db` | tags, marks, saved views, workspaces, assertions, authored overlays | Mutated through CLI/API; not TOML and not source content. |
 | Provider/cost controls | TOML/env | `embedding.enabled`, `embedding.max_cost_usd`, `VOYAGE_API_KEY` | Embedding loops read the gate/cost controls; no provider call happens unless explicitly enabled and credentials are present. |
@@ -189,7 +189,6 @@ port = 8765
 allowed_origins = "chrome-extension://*"
 allow_remote = false
 # auth_token = "..."   # required for remote binding or web origins
-# spool_path = "/home/user/.local/share/polylogue/browser-capture"
 
 [embedding]
 enabled = false
@@ -328,11 +327,7 @@ A few keys not shown in the full example above, with their TOML path:
 | `daemon_client_mode` | `daemon.client_mode` | How the CLI/MCP client reaches the daemon: `auto` (default), or `off` to refuse daemon-served operations. |
 | `no_daemon` | `client.no_daemon` | Refuse daemon-served operations for one invocation; reads that require the daemon then fail. |
 | `debug_timing` | `ui.debug_timing` | Emit per-stage timing diagnostics in CLI output. |
-| `hermes_root` | `sources.hermes.root` | Runtime root watched for Hermes state, snapshots, NeMo Relay ATIF/ATOF artifacts, and verification evidence. Defaults to `~/.hermes`. |
-| `hook_sidecar_dir` | `sources.hook_sidecar_dir` | Directory for hook-event sidecar files consumed by the Claude Code/Codex hook harness. Defaults to `<archive_root>/hooks`, so a scratch/test `POLYLOGUE_ARCHIVE_ROOT` genuinely isolates its hook carriers from the real ones; set explicitly only if you need them somewhere other than the archive they belong to. |
-| `hook_provider` | `sources.hook_provider` | Force hook-event harness detection to `claude-code` or `codex` instead of sniffing the payload shape; unset auto-detects. |
 | `backup_verify_tmpdir` | `maintenance.backup_verify_tmpdir` | Scratch directory for backup-restore verification; defaults to the system temp dir when unset. |
-| `antigravity_language_server` | `sources.antigravity_language_server` | Path to an Antigravity language-server binary, when parsing Antigravity sessions needs it. |
 | `ingest_commit_batch_messages` | `sources.ingest_commit_batch_messages` | Messages per commit batch during ingest (default 8000). |
 | `ingest_parse_workers` | `POLYLOGUE_INGEST_PARSE_WORKERS` (env only) | Worker count for CPU-bound source parsing. Read from the environment; there is no TOML key. The default adapts to the interpreter — `min(16, cpus-2)` on a free-threaded build (the packaged daemon), `min(8, cpus-1)` under the GIL. Set to `1` to disable pooling. |
 | `live_full_ingest_workers` | `sources.live_full_ingest_workers` | Parallel workers for a live full-reingest pass (default 1). |
@@ -366,13 +361,13 @@ Common runtime overrides:
 | Variable | Config key | Description |
 |----------|------------|-------------|
 | `XDG_CONFIG_HOME` | path base | Base directory for `polylogue.toml` and Drive credentials. |
-| `XDG_DATA_HOME` | path base | Base directory for the archive, blob store, Drive cache, and browser-capture spool. |
+| `XDG_DATA_HOME` | path base | Base directory for the default archive root (and so its blob store and browser-capture spool) and the Drive cache. |
 | `XDG_CACHE_HOME` | path base | Base directory for cache/index output. |
 | `XDG_STATE_HOME` | path base | Base directory for OAuth token and runtime state. |
 | `POLYLOGUE_CONFIG` | config layer | Explicit user config path. |
 | `POLYLOGUE_SITE_CONFIG` | config layer | Explicit site config path; empty disables site config. |
 | `POLYLOGUE_ARCHIVE_ROOT` | `archive_root` | Override the archive root. |
-| `POLYLOGUE_HERMES_ROOT` | `hermes_root` | Override the Hermes runtime root watched by the daemon. |
+| `HERMES_HOME` | Hermes root | Hermes's own runtime root, watched by the daemon; defaults to `~/.hermes`. |
 | `POLYLOGUE_DAEMON_URL` | `daemon_url` | CLI/MCP client daemon base URL. |
 | `POLYLOGUE_API_HOST` / `POLYLOGUE_API_PORT` | `api_host` / `api_port` | Daemon HTTP API bind. |
 | `POLYLOGUE_API_AUTH_TOKEN` | `api_auth_token` | API bearer token; redacted in config output. |
@@ -381,15 +376,11 @@ Common runtime overrides:
 | `POLYLOGUE_BROWSER_CAPTURE_ALLOW_REMOTE` | `browser_capture_allow_remote` | Explicit remote-bind opt-in. |
 | `POLYLOGUE_BROWSER_CAPTURE_AUTH_TOKEN` | `browser_capture_auth_token` | Receiver bearer token; redacted. Auto-minted/loaded if unset. |
 | `POLYLOGUE_BROWSER_CAPTURE_ALLOW_NO_AUTH` | `browser_capture_allow_no_auth` | Explicit opt-out of the auto-minted receiver token. |
-| `POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH` | `browser_capture_spool_path` | Receiver spool override. |
 | `POLYLOGUE_FORCE_PLAIN` | `force_plain` | Force plain output. |
 | `POLYLOGUE_THEME` | `theme` | `auto`, `dark`, or `light`. |
 | `NO_COLOR` | `no_color` | Standard no-color request; any non-empty value makes CLI output ANSI-free/plain. |
 | `VOYAGE_API_KEY` | `voyage_api_key` | Voyage credential; redacted and spend-gated. |
 | `POLYLOGUE_DAEMON_ENABLE_EMBEDDINGS` | `embedding_enabled` | Enable daemon embedding convergence. |
-| `POLYLOGUE_CREDENTIAL_PATH` | Drive auth | OAuth client JSON path. |
-| `POLYLOGUE_TOKEN_PATH` | Drive auth | OAuth token path. |
-| `POLYLOGUE_HOOK_PROVIDER` | `hook_provider` | Force hook-harness detection to `claude-code`/`codex`. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS` | `daemon_parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `daemon_parse_stage_max_inflight_bytes` | In-flight raw-payload budget for the prefetch cache. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES` | `daemon_parse_stage_max_cached_tree_bytes` | Resident parsed-tree budget for the prefetch cache. |
@@ -456,9 +447,8 @@ For Gemini sessions via Google Drive:
 3. Run `polylogue ops auth` to complete OAuth flow
 
 Polylogue syncs the fixed `Google AI Studio` folder name used by Gemini exports.
-The `drive_credentials_path` and `drive_token_path` config keys override the
-default OAuth credential/token file locations under `$XDG_CONFIG_HOME` /
-`$XDG_STATE_HOME`.
+The OAuth client lives at `$XDG_CONFIG_HOME/polylogue/polylogue-credentials.json`
+and the token at `$XDG_STATE_HOME/polylogue/token.json`; no key relocates them.
 
 ## Observability
 

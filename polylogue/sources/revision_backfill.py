@@ -1232,11 +1232,10 @@ def prepare_retained_jsonl_artifact(
             # title enrichment needs the cohort's session IDs and is not a
             # bundle provider, so it remains on the cohort callback below.
             def finalize(sessions: list[ParsedSession]) -> list[ParsedSession]:
-                selected = require_positive_conversational_evidence(
-                    sessions, provider=provider, source_path=source_path
-                )
+                # ``prepare_jsonl_blob`` admits every session before it calls
+                # a finalizer, so this sees only admitted sessions.
                 normalized = [
-                    normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp) for session in selected
+                    normalize_session_timestamps(session, fallback_timestamp=fallback_timestamp) for session in sessions
                 ]
                 return _replay_safe_enrich_sessions(
                     provider=provider,

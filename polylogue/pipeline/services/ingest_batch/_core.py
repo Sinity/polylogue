@@ -15,15 +15,14 @@ import dataclasses
 import hashlib
 import io
 import json
-import pickle
 import re
 import sqlite3
 import time
 import unicodedata
 import uuid
-from collections import Counter
+from collections import Counter, deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, BrokenExecutor, Future, ProcessPoolExecutor, wait
 from contextlib import AsyncExitStack, closing
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -55,6 +54,7 @@ from polylogue.markers.preparation import (
 from polylogue.pipeline.ids import SIDECAR_BLOB_EVENT_TYPES, bound_session_content_hash, session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.ingest_outcomes import (
+    IngestAttemptDisposition,
     parser_defect_disposition,
     transient_error_disposition,
 )
@@ -2250,6 +2250,34 @@ def _iter_ingest_results_sync(
         )
 
 
+def _disposed_result(raw_id: str, error: str, disposition: IngestAttemptDisposition) -> IngestRecordResult:
+    return IngestRecordResult(
+        raw_id=raw_id,
+        error=error,
+        outcome_code=disposition.outcome_code,
+        retryable=disposition.retryable,
+        evidence_ref=disposition.evidence_ref,
+        remediation=disposition.remediation,
+        diagnostic=disposition.diagnostic,
+    )
+
+
+def _unattempted_result(
+    raw_id: str, reason: str, *, evidence_ref: str, deterministic: bool = False
+) -> IngestRecordResult:
+    """A raw the pool never ran.
+
+    Nothing of it executed, so an unavailable pool is retryable. A refusal
+    the same raw would meet again (its arguments cannot be sent to a worker)
+    is a defect, so it is not retried forever.
+    """
+    error = f"worker pool did not run this raw: {reason}"
+    disposition = (parser_defect_disposition if deterministic else transient_error_disposition)(
+        evidence_ref=evidence_ref, diagnostic=error
+    )
+    return _disposed_result(raw_id, error, disposition)
+
+
 def _iter_ingest_results_chunk(
     raw_artifacts: list[RawSessionRecord],
     *,
@@ -2259,7 +2287,16 @@ def _iter_ingest_results_chunk(
     progress: _WorkerProgress | None = None,
     force_process_pool: bool = False,
 ) -> Iterable[IngestRecordResult]:
-    """Process one chunk of raw_artifacts through the process pool."""
+    """Process one chunk of raw_artifacts, in-process or through the process pool.
+
+    The execution mode is chosen once, before anything is delivered, and never
+    changes afterwards. A pool that cannot accept a raw yields a typed result
+    for that raw instead of replaying the chunk inline: an inline replay would
+    deliver already-delivered raws a second time and run work that asked for
+    process isolation inside the coordinator. A pool that broke (a worker
+    died) is replaced for raws it never accepted, which keeps the same
+    isolation for them. Every raw of the chunk yields exactly one result.
+    """
     if worker_count <= 1 and not force_process_pool:
         for raw_record in raw_artifacts:
             if progress is not None:
@@ -2271,28 +2308,88 @@ def _iter_ingest_results_chunk(
                 progress.completed_raw_count += 1
                 progress.in_flight_raw_ids.clear()
         return
-    executor = None
+    raw_iter = iter(raw_artifacts)
+    futures: dict[Future[IngestRecordResult], str] = {}
+    # The pool each future ran on, and for a pool that broke, how many raws it
+    # held at the break: one is attributable to that raw, several are not.
+    future_pools: dict[Future[IngestRecordResult], object] = {}
+    broken_cohorts: dict[object, int] = {}
+    unattempted: deque[IngestRecordResult] = deque()
+    executor: Any = None
     stalled = False
+
+    def settle_unattempted() -> Iterable[IngestRecordResult]:
+        while unattempted:
+            result = unattempted.popleft()
+            if progress is not None:
+                progress.completed_raw_count += 1
+            yield result
+
+    def refuse_remaining(reason: str, *, evidence_ref: str) -> None:
+        for raw_record in raw_iter:
+            unattempted.append(_unattempted_result(raw_record.raw_id, reason, evidence_ref=evidence_ref))
+
+    def shut_down(pool: Any, *, wait_for_workers: bool) -> None:
+        shutdown = getattr(pool, "shutdown", None)
+        if not callable(shutdown):
+            return
+        try:
+            shutdown(wait=wait_for_workers, cancel_futures=True)
+        except TypeError:
+            # Small test doubles may not expose ``cancel_futures``.
+            shutdown(wait=wait_for_workers)
+
     try:
-        executor = process_pool_executor(max_workers=max(1, worker_count))
-        raw_iter = iter(raw_artifacts)
-        futures: dict[Future[IngestRecordResult], str] = {}
+        try:
+            executor = process_pool_executor(max_workers=max(1, worker_count))
+        except Exception as exc:
+            refuse_remaining(
+                f"process pool could not start: {type(exc).__name__}: {exc}",
+                evidence_ref=f"worker:pool_start:{type(exc).__name__}",
+            )
+            yield from settle_unattempted()
+            return
         max_in_flight = max(1, worker_count)
 
-        def submit_next() -> bool:
+        def submit(raw_record: RawSessionRecord) -> Future[IngestRecordResult]:
+            nonlocal executor
             try:
-                raw_record = next(raw_iter)
-            except StopIteration:
-                return False
-            future = executor.submit(_run_ingest_record, raw_record, request)
-            futures[future] = raw_record.raw_id
-            if progress is not None:
-                progress.in_flight_raw_ids[:] = list(futures.values())
-            return True
+                return cast("Future[IngestRecordResult]", executor.submit(_run_ingest_record, raw_record, request))
+            except BrokenExecutor:
+                # The pool lost a worker before accepting this raw, so the raw
+                # is proven undelivered: run it on a fresh pool, never inline.
+                broken = executor
+                executor = process_pool_executor(max_workers=max(1, worker_count))
+                shut_down(broken, wait_for_workers=False)
+                return cast("Future[IngestRecordResult]", executor.submit(_run_ingest_record, raw_record, request))
+
+        def submit_next() -> bool:
+            for raw_record in raw_iter:
+                try:
+                    future = submit(raw_record)
+                except Exception as exc:
+                    unattempted.append(
+                        _unattempted_result(
+                            raw_record.raw_id,
+                            f"submission failed: {type(exc).__name__}: {exc}",
+                            evidence_ref=f"worker:submit:{type(exc).__name__}",
+                            # A pool that is shut down or broken is not this
+                            # raw's doing; anything else refuses the raw itself.
+                            deterministic=not isinstance(exc, (BrokenExecutor, RuntimeError)),
+                        )
+                    )
+                    continue
+                futures[future] = raw_record.raw_id
+                future_pools[future] = executor
+                if progress is not None:
+                    progress.in_flight_raw_ids[:] = list(futures.values())
+                return True
+            return False
 
         for _ in range(max_in_flight):
             if not submit_next():
                 break
+        yield from settle_unattempted()
         last_progress_at = time.monotonic()
         while futures:
             remaining_deadline = _INGEST_RESULT_PROGRESS_DEADLINE_S - (time.monotonic() - last_progress_at)
@@ -2321,24 +2418,19 @@ def _iter_ingest_results_chunk(
                         for future, raw_id in unfinished:
                             future.cancel()
                             stall_error = "worker progress deadline exceeded; retryable stalled/refused result"
-                            stall_disposition = transient_error_disposition(
-                                evidence_ref="worker:progress_deadline",
-                                diagnostic=stall_error,
-                            )
-                            yield IngestRecordResult(
-                                raw_id=raw_id,
-                                error=stall_error,
-                                # polylogue-u1ww0: without an explicit
-                                # disposition this refusal inherited the
-                                # dataclass default and was persisted as a
-                                # non-retryable success.
-                                outcome_code=stall_disposition.outcome_code,
-                                retryable=stall_disposition.retryable,
-                                evidence_ref=stall_disposition.evidence_ref,
-                                remediation=stall_disposition.remediation,
-                                diagnostic=stall_disposition.diagnostic,
+                            # polylogue-u1ww0: without an explicit disposition
+                            # this refusal inherited the dataclass default and
+                            # was persisted as a non-retryable success.
+                            yield _disposed_result(
+                                raw_id,
+                                stall_error,
+                                transient_error_disposition(
+                                    evidence_ref="worker:progress_deadline",
+                                    diagnostic=stall_error,
+                                ),
                             )
                         futures.clear()
+                        future_pools.clear()
                         # ``Future.cancel()`` cannot stop a task that is already
                         # executing in a worker process, and neither can
                         # ``shutdown(cancel_futures=True)``. Without an explicit
@@ -2353,57 +2445,62 @@ def _iter_ingest_results_chunk(
                             # snapshot would make a settled batch look as if
                             # its source cursor were still in flight.
                             progress.in_flight_raw_ids.clear()
+                        # Raws not yet submitted never ran; they are refused
+                        # the same way instead of vanishing from the pass.
+                        refuse_remaining(
+                            "the pool was terminated after a progress stall",
+                            evidence_ref="worker:progress_deadline",
+                        )
+                        yield from settle_unattempted()
                         continue
                 else:
                     continue
             last_progress_at = time.monotonic()
             for future in done:
                 raw_id = futures.pop(future)
+                pool = future_pools.pop(future, None)
                 if progress is not None:
                     progress.in_flight_raw_ids[:] = list(futures.values())
                 try:
                     result = future.result()
-                except Exception as exc:
-                    worker_disposition = parser_defect_disposition(
-                        evidence_ref=f"worker:{type(exc).__name__}",
-                        diagnostic=str(exc),
+                except BrokenExecutor as exc:
+                    # A worker died (for example, killed by the kernel). Every
+                    # raw in flight on that pool sees the break, not only the
+                    # one that caused it. With one raw held the death is that
+                    # raw's; with several it is nobody's in particular, so
+                    # each of them is retryable rather than a parser defect.
+                    held = broken_cohorts.setdefault(
+                        pool, 1 + sum(1 for other in futures if future_pools.get(other) is pool)
                     )
-                    result = IngestRecordResult(
-                        raw_id=raw_id,
-                        error=f"worker: {exc}",
-                        # polylogue-u1ww0: a crashed worker is a classified
-                        # defect, not the dataclass default success.
-                        outcome_code=worker_disposition.outcome_code,
-                        retryable=worker_disposition.retryable,
-                        evidence_ref=worker_disposition.evidence_ref,
-                        remediation=worker_disposition.remediation,
-                        diagnostic=worker_disposition.diagnostic,
+                    result = _disposed_result(
+                        raw_id,
+                        f"worker: {exc}",
+                        (parser_defect_disposition if held == 1 else transient_error_disposition)(
+                            evidence_ref=f"worker:{type(exc).__name__}",
+                            diagnostic=f"{exc} ({held} raw(s) held by the pool when a worker died)",
+                        ),
+                    )
+                except Exception as exc:
+                    # polylogue-u1ww0: a crashed worker is a classified
+                    # defect, not the dataclass default success.
+                    result = _disposed_result(
+                        raw_id,
+                        f"worker: {exc}",
+                        parser_defect_disposition(
+                            evidence_ref=f"worker:{type(exc).__name__}",
+                            diagnostic=str(exc),
+                        ),
                     )
                 submit_next()
                 if progress is not None:
                     progress.in_flight_raw_ids[:] = list(futures.values())
                     progress.completed_raw_count += 1
                 yield result
-    except (TypeError, pickle.PicklingError):
-        for raw_record in raw_artifacts:
-            if progress is not None:
-                progress.in_flight_raw_ids[:] = [raw_record.raw_id]
-            if heartbeat is not None:
-                heartbeat()
-            yield _run_ingest_record(raw_record, request)
-            if progress is not None:
-                progress.completed_raw_count += 1
-                progress.in_flight_raw_ids.clear()
+                yield from settle_unattempted()
+        yield from settle_unattempted()
     finally:
         if executor is not None:
-            shutdown = getattr(executor, "shutdown", None)
-            if callable(shutdown):
-                try:
-                    shutdown(wait=not stalled, cancel_futures=True)
-                except TypeError:
-                    # Small test doubles and older executor implementations
-                    # may not expose ``cancel_futures``.
-                    shutdown(wait=not stalled)
+            shut_down(executor, wait_for_workers=not stalled)
 
 
 def _select_ingest_worker_count(raw_artifacts: Sequence[_BlobSized], ingest_workers: int | None) -> int:

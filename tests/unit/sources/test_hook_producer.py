@@ -267,10 +267,7 @@ def test_producer_refuses_a_payload_that_duplicates_transcript_content(isolated_
         pytest.param({"permission_mode": "auto", "tool_name": "Bash"}, id="snake-permission-mode"),
     ],
 )
-def test_provider_detection_reads_both_payload_generations(
-    payload: dict[str, object],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_provider_detection_reads_both_payload_generations(payload: dict[str, object]) -> None:
     """bd polylogue-cp806: a camelCase Claude Code payload must not fall through
     to the Codex branch or to "could not detect provider".
 
@@ -278,10 +275,6 @@ def test_provider_detection_reads_both_payload_generations(
     ``None`` and the manually-invoked command refuses the event outright.
     """
     from polylogue.sources import hook_producer
-
-    # Detection from payload shape only: an operator-forced provider would
-    # answer before the shape is ever inspected.
-    monkeypatch.setattr(hook_producer, "_configured_provider", lambda: None)
 
     assert hook_producer.detect_provider(payload) == "claude-code"
 

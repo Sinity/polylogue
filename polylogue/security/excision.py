@@ -63,6 +63,20 @@ them from that declared identity and folds them into the seed set *before*
 the revision closure runs, so every retained revision of the same plan file
 is covered too.
 
+**Tool-output sidecars.** A Claude Code or gemini-cli tool result that
+overflowed its inline envelope left the full output in a sidecar file
+(``<session>/tool-results/`` or ``tool-outputs/session-<id>/``), retained as
+its own ``tool_result_sidecar`` raw row that no session relation names.
+``resolve_session_excision_target`` derives each transcript's sidecar scope
+from its retained ``source_path`` and seeds every retained revision of the
+files the session owns into the revision closure (polylogue-8j9rh).
+Ownership follows the join's own rules: a file whose stem is a ``tool_id`` of
+one of the session's ``tool_result`` blocks, or that a sidecar event of the
+session names as its own (see :class:`_SidecarOwnership`). The scope
+directory is shared (a Claude Code parent and its subagents; every chat of
+one gemini-cli process), so a file another transcript owns stays, and a file
+no transcript claimed stays too.
+
 **Shared blobs.** Excision forgets the excised session, not every session
 whose content shares a content-addressed blob with it. Two sessions with the
 same tool output or the same attachment own one blob hash. After the excised
@@ -118,8 +132,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from polylogue.archive.revision_authority import WORK_EVENT_RAW_ID_PREFIX
-from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, Origin, Provider
+from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, BlockType, Origin, Provider
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.pipeline.ids import SIDECAR_BLOB_EVENT_TYPES
 from polylogue.security.excision_carriers import (
     UnclassifiedSessionCarrierError,
     audit_session_carriers,
@@ -129,6 +144,8 @@ from polylogue.security.excision_policy import (
     ExcisionPolicySnapshot,
     build_excision_policy_snapshot,
 )
+from polylogue.sources.live.gemini_tool_output_sidecars import resolve_tool_outputs_dir
+from polylogue.sources.live.tool_result_sidecars import resolve_tool_results_dir
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers.claude.todos import session_and_agent_id_from_filename
 from polylogue.storage.accepted_marker_inputs import (
@@ -256,6 +273,13 @@ class ExcisionTarget:
     #: (polylogue-si5kj). Each also appears in ``raw_targets``; this tuple
     #: exists so the plan and receipt can name them separately.
     fact_raw_ids: tuple[str, ...] = ()
+    #: Raw ids of the tool-output sidecars this session owns -- the Claude
+    #: Code ``tool-results/`` and gemini-cli ``tool-outputs/session-<id>/``
+    #: files its tool results overflowed into, retained as their own
+    #: ``tool_result_sidecar`` raw rows that no session relation names
+    #: (polylogue-8j9rh). Each also appears in ``raw_targets``; named
+    #: separately so the plan and receipt can count them.
+    sidecar_raw_ids: tuple[str, ...] = ()
     #: Per-member disposition of the manifest containers that hold these raw
     #: acquisitions (polylogue-q4f6d).
     containers: ContainerDisposition = field(default_factory=lambda: ContainerDisposition())
@@ -309,6 +333,7 @@ def _resolve_session_excision_target(
     session_exists = False
     message_ids: tuple[str, ...] = ()
     block_ids: tuple[str, ...] = ()
+    sidecar_ownership = _SidecarOwnership()
 
     if index_db.exists():
         conn = _connect_ro(index_db)
@@ -336,6 +361,7 @@ def _resolve_session_excision_target(
                     (session_id,),
                 ).fetchall()
             )
+            sidecar_ownership = _session_sidecar_ownership(conn, session_id)
         finally:
             conn.close()
 
@@ -356,6 +382,7 @@ def _resolve_session_excision_target(
     raw_targets: tuple[ExcisionRawTarget, ...] = ()
     hook_event_ids: tuple[str, ...] = ()
     fact_raw_ids: tuple[str, ...] = ()
+    sidecar_raw_ids: tuple[str, ...] = ()
     containers = ContainerDisposition()
     material_ids: tuple[str, ...] = ()
     material_blob_hashes: tuple[bytes, ...] = ()
@@ -374,6 +401,16 @@ def _resolve_session_excision_target(
             fact_raw_ids = _session_fact_raw_ids(conn, session_id)
             raw_ids.extend(fact_raw_ids)
             raw_ids.extend(_session_work_event_raw_ids(conn, session_id))
+            # Tool-output sidecars are retained as their own raw rows, named
+            # by no session relation. Their scope is derived from the
+            # session's transcript paths, so resolve those first, then seed
+            # the owned sidecars before the closure that the rest of the
+            # target is computed from (polylogue-8j9rh).
+            if sidecar_ownership and raw_ids:
+                sidecar_raw_ids = _session_sidecar_raw_ids(
+                    conn, session_id, _durable_revision_closure(conn, raw_ids), sidecar_ownership
+                )
+                raw_ids.extend(sidecar_raw_ids)
             marker_target_raw_ids = frozenset(raw_ids)
             resolved = _durable_revision_closure(conn, raw_ids) if raw_ids else ()
             marker_target_raw_ids = frozenset(resolved)
@@ -424,6 +461,7 @@ def _resolve_session_excision_target(
         block_ids=block_ids,
         hook_event_ids=hook_event_ids,
         fact_raw_ids=fact_raw_ids,
+        sidecar_raw_ids=sidecar_raw_ids,
         containers=containers,
         material_ids=material_ids,
         material_blob_hashes=material_blob_hashes,
@@ -683,6 +721,176 @@ def _session_work_event_raw_ids(conn: sqlite3.Connection, session_id: str) -> tu
     )
 
 
+#: Reason prefix both sidecar joins give the debt of a file no transcript
+#: claims (``no_owning_tool_result_block``, ``no_owning_tool_call``). Every
+#: other debt reason is recorded by the transcript that owns the file.
+_OWNERLESS_SIDECAR_REASON_PREFIX = "no_owning_"
+
+
+@dataclass(frozen=True, slots=True)
+class _SidecarOwnership:
+    """Which tool-output sidecar files a session's own join claimed.
+
+    Read from the session's derived rows, by the join's own rules
+    (``sources/live/tool_result_sidecars.py``,
+    ``sources/live/gemini_tool_output_sidecars.py``): a file whose stem is a
+    ``tool_id`` of one of the session's ``tool_result`` blocks, and every file
+    a sidecar event of the session names -- matched, or debt the join
+    recorded against a file it had already resolved to this transcript
+    (oversize, unreadable, less complete than the inline text). Both joins
+    record the one ownerless outcome with a ``no_owning_*`` reason: a file no
+    transcript claims is owned by no session and stays. Both scopes are
+    shared: a Claude Code ``tool-results/`` directory by the parent and its
+    subagent transcripts, a gemini-cli ``tool-outputs/session-<id>/``
+    directory by every chat of one CLI process.
+    """
+
+    tool_ids: frozenset[str] = frozenset()
+    filenames: frozenset[str] = frozenset()
+
+    def __bool__(self) -> bool:
+        return bool(self.tool_ids or self.filenames)
+
+    def owns(self, filename: str) -> bool:
+        return filename in self.filenames or filename.rsplit(".", 1)[0] in self.tool_ids
+
+
+def _session_sidecar_ownership(conn: sqlite3.Connection, session_id: str) -> _SidecarOwnership:
+    """Read the session's sidecar ownership evidence from the index tier."""
+    tool_ids = frozenset(
+        str(row[0])
+        for row in conn.execute(
+            "SELECT DISTINCT tool_id FROM blocks WHERE session_id = ? AND block_type = ? AND tool_id IS NOT NULL",
+            (session_id, BlockType.TOOL_RESULT.value),
+        ).fetchall()
+        if row[0]
+    )
+    event_types = tuple(sorted(SIDECAR_BLOB_EVENT_TYPES))
+    placeholders = ",".join("?" for _ in event_types)
+    filenames: set[str] = set()
+    for (payload_json,) in conn.execute(
+        f"SELECT payload_json FROM session_events WHERE session_id = ? AND event_type IN ({placeholders})",
+        (session_id, *event_types),
+    ).fetchall():
+        payload = json.loads(str(payload_json)) if payload_json else None
+        if not isinstance(payload, dict):
+            continue
+        reason = payload.get("reason")
+        if payload.get("acquisition_status") == "debt" and (
+            not isinstance(reason, str) or reason.startswith(_OWNERLESS_SIDECAR_REASON_PREFIX)
+        ):
+            continue
+        filename = payload.get("filename")
+        if isinstance(filename, str) and filename:
+            filenames.add(filename)
+    return _SidecarOwnership(tool_ids=tool_ids, filenames=frozenset(filenames))
+
+
+def _path_prefix_range(prefix: str) -> tuple[str, str]:
+    """Half-open ``source_path`` range covering every path starting with ``prefix``.
+
+    A range comparison keeps ``idx_raw_sessions_source_path`` usable where a
+    ``LIKE`` with the ``ESCAPE`` a path needs would not.
+    """
+    return prefix, prefix[:-1] + chr(ord(prefix[-1]) + 1)
+
+
+def _session_sidecar_raw_ids(
+    conn: sqlite3.Connection,
+    session_id: str,
+    transcript_raw_ids: Sequence[str],
+    ownership: _SidecarOwnership,
+) -> tuple[str, ...]:
+    """Raw ids of every retained revision of the sidecars this session owns.
+
+    The scope directory comes from each transcript's retained ``source_path``
+    by the same path law acquisition and derivation use
+    (``resolve_tool_results_dir`` / ``resolve_tool_outputs_dir``); a scope
+    member is a direct child of it, as a directory listing would have
+    yielded. Every retained revision of an owned file is returned, not only
+    the latest: each one holds that output's bytes.
+    """
+    origin, _, native_id = session_id.partition(":")
+    if not transcript_raw_ids or not native_id:
+        return ()
+    placeholders = ",".join("?" for _ in transcript_raw_ids)
+    transcript_paths = sorted(
+        {
+            str(row[0])
+            for row in conn.execute(
+                f"SELECT source_path FROM raw_sessions WHERE raw_id IN ({placeholders}) AND origin = ?",
+                (*transcript_raw_ids, origin),
+            ).fetchall()
+            if row[0]
+        }
+    )
+    resolved: set[str] = set()
+    for source_path in transcript_paths:
+        if origin == Origin.CLAUDE_CODE_SESSION.value:
+            if not source_path.endswith(".jsonl"):
+                continue
+            directory = resolve_tool_results_dir(source_path)
+            if directory is None:
+                continue
+            resolved.update(_owned_scope_children(conn, directory.as_posix(), ownership, skip_prefix="hook-"))
+        elif origin == Origin.GEMINI_CLI_SESSION.value:
+            resolved.update(_gemini_owned_sidecar_raw_ids(conn, source_path, native_id, ownership))
+    return tuple(sorted(resolved))
+
+
+def _owned_scope_children(
+    conn: sqlite3.Connection,
+    directory: str,
+    ownership: _SidecarOwnership,
+    *,
+    skip_prefix: str | None = None,
+) -> set[str]:
+    """Raw ids of the owned files directly inside one scope directory.
+
+    ``skip_prefix`` names files the join never treats as sidecars (Claude
+    Code's ``hook-*`` stdout captures, which hook-event excision owns).
+    """
+    low, high = _path_prefix_range(f"{directory}/")
+    found: set[str] = set()
+    for raw_id, source_path in conn.execute(
+        "SELECT raw_id, source_path FROM raw_sessions WHERE source_path >= ? AND source_path < ?",
+        (low, high),
+    ):
+        filename = str(source_path)[len(low) :]
+        if not filename or "/" in filename:
+            continue
+        if skip_prefix is not None and filename.startswith(skip_prefix):
+            continue
+        if ownership.owns(filename):
+            found.add(str(raw_id))
+    return found
+
+
+def _gemini_owned_sidecar_raw_ids(
+    conn: sqlite3.Connection, source_path: str, native_id: str, ownership: _SidecarOwnership
+) -> set[str]:
+    """Owned sidecars of one gemini-cli chat snapshot.
+
+    The scope is ``tool-outputs/session-<sessionId>/`` for the wire
+    ``sessionId``, which the chat's native id begins with, followed by a
+    colon (``gemini_cli_chat_identity`` composes
+    ``<sessionId>:<kind>:<startTime>``). Every prefix of the native id that
+    ends before a colon is a candidate, and ``resolve_tool_outputs_dir``, the
+    path law the join itself uses, turns each into its directory.
+    """
+    directories: set[str] = set()
+    for index, character in enumerate(native_id):
+        if character != ":":
+            continue
+        directory = resolve_tool_outputs_dir(source_path, native_id[:index])
+        if directory is not None:
+            directories.add(directory.as_posix())
+    found: set[str] = set()
+    for scope_directory in sorted(directories):
+        found.update(_owned_scope_children(conn, scope_directory, ownership))
+    return found
+
+
 def _session_fact_raw_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
     """Raw ids of fact-tier evidence whose declared identity is this session.
 
@@ -838,6 +1046,9 @@ class ExcisionPlan:
     #: Already counted in ``source_raw_rows``; named so the preview shows
     #: that this evidence class is in scope.
     source_fact_rows: int = 0
+    #: Tool-output sidecar raw rows the session owns (polylogue-8j9rh).
+    #: Already counted in ``source_raw_rows``, like ``source_fact_rows``.
+    source_sidecar_rows: int = 0
     #: Container member rows an apply will remove (polylogue-q4f6d).
     source_container_members: int = 0
     #: Container items an apply will remove because no live member remains.
@@ -870,6 +1081,7 @@ class ExcisionPlan:
             "lineage_dependent_session_ids": list(self.lineage_dependent_session_ids),
             "source_hook_events": self.source_hook_events,
             "source_fact_rows": self.source_fact_rows,
+            "source_sidecar_rows": self.source_sidecar_rows,
             "source_container_members": self.source_container_members,
             "source_container_items": self.source_container_items,
             "retained_source_containers": list(self.retained_source_containers),
@@ -978,6 +1190,7 @@ def plan_session_excision(archive_root: Path, session_id: str, *, cascade_lineag
         lineage_dependent_session_ids=dependent_ids,
         source_hook_events=len({item for current in targets for item in current.hook_event_ids}),
         source_fact_rows=len({item for current in targets for item in current.fact_raw_ids}),
+        source_sidecar_rows=len({item for current in targets for item in current.sidecar_raw_ids}),
         source_container_members=len(
             {
                 (member.source_generation_id, member.source_item_id, member.record_coordinate)
@@ -1115,6 +1328,7 @@ def _apply_single_session_excision(
         "source_blob_refs": 0,
         "source_raw_rows": 0,
         "source_fact_rows": len(target.fact_raw_ids),
+        "source_sidecar_rows": len(target.sidecar_raw_ids),
         "source_hook_events": 0,
         "source_container_members": 0,
         "source_container_items": 0,

@@ -518,10 +518,6 @@ class ColdBuildGeneration:
         # ``begin`` is only reached when a cold build is actually starting.
         # That is the only cost gate this needs; intent is not a gate.
         operation_id = f"cold-build-{uuid.uuid4().hex}"
-        from polylogue.maintenance.source_manifest_continuity import (
-            _read_wanted_source_receipt,
-            wanted_source_receipt_is_published,
-        )
         from polylogue.sources.live.production_baseline import (
             MATERIAL_BYTE_DEFINITION,
             capture_production_source_baseline,
@@ -530,12 +526,6 @@ class ColdBuildGeneration:
             publish_pending_production_baseline,
             unretained_source_material,
         )
-
-        # Existing manual receipts remain historical evidence. Validate any
-        # published one's integrity without reusing its obsolete roots as the
-        # production denominator. Never require a new manual freeze.
-        if wanted_source_receipt_is_published(archive_root):
-            _read_wanted_source_receipt(archive_root)
 
         def phase(name: str) -> None:
             if progress is not None:

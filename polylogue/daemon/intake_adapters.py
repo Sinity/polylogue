@@ -8,6 +8,7 @@ focused tests.
 
 from polylogue.operations.intake_adapters import (
     CallbackIntakeAdapter,
+    ColdBuildCoverageError,
     ColdBuildGeneration,
     ColdBuildSettlement,
     DaemonIntakeContext,
@@ -22,10 +23,12 @@ from polylogue.operations.intake_adapters import (
     classify_cold_build_settlement_failure,
     clear_cold_build_generation,
     discover_pending_raw_ids,
+    promote_cold_build_covering_active_index,
     register_cold_build_generation,
 )
 
 __all__ = [
+    "ColdBuildCoverageError",
     "ColdBuildGeneration",
     "ColdBuildSettlement",
     "DaemonIntakeContext",
@@ -37,6 +40,7 @@ __all__ = [
     "active_cold_build_generation",
     "active_index_generation_is_empty",
     "discover_pending_raw_ids",
+    "promote_cold_build_covering_active_index",
     "CallbackIntakeAdapter",
     "build_intake_adapters",
     "classify_cold_build_settlement_failure",

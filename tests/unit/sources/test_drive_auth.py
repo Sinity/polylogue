@@ -113,21 +113,19 @@ def test_default_path_helpers_contract(
 
 
 @pytest.mark.parametrize(
-    ("config_path", "env_path", "default_exists", "has_prompter", "prompter_response", "expected_kind"),
+    ("config_path", "default_exists", "has_prompter", "prompter_response", "expected_kind"),
     [
-        ("/cfg/creds.json", None, False, False, None, "config"),
-        (None, "~/creds.json", False, False, None, "env"),
-        (None, None, True, False, None, "default"),
-        (None, None, False, True, "user", "interactive"),
-        (None, None, False, True, None, "error"),
-        (None, None, False, False, None, "error"),
+        ("/cfg/creds.json", False, False, None, "config"),
+        (None, True, False, None, "default"),
+        (None, False, True, "user", "interactive"),
+        (None, False, True, None, "error"),
+        (None, False, False, None, "error"),
     ],
 )
 def test_resolve_credentials_path_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     config_path: str | None,
-    env_path: str | None,
     default_exists: bool,
     has_prompter: bool,
     prompter_response: str | None,
@@ -142,10 +140,6 @@ def test_resolve_credentials_path_contract(
     user_path.write_text('{"user": true}', encoding="utf-8")
 
     monkeypatch.setattr("polylogue.sources.drive.auth.default_credentials_path", lambda config: default_path)
-    if env_path is None:
-        monkeypatch.delenv("POLYLOGUE_CREDENTIAL_PATH", raising=False)
-    else:
-        monkeypatch.setenv("POLYLOGUE_CREDENTIAL_PATH", env_path)
 
     config = None if config_path is None else MagicMock(credentials_path=config_path)
     ui = None
@@ -163,9 +157,6 @@ def test_resolve_credentials_path_contract(
     if expected_kind == "config":
         assert config_path is not None
         assert result == Path(config_path)
-    elif expected_kind == "env":
-        assert env_path is not None
-        assert result == Path(env_path).expanduser()
     elif expected_kind == "default":
         assert result == default_path
     else:
@@ -174,26 +165,20 @@ def test_resolve_credentials_path_contract(
 
 
 @pytest.mark.parametrize(
-    ("config_path", "env_path", "expected"),
+    ("config_path", "expected"),
     [
-        ("/cfg/token.json", None, Path("/cfg/token.json")),
-        (None, "~/token.json", Path("~/token.json").expanduser()),
-        (None, None, Path("/tmp/default-token.json")),
+        ("/cfg/token.json", Path("/cfg/token.json")),
+        (None, Path("/tmp/default-token.json")),
     ],
 )
 def test_resolve_token_path_contract(
     monkeypatch: pytest.MonkeyPatch,
     config_path: str | None,
-    env_path: str | None,
     expected: Path,
 ) -> None:
     monkeypatch.setattr(
         "polylogue.sources.drive.auth.default_token_path", lambda config: Path("/tmp/default-token.json")
     )
-    if env_path is None:
-        monkeypatch.delenv("POLYLOGUE_TOKEN_PATH", raising=False)
-    else:
-        monkeypatch.setenv("POLYLOGUE_TOKEN_PATH", env_path)
     config = None if config_path is None else MagicMock(token_path=config_path)
     assert _resolve_token_path(config=config) == expected
 

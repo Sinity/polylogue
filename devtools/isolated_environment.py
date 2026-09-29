@@ -10,9 +10,9 @@ def isolated_home_environment(inherited: Mapping[str, str], *, home: Path) -> di
     """``inherited`` with every source-discovery root pointed into ``home``.
 
     Sources are acquired only from canonical locations under ``HOME``, so a
-    scratch daemon run must replace ``HOME`` and every XDG root, and drop the
-    Polylogue path overrides: any one of them inherited would add the
-    operator's real sources to the run. ``_user_config_path`` also falls
+    scratch daemon run must replace ``HOME`` and every XDG root, and drop
+    Hermes's ``HERMES_HOME``: inherited, it would add the operator's real
+    Hermes state to the run. ``_user_config_path`` also falls
     through to ``<cwd>/polylogue.toml`` when no ``POLYLOGUE_CONFIG`` is set,
     so an untracked project-local config in the launch checkout's cwd (the
     dev-loop proof deliberately runs the daemon from the repository root)
@@ -32,12 +32,5 @@ def isolated_home_environment(inherited: Mapping[str, str], *, home: Path) -> di
         env[variable] = str(home / relative)
     env["POLYLOGUE_SITE_CONFIG"] = ""
     env["POLYLOGUE_CONFIG"] = str(home / "unconfigured-polylogue.toml")
-    for variable in (
-        "POLYLOGUE_HERMES_ROOT",
-        "POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH",
-        "POLYLOGUE_HOOK_SIDECAR_DIR",
-        "POLYLOGUE_CREDENTIAL_PATH",
-        "POLYLOGUE_TOKEN_PATH",
-    ):
-        env.pop(variable, None)
+    env.pop("HERMES_HOME", None)
     return env
