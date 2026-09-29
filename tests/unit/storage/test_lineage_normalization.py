@@ -11,7 +11,7 @@ import json
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import aiosqlite
 import pytest
@@ -3931,7 +3931,7 @@ def test_reanchor_across_an_inserted_prefix_row_keeps_refs_and_dispatch(tmp_path
     and both its event and a subagent dispatch pointer into the relocated
     tool call follow it.
 
-    Anti-vacuity: require equal prefix lengths in ``_reanchored_ids`` and the
+    Anti-vacuity: require equal prefix lengths in ``_reanchor_inherited_rows`` and the
     event stays NULL; drop the re-anchor fallback in
     ``_restore_dispatch_refs`` and the pointer stays NULL.
     """
@@ -5152,4 +5152,46 @@ def test_a_scoped_replay_keeps_per_segment_prefix_positions(tmp_path: Path) -> N
     write_parsed_session_to_archive(conn, child, force_replace=True)
     conn.commit()
     assert conn.execute(placed, (child_id,)).fetchall() == stored
+    conn.close()
+
+
+def test_settlement_streams_inherited_prefixes_through_the_guard_tables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parent rewrite that materializes several children holds no per-row
+    Python copy of their prefixes: the guard and the plan are TEMP tables.
+
+    Anti-vacuity: build the guard or the plan from ``_composed_db_signatures``
+    lists and the patched list builder fails the parent's write.
+    """
+    from polylogue.storage.sqlite.archive_tiers import write as write_module
+
+    conn = _connect(tmp_path / "index.db")
+    base = [f"m{index}" for index in range(40)]
+    write_parsed_session_to_archive(conn, _codex_session("parent", base))
+    children = [
+        write_parsed_session_to_archive(conn, _codex_session(f"child{n}", [*base, f"x{n}"], parent="parent"))
+        for n in range(3)
+    ]
+    conn.commit()
+
+    def no_lists(*_args: object, **_kwargs: object) -> list[tuple[str, str]]:
+        raise AssertionError("settlement composed a transcript into a Python list")
+
+    def list_free(function: Any) -> Any:
+        def guarded(*args: Any, **kwargs: Any) -> Any:
+            with monkeypatch.context() as scoped:
+                scoped.setattr(write_module, "_composed_db_signatures", no_lists)
+                return function(*args, **kwargs)
+
+        return guarded
+
+    with monkeypatch.context() as patched:
+        for name in ("_capture_inherited_prefixes", "_settle_inherited_prefixes"):
+            patched.setattr(write_module, name, list_free(getattr(write_module, name)))
+        write_parsed_session_to_archive(conn, _codex_session("parent", base[:10]))
+    conn.commit()
+    for n, child_id in enumerate(children):
+        assert _edge_state(conn, child_id)[1] == "spawned-fresh"
+        assert _composed_texts(conn, child_id) == [*base, f"x{n}"]
     conn.close()

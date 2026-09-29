@@ -28,7 +28,7 @@ from datetime import date, datetime
 from datetime import time as datetime_time
 from decimal import Decimal
 from enum import Enum
-from itertools import chain, islice
+from itertools import chain, islice, zip_longest
 from pathlib import Path
 from typing import Any, Literal, cast, overload
 from urllib.parse import quote, urlparse
@@ -960,7 +960,7 @@ def _scoped_identities(
     decision is carried by the message itself (an ID-less view of a content
     copy), so the rows need no duplicate set. Positions are placed as
     materialization placed them: prefix below tail, renumbered densely when
-    the parsed coordinates collide (``_prefix_positions``).
+    the parsed coordinates collide (``_plan_prefix_positions``).
 
     Messages are streamed, never listed, so a disk-backed session stays on
     disk; only the per-message identity pairs are held.
@@ -10302,6 +10302,50 @@ class _DiskSignatureSequence(Sequence[tuple[str, str]]):
             scratch.cleanup()
 
 
+def _iter_composed_rows(conn: sqlite3.Connection, session_id: str) -> Iterator[tuple[str, str, str]]:
+    """``(message_id, signature, owner)`` of a composed transcript, streamed segment by segment.
+
+    The composition rules are ``_composed_db_signatures``': the first
+    composing prefix-sharing edge, the branch-point witness, the visited set
+    and the dangling-branch-point rule. Only the segment plan is held.
+    """
+    chain: list[tuple[str, str]] = []
+    visited = {session_id}
+    cursor_session_id = session_id
+    # ``visited`` bounds the walk: every step adds a new session.
+    while True:
+        edge = conn.execute(
+            f"SELECT resolved_dst_session_id, branch_point_message_id, branch_point_content_address "
+            f"FROM session_links WHERE src_session_id = ? AND inheritance = 'prefix-sharing' "
+            f"AND resolved_dst_session_id IS NOT NULL AND branch_point_message_id IS NOT NULL "
+            f"AND {topology_status_composes_sql()} "
+            f"ORDER BY link_type, dst_origin, dst_native_id LIMIT 1",
+            (cursor_session_id,),
+        ).fetchone()
+        if edge is None:
+            break
+        parent_id, branch_point = str(edge[0]), str(edge[1])
+        witness = bytes(edge[2]) if edge[2] is not None else None
+        if witness is not None and _message_content_address_for_id(conn, branch_point) != witness:
+            break
+        if parent_id in visited:
+            break
+        chain.append((cursor_session_id, branch_point))
+        visited.add(parent_id)
+        cursor_session_id = parent_id
+    composed = _SegmentList(
+        conn,
+        (_TranscriptSegment(cursor_session_id, None, None, _count_session_messages(conn, cursor_session_id)),),
+    )
+    for child_id, branch_point in reversed(chain):
+        if not composed.cut_at(branch_point):
+            composed.clear()
+        composed.append(_TranscriptSegment(child_id, None, None, _count_session_messages(conn, child_id)))
+    for segment in list(composed.segments):
+        for message_id, digest in _iter_own_db_signatures(conn, segment):
+            yield message_id, digest, segment.session_id
+
+
 def _disk_composed_db_signatures(
     conn: sqlite3.Connection,
     session_id: str,
@@ -10312,42 +10356,9 @@ def _disk_composed_db_signatures(
     if opened_snapshot:
         conn.execute("BEGIN DEFERRED")
     try:
-        chain: list[tuple[str, str]] = []
-        visited = {session_id}
-        cursor_session_id = session_id
-        # ``visited`` bounds the walk: every step adds a new session.
-        while True:
-            edge = conn.execute(
-                f"SELECT resolved_dst_session_id, branch_point_message_id, branch_point_content_address "
-                f"FROM session_links WHERE src_session_id = ? AND inheritance = 'prefix-sharing' "
-                f"AND resolved_dst_session_id IS NOT NULL AND branch_point_message_id IS NOT NULL "
-                f"AND {topology_status_composes_sql()} "
-                f"ORDER BY link_type, dst_origin, dst_native_id LIMIT 1",
-                (cursor_session_id,),
-            ).fetchone()
-            if edge is None:
-                break
-            parent_id, branch_point = str(edge[0]), str(edge[1])
-            witness = bytes(edge[2]) if edge[2] is not None else None
-            if witness is not None and _message_content_address_for_id(conn, branch_point) != witness:
-                break
-            if parent_id in visited:
-                break
-            chain.append((cursor_session_id, branch_point))
-            visited.add(parent_id)
-            cursor_session_id = parent_id
-        composed = _SegmentList(
-            conn,
-            (_TranscriptSegment(cursor_session_id, None, None, _count_session_messages(conn, cursor_session_id)),),
-        )
-        for child_id, branch_point in reversed(chain):
-            if not composed.cut_at(branch_point):
-                composed.clear()
-            composed.append(_TranscriptSegment(child_id, None, None, _count_session_messages(conn, child_id)))
         result = _DiskSignatureSequence(directory)
-        for segment in composed.segments:
-            for message_id, digest in _iter_own_db_signatures(conn, segment):
-                result.append(message_id, digest)
+        for message_id, digest, _owner in _iter_composed_rows(conn, session_id):
+            result.append(message_id, digest)
         return result
     finally:
         if opened_snapshot:
@@ -11065,12 +11076,11 @@ class _InheritedPrefixGuard:
     """What sessions inheriting from a rewritten session held before its write."""
 
     rewritten_session_id: str
-    #: inheriting session -> the session it resolves its prefix through.
+    #: inheriting session -> the session it resolves its prefix through. Each
+    #: session's pre-write composed transcript is in the guard's TEMP
+    #: ``before`` table, never in Python: a whale child's prefix, times every
+    #: child of a whale parent, would not fit the writer.
     parents: dict[str, str]
-    #: inheriting session -> ordered ids of the rows its composed transcript inherited.
-    inherited_ids: dict[str, tuple[str, ...]]
-    #: inheriting session -> the composed transcript's content signatures before the write.
-    signatures: dict[str, tuple[str, ...]]
     #: ``(src, dst_origin, dst_native_id, link_type, block_id, message_id)`` for
     #: every edge dispatched from a block of a snapshotted message.
     dispatch_refs: tuple[tuple[str, str, str, str, str, str], ...]
@@ -11099,8 +11109,19 @@ def _drop_prefix_guard_tables(conn: sqlite3.Connection) -> None:
         conn.execute(f"DROP TABLE IF EXISTS {_snapshot_table(table)}")
     conn.execute(f"DROP TABLE IF EXISTS temp.{_GUARD_PREFIX}ids")
     conn.execute(f"DROP TABLE IF EXISTS temp.{_GUARD_PREFIX}plan")
-    conn.execute(f"DROP TABLE IF EXISTS temp.{_GUARD_PREFIX}refs")
-    conn.execute(f"DROP TABLE IF EXISTS temp.{_GUARD_PREFIX}positions")
+    for table in (
+        "refs",
+        "positions",
+        "before",
+        "now",
+        "reanchors",
+        "copies",
+        "sources",
+        "placed",
+        "taken",
+        "occurrences",
+    ):
+        conn.execute(f"DROP TABLE IF EXISTS temp.{_GUARD_PREFIX}{table}")
 
 
 def _capture_inherited_prefixes(conn: sqlite3.Connection, session_id: str) -> _InheritedPrefixGuard | None:
@@ -11149,10 +11170,6 @@ def _capture_inherited_prefixes(conn: sqlite3.Connection, session_id: str) -> _I
             parents[str(candidate)] = parent_id
     if not parents:
         return None
-    inherited_ids: dict[str, tuple[str, ...]] = {}
-    signatures: dict[str, tuple[str, ...]] = {}
-    rewritten_owned: set[str] = set()
-    rewritten_rows = _session_message_ids(conn, session_id)
     _drop_prefix_guard_tables(conn)
     conn.execute(
         f"""CREATE TEMP TABLE {_GUARD_PREFIX}refs (
@@ -11160,27 +11177,34 @@ def _capture_inherited_prefixes(conn: sqlite3.Connection, session_id: str) -> _I
                session_id TEXT NOT NULL, old_id TEXT NOT NULL,
                PRIMARY KEY (table_name, column_name, row_id))"""
     )
+    conn.execute(
+        f"""CREATE TEMP TABLE {_GUARD_PREFIX}before (
+               child TEXT NOT NULL, ordinal INTEGER NOT NULL, message_id TEXT NOT NULL,
+               signature TEXT NOT NULL, owner TEXT NOT NULL, PRIMARY KEY (child, ordinal))"""
+    )
+    conn.execute(f"CREATE INDEX temp.{_GUARD_PREFIX}before_id ON {_GUARD_PREFIX}before (child, message_id)")
+    conn.execute(f"CREATE INDEX temp.{_GUARD_PREFIX}before_owner ON {_GUARD_PREFIX}before (owner, message_id)")
+    before = f"temp.{_GUARD_PREFIX}before"
     for child in parents:
-        composed = _composed_db_signatures(conn, child)
-        inherited = tuple(message_id for message_id, _ in _inherited_entries(conn, child, composed))
-        inherited_ids[child] = inherited
-        signatures[child] = tuple(signature for _, signature in composed)
-        rewritten_owned.update(message_id for message_id in inherited if message_id in rewritten_rows)
+        # The pre-write composed transcript, streamed into the guard table.
+        for ordinal, (message_id, signature, owner) in enumerate(_iter_composed_rows(conn, child)):
+            conn.execute(f"INSERT INTO {before} VALUES (?, ?, ?, ?, ?)", (child, ordinal, message_id, signature, owner))
         # Every inherited row, not only the rewritten session's: a
         # materialized child owns copies of its whole prefix, and a reference
         # left on an ancestor row would name a message outside its transcript.
-        for start in range(0, len(inherited), _GUARD_ID_CHUNK):
-            chunk = inherited[start : start + _GUARD_ID_CHUNK]
-            placeholders = ",".join("?" for _ in chunk)
-            for table, column in _MESSAGE_REF_COLUMNS:
-                conn.execute(
-                    f"""INSERT OR IGNORE INTO temp.{_GUARD_PREFIX}refs
-                        SELECT ?, ?, rowid, session_id, {column} FROM main.{table}
-                        WHERE session_id = ? AND {column} IN ({placeholders})""",
-                    (table, column, child, *chunk),
-                )
+        for table, column in _MESSAGE_REF_COLUMNS:
+            conn.execute(
+                f"""INSERT OR IGNORE INTO temp.{_GUARD_PREFIX}refs
+                    SELECT ?, ?, rowid, session_id, {column} FROM main.{table}
+                    WHERE session_id = ? AND {column} IN (
+                        SELECT message_id FROM {before} WHERE child = ? AND owner <> ?)""",
+                (table, column, child, child, child),
+            )
     conn.execute(f"CREATE TEMP TABLE {_GUARD_PREFIX}ids (message_id TEXT PRIMARY KEY)")
-    conn.executemany(f"INSERT INTO temp.{_GUARD_PREFIX}ids VALUES (?)", ((mid,) for mid in sorted(rewritten_owned)))
+    conn.execute(
+        f"INSERT OR IGNORE INTO temp.{_GUARD_PREFIX}ids SELECT message_id FROM {before} WHERE owner = ? AND owner <> child",
+        (session_id,),
+    )
     ids = f"SELECT message_id FROM temp.{_GUARD_PREFIX}ids"
     # Any other session's reference into a row this write deletes -- a
     # deeper descendant composing through a child that will materialize --
@@ -11229,8 +11253,6 @@ def _capture_inherited_prefixes(conn: sqlite3.Connection, session_id: str) -> _I
     return _InheritedPrefixGuard(
         rewritten_session_id=session_id,
         parents=parents,
-        inherited_ids=inherited_ids,
-        signatures=signatures,
         dispatch_refs=dispatch_refs,
     )
 
@@ -11260,9 +11282,21 @@ def _settle_inherited_prefixes(
     A session whose edge this write invalidated (an identity contradiction) is
     not this guard's: that loss has its own named route.
     """
-    materialized: dict[str, dict[str, str]] = {}
+    materialized: set[str] = set()
+    now = f"temp.{_GUARD_PREFIX}now"
     #: pre-write id -> the row a composable session now inherits in its place.
-    reanchors: dict[str, str] = {}
+    conn.execute(f"CREATE TEMP TABLE {_GUARD_PREFIX}reanchors (old_id TEXT PRIMARY KEY, new_id TEXT NOT NULL)")
+    #: materialized session -> its copy of each pre-write inherited row.
+    conn.execute(
+        f"""CREATE TEMP TABLE {_GUARD_PREFIX}copies (
+               child TEXT NOT NULL, old_id TEXT NOT NULL, new_id TEXT NOT NULL, PRIMARY KEY (child, old_id))"""
+    )
+    conn.execute(
+        f"""CREATE TEMP TABLE {_GUARD_PREFIX}now (
+               ordinal INTEGER PRIMARY KEY, message_id TEXT NOT NULL, signature TEXT NOT NULL, owner TEXT NOT NULL)"""
+    )
+    conn.execute(f"CREATE INDEX temp.{_GUARD_PREFIX}now_id ON {_GUARD_PREFIX}now (message_id)")
+    conn.execute(f"CREATE INDEX temp.{_GUARD_PREFIX}now_signature ON {_GUARD_PREFIX}now (signature, ordinal)")
 
     def depth(session: str) -> int:
         hops, seen = 0, {session}
@@ -11272,7 +11306,7 @@ def _settle_inherited_prefixes(
         return hops
 
     try:
-        for child in sorted(guard.inherited_ids, key=lambda item: (depth(item), item)):
+        for child in sorted(guard.parents, key=lambda item: (depth(item), item)):
             parent = guard.parents[child]
             edge = conn.execute(
                 """SELECT 1 FROM session_links
@@ -11283,111 +11317,121 @@ def _settle_inherited_prefixes(
             ).fetchone()
             if edge is None:
                 continue
-            composed = _composed_db_signatures(conn, child)
-            inherited_now = _inherited_entries(conn, child, composed)
-            if inherited_now:
-                reanchored = _reanchored_ids(guard, child, inherited_now)
-                composed_now = {new for new, _ in inherited_now}
+            conn.execute(f"DELETE FROM {now}")
+            for ordinal, (message_id, signature, owner) in enumerate(_iter_composed_rows(conn, child)):
+                conn.execute(f"INSERT INTO {now} VALUES (?, ?, ?, ?)", (ordinal, message_id, signature, owner))
+            if conn.execute(f"SELECT 1 FROM {now} WHERE owner <> ? LIMIT 1", (child,)).fetchone() is not None:
                 # Every pre-write inherited row must still be composed, in
                 # place or re-anchored; a surviving branch point does not prove
                 # the rows before it survived. One lost row materializes the
                 # whole pre-write prefix instead of shortening the transcript.
-                if all(old in composed_now or old in reanchored for old in guard.inherited_ids[child]):
-                    reanchors.update(reanchored)
+                reanchored = _reanchor_inherited_rows(conn, child)
+                if reanchored is not None:
+                    conn.executemany(
+                        f"INSERT OR REPLACE INTO temp.{_GUARD_PREFIX}reanchors VALUES (?, ?)", reanchored.items()
+                    )
                     continue
-            remap = _materialize_inherited_prefix(
+            _materialize_inherited_prefix(
                 conn,
                 child,
                 guard.rewritten_session_id,
                 parent,
-                guard.inherited_ids[child],
                 bulk_fts=bulk_fts,
                 bulk_build=bulk_build,
             )
             if cache is not None:
                 cache.pop(child, None)
-            materialized[child] = remap
-            after = tuple(signature for _, signature in _composed_db_signatures(conn, child))
-            if after != guard.signatures[child]:
+            materialized.add(child)
+            if not _composition_matches_before(conn, child):
                 raise InheritedPrefixMaterializationError(
                     f"materializing the inherited prefix of {child!r} did not reproduce its composed transcript"
                 )
-        _restore_message_refs(conn, materialized, reanchors)
-        _restore_dispatch_refs(conn, guard.dispatch_refs, materialized, reanchors, bulk_build=bulk_build)
+        _restore_message_refs(conn)
+        _restore_dispatch_refs(conn, guard.dispatch_refs, bulk_build=bulk_build)
     finally:
         _drop_prefix_guard_tables(conn)
-    return set(materialized)
+    return materialized
 
 
-def _session_message_ids(conn: sqlite3.Connection, session_id: str) -> set[str]:
-    return {str(row[0]) for row in conn.execute("SELECT message_id FROM messages WHERE session_id = ?", (session_id,))}
+def _reanchor_inherited_rows(conn: sqlite3.Connection, child: str) -> dict[str, str] | None:
+    """Map each pre-write inherited id of ``child`` onto the row now composed in its place.
 
-
-def _inherited_entries(
-    conn: sqlite3.Connection, child: str, composed: Sequence[tuple[str, str]]
-) -> list[tuple[str, str]]:
-    """The composed entries ``child`` does not own, judged by the row's session.
-
-    A message id's text prefix cannot decide ownership: a session whose native
-    id extends another's (``child`` and ``child:parent``) shares its prefix.
-    """
-    own = _session_message_ids(conn, child)
-    return [entry for entry in composed if entry[0] not in own]
-
-
-def _reanchored_ids(
-    guard: _InheritedPrefixGuard, child: str, inherited_now: Sequence[tuple[str, str]]
-) -> dict[str, str]:
-    """Map each pre-write inherited id onto the row now composed in its place.
-
-    A row that is still composed under its own id keeps it (an in-place edit
-    needs no entry), so a surviving message is never claimed by another one's
-    content. Only the ids that left the composition are then matched, in
-    order, by content signature against the rows no surviving id holds, so a
-    message inserted or removed elsewhere in the prefix does not break the
+    ``None`` when a pre-write inherited row is neither still composed nor
+    re-anchored. A row still composed under its own id keeps it (an in-place
+    edit needs no entry), so a surviving message is never claimed by another
+    one's content. Only the ids that left the composition are then matched,
+    in order, by content signature against the rows no surviving id holds, so
+    a message inserted or removed elsewhere in the prefix does not break the
     mapping of unchanged rows around it, and a removed duplicate never takes
-    the row of an identical message that survived.
+    the row of an identical message that survived. Read from the guard's
+    ``before``/``now`` tables; the mapping holds only rows that moved.
     """
-    before = guard.inherited_ids[child]
-    signatures = guard.signatures[child][: len(before)]
-    before_ids = set(before)
-    now_ids = {new for new, _ in inherited_now}
-    candidates = [(new, current) for new, current in inherited_now if new not in before_ids]
+    before = f"temp.{_GUARD_PREFIX}before"
+    now = f"temp.{_GUARD_PREFIX}now"
     mapping: dict[str, str] = {}
     cursor = 0
-    for old, signature in zip(before, signatures, strict=True):
-        if old in now_ids:
-            continue
-        for index in range(cursor, len(candidates)):
-            new, current = candidates[index]
-            if current == signature:
-                mapping[old] = new
-                cursor = index + 1
-                break
+    lost = conn.execute(
+        f"""SELECT b.message_id, b.signature FROM {before} AS b
+            WHERE b.child = ? AND b.owner <> ?
+              AND NOT EXISTS (SELECT 1 FROM {now} AS n WHERE n.message_id = b.message_id AND n.owner <> ?)
+            ORDER BY b.ordinal""",
+        (child, child, child),
+    ).fetchall()
+    for old, signature in lost:
+        match = conn.execute(
+            f"""SELECT n.ordinal, n.message_id FROM {now} AS n
+                WHERE n.signature = ? AND n.ordinal >= ? AND n.owner <> ?
+                  AND NOT EXISTS (SELECT 1 FROM {before} AS b WHERE b.child = ? AND b.message_id = n.message_id)
+                ORDER BY n.ordinal LIMIT 1""",
+            (signature, cursor, child, child),
+        ).fetchone()
+        if match is None:
+            return None
+        mapping[str(old)] = str(match[1])
+        cursor = int(match[0]) + 1
     return mapping
 
 
-def _restore_message_refs(
-    conn: sqlite3.Connection,
-    materialized: Mapping[str, Mapping[str, str]],
-    reanchors: Mapping[str, str],
-) -> None:
+def _composition_matches_before(conn: sqlite3.Connection, child: str) -> bool:
+    """Whether ``child``'s composed signatures equal the guard's pre-write ones, streamed."""
+    expected = conn.execute(
+        f"SELECT signature FROM temp.{_GUARD_PREFIX}before WHERE child = ? ORDER BY ordinal", (child,)
+    )
+    composed = (signature for _message_id, signature, _owner in _iter_composed_rows(conn, child))
+    wanted = (str(row[0]) for row in expected)
+    return all(have == want for have, want in zip_longest(composed, wanted))
+
+
+def _copy_of(conn: sqlite3.Connection, session_id: str, old_id: str) -> str | None:
+    row = conn.execute(
+        f"SELECT new_id FROM temp.{_GUARD_PREFIX}copies WHERE child = ? AND old_id = ?", (session_id, old_id)
+    ).fetchone()
+    return None if row is None else str(row[0])
+
+
+def _reanchor_of(conn: sqlite3.Connection, old_id: str) -> str | None:
+    row = conn.execute(f"SELECT new_id FROM temp.{_GUARD_PREFIX}reanchors WHERE old_id = ?", (old_id,)).fetchone()
+    return None if row is None else str(row[0])
+
+
+def _restore_message_refs(conn: sqlite3.Connection) -> None:
     """Point every captured message reference at the row its session now composes.
 
     A reference follows the copy its own lineage holds (itself or its nearest
     materialized ancestor), else a re-anchored row, else it keeps the old id
     when that row survived. Streamed from the guard's TEMP table.
     """
-    cursor = conn.execute(
-        f"SELECT table_name, column_name, row_id, session_id, old_id FROM temp.{_GUARD_PREFIX}refs ORDER BY rowid"
+    captured = conn.execute(
+        f"""SELECT table_name, column_name, row_id, session_id, old_id FROM temp.{_GUARD_PREFIX}refs
+            ORDER BY session_id, old_id"""
     )
-    owners: dict[tuple[str, str], str | None] = {}
-    for table, column, row_id, session, old_id in cursor:
-        key = (str(session), str(old_id))
-        if key not in owners:
-            owners[key] = _materialized_owner_in_lineage(conn, key[0], key[1], materialized)
-        owner = owners[key]
-        target = materialized[owner][key[1]] if owner is not None else reanchors.get(key[1], key[1])
+    resolved: tuple[str, str, str] | None = None
+    for table, column, row_id, session, old_id in captured:
+        if resolved is None or resolved[:2] != (str(session), str(old_id)):
+            copied = _copy_in_lineage(conn, str(session), str(old_id))
+            target = copied[1] if copied is not None else _reanchor_of(conn, str(old_id)) or str(old_id)
+            resolved = (str(session), str(old_id), target)
+        target = resolved[2]
         # With foreign keys on, the parent's delete nulled a reference; with
         # them suspended (bulk rebuild), or for the plain-text boundary id, it
         # still names the old row.
@@ -11395,15 +11439,13 @@ def _restore_message_refs(
             f"""UPDATE main.{table} SET {column} = ?
                 WHERE rowid = ? AND ({column} IS NULL OR {column} = ?)
                   AND EXISTS (SELECT 1 FROM messages WHERE message_id = ?)""",
-            (target, row_id, key[1], target),
+            (target, row_id, old_id, target),
         )
 
 
 def _restore_dispatch_refs(
     conn: sqlite3.Connection,
     refs: Sequence[tuple[str, str, str, str, str, str]],
-    materialized: Mapping[str, Mapping[str, str]],
-    reanchors: Mapping[str, str],
     *,
     bulk_build: bool,
 ) -> None:
@@ -11426,10 +11468,10 @@ def _restore_dispatch_refs(
         # its lineage now holds a copy, that copy is the call. Otherwise the
         # block survived in place only if it is the same call by its evidence
         # -- a rewrite can reuse the generated id for a different one.
-        owner = _materialized_owner_in_lineage(conn, dispatcher, message_id, materialized)
-        if owner is not None:
-            target = materialized[owner][message_id] + block_id[len(message_id) :]
-            refreshed.add(owner)
+        copied = _copy_in_lineage(conn, dispatcher, message_id)
+        if copied is not None:
+            target = copied[1] + block_id[len(message_id) :]
+            refreshed.add(copied[0])
         elif (
             conn.execute(
                 f"""SELECT 1 FROM main.blocks AS b JOIN {_snapshot_table("blocks")} AS old
@@ -11442,9 +11484,10 @@ def _restore_dispatch_refs(
         ):
             target = block_id
         else:
-            if message_id in reanchors:
+            reanchored = _reanchor_of(conn, message_id)
+            if reanchored is not None:
                 # The message survived elsewhere in the lineage (re-anchored).
-                candidate = reanchors[message_id] + block_id[len(message_id) :]
+                candidate = reanchored + block_id[len(message_id) :]
                 if conn.execute("SELECT 1 FROM blocks WHERE block_id = ?", (candidate,)).fetchone() is not None:
                     target = candidate
         if target is None:
@@ -11464,24 +11507,20 @@ def _restore_dispatch_refs(
             refresh_delegation_facts_for_session(conn, owner)
 
 
-def _materialized_owner_in_lineage(
-    conn: sqlite3.Connection,
-    dispatcher: str | None,
-    message_id: str,
-    materialized: Mapping[str, Mapping[str, str]],
-) -> str | None:
-    """The materialized session, on the dispatcher's own lineage, that copied ``message_id``.
+def _copy_in_lineage(conn: sqlite3.Connection, dispatcher: str | None, message_id: str) -> tuple[str, str] | None:
+    """``(owner, copy id)`` of the copy of ``message_id`` on the dispatcher's own lineage.
 
-    The dispatcher saw the block through its composed transcript, so the copy
-    it now sees is the one its nearest materialized ancestor (or itself) holds.
+    The dispatcher saw the row through its composed transcript, so the copy it
+    now sees is the one its nearest materialized ancestor (or itself) holds.
     A copy held by an unrelated sibling is never chosen.
     """
     seen: set[str] = set()
     cursor = dispatcher
     while cursor is not None and cursor not in seen:
         seen.add(cursor)
-        if message_id in materialized.get(cursor, {}):
-            return cursor
+        copied = _copy_of(conn, cursor, message_id)
+        if copied is not None:
+            return cursor, copied
         row = conn.execute(
             f"""SELECT resolved_dst_session_id FROM session_links
                WHERE src_session_id = ? AND inheritance = 'prefix-sharing'
@@ -11494,31 +11533,39 @@ def _materialized_owner_in_lineage(
     return None
 
 
-def _prefix_positions(
-    conn: sqlite3.Connection, child: str, coordinates: Sequence[tuple[str, int, int]]
-) -> tuple[list[int], int]:
-    """Positions for copied prefix rows, and how many slots they need below the tail.
+def _plan_prefix_positions(conn: sqlite3.Connection, child: str) -> int:
+    """Place the guard's ``sources`` rows; return the slots they need below the tail.
 
-    The source coordinates are kept when they already fit under the child's
-    own rows without colliding -- the usual case, since parsers record each
-    message's position in the full replayed transcript. Otherwise the rows are
-    renumbered densely by source ``(session, position)``, so sibling variants
-    stay one turn.
+    The source coordinates are kept when they are unique, ordered and sit below
+    the child's own rows; otherwise the rows are renumbered densely by source
+    ``(session, position)`` in order of first appearance, so sibling variants
+    stay one turn. The result is the TEMP ``placed`` table.
     """
+    sources = f"temp.{_GUARD_PREFIX}sources"
     own_min = conn.execute("SELECT MIN(position) FROM messages WHERE session_id = ?", (child,)).fetchone()[0]
-    keys = [(position, variant) for _session, position, variant in coordinates]
-    positions = [position for position, _variant in keys]
-    fits = (
-        len(set(keys)) == len(keys)
-        and positions == sorted(positions)
-        and (own_min is None or not positions or positions[-1] < int(own_min))
+    duplicate = conn.execute(
+        f"SELECT 1 FROM {sources} GROUP BY position, variant_index HAVING COUNT(*) > 1 LIMIT 1"
+    ).fetchone()
+    unordered = conn.execute(
+        f"""SELECT 1 FROM (SELECT position, LAG(position) OVER (ORDER BY ordinal) AS previous FROM {sources})
+            WHERE previous IS NOT NULL AND position < previous LIMIT 1"""
+    ).fetchone()
+    highest = conn.execute(f"SELECT MAX(position) FROM {sources}").fetchone()[0]
+    fits = duplicate is None and unordered is None and (own_min is None or highest is None or highest < int(own_min))
+    conn.execute(
+        f"CREATE TEMP TABLE {_GUARD_PREFIX}placed (ordinal INTEGER PRIMARY KEY, new_position INTEGER NOT NULL)"
     )
     if fits:
-        return positions, 0
-    dense: dict[tuple[str, int], int] = {}
-    for session, position, _variant in coordinates:
-        dense.setdefault((session, position), len(dense))
-    return [dense[(session, position)] for session, position, _variant in coordinates], len(dense)
+        conn.execute(f"INSERT INTO temp.{_GUARD_PREFIX}placed SELECT ordinal, position FROM {sources}")
+        return 0
+    conn.execute(
+        f"""INSERT INTO temp.{_GUARD_PREFIX}placed
+            SELECT s.ordinal, d.slot FROM {sources} AS s JOIN (
+                SELECT session_id, position, ROW_NUMBER() OVER (ORDER BY MIN(ordinal)) - 1 AS slot
+                FROM {sources} GROUP BY session_id, position
+            ) AS d ON d.session_id = s.session_id AND d.position = s.position"""
+    )
+    return int(conn.execute(f"SELECT COUNT(DISTINCT new_position) FROM temp.{_GUARD_PREFIX}placed").fetchone()[0])
 
 
 def _materialize_inherited_prefix(
@@ -11526,115 +11573,66 @@ def _materialize_inherited_prefix(
     child: str,
     rewritten_session_id: str,
     parent_session_id: str,
-    inherited_ids: Sequence[str],
     *,
     bulk_fts: bool,
     bulk_build: bool,
-) -> dict[str, str]:
-    """Copy ``inherited_ids`` into ``child``'s own rows and stop its inheritance.
+) -> None:
+    """Copy ``child``'s pre-write inherited rows into its own rows and stop its inheritance.
 
+    The inherited rows are the guard's ``before`` rows ``child`` does not own.
     Rows the rewritten session owned come from the pre-write TEMP snapshot,
     every other ancestor row from the live tables. Each copy keeps its native
     identity when the child has no row of that native id; otherwise it takes
     the next free content occurrence, so no stored child id -- and no durable
-    reference to one -- moves. Returns the old->new message id map.
+    reference to one -- moves. The plan streams through TEMP tables, so a whale
+    prefix is never held in Python; each copy is recorded in the guard's
+    ``copies`` table.
     """
-    snapshotted = {str(row[0]) for row in conn.execute(f"SELECT message_id FROM {_snapshot_table('messages')}")}
-    taken_native = {
-        str(row[0])
-        for row in conn.execute(
-            "SELECT native_id FROM messages WHERE session_id = ? AND native_id IS NOT NULL", (child,)
-        )
-    }
-    next_occurrence: dict[str, int] = {
-        str(row[0]): int(row[1]) + 1
-        for row in conn.execute(
-            """SELECT content_identity, MAX(content_occurrence) FROM messages
-               WHERE session_id = ? AND content_identity IS NOT NULL GROUP BY content_identity""",
-            (child,),
-        )
-    }
-    sources: list[tuple[str, tuple[Any, ...]]] = []
-    for old_id in inherited_ids:
-        table = _snapshot_table("messages") if old_id in snapshotted else "main.messages"
-        row = conn.execute(
-            f"""SELECT session_id, position, variant_index, native_id, content_identity, content_occurrence,
-                       content_hash
-                FROM {table} WHERE message_id = ?""",
-            (old_id,),
-        ).fetchone()
-        if row is None:
-            raise InheritedPrefixMaterializationError(f"inherited row {old_id!r} of {child!r} is not retained")
-        sources.append((old_id, tuple(row)))
-    positions, slots = _prefix_positions(
-        conn, child, [(str(row[0]), int(row[1]), int(row[2])) for _old_id, row in sources]
+    del parent_session_id  # Every prefix-sharing edge of the child is flipped below.
+    snapshot = _snapshot_table("messages")
+    conn.execute(
+        f"""CREATE TEMP TABLE {_GUARD_PREFIX}sources (
+               ordinal INTEGER PRIMARY KEY, old_id TEXT NOT NULL, session_id TEXT, position INTEGER,
+               variant_index INTEGER, native_id TEXT, content_identity TEXT, content_occurrence INTEGER)"""
     )
-    plan: list[tuple[int, str, str, str | None, int | None, str, bytes, int]] = []
-    remap: dict[str, str] = {}
-    for ordinal, ((old_id, row), position) in enumerate(zip(sources, positions, strict=True)):
-        _session, _position, variant_index, native_id, content_identity, content_occurrence, content_hash = row
-        if native_id is not None and str(native_id) not in taken_native:
-            taken_native.add(str(native_id))
-            new_native: str | None = str(native_id)
-            occurrence = None if content_occurrence is None else int(content_occurrence)
-            new_id = f"{child}:n:{native_id}"
-            identity_source = "native"
-        elif content_identity is not None:
-            identity = str(content_identity)
-            occurrence = next_occurrence.get(identity, 0)
-            next_occurrence[identity] = occurrence + 1
-            new_native = None
-            new_id = f"{child}:c:{identity}.{occurrence}"
-            identity_source = "content"
-        else:
-            raise InheritedPrefixMaterializationError(
-                f"inherited row {old_id!r} collides with a native id of {child!r} and has no content identity"
-            )
-        # The stored hash is identity-inclusive (session, position, native id),
-        # so the copy gets its own; it changes whenever the source content does.
-        new_hash = _hash_bytes(
-            "inherited-prefix-copy", new_id, str(position), str(variant_index), bytes(content_hash).hex()
-        )
-        plan.append((ordinal, old_id, new_id, new_native, occurrence, identity_source, new_hash, position))
-        remap[old_id] = new_id
-    # Record which copies took a content ID, by their occurrence among the
-    # prefix's messages of the same content identity, so a replay of the
-    # spawned-fresh child reproduces these IDs (``_IdentityScope``).
-    prefix_ordinals: Counter[str] = Counter()
-    content_copies: dict[str, list[int]] = defaultdict(list)
-    copy_bases: dict[str, int] = {}
-    for (_old_id, row), planned in zip(sources, plan, strict=True):
-        identity = row[4]
-        if identity is None:
-            continue
-        ordinal_in_prefix = prefix_ordinals[str(identity)]
-        prefix_ordinals[str(identity)] += 1
-        if planned[5] == "content":
-            content_copies[str(identity)].append(ordinal_in_prefix)
-            assert planned[4] is not None
-            copy_bases.setdefault(str(identity), planned[4])
-    prefix_keys = [
-        key
-        for _old_id, row in sources
-        if (key := _prefix_key(None if row[3] is None else str(row[3]), None if row[4] is None else str(row[4])))
-        is not None
-    ]
-    tail_identities = [
-        str(row[0] or "")
-        for row in conn.execute(
-            "SELECT content_identity FROM messages WHERE session_id = ? ORDER BY position, variant_index", (child,)
-        )
-    ]
-    identity_scope = _IdentityScope(
-        len(inherited_ids),
-        {identity: tuple(ordinals) for identity, ordinals in content_copies.items()},
-        _identity_sequence_digest(prefix_keys) if len(prefix_keys) == len(sources) else "",
-        prefix_keys[0] if prefix_keys and len(prefix_keys) == len(sources) else "",
-        copy_bases,
-        len(tail_identities),
-        _identity_sequence_digest(tail_identities),
-        "".join(key[0] for key in prefix_keys) if len(prefix_keys) == len(sources) else "",
-        _position_runs(positions) if slots else (),
+    conn.execute(
+        f"""INSERT INTO temp.{_GUARD_PREFIX}sources
+            SELECT b.ordinal, b.message_id,
+                   COALESCE(s.session_id, m.session_id), COALESCE(s.position, m.position),
+                   COALESCE(s.variant_index, m.variant_index),
+                   CASE WHEN s.message_id IS NOT NULL THEN s.native_id ELSE m.native_id END,
+                   CASE WHEN s.message_id IS NOT NULL THEN s.content_identity ELSE m.content_identity END,
+                   CASE WHEN s.message_id IS NOT NULL THEN s.content_occurrence ELSE m.content_occurrence END
+            FROM temp.{_GUARD_PREFIX}before AS b
+            LEFT JOIN {snapshot} AS s ON s.message_id = b.message_id
+            LEFT JOIN main.messages AS m ON m.message_id = b.message_id AND s.message_id IS NULL
+            WHERE b.child = ? AND b.owner <> ?""",
+        (child, child),
+    )
+    missing = conn.execute(
+        f"SELECT old_id FROM temp.{_GUARD_PREFIX}sources WHERE session_id IS NULL ORDER BY ordinal LIMIT 1"
+    ).fetchone()
+    if missing is not None:
+        raise InheritedPrefixMaterializationError(f"inherited row {missing[0]!r} of {child!r} is not retained")
+    inherited_count = int(conn.execute(f"SELECT COUNT(*) FROM temp.{_GUARD_PREFIX}sources").fetchone()[0])
+    slots = _plan_prefix_positions(conn, child)
+    # Identity decisions, one row at a time: natives already taken by the
+    # child (or by an earlier copy) and each content identity's next free
+    # occurrence live in TEMP tables, never in Python sets.
+    conn.execute(f"CREATE TEMP TABLE {_GUARD_PREFIX}taken (native_id TEXT PRIMARY KEY)")
+    conn.execute(
+        f"INSERT OR IGNORE INTO temp.{_GUARD_PREFIX}taken SELECT native_id FROM messages WHERE session_id = ? AND native_id IS NOT NULL",
+        (child,),
+    )
+    conn.execute(
+        f"""CREATE TEMP TABLE {_GUARD_PREFIX}occurrences (
+               content_identity TEXT PRIMARY KEY, next_occurrence INTEGER NOT NULL, prefix_seen INTEGER NOT NULL)"""
+    )
+    conn.execute(
+        f"""INSERT INTO temp.{_GUARD_PREFIX}occurrences
+            SELECT content_identity, MAX(content_occurrence) + 1, 0 FROM messages
+            WHERE session_id = ? AND content_identity IS NOT NULL GROUP BY content_identity""",
+        (child,),
     )
     conn.execute(
         f"""CREATE TEMP TABLE {_GUARD_PREFIX}plan (
@@ -11642,7 +11640,100 @@ def _materialize_inherited_prefix(
                native_id TEXT, content_occurrence INTEGER, identity_source TEXT NOT NULL, content_hash BLOB NOT NULL,
                position INTEGER NOT NULL)"""
     )
-    conn.executemany(f"INSERT INTO temp.{_GUARD_PREFIX}plan VALUES (?, ?, ?, ?, ?, ?, ?, ?)", plan)
+    # Record which copies took a content ID, by their occurrence among the
+    # prefix's messages of the same content identity, so a replay of the
+    # spawned-fresh child reproduces these IDs (``_IdentityScope``).
+    content_copies: dict[str, list[int]] = defaultdict(list)
+    copy_bases: dict[str, int] = {}
+    keys_digest = hashlib.sha256()
+    kinds: list[str] = []
+    first_key = ""
+    keyed = True
+    source_rows = conn.execute(
+        f"""SELECT s.ordinal, s.old_id, s.variant_index, s.native_id, s.content_identity, s.content_occurrence,
+                   p.new_position
+            FROM temp.{_GUARD_PREFIX}sources AS s JOIN temp.{_GUARD_PREFIX}placed AS p ON p.ordinal = s.ordinal
+            ORDER BY s.ordinal"""
+    )
+    for ordinal, old_id, variant_index, native_id, content_identity, stored_occurrence, position in source_rows:
+        key = _prefix_key(
+            None if native_id is None else str(native_id), None if content_identity is None else str(content_identity)
+        )
+        if key is None:
+            keyed = False
+        else:
+            encoded = key.encode("ascii", "replace") + b"\n"
+            keys_digest.update(encoded)
+            kinds.append(key[0])
+            first_key = first_key or key
+        identity = None if content_identity is None else str(content_identity)
+        ordinal_in_prefix = 0
+        if identity is not None:
+            seen = conn.execute(
+                f"SELECT prefix_seen FROM temp.{_GUARD_PREFIX}occurrences WHERE content_identity = ?", (identity,)
+            ).fetchone()
+            ordinal_in_prefix = 0 if seen is None else int(seen[0])
+            conn.execute(
+                f"""INSERT INTO temp.{_GUARD_PREFIX}occurrences VALUES (?, 0, 1)
+                    ON CONFLICT(content_identity) DO UPDATE SET prefix_seen = prefix_seen + 1""",
+                (identity,),
+            )
+        if (
+            native_id is not None
+            and conn.execute(f"INSERT OR IGNORE INTO temp.{_GUARD_PREFIX}taken VALUES (?)", (str(native_id),)).rowcount
+            == 1
+        ):
+            new_native: str | None = str(native_id)
+            content_occurrence = None if stored_occurrence is None else int(stored_occurrence)
+            new_id = f"{child}:n:{native_id}"
+            identity_source = "native"
+        elif identity is not None:
+            next_row = conn.execute(
+                f"SELECT next_occurrence FROM temp.{_GUARD_PREFIX}occurrences WHERE content_identity = ?", (identity,)
+            ).fetchone()
+            content_occurrence = int(next_row[0])
+            conn.execute(
+                f"UPDATE temp.{_GUARD_PREFIX}occurrences SET next_occurrence = next_occurrence + 1 WHERE content_identity = ?",
+                (identity,),
+            )
+            new_native = None
+            new_id = f"{child}:c:{identity}.{content_occurrence}"
+            identity_source = "content"
+            content_copies[identity].append(ordinal_in_prefix)
+            copy_bases.setdefault(identity, content_occurrence)
+        else:
+            raise InheritedPrefixMaterializationError(
+                f"inherited row {old_id!r} collides with a native id of {child!r} and has no content identity"
+            )
+        # A placeholder the copy's canonical hash replaces once its blocks are
+        # in place (``_rehash_session_messages``); unique per copied row.
+        placeholder = _hash_bytes("inherited-prefix-copy", new_id, str(position), str(variant_index))
+        conn.execute(
+            f"INSERT INTO temp.{_GUARD_PREFIX}plan VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (ordinal, old_id, new_id, new_native, content_occurrence, identity_source, placeholder, position),
+        )
+    tail_digest = hashlib.sha256()
+    tail_length = 0
+    for (content_identity,) in conn.execute(
+        "SELECT content_identity FROM messages WHERE session_id = ? ORDER BY position, variant_index", (child,)
+    ):
+        tail_digest.update(str(content_identity or "").encode("ascii", "replace") + b"\n")
+        tail_length += 1
+    identity_scope = _IdentityScope(
+        inherited_count,
+        {identity: tuple(ordinals) for identity, ordinals in content_copies.items()},
+        keys_digest.hexdigest() if keyed else "",
+        first_key if keyed else "",
+        copy_bases,
+        tail_length,
+        tail_digest.hexdigest(),
+        "".join(kinds) if keyed else "",
+        _position_runs(
+            int(row[0]) for row in conn.execute(f"SELECT position FROM temp.{_GUARD_PREFIX}plan ORDER BY ordinal")
+        )
+        if slots
+        else (),
+    )
     tail_start = conn.execute("SELECT MIN(position) FROM messages WHERE session_id = ?", (child,)).fetchone()[0]
     shifted = _make_room_below(conn, "messages", child, slots)
     if shifted or slots:
@@ -11656,12 +11747,11 @@ def _materialize_inherited_prefix(
                    source_position INTEGER PRIMARY KEY, first_position INTEGER NOT NULL,
                    last_position INTEGER NOT NULL)"""
         )
-        conn.executemany(
-            f"""INSERT INTO temp.{_GUARD_PREFIX}positions VALUES (?, ?, ?)
-                ON CONFLICT(source_position) DO UPDATE SET
-                    first_position = min(first_position, excluded.first_position),
-                    last_position = max(last_position, excluded.last_position)""",
-            ((int(row[1]), position, position) for (_old_id, row), position in zip(sources, positions, strict=True)),
+        conn.execute(
+            f"""INSERT INTO temp.{_GUARD_PREFIX}positions
+                SELECT s.position, MIN(p.new_position), MAX(p.new_position)
+                FROM temp.{_GUARD_PREFIX}sources AS s JOIN temp.{_GUARD_PREFIX}placed AS p ON p.ordinal = s.ordinal
+                GROUP BY s.position"""
         )
 
         def moved(endpoint: str, mapped: str) -> str:
@@ -11721,17 +11811,19 @@ def _materialize_inherited_prefix(
         },
     )
     _keep_an_active_leaf(conn, child)
-    stored = {
-        str(row[0])
-        for row in conn.execute(
-            f"SELECT m.message_id FROM messages AS m JOIN temp.{_GUARD_PREFIX}plan AS p ON p.new_id = m.message_id"
-        )
-    }
-    if len(stored) != len(plan):
+    stored = int(
+        conn.execute(
+            f"SELECT COUNT(*) FROM messages AS m JOIN temp.{_GUARD_PREFIX}plan AS p ON p.new_id = m.message_id"
+        ).fetchone()[0]
+    )
+    if stored != inherited_count:
         raise InheritedPrefixMaterializationError(
-            f"materialized {len(stored)} of {len(plan)} inherited rows of {child!r}; the planned ids disagree "
+            f"materialized {stored} of {inherited_count} inherited rows of {child!r}; the planned ids disagree "
             "with the stored identity"
         )
+    conn.execute(
+        f"INSERT INTO temp.{_GUARD_PREFIX}copies SELECT ?, old_id, new_id FROM temp.{_GUARD_PREFIX}plan", (child,)
+    )
     # Descendants that branched inside this child's inherited prefix follow
     # the rows to their new owner -- at any depth, since a grandchild's
     # composition reaches the copies through its own parent. Their own
@@ -11813,8 +11905,8 @@ def _materialize_inherited_prefix(
     _aggregate_provider_usage_into_model_usage(conn, child)
     conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (child,))
     conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (child,))
-    conn.execute(f"DROP TABLE temp.{_GUARD_PREFIX}plan")
-    return remap
+    for table in ("plan", "sources", "placed", "taken", "occurrences"):
+        conn.execute(f"DROP TABLE temp.{_GUARD_PREFIX}{table}")
 
 
 def _composing_descendants(conn: sqlite3.Connection, session_id: str) -> list[str]:
