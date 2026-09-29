@@ -10,6 +10,7 @@ from pathlib import Path
 import ijson
 import pytest
 
+import polylogue.sources.prepared_jsonl as prepared_jsonl
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
@@ -41,11 +42,17 @@ def _trajectory(step_count: int = 300, *, subagents: bool = True) -> dict[str, o
             {
                 "session_id": "neutral-child",
                 "agent": {"name": "Neutral agent"},
-                "steps": [{"source": "agent", "message": "Neutral child response"}],
+                "steps": [
+                    {**fixture_steps[index % len(fixture_steps)], "step_id": index + 1} for index in range(step_count)
+                ]
+                + ["not a step object"],
             },
             {"session_id": document["session_id"], "steps": []},
             "not a subagent object",
+            ["not", "a", "subagent"],
             {"steps": [{"source": "agent", "message": "No child identity"}]},
+            {"session_id": "neutral-scalar-steps", "steps": "not a list"},
+            {},
         ]
     return document
 
@@ -106,8 +113,10 @@ def test_atif_trajectory_streams_step_events_before_eof_with_parser_parity(
     document = _trajectory(subagents=subagents)
     source = _source(tmp_path, document)
     expected = _expected(document, source)
-    assert len(expected) == (2 if subagents else 1)
+    assert len(expected) == (3 if subagents else 1)
     assert len(expected[0].session_events) > 300
+    if subagents:
+        assert len(expected[1].session_events) > 300
 
     _refuse_whole_document(monkeypatch)
     decoded = 0
@@ -276,5 +285,87 @@ def test_retained_atif_trajectory_uses_streamed_replay_route(tmp_path: Path, mon
     assert artifact.error is None
     assert artifact.positive_evidence_filtered
     sessions = list(artifact.iter_sessions())
-    assert len(sessions) == 2
+    assert len(sessions) == 3
     assert len(sessions[0].session_events) > 300
+
+
+def test_atif_subagent_entries_arrive_without_their_steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each child step is spilled on its own; no entry is decoded with its step list."""
+    document = _trajectory(40)
+    # A root key containing dots must not pose as a path into the entries.
+    document["subagent_trajectories.item"] = {"session_id": "posing-child", "steps": [{"source": "agent"}]}
+    source = _source(tmp_path, document)
+    expected = _expected(document, source)
+    members: list[tuple[int, object, int | None]] = []
+    spilled_steps: dict[int, int] = {}
+    original_walk = prepared_jsonl.spill_member_arrays
+
+    def tracked_walk(handle: object, container: str, nested: str, *, on_member: object, on_nested_item: object) -> bool:
+        def record_member(index: int, fields: object, count: int | None) -> None:
+            members.append((index, fields, count))
+            on_member(index, fields, count)  # type: ignore[operator]
+
+        def record_step(index: int, ordinal: int, step: object) -> None:
+            # A step is spilled before its entry has been reported.
+            assert all(member[0] != index for member in members)
+            spilled_steps[index] = spilled_steps.get(index, 0) + 1
+            on_nested_item(index, ordinal, step)  # type: ignore[operator]
+
+        return original_walk(handle, container, nested, on_member=record_member, on_nested_item=record_step)
+
+    monkeypatch.setattr(prepared_jsonl, "spill_member_arrays", tracked_walk)
+    _refuse_whole_document(monkeypatch)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.HERMES.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    entries = document["subagent_trajectories"]
+    assert isinstance(entries, list)
+    assert [member[0] for member in members] == list(range(len(entries)))
+    for index, fields, count in members:
+        entry = entries[index]
+        if isinstance(entry, dict) and isinstance(entry.get("steps"), list):
+            assert isinstance(fields, dict) and "steps" not in fields
+            assert count == spilled_steps.get(index, 0) == len(entry["steps"])
+        else:
+            assert count is None
+    assert spilled_steps[0] == 41
+    assert artifact.shard_path is not None
+    _assert_same_publication(list(artifact.iter_sessions()), expected, artifact.shard_path, tmp_path)
+    assert artifact.sessions_path is not None
+    with sqlite3.connect(artifact.sessions_path) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert not {table for table in tables if table.startswith("atif_")}
+
+
+def test_atif_subagent_repeating_steps_keeps_collecting_parity(tmp_path: Path) -> None:
+    """The decoder keeps a repeated key's last value, so the walk refuses it."""
+    document = _trajectory(10)
+    text = json.dumps(document).replace(
+        '"session_id": "neutral-child", ',
+        '"session_id": "neutral-child", "steps": [{"source": "agent", "message": "overwritten"}], ',
+        1,
+    )
+    assert text.count('"overwritten"') == 1
+    source = _source(tmp_path, document)
+    source.write_text(text, encoding="utf-8")
+    expected = _expected(json.loads(text), source)
+    with source.open("rb") as handle:
+        refused = prepared_jsonl._spill_atif_subagents(handle, sqlite3.connect(":memory:"))
+    assert refused is False
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.HERMES.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    assert artifact.shard_path is not None
+    _assert_same_publication(list(artifact.iter_sessions()), expected, artifact.shard_path, tmp_path)
