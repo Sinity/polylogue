@@ -181,7 +181,7 @@ def observe_embedding_mutation_authority(root: Path) -> OperationControlRead:
     return replace(snapshot, schema_versions=versions, degraded_components=tuple(degraded))
 
 
-def _abort_checkpoint(ctx: QueryExecutionContext) -> Callable[[], None]:
+def abort_checkpoint(ctx: QueryExecutionContext) -> Callable[[], None]:
     """A Python-level abort checkpoint for reads between SQL statements.
 
     It raises the same typed errors the SQLite progress handler raises for
@@ -260,12 +260,6 @@ def open_operation_read(
                 cleanup.callback(end_snapshot)
             if execution_context is not None:
                 cleanup.enter_context(InterruptibleSQLiteRead(execution_context).control_store(archive))
-                # Optional per-read checkpoint that read_view_lineage reads with
-                # getattr; ArchiveStore does not declare it, so it is attached
-                # dynamically. It raises the typed abort error for the reason.
-                setattr(  # noqa: B010
-                    archive, "operation_raise_if_aborted", _abort_checkpoint(execution_context)
-                )
             pin_snapshot = getattr(archive, "pin_operation_snapshot", None)
             # The read-result cache epoch is the announced index-content
             # revision, and it must describe the snapshot this read actually
