@@ -177,8 +177,8 @@ def test_seed_is_present_on_every_node_page(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     _seed_family(conn)
 
-    first = derive_compact_lineage(conn, _FORK, node_limit=2, node_offset=0)
-    second = derive_compact_lineage(conn, _FORK, node_limit=2, node_offset=1)
+    first = derive_compact_lineage(conn, _FORK, node_limit=1, node_offset=0)
+    second = derive_compact_lineage(conn, _FORK, node_limit=1, node_offset=1)
     last = derive_compact_lineage(conn, _FORK, node_limit=1, node_offset=99)
 
     for page in (first, second, last):
@@ -274,3 +274,24 @@ def test_compact_execution_reads_no_message_body(tmp_path: Path) -> None:
                 or "select position, variant_index" in sql
                 or sql.startswith("select session_id from messages where message_id = ?")
             ), sql
+
+
+def test_w5_one_node_pages_advance_past_the_seed(tmp_path: Path) -> None:
+    """99.15: a one-node budget used to return zero non-seed nodes forever."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        _seed_family(conn)
+        offset = 0
+        seen: list[str] = []
+        for _ in range(2):
+            page = derive_compact_lineage(conn, _FORK, node_limit=1, node_offset=offset)
+            assert page is not None
+            assert page.node_page.returned == 1
+            seen.extend(str(node.session_id) for node in page.nodes if not node.is_seed)
+            offset += page.node_page.returned
+        assert set(seen) == {_PARENT, _SPAWNED}
+        assert len(seen) == len(set(seen))
+        assert not page.node_page.has_more
+    finally:
+        conn.close()
+

@@ -386,9 +386,10 @@ def _session_id_page(
         SELECT s.session_id
         FROM sessions AS s
         LEFT JOIN session_profiles AS p ON p.session_id = s.session_id
+        LEFT JOIN session_latency_profiles AS l ON l.session_id = s.session_id
         LEFT JOIN session_profile_demand AS d ON d.session_id = s.session_id
         WHERE s.session_id > COALESCE(?, '')
-          AND (p.session_id IS NULL OR d.session_id IS NOT NULL)
+          AND (p.session_id IS NULL OR l.session_id IS NULL OR d.session_id IS NOT NULL)
         ORDER BY s.session_id LIMIT ?
         """,
         (cursor, limit + 1),
@@ -748,10 +749,13 @@ class SessionProfileDerivation:
             profiles = _count(
                 conn.execute("SELECT COUNT(*) FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0]
             )
-            status = _classify_partition(
+            status = _classify_partition_with_demand(
                 stored,
                 input_binding,
                 materializer_version=self._materializer_version,
+                demanded=conn.execute(
+                    "SELECT 1 FROM session_profile_demand WHERE session_id = ?", (session_id,)
+                ).fetchone() is not None,
             )
         finally:
             conn.close()

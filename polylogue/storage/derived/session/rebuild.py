@@ -612,6 +612,8 @@ def sync_attachment_batch(
             r.source_url,
             r.caption,
             r.upload_origin,
+            r.direction,
+            r.producer_ref,
             r.message_id,
             r.session_id
         FROM attachments a
@@ -635,6 +637,8 @@ def sync_attachment_batch(
                 source_url=row["source_url"],
                 caption=row["caption"],
                 upload_origin=row["upload_origin"],
+                direction=row["direction"],
+                producer_ref=row["producer_ref"],
             )
         )
     return result
