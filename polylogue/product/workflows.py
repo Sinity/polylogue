@@ -117,12 +117,30 @@ async def _iter_messages(messages: Iterable[Any]) -> AsyncIterator[Any]:
         yield message
 
 
+def _max_window_rows() -> int:
+    """The largest page the transcript window accepts (``SessionRead.limit``)."""
+    from polylogue.operations.session_contracts import SessionRead
+
+    for item in SessionRead.model_fields["limit"].metadata:
+        bound = getattr(item, "le", None)
+        if isinstance(bound, int):
+            return bound
+    return 2000
+
+
 async def _session_messages(store: Any, session_id: str, page_size: int) -> AsyncIterator[Any] | None:
     """Stream one session's messages in bounded pages until the caller stops.
 
     The caller's bound counts text-bearing output, not raw rows, so paging
-    continues past rows it discards; ``None`` means the session is gone.
+    continues past rows it discards; each page stays within the transcript
+    window's own limit. ``None`` means the session is gone before its first
+    page; a session that disappears or is rewritten mid-stream ends the stream
+    rather than failing the whole topic pack or mixing snapshots.
     """
+    from polylogue.archive.query.transaction import QueryContinuationStaleError
+    from polylogue.operations.archive_mutation import SessionNotFoundError
+
+    page_size = max(1, min(page_size, _max_window_rows()))
     windowed = getattr(store, "read_transcript_window", None)
     pager = getattr(store, "get_messages_paginated", None)
     iterator = getattr(store, "iter_messages", None)
@@ -130,29 +148,44 @@ async def _session_messages(store: Any, session_id: str, page_size: int) -> Asyn
         # Snapshot-bound pages: each continuation resumes the archive snapshot
         # its first page read, so a concurrent rewrite is refused as stale
         # instead of shifting a numeric offset onto a different transcript.
+        try:
+            first = await windowed(session_id, limit=page_size)
+        except SessionNotFoundError:
+            return None
 
         async def continued() -> AsyncIterator[Any]:
-            window = await windowed(session_id, limit=page_size)
+            window = first
             while True:
                 for row in window.rows:
                     yield row
                 if window.continuation is None:
                     return
-                window = await windowed(session_id, continuation=window.continuation)
+                try:
+                    window = await windowed(session_id, continuation=window.continuation)
+                except (SessionNotFoundError, QueryContinuationStaleError):
+                    return
 
         return continued()
     if callable(pager):
+        try:
+            first_page = await pager(session_id, limit=page_size, offset=0)
+        except SessionNotFoundError:
+            return None
 
         async def paged() -> AsyncIterator[Any]:
+            page = first_page
             offset = 0
             while True:
-                page = await pager(session_id, limit=page_size, offset=offset)
                 rows = tuple(page[0])
                 for row in rows:
                     yield row
                 if len(rows) < page_size:
                     return
                 offset += len(rows)
+                try:
+                    page = await pager(session_id, limit=page_size, offset=offset)
+                except SessionNotFoundError:
+                    return
 
         return paged()
     if callable(iterator):

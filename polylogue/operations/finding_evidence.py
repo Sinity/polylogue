@@ -17,6 +17,7 @@ observable at all -- bounded by the evaluator's own node budget.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from polylogue.core.enums import AssertionStatus
@@ -167,7 +168,10 @@ def build_finding_evidence_adapter(
         )
     }
     edges: list[EvidenceGraphEdge] = []
-    pending: list[tuple[str, tuple[FindingEvidenceResolution, ...]]] = [(root_ref, provenance.evidence)]
+    # Children resolve lazily: the consumer stops at the node budget (plus one
+    # boundary witness), so an assertion citing 100k refs costs budget-many
+    # lookups, not 100k.
+    pending: list[tuple[str, Iterable[FindingEvidenceResolution]]] = [(root_ref, provenance.evidence)]
     expanded: set[str] = {root_ref}
 
     while pending:
@@ -216,12 +220,7 @@ def build_finding_evidence_adapter(
                 # half of polylogue-rxdo.4 this change does not reach.
                 public=True,
             )
-            pending.append(
-                (
-                    ref,
-                    tuple(_cited(conn, str(child)) for child in envelope.evidence_refs),
-                )
-            )
+            pending.append((ref, (_cited(conn, str(child)) for child in envelope.evidence_refs)))
 
     return FindingEvidenceAdapter(graph_nodes=tuple(nodes.values()), graph_edges=tuple(edges))
 

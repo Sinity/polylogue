@@ -206,3 +206,31 @@ def test_topic_pack_to_dict_is_json_serializable_for_model_timestamps() -> None:
         gaps=(),
     )
     assert json.loads(json.dumps(result.to_dict()))["sessions"][0]["created_at"] == "2026-09-28T00:00:00Z"
+
+
+@pytest.mark.asyncio
+async def test_topic_pack_reports_a_session_deleted_before_its_window_as_a_gap() -> None:
+    """Anti-vacuity: an unhandled SessionNotFoundError from the window fails the whole topic pack."""
+    from polylogue.operations.archive_mutation import SessionNotFoundError
+
+    class DeletedStore(FakeStore):
+        async def read_transcript_window(self, session_id: str, **_kwargs: Any) -> Any:
+            raise SessionNotFoundError(session_id)
+
+    result = await build_topic_pack(cast(Any, DeletedStore()), TopicPackRequest("topic", max_messages=1))
+    assert result.context_pack == []
+    assert any("session disappeared during read" in gap for gap in result.gaps)
+
+
+@pytest.mark.asyncio
+async def test_topic_pack_pages_within_the_transcript_window_limit() -> None:
+    """Anti-vacuity: passing max_messages straight through as the window limit exceeds SessionRead.limit."""
+    requested: list[int] = []
+
+    class WindowStore(FakeStore):
+        async def read_transcript_window(self, session_id: str, *, limit: int = 50, **_kwargs: Any) -> Any:
+            requested.append(limit)
+            return SimpleNamespace(rows=list(self.session.messages), continuation=None)
+
+    await build_topic_pack(cast(Any, WindowStore()), TopicPackRequest("topic", max_messages=5000))
+    assert requested and max(requested) <= 2000
