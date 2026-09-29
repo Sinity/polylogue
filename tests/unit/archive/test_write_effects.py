@@ -58,7 +58,7 @@ def test_commit_write_effects_positive_case_runs_fts_repair_and_cache_invalidati
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_triggers_sync", lambda _conn: None)
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync",
-        lambda _conn, ids, **_kwargs: repaired.append(tuple(ids)),
+        lambda _conn, ids: repaired.append(tuple(ids)),
     )
     monkeypatch.setattr(
         "polylogue.storage.search.cache.invalidate_search_cache",
@@ -102,7 +102,7 @@ def test_commit_write_effects_degraded_case_skips_conditional_effects_when_no_id
     )
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync",
-        lambda _conn, _ids, **_kwargs: repaired.append(True),
+        lambda _conn, _ids: repaired.append(True),
     )
     monkeypatch.setattr(
         "polylogue.storage.search.cache.invalidate_search_cache",
@@ -157,7 +157,7 @@ def test_repair_message_fts_should_run_honors_explicit_opt_out(
     monkeypatch.setattr("polylogue.storage.fts.fts_lifecycle.ensure_fts_triggers_sync", lambda _conn: None)
     monkeypatch.setattr(
         "polylogue.storage.fts.fts_lifecycle.repair_message_fts_index_sync",
-        lambda _conn, _ids, **_kwargs: repaired.append(True),
+        lambda _conn, _ids: repaired.append(True),
     )
     monkeypatch.setattr("polylogue.storage.search.cache.invalidate_search_cache", lambda: None)
 

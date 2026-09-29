@@ -845,9 +845,16 @@ async def test_a_slow_json_preparation_is_awaited_not_deferred(tmp_path: Path, m
         read_snapshot=open_operation_read,
     )
     try:
-        result = await processor.ingest_files([pending_path, ready_path], emit_event=False)
+        with plog.capture() as records:
+            result = await processor.ingest_files([pending_path, ready_path], emit_event=False)
         assert not result.deferred_paths
         assert result.succeeded_file_count == 2
+        # The stall is reported with its measurements, each registered in
+        # the log field allowlist (an unregistered field is dropped with a
+        # ``log.field_rejected`` record).
+        stalls = [record for record in records if record["event"] == "live.parse_prefetch.preparation_stalled"]
+        assert stalls and stalls[0]["paths"] >= 1 and "wait_ms" in stalls[0] and "attempt_bytes" in stalls[0]
+        assert not [record for record in records if record["event"] == "log.field_rejected"]
         cursors = CursorStore(archive_root / "index.db")
         for path in (pending_path, ready_path):
             cursor = cursors.get_record(path)
@@ -1132,22 +1139,6 @@ def test_read_ahead_refuses_a_path_swapped_for_a_symlink(tmp_path: Path) -> None
     assert result.error == "read-ahead path is not a regular file"
     assert result.deferred
     assert not shards.exists() or not any(shards.iterdir())
-
-
-def test_a_preparation_stall_report_carries_its_measurements() -> None:
-    """Anti-vacuity: emit a stall field the log allowlist does not register and
-    it is dropped from the event with a ``log.field_rejected`` record."""
-    from concurrent.futures import Future
-
-    from polylogue.sources.live.parse_prefetch import _completed_reporting_stalls
-
-    future: Future[None] = Future()
-    threading.Timer(0.2, future.set_result, args=(None,)).start()
-    with plog.capture() as records:
-        assert list(_completed_reporting_stalls([future], stall_window=0.02)) == [future]
-    stalls = [record for record in records if record["event"] == "live.parse_prefetch.preparation_stalled"]
-    assert stalls and stalls[0]["paths"] == 1 and stalls[0]["wait_ms"] == 20
-    assert not [record for record in records if record["event"] == "log.field_rejected"]
 
 
 @pytest.mark.asyncio
