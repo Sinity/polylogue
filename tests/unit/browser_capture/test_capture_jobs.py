@@ -1343,6 +1343,8 @@ def _declared_after_upgrade(tmp_path: Path, job_id: str, retention: Mapping[str,
             "UPDATE capture_jobs SET retention_json=? WHERE job_id=?", (canonical_json(retention), job_id)
         )
         connection.execute("ALTER TABLE capture_jobs DROP COLUMN retention_declared")
+    # An upgrade runs in a fresh process; forget this one's once-per-file schema check.
+    capture_jobs_module._SCHEMA_READY.clear()
     registry = CaptureJobRegistry(spool_path=tmp_path, receiver_id="upgrade-test")
     with registry._connection() as connection:
         row = connection.execute("SELECT retention_declared FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
