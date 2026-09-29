@@ -104,7 +104,8 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
         # A paged batch still accepting pages: durably accepted, not done --
         # or fenced at startup because the daemon preparing it died.
         if record.get("stop_reason"):
-            return {**state, "outcome": "interrupted", "effect": "no-effect", "stop_reason": record["stop_reason"]}
+            outcome = "cancelled" if record["stop_reason"] == "cancelled" else "interrupted"
+            return {**state, "outcome": outcome, "effect": "no-effect", "stop_reason": record["stop_reason"]}
         return {**state, "outcome": "running", "effect": "no-effect"}
     if kind not in {"operation", "execution-batch", "source-generation"}:
         refs = [part["artifact_ref"] for part in parts] or [record["artifact_ref"]]

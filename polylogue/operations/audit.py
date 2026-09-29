@@ -1894,7 +1894,11 @@ class AuditRepository:
 
     @_continuity_mutation("stop_machine_batch")
     def stop_machine_batch(self, binding: MachineRequestBinding, reason: str) -> None:
-        """Fence unstarted parts without hiding or revoking an attempted effect."""
+        """Fence unstarted parts without hiding or revoking an attempted effect.
+
+        A staged authorization batch has attempted nothing, so its issued
+        authorizations are revoked with it.
+        """
         if self.machine_request(binding) is None:
             raise ValueError("machine request is unknown")
         with self._connection() as conn:
@@ -1917,6 +1921,21 @@ class AuditRepository:
                     WHERE archive_identity = ? AND request_id = ? AND operation_id IS NULL
                 )""",
                 (binding.archive_identity, binding.request_id),
+            )
+            # A staged authorization batch keeps its issued authorizations as
+            # its parts' artifacts. Fencing it must not leave the pages it
+            # already accepted usable by an execution nobody can follow.
+            conn.execute(
+                """UPDATE operation_authorizations SET state = 'revoked'
+                WHERE state = 'active' AND authorization_id IN (
+                    SELECT parts.artifact_ref FROM machine_request_parts AS parts
+                    JOIN machine_requests AS requests
+                      ON requests.archive_identity = parts.archive_identity
+                     AND requests.request_id = parts.request_id
+                    WHERE parts.archive_identity = ? AND parts.request_id = ?
+                      AND requests.artifact_kind = ?
+                )""",
+                (binding.archive_identity, binding.request_id, machine_pages_kind("authorization-batch")),
             )
 
     @_continuity_mutation("ensure_archive_authority")

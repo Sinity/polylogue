@@ -2828,3 +2828,56 @@ def test_a_failing_later_page_terminalizes_the_staged_request(tmp_path: Path) ->
     record = audit.machine_request(binding)
     assert record is not None and record["stop_reason"] == "refused"
     assert machine_request_state(audit, record)["outcome"] == "interrupted"
+
+
+def test_cancelling_a_staged_authorization_batch_between_pages_revokes_it(tmp_path: Path) -> None:
+    """Anti-vacuity: stop checking cancellation between pages and the second
+    page is accepted; leave staged authorizations active on a fence and the
+    first page's authorization stays usable."""
+    from types import SimpleNamespace
+
+    from polylogue.archive.query.execution_control import QueryCancelledError
+    from polylogue.operations.audit import MACHINE_PAGE_PARTS
+    from polylogue.operations.daemon_mutations import _fenced_on_failure, _page_bounds
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit)
+    previews = [
+        executor.prepare_bound(
+            _binding(actuator),
+            object(),
+            _principal(),
+            archive_instance_id="archive:fixture",
+            archive_identity_digest="identity:fixture",
+            parameter_digest=f"params:paged-{index}",
+        )
+        for index in range(2)
+    ]
+    binding = MachineRequestBinding("identity:fixture", "request:paged", "actor:test", "c" * 64, "mutation.fixture")
+    context = cast(Any, SimpleNamespace(runtime=SimpleNamespace(stop_reason=lambda _request: "cancelled")))
+    accepted_pages = 0
+    with pytest.raises(QueryCancelledError, match="cancelled"), _fenced_on_failure(audit, binding):
+        for offset, _end, final in _page_bounds(
+            2 * MACHINE_PAGE_PARTS, 0, request=cast(Any, None), context=context, audit=audit, binding=binding
+        ):
+            preview = previews[accepted_pages]
+            # Issued unpersisted, as the daemon handler issues them; the batch publishes it.
+            authorization = OperationExecutor().authorize_bound(_binding(actuator), preview, _principal())
+            with audit.bind_machine_request(binding, transition="issue_authorization_batch", page=(offset, final)):
+                audit.issue_authorization_batch((preview,), _principal(), (authorization,))
+            accepted_pages += 1
+    assert accepted_pages == 1
+    record = audit.machine_request(binding)
+    assert record is not None and record["stop_reason"] == "cancelled"
+    assert machine_request_state(audit, record)["outcome"] == "cancelled"
+    refs = [str(part["artifact_ref"]) for part in audit.machine_parts(binding)]
+    with audit._connection() as conn:
+        states = {
+            str(row[0])
+            for row in conn.execute(
+                f"SELECT state FROM operation_authorizations WHERE authorization_id IN ({','.join('?' * len(refs))})",
+                refs,
+            )
+        }
+    assert refs and states == {"revoked"}

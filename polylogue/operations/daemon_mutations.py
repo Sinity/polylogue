@@ -583,9 +583,29 @@ def _fenced_on_failure(audit: AuditRepository, binding: MachineRequestBinding) -
         raise
 
 
-def _page_bounds(total: int, start: int) -> Iterator[tuple[int, int, bool]]:
-    """``(offset, end, final)`` for each page of ``total`` parts from ``start``."""
+def _page_bounds(
+    total: int,
+    start: int,
+    *,
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    binding: MachineRequestBinding,
+) -> Iterator[tuple[int, int, bool]]:
+    """``(offset, end, final)`` for each page of ``total`` parts from ``start``.
+
+    Between pages, a cancellation or an expired deadline fences the staged
+    request with that reason, so it reads terminal instead of every remaining
+    page being accepted regardless.
+    """
     for offset in range(start, total, MACHINE_PAGE_PARTS):
+        if offset > 0 and context.runtime is not None:
+            stop = context.runtime.stop_reason(request)
+            if stop is not None:
+                audit.stop_machine_batch(binding, stop)
+                from polylogue.archive.query.execution_control import QueryCancelledError
+
+                raise QueryCancelledError(f"{binding.operation_name} stopped after {offset} parts: {stop}")
         end = min(offset + MACHINE_PAGE_PARTS, total)
         yield offset, end, end == total
 
@@ -613,7 +633,9 @@ def mutation_session_delete_preview(
         accepted_at_ms = int(cast(int, staged["accepted_at_ms"])) if staged is not None else int(time() * 1000)
         expires_at_ms = accepted_at_ms + _DELETE_PREVIEW_BUDGET_MS + _PREVIEW_LIFETIME_MS
         with _fenced_on_failure(audit, binding):
-            for offset, end, final in _page_bounds(len(chunks), accepted):
+            for offset, end, final in _page_bounds(
+                len(chunks), accepted, request=request, context=context, audit=audit, binding=binding
+            ):
                 args = tuple(SessionDeleteArgs(snapshot.archive, chunk) for chunk in chunks[offset:end])
                 previews = _previews(request, context, audit, snapshot, operation, args, expires_at_ms=expires_at_ms)
                 with audit.bind_machine_request(binding, transition="create_preview_batch", page=(offset, final)):
@@ -635,7 +657,9 @@ def mutation_session_delete_authorize(
         operation = runtime_operation_binding(SessionDeleteActuator())
         executor = OperationExecutor()
         with _fenced_on_failure(audit, binding):
-            for offset, end, final in _page_bounds(len(preview_refs), accepted):
+            for offset, end, final in _page_bounds(
+                len(preview_refs), accepted, request=request, context=context, audit=audit, binding=binding
+            ):
                 previews = tuple(
                     audit.preview_for_principal(ref, context.principal) for ref in preview_refs[offset:end]
                 )
@@ -660,7 +684,9 @@ def mutation_session_delete_cancel(
     accepted = _accepted_pages(audit, binding, "cancelled-preview-batch")
     if accepted is not None:
         with _fenced_on_failure(audit, binding):
-            for offset, end, final in _page_bounds(len(refs), accepted):
+            for offset, end, final in _page_bounds(
+                len(refs), accepted, request=request, context=context, audit=audit, binding=binding
+            ):
                 previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs[offset:end])
                 with audit.bind_machine_request(binding, transition="cancel_preview_batch", page=(offset, final)):
                     audit.cancel_preview_batch(previews, context.principal)
@@ -706,7 +732,9 @@ def _execute_batch(
     if accepted is not None:
         deadline_unix_ms = context.runtime.request_deadline_unix_ms(request)
         with _fenced_on_failure(audit, binding):
-            for offset, end, final in _page_bounds(len(refs), accepted):
+            for offset, end, final in _page_bounds(
+                len(refs), accepted, request=request, context=context, audit=audit, binding=binding
+            ):
                 with audit.bind_machine_request(
                     binding,
                     transition="accept_execution_batch",
