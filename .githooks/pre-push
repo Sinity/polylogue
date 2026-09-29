@@ -1,6 +1,47 @@
 #!/usr/bin/env bash
-# No local push gate. The hosted quick gate on the pull request is the static
-# check; broader suites are explicit workflow or operator requests, not a
-# per-wave hook, and a local gate here would run against whichever working tree
-# happened to be checked out rather than the commit being pushed.
-exit 0
+# Pre-push gate: run the static quick gate (`devtools verify --quick`) on the
+# commit being pushed, so a head that fails formatting, lint, typing, or a
+# repository gate never reaches the pull request and costs a review round.
+# Installed automatically by the devshell (shellHook in flake.nix).
+#
+# The hosted `ci/circleci: quick-gate` check stays the enforced record. This
+# hook is an early local copy of it, not a replacement.
+#
+# The gate reads the working tree, so it can vouch only for a pushed commit
+# that is the checked-out HEAD with no tracked modifications. A tracked change
+# on top of the pushed HEAD is refused (commit it or move it first). A pushed
+# ref that is not HEAD (a tag, `sha:refs/heads/x` from elsewhere) is left to
+# the hosted gate with a notice. Untracked files are not inspected.
+
+set -euo pipefail
+
+zero=0000000000000000000000000000000000000000
+head=$(git rev-parse HEAD)
+gate_head=0
+
+while read -r local_ref local_sha _remote_ref remote_sha; do
+  # A deletion pushes nothing; an unchanged ref pushes nothing new.
+  [ "$local_sha" = "$zero" ] && continue
+  [ "$local_sha" = "$remote_sha" ] && continue
+  if [ "$local_sha" = "$head" ]; then
+    gate_head=1
+  else
+    echo "pre-push: $local_ref ($local_sha) is not the checked-out HEAD; the hosted quick gate checks it." >&2
+  fi
+done
+
+[ "$gate_head" -eq 1 ] || exit 0
+
+if ! git diff --quiet HEAD --; then
+  echo "pre-push: tracked changes on top of HEAD ($head) would be checked instead of the pushed commit." >&2
+  echo "  Commit them, or move them out of this checkout, then push again." >&2
+  exit 1
+fi
+
+if ! command -v devtools >/dev/null 2>&1; then
+  echo "pre-push: devtools is not on PATH; push from the devshell (direnv or nix develop)." >&2
+  exit 1
+fi
+
+echo "pre-push: devtools verify --quick on $head" >&2
+exec devtools verify --quick
