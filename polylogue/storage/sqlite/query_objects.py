@@ -136,7 +136,12 @@ def put_query(
         """,
         (query_hash, _json(canonical_plan), grain, lane, rank_policy, definition_protocol_version, created_at_ms),
     )
-    return QueryObject(query_hash, canonical_plan, grain, lane, rank_policy, definition_protocol_version)
+    # An existing definition may have been promoted since its first insert.
+    # Return its durable forgetting contract, not constructor defaults.
+    stored = get_query(conn, query_hash)
+    if stored is None:
+        raise RuntimeError(f"query definition {query_hash} is absent after its idempotent insert")
+    return stored
 
 
 def _promotion_values(

@@ -87,11 +87,23 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
     if snapshot.current_version == SCHEMA_VERSION:
         suffix = f" Generation {generation_id}" if generation_id is not None else ""
         try:
+            canonical = canonical_schema_manifest(ArchiveTier.INDEX)
+        except sqlite3.Error as exc:
+            # This DDL runs in a fresh in-memory database, not the archive.
+            # Rebuilding or retrying the archive cannot add runtime features.
+            raise SchemaVersionMismatchError(
+                f"The SQLite runtime cannot construct the canonical index schema.{suffix} {exc}",
+                current_version=snapshot.current_version,
+                expected_version=SCHEMA_VERSION,
+                generation_id=generation_id,
+                lifecycle_action="upgrade_runtime",
+            ) from exc
+        try:
             # A missing message FTS surface degrades search and nothing else,
             # so a read reports it through the search route's degraded state
             # rather than refusing every read of the index.
             diff = schema_manifest_diff(
-                canonical_schema_manifest(ArchiveTier.INDEX),
+                canonical,
                 SchemaManifest.from_connection(conn, ArchiveTier.INDEX),
             )
             if any(diff.values()) and not schema_manifest_diff_is_message_fts_only(diff):
