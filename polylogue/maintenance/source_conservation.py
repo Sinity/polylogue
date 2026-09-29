@@ -38,6 +38,7 @@ from polylogue.archive.revision_authority import (
     logical_head_cohort_sql,
 )
 from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.raw_coordinates import zip_member_coordinate
 from polylogue.core.sqlite_introspection import table_exists
 from polylogue.maintenance.source_manifest_continuity import SourceContinuityError, SourceFrontier
 from polylogue.sources.origin_specs import ORIGIN_SPECS, OriginArtifactRule
@@ -391,7 +392,8 @@ def _source_exists(archive_root: Path, source_path: str) -> bool:
     """Does the acquired source still exist on disk?
 
     A raw acquired from inside an export bundle records an ``archive!member``
-    coordinate (``sources/source_snapshot.py`` builds it).  Probing that string
+    coordinate (``sources/source_snapshot.py`` builds it) or, from the ZIP
+    readers, an ``archive:member`` coordinate.  Probing that string
     as a filesystem path can never succeed, so the coordinate is resolved to its
     container and the member is required to be present in it -- container
     existence alone would conserve a member the archive no longer holds.  A container that is not a readable zip cannot be
@@ -406,11 +408,20 @@ def _source_exists(archive_root: Path, source_path: str) -> bool:
     if direct.exists():
         return True
     container_text, separator, member = source_path.partition(_ARCHIVE_MEMBER_SEPARATOR)
-    if not separator or not member:
+    if separator and member:
+        container = _resolve(container_text)
+        if not container.is_file():
+            return False
+        names = _member_names(container)
+        return True if names is None else member in names
+    # ZIP acquisition records ``<container>:<member>`` (``decoder_zip`` and the
+    # import route), not the snapshot's ``!`` form. The shared parser tries each
+    # colon and accepts only a prefix that is a real ZIP, so a loose file whose
+    # name contains a colon is never mistaken for a member.
+    coordinate = zip_member_coordinate(str(direct))
+    if coordinate is None:
         return False
-    container = _resolve(container_text)
-    if not container.is_file():
-        return False
+    container, member = coordinate
     names = _member_names(container)
     return True if names is None else member in names
 
