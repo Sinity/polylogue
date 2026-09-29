@@ -48,6 +48,7 @@ PROFILE_METRICS: tuple[str, ...] = (
     "background_throughput",
     "concurrent_interference_p95_ms",
     "mixed_load_phase_percentiles",
+    "mixed_load_cache_invalidation",
     "mixed_load_dominant_phase",
     "mixed_load_series_summary",
     "mixed_load_interactive_percentiles",

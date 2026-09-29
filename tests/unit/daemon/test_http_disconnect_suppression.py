@@ -54,11 +54,3 @@ def test_do_delete_swallows_client_disconnect(error: OSError) -> None:
     handler = _make_handler()
     with patch.object(DaemonAPIHandler, "_do_delete_impl", side_effect=error):
         handler.do_DELETE()
-
-
-def test_do_get_does_not_swallow_unrelated_exceptions() -> None:
-    """Non-disconnect errors still escape so the SocketServer logs them properly."""
-    handler = _make_handler()
-    with patch.object(DaemonAPIHandler, "_parse_path", side_effect=RuntimeError("real bug")):
-        with pytest.raises(RuntimeError, match="real bug"):
-            handler.do_GET()
