@@ -74,17 +74,19 @@ def test_fresh_ops_schema_declares_daemon_event_lifecycle_indexes(tmp_path: Path
     assert {"idx_daemon_events_kind_id", "idx_daemon_events_lifecycle", "idx_daemon_events_idempotency"} <= indexes
 
 
-def test_existing_ops_db_reapply_creates_daemon_event_indexes(tmp_path: Path) -> None:
+def test_fresh_ops_daemon_events_enforce_idempotency_identity(tmp_path: Path) -> None:
+    """Removing the canonical partial unique index admits duplicate event identities."""
     ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
     with sqlite3.connect(ops_db) as conn:
-        initialize_archive_tier(conn, ArchiveTier.OPS)
-        conn.execute("DROP INDEX idx_daemon_events_kind_id")
-        conn.execute("DROP INDEX idx_daemon_events_lifecycle")
-        conn.execute("DROP INDEX idx_daemon_events_idempotency")
-        initialize_archive_tier(conn, ArchiveTier.OPS)
-        indexes = {row[1] for row in conn.execute("PRAGMA index_list('daemon_events')")}
-
-    assert {"idx_daemon_events_kind_id", "idx_daemon_events_lifecycle", "idx_daemon_events_idempotency"} <= indexes
+        sql = "INSERT INTO daemon_events (ts_ms, kind, idempotency_key, payload_json) VALUES (?, ?, ?, '{}')"
+        conn.execute(sql, (1, "batch", "one"))
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(sql, (2, "batch", "one"))
+        conn.execute(sql, (3, "other", "one"))
+        conn.execute(sql, (4, "batch", None))
+        conn.execute(sql, (5, "batch", None))
+        assert conn.execute("SELECT COUNT(*) FROM daemon_events").fetchone()[0] == 4
 
 
 def test_ops_upsert_ingest_cursor_updates_single_row(tmp_path: Path) -> None:

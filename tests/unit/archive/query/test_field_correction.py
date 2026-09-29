@@ -61,3 +61,11 @@ def test_an_ambiguous_or_reshaping_guess_is_no_correction(expression: str) -> No
 
     assert error.candidates
     assert propose_field_correction(expression, error) is None
+
+
+def test_a_shared_field_is_not_its_own_ambiguous_candidate() -> None:
+    """Duplicating names from the two registries makes an exact candidate ambiguous."""
+    error = _unknown_field("messages where duraton_ms:>=1")
+
+    assert error.candidates == ("duration_ms",)
+    assert propose_field_correction("messages where duraton_ms:>=1", error) == "messages where duration_ms:>=1"

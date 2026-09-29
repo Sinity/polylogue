@@ -1364,7 +1364,7 @@ _FIELD_CLAUSE_RE = re.compile(
 def _unknown_query_field_error(field_name: str, *, include_structural: bool = False) -> UnknownQueryFieldError:
     recognized = sorted(EXPRESSION_FIELD_REGISTRY)
     message = f"unknown query field {field_name!r}; recognized fields: " + ", ".join(recognized)
-    vocabulary = [*recognized, *sorted(_STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS)] if include_structural else recognized
+    vocabulary = sorted(set(recognized) | _STRUCTURAL_BOOLEAN_SUPPORTED_FIELDS) if include_structural else recognized
     suggestions = tuple(get_close_matches(field_name, vocabulary, n=3, cutoff=0.6))
     if suggestions:
         message += "; did you mean: " + ", ".join(suggestions)
