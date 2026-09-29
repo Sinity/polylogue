@@ -654,11 +654,13 @@ def _search_payload(
         from polylogue.api.archive import _archive_count_sessions_for_spec
 
         total = _archive_count_sessions_for_spec(archive, fetch_spec)
+    # Same projection as the API builder: ``matched`` is the query's match
+    # total, ``analyzed`` the hit window this route returns.
     authority = authority_for_reader(
         archive,
         server_identity="daemon" if serving_identity == "daemon" else "direct",
         started_at=monotonic(),
-    ).model_copy(update={"matched": len(hit_payloads), "analyzed": total})
+    ).model_copy(update={"matched": total, "analyzed": len(hit_payloads)})
     # The ranked envelope must name what it counted.  Without this a
     # ``--no-root`` search reports subagent/branch rows under the "top-level
     # sessions" label, because the renderer has nothing to read but a default.
@@ -688,7 +690,7 @@ def _search_payload(
     emitted_hits = envelope_model.hits
     if envelope_model.authority is not None:
         envelope_model = envelope_model.model_copy(
-            update={"authority": envelope_model.authority.model_copy(update={"matched": len(emitted_hits)})}
+            update={"authority": envelope_model.authority.model_copy(update={"analyzed": len(emitted_hits)})}
         )
     envelope = envelope_model.model_dump(mode="json")
     # Match the direct branch's hit shape exactly: ``archive_query._hit_payload``
@@ -907,23 +909,17 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
     away from it: no ``family_status``, ``availability``, ``deadline_s``,
     ``elapsed_s`` or ``stale_age_s``; hard-coded ``budget_exceeded`` and
     ``cost_class``; its own family lists (``omitted`` in both complete and
-    deferred, no ``total_counts``); and no ``PostFilterScopeTooLargeError``
-    handling, so a too-large scope raised instead of degrading. Building the
+    deferred, no ``total_counts``). Building the
     shared model and dumping it keeps the two surfaces equal by construction
     rather than by matching key lists.
 
-    ``scope_gaps`` is the one input that still had to be threaded by hand, and
-    it was not: this route dropped the collector, so a scope that hit
-    ``FACET_SCOPE_SESSION_CAP`` reported buckets rolled from a truncated
-    denominator as ``outcome: ok`` with every family in ``complete_families``,
-    while the API route on the identical cap reported ``degraded`` and named
-    the gap. This is the production route the CLI reads through, so the
-    truncated answer was the one operators actually saw.
+    ``scope_gaps`` is threaded through both ``_archive_facet_buckets`` calls
+    and ``build_facets_response`` so every declared gap reaches the envelope.
     """
 
     import time
 
-    from polylogue.api.archive import PostFilterScopeTooLargeError, _archive_facet_buckets, build_facets_response
+    from polylogue.api.archive import _archive_facet_buckets, build_facets_response
     from polylogue.archive.query.expression import compile_expression_into
     from polylogue.archive.query.spec import SessionQuerySpec
 
@@ -942,16 +938,8 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
     started_at = time.perf_counter()
     scope_gaps: list[str] = []
     global_buckets = _archive_facet_buckets(archive, None, include_deferred=include_deferred, scope_gaps=scope_gaps)
-    post_filter_gap: str | None = None
     if scoped_to_query:
-        try:
-            scoped_buckets = _archive_facet_buckets(
-                archive, spec, include_deferred=include_deferred, scope_gaps=scope_gaps
-            )
-        except PostFilterScopeTooLargeError as exc:
-            from polylogue.archive.query.facets import FacetBuckets
-
-            scoped_buckets, post_filter_gap = FacetBuckets(), exc.gap_reason
+        scoped_buckets = _archive_facet_buckets(archive, spec, include_deferred=include_deferred, scope_gaps=scope_gaps)
     else:
         scoped_buckets = global_buckets
 
@@ -962,7 +950,6 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
         include_deferred=include_deferred,
         elapsed_s=time.perf_counter() - started_at,
         include_idf=not _truthy(params.get("no_idf")),
-        post_filter_gap=post_filter_gap,
         scope_gaps=scope_gaps,
     )
     return cast(dict[str, object], response.model_dump(by_alias=True, mode="json"))
@@ -1233,7 +1220,7 @@ def _session_identity_projection(
     are retained so the window's own coordinates stay honest.
     """
 
-    from polylogue.archive.hydration import archive_message_to_domain
+    from polylogue.archive.hydration import archive_block_to_domain, archive_message_to_domain
     from polylogue.surfaces.payloads import message_topology_from_domain
 
     return {
@@ -1260,7 +1247,9 @@ def _session_identity_projection(
                         "text": block.text,
                         "tool_name": block.tool_name,
                         "tool_id": block.tool_id,
-                        "tool_input": block.tool_input,
+                        # The column holds JSON text; expose the object the
+                        # shared hydrator decodes, as every other block read does.
+                        "tool_input": archive_block_to_domain(block).get("tool_input"),
                         "semantic_type": block.semantic_type,
                     }
                     for block in message.blocks

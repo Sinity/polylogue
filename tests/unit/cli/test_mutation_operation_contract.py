@@ -113,7 +113,12 @@ class TestDeleteChokePoint:
         def _served(_config: object, operation: str, _payload: dict[str, object]) -> dict[str, object]:
             issued.append(operation)
             if operation.endswith(".preview"):
-                return {"status": "prepared", "preview_ref": "preview:1", "session_ids": ["s1"]}
+                return {
+                    "status": "prepared",
+                    "preview_ref": "preview:1",
+                    "session_count": 1,
+                    "session_ids_sample": ["s1"],
+                }
             if operation.endswith(".authorize"):
                 return {"status": "authorized", "authorization_ref": "authorization:1"}
             return {"status": "deleted", "affected_count": 1}
@@ -135,7 +140,12 @@ class TestDeleteChokePoint:
         def _served(_config: object, operation: str, _payload: dict[str, object]) -> dict[str, object]:
             issued.append(operation)
             if operation.endswith(".preview"):
-                return {"status": "prepared", "preview_ref": "preview:1", "session_ids": ["s1"]}
+                return {
+                    "status": "prepared",
+                    "preview_ref": "preview:1",
+                    "session_count": 1,
+                    "session_ids_sample": ["s1"],
+                }
             return {"status": "authorized"}
 
         with (
@@ -156,7 +166,8 @@ class TestDeleteChokePoint:
                 return {
                     "status": "prepared",
                     "preview_refs": ["preview:1", "preview:2"],
-                    "session_ids": ["s1", "s2"],
+                    "session_count": 2,
+                    "session_ids_sample": ["s1", "s2"],
                 }
             return {"status": "authorized", "authorization_ref": "authorization:1"}
 
@@ -167,6 +178,51 @@ class TestDeleteChokePoint:
             _emit_delete(_env(), ("s1", "s2"), params={"force": True, "dry_run": False})
 
         assert "mutation.session.delete.execute" not in issued
+
+    @pytest.mark.parametrize(
+        ("count", "sample", "accepted"),
+        [
+            (30, [f"s{index}" for index in range(20)], True),
+            (3, [f"s{index}" for index in range(5)], False),
+            (2, ["s1", "s1"], False),
+            (0, [], False),
+        ],
+    )
+    def test_preview_reports_selection_size_and_bounded_sample(
+        self, count: int, sample: list[str], accepted: bool, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The preview names the selection by size and a leading sample, never the whole list.
+
+        Fails if the CLI needs the full echoed selection (a large accepted
+        selection would then exceed the operation result bound), or if it
+        accepts a sample that is not the canonical leading slice.
+        """
+        issued: list[str] = []
+
+        def _served(_config: object, operation: str, _payload: dict[str, object]) -> dict[str, object]:
+            issued.append(operation)
+            if operation.endswith(".preview"):
+                return {
+                    "status": "prepared",
+                    "preview_ref": "preview:1",
+                    "session_count": count,
+                    "session_ids_sample": sample,
+                }
+            if operation.endswith(".authorize"):
+                return {"status": "authorized", "authorization_ref": "authorization:1"}
+            return {"status": "deleted", "affected_count": count}
+
+        selection = tuple(f"s{index}" for index in range(max(count, 1)))
+        with patch("polylogue.cli.archive_query._submit_mutation_operation", side_effect=_served):
+            if accepted:
+                _emit_delete(_env(), selection, params={"force": True, "dry_run": False})
+            else:
+                with pytest.raises(click.ClickException, match="delete preview"):
+                    _emit_delete(_env(), selection, params={"force": True, "dry_run": False})
+
+        assert ("mutation.session.delete.execute" in issued) is accepted
+        if accepted:
+            assert json.loads(capsys.readouterr().out)["affected_count"] == count
 
 
 class TestCancellation:
@@ -182,7 +238,12 @@ class TestCancellation:
         def _served(_config: object, operation: str, _payload: dict[str, object]) -> dict[str, object]:
             issued.append(operation)
             if operation.endswith(".preview"):
-                return {"status": "prepared", "preview_ref": "preview:1", "session_ids": ["s1"]}
+                return {
+                    "status": "prepared",
+                    "preview_ref": "preview:1",
+                    "session_count": 1,
+                    "session_ids_sample": ["s1"],
+                }
             return {"status": "cancelled", "preview_ref": "preview:1"}
 
         with (
@@ -205,7 +266,12 @@ class TestCancellation:
         def _served(_config: object, operation: str, _payload: dict[str, object]) -> dict[str, object]:
             issued.append(operation)
             if operation.endswith(".preview"):
-                return {"status": "prepared", "preview_ref": "preview:1", "session_ids": ["s1"]}
+                return {
+                    "status": "prepared",
+                    "preview_ref": "preview:1",
+                    "session_count": 1,
+                    "session_ids_sample": ["s1"],
+                }
             if operation.endswith(".authorize"):
                 raise KeyboardInterrupt
             return {"status": "cancelled", "preview_ref": "preview:1"}

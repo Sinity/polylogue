@@ -12,6 +12,7 @@ from typing import IO, Protocol, TypeAlias, TypeGuard, cast
 
 import ijson
 
+from polylogue.core.content_identity import JSON_TEXT_ENCODINGS
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
 from polylogue.core.json_envelope import OversizedRecord, bounded_lines
@@ -19,16 +20,6 @@ from polylogue.logging import get_logger
 
 logger = get_logger(__name__)
 
-ENCODING_GUESSES: tuple[str, ...] = (
-    "utf-8",
-    "utf-8-sig",
-    "utf-16",
-    "utf-16-le",
-    "utf-16-be",
-    "utf-32",
-    "utf-32-le",
-    "utf-32-be",
-)
 
 JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = dict[str, "JsonValue"] | list["JsonValue"] | JsonScalar
@@ -118,7 +109,7 @@ def _is_json_value(value: object) -> TypeGuard[JsonValue]:
 
 def decode_json_bytes_with(logger_obj: LoggerLike, blob: bytes) -> str | None:
     """Decode a JSON payload from bytes, trying multiple encodings."""
-    for encoding in ENCODING_GUESSES:
+    for encoding in JSON_TEXT_ENCODINGS:
         try:
             decoded = blob.decode(encoding)
         except UnicodeError:
@@ -1161,7 +1152,6 @@ def iter_json_container_records(handle: JsonReadable, prefix: str) -> Iterable[J
 
 
 __all__ = [
-    "ENCODING_GUESSES",
     "IjsonModuleLike",
     "JsonlDecodeError",
     "JsonReadable",
