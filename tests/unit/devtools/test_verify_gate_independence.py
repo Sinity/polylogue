@@ -35,8 +35,13 @@ class _Artifacts:
 class _Run:
     """A receipt sink: enough surface for ``_main`` without touching the cache."""
 
+    recorded_git_dirty = False
+
     def __init__(self, **_kwargs: Any) -> None:
         self.steps: list[dict[str, Any]] = []
+
+    def declare_workload(self, spec: Any) -> None:
+        del spec
 
     def record_selection(self, **_kwargs: Any) -> None:
         return None
@@ -120,7 +125,8 @@ def test_quick_records_every_static_gate_after_a_failure(driven: tuple[list[str]
     # The diagnosis is the first failure in declared order, not finish order.
     assert payload["diagnosis"] == "js_failed"
     assert payload["pytest_aggregate"]["selection_mode"] == "quick"
-    assert payload["pytest_aggregate"]["selected_union_count"] == 0
+    # No pytest step ran, so the count is unmeasured rather than zero.
+    assert payload["pytest_aggregate"]["selected_union_count"] is None
     assert payload["workload_receipt"]["status"] == "failed"
     assert [phase["name"] for phase in payload["workload_receipt"]["phases"]] == ["gate js-tests", "gate layering"]
 
@@ -143,7 +149,7 @@ def test_quick_receipt_keeps_all_blocking_gate_failures(monkeypatch: pytest.Monk
     monkeypatch.setattr(verify_module, "git_head", lambda _root: "head")
     monkeypatch.setattr(verify_module, "build_verify_steps", lambda **_kwargs: gates)
     monkeypatch.setattr(verify_module, "_run", run_gate)
-    monkeypatch.setattr(verify_module, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify_module, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify_module._main(["--quick"]) == 4
     receipt = json.loads((tmp_path / history["artifact_dir"] / "run.json").read_text())
@@ -155,4 +161,4 @@ def test_quick_receipt_keeps_all_blocking_gate_failures(monkeypatch: pytest.Monk
         ("gate last", 0),
         ("gate second", 2),
     ]
-    assert receipt["pytest_aggregate"]["selected_union_count"] == 0
+    assert receipt["pytest_aggregate"]["selected_union_count"] is None

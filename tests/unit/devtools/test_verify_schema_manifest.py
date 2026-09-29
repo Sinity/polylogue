@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 import subprocess
 from pathlib import Path
@@ -7,9 +9,19 @@ from pathlib import Path
 import pytest
 
 from devtools import verify_schema_manifest
+from polylogue.storage.sqlite import durable_change_train, migration_runner
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.schema_identity import _normalize_schema_sql
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.migration_runner import (
+    DurableChangeRider,
+    DurableRuntimeConsumer,
+    MigrationError,
+    declare_durable_change_train,
+    durable_change_train_to_payload,
+    durable_migration_claim_for_sql,
+    durable_migration_claims,
+)
 
 
 def test_schema_manifest_checks_all_canonical_tiers() -> None:
@@ -256,22 +268,231 @@ def test_durable_evolution_fixture_covers_every_durable_tier() -> None:
     assert all(tier in state.ddl and tier in state.versions for tier in verify_schema_manifest._DURABLE_TIERS)
 
 
-def test_durable_evolution_uses_head_parent_when_origin_master_is_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
+def _isolated_git(monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
+    """Keep the operator's git configuration and CI base-ref hints out of the gate."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+    monkeypatch.delenv("POLYLOGUE_SCHEMA_MERGE_BASE", raising=False)
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            *args,
+        ],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _commit(repo: Path, text: str) -> str:
+    (repo / "file.txt").write_text(text, encoding="utf-8")
+    _git(repo, "add", "file.txt")
+    _git(repo, "commit", "-q", "-m", text)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+def _upstream(tmp_path: Path) -> tuple[Path, list[str]]:
+    """A default branch with three commits and a feature branch off its tip."""
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    _git(upstream, "init", "-q", "-b", "master")
+    master = [_commit(upstream, f"master {index}") for index in range(3)]
+    _git(upstream, "switch", "-q", "-c", "feature")
+    _commit(upstream, "feature")
+    _git(upstream, "switch", "-q", "master")
+    return upstream, master
+
+
+def test_merge_base_is_the_fork_point_of_a_feature_branch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: comparing against HEAD would return the feature commit."""
+    _isolated_git(monkeypatch, tmp_path)
+    upstream, master = _upstream(tmp_path)
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", "--branch", "feature", upstream.as_uri(), str(clone))
+    monkeypatch.setattr(verify_schema_manifest, "ROOT", clone)
+
+    assert verify_schema_manifest._merge_base() == master[-1]
+
+
+def test_merge_base_on_the_default_branch_is_the_first_parent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A default-branch push is its own merge base; the gate compares its parent.
+
+    Anti-vacuity: returning the merge base unchanged compares HEAD with HEAD.
+    """
+    _isolated_git(monkeypatch, tmp_path)
+    upstream, master = _upstream(tmp_path)
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", upstream.as_uri(), str(clone))
+    monkeypatch.setattr(verify_schema_manifest, "ROOT", clone)
+
+    assert verify_schema_manifest._merge_base() == master[-2]
+
+
+@pytest.mark.parametrize("branch", ["master", "feature"])
+def test_merge_base_refuses_a_shallow_clone_without_comparison_history(
+    branch: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """A checkout without origin/master must still use its available parent base."""
-    calls: list[tuple[str, ...]] = []
+    """A depth-1 checkout has no parent and no fork point to compare against.
 
-    def fake_git_text(*args: str) -> str:
-        calls.append(args)
-        if args == ("merge-base", "HEAD", "HEAD^"):
-            return "parent\n"
-        raise subprocess.CalledProcessError(1, ["git", *args])
+    Anti-vacuity: the former fallback to HEAD makes both branches pass.
+    """
+    _isolated_git(monkeypatch, tmp_path)
+    upstream, _master = _upstream(tmp_path)
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", "--depth", "1", "--single-branch", "--branch", branch, upstream.as_uri(), str(clone))
+    assert _git(clone, "rev-parse", "--is-shallow-repository") == "true"
+    monkeypatch.setattr(verify_schema_manifest, "ROOT", clone)
 
-    monkeypatch.setattr(verify_schema_manifest, "_git_text", fake_git_text)
+    with pytest.raises(RuntimeError, match="no schema comparison base") as refused:
+        verify_schema_manifest._merge_base()
+    assert "shallow" in str(refused.value)
 
-    assert verify_schema_manifest._merge_base() == "parent"
-    assert ("merge-base", "HEAD", "origin/master") in calls
+
+def test_check_evolution_fails_in_a_shallow_clone(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The gate's exit status, not only the helper, refuses the missing base."""
+    _isolated_git(monkeypatch, tmp_path)
+    upstream, _master = _upstream(tmp_path)
+    clone = tmp_path / "clone"
+    _git(tmp_path, "clone", "-q", "--depth", "1", upstream.as_uri(), str(clone))
+    monkeypatch.setattr(verify_schema_manifest, "ROOT", clone)
+
+    assert verify_schema_manifest.main(["--check-evolution", "--json"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["violations"][0].startswith("cannot compare durable schema evolution: no schema comparison base")
+
+
+_FUTURE_SQL = "-- migration-safety: additive-no-backup\nCREATE TABLE future_items (id INTEGER PRIMARY KEY) STRICT;\n"
+
+
+def _install_source_migration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, sidecar_sql: str | None) -> None:
+    """Ship ``002_future_items.sql`` in a real package, with a sidecar bound to *sidecar_sql*."""
+    package = "fixture_gate_migrations_" + "".join(ch if ch.isalnum() else "_" for ch in tmp_path.name)
+    tier_package = tmp_path / package / ArchiveTier.SOURCE.value
+    tier_package.mkdir(parents=True)
+    (tmp_path / package / "__init__.py").write_text("", encoding="utf-8")
+    (tier_package / "__init__.py").write_text("", encoding="utf-8")
+    name = "002_future_items.sql"
+    (tier_package / name).write_text(_FUTURE_SQL, encoding="utf-8")
+    if sidecar_sql is not None:
+        claim = durable_migration_claim_for_sql(ArchiveTier.SOURCE, name, sidecar_sql, owner_ref="owner:gate")
+        rider = DurableChangeRider(
+            rider_id="rider:gate",
+            owner_ref="owner:gate-rider",
+            schema_objects=("table:future_items",),
+            runtime_consumers=(
+                DurableRuntimeConsumer(
+                    "bootstrap",
+                    "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_database",
+                    "proof:bootstrap",
+                    ("write",),
+                ),
+                DurableRuntimeConsumer(
+                    "daemon-health",
+                    "polylogue/storage/sqlite/archive_tiers/bootstrap.py:initialize_archive_tier",
+                    "proof:daemon-health",
+                    ("read",),
+                ),
+            ),
+            behavior_proof_refs=("proof:bootstrap", "proof:daemon-health"),
+        )
+        declared = declare_durable_change_train(
+            train_id="train:source:v2",
+            tier=ArchiveTier.SOURCE,
+            current_version=1,
+            target_version=2,
+            slot=2,
+            owner_ref="owner:gate",
+            migration=claim,
+            riders=(rider,),
+            declared_at_ms=1,
+        )
+        (tier_package / "002.train.json").write_text(
+            json.dumps(durable_change_train_to_payload(declared)), encoding="utf-8"
+        )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setattr(migration_runner, "_migration_package", lambda tier: f"{package}.{tier.value}")
+    monkeypatch.setattr(durable_change_train, "_migration_package", lambda tier: f"{package}.{tier.value}")
+    # The gate compares the source tier's v1->v2 bump against the added SQL.
+    monkeypatch.setattr(verify_schema_manifest, "_merge_base", lambda _explicit=None: "base")
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_render_schema_state",
+        lambda ref: _schema_state(source_version=1 if ref == "base" else 2),
+    )
+    added = verify_schema_manifest._MigrationChange(
+        "A", f"polylogue/storage/sqlite/migrations/source/{name}", f"polylogue/storage/sqlite/migrations/source/{name}"
+    )
+    monkeypatch.setattr(
+        verify_schema_manifest,
+        "_migration_changes",
+        lambda _base, tier: (added,) if tier is ArchiveTier.SOURCE else (),
+    )
+
+
+@pytest.mark.parametrize(
+    ("sidecar_sql", "expected"),
+    [
+        (None, "missing durable migration train sidecar: source/002.train.json"),
+        (_FUTURE_SQL.replace("future_items", "other_items"), "SQL SHA-256 mismatch: 002.train.json"),
+    ],
+    ids=["missing-sidecar", "sidecar-bound-to-other-sql"],
+)
+def test_durable_evolution_rejects_an_added_slot_the_runtime_refuses(
+    sidecar_sql: str | None, expected: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A complete SQL chain is not enough: the runtime loader requires a bound sidecar.
+
+    Anti-vacuity: without the gate's admission check the chain alone passes.
+    """
+    _install_source_migration(tmp_path, monkeypatch, sidecar_sql=sidecar_sql)
+    with pytest.raises(MigrationError, match=expected):
+        durable_migration_claims(ArchiveTier.SOURCE)
+
+    violations = verify_schema_manifest._durable_ddl_evolution_violations()
+
+    assert len(violations) == 1
+    assert violations[0].startswith("source: shipped migrations fail runtime admission:")
+    assert expected in violations[0]
+
+
+def test_durable_evolution_accepts_an_added_slot_with_its_bound_sidecar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The validator the runtime uses admits the slot, so the gate stays green."""
+    _install_source_migration(tmp_path, monkeypatch, sidecar_sql=_FUTURE_SQL)
+    assert [claim.slot for claim in durable_migration_claims(ArchiveTier.SOURCE)] == [2]
+
+    assert verify_schema_manifest._durable_ddl_evolution_violations() == []
+
+
+def test_durable_evolution_rejects_editing_a_shipped_train_sidecar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A frozen sidecar is part of the migration contract, like its SQL."""
+    change = verify_schema_manifest._MigrationChange(
+        "M",
+        "polylogue/storage/sqlite/migrations/source/002.train.json",
+        "polylogue/storage/sqlite/migrations/source/002.train.json",
+    )
+    monkeypatch.setattr(verify_schema_manifest, "_migration_changes", lambda _base, _tier: (change,))
+
+    assert verify_schema_manifest._migration_integrity_violations("base", ArchiveTier.SOURCE) == [
+        "source: required migration train sidecar was modified: "
+        "polylogue/storage/sqlite/migrations/source/002.train.json"
+    ]
 
 
 @pytest.mark.parametrize("status", ["D", "M"])

@@ -30,7 +30,11 @@ jobs:
     timeout-minutes: 15
     runs-on: ubuntu-latest
     steps:
+      # The schema-manifest gate compares against the merge base with master
+      # (or HEAD's first parent on master) and refuses a shallow clone.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.14"

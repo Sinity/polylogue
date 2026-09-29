@@ -30,6 +30,18 @@ behind it. Measured on 2026-09-27 at load average 16: a fresh seed's first
 run took 50 s, a warm rerun 6.6 s, and four seeded runs side by side 10.7 s
 wall-clock at about 420 MB RSS each. The same host's serialized quick gate
 waited up to 107 s for the lock.
+
+A seeded entry is trusted only after mypy has compared its source's content.
+mypy reuses a cached module without reading its source when the recorded
+path, size and whole-second mtime all match, and a sibling can hold different
+bytes under the same relative path, size and mtime (a copied tree, or two
+checkouts written in the same second). So the gate hands mypy the configured
+``files`` as absolute paths under this checkout: an entry a sibling wrote
+records the sibling's path, the path comparison fails, and mypy hashes the
+source, reusing the entry when the bytes match and re-checking the module when
+they differ. That is one hash per module on the first run after a seed; the
+entry is then rewritten with this checkout's path, and later runs take mypy's
+ordinary stat check against it.
 """
 
 from __future__ import annotations
@@ -49,6 +61,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import tomllib
+from mypy.config_parser import expand_path, split_and_match_files_list, split_commas, try_split
 
 #: mypy exits 0 (clean) or 1 (type errors) with a complete cache; anything
 #: else is a crash or a usage error and may leave a partial one.
@@ -133,6 +146,47 @@ def _incremental_disabled(root: Path) -> bool:
         return parser.has_option("mypy", "incremental") and not parser.getboolean("mypy", "incremental")
     except (configparser.Error, ValueError, OSError):
         return False
+
+
+def _configured_files(root: Path) -> list[str]:
+    """The ``files`` entries of the configuration mypy reads in *root*, split as mypy splits them."""
+    path = _config_file(root)
+    if path is None:
+        return []
+    if path.name == "pyproject.toml":
+        config = _config_contents(path)
+        if not isinstance(config, dict) or "files" not in config:
+            return []
+        return try_split(config["files"])
+    parser = configparser.RawConfigParser()
+    try:
+        parser.read(path, encoding="utf-8")
+    except (configparser.Error, OSError):
+        return []
+    if not parser.has_option("mypy", "files"):
+        return []
+    return split_commas(parser.get("mypy", "files"))
+
+
+def _targets(root: Path) -> list[str]:
+    """The configured ``files``, globbed as mypy globs them but rooted at *root*.
+
+    Absolute, so each cached module records which checkout's source it was
+    checked against (see the module docstring). ``$MYPY_CONFIG_FILE_DIR`` is
+    the one variable mypy itself defines while reading its configuration.
+    """
+    config = _config_file(root)
+    if config is None:
+        return []
+    rooted = []
+    for entry in _configured_files(root):
+        expanded = expand_path(
+            entry.strip()
+            .replace("${MYPY_CONFIG_FILE_DIR}", str(config.parent))
+            .replace("$MYPY_CONFIG_FILE_DIR", str(config.parent))
+        )
+        rooted.append(expanded if os.path.isabs(expanded) else str(root / expanded))
+    return split_and_match_files_list(rooted)
 
 
 def _input_key(root: Path) -> str:
@@ -245,7 +299,17 @@ def _check(mypy: Path, cache: Path, root: Path, key: str) -> int:
     """Run mypy on *cache*, stamping it complete only after a run that left it so."""
     cache.mkdir(parents=True, exist_ok=True)
     (cache / _STAMP).unlink(missing_ok=True)
-    returncode = subprocess.run([str(mypy), "--cache-dir", str(cache)], cwd=root, check=False).returncode
+    command = [str(mypy), "--cache-dir", str(cache)]
+    targets = _targets(root)
+    # A response file, not argv: the target list grows with the repository.
+    arguments = cache.with_name(f"{cache.name}.targets")
+    if targets:
+        arguments.write_text("".join(f"{target}\n" for target in targets), encoding="utf-8")
+        command.append(f"@{arguments}")
+    try:
+        returncode = subprocess.run(command, cwd=root, check=False).returncode
+    finally:
+        arguments.unlink(missing_ok=True)
     # A configuration with ``incremental = false`` exits 0 without writing a
     # module cache; only a cache mypy actually populated is complete.
     if returncode in _CACHE_COMPLETE_EXITS and not _incremental_disabled(root) and _has_module_cache(cache):

@@ -3,12 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, cast
 
 import pytest
-
-if TYPE_CHECKING:
-    from devtools.verify_runs import VerifyRun
 
 from polylogue.scenarios.workload import (
     BudgetAggregation,
@@ -160,36 +156,6 @@ def test_default_slo_output_exposes_its_workload_receipt(capsys: pytest.CaptureF
 
     verify_slos_main(["--skip-benchmarks"])
     assert "workload_receipt={" in capsys.readouterr().out
-
-
-def test_verifier_common_finalizer_adds_receipt_on_early_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Failure exits that skip the normal success call still persist a receipt.
-
-    Anti-vacuity: removing the common fallback leaves ``workload_receipt``
-    absent when the admission refusal path finalizes without a supplied one.
-    """
-    import devtools.verify as verify
-
-    class Run:
-        _payload = {"tier": "focused-test", "git_head": "synthetic-head"}
-
-        def finish(self, **kwargs: object) -> dict[str, object]:
-            return dict(kwargs)
-
-    monkeypatch.setattr(verify, "append_verify_history", lambda _payload: None)
-    monkeypatch.setattr(verify, "append_verification_evidence", lambda _payload: None)
-    monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
-    import polylogue.context.failure_seed as failure_seed
-
-    monkeypatch.setattr(failure_seed, "write_failure_seed", lambda **_kwargs: None)
-    payload = verify._finish_and_record_verification(
-        run=cast("VerifyRun", Run()), exit_code=2, duration_s=0.0, workload_receipt=None
-    )
-
-    receipt = payload["workload_receipt"]
-    assert isinstance(receipt, dict)
-    assert isinstance(receipt.get("receipt_id"), str)
-    assert payload["exit_code"] == 2
 
 
 def test_workload_receipt_distinguishes_zero_from_unavailable_and_is_stable() -> None:

@@ -26,6 +26,7 @@ from polylogue.storage.sqlite.archive_tiers import (
 )
 from polylogue.storage.sqlite.archive_tiers.archive_plan import ARCHIVE_FORMAT_LINEAGE
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.migration_runner import MigrationError, durable_migration_claims
 from polylogue.storage.sqlite.schema_manifest import SchemaManifest, canonical_schema_manifest, schema_manifest_diff
 
 ROOT = Path(__file__).parents[1]
@@ -147,7 +148,15 @@ def _git_text(*args: str) -> str:
 
 
 def _merge_base(explicit_base: str | None = None) -> str:
-    """Resolve a usable merge base without requiring an ``origin/master`` ref."""
+    """Resolve the commit the candidate's durable schema is compared against.
+
+    An explicit ref is used exactly. Otherwise the base is the merge base with
+    the default branch; when HEAD is itself on that branch (a default-branch
+    push, or a checkout with no commits of its own) that merge base is HEAD,
+    so the comparison steps to HEAD's first parent. A base that cannot be
+    resolved, as in a shallow clone, is a refusal: comparing HEAD with itself
+    would pass any schema change.
+    """
     requested = explicit_base or os.environ.get("POLYLOGUE_SCHEMA_MERGE_BASE")
     if requested:
         try:
@@ -162,22 +171,37 @@ def _merge_base(explicit_base: str | None = None) -> str:
     github_base = os.environ.get("GITHUB_BASE_REF")
     if github_base:
         candidates.extend((f"origin/{github_base}", github_base))
-    candidates.extend(("origin/master", "master", "origin/HEAD", "HEAD^"))
-    seen: set[str] = set()
-    for candidate in candidates:
-        if candidate in seen:
-            continue
-        seen.add(candidate)
+    candidates.extend(("origin/master", "master", "origin/HEAD"))
+    base = ""
+    for candidate in dict.fromkeys(candidates):
         try:
             base = _git_text("merge-base", "HEAD", candidate).strip()
         except (OSError, subprocess.CalledProcessError):
             continue
         if base:
-            return base
+            break
+    if not base:
+        raise RuntimeError(
+            f"no schema comparison base: none of {', '.join(dict.fromkeys(candidates))} shares history with HEAD"
+            f"{_shallow_hint()}; fetch the default branch or pass --base"
+        )
+    if base != _git_text("rev-parse", "--verify", "HEAD^{commit}").strip():
+        return base
     try:
-        return _git_text("rev-parse", "--verify", "HEAD").strip()
+        return _git_text("rev-parse", "--verify", "HEAD^1^{commit}").strip()
     except (OSError, subprocess.CalledProcessError) as exc:
-        raise RuntimeError(f"cannot determine a schema comparison base: {exc}") from exc
+        raise RuntimeError(
+            f"no schema comparison base: HEAD is on the default branch and its first parent is unavailable"
+            f"{_shallow_hint()}; fetch its history or pass --base"
+        ) from exc
+
+
+def _shallow_hint() -> str:
+    try:
+        shallow = _git_text("rev-parse", "--is-shallow-repository").strip() == "true"
+    except (OSError, subprocess.CalledProcessError):
+        return ""
+    return " (this clone is shallow)" if shallow else ""
 
 
 def _migration_changes(base: str, tier: ArchiveTier) -> tuple[_MigrationChange, ...]:
@@ -217,18 +241,23 @@ def _migration_integrity_violations(
     *,
     allow_predecessor_retirement: bool = False,
 ) -> list[str]:
-    """Reject mutation of durable SQL, except a complete lineage reset's retirement."""
+    """Reject mutation of durable SQL or its frozen train sidecar, except a complete lineage reset's retirement."""
     violations: list[str] = []
     for change in _migration_changes(base, tier):
-        if not (change.old_path.endswith(".sql") or change.new_path.endswith(".sql")):
+        paths = (change.old_path, change.new_path)
+        if any(path.endswith(".sql") for path in paths):
+            kind = "migration"
+        elif any(path.endswith(".train.json") for path in paths):
+            kind = "migration train sidecar"
+        else:
             continue
         if change.status.startswith("A"):
-            if _migration_version(change.new_path, tier) is None:
+            if kind == "migration" and _migration_version(change.new_path, tier) is None:
                 violations.append(f"{tier.value}: added migration has an invalid numbered name: {change.new_path}")
         elif change.status.startswith("D") and not allow_predecessor_retirement:
-            violations.append(f"{tier.value}: required migration was deleted: {change.old_path}")
+            violations.append(f"{tier.value}: required {kind} was deleted: {change.old_path}")
         elif change.status.startswith(("M", "R", "C", "T")):
-            violations.append(f"{tier.value}: required migration was modified: {change.old_path}")
+            violations.append(f"{tier.value}: required {kind} was modified: {change.old_path}")
     return violations
 
 
@@ -292,6 +321,12 @@ def _durable_ddl_evolution_violations(explicit_base: str | None = None) -> list[
     )
 
     for tier in _DURABLE_TIERS:
+        # The runtime's own discovery route: it refuses a post-floor slot whose
+        # NNN.train.json is missing, malformed, or bound to other SQL.
+        try:
+            durable_migration_claims(tier)
+        except MigrationError as exc:
+            violations.append(f"{tier.value}: shipped migrations fail runtime admission: {exc}")
         violations.extend(
             _migration_integrity_violations(base, tier, allow_predecessor_retirement=retire_predecessor_chain)
         )
