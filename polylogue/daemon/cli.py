@@ -866,7 +866,7 @@ async def _reconcile_ended_daemon_runs() -> None:
     receipts = await asyncio.to_thread(lifecycle.reconcile_ended_runs, HostTerminationEvidence())
     if not receipts:
         return
-    written = await daemon_write_coordinator().run_sync(
+    await daemon_write_coordinator().run_sync(
         "daemon.lifecycle.reconcile", lifecycle.record_termination_receipts, receipts
     )
     for receipt in receipts:
@@ -877,7 +877,6 @@ async def _reconcile_ended_daemon_runs() -> None:
             run_id=receipt.run_id,
             state=receipt.classification.value,
         )
-    emit("daemon.lifecycle.reconciliation_recorded", outcome="ok", count=written)
 
 
 async def _periodic_db_optimize() -> None:

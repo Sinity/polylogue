@@ -19,6 +19,7 @@ from polylogue.operations.route_observation import (
     RouteObservationSpec,
     compute_latency_percentiles,
     observe_route,
+    open_observation_connection,
     reset_route_observation_drops,
     route_observation_drops,
 )
@@ -615,7 +616,9 @@ def test_the_reader_computes_percentiles_over_every_row_in_the_window(tmp_path: 
 
     ops_db = _init_ops(tmp_path)
     base_ms = 1_700_000_000_000
-    conn = sqlite3.connect(ops_db)
+    # The production observation writer's connection: 1,200 FULL-synchronous
+    # commits spend the test's budget on fsync, not on the reader under test.
+    conn = open_observation_connection(ops_db)
     try:
         for index in range(1_200):
             record_route_observation(
@@ -640,8 +643,8 @@ def test_the_reader_computes_percentiles_over_every_row_in_the_window(tmp_path: 
         record_mcp_call(conn, tool_name="search", started_at_ms=base_ms, finished_at_ms=base_ms + 7, success=True)
         conn.commit()
 
-        report = read_latency_report(conn, since_ms=base_ms)
-        cli_only = read_latency_report(conn, since_ms=base_ms, surface="cli")
+        report = read_latency_report(conn, since_ms=base_ms, now_ms=base_ms + 1_200)
+        cli_only = read_latency_report(conn, since_ms=base_ms, surface="cli", now_ms=base_ms + 1_200)
     finally:
         conn.close()
 

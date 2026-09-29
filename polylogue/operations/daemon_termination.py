@@ -195,6 +195,21 @@ def _own_cgroup_path(proc: Path, pid: int) -> str | None:
     return None
 
 
+def _own_invocation_id(env: Mapping[str, str], pid: int) -> str | None:
+    """The service manager's invocation id, only when this process is the unit's own main process.
+
+    ``INVOCATION_ID`` is inherited by every descendant of a service, so a
+    daemon started by hand from inside another unit (a shell in a session
+    service, a job runner) would otherwise claim that unit's invocation and
+    read its records as its own. The manager also sets ``SYSTEMD_EXEC_PID`` to
+    the pid it executed; a mismatch means the id belongs to an ancestor.
+    """
+    invocation_id = _optional_text(env.get("INVOCATION_ID"))
+    if invocation_id is None or env.get("SYSTEMD_EXEC_PID") != str(pid):
+        return None
+    return invocation_id
+
+
 def capture_host_run_identity(
     *,
     pid: int | None = None,
@@ -226,7 +241,7 @@ def capture_host_run_identity(
     return HostRunIdentity(
         pid=resolved_pid,
         boot_id=boot_id,
-        invocation_id=_optional_text(env.get("INVOCATION_ID")),
+        invocation_id=_own_invocation_id(env, resolved_pid),
         unit=unit,
         cgroup_path=cgroup_path,
         cgroup_inode=cgroup_inode,

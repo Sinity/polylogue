@@ -450,9 +450,21 @@ def test_capture_and_read_back_the_cgroup_baseline(tmp_path: Path) -> None:
     (unit_dir / "memory.events").write_text("low 0\nhigh 0\nmax 4\noom 1\noom_kill 1\noom_group_kill 0\n")
 
     host = capture_host_run_identity(
-        pid=PRIOR_PID, environ={"INVOCATION_ID": INVOCATION}, proc=proc, cgroup_root=cgroup_root
+        pid=PRIOR_PID,
+        environ={"INVOCATION_ID": INVOCATION, "SYSTEMD_EXEC_PID": str(PRIOR_PID)},
+        proc=proc,
+        cgroup_root=cgroup_root,
     )
     assert host.boot_id == BOOT
+    assert host.invocation_id == INVOCATION
+    # An id inherited from an ancestor unit is not this run's invocation.
+    inherited = capture_host_run_identity(
+        pid=PRIOR_PID,
+        environ={"INVOCATION_ID": INVOCATION, "SYSTEMD_EXEC_PID": "1"},
+        proc=proc,
+        cgroup_root=cgroup_root,
+    )
+    assert inherited.invocation_id is None
     assert host.unit == "polylogued.service"
     assert host.memory_events == {"oom": 1, "oom_kill": 1, "oom_group_kill": 0}
     assert HostRunIdentity.from_details({"host": host.to_details()}) == host
