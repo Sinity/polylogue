@@ -1718,13 +1718,10 @@ def _require_deliverable_window(result: Mapping[str, object], *, limit: int) -> 
     Silently truncating would make ``complete``/``next_offset`` lie about what
     the caller received.
 
-    The refusal names a way out only where one exists.  "Retry with a smaller
-    limit" is actionable for a window of many rows and a lie for a window of
-    one: a single ``file-edits`` row carrying an 8 MiB ``original_file``, or one
-    oversized ``web-content`` body, cannot be made smaller by paging, and a
-    kind answered whole rejects window coordinates outright.  Saying so is the
-    honest refusal; inventing a retry the caller cannot perform is the shape
-    that made these relations silently unreadable.
+    File edits and web content are byte-paged by the evidence owner before
+    reaching this boundary, including within a single oversized row. This
+    final transport guard remains necessary for other projections: narrowing
+    a row window helps only when the window contains more than one row.
     """
 
     import json

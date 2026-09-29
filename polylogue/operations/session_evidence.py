@@ -43,6 +43,12 @@ import json
 from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
+from polylogue.operations.evidence_payloads import (
+    DEFAULT_EVIDENCE_PAGE_BYTES,
+    EvidencePayloadPage,
+    read_evidence_payload_page,
+)
+
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
@@ -480,6 +486,7 @@ def read_session_evidence_window(
     limit: int,
     offset: int,
     continuation: str | None,
+    max_bytes: int = DEFAULT_EVIDENCE_PAGE_BYTES,
 ) -> Mapping[str, object] | None:
     """Answer one page of a windowed per-session relation, or ``None`` for an unknown session.
 
@@ -495,6 +502,21 @@ def read_session_evidence_window(
         return None
     reader = SESSION_EVIDENCE_PAGE_READERS[kind]
     source_epoch = _SOURCE_RELATION_EPOCHS.get(kind)
+
+    def read_payload(
+        page_limit: int, page_offset: int, cursor: Mapping[str, object] | None, budget: int
+    ) -> EvidencePayloadPage:
+        return read_evidence_payload_page(
+            archive._conn,
+            kind=kind,
+            session_id=session_id,
+            limit=page_limit,
+            offset=page_offset,
+            cursor=cursor,
+            budget=budget,
+            read_rows=lambda count, start: reader(archive, session_id, count, start),
+        )
+
     return read_evidence_window(
         archive,
         EVIDENCE_WINDOW_FAMILIES[kind],
@@ -504,4 +526,6 @@ def read_session_evidence_window(
         continuation=continuation,
         read=lambda page_limit, page_offset: reader(archive, session_id, page_limit, page_offset),
         source_epoch=None if source_epoch is None else (lambda: source_epoch(archive, session_id)),
+        read_payload=read_payload if kind in {"file-edits", "web-content"} else None,
+        max_bytes=max_bytes,
     )

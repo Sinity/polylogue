@@ -80,3 +80,26 @@ Begin with the focused query or surface test through `devtools test`. For a
 cross-surface change, run the relevant CLI/API/MCP parity tests, pagination and
 cancellation coverage, then the generated surface check. Use `devtools why` to inspect a managed verification refusal or
 failure before interpreting a receipt.
+
+## Large session evidence
+
+`file-edits` and `web-content` share the byte-bounded evidence owner in
+`polylogue/operations/evidence_window.py` and `evidence_payloads.py`.
+Small rows remain ordinary objects in `rows`. An oversized row is delivered
+as `row_fragment` instead, with its row offset and ordered field fragments.
+Each field declares its name, `encoding` (`utf-8` or `json`), byte `offset`,
+`total_bytes`, and `data_base64`. Concatenate decoded bytes in offset order;
+decode UTF-8 only when the entire field is present, then parse JSON for
+`encoding=json`. Empty strings, nulls, booleans, and structured patches keep
+their normal projected values. The fragment's `complete` completes that row,
+not necessarily the relation.
+
+`returned`, `offset`, `next_offset`, and `total` count completed rows, never
+fragments. A page can therefore have `rows=[]`, `returned=0`, and an advancing
+continuation while delivering part of a row. Continue until the window's
+`complete` is true. The token binds both row and field-byte coordinates to
+the original result, snapshot, and expiry; changing the transport byte budget
+does not change result identity. SQLite reads only bounded field slices on
+resume. Evidence insert/update/delete advances the archive frame so callers
+cannot silently assemble one row from two revisions. CLI, Python API, and MCP
+preserve this contract; MCP supplies its smaller delivery budget to the owner.

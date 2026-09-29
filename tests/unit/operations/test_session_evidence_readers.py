@@ -323,88 +323,287 @@ def _seed_large_file_edits(archive_root: Path, *, rows: int, original_file_bytes
     return "claude-code-session:ext-large-file-edits"
 
 
-def test_a_large_file_edits_relation_is_readable_one_page_at_a_time(tmp_path: Path) -> None:
-    """A valid session whose file edits exceed one result is still readable.
+def _reassemble(windows: list[dict[str, Any]]) -> list[dict[str, object]]:
+    """Independent consumer: every byte/field/row must arrive once and in order."""
+    import base64
+    import json
 
-    ``file-edits`` was classified whole. The handler materialized every row and
-    ``_require_deliverable_window`` then refused the result, advising a smaller
-    limit -- which a whole kind rejects, because it takes no window
-    coordinates. There was no successful retry, so a session with one big
-    ``original_file`` (or enough of them) could not be read through this view
-    at all.
+    from polylogue.operations.read_contracts import EvidenceWindowBody
 
-    Anti-vacuity, executed: move ``"file-edits"`` back into
-    ``_WHOLE_EVIDENCE_KINDS`` in ``operations/read_contracts.py`` and this goes
-    red -- the paged read raises the deliverability refusal instead of
-    answering, and the continuation walk never starts.
-    """
+    rows: list[dict[str, object]] = []
+    pending: dict[str, bytearray] = {}
+    current: dict[str, object] = {}
+    for window in windows:
+        EvidenceWindowBody.model_validate(window)
+        before = len(rows)
+        assert window["offset"] == before
+        fragment = window.get("row_fragment")
+        if fragment is None:
+            assert not pending and not current
+            rows.extend(window["rows"])
+        else:
+            assert fragment["row_offset"] == before
+            assert not window["rows"]
+            for part in fragment["fields"]:
+                name = part["field"]
+                assert name not in current, "a completed field was delivered twice"
+                buffer = pending.setdefault(name, bytearray())
+                assert len(buffer) == part["offset"], "a field skipped or repeated bytes"
+                buffer.extend(base64.b64decode(part["data_base64"], validate=True))
+                assert len(buffer) <= part["total_bytes"]
+                if len(buffer) == part["total_bytes"]:
+                    text = buffer.decode("utf-8")
+                    current[name] = json.loads(text) if part["encoding"] == "json" else text
+                    del pending[name]
+            if fragment["complete"]:
+                assert not pending
+                rows.append(current)
+                current = {}
+        assert window["returned"] == len(rows) - before
+        assert window["complete"] is (len(rows) == window["total"])
+    assert not pending and not current
+    assert windows[-1]["complete"] and windows[-1]["continuation"] is None
+    return rows
+
+
+@pytest.mark.parametrize("row_count", [1, 3])
+def test_large_file_edits_are_losslessly_delivered(tmp_path: Path, row_count: int) -> None:
+    """07.F049: both a multi-row overflow and one >8 MiB edit remain readable."""
+    import json
+
+    from polylogue.archive.query.transaction import QueryContinuation
     from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
     from polylogue.operations.daemon_reads import execute_read_operation
+    from polylogue.operations.session_evidence import read_file_edits_page
 
     root = tmp_path / "archive"
-    # Three rows of ~4 MiB: no single row is undeliverable, the whole relation
-    # is roughly 12 MiB, and one page of one row is comfortably inside 8 MiB.
-    row_bytes = MAX_OPERATION_RESULT_BYTES // 2
-    session_id = _seed_large_file_edits(root, rows=3, original_file_bytes=row_bytes)
-
-    seen: list[str] = []
+    row_bytes = MAX_OPERATION_RESULT_BYTES // 2 if row_count == 3 else MAX_OPERATION_RESULT_BYTES + 4096
+    session_id = _seed_large_file_edits(root, rows=row_count, original_file_bytes=row_bytes)
+    windows: list[dict[str, Any]] = []
+    token: str | None = None
+    positions: list[tuple[int, int, int]] = []
+    result_refs: set[str] = set()
+    validity: set[tuple[int | None, int | None]] = set()
     with ArchiveStore.open_existing(root) as archive:
-        page = execute_read_operation(
+        expected, _ = read_file_edits_page(archive, session_id, limit=row_count, offset=0)
+        while True:
+            request: dict[str, object] = {"ref": f"session:{session_id}", "kind": "file-edits"}
+            request.update({"continuation": token} if token is not None else {"limit": 1})
+            result = execute_read_operation("session.read", request, archive=archive, serving_identity="test")
+            assert len(json.dumps(result).encode("utf-8")) <= MAX_OPERATION_RESULT_BYTES
+            window = cast("dict[str, Any]", result["evidence_window"])
+            assert window["total"] == row_count
+            windows.append(window)
+            token = window["continuation"]
+            if token is None:
+                break
+            decoded = QueryContinuation.decode(token)
+            cursor = decoded.cursor or {"field": 0, "byte": 0}
+            position = (decoded.request.offset, cast(int, cursor["field"]), cast(int, cursor["byte"]))
+            assert not positions or position > positions[-1], "continuation made no progress"
+            positions.append(position)
+            result_refs.add(decoded.result_ref)
+            validity.add((decoded.request.issued_at, decoded.request.expires_at))
+    assert any(window.get("row_fragment") for window in windows)
+    assert len(result_refs) == len(validity) == 1
+    assert _reassemble(windows) == expected
+
+
+def _seed_fragment_evidence(root: Path, kind: str, text: str) -> None:
+    """Synthetic derived rows; no operator archive or acquisition is involved."""
+    import json
+    import sqlite3
+
+    from polylogue.core.enums import WebConstructType
+
+    _seed(root)
+    with sqlite3.connect(root / "index.db") as conn:
+        block, message = conn.execute(
+            "SELECT tool_use_block_id, message_id FROM file_edits ORDER BY tool_use_block_id LIMIT 1"
+        ).fetchone()
+        if kind == "file-edits":
+            conn.execute(
+                "UPDATE file_edits SET original_file = ?, structured_patch_json = ?, "
+                "old_string = '', new_string = ?, replace_all = 1, user_modified = 0 WHERE tool_use_block_id = ?",
+                (text, json.dumps([{"lines": [text]}]), text, block),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO web_content_constructs "
+                "(session_id, message_id, block_id, position, provider, construct_type, title, text) "
+                "VALUES (?, ?, ?, 0, 'claude', ?, '', ?)",
+                (_SESSION_ID, message, block, next(iter(WebConstructType)).value, text),
+            )
+
+
+@pytest.mark.parametrize("kind", ["file-edits", "web-content"])
+async def test_small_transport_budget_preserves_unicode_json_nulls_and_empty_fields(tmp_path: Path, kind: str) -> None:
+    """The API's bounded owner can serve MCP-sized pages without a whole-row read."""
+    import json
+
+    from polylogue.api import Polylogue
+    from polylogue.operations.session_evidence import SESSION_EVIDENCE_PAGE_READERS
+
+    root = tmp_path / "archive"
+    _seed_fragment_evidence(root, kind, 'zażółć\x00🧪"\\\n' * 5000)
+    with ArchiveStore.open_existing(root) as store:
+        expected, _ = SESSION_EVIDENCE_PAGE_READERS[kind](store, _SESSION_ID, 100, 0)
+    archive = Polylogue(archive_root=root)
+    windows: list[dict[str, Any]] = []
+    token: str | None = None
+    try:
+        while True:
+            window = await archive.read_session_evidence_window(
+                _SESSION_ID, kind, limit=50, continuation=token, max_bytes=20_904
+            )
+            assert window is not None
+            assert len(json.dumps(window).encode("utf-8")) <= 20_904
+            windows.append(window)
+            following = cast("str | None", window["continuation"])
+            assert following is None or following != token
+            token = following
+            if token is None:
+                break
+    finally:
+        await archive.close()
+    assert len(windows) > 2
+    assert _reassemble(windows) == expected
+
+
+@pytest.mark.parametrize("kind", ["file-edits", "web-content"])
+def test_fragment_continuation_rejects_same_length_evidence_rewrite(tmp_path: Path, kind: str) -> None:
+    """Changing only the evidence relation, not its session, invalidates the token."""
+    import sqlite3
+
+    from polylogue.archive.query.transaction import QueryContinuationStaleError
+    from polylogue.operations.session_evidence import read_session_evidence_window
+
+    root = tmp_path / "archive"
+    _seed_fragment_evidence(root, kind, "a" * 40_000)
+    with ArchiveStore.open_existing(root) as archive:
+        first = read_session_evidence_window(
+            archive, kind, ref=f"session:{_SESSION_ID}", limit=1, offset=0, continuation=None, max_bytes=10_000
+        )
+    assert first is not None and first["row_fragment"] and first["continuation"]
+    table, column = ("file_edits", "original_file") if kind == "file-edits" else ("web_content_constructs", "text")
+    with sqlite3.connect(root / "index.db") as conn:
+        conn.execute(f"UPDATE {table} SET {column} = ? WHERE length({column}) = 40000", ("b" * 40_000,))
+    with ArchiveStore.open_existing(root) as archive, pytest.raises(QueryContinuationStaleError):
+        read_session_evidence_window(
+            archive,
+            kind,
+            ref=f"session:{_SESSION_ID}",
+            limit=1,
+            offset=0,
+            continuation=cast(str, first["continuation"]),
+            max_bytes=10_000,
+        )
+
+
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        {"field": -1, "byte": 0},
+        {"field": 999, "byte": 0},
+        {"field": True, "byte": 0},
+        {"field": 0, "byte": -1},
+        {"field": 0, "byte": 2**62},
+        {"unexpected": 1},
+    ],
+)
+def test_fragment_cursor_rejects_invalid_coordinates(tmp_path: Path, cursor: dict[str, object]) -> None:
+    from polylogue.archive.query.transaction import QueryContinuation, QueryContinuationInvalidError
+    from polylogue.operations.session_evidence import read_session_evidence_window
+
+    root = tmp_path / "archive"
+    _seed_fragment_evidence(root, "file-edits", "a" * 40_000)
+    with ArchiveStore.open_existing(root) as archive:
+        first = read_session_evidence_window(
+            archive,
+            "file-edits",
+            ref=f"session:{_SESSION_ID}",
+            limit=1,
+            offset=0,
+            continuation=None,
+            max_bytes=10_000,
+        )
+        assert first is not None
+        decoded = QueryContinuation.decode(cast(str, first["continuation"]))
+        malformed = QueryContinuation(decoded.request, decoded.result_ref, cursor=cursor).encode()
+        with pytest.raises(QueryContinuationInvalidError):
+            read_session_evidence_window(
+                archive,
+                "file-edits",
+                ref=f"session:{_SESSION_ID}",
+                limit=1,
+                offset=0,
+                continuation=malformed,
+                max_bytes=10_000,
+            )
+
+
+def test_oversized_row_never_enters_the_full_row_mapper(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.operations import session_evidence
+
+    root = tmp_path / "archive"
+    _seed_fragment_evidence(root, "file-edits", "a" * 40_000)
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise AssertionError("materialized an oversized row before fragmenting it")
+
+    monkeypatch.setattr(session_evidence, "read_file_edits_page", refuse)
+    with ArchiveStore.open_existing(root) as archive:
+        window = session_evidence.read_session_evidence_window(
+            archive,
+            "file-edits",
+            ref=f"session:{_SESSION_ID}",
+            limit=1,
+            offset=0,
+            continuation=None,
+            max_bytes=10_000,
+        )
+    assert window is not None and window["row_fragment"]
+
+
+async def test_oversized_web_construct_resumes_from_daemon_on_api(tmp_path: Path) -> None:
+    """One >8 MiB web row crosses surfaces and byte budgets without restarting."""
+    import json
+
+    from polylogue.api import Polylogue
+    from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
+    from polylogue.operations.daemon_reads import execute_read_operation
+    from polylogue.operations.session_evidence import SESSION_EVIDENCE_PAGE_READERS
+
+    root = tmp_path / "archive"
+    _seed_fragment_evidence(root, "web-content", "x" * (MAX_OPERATION_RESULT_BYTES + 4096))
+    ref = f"session:{_SESSION_ID}"
+    with ArchiveStore.open_existing(root) as store:
+        expected, _ = SESSION_EVIDENCE_PAGE_READERS["web-content"](store, _SESSION_ID, 1, 0)
+        result = execute_read_operation(
             "session.read",
-            {"ref": f"session:{session_id}", "kind": "file-edits", "limit": 1, "offset": 0},
-            archive=archive,
+            {"ref": ref, "kind": "web-content", "limit": 1},
+            archive=store,
             serving_identity="test",
         )
-        while True:
-            window = cast("dict[str, Any]", page["evidence_window"])
-            assert window["total"] == 3, "total is the relation's own row count, not the page's"
-            assert window["returned"] == 1
-            seen.extend(str(row["tool_use_block_id"]) for row in window["rows"])
-            if window["continuation"] is None:
-                assert window["complete"] is True
-                break
-            page = execute_read_operation(
-                "session.read",
-                {
-                    "ref": f"session:{session_id}",
-                    "kind": "file-edits",
-                    "continuation": window["continuation"],
-                },
-                archive=archive,
-                serving_identity="test",
+    assert len(json.dumps(result).encode("utf-8")) <= MAX_OPERATION_RESULT_BYTES
+    windows = [cast("dict[str, Any]", result["evidence_window"])]
+    assert windows[0]["row_fragment"] is not None
+    token = windows[0]["continuation"]
+    archive = Polylogue(archive_root=root)
+    try:
+        while token is not None:
+            window = await archive.read_session_evidence_window(
+                ref,
+                "web-content",
+                continuation=token,
+                max_bytes=512 * 1024,
             )
-
-    assert len(seen) == 3
-    assert len(set(seen)) == 3, "the walk must not repeat a row"
-
-
-def test_a_single_undeliverable_row_is_refused_without_inventing_a_retry(tmp_path: Path) -> None:
-    """The opposite direction: paging is not a promise that everything fits.
-
-    One row larger than a whole operation result cannot be delivered by any
-    window, and the refusal must say so rather than repeat "retry with a
-    smaller limit" -- the advice that made this class of failure look like
-    caller error.
-
-    Anti-vacuity: restore the single unconditional "retry with a smaller
-    limit" message in ``_require_deliverable_window`` and this goes red,
-    because the refusal again advertises a retry that cannot exist.
-    """
-    from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
-    from polylogue.operations.daemon_reads import execute_read_operation
-
-    root = tmp_path / "archive"
-    session_id = _seed_large_file_edits(root, rows=1, original_file_bytes=MAX_OPERATION_RESULT_BYTES + 4096)
-
-    with ArchiveStore.open_existing(root) as archive:
-        with pytest.raises(ValueError) as caught:
-            execute_read_operation(
-                "session.read",
-                {"ref": f"session:{session_id}", "kind": "file-edits", "limit": 1, "offset": 0},
-                archive=archive,
-                serving_identity="test",
-            )
-
-    message = str(caught.value)
-    assert "no retry can deliver it" in message
-    assert "retry with a smaller limit" not in message
+            assert window is not None
+            assert len(json.dumps(window).encode("utf-8")) <= 512 * 1024
+            following = window["continuation"]
+            assert following is None or following != token
+            windows.append(window)
+            token = following
+    finally:
+        await archive.close()
+    assert _reassemble(windows) == expected

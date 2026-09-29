@@ -1490,6 +1490,30 @@ CREATE TABLE IF NOT EXISTS session_tags (
     {TABLE_SPECS["session_tags"].ddl_body}
 ) STRICT;
 
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_file_edits_insert
+AFTER INSERT ON file_edits BEGIN
+    {index_frame_bump_sql("file_edits")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_file_edits_update
+AFTER UPDATE ON file_edits BEGIN
+    {index_frame_bump_sql("file_edits")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_file_edits_delete
+AFTER DELETE ON file_edits BEGIN
+    {index_frame_bump_sql("file_edits")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_web_content_constructs_insert
+AFTER INSERT ON web_content_constructs BEGIN
+    {index_frame_bump_sql("web_content_constructs")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_web_content_constructs_update
+AFTER UPDATE ON web_content_constructs BEGIN
+    {index_frame_bump_sql("web_content_constructs")}
+END;
+CREATE TRIGGER IF NOT EXISTS query_unit_frame_web_content_constructs_delete
+AFTER DELETE ON web_content_constructs BEGIN
+    {index_frame_bump_sql("web_content_constructs")}
+END;
 CREATE TRIGGER IF NOT EXISTS query_unit_frame_sessions_insert
 AFTER INSERT ON sessions BEGIN
     {index_frame_bump_sql("sessions")}

@@ -1,38 +1,15 @@
-"""The windowed-evidence continuation family (polylogue-r3cuz).
+"""Snapshot-bound windows over per-session evidence, shared by every surface.
 
-``operations/transcript_window.py`` owns the **message** window vocabulary:
-one projection token (``session-owner-v1``) shared by every surface that pages
-a transcript, so a token minted by the Python API resumes on the CLI.  That
-sharing is the point of the family, and it is also why a *different* kind of
-row must not mint into it: a token that resumes "artifacts 50..100" while
-carrying the message family's projection is readable by a reader that will
-compose messages with it.
-
-So this module declares a second family -- per relation, not per surface.  A
-family names three things and nothing else:
-
-* the ``session.read`` kind it pages,
-* its own projection token, which is what makes a foreign continuation
-  refusable **by name** instead of silently resumable, and
-* the stable order the relation is windowed in, because a continuation is only
-  meaningful against an order the reader guarantees.
-
-What it deliberately does *not* own is the window arithmetic or the snapshot
-binding.  ``next_offset``/``complete``/token minting and the
-before-and-after epoch check come from ``transcript_window``'s
-``window_result``/``bind_snapshot``, which take a transaction and know nothing
-about messages: an off-by-one or a missing epoch revalidation stays a single
-defect across both families rather than two independent ones.  The separation
-that matters is the *vocabulary*, and :func:`frame_evidence_window` is where
-it is enforced.
-
-The one binding added here is for relations the archive frame cannot see:
-``bind_snapshot`` stamps the index/user frame, so a family that pages a
-``source.db`` relation also binds that relation's own epoch into its token.
+Each relation has its own continuation projection and stable order. Transcript
+window arithmetic remains shared: offsets and totals count completed rows,
+not physical fragments. File-edit and web-content rows may span responses;
+the token additionally carries their field/byte cursor, without changing the
+logical result identity. Source-tier material pages bind their own epoch.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
@@ -43,76 +20,25 @@ from polylogue.archive.query.transaction import (
     QueryContinuationStaleError,
     QueryTransactionRequest,
 )
+from polylogue.operations.evidence_payloads import DEFAULT_EVIDENCE_PAGE_BYTES, EvidencePayloadPage
 from polylogue.operations.transcript_window import bind_snapshot, window_result
 
-#: One storage read for one evidence page: ``(limit, offset)`` in, the page's
-#: rows plus the **relation's own** total out.  A reader that returned the
-#: windowed count as the total would make every clipped page look whole, which
-#: is exactly what the contract refuses -- so the total is the reader's
-#: responsibility and ``EvidenceWindowBody`` checks the arithmetic.
 EvidenceReader = Callable[[int, int], tuple[list[dict[str, object]], int]]
+EvidencePayloadReader = Callable[[int, int, Mapping[str, object] | None, int], EvidencePayloadPage]
 
 
 @dataclass(frozen=True, slots=True)
 class EvidenceWindowFamily:
-    """One per-session relation that is paged rather than answered whole."""
-
-    #: The ``session.read`` kind this family serves.
     kind: str
-    #: The transaction projection stamped into every token this family mints.
-    #: Distinct per relation, so a page of one relation can never resume the
-    #: other -- nor the message window.
     projection: str
-    #: The order the reader guarantees, recorded in the token.
     stable_order: str
 
 
-#: ``Session.session_events`` -- provider evidence riding the session timeline.
-#: Ordered by the substrate's own ``position``, which is the order the
-#: repository hydrates a session's events in.
-SESSION_EVENTS_WINDOW = EvidenceWindowFamily(
-    kind="events",
-    projection="session-events-v1",
-    stable_order="position",
-)
-
-#: Source-tier acquisition rows for one session's ``raw_id``.  Ordered exactly
-#: as ``ArchiveStore.raw_artifacts_for_session`` windows them.
-RAW_ARTIFACTS_WINDOW = EvidenceWindowFamily(
-    kind="raw",
-    projection="session-artifacts-v1",
-    stable_order="acquired_at_ms desc,raw_id",
-)
-
-#: ``file_edits`` -- captured Edit/Write/MultiEdit tool-call evidence.  Ordered
-#: by the repository's own ``message_id, tool_use_block_id``.  Windowed because
-#: one row carries ``original_file``, the pre-edit contents of the touched
-#: file, so a single edit can exceed the operation-result bound.
-FILE_EDITS_WINDOW = EvidenceWindowFamily(
-    kind="file-edits",
-    projection="session-file-edits-v1",
-    stable_order="message_id,tool_use_block_id",
-)
-
-#: ``web_content_constructs`` -- typed web-export constructs.  Ordered by the
-#: repository's own ``message_id, block_id, position``.  Windowed because one
-#: row carries ``text``, a fetched page or search-result body.
-WEB_CONTENT_WINDOW = EvidenceWindowFamily(
-    kind="web-content",
-    projection="session-web-content-v1",
-    stable_order="message_id,block_id,position",
-)
-
-#: ``material_observations`` whose referrer is the session -- source-tier
-#: materials such as Codex goals and memories.  Ordered by admission.
-#: Windowed because one material carries its retained bytes.  The relation is
-#: in ``source.db``, so its tokens also bind
-#: ``session_evidence.session_materials_source_epoch``.
-SESSION_MATERIALS_WINDOW = EvidenceWindowFamily(
-    kind="materials",
-    projection="session-materials-v1",
-    stable_order="created_at_ms,material_id",
-)
+SESSION_EVENTS_WINDOW = EvidenceWindowFamily("events", "session-events-v1", "position")
+RAW_ARTIFACTS_WINDOW = EvidenceWindowFamily("raw", "session-artifacts-v1", "acquired_at_ms desc,raw_id")
+FILE_EDITS_WINDOW = EvidenceWindowFamily("file-edits", "session-file-edits-v2", "message_id,tool_use_block_id")
+WEB_CONTENT_WINDOW = EvidenceWindowFamily("web-content", "session-web-content-v2", "message_id,block_id,position")
+SESSION_MATERIALS_WINDOW = EvidenceWindowFamily("materials", "session-materials-v1", "created_at_ms,material_id")
 
 EVIDENCE_WINDOW_FAMILIES: dict[str, EvidenceWindowFamily] = {
     family.kind: family
@@ -124,20 +50,10 @@ EVIDENCE_WINDOW_FAMILIES: dict[str, EvidenceWindowFamily] = {
         SESSION_MATERIALS_WINDOW,
     )
 }
-
-
-#: The transaction argument that carries a source-tier relation's epoch.
 _SOURCE_EPOCH_ARGUMENT = "source_epoch"
 
 
 def _window_arguments(family: EvidenceWindowFamily, ref: str) -> dict[str, object]:
-    """The request identity a resume must match, minus the coordinates.
-
-    ``limit``/``offset`` live on the transaction itself, so they are not part
-    of the identity; the reference and the relation are, which is what keeps a
-    token minted for one session's events from resuming another session's.
-    """
-
     return {"ref": ref, "kind": family.kind}
 
 
@@ -150,21 +66,7 @@ def frame_evidence_window(
     continuation: str | None,
     source_epoch: str | None = None,
 ) -> QueryTransactionRequest:
-    """Resolve one evidence page request, honouring a continuation over coordinates.
-
-    A continuation from another family is refused **by name**.  That refusal is
-    the reason this module exists: the message window and each evidence
-    relation all page ``session.read``, so an operation-name check alone would
-    accept a transcript token here and compose artifacts against a window the
-    caller minted for messages.
-
-    ``source_epoch`` is the current epoch of a relation outside the archive
-    frame (``source.db``), for families that page one. It is stamped into a
-    new window's arguments -- which the token's result identity covers -- and
-    a resumed token whose stamped epoch differs is stale, exactly as a moved
-    archive frame is.
-    """
-
+    """Resolve a request, rejecting foreign families, selections and snapshots."""
     if continuation is None:
         arguments = _window_arguments(family, ref)
         if source_epoch is not None:
@@ -177,14 +79,13 @@ def frame_evidence_window(
             projection=family.projection,
             stable_order=family.stable_order,
         )
-
     decoded = QueryContinuation.decode(continuation)
     transaction = decoded.request
     if transaction.operation != "session.read" or decoded.result_ref != transaction.result_ref:
         raise QueryContinuationInvalidError("continuation belongs to another operation")
-    if transaction.projection != family.projection:
+    if transaction.projection != family.projection or transaction.stable_order != family.stable_order:
         raise QueryContinuationInvalidError(
-            f"continuation belongs to the {transaction.projection!r} read family, "
+            f"continuation belongs to the {transaction.projection!r} read family/order, "
             f"not the {family.projection!r} window this request asks for"
         )
     arguments = dict(transaction.arguments)
@@ -194,6 +95,32 @@ def frame_evidence_window(
     if issued_source_epoch != source_epoch:
         raise QueryContinuationStaleError(issued_epoch=str(issued_source_epoch), current_epoch=str(source_epoch))
     return transaction
+
+
+def _payload_budget(framed: QueryTransactionRequest, max_bytes: int) -> int:
+    """Reserve the actual token/envelope cost before reading any payload bytes."""
+    # SQLite counts and field lengths fit signed 64-bit integers. Reserve the
+    # longest next coordinates rather than guessing how long this token is.
+    largest = 2**63 - 1
+    token = QueryContinuation(
+        framed.next(offset=largest), framed.result_ref, cursor={"field": largest, "byte": largest}
+    ).encode()
+    envelope = {
+        "relation": framed.arguments["kind"],
+        "rows": [],
+        "total": largest,
+        "returned": largest,
+        "limit": framed.page_size,
+        "offset": framed.offset,
+        "next_offset": largest,
+        "continuation": token,
+        "complete": False,
+        "row_fragment": None,
+    }
+    budget = max_bytes - len(json.dumps(envelope, ensure_ascii=True).encode("utf-8")) - 256
+    if budget < 512:
+        raise ValueError("evidence byte budget is too small for its continuation envelope")
+    return budget
 
 
 def read_evidence_window(
@@ -206,49 +133,53 @@ def read_evidence_window(
     continuation: str | None,
     read: EvidenceReader,
     source_epoch: Callable[[], str] | None = None,
+    read_payload: EvidencePayloadReader | None = None,
+    max_bytes: int = DEFAULT_EVIDENCE_PAGE_BYTES,
 ) -> Mapping[str, object]:
-    """Answer one evidence page against an already-pinned archive reader.
+    """Read one advancing page inside the caller's already-pinned snapshot.
 
-    The returned mapping is exactly the declared ``EvidenceWindowBody``: the
-    caller validates it into the contract rather than assembling a second
-    shape of its own, so the reported bound and the rows are decided in one
-    place.
-
-    Like the message route, the epoch is bound before the storage read and
-    revalidated after it, so a continuation is only minted for a page that was
-    composed against one snapshot. ``source_epoch`` reads the epoch of a
-    relation the archive frame does not cover; it is bracketed around the
-    storage read the same way.
+    ``returned`` counts completed rows. A partial row is never placed in
+    ``rows`` or reported complete: ``row_fragment`` names its byte coverage,
+    and its continuation advances within the same row until all fields have
+    arrived. Small rows keep their ordinary row projection.
     """
-
     issued_source_epoch = source_epoch() if source_epoch is not None else None
     transaction = frame_evidence_window(
-        family,
-        ref=ref,
-        limit=limit,
-        offset=offset,
-        continuation=continuation,
-        source_epoch=issued_source_epoch,
+        family, ref=ref, limit=limit, offset=offset, continuation=continuation, source_epoch=issued_source_epoch
     )
     framed = bind_snapshot(archive, transaction)
-    rows, total = read(framed.page_size, framed.offset)
+    cursor = QueryContinuation.decode(continuation).cursor if continuation is not None else None
+    if read_payload is None:
+        if cursor is not None:
+            raise QueryContinuationInvalidError("this evidence family cannot resume field fragments")
+        rows, total = read(framed.page_size, framed.offset)
+        page = EvidencePayloadPage(rows=rows, total=total)
+    else:
+        page = read_payload(framed.page_size, framed.offset, cursor, _payload_budget(framed, max_bytes))
     bind_snapshot(archive, framed)
     if source_epoch is not None and (current := source_epoch()) != issued_source_epoch:
         raise QueryContinuationStaleError(issued_epoch=str(issued_source_epoch), current_epoch=current)
-    # ``window_result`` is the shared arithmetic, not the message vocabulary:
-    # it decides ``next_offset``/``complete`` and mints the token from the
-    # transaction it is handed -- which carries *this* family's projection.
-    window = window_result(list(rows), total, framed)
+    # The shared arithmetic sees only completed records. The final fragment
+    # completes one record; unfinished fragments do not advance the row offset.
+    completed = page.rows if page.fragment is None else ([page.fragment] if page.completed_rows else [])
+    window = window_result(completed, page.total, framed)
+    next_token = window.continuation
+    if page.cursor is not None:
+        assert window.next_offset is not None
+        next_token = QueryContinuation(
+            framed.next(offset=window.next_offset), framed.result_ref, cursor=page.cursor
+        ).encode()
     return {
         "relation": family.kind,
-        "rows": list(window.rows),
+        "rows": page.rows,
         "total": window.total,
-        "returned": len(window.rows),
+        "returned": page.completed_rows,
         "limit": window.limit,
         "offset": window.offset,
         "next_offset": window.next_offset,
-        "continuation": window.continuation,
+        "continuation": next_token,
         "complete": window.complete,
+        "row_fragment": page.fragment,
     }
 
 

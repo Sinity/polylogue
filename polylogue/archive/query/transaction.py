@@ -366,6 +366,9 @@ class QueryContinuation:
 
     request: QueryTransactionRequest
     result_ref: str
+    # Physical delivery state (e.g. a byte position inside an evidence row),
+    # checksummed with the token but deliberately excluded from result identity.
+    cursor: Mapping[str, object] | None = None
 
     def encode(self) -> str:
         request = self.request
@@ -388,6 +391,8 @@ class QueryContinuation:
                 "archive_epoch": request.archive_epoch,
             },
         }
+        if self.cursor is not None:
+            body["cursor"] = dict(self.cursor)
         body["checksum"] = hashlib.sha256(_canonical_json(body).encode("utf-8")).hexdigest()
         encoded = base64.urlsafe_b64encode(_canonical_json(body).encode("utf-8")).decode("ascii").rstrip("=")
         return "q2." + encoded
@@ -434,13 +439,16 @@ class QueryContinuation:
                 continuation_version=version,
             )
             result_ref = str(body["result_ref"])
+            cursor = body.get("cursor")
+            if cursor is not None and not isinstance(cursor, dict):
+                raise ValueError("query continuation cursor must be an object")
         except QueryContinuationExpiredError:
             raise
         except (binascii.Error, KeyError, TypeError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
             raise QueryContinuationInvalidError("invalid query continuation") from exc
         if not result_ref.startswith("result:"):
             raise QueryContinuationInvalidError("invalid query result reference")
-        return cls(request=request, result_ref=result_ref)
+        return cls(request=request, result_ref=result_ref, cursor=cursor)
 
 
 def decode_query_units_continuation(token: str) -> QueryContinuation:
