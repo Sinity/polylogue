@@ -166,6 +166,9 @@ class QueryExecutionContext:
     owner_ref: str | None = None
     cancel_event: threading.Event = field(default_factory=threading.Event, compare=False, repr=False)
     _receipt_lock: threading.Lock = field(default_factory=threading.Lock, compare=False, repr=False)
+    _cancel_listeners: dict[int, Callable[[], None]] = field(
+        default_factory=dict, init=False, compare=False, repr=False
+    )
     receipt: QueryExecutionReceipt = field(init=False, compare=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -207,6 +210,33 @@ class QueryExecutionContext:
 
     def cancel(self) -> None:
         self.cancel_event.set()
+        with self._receipt_lock:
+            listeners = list(self._cancel_listeners.values())
+        for listener in listeners:
+            listener()
+
+    def add_cancel_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Call ``listener`` on cancellation (immediately if already cancelled).
+
+        Returns a function that unregisters it. Listeners run on the
+        cancelling thread and must only schedule work.
+        """
+        key = id(listener)
+        with self._receipt_lock:
+            self._cancel_listeners[key] = listener
+        if self.cancelled:
+            listener()
+
+        def _remove() -> None:
+            with self._receipt_lock:
+                self._cancel_listeners.pop(key, None)
+
+        return _remove
+
+    def seconds_until_deadline(self) -> float | None:
+        if self.deadline_monotonic is None:
+            return None
+        return max(0.0, self.deadline_monotonic - time.monotonic())
 
     @property
     def cancelled(self) -> bool:
@@ -289,6 +319,9 @@ class QueryAdmissionController:
         self._in_flight = 0
         self._queues: dict[WorkloadClass, deque[str]] = {"interactive": deque(), "scan": deque()}
         self._released: set[str] = set()
+        # Async waiters keyed by call_id. Only a class queue head can be
+        # admitted, so state changes wake heads instead of every waiter.
+        self._async_wakers: dict[str, Callable[[], None]] = {}
 
     def _class_ceiling(self, workload_class: WorkloadClass) -> int:
         if workload_class == "scan":
@@ -329,14 +362,22 @@ class QueryAdmissionController:
                     self._cond.wait(timeout=0.05)
             except BaseException:
                 self._remove_queued_locked(ctx)
-                self._cond.notify_all()
+                self._notify_locked()
                 raise
             self._queues[ctx.workload_class].popleft()
             self._in_flight += weight
             ctx.receipt.queued_s = time.monotonic() - started
             ctx.receipt.state = "admitted"
-            self._cond.notify_all()
+            self._notify_locked()
         return weight
+
+    def _notify_locked(self) -> None:
+        self._cond.notify_all()
+        for queue in self._queues.values():
+            if queue:
+                waker = self._async_wakers.get(queue[0])
+                if waker is not None:
+                    waker()
 
     def _remove_queued_locked(self, ctx: QueryExecutionContext) -> None:
         queue = self._queues[ctx.workload_class]
@@ -352,41 +393,59 @@ class QueryAdmissionController:
                 self._released.clear()
                 self._released.add(ctx.call_id)
             self._in_flight -= weight
-            self._cond.notify_all()
+            self._notify_locked()
 
     async def _admit_async(self, ctx: QueryExecutionContext) -> int:
         """Admit without occupying a storage worker while queued.
 
         The controller remains the sole owner of class-aware queueing and
-        weights. Async callers re-check the thread-safe state at a short
-        cadence so a queued scan cannot consume a bounded archive-read worker
-        before its class is eligible to run.
+        weights. A queued async caller sleeps on an event that is set only
+        when it becomes its class's queue head after a state change, when
+        its context is cancelled, or when its deadline passes, so a queued
+        scan neither consumes a bounded archive-read worker nor wakes the
+        event loop while it cannot be admitted.
         """
         weight = self.clamped_weight(ctx)
         started = time.monotonic()
+        loop = asyncio.get_running_loop()
+        wake = asyncio.Event()
+
+        def _wake() -> None:
+            # Called from any thread, possibly after the loop has closed.
+            with suppress(RuntimeError):
+                loop.call_soon_threadsafe(wake.set)
+
+        remove_cancel_listener = ctx.add_cancel_listener(_wake)
         queued = False
         try:
             while True:
                 with self._cond:
                     if not queued:
                         self._queues[ctx.workload_class].append(ctx.call_id)
+                        self._async_wakers[ctx.call_id] = _wake
                         ctx.receipt.queue_position = len(self._queues[ctx.workload_class]) - 1
                         queued = True
                     if self._may_admit_locked(ctx, weight):
                         self._queues[ctx.workload_class].popleft()
+                        self._async_wakers.pop(ctx.call_id, None)
                         self._in_flight += weight
                         ctx.receipt.queued_s = time.monotonic() - started
                         ctx.receipt.state = "admitted"
-                        self._cond.notify_all()
+                        self._notify_locked()
                         return weight
                     if ctx.should_abort():
                         raise _abort_error(ctx)
-                await asyncio.sleep(0.01)
+                    wake.clear()
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(wake.wait(), timeout=ctx.seconds_until_deadline())
         except BaseException:
             with self._cond:
+                self._async_wakers.pop(ctx.call_id, None)
                 self._remove_queued_locked(ctx)
-                self._cond.notify_all()
+                self._notify_locked()
             raise
+        finally:
+            remove_cancel_listener()
 
     @asynccontextmanager
     async def admit_async(self, ctx: QueryExecutionContext) -> AsyncIterator[None]:

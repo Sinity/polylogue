@@ -39,17 +39,8 @@ every other runtime path uses (`polylogue/config.py`):
 | Config file | `sources.hermes.root` in `polylogue.toml` |
 | Default | `~/.hermes` |
 
-There is no dedicated `polylogued run` flag for the Hermes root specifically;
-use the environment variable or config file.
-`polylogued run --root <path>` adds an ordinary export root alongside the
-typed default sources; it does not change the Hermes root. Use the environment
-variable or config file when the Hermes state root itself must move.
-
-`--root` is additive by design. To watch *only* the given roots — isolating a
-temporary or separately-served archive — pass `--no-default-sources`, which
-drops the typed defaults (Hermes root included) so the `--root` values are the
-complete watch set. The flag requires at least one `--root`; without one there
-is nothing left to watch. `polylogued watch` accepts the same flag.
+There is no `polylogued run` flag for the Hermes root; use the environment
+variable or config file.
 
 Source: `ConfigInventoryEntry("hermes_root", toml_path="sources.hermes.root",
 env_var="POLYLOGUE_HERMES_ROOT", ...)` in `polylogue/config.py:780-786`, resolved
@@ -520,18 +511,15 @@ smoke_home=$(mktemp -d)
 env -u POLYLOGUE_HERMES_ROOT -u POLYLOGUE_CONFIG -u POLYLOGUE_SITE_CONFIG \
     -u POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH -u POLYLOGUE_HOOK_SIDECAR_DIR \
     HOME="$smoke_home" XDG_CONFIG_HOME="$smoke_home/config" XDG_DATA_HOME="$smoke_home/data" \
-  polylogued run --no-browser-capture --no-source-catchup \
-  --root "$POLYLOGUE_ARCHIVE_ROOT/inbox" &
+  polylogued run --no-browser-capture --no-source-catchup &
 polylogue import tests/fixtures/hermes/atif/nemo_relay_atif_v1.7_real_redacted.json
 polylogue --origin hermes-session find "hermes" then read --all --format json
 ```
 
-`--root` on its own does not isolate a watcher: it is additive. Add
-`--no-default-sources` to make the listed roots the complete watch set, or use
-a disposable `HOME` for fixture-only daemon runs; `--no-source-catchup` only
-disables configured non-watch sources. A configured root reaches the daemon
-through its own environment variable, so the smoke above also clears the five
-that outrank `HOME`/XDG discovery.
+A disposable `HOME` isolates fixture-only daemon runs, since every origin is
+watched only at its canonical location; `--no-source-catchup` only disables
+configured non-watch sources. The smoke above also clears the environment
+variables that outrank `HOME`/XDG discovery.
 
 ## Related docs
 

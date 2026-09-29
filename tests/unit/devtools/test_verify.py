@@ -1134,7 +1134,7 @@ def test_affected_admission_refuses_without_launching_pytest(
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
 
-    def capture_run(label: str, **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+    def capture_run(label: str, _command: list[str], **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
         launched.append(label)
         return 0, 0.1, {}
 
@@ -1144,6 +1144,7 @@ def test_affected_admission_refuses_without_launching_pytest(
     monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
 
     assert verify._main([]) == 2
+    assert launched, "an affected admission refusal must still run the static gates"
     assert not any(label.startswith("pytest") for label in launched)
     assert history["testmon_selection"]["admission"]["status"] == expected_status
     assert history["pytest_aggregate"]["selected_union_count"] == selected_count

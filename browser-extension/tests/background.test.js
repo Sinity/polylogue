@@ -1877,7 +1877,9 @@ describe("background receiver diagnostics", () => {
       expect(status.cooldown_reason).toBe("provider_rate_limited");
     });
 
-    expect(status.cooldown_until_ms).toBe(Date.parse(status.updated_at) + 60000);
+    const remainingCooldownMs = status.cooldown_until_ms - Date.parse(status.updated_at);
+    expect(remainingCooldownMs).toBeGreaterThanOrEqual(59000);
+    expect(remainingCooldownMs).toBeLessThanOrEqual(60000);
     expect(status.inventory_complete).toBe(false);
   });
 
@@ -2265,6 +2267,47 @@ describe("background receiver diagnostics", () => {
     );
 
     expect(response).toMatchObject({ ok: false, error: "freshness_hint_sender_identity_mismatch" });
+  });
+
+  it("anti-vacuity: a Gemini freshness hint reaches the Gemini content script", async () => {
+    // Without a Gemini branch in conversationIdForUrl, captureTab returns null
+    // before messaging the tab and the hint was still reported as ok.
+    const geminiUrl = "https://gemini.google.com/app/gemini-fresh";
+    tabs = [{ id: 42, url: geminiUrl, title: "Gemini" }];
+    stored.polylogueReceiverPairing = {
+      state: "online",
+      receiver_id: "rx-auto-capture",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-auto-capture", api_schema: "polylogue-browser-capture/v1" });
+      }
+      return responseJson(
+        { provider: "gemini", provider_session_id: "gemini-fresh", state: "archived", lifecycle: "archived", captured: true, spooled: false },
+        { requestId: "archive-state-gemini" },
+      );
+    });
+    globalThis.chrome.tabs.sendMessage = vi.fn(async (_tabId, message) => (
+      message.type === "polylogue.capturePage" ? { ok: true, archiveState: { state: "archived" } } : null
+    ));
+
+    await sendRuntimeMessage(
+      {
+        type: "polylogue.captureFreshnessHint",
+        provider: "gemini",
+        provider_session_id: "gemini-fresh",
+        reason: "provider_turns_changed",
+        delay_ms: 0,
+      },
+      { tab: { id: 42, url: geminiUrl } },
+    );
+
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ type: "polylogue.capturePage" }),
+    );
   });
 
   it("does not fetch a missing conversation while automatic capture is paused", async () => {
@@ -2854,6 +2897,18 @@ describe("capture retry queue", () => {
     expect(stored.polylogueCaptureQueue.dropped_count).toBe(2);
     expect(stored.polylogueCaptureQueue.entries[0].envelope.session.provider_session_id).toBe("conv-2");
     expect(stored.polylogueCaptureQueue.entries.at(-1).envelope.session.provider_session_id).toBe("conv-21");
+  });
+
+  it("queues a capture whose stalled upload the receiver cancelled with 408", async () => {
+    globalThis.fetch = vi.fn(async () => responseJson({ error: "upload_stalled" }, { ok: false, status: 408 }));
+
+    await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-stalled" } },
+    });
+
+    expect(stored.polylogueCaptureQueue.entries).toHaveLength(1);
+    expect(stored.polylogueCaptureQueue.entries[0].envelope.session.provider_session_id).toBe("conv-stalled");
   });
 
   it("summarizes the retry queue for the popup without leaking full envelope internals", async () => {

@@ -1006,6 +1006,11 @@ class OperationExecutor:
             authorization.token is None and (self._audit is None or authorization.authorization_id is None)
         ):
             raise AuthorizationMismatchError("authorization is not bound to this preview")
+        token = authorization.token or ""
+
+        def revoke_local() -> None:
+            self._issued_authorizations.pop(token, None)
+
         issued = self._issued_authorizations.get(authorization.token or "")
         if self._audit is None and (issued is None or issued != authorization):
             raise AuthorizationMismatchError("authorization token was not issued for this executor")
@@ -1027,6 +1032,7 @@ class OperationExecutor:
 
             live_identity = ArchiveIdentity.resolve(self._archive_root).authority_identity_digest
             if live_identity != preview.plan.archive_identity_digest:
+                revoke_local()
                 raise PlanStaleError("archive identity changed after the bound preview was prepared")
         if self._audit is not None:
             # Land interrupted work before re-preparing, so the freshness
@@ -1041,6 +1047,7 @@ class OperationExecutor:
             expires_at_ms=preview.plan.expires_at_ms,
         )
         if fresh_plan.plan_hash != preview.plan.plan_hash:
+            revoke_local()
             if self._audit is not None:
                 self._audit.mark_preview_stale(preview)
             raise PlanStaleError(
@@ -1050,7 +1057,7 @@ class OperationExecutor:
         # Tokens are one-shot even for daemonless/library executors. Durable
         # audit rows enforce this in production; this local consume closes
         # the equivalent replay path when no audit repository is configured.
-        self._issued_authorizations.pop(authorization.token or "", None)
+        revoke_local()
         if self._audit is not None:
             self._refuse_unresolved_overlap(fresh_plan)
         operation_id: str | None = None

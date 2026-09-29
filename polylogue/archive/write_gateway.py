@@ -13,12 +13,18 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from threading import RLock
-from typing import TYPE_CHECKING, Any, Literal
+from typing import Any, Literal
 
 from polylogue.storage.sqlite.connection_profile import open_connection as _open_conn
 
-if TYPE_CHECKING:
-    from polylogue.archive.write_effects import WriteEffectReceipt
+
+@dataclass(frozen=True, slots=True)
+class WriteEffectReceipt:
+    name: str
+    phase: Literal["in-transaction", "post-commit", "async-deferred"]
+    disposition: Literal["applied", "enqueued", "skipped", "failed"]
+    retryable: bool = False
+    error: str | None = None
 
 
 class WriteOperation(Enum):

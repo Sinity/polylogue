@@ -42,6 +42,7 @@ from polylogue.daemon.topology_http import (
     READINESS_PARTIAL,
     build_topology_envelope,
     coerce_node_limit,
+    coerce_node_offset,
 )
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -187,6 +188,10 @@ class TestCoerceNodeLimit:
 
     def test_non_numeric_rejected(self) -> None:
         assert coerce_node_limit("abc") is None
+
+    def test_offset_rejects_sqlite_integer_overflow(self) -> None:
+        """Anti-vacuity: oversized client offsets never reach SQLite LIMIT bindings."""
+        assert coerce_node_offset("node-offset:9223372036854775808") is None
 
 
 class TestEnvelopeProjection:

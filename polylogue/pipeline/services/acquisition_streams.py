@@ -178,6 +178,13 @@ async def iter_raw_record_stream(
             destination_root = blob_store.root.parent
         elif blob_root is not None:
             destination_root = _Path(blob_root).parent
+        else:
+            # The omitted arguments select the default archive's blob store
+            # later in this function. Resolve that same destination before
+            # capture-root admission so its own inbox/cache remains valid.
+            from polylogue.paths import blob_store_root
+
+            destination_root = blob_store_root().parent
         refuse_non_capture_source_root(_Path(source.path), destination=destination_root)
 
     raw_stream: AsyncIterator[RawSessionData]

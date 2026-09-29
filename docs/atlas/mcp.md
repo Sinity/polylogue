@@ -48,6 +48,17 @@ Public filters in these contracts are `origin`-typed (`polylogue/core/enums.py:8
 `RawOrigin` is a separate narrow literal for raw-source reads. No MCP request
 field takes a `Provider` (`polylogue/operations/session_contracts.py:9-16`).
 
+## Read-view discovery
+
+`explain(subject="capability")` returns `read_view_profile_ids`: the `view_id`
+of every executable viewport profile, from `Polylogue.list_read_view_profiles()`.
+The list is the whole declared catalog, independent of the paged
+query-capability `items` and their `total`; `limit` and `offset` apply to the
+query declarations only. Full profile metadata stays on its own facade and
+daemon route (`/api/read-view-profiles`). `read_views` remains the distinct
+session-list projection vocabulary. The self-inspection continuity scenario
+compares every profile identity against its fixture oracle.
+
 ## Insight projections
 
 MCP insight projections still bypass `analysis/registry.py`, so a descriptor

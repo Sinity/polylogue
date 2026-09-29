@@ -190,6 +190,12 @@ class Replacement:
     empty: bool = False
 
 
+def _is_transient_failure(exc: BaseException) -> bool:
+    from polylogue.daemon.intake import is_transient_admission_error
+
+    return is_transient_admission_error(exc)
+
+
 @dataclass(frozen=True, slots=True)
 class KeyOutcome:
     """The typed result of one key's convergence attempt."""
@@ -199,6 +205,10 @@ class KeyOutcome:
     reason: PendingReason | None = None
     error: str | None = None
     elapsed_s: float = 0.0
+    transient: bool = False
+    """For ``FAILED``: whether the failure can clear with no change to the
+    key's evidence (lock contention, a storage fault). Anything else repeats
+    identically on the unchanged key."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,9 +280,11 @@ class Budget:
         unbounded discovery sweep it never asked for.
         """
         if isinstance(value, Budget):
-            if deadline_s is None or value.deadline_s is not None:
+            if deadline_s is None:
                 return value
-            return replace(value, deadline_s=deadline_s)
+            if value.deadline_s is None:
+                return replace(value, deadline_s=deadline_s)
+            return replace(value, deadline_s=min(value.deadline_s, deadline_s))
         if value is None:
             return cls(deadline_s=deadline_s)
         return cls(publication=int(value), deadline_s=deadline_s)
@@ -358,6 +370,15 @@ class DerivationReport:
     work: WorkCounters = WorkCounters()
     cursor: PassCursor = PassCursor()
     truncated: bool = False
+
+    def __post_init__(self) -> None:
+        # Preserve the positional constructor while deriving totals when the
+        # caller supplies outcomes but omits the authoritative count mapping.
+        if not self.counts and self.outcomes:
+            totals = dict.fromkeys(Outcome, 0)
+            for item in self.outcomes:
+                totals[item.outcome] += 1
+            object.__setattr__(self, "counts", totals)
 
     def by_outcome(self, outcome: Outcome) -> tuple[KeyOutcome, ...]:
         """The retained per-key detail for one outcome, not a count of it."""
@@ -591,6 +612,9 @@ class _Pass:
         self.discovered = 0
         self.inspected = 0
         self.prerequisites_inspected = 0
+        #: Cursors seen per (domain, phase): the required and excess pagers are
+        #: independent keysets and may legitimately reuse a cursor value.
+        self.visited_cursors: dict[tuple[str, DiscoveryPhase], set[object]] = {}
         self.computed = 0
         self.published = 0
         #: Every key this pass reached a verdict on, so a dependant can be gated
@@ -601,6 +625,7 @@ class _Pass:
         #: Domains this pass observed holding at least one non-valid key.
         self.unconverged_domains: set[str] = set()
         self.prerequisite_cache: dict[DerivationKey, str | None] = {}
+        self.coarse_domain_cache: dict[str, str | None] = {}
 
     # ── bookkeeping ────────────────────────────────────────────────
 
@@ -670,8 +695,11 @@ class _Pass:
         self.discovered += max(1, len(page.keys))
         if len(page.keys) > limit:
             raise ValueError(f"derivation {adapter.domain} returned {len(page.keys)} keys for a limit of {limit}")
-        if page.next_cursor is not None and page.next_cursor == position.page_cursor:
+        visited = self.visited_cursors.setdefault((adapter.domain, position.phase), set())
+        if page.next_cursor is not None and (page.next_cursor == position.page_cursor or page.next_cursor in visited):
             raise ValueError(f"derivation {adapter.domain} returned a cursor that does not advance")
+        if position.page_cursor is not None:
+            visited.add(position.page_cursor)
         return page
 
     @staticmethod
@@ -735,6 +763,10 @@ class _Pass:
         for a domain that does not: it can only be evaluated at whole-domain
         granularity, which is coarse but never optimistic.
         """
+        # Prerequisite enumeration is not metered against the pass's
+        # discovery/inspection budgets: a full page would otherwise consume
+        # them before any dependant could name its inputs, and every pass
+        # would record the page as blocked without progress.
         try:
             bindings = tuple(_as_key(item) for item in adapter.prerequisite_keys(self.frame, key))
         except Exception as exc:
@@ -750,7 +782,55 @@ class _Pass:
                 return f"prerequisite domain {name!r} could not be inspected"
             if name in self.unconverged_domains:
                 return f"prerequisite domain {name!r} has an unconverged key"
+            if (reason := self.inspect_coarse_domain(name)) is not None:
+                return reason
         return None
+
+    def inspect_coarse_domain(self, name: str) -> str | None:
+        """Establish current required-key validity before using a coarse edge.
+
+        A resumed cursor may leave an earlier refusal behind it, so the
+        in-pass outcome set cannot certify the whole prerequisite domain.
+        Stream every required page and cache the first refusal for this pass.
+        """
+        if name in self.coarse_domain_cache:
+            return self.coarse_domain_cache[name]
+        try:
+            upstream = self.registry.get(name)
+            cursor: str | None = None
+            while True:
+                # The scan is bounded by the pass deadline and counted as
+                # prerequisite work; an exhausted deadline is not cached, so a
+                # later pass resumes the check instead of trusting a partial one.
+                if self.out_of_time():
+                    return f"prerequisite domain {name!r} inspection deadline exhausted"
+                limit = DEFAULT_PAGE
+                if self.budget.inspection is not None:
+                    allowance = self.budget.inspection - self.inspected - self.prerequisites_inspected
+                    if allowance <= 0:
+                        return f"prerequisite domain {name!r} inspection budget exhausted"
+                    limit = min(limit, allowance)
+                page = _as_page(upstream.required_page(self.frame, cursor=cursor, limit=limit))
+                self.pages += 1
+                if len(page.keys) > limit:
+                    raise ValueError(f"prerequisite domain {name!r} exceeded page limit")
+                statuses = _coerce_statuses(dict(upstream.inspect(self.frame, page.keys)))
+                self.prerequisites_inspected += len(page.keys)
+                for key in page.keys:
+                    if statuses.get(key, KeyStatus.MISSING) is not KeyStatus.VALID:
+                        reason = f"prerequisite domain {name!r} has unconverged key {key!r}"
+                        self.coarse_domain_cache[name] = reason
+                        return reason
+                if page.next_cursor is None:
+                    self.coarse_domain_cache[name] = None
+                    return None
+                if page.next_cursor == cursor:
+                    raise ValueError(f"prerequisite domain {name!r} cursor did not advance")
+                cursor = page.next_cursor
+        except Exception as exc:
+            reason = f"prerequisite domain {name!r} could not be inspected: {exc}"
+            self.coarse_domain_cache[name] = reason
+            return reason
 
     def binding_block(self, binding: DerivationKey) -> str | None:
         if binding.domain in self.unreadable_domains:
@@ -768,6 +848,8 @@ class _Pass:
 
     def inspect_binding(self, binding: DerivationKey) -> str | None:
         """Read one upstream key's authority, whatever this pass selected."""
+        if self.out_of_time():
+            return "prerequisite inspection deadline exhausted"
         try:
             upstream = self.registry.get(binding.domain)
         except KeyError:
@@ -810,7 +892,9 @@ class _Pass:
         derivation_key = DerivationKey(adapter.domain, key)
         expected = KeyStatus.MISSING if retiring else KeyStatus.VALID
 
-        blocked = self.prerequisite_block(adapter, key)
+        # Retiring an excess key removes an output nothing requires; it reads no
+        # upstream inputs, so it is never gated on (or scans for) prerequisites.
+        blocked = None if retiring else self.prerequisite_block(adapter, key)
         if blocked is not None:
             self.record(
                 KeyOutcome(key=derivation_key, outcome=Outcome.PENDING, reason=PendingReason.BLOCKED, error=blocked)
@@ -832,7 +916,14 @@ class _Pass:
                 error_type=type(exc).__name__,
                 error_detail=str(exc),
             )
-            self.record(KeyOutcome(key=derivation_key, outcome=Outcome.FAILED, error=f"quiet: {exc}"))
+            self.record(
+                KeyOutcome(
+                    key=derivation_key,
+                    outcome=Outcome.FAILED,
+                    error=f"quiet {type(exc).__name__}: {exc}",
+                    transient=_is_transient_failure(exc),
+                )
+            )
             return
 
         started_key = time.monotonic()
@@ -854,7 +945,8 @@ class _Pass:
                 KeyOutcome(
                     key=derivation_key,
                     outcome=Outcome.FAILED,
-                    error=f"compute: {exc}",
+                    error=f"compute {type(exc).__name__}: {exc}",
+                    transient=_is_transient_failure(exc),
                     elapsed_s=time.monotonic() - started_key,
                 )
             )
@@ -894,7 +986,8 @@ class _Pass:
                 KeyOutcome(
                     key=derivation_key,
                     outcome=Outcome.FAILED,
-                    error=f"publish: {exc}",
+                    error=f"publish {type(exc).__name__}: {exc}",
+                    transient=_is_transient_failure(exc),
                     elapsed_s=time.monotonic() - started_key,
                 )
             )
@@ -935,12 +1028,38 @@ class _Pass:
                 KeyOutcome(
                     key=derivation_key,
                     outcome=Outcome.FAILED,
-                    error=f"reinspect: {exc}",
+                    error=f"reinspect {type(exc).__name__}: {exc}",
+                    transient=_is_transient_failure(exc),
                     elapsed_s=elapsed,
                 )
             )
             return
         if after is KeyStatus.MISSING and expected is KeyStatus.VALID:
+            still_required = getattr(adapter, "is_required_key", None)
+            if callable(still_required):
+                try:
+                    if not still_required(self.frame, key):
+                        self.record(
+                            KeyOutcome(
+                                key=derivation_key,
+                                outcome=Outcome.PENDING,
+                                reason=PendingReason.BINDING_MOVED,
+                                error="required key disappeared before publication completed",
+                                elapsed_s=elapsed,
+                            )
+                        )
+                        return
+                except Exception as exc:
+                    self.record(
+                        KeyOutcome(
+                            key=derivation_key,
+                            outcome=Outcome.FAILED,
+                            error=f"requiredness inspection {type(exc).__name__}: {exc}",
+                            transient=_is_transient_failure(exc),
+                            elapsed_s=elapsed,
+                        )
+                    )
+                    return
             # A publication that rechecks the authoritative required relation
             # returns False when this key ceased to be required.  A successful
             # publication that still leaves a required output missing is a
@@ -995,7 +1114,12 @@ class _Pass:
                     error_detail=str(exc),
                 )
                 self.record(
-                    KeyOutcome(key=DerivationKey(domain, "*"), outcome=Outcome.FAILED, error=f"discover: {exc}")
+                    KeyOutcome(
+                        key=DerivationKey(domain, "*"),
+                        outcome=Outcome.FAILED,
+                        error=f"discover {type(exc).__name__}: {exc}",
+                        transient=_is_transient_failure(exc),
+                    )
                 )
                 self.unreadable_domains.add(domain)
                 break
@@ -1045,7 +1169,8 @@ class _Pass:
                                 KeyOutcome(
                                     key=DerivationKey(domain, key),
                                     outcome=Outcome.FAILED,
-                                    error=f"inspect: {key_exc}",
+                                    error=f"inspect {type(key_exc).__name__}: {key_exc}",
+                                    transient=_is_transient_failure(key_exc),
                                 )
                             )
                             # A recorded FAILED verdict already stops the main

@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from contextlib import AbstractAsyncContextManager
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
 
 import aiosqlite
 
+from polylogue.analysis.topology import SessionTopology
 from polylogue.storage.derived.session.runtime import SessionInsightStatusSnapshot
 from polylogue.storage.runtime import (
     ThreadRecord,
@@ -36,6 +37,41 @@ class SQLiteQueryStore(
         connection_factory: Callable[[], AbstractAsyncContextManager[aiosqlite.Connection]],
     ) -> None:
         self._connection_factory = connection_factory
+
+    async def get_session_topology(
+        self,
+        session_id: str,
+        *,
+        node_offset: int = 0,
+        node_limit: int = 200,
+        edge_limit: int = 500,
+    ) -> SessionTopology | None:
+        """Read one graph page in one SQLite snapshot, including its root walk."""
+        from polylogue.storage.derived.topology.derivation import derive_session_topology_async
+
+        async with self._connection_factory() as conn:
+            # A bulk caller may already own a transaction. Do not commit or
+            # roll back that caller's work; ordinary reads own a deferred,
+            # read-only snapshot rather than acquiring the writer lease.
+            owns_snapshot = not conn.in_transaction
+
+            @asynccontextmanager
+            async def pinned_connection() -> AsyncIterator[aiosqlite.Connection]:
+                yield conn
+
+            try:
+                if owns_snapshot:
+                    await conn.execute("BEGIN")
+                return await derive_session_topology_async(
+                    SQLiteQueryStore(connection_factory=pinned_connection),
+                    session_id,
+                    node_offset=node_offset,
+                    node_limit=node_limit,
+                    edge_limit=edge_limit,
+                )
+            finally:
+                if owns_snapshot:
+                    await conn.rollback()
 
     # -- Insight status (formerly query_store_insight_status.py) ------------
 

@@ -12,9 +12,6 @@ from polylogue.archive.message.roles import Role
 from polylogue.archive.revision_authority import (
     BYTE_AUTHORITY_CENSUS_DETAIL,
     HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
-    LEGACY_FULL_REVISION_GOVERNANCE_DETAILS,
-    RETIRED_FULL_REVISION_GOVERNANCE_DETAILS,
-    WRITABLE_FULL_REVISION_GOVERNANCE_DETAILS,
     RawRevisionAuthority,
     RawRevisionEnvelope,
     RawRevisionKind,
@@ -1378,107 +1375,6 @@ def test_precedence_write_allows_a_non_ambiguous_sibling_membership_on_the_same_
         )
 
 
-def test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_detail_string(
-    tmp_path: Path,
-) -> None:
-    """polylogue-hm2f: the 52l2 guard must also recognize legacy-detail retirements.
-
-    Durable ``raw_membership_census`` rows written by ``sources/live/batch.py``
-    BEFORE #3234 carry ``detail="cross-route full revision governance"`` (the
-    pre-fix literal at that call site) instead of the shared
-    ``HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL`` marker the #3234 guard query
-    matches. This is a byte-for-byte mirror of
-    ``test_isolated_later_raw_does_not_override_known_ambiguous_cohort``
-    except the two siblings are retired under that legacy literal directly
-    (as durable pre-#3234 rows would already be on disk) instead of the
-    current shared constant -- proving the guard's widened ``detail IN (...)``
-    match, not just its original single-literal match.
-    """
-    bootstrap_archive_root(tmp_path)
-
-    def parsed_solo(native_id: str, *texts: str) -> ParsedSession:
-        return ParsedSession(
-            source_name=Provider.CHATGPT,
-            provider_session_id=native_id,
-            messages=[
-                ParsedMessage(provider_message_id=f"{native_id}-{index}", role=Role.USER, text=text)
-                for index, text in enumerate(texts)
-            ],
-        )
-
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_a = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"aaa-left", source_path="a.json", acquired_at_ms=1
-        )
-        archive.bind_raw_revision(
-            raw_a,
-            RawRevisionEnvelope(
-                "chatgpt-export:s1", RawRevisionKind.FULL, raw_a, 0, authority=RawRevisionAuthority.QUARANTINED
-            ),
-        )
-        raw_b = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"bbb-right", source_path="b.json", acquired_at_ms=2
-        )
-        archive.bind_raw_revision(
-            raw_b,
-            RawRevisionEnvelope(
-                "chatgpt-export:s1", RawRevisionKind.FULL, raw_b, 0, authority=RawRevisionAuthority.QUARANTINED
-            ),
-        )
-
-        first_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1")
-        assert first_plan.accepted_raw_ids == ()
-
-        # Retire both siblings, then put the LEGACY pre-#3234 literal on the
-        # durable census rows directly. The current write boundary refuses
-        # that spelling (polylogue-sze30: it is read-compatibility only), and
-        # a pre-#3234 row is precisely a row no current writer could produce
-        # -- seeding it through the writer would make this fixture more
-        # permissive than production and would silently stop being a legacy
-        # row the day the writer changed.
-        for raw_id, session in (
-            (raw_a, parsed_solo("s1", "base", "left")),
-            (raw_b, parsed_solo("s1", "base", "right")),
-        ):
-            archive.replace_raw_membership_census(
-                raw_id,
-                [session],
-                parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-                censused_at_ms=0,
-                detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL,
-                retire_full_revision_governance=True,
-            )
-        source_conn = archive._ensure_source_conn()
-        with source_conn:
-            source_conn.executemany(
-                "UPDATE raw_membership_census SET detail = ? WHERE raw_id = ?",
-                [("cross-route full revision governance", raw_id) for raw_id in (raw_a, raw_b)],
-            )
-
-        # A THIRD raw for the same logical identity, discovered afterward.
-        raw_c = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=b"ccc-solo", source_path="c.json", acquired_at_ms=3
-        )
-        archive.bind_raw_revision(
-            raw_c,
-            RawRevisionEnvelope(
-                "chatgpt-export:s1", RawRevisionKind.FULL, raw_c, 0, authority=RawRevisionAuthority.QUARANTINED
-            ),
-        )
-        second_plan = archive.classify_raw_revision_cohort_for_live_watch("chatgpt-export:s1")
-
-    # Same assertion as the shared-constant test: the isolated raw must not
-    # be promoted alone against siblings retired under the legacy literal.
-    assert second_plan.accepted_raw_ids == ()
-
-    # Anti-vacuity: removing the legacy literal from the tuple this guard
-    # matches against must make this exact test fail. Assert the tuple still
-    # names it explicitly, so a future edit that drops it is caught here too.
-    from polylogue.archive.revision_authority import RETIRED_FULL_REVISION_GOVERNANCE_DETAILS
-
-    assert "cross-route full revision governance" in RETIRED_FULL_REVISION_GOVERNANCE_DETAILS
-
-
 def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundary(
     tmp_path: Path,
 ) -> None:
@@ -1486,18 +1382,16 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
 
     ``replace_raw_membership_census(..., retire_full_revision_governance=
     True)`` nulls the raw's ``logical_source_key`` and quarantines it, so the
-    surviving ``raw_membership_census.detail`` marker is the ONLY thing that
-    still tells the 52l2 guard this identity has known ambiguous evidence. A
-    marker outside ``RETIRED_FULL_REVISION_GOVERNANCE_DETAILS`` is not a
-    harmless label: the guard's ``detail IN (...)`` query simply misses it and
-    a later-arriving sibling is accepted as an unconditional singleton
+    surviving census authority is the ONLY thing that still tells the 52l2
+    guard this identity has known ambiguous evidence. A marker that does not
+    translate to the typed quarantined authority is not a harmless label: the
+    guard simply misses it and a later-arriving sibling is accepted as an unconditional singleton
     byte-proven baseline (polylogue-sze30 AC2).
 
-    Anti-vacuity: the second half of this test rewrites an accepted
-    retirement's detail to that same unrecognized marker and shows the third
-    raw IS then promoted alone -- so the refusal in the first half is
-    protecting a real outcome, not a spelling. Delete the write-boundary
-    check and the first half stops raising.
+    The second half rewrites an accepted retirement's display detail to that
+    same unrecognized marker and shows the typed authority still refuses the
+    isolated third raw. Delete the write-boundary check and the first half
+    stops raising.
     """
     bootstrap_archive_root(tmp_path)
 
@@ -1613,7 +1507,7 @@ def test_retirement_under_an_unrecognized_marker_is_refused_at_the_write_boundar
 def test_retired_raw_stays_fail_closed_when_census_authority_is_unknown(tmp_path: Path) -> None:
     """A missing census code cannot turn a quarantined retirement into success.
 
-    Source migration 004 leaves arbitrary historical census details with a NULL
+    A census whose detail has no typed translation stores a NULL
     ``revision_authority``.  The raw row itself is already durably quarantined,
     so the retirement reader must use that typed source authority as a second
     proof rather than promoting a later singleton when the census code is
@@ -1712,93 +1606,6 @@ def test_typed_retirement_authority_allows_detail_wording_to_change(
         )
 
     assert tuple(row) == ("operator-facing wording may change", RawRevisionAuthority.QUARANTINED.value)
-
-
-def test_legacy_governance_marker_is_never_writable(
-    tmp_path: Path,
-) -> None:
-    """The legacy retirement spelling may be read forever and written never.
-
-    ``LEGACY_FULL_REVISION_GOVERNANCE_DETAILS`` exists only so durable
-    pre-#3234 ``raw_membership_census`` rows stay legible to the 52l2 guard
-    (polylogue-hm2f). Its declaration has always said "read-only, never
-    write", and until polylogue-sze30 nothing enforced that: the write
-    boundary accepted the whole read vocabulary, so new code could keep
-    minting the obsolete spelling and no query could then tell a pre-fix row
-    from one written afterwards -- which is what makes the compat branch
-    impossible to retire even after the archive is rebuilt.
-
-    Both directions are pinned, so a blanket refusal cannot pass this test:
-    the legacy spelling is refused AND the writable one is accepted and
-    actually applied (identity cleared, raw quarantined).
-
-    Anti-vacuity: restore the guard to ``detail not in
-    RETIRED_FULL_REVISION_GOVERNANCE_DETAILS`` and the ``pytest.raises`` block
-    stops raising.
-    """
-    (legacy_marker,) = LEGACY_FULL_REVISION_GOVERNANCE_DETAILS
-    assert legacy_marker not in WRITABLE_FULL_REVISION_GOVERNANCE_DETAILS
-    assert legacy_marker in RETIRED_FULL_REVISION_GOVERNANCE_DETAILS
-
-    bootstrap_archive_root(tmp_path)
-
-    def parsed_solo(native_id: str, *texts: str) -> ParsedSession:
-        return ParsedSession(
-            source_name=Provider.CHATGPT,
-            provider_session_id=native_id,
-            messages=[
-                ParsedMessage(provider_message_id=f"{native_id}-{index}", role=Role.USER, text=text)
-                for index, text in enumerate(texts)
-            ],
-        )
-
-    def retire(archive: ArchiveStore, raw_id: str, tail: str, *, detail: str) -> None:
-        archive.replace_raw_membership_census(
-            raw_id,
-            [parsed_solo("s1", "base", tail)],
-            parser_fingerprint=RAW_AUTHORITY_PARSER_FINGERPRINT,
-            censused_at_ms=0,
-            detail=detail,
-            retire_full_revision_governance=True,
-        )
-
-    def quarantined_raw(archive: ArchiveStore, label: str, payload: bytes, acquired_at_ms: int) -> str:
-        raw_id = archive.write_raw_payload(
-            provider=Provider.CHATGPT, payload=payload, source_path=f"{label}.json", acquired_at_ms=acquired_at_ms
-        )
-        archive.bind_raw_revision(
-            raw_id,
-            RawRevisionEnvelope(
-                "chatgpt-export:s1", RawRevisionKind.FULL, raw_id, 0, authority=RawRevisionAuthority.QUARANTINED
-            ),
-        )
-        return raw_id
-
-    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        raw_a = quarantined_raw(archive, "a", b"aaa-left", 1)
-
-        with pytest.raises(ValueError, match="read-compatibility only"):
-            retire(archive, raw_a, "left", detail=legacy_marker)
-
-        # The refusal is specific to the legacy spelling, not a blanket one:
-        # the same call with the writable marker goes through, and the raw is
-        # actually retired.
-        retire(archive, raw_a, "left", detail=HISTORICAL_NON_PREFIX_GOVERNANCE_DETAIL)
-        row = (
-            archive._ensure_source_conn()
-            .execute(
-                "SELECT logical_source_key, revision_authority FROM raw_sessions WHERE raw_id = ?",
-                (raw_a,),
-            )
-            .fetchone()
-        )
-        assert row[0] is None
-        assert str(row[1]) == RawRevisionAuthority.QUARANTINED.value
-
-    # The read direction of the split is owned by
-    # ``test_isolated_later_raw_does_not_override_cohort_retired_under_legacy_
-    # detail_string``, which now seeds its durable legacy row by direct UPDATE
-    # because this write boundary refuses to mint one.
 
 
 def test_same_source_path_full_siblings_under_different_keys_are_not_independently_accepted(

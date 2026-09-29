@@ -3,7 +3,7 @@
 Anti-vacuity: ``test_reingest_does_not_resurrect_excised_content`` exercises
 the real acquire-time write chokepoint
 (``write_source_raw_session``/``ContentExcisedError``) that
-``polylogue.pipeline.services.archive_ingest.parse_sources_archive`` relies
+``polylogue.operations.canonical_archive_ingest.ingest_one_shot_archive`` relies
 on for every ordinary re-ingest; removing the gate in
 ``write_source_raw_session`` (or reverting the ``write_pair`` skip-not-abort
 handling) makes it fail.
@@ -680,7 +680,7 @@ class TestApplySessionExcision:
         import asyncio
 
         from polylogue.config import Source
-        from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+        from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
         from polylogue.scenarios import build_default_corpus_specs
         from polylogue.schemas.synthetic import SyntheticCorpus
 
@@ -692,7 +692,7 @@ class TestApplySessionExcision:
         assert sources
 
         # First ingest establishes the raw row + session normally.
-        result_first = asyncio.run(parse_sources_archive(archive_root, sources))
+        result_first = asyncio.run(ingest_one_shot_archive(archive_root, sources))
         assert result_first.excised_skips == 0
         assert result_first.counts["sessions"] >= 1
 
@@ -714,7 +714,7 @@ class TestApplySessionExcision:
             ).fetchone() == (0,)
 
         # Re-ingest the SAME unmodified file: must skip (not raise/abort).
-        result_second = asyncio.run(parse_sources_archive(archive_root, sources))
+        result_second = asyncio.run(ingest_one_shot_archive(archive_root, sources))
         assert result_second.excised_skips >= 1
 
         index_conn = sqlite3.connect(archive_root / "index.db")

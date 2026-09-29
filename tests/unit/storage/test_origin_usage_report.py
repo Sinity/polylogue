@@ -1414,3 +1414,188 @@ def test_whitespace_only_model_name_is_both_counted_and_sampled(tmp_path: Path) 
         assert sampled == {"codex-session": ("codex-session:whitespace-model",)}
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("request_input", [None, 0])
+def test_request_lane_reportedness_requires_request_counter_evidence(tmp_path: Path, request_input: int | None) -> None:
+    """A cumulative-only row previously fabricated reported request zeroes."""
+    from polylogue.storage.usage import _provider_event_stats_streaming
+
+    conn = _connect(tmp_path / "index.db")
+    try:
+        payload: dict[str, object] = {
+            "type": "token_count",
+            "model": "gpt-5-codex",
+            "total_token_usage": {"input_tokens": 10, "output_tokens": 5},
+        }
+        if request_input is not None:
+            payload["last_token_usage"] = {"input_tokens": request_input}
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="request-evidence",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.ASSISTANT,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="done")],
+                    )
+                ],
+                session_events=[ParsedSessionEvent(event_type="token_count", payload=payload)],
+            ),
+        )
+        report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
+        origin = next(row for row in report.origins if row.origin == "codex-session")
+        assert origin.provider_event_count > 0
+        assert origin.provider_request_lanes.state == ("unavailable" if request_input is None else "reported")
+        streaming = _provider_event_stats_streaming(conn, "codex-session")
+        assert streaming["codex-session"]["request_counter_event_count"] == (0 if request_input is None else 1)
+    finally:
+        conn.close()
+
+
+def test_cumulative_lane_reportedness_keeps_an_explicit_zero(tmp_path: Path) -> None:
+    """Anti-vacuity: deciding the cumulative lane from nonzero totals turned an
+    explicitly reported zero cumulative counter into an unavailable lane."""
+    from polylogue.storage.usage import _provider_event_stats_streaming
+
+    conn = _connect(tmp_path / "index.db")
+    try:
+        payload: dict[str, object] = {
+            "type": "token_count",
+            "model": "gpt-5-codex",
+            "last_token_usage": {"input_tokens": 3, "output_tokens": 1},
+            "total_token_usage": {"input_tokens": 0},
+        }
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="cumulative-zero",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.ASSISTANT,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="done")],
+                    )
+                ],
+                session_events=[ParsedSessionEvent(event_type="token_count", payload=payload)],
+            ),
+        )
+        stored = conn.execute("SELECT total_input_tokens FROM session_provider_usage_events").fetchall()
+        assert [row[0] for row in stored] == [0]
+        report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
+        origin = next(row for row in report.origins if row.origin == "codex-session")
+        assert origin.provider_request_lanes.state == "reported"
+        assert origin.provider_cumulative_lanes.state == "reported"
+        assert origin.provider_cumulative_lanes.uncached_input_tokens == 0
+        streaming = _provider_event_stats_streaming(conn, "codex-session")
+        assert streaming["codex-session"]["cumulative_counter_event_count"] == 1
+    finally:
+        conn.close()
+
+
+def test_stored_price_does_not_hide_a_missing_cache_rate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The physical shortcut formerly claimed completeness unlike the logical lane."""
+    from polylogue.archive.semantic.pricing import PRICING, ModelPricing
+
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session_id = write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="cache-rate-coverage",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.ASSISTANT,
+                        model_name="gpt-5-codex",
+                        input_tokens=100,
+                        output_tokens=20,
+                        cache_read_tokens=40,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="done")],
+                    )
+                ],
+            ),
+        )
+        conn.execute(
+            "UPDATE session_model_usage SET provider_cost_usd = NULL, catalog_cost_usd = 1.25 WHERE session_id = ?",
+            (session_id,),
+        )
+        monkeypatch.setitem(
+            PRICING,
+            "gpt-5-codex",
+            ModelPricing(
+                source_name="openai",
+                input_usd_per_1m=1.0,
+                output_usd_per_1m=2.0,
+                cache_read_usd_per_1m=0.0,
+            ),
+        )
+        report = origin_usage_report_from_connection(conn, archive_root=tmp_path, detail="headline", limit=0)
+        for lanes in (report.pricing_lanes, report.logical_pricing_lanes):
+            lane = next(row for row in lanes if row.provenance == "priced")
+            assert lane.unmatched_model_row_count == 1
+            assert lane.catalog_api_equivalent_usd is None
+            assert "missing_cache_price" in lane.caveats
+    finally:
+        conn.close()
+
+
+def test_usage_cli_renders_disjoint_lanes_and_unavailable_requests(tmp_path: Path) -> None:
+    """The old CLI printed overlapping input/output instead of the lane contract."""
+    import io
+    from types import SimpleNamespace
+    from typing import cast
+
+    from rich.console import Console
+
+    from polylogue.cli.commands.diagnostics import _render_usage_report
+    from polylogue.cli.shared.types import AppEnv
+
+    conn = _connect(tmp_path / "index.db")
+    try:
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="cli-disjoint",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.ASSISTANT,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="done")],
+                    )
+                ],
+                session_events=[
+                    ParsedSessionEvent(
+                        event_type="token_count",
+                        payload={
+                            "type": "token_count",
+                            "model": "gpt-5-codex",
+                            "total_token_usage": {
+                                "input_tokens": 100,
+                                "cached_input_tokens": 40,
+                                "output_tokens": 50,
+                                "reasoning_output_tokens": 30,
+                            },
+                        },
+                    )
+                ],
+            ),
+        )
+        report = origin_usage_report_from_connection(conn, archive_root=tmp_path)
+        output = io.StringIO()
+        env = cast(
+            AppEnv, SimpleNamespace(ui=SimpleNamespace(console=Console(file=output, width=250, color_system=None)))
+        )
+        _render_usage_report(env, report)
+        text = output.getvalue()
+        assert "origin request usage: unavailable" in text
+        cumulative = next(line for line in text.splitlines() if "origin cumulative usage:" in line)
+        assert "uncached_input=60" in cumulative and "cached_input=40" in cumulative
+        assert "completion_output=20" in cumulative and "reasoning_output=30" in cumulative
+    finally:
+        conn.close()

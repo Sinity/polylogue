@@ -23,6 +23,7 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Mapping, Sequence
 from collections.abc import Set as AbstractSet
+from dataclasses import dataclass, field
 from typing import TypeVar
 
 from polylogue.analysis.lineage_graph import (
@@ -40,16 +41,15 @@ from polylogue.analysis.lineage_graph import (
 from polylogue.archive.topology.edge import status_excludes_composition, topology_status_composes_sql
 from polylogue.core.enums import TopologyEdgeStatus
 from polylogue.core.types import MessageId, SessionId
-from polylogue.storage.runtime.store_constants import LINEAGE_ITERATIVE_DEPTH_LIMIT
 
-#: Runaway guard for the ancestry walk and the descendant sweep. A ``visited``
-#: set is the real cycle guard; this only bounds a pathological archive.
-_MAX_DEPTH = LINEAGE_ITERATIVE_DEPTH_LIMIT
+# Every walk below is bounded by its visited set: each step reaches a session
+# not seen before, and an archive holds finitely many. No depth cap truncates
+# a valid lineage.
 
 DEFAULT_PAGE_LIMIT = DEFAULT_LINEAGE_PAGE_LIMIT
 
 _ACCOUNTING_DANGLING = "branch point resolves to no stored message"
-_ACCOUNTING_DEPTH_LIMIT = "lineage chain exceeds the composition depth limit"
+_ACCOUNTING_UNCOMPOSABLE = "an ancestor's composition cycles or dangles"
 _ACCOUNTING_NOT_REQUESTED = "accounting not requested for this read"
 
 
@@ -81,7 +81,7 @@ def _ancestry(conn: sqlite3.Connection, seed_id: str) -> tuple[list[str], bool]:
     chain: list[str] = []
     seen = {seed_id}
     current = seed_id
-    for _ in range(_MAX_DEPTH):
+    while True:
         row = conn.execute(
             "SELECT parent_session_id FROM sessions WHERE session_id = ?",
             (current,),
@@ -98,7 +98,6 @@ def _ancestry(conn: sqlite3.Connection, seed_id: str) -> tuple[list[str], bool]:
         seen.add(parent)
         chain.append(parent)
         current = parent
-    return chain, False
 
 
 def _subtree(conn: sqlite3.Connection, root_id: str) -> tuple[dict[str, int], bool]:
@@ -107,7 +106,7 @@ def _subtree(conn: sqlite3.Connection, root_id: str) -> tuple[dict[str, int], bo
     frontier = [root_id]
     cycle = False
     depth = 0
-    while frontier and depth < _MAX_DEPTH:
+    while frontier:
         placeholders = ", ".join("?" for _ in frontier)
         rows = conn.execute(
             f"""
@@ -136,7 +135,7 @@ def _descendants(conn: sqlite3.Connection, seed_id: str, depths: Mapping[str, in
     out: dict[str, int] = {seed_id: 0}
     frontier = [seed_id]
     depth = 0
-    while frontier and depth < _MAX_DEPTH:
+    while frontier:
         placeholders = ", ".join("?" for _ in frontier)
         rows = conn.execute(
             f"""
@@ -226,7 +225,7 @@ class _CompositionShape:
     def __init__(self, conn: sqlite3.Connection) -> None:
         self._conn = conn
         self._own_counts: dict[str, int] = {}
-        self._segments: dict[str, list[tuple[str, int]] | None] = {}
+        self._segments: dict[str, _Segment | None] = {}
 
     def _own_count(self, session_id: str) -> int:
         if session_id not in self._own_counts:
@@ -269,48 +268,85 @@ class _CompositionShape:
         ).fetchone()
         return int(count[0])
 
-    def segments(self, session_id: str, _depth: int = 0) -> list[tuple[str, int]] | None:
+    def segments(self, session_id: str) -> list[tuple[str, int]] | None:
         """Composed transcript as ``(owning_session, length)`` runs, or ``None``.
 
-        ``None`` means composition is not reproducible from stored rows, which
-        is exactly when an accounting number would have to be invented.
+        ``None`` means composition is not reproducible from stored rows (a
+        cycle, or a dangling branch point up the chain), which is exactly when
+        an accounting number would have to be invented.
+        """
+        node = self._composed(session_id)
+        if node is None:
+            return None
+        runs: list[tuple[str, int]] = []
+        cursor: _Segment | None = node
+        while cursor is not None:
+            runs.append((cursor.owner, cursor.length))
+            cursor = cursor.prev
+        return runs[::-1]
+
+    def _composed(self, session_id: str) -> _Segment | None:
+        """The last segment of ``session_id``'s composed transcript.
+
+        Segments are persistent: a child's list shares every segment before
+        its branch point with its parent's, so each session costs one or two
+        new nodes, and caching every session on a chain stays linear.
         """
         if session_id in self._segments:
             return self._segments[session_id]
-        if _depth >= _MAX_DEPTH:
-            self._segments[session_id] = None
-            return None
-        edge = self._prefix_edge(session_id)
-        if edge is None:
-            result: list[tuple[str, int]] | None = [(session_id, self._own_count(session_id))]
+        chain: list[tuple[str, str]] = []
+        visited = {session_id}
+        cursor = session_id
+        base: _Segment | None
+        while True:
+            if cursor != session_id and cursor in self._segments:
+                base = self._segments[cursor]
+                break
+            edge = self._prefix_edge(cursor)
+            if edge is None:
+                base = _Segment(cursor, self._own_count(cursor), None)
+                self._segments[cursor] = base
+                break
+            parent_id, branch_point_message_id = edge
+            if parent_id in visited:
+                base = None
+                break
+            chain.append((cursor, branch_point_message_id))
+            visited.add(parent_id)
+            cursor = parent_id
+        result = base
+        for child_id, branch_point_message_id in reversed(chain):
+            if result is not None:
+                cut = self._cut_at(result, branch_point_message_id)
+                result = None if cut is None else _Segment(child_id, self._own_count(child_id), cut)
+            self._segments[child_id] = result
+        if session_id not in self._segments:
             self._segments[session_id] = result
-            return result
-        parent_id, branch_point_message_id = edge
-        # Guard the recursion against a cyclic link before descending.
-        self._segments[session_id] = None
-        parent_segments = self.segments(parent_id, _depth + 1)
-        if parent_segments is None:
-            return None
-        prefix = self._truncate_at(parent_segments, branch_point_message_id)
-        if prefix is None:
-            return None
-        result = [*prefix, (session_id, self._own_count(session_id))]
-        self._segments[session_id] = result
         return result
 
-    def _truncate_at(
-        self, segments: Sequence[tuple[str, int]], branch_point_message_id: str
-    ) -> list[tuple[str, int]] | None:
-        """Cut a composed segment list after the branch-point message."""
-        out: list[tuple[str, int]] = []
-        for owner, length in segments:
-            rank = self._rank_within_own(owner, branch_point_message_id)
-            if rank is None or rank > length:
-                out.append((owner, length))
-                continue
-            out.append((owner, rank))
-            return out
-        return None
+    def _owner_of(self, message_id: str) -> str | None:
+        row = self._conn.execute("SELECT session_id FROM messages WHERE message_id = ?", (message_id,)).fetchone()
+        return None if row is None else str(row[0])
+
+    def _cut_at(self, last: _Segment, branch_point_message_id: str) -> _Segment | None:
+        """The segment ending the composed transcript at the branch point.
+
+        ``None`` when the branch point is not inside the composed transcript.
+        The walk back passes only segments the cut drops, so down a chain the
+        walks sum to the chain's length.
+        """
+        owner = self._owner_of(branch_point_message_id)
+        if owner is None:
+            return None
+        cursor: _Segment | None = last
+        while cursor is not None and cursor.owner != owner:
+            cursor = cursor.prev
+        if cursor is None:
+            return None
+        rank = self._rank_within_own(owner, branch_point_message_id)
+        if rank is None or rank > cursor.length:
+            return None
+        return cursor if rank == cursor.length else _Segment(owner, rank, cursor.prev)
 
     def accounting(self, session_id: str) -> LineageMessageAccounting:
         edge = self._prefix_edge(session_id)
@@ -318,17 +354,27 @@ class _CompositionShape:
         if edge is None:
             return LineageMessageAccounting(status=LineageAccountingStatus.KNOWN, unique=own, inherited=0)
         parent_id, branch_point_message_id = edge
-        parent_segments = self.segments(parent_id)
-        if parent_segments is None:
-            return LineageMessageAccounting(status=LineageAccountingStatus.UNKNOWN, reason=_ACCOUNTING_DEPTH_LIMIT)
-        prefix = self._truncate_at(parent_segments, branch_point_message_id)
+        parent_last = self._composed(parent_id)
+        if parent_last is None:
+            return LineageMessageAccounting(status=LineageAccountingStatus.UNKNOWN, reason=_ACCOUNTING_UNCOMPOSABLE)
+        prefix = self._cut_at(parent_last, branch_point_message_id)
         if prefix is None:
             return LineageMessageAccounting(status=LineageAccountingStatus.UNKNOWN, reason=_ACCOUNTING_DANGLING)
-        return LineageMessageAccounting(
-            status=LineageAccountingStatus.KNOWN,
-            unique=own,
-            inherited=sum(length for _, length in prefix),
-        )
+        return LineageMessageAccounting(status=LineageAccountingStatus.KNOWN, unique=own, inherited=prefix.total)
+
+
+@dataclass(frozen=True, slots=True)
+class _Segment:
+    """One run of a composed transcript, linked to the runs before it."""
+
+    owner: str
+    length: int
+    prev: _Segment | None
+    #: Messages in this run and every run before it.
+    total: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "total", self.length + (self.prev.total if self.prev is not None else 0))
 
 
 _Item = TypeVar("_Item")

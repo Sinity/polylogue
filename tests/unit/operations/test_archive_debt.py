@@ -1093,8 +1093,8 @@ def test_archive_debt_reports_ambiguous_membership_quarantine_as_blocked(tmp_pat
     assert "0 of 1 already parsed" in (quarantined.details or "")
     assert "Running daemon convergence again does not move them." in (quarantined.details or "")
     assert [action.command for action in quarantined.actions] == [
-        ("polylogue", "maintenance", "raw-authority-frontier"),
-        ("polylogue", "maintenance", "raw-authority-blockers"),
+        ("polylogue", "ops", "maintenance", "raw-authority-frontier"),
+        ("polylogue", "ops", "maintenance", "raw-authority-blockers"),
     ]
 
 

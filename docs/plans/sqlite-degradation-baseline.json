@@ -167,10 +167,6 @@
       "digest": "9198064b17098044e3a9af4623b1e43ebc84346b"
     },
     {
-      "file": "polylogue/daemon/catchup_status.py",
-      "digest": "ff72e875274ffcc19b05228caaf1cb09f45b030c"
-    },
-    {
       "file": "polylogue/daemon/cli.py",
       "digest": "8eb587bcf838ae5e852841cf5d7fe9652f69bca2"
     },

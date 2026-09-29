@@ -826,6 +826,7 @@
             const attachmentKind = contentType === "image_asset_pointer"
               ? "file_service_image"
               : contentType === "audio_asset_pointer"
+                || contentType === "audio_transcription"
                 || contentType === "real_time_user_audio_video_asset_pointer"
                 ? "file_service_audio"
                 : "file_service_file";
@@ -914,6 +915,7 @@
         outcome.acquired += 1;
         outcome.acquired_assets.push({
           provider_attachment_id: descriptor.provider_attachment_id,
+          attachment_kind: descriptor.attachment_kind || descriptor.kind,
           sha256: contentSha256,
           size_bytes: result.asset.size_bytes || 0
         });
@@ -936,6 +938,7 @@
         consecutiveFailuresByKind[descriptor.kind] += 1;
         outcome.failed.push({
           provider_attachment_id: descriptor.provider_attachment_id,
+          attachment_kind: descriptor.attachment_kind || descriptor.kind,
           status: recordedStatus,
           error: recordedStatus,
           phase: result.phase || null,
@@ -1124,7 +1127,7 @@
     messageLayer = window.polylogueMessageLayer.mount({
       containerSelector: MESSAGE_CONTAINER_SELECTOR,
       identityForNode: (node) => window.polylogueCapture.identityObservation({
-        provider: "chatgpt", conversationId: conversationIdFromUrl(),
+        provider: "chatgpt", conversationId: conversationIdFromUrl() || latestNativePayload()?.conversation_id || latestNativePayload()?.id || null,
         // Only an explicit provider-native message id is authoritative. A
         // turn test id, DOM ordinal, and visible text are diagnostic hints.
         messageId: node.getAttribute("data-message-id"),

@@ -427,7 +427,7 @@ def test_finished_build_comparison_rejects_a_diverged_or_indebted_arm(tmp_path: 
             INSERT INTO convergence_debt (
                 debt_id, stage, target_type, target_id, status, priority,
                 attempts, last_error, created_at_ms, updated_at_ms
-            ) VALUES ('equivalence-probe', 'insights', 'session', 'probe', 'failed', 0, 1, 'probe', 1, 1)
+            ) VALUES ('equivalence-probe', 'derived', 'session_id', 'probe', 'failed', 0, 1, 'probe', 1, 1)
             """
         )
     with pytest.raises(AssertionError, match="convergence debt remains"):

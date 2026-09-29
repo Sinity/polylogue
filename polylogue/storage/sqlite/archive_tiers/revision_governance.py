@@ -116,7 +116,6 @@ if TYPE_CHECKING:
 from polylogue.archive.artifact_taxonomy import ArtifactClassification
 from polylogue.archive.ingest_flags import DOM_FALLBACK_INGEST_FLAG, NATIVE_BROWSER_CAPTURE_FLAGS
 from polylogue.archive.revision_authority import (
-    LEGACY_FULL_REVISION_GOVERNANCE_DETAILS,
     RAW_AUTHORITY_PARSER_FINGERPRINT,
     HistoricalRawRevisionStream,
     RawRevisionAuthority,
@@ -126,6 +125,7 @@ from polylogue.archive.revision_authority import (
     canonical_authority_logical_key,
     classify_historical_full_revision_streams,
     durable_authority_logical_keys,
+    is_work_event_raw_id,
     parser_census_is_complete,
     revision_authority_for_census_detail,
 )
@@ -427,6 +427,22 @@ def _bind_retained_enrichment(
     )
 
 
+def _work_events_already_stored(conn: sqlite3.Connection, session_id: str, session: ParsedSession) -> bool:
+    """Whether every event a work-event raw carries is already on its session."""
+    return bool(session.session_events) and all(
+        conn.execute(
+            """
+            SELECT 1 FROM session_events
+            WHERE session_id = ? AND event_type = ? AND json_extract(payload_json, '$.event_id') = ?
+            LIMIT 1
+            """,
+            (session_id, event.event_type, str(event.payload.get("event_id"))),
+        ).fetchone()
+        is not None
+        for event in session.session_events
+    )
+
+
 def _write_parsed_precedence_result(
     store: RawRevisionGovernanceHost,
     session: ParsedSession,
@@ -468,10 +484,37 @@ def _write_parsed_precedence_result(
             (session_id,),
         ).fetchone()
     )
+    if is_work_event_raw_id(raw_id) and _work_events_already_stored(store._conn, session_id, session):
+        # An event-only write keeps the transcript's content hash, so the
+        # hash cannot show that this event is already recorded; its id can.
+        return ArchiveRawParsedWriteResult(
+            raw_id=raw_id,
+            session_id=session_id,
+            content_changed=False,
+            counts=store._skipped_counts(session),
+        )
     existing_raw_id = str(existing_row["raw_id"] or "") if existing_row is not None else ""
     existing_hash = existing_row["content_hash"] if existing_row is not None else None
     existing_hash_hex = existing_hash.hex() if isinstance(existing_hash, bytes) else str(existing_hash or "")
     content_unchanged = existing_row is not None and existing_hash_hex == content_hash
+    if content_unchanged:
+        incoming_aliases = {
+            str(value).strip()
+            for value in (session.provider_session_id, *session.provider_session_aliases)
+            if str(value).strip()
+        }
+        stored_aliases = {
+            str(row[0])
+            for row in store._conn.execute(
+                "SELECT provider_value FROM session_identity_claims "
+                "WHERE claimant_session_id = ? AND identity_namespace = 'provider-session'",
+                (session_id,),
+            ).fetchall()
+        }
+        # Alias claims are excluded from content identity but still drive
+        # lineage resolution. Force the normal writer when their set changes
+        # so it refreshes claims and invalidates affected child links.
+        content_unchanged = incoming_aliases == stored_aliases
     existing_is_dom_fallback = False
     incoming_is_dom_fallback = DOM_FALLBACK_INGEST_FLAG in session.ingest_flags
     existing_has_native_browser_payload = False
@@ -543,7 +586,9 @@ def _write_parsed_precedence_result(
             counts=store._write_counts(session),
             unresolved_attachment_owners=(writer_outcomes[-1].unresolved_attachment_owners if writer_outcomes else ()),
         )
-    if revision_authority_refuses_write(
+    # A work event annotates its session; it is never a competing revision of
+    # the transcript, so the transcript's accepted head cannot refuse it.
+    if not is_work_event_raw_id(raw_id) and revision_authority_refuses_write(
         store._conn,
         store._ensure_source_conn(),
         session_id=session_id,
@@ -1300,8 +1345,7 @@ def raw_membership_retired_full_revision_siblings(
     still be told this identity has known, unresolved ambiguous
     evidence (polylogue-52l2) instead of being evaluated alone.
 
-    Matches the typed quarantine authority. Legacy detail strings are
-    migrated into that code while retained as display evidence.
+    Matches the typed quarantine authority; ``detail`` is display evidence.
     """
     rows = (
         store._ensure_source_conn()
@@ -2240,23 +2284,6 @@ def _raw_revision_matches_segments(
         return full.read(1) == b""
 
 
-def unclassified_raw_revision_rows(store: RawRevisionGovernanceHost) -> tuple[tuple[str, int], ...]:
-    """Return legacy rows that have no durable logical revision identity."""
-    rows = (
-        store._ensure_source_conn()
-        .execute(
-            """
-        SELECT raw_id, source_index
-        FROM raw_sessions
-        WHERE logical_source_key IS NULL AND revision_authority = 'quarantined'
-        ORDER BY raw_id
-        """
-        )
-        .fetchall()
-    )
-    return tuple((str(row[0]), int(row[1])) for row in rows)
-
-
 def pending_raw_revision_logical_keys(store: RawRevisionGovernanceHost) -> tuple[str, ...]:
     rows = (
         store._ensure_source_conn()
@@ -2273,28 +2300,25 @@ def pending_raw_revision_logical_keys(store: RawRevisionGovernanceHost) -> tuple
     return tuple(str(row[0]) for row in rows)
 
 
-def raw_revision_rebuild_selection(
+def raw_revision_rebuild_logical_keys(
     store: RawRevisionGovernanceHost,
     raw_ids: list[str] | None,
-) -> tuple[tuple[tuple[str, int], ...], tuple[str, ...]]:
+) -> tuple[str, ...]:
     """Expand requested raws only to complete same-source-path cohorts."""
     conn = store._ensure_source_conn()
     if raw_ids is None:
-        return (
-            unclassified_raw_revision_rows(store),
-            tuple(
-                str(row[0])
-                for row in conn.execute(
-                    """
-                    SELECT DISTINCT logical_source_key FROM raw_sessions
-                    WHERE logical_source_key IS NOT NULL ORDER BY logical_source_key
-                    """
-                )
-            ),
+        return tuple(
+            str(row[0])
+            for row in conn.execute(
+                """
+                SELECT DISTINCT logical_source_key FROM raw_sessions
+                WHERE logical_source_key IS NOT NULL ORDER BY logical_source_key
+                """
+            )
         )
     selected = tuple(dict.fromkeys(raw_ids))
     if not selected:
-        return (), ()
+        return ()
     placeholders = ",".join("?" for _ in selected)
     source_paths = tuple(
         str(row[0])
@@ -2304,22 +2328,9 @@ def raw_revision_rebuild_selection(
         )
     )
     if not source_paths:
-        return (), ()
+        return ()
     path_placeholders = ",".join("?" for _ in source_paths)
-    unclassified = tuple(
-        (str(row[0]), int(row[1]))
-        for row in conn.execute(
-            f"""
-            SELECT raw_id, source_index FROM raw_sessions
-            WHERE source_path IN ({path_placeholders})
-              AND logical_source_key IS NULL
-              AND revision_authority = 'quarantined'
-            ORDER BY raw_id
-            """,
-            source_paths,
-        )
-    )
-    logical_keys = tuple(
+    return tuple(
         str(row[0])
         for row in conn.execute(
             f"""
@@ -2331,7 +2342,6 @@ def raw_revision_rebuild_selection(
             source_paths,
         )
     )
-    return unclassified, logical_keys
 
 
 def raw_membership_census_rows(
@@ -2426,37 +2436,19 @@ def replace_raw_membership_census(
             # text.  Keep the detail-only bridge for older producers, but do
             # not make explicitly typed writes depend on a prose spelling.
             census_authority = revision_authority or revision_authority_for_census_detail(detail)
-            if sessions and detail in LEGACY_FULL_REVISION_GOVERNANCE_DETAILS:
-                # Unconditional, and deliberately ahead of the authority check.
-                # Typing the authority is what frees the *wording* of a recognized
-                # marker (see the test for that); it does not make the retired
-                # spelling writable again. Keyed off the authority alone, a
-                # producer passing QUARANTINED explicitly would mint the legacy
-                # detail afresh and no query could then tell a pre-#3234 row from
-                # a new one -- the compat branch this bead exists to make
-                # retirable (polylogue-sze30 AC1).
-                raise ValueError("legacy marker is read-compatibility only and may never be written")
             if sessions and census_authority is not RawRevisionAuthority.QUARANTINED:
                 # A retirement that leaves membership rows behind is only observable
-                # through its ``raw_membership_census.detail`` marker: the retired raw
-                # loses its ``logical_source_key`` and goes ``quarantined``, so
+                # through its census authority: the retired raw loses its
+                # ``logical_source_key`` and goes ``quarantined``, so
                 # ``raw_membership_retired_full_revision_siblings`` and
-                # ``_raw_revision_source_path_has_divergent_evidence`` find it by
-                # detail alone. An unrecognized marker is not a harmless label -- it
-                # makes the retirement invisible, and a later-arriving sibling for the
+                # ``_raw_revision_source_path_has_divergent_evidence`` find it by the
+                # typed quarantined authority alone. An unrecognized marker with no
+                # typed authority is not a harmless label -- it makes the retirement
+                # invisible, and a later-arriving sibling for the
                 # same identity is then accepted as an unconditional singleton
                 # byte-proven baseline, which is exactly the polylogue-52l2 hazard the
                 # marker exists to prevent. Refuse the write instead of letting an
                 # unknown source value read back as success (polylogue-sze30 AC2).
-                #
-                # The accepted set is the WRITABLE vocabulary, not the wider read
-                # vocabulary: ``LEGACY_FULL_REVISION_GOVERNANCE_DETAILS`` exists so
-                # durable pre-#3234 rows stay legible, and the module comment that
-                # declares it "read-only, never write" was until now enforced by
-                # nothing. Emitting the legacy spelling afresh would be harmless to
-                # the 52l2 guard but would make the compat branch impossible to
-                # retire, because no query could distinguish a pre-fix row from a
-                # new one (polylogue-sze30 AC1).
                 #
                 # A census with no surviving membership row (a non-session artifact or
                 # retained-state export) has no logical identity to be ambiguous
@@ -4771,6 +4763,73 @@ def write_raw_and_parsed_result(
     with source_conn:
         record_current_parser_source_census(source_conn, raw_id, parser_sessions=[session])
     add_timing("index_parsed_write", t0)
+    return result
+
+
+def write_work_event_raw_and_parsed_result(
+    store: RawRevisionGovernanceHost,
+    session: ParsedSession,
+    *,
+    payload: bytes,
+    raw_id: str,
+    acquired_at_ms: int,
+) -> ArchiveRawParsedWriteResult:
+    """Retain one agent work event as its own byte-proven source, then index it.
+
+    The event raw is its own logical source: its raw id is both its logical
+    key and its source path, and it is admitted as a singleton full baseline
+    with the byte authority that frozen classification re-derives for it. It
+    therefore never joins the byte-revision cohort, source-path cohort, or
+    accepted head of the transcript it annotates. Its parser census inherits
+    that key, because the parsed event names its session rather than itself.
+    """
+    if not is_work_event_raw_id(raw_id):
+        raise ValueError(f"work event raw id must carry the work-event prefix: {raw_id!r}")
+    if store._blob_publisher is None:
+        raise RuntimeError("raw archive writes require a writable archive publisher")
+    raw_hash, _raw_size = store._blob_publisher.write_from_bytes(payload)
+    blob_publication_receipt_id = store._blob_publisher.receipt_id(raw_hash)
+    store._blob_publisher.flush()
+    source_conn = store._ensure_source_conn()
+    admission = admit_raw_observation(
+        source_conn,
+        origin=origin_from_provider(session.source_name),
+        capture_mode=session.source_name,
+        source_path=raw_id,
+        source_index=-1,
+        payload=payload,
+        acquired_at_ms=acquired_at_ms,
+        native_id=session.provider_session_id,
+        raw_id=raw_id,
+        logical_source_key=raw_id,
+        baseline_revision=RawRevisionEnvelope(
+            logical_source_key=raw_id,
+            kind=RawRevisionKind.FULL,
+            source_revision=raw_hash,
+            acquisition_generation=0,
+            baseline_raw_id=raw_id,
+            authority=RawRevisionAuthority.BYTE_PROVEN,
+        ),
+        prior_head=None,
+        blob_publication_receipt_id=blob_publication_receipt_id,
+        manage_transaction=True,
+        policy_snapshot=_policy_snapshot_for_store(store),
+    )
+    if admission.arm is not RawAdmissionArm.BASELINE or admission.raw_id != raw_id:
+        raise RuntimeError(f"unexpected work event raw admission: {admission.arm!r} {admission.raw_id!r}")
+    result = _index_parsed_for_retained_raw(
+        store,
+        session,
+        raw_id=raw_id,
+        source_index=-1,
+        stage_timings_s=None,
+        stage_timing_prefix="work_event",
+        manage_transaction=True,
+        preacquired_attachment_blobs={},
+        finalize_raw_parse=True,
+    )
+    with source_conn:
+        record_current_parser_source_census(source_conn, raw_id, inherited_logical_keys=(raw_id,))
     return result
 
 

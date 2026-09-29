@@ -8,6 +8,7 @@ import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
+from typing import IO
 
 import pytest
 
@@ -53,20 +54,22 @@ async def test_slow_following_source_cannot_age_uncommitted_blob_into_gc(
     (source_root / "01-slow.json").write_text('{"title":"slow","mapping":{}}')
 
     initial_time = frozen_clock.time()
-    original_prepare = BlobStore.prepare_from_path
+    # Acquisition retains each file through the acquisition boundary, which
+    # streams the validated bytes into ``prepare_from_fileobj``.
+    original_prepare = BlobStore.prepare_from_fileobj
     original_flush = ArchiveBlobPublisher.flush
     gc_report: BlobGCResult | None = None
     measured_window_s = 0.0
 
     def measured_prepare(
         store: BlobStore,
-        source: Path,
+        source: IO[bytes],
         *,
         heartbeat: object | None = None,
     ) -> PreparedBlob:
         nonlocal measured_window_s
         prepared = original_prepare(store, source, heartbeat=heartbeat)  # type: ignore[arg-type]
-        if source.name == "01-slow.json":
+        if Path(str(getattr(source, "name", ""))).name == "01-slow.json":
             frozen_clock.advance(MIN_AGE_S + 1)
             measured_window_s = frozen_clock.time() - initial_time
         return prepared
@@ -80,7 +83,7 @@ async def test_slow_following_source_cannot_age_uncommitted_blob_into_gc(
             gc_report = run_blob_gc_report(archive_root / "source.db", archive_root / "blob", max_batch=10)
         return receipts
 
-    monkeypatch.setattr(BlobStore, "prepare_from_path", measured_prepare)
+    monkeypatch.setattr(BlobStore, "prepare_from_fileobj", measured_prepare)
     monkeypatch.setattr(ArchiveBlobPublisher, "flush", measured_flush)
     try:
         result = await AcquisitionService(backend).acquire_sources([Source(name="chatgpt", path=source_root)])

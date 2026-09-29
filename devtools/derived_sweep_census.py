@@ -504,7 +504,8 @@ class DerivedSweepCensus:
 
     A caller that already walks the package parses each module once and hands
     it to every census that reads it, so no census holds the package's trees.
-    The first site recorded under a key wins, as in path order.
+    Repeated SQL sites retain the broadest scope and its source location.
+    Non-SQL sites and equal-scope sites retain their first observation.
     """
 
     def __init__(self) -> None:
@@ -519,7 +520,13 @@ class DerivedSweepCensus:
         sites = self._sites
 
         def record(site: SweepSite) -> None:
-            sites.setdefault(site.key, site)
+            previous = sites.get(site.key)
+            if previous is None or (
+                previous.scope in _SCOPE_PRECEDENCE
+                and site.scope in _SCOPE_PRECEDENCE
+                and _worst_scope((previous.scope, site.scope)) != previous.scope
+            ):
+                sites[site.key] = site
 
         scopes = function_scopes(tree)
 

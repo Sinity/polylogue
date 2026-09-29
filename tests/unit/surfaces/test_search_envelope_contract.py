@@ -19,7 +19,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from polylogue.archive.query.search_contract import SearchExecution
 from polylogue.archive.query.search_hits import (
+    SearchHitResults,
     SessionSearchHit,
     session_search_hit_from_summary,
 )
@@ -205,7 +207,7 @@ def _normalise_envelope_dict(payload: dict[str, Any]) -> dict[str, Any]:
 
 def test_all_surfaces_emit_semantically_equivalent_envelope() -> None:
     """Same hits → same envelope across CLI JSON, MCP, Python API helper, daemon HTTP."""
-    hits = [_hit(rank=1), _hit(rank=2)]
+    hits = SearchHitResults([_hit(rank=1), _hit(rank=2)], SearchExecution(("text",), ("text",)))
     query = "needle"
     limit = 10
     offset = 0
@@ -222,6 +224,7 @@ def test_all_surfaces_emit_semantically_equivalent_envelope() -> None:
         offset=offset,
         query=query,
         retrieval_lane=retrieval_lane,
+        execution=hits.execution,
     )
     api_dict = json.loads(api_envelope.model_dump_json(exclude_none=False))
 
@@ -284,7 +287,7 @@ def test_all_surfaces_emit_semantically_equivalent_envelope() -> None:
 def test_envelope_carries_cursor_when_page_is_full() -> None:
     """When ``len(hits) == limit`` AND more rows exist, the envelope exposes
     a keyset cursor so callers can resume scanning without offset drift."""
-    hits = [_hit(rank=1), _hit(rank=2)]
+    hits = SearchHitResults([_hit(rank=1), _hit(rank=2)], SearchExecution(("text",), ("text",)))
     hit_payloads = [SessionSearchHitPayload.from_search_hit(hit) for hit in hits]
     envelope = build_search_envelope(
         hit_payloads,
@@ -299,7 +302,7 @@ def test_envelope_carries_cursor_when_page_is_full() -> None:
 
 
 def test_envelope_omits_cursor_when_page_is_last() -> None:
-    hits = [_hit(rank=1), _hit(rank=2)]
+    hits = SearchHitResults([_hit(rank=1), _hit(rank=2)], SearchExecution(("text",), ("text",)))
     hit_payloads = [SessionSearchHitPayload.from_search_hit(hit) for hit in hits]
     envelope = build_search_envelope(
         hit_payloads,

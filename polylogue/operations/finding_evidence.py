@@ -17,6 +17,7 @@ observable at all -- bounded by the evaluator's own node budget.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from polylogue.core.enums import AssertionStatus
@@ -49,7 +50,7 @@ FINDING_ANCESTRY_MAX_NODES = 512
 #: ancestry is other assertions is a closed loop, which is the evaluator's own
 #: ``authorities <= {"agent", "assertion"}`` rule and not a policy this module
 #: re-implements. An unlisted kind stays ``unknown`` -- ungrounded -- because
-#: ``_resolve_evidence_ref`` cannot resolve it either.
+#: ``resolve_evidence_ref`` cannot resolve it either.
 _REF_KIND_AUTHORITY: dict[str, EvidenceAuthority] = {
     "query": "tool",
     "result-set": "tool",
@@ -136,7 +137,9 @@ def build_finding_evidence_adapter(
     *,
     frame_hash: str | None,
     definition_hash: str | None,
+    incompatible_result_set_refs: frozenset[str] = frozenset(),
     max_nodes: int = FINDING_ANCESTRY_MAX_NODES,
+    index_conn: sqlite3.Connection | None = None,
 ) -> FindingEvidenceAdapter:
     """Project one finding and its transitive assertion ancestry into a graph.
 
@@ -167,7 +170,10 @@ def build_finding_evidence_adapter(
         )
     }
     edges: list[EvidenceGraphEdge] = []
-    pending: list[tuple[str, tuple[FindingEvidenceResolution, ...]]] = [(root_ref, provenance.evidence)]
+    # Children resolve lazily: the consumer stops at the node budget (plus one
+    # boundary witness), so an assertion citing 100k refs costs budget-many
+    # lookups, not 100k.
+    pending: list[tuple[str, Iterable[FindingEvidenceResolution]]] = [(root_ref, provenance.evidence)]
     expanded: set[str] = {root_ref}
 
     while pending:
@@ -175,6 +181,11 @@ def build_finding_evidence_adapter(
         for item in items:
             ref = item.ref
             resolvable = item.resolvable
+            if len(nodes) >= max_nodes:
+                # One boundary edge is the evaluator's exhaustion witness. It
+                # is bounded overhead and avoids materializing the siblings.
+                edges.append(EvidenceGraphEdge(src_ref=parent_ref, dst_ref=ref, purpose="supports"))
+                break
             edges.append(EvidenceGraphEdge(src_ref=parent_ref, dst_ref=ref, purpose="supports"))
             if ref not in nodes:
                 nodes[ref] = EvidenceGraphNode(
@@ -183,6 +194,7 @@ def build_finding_evidence_adapter(
                     authority=_ref_authority(ref),
                     ref_state="ok" if resolvable else "missing",
                     frame_hash=frame_hash if resolvable else None,
+                    compatible=ref not in incompatible_result_set_refs,
                 )
             if len(nodes) >= max_nodes:
                 continue
@@ -211,27 +223,21 @@ def build_finding_evidence_adapter(
                 # half of polylogue-rxdo.4 this change does not reach.
                 public=True,
             )
-            pending.append(
-                (
-                    ref,
-                    tuple(_cited(str(child)) for child in envelope.evidence_refs),
-                )
-            )
+            pending.append((ref, (_cited(conn, str(child), index_conn) for child in envelope.evidence_refs)))
 
     return FindingEvidenceAdapter(graph_nodes=tuple(nodes.values()), graph_edges=tuple(edges))
 
 
-def _cited(ref: str) -> FindingEvidenceResolution:
+def _cited(conn: sqlite3.Connection, ref: str, index_conn: sqlite3.Connection | None) -> FindingEvidenceResolution:
     """One ref discovered during ancestry expansion.
 
-    Resolvability of a *transitively* cited ref is deliberately not re-measured
-    here: this module does not re-run the storage resolution for every
-    ancestor, and an ancestor that does not exist becomes a ``missing_ref``
-    witness from the evaluator's own node lookup instead.
+    Every transitive ref goes through the same fail-closed resolver as a
+    direct one, so a missing session or unresolvable kind becomes a missing
+    node, never an ``ok`` grounding leaf.
     """
-    from polylogue.storage.sqlite.finding_provenance import FindingEvidenceResolution
+    from polylogue.storage.sqlite.finding_provenance import resolve_evidence_ref
 
-    return FindingEvidenceResolution(ref=ref, resolvable=True)
+    return resolve_evidence_ref(conn, ref, index_conn=index_conn)
 
 
 def _ref_kind(ref: str) -> str:
@@ -246,15 +252,19 @@ def evaluate_finding_evidence(
     provenance: FindingProvenance,
     *,
     max_nodes: int = FINDING_ANCESTRY_MAX_NODES,
+    index_conn: sqlite3.Connection | None = None,
 ) -> EvidenceIntegrityVerdict:
     """Return the shared evaluator's verdict for one finding's ancestry."""
     frame_hash, definition_hash = _frame_and_definition(conn, provenance)
+    incompatible_result_set_refs = _incompatible_result_set_refs(conn, provenance, definition_hash)
     adapter = build_finding_evidence_adapter(
         conn,
         provenance,
         frame_hash=frame_hash,
         definition_hash=definition_hash,
+        incompatible_result_set_refs=incompatible_result_set_refs,
         max_nodes=max_nodes,
+        index_conn=index_conn,
     )
     detector_ref = provenance.detector_ref
     return evaluate_adapter(
@@ -265,3 +275,24 @@ def evaluate_finding_evidence(
         detector_output_refs=frozenset({detector_ref}) if detector_ref else frozenset(),
         max_nodes=max_nodes,
     )
+
+
+def _incompatible_result_set_refs(
+    conn: sqlite3.Connection,
+    provenance: FindingProvenance,
+    definition_hash: str | None,
+) -> frozenset[str]:
+    """Identify declared result sets evaluated for a different query."""
+    if definition_hash is None:
+        return frozenset()
+    from polylogue.storage.sqlite.query_objects import get_result_set
+
+    incompatible: set[str] = set()
+    for ref in (provenance.result_set_ref, provenance.baseline_ref, provenance.current_ref):
+        object_id = _object_id_of_kind(ref, "result-set") if ref is not None else None
+        if object_id is None:
+            continue
+        manifest = get_result_set(conn, object_id)
+        if manifest is not None and manifest.query_hash != definition_hash and ref is not None:
+            incompatible.add(ref)
+    return frozenset(incompatible)

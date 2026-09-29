@@ -23,6 +23,7 @@ from devtools.pytest_slot import SlotOutcome
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
     CURRENT_STATISTICS_PATH,
+    VERIFY_RUNS_DIR,
     VerifyRun,
     git_head,
     git_worktree_content_sha256,
@@ -78,6 +79,7 @@ def test_build_pytest_cmd_uses_the_managed_plugin_contract() -> None:
     assert "pytest-testmon" not in cmd
     assert "xdist" not in cmd
     assert CLEAR_CONFIGURED_ADDOPTS in cmd
+    assert "--assert=plain" in cmd
     ignored_start = cmd.index(IGNORED_COLLECTION_ARGS[0])
     assert [*IGNORED_COLLECTION_ARGS] == cmd[ignored_start : ignored_start + len(IGNORED_COLLECTION_ARGS)]
 
@@ -213,6 +215,27 @@ def test_outliers_aggregate_phases_and_report_test_and_file_shares(
         (report_dir / name).write_text(
             json.dumps({"tests": [{"nodeid": nodeid, "call": {"duration": duration}}]}), encoding="utf-8"
         )
+
+    run_dir = tmp_path / VERIFY_RUNS_DIR / "completed"
+    steps = []
+    for index, path in enumerate(sorted(report_dir.glob("last-pytest-*.json"))):
+        step_id = f"{index:02d}-pytest-lane"
+        destination = run_dir / "steps" / step_id / "pytest-report.json"
+        destination.parent.mkdir(parents=True)
+        path.rename(destination)
+        steps.append({"name": f"pytest lane {index}", "step_id": step_id})
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "tier": "all",
+                "status": "success",
+                "finished_at": "2026-01-01T00:00:00Z",
+                "pytest_aggregate": {"complete_corpus_covered": True},
+                "steps": steps,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     assert run_tests.print_outliers(5, root=tmp_path) == 0
     output = capsys.readouterr().out
@@ -1176,3 +1199,16 @@ def test_a_queued_run_keeps_its_slot_receipt_and_any_recorded_killer(
     assert timed_out["diagnosis"] == "pytest_failed"
     assert timed_out["termination_killer"] == "timeout"
     assert timed_out["termination_unit"] == "u"
+
+
+@pytest.mark.parametrize("selection", ["all", "affected", "descriptor"])
+def test_verify_pytest_command_keeps_plain_assertions(selection: str) -> None:
+    """Anti-vacuity: the verify step clears configured addopts; without
+    ``--assert=plain`` in the shared closed-world args the corpus run rewrites
+    assertions and retains their ASTs.
+    """
+    from devtools import verify
+
+    cmd = verify._pytest_command(selection=selection, worker_args=(), hypothesis_profile=None, explicit_tests=())
+    assert CLEAR_CONFIGURED_ADDOPTS in cmd
+    assert "--assert=plain" in cmd

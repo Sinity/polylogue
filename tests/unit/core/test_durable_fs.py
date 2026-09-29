@@ -36,6 +36,24 @@ def test_durable_file_operations_sync_the_parent_directory(
     assert any(fsynced)
 
 
+def test_write_once_syncs_each_new_directory_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: syncing only the leaf omits tmp_path from the barriers."""
+    synced: list[Path] = []
+    real_fsync = os.fsync
+
+    def observe(fd: int) -> None:
+        info = os.fstat(fd)
+        if stat.S_ISDIR(info.st_mode):
+            synced.append(Path(os.readlink(f"/proc/self/fd/{fd}")))
+        real_fsync(fd)
+
+    monkeypatch.setattr("polylogue.core.durable_fs.os.fsync", observe)
+    write_once(tmp_path / "one" / "two" / "receipt", b"durable")
+    assert tmp_path in synced
+    assert tmp_path / "one" in synced
+    assert tmp_path / "one" / "two" in synced
+
+
 def test_write_once_refuses_existing_path(tmp_path: Path) -> None:
     path = tmp_path / "receipt"
     path.write_bytes(b"original")
@@ -95,3 +113,17 @@ def test_clone_or_copy_replace_sets_metadata_before_its_file_barrier(tmp_path: P
         clone_or_copy_replace(source, tmp_path / "staged" / "source.json")
 
     assert observed == [(0o640, 2_000_000_000)]
+
+
+def test_write_once_removes_its_partial_file_after_fsync_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "receipt"
+    real_fsync = os.fsync
+    monkeypatch.setattr("polylogue.core.durable_fs.os.fsync", lambda _fd: (_ for _ in ()).throw(OSError("disk")))
+    with pytest.raises(DurableFilesystemError):
+        write_once(path, b"partial")
+    assert not path.exists()
+    monkeypatch.setattr("polylogue.core.durable_fs.os.fsync", real_fsync)
+    write_once(path, b"retry")
+    assert path.read_bytes() == b"retry"

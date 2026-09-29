@@ -94,6 +94,11 @@ class ChronicleReadRequest(QueryRequest):
     projection: dict[str, object] = Field(default_factory=dict)
 
 
+class CompactReadRequest(QueryRequest):
+    session_id: str | None = None
+    projection: dict[str, object] = Field(default_factory=dict)
+
+
 class EffectiveContextReadRequest(_OperationPayload):
     session_id: str = Field(min_length=1)
     at_position: int | None = None
@@ -814,7 +819,7 @@ class ResetRequest(_OperationPayload):
 
 
 class BlobPublicationsAbandonRequest(_OperationPayload):
-    publication_ids: list[str] = Field(min_length=1, max_length=10_000)
+    publication_ids: list[str] = Field(min_length=1, max_length=256)
     confirm: bool = False
 
 
@@ -963,6 +968,11 @@ class TemporalReadResult(_OperationResult):
 
 class ChronicleReadResult(_OperationResult):
     view: Literal["chronicle"]
+    payload: dict[str, object]
+
+
+class CompactReadResult(_OperationResult):
+    view: Literal["compact"]
     payload: dict[str, object]
 
 
@@ -1480,6 +1490,14 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="read.chronicle.result/v1",
         request_model=ChronicleReadRequest,
         result_model=ChronicleReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.compact",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.compact.result/v1",
+        request_model=CompactReadRequest,
+        result_model=CompactReadResult,
     ),
     DaemonOperationSpec(
         "read.effective_context",
@@ -2294,7 +2312,9 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonFallback.NEVER,
         capability="archive.capture_assertion_candidate",
         deadline_s=120.0,
-        max_body_bytes=1024 * 1024,
+        # 256 KiB of stdin can expand to six JSON bytes per control character
+        # when ensure_ascii escaping is applied by the daemon client.
+        max_body_bytes=2 * 1024 * 1024,
         request_contract="mutation.assertion.candidate.capture.request/v1",
         result_contract="mutation.result/v1",
         request_type="AssertionCandidateCaptureRequest",
@@ -2325,13 +2345,14 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonFallback.NEVER,
         capability="archive.import_annotation_batch",
         deadline_s=120.0,
-        max_body_bytes=MAX_ANNOTATION_IMPORT_BYTES + 64 * 1024,
+        max_body_bytes=MAX_ANNOTATION_IMPORT_BYTES * 6 + 64 * 1024,
         request_contract="mutation.annotation.import_batch.request/v1",
         result_contract="mutation.result/v1",
         request_type="AnnotationBatchImportOperationRequest",
         result_type="MutationResult",
         request_model=AnnotationBatchImportOperationRequest,
         result_model=MutationResult,
+        idempotent=True,
         handler="mutation_annotation_import_batch",
     ),
     DaemonOperationSpec(

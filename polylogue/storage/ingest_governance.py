@@ -780,7 +780,7 @@ def _writer_preacquired_attachments(
     writer_archive: Any,
     prepared: PreparedIngestCohort,
 ) -> tuple[dict[Any, tuple[bytes | None, int, str]], tuple[ArchiveSourceBlobRef, ...]]:
-    """Queue compute-staged blobs; only the writer later reserves and publishes them."""
+    """Queue compute-staged and compute-published blobs; only the writer reserves them."""
     if prepared.classification is None or not prepared.classification.accepted_raw_ids:
         return {}, ()
     if str(writer_archive.archive_root / "blob") != prepared.blob_root:
@@ -799,13 +799,14 @@ def _writer_preacquired_attachments(
     refs: list[ArchiveSourceBlobRef] = []
     for item in prepared.prepared_attachment_blobs:
         attachment = accepted_session.attachments[item.position]
-        if item.prepared_blob is None:
-            if item.precomputed_blob is None:
-                raise RuntimeError("prepared attachment has neither staged nor precomputed bytes")
-            hash_hex, size = item.precomputed_blob
-            attachments[attachment.acquisition_key] = (bytes.fromhex(hash_hex), size, "acquired")
-            continue
-        hash_hex, size = publisher.queue_prepared(item.prepared_blob)
+        if item.prepared_blob is not None:
+            hash_hex, size = publisher.queue_prepared(item.prepared_blob)
+        elif item.precomputed_blob is not None:
+            # Already published by compute, so GC-eligible until referenced:
+            # reserve it, and the publisher's flush proves it is still present.
+            hash_hex, size = publisher.adopt_published(*item.precomputed_blob)
+        else:
+            raise RuntimeError("prepared attachment has neither staged nor precomputed bytes")
         attachments[attachment.acquisition_key] = (bytes.fromhex(hash_hex), size, "acquired")
         if is_blob_hash_excised(source_conn, bytes.fromhex(hash_hex)):
             # The flush refuses these bytes and discards the staged file; the
