@@ -22,6 +22,7 @@ from threading import Thread
 from typing import Any
 
 from devtools.agentctl_service_context import require_declared_operation_context, terminate_process_group
+from devtools.shared_chrome_lock import shared_chrome_extension_lock
 from polylogue.browser_capture.server import make_server
 
 _RECEIVER_PORT_ENV = "POLYLOGUE_LIVE_PROVIDER_RECEIVER_PORT"
@@ -31,6 +32,11 @@ _MAX_ERROR_MESSAGE = 512
 
 def run_proof(*, repo_root: Path | None = None) -> dict[str, object]:
     """Run the shared-Chrome workflow against a self-bound loopback receiver."""
+    with shared_chrome_extension_lock(timeout_s=_NODE_PROOF_TIMEOUT_S):
+        return _run_proof_locked(repo_root=repo_root)
+
+
+def _run_proof_locked(*, repo_root: Path | None = None) -> dict[str, object]:
     require_declared_operation_context("live_provider_proof")
     root = (repo_root or Path(__file__).resolve().parents[1]).resolve()
     extension_root = root / "browser-extension"

@@ -280,9 +280,11 @@ class Budget:
         unbounded discovery sweep it never asked for.
         """
         if isinstance(value, Budget):
-            if deadline_s is None or value.deadline_s is not None:
+            if deadline_s is None:
                 return value
-            return replace(value, deadline_s=deadline_s)
+            if value.deadline_s is None:
+                return replace(value, deadline_s=deadline_s)
+            return replace(value, deadline_s=min(value.deadline_s, deadline_s))
         if value is None:
             return cls(deadline_s=deadline_s)
         return cls(publication=int(value), deadline_s=deadline_s)
@@ -368,6 +370,15 @@ class DerivationReport:
     work: WorkCounters = WorkCounters()
     cursor: PassCursor = PassCursor()
     truncated: bool = False
+
+    def __post_init__(self) -> None:
+        # Preserve the positional constructor while deriving totals when the
+        # caller supplies outcomes but omits the authoritative count mapping.
+        if not self.counts and self.outcomes:
+            totals = dict.fromkeys(Outcome, 0)
+            for item in self.outcomes:
+                totals[item.outcome] += 1
+            object.__setattr__(self, "counts", totals)
 
     def by_outcome(self, outcome: Outcome) -> tuple[KeyOutcome, ...]:
         """The retained per-key detail for one outcome, not a count of it."""
@@ -601,6 +612,9 @@ class _Pass:
         self.discovered = 0
         self.inspected = 0
         self.prerequisites_inspected = 0
+        #: Cursors seen per (domain, phase): the required and excess pagers are
+        #: independent keysets and may legitimately reuse a cursor value.
+        self.visited_cursors: dict[tuple[str, DiscoveryPhase], set[object]] = {}
         self.computed = 0
         self.published = 0
         #: Every key this pass reached a verdict on, so a dependant can be gated
@@ -681,8 +695,11 @@ class _Pass:
         self.discovered += max(1, len(page.keys))
         if len(page.keys) > limit:
             raise ValueError(f"derivation {adapter.domain} returned {len(page.keys)} keys for a limit of {limit}")
-        if page.next_cursor is not None and page.next_cursor == position.page_cursor:
+        visited = self.visited_cursors.setdefault((adapter.domain, position.phase), set())
+        if page.next_cursor is not None and (page.next_cursor == position.page_cursor or page.next_cursor in visited):
             raise ValueError(f"derivation {adapter.domain} returned a cursor that does not advance")
+        if position.page_cursor is not None:
+            visited.add(position.page_cursor)
         return page
 
     @staticmethod
@@ -746,6 +763,10 @@ class _Pass:
         for a domain that does not: it can only be evaluated at whole-domain
         granularity, which is coarse but never optimistic.
         """
+        # Prerequisite enumeration is not metered against the pass's
+        # discovery/inspection budgets: a full page would otherwise consume
+        # them before any dependant could name its inputs, and every pass
+        # would record the page as blocked without progress.
         try:
             bindings = tuple(_as_key(item) for item in adapter.prerequisite_keys(self.frame, key))
         except Exception as exc:
@@ -827,6 +848,8 @@ class _Pass:
 
     def inspect_binding(self, binding: DerivationKey) -> str | None:
         """Read one upstream key's authority, whatever this pass selected."""
+        if self.out_of_time():
+            return "prerequisite inspection deadline exhausted"
         try:
             upstream = self.registry.get(binding.domain)
         except KeyError:
@@ -1012,6 +1035,31 @@ class _Pass:
             )
             return
         if after is KeyStatus.MISSING and expected is KeyStatus.VALID:
+            still_required = getattr(adapter, "is_required_key", None)
+            if callable(still_required):
+                try:
+                    if not still_required(self.frame, key):
+                        self.record(
+                            KeyOutcome(
+                                key=derivation_key,
+                                outcome=Outcome.PENDING,
+                                reason=PendingReason.BINDING_MOVED,
+                                error="required key disappeared before publication completed",
+                                elapsed_s=elapsed,
+                            )
+                        )
+                        return
+                except Exception as exc:
+                    self.record(
+                        KeyOutcome(
+                            key=derivation_key,
+                            outcome=Outcome.FAILED,
+                            error=f"requiredness inspection {type(exc).__name__}: {exc}",
+                            transient=_is_transient_failure(exc),
+                            elapsed_s=elapsed,
+                        )
+                    )
+                    return
             # A publication that rechecks the authoritative required relation
             # returns False when this key ceased to be required.  A successful
             # publication that still leaves a required output missing is a

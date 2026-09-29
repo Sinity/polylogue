@@ -598,13 +598,31 @@ export class BackfillCoordinator {
       const failures = Array.isArray(result?.failures) ? result.failures : [];
       if (!failures.length) return null;
       const errors = {};
-      const now = nowIso(this.clock());
+      const nowMs = this.clock();
+      const now = nowIso(nowMs);
       for (const failure of failures) {
         if (typeof failure?.job_id !== "string") continue;
         const detail = String(failure.error || "capture_job_receiver_commit_failed");
         errors[failure.job_id] = detail;
         const job = await this.store.getJob(failure.job_id);
         if (job?.status === "running") {
+          const retryUntil = Number.isFinite(failure.retry_until_ms)
+            ? failure.retry_until_ms
+            : Number.isFinite(failure.retry_after_ms) ? nowMs + Math.max(0, failure.retry_after_ms) : null;
+          if (failure.outcome === "rate_limited" && retryUntil !== null) {
+            // A provider throttle is retryable: keep the job running and let
+            // the alarm at the deadline resume it. Only operator-actionable
+            // failures pause. A job already cooling down is left unchanged so
+            // the checkpoint reaches a fixed point.
+            if (job.cooldown_reason === "provider_rate_limited" && job.cooldown_until_ms > nowMs) continue;
+            await this.store.controlJob(failure.job_id, "running", now, {
+              cooldown_reason: "provider_rate_limited",
+              cooldown_until_ms: retryUntil,
+              last_error: detail,
+            });
+            await this.schedule(job.id, retryUntil);
+            continue;
+          }
           await this.store.controlJob(failure.job_id, "paused", now, {
             cooldown_reason: "receiver_capture_job_authority_unavailable",
             last_error: detail,

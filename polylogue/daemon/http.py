@@ -32,7 +32,7 @@ from polylogue.archive.query.transaction import (
     archive_read_context,
 )
 from polylogue.archive.viewport import READ_VIEW_HTTP_CAPABILITIES
-from polylogue.core.errors import DatabaseError, PolylogueError
+from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, PolylogueError
 from polylogue.core.json import JSONDocument
 from polylogue.core.loopback import is_loopback_host
 from polylogue.core.sqlite_locking import is_corrupt_sqlite_database, is_transient_sqlite_lock
@@ -504,6 +504,19 @@ def _json_bytes(payload: object) -> bytes:
     return dumps_bytes(payload, append_newline=True)
 
 
+def _stable_status_identity(value: object) -> object:
+    """Remove clock-only status diagnostics from the conditional identity."""
+    if isinstance(value, Mapping):
+        return {
+            str(key): _stable_status_identity(item)
+            for key, item in value.items()
+            if str(key) not in {"age_s", "evaluated_at", "quick_check_age_s"}
+        }
+    if isinstance(value, list):
+        return [_stable_status_identity(item) for item in value]
+    return value
+
+
 def _web_reader_archive_root() -> Path | None:
     """Return the archive root when archive reader routes should use it."""
     from polylogue.paths import archive_root
@@ -971,11 +984,10 @@ def _profile_panel_payload(profile: Any, provenance: Any) -> dict[str, object]:
     and adds a readiness chip + provenance summary on top.
     """
     body = dict(profile.to_dict())
-    row_count = int(body.get("message_count", 0) or 0)
-    outcome = decide_outcome(matched=row_count)
+    outcome = decide_outcome(matched=True)
     return {
         "outcome": outcome.to_dict(),
-        "readiness_tag": _readiness_tag(outcome, materialized=True, row_count=row_count),
+        "readiness_tag": _readiness_tag(outcome, materialized=True, row_count=1),
         "materialized": True,
         "profile": body,
         "provenance": _provenance_dict(provenance),
@@ -1113,7 +1125,7 @@ def _write_route_exception_answer(handler: DaemonAPIHandler, exc: Exception, *, 
             status,
             QueryErrorPayload(
                 error=type(exc).__name__,
-                detail=str(exc),
+                detail=(exc.public_message if isinstance(exc, ArchiveTierUnavailableError) else str(exc)),
                 field=field,
             ).model_dump(mode="json"),
         )
@@ -1715,12 +1727,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _parse_path(self) -> tuple[list[str], dict[str, list[str]]]:
         parsed = urlparse(self.path)
         path = [unquote(segment) for segment in parsed.path.strip("/").split("/")]
-        params = parse_qs(parsed.query)
+        # Blank values are kept so a route can tell "sent empty" from "absent";
+        # _get_param still reads a blank as absent for ordinary parameters.
+        params = parse_qs(parsed.query, keep_blank_values=True)
         return path, params
 
     def _get_param(self, params: dict[str, list[str]], key: str, default: str | None = None) -> str | None:
         values = params.get(key)
-        if values:
+        if values and values[0] != "":
             return values[0]
         return default
 
@@ -1832,6 +1846,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     # context and its events could not be joined to this span.
                     propagate(lambda: asyncio.run(self._archive_query_coroutine(handler))),
                     admission_class=admission_class,
+                    estimated_bytes=1024 * 1024,
                     cancellation=cancellation,
                 )
                 try:
@@ -1865,6 +1880,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                         result = submitted.future.result(timeout=_ARCHIVE_QUERY_TIMEOUT_S)
                     except FutureTimeoutError as exc:
                         cancellation.cancel()
+                        submitted.future.cancel()
                         # The raised TimeoutError makes the span emit its own
                         # ``.error`` terminal event; these fields ride along.
                         route_span.set(
@@ -2316,7 +2332,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _serve_webui_pastes(self, params: dict[str, list[str]]) -> None:
         limit = max(1, min(self._get_int(params, "limit", 200), 500))
         offset = max(0, self._get_int(params, "offset", 0))
-        payload = self._sync_run(lambda poly: self._do_paste_browser(poly, limit=limit, offset=offset))
+        try:
+            payload = self._sync_run(lambda poly: self._do_paste_browser(poly, limit=limit, offset=offset))
+        except (DaemonBackpressureError, TimeoutError):
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_read_unavailable", "Retry this request shortly.")
+            return
         self._serve_webui_secondary(
             title="Pastes",
             heading="Paste evidence",
@@ -2328,16 +2348,20 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _serve_webui_attachments(self, params: dict[str, list[str]]) -> None:
         limit = max(1, min(self._get_int(params, "limit", 200), 500))
         offset = max(0, self._get_int(params, "offset", 0))
-        payload = self._sync_run(
-            lambda poly: self._do_attachment_library(
-                poly,
-                limit=limit,
-                offset=offset,
-                mime_filter=self._get_param(params, "mime") or "",
-                state_filter=self._get_param(params, "state") or "",
-                session_filter=self._get_param(params, "session") or "",
+        try:
+            payload = self._sync_run(
+                lambda poly: self._do_attachment_library(
+                    poly,
+                    limit=limit,
+                    offset=offset,
+                    mime_filter=self._get_param(params, "mime") or "",
+                    state_filter=self._get_param(params, "state") or "",
+                    session_filter=self._get_param(params, "session") or "",
+                )
             )
-        )
+        except (DaemonBackpressureError, TimeoutError):
+            self._send_error(HTTPStatus.SERVICE_UNAVAILABLE, "archive_read_unavailable", "Retry this request shortly.")
+            return
         self._serve_webui_secondary(
             title="Attachments",
             heading="Attachment library",
@@ -2950,15 +2974,24 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         page_truncated = getattr(envelope, "next_offset", None) is not None
         matched_so_far = offset + len(rows)
         entries: list[PasteBrowserEntry] = []
+        # One archive read for the page's sessions, not one per session.
+        summaries = await poly.get_session_summaries([str(row.session_id) for row in rows])
+        display_titles: dict[str, str] = {}
         for row in rows:
             text = str(getattr(row, "text", "") or "")
             spans = envelope_paste_spans(text, has_paste=True)
             message_id = str(row.message_id)
             occurred_at_ms = getattr(row, "occurred_at_ms", None)
+            session_id = str(row.session_id)
+            if session_id not in display_titles:
+                summary = summaries.get(session_id)
+                display_titles[session_id] = str(
+                    getattr(summary, "display_title", None) or getattr(row, "title", None) or session_id
+                )
             entries.append(
                 PasteBrowserEntry(
-                    session_id=str(row.session_id),
-                    session_title=str(getattr(row, "title", None) or row.session_id),
+                    session_id=session_id,
+                    session_title=display_titles[session_id],
                     origin=str(row.origin) if row.origin else None,
                     message_id=message_id,
                     message_anchor=reader_anchor("message", message_id),
@@ -2976,8 +3009,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             )
         return build_paste_browser_payload(
             entries,
-            total=None if page_truncated else matched_so_far,
-            total_is_exact=not page_truncated,
+            total=None if page_truncated or (offset > 0 and not rows) else matched_so_far,
+            total_is_exact=not page_truncated and not (offset > 0 and not rows),
             matched_so_far=matched_so_far,
         )
 
@@ -3045,8 +3078,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         matched_so_far = offset + len(entries)
         return build_library_payload(
             entries,
-            total=None if page_truncated else matched_so_far,
-            total_is_exact=not page_truncated,
+            total=None if page_truncated or (offset > 0 and not entries) else matched_so_far,
+            total_is_exact=not page_truncated and not (offset > 0 and not entries),
             matched_so_far=matched_so_far,
         )
 
@@ -3200,7 +3233,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         else:
             status["daemon_liveness_state"] = "measured"
         # The frame and live discovery overlay can change without a daemon event.
-        raw = _json_bytes(status)
+        raw = _json_bytes(_stable_status_identity(status))
         etag_digest = hashlib.sha256(raw).hexdigest()[:24]
         etag = f'W/"status-{etag_digest}"'
         if_none_match = self.headers.get("If-None-Match", "")
@@ -3749,7 +3782,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             # Stored session word counter; the domain summary deliberately
             # delegates word totals to the query-row projection.
             "word_count": summary.word_count,
-            "terminal_state": row.outcome,
+            "terminal_state": domain.terminal_state,
             "total_cost_usd": row.cost_usd,
             "relative_time": row.relative_time,
             "repo": domain.git_repository_url,
@@ -4072,7 +4105,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                 profile_record = await poly.get_session_profile_record(conv_id)
                 if profile_record is not None:
                     partition_status, stored_binding, stored_version = await asyncio.to_thread(
-                        session_profile_partition_status, active_archive_root(poly.config), conv_id
+                        session_profile_partition_status, active_archive_root(poly.config), profile_record.session_id
                     )
                     profile_row_matches = (
                         profile_record.input_content_hash is not None
@@ -4520,8 +4553,10 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             limit = self._get_int(params, "limit", 50)
             offset = self._get_int(params, "offset", 0)
             window_continuation = self._get_param(params, "continuation")
-            around = self._get_param(params, "around")
-            if not self._accept_message_window_anchor(around, window_continuation):
+            # An explicitly blank ``around`` is still an anchor request, so it
+            # conflicts with an offset or continuation rather than vanishing.
+            around = params["around"][0] if "around" in params else None
+            if not self._accept_message_window_anchor(around, window_continuation, offset):
                 return
             archive_root = _web_reader_archive_root()
             try:
@@ -4643,16 +4678,21 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if output_format != "json":
                 self._send_error(HTTPStatus.BAD_REQUEST, "invalid_format")
                 return
+            from polylogue.analysis.lineage_graph import DEFAULT_LINEAGE_PAGE_LIMIT
+
+            node_limit = self._get_int(params, "node_limit", DEFAULT_LINEAGE_PAGE_LIMIT)
+            edge_limit = self._get_int(params, "edge_limit", DEFAULT_LINEAGE_PAGE_LIMIT)
+            if node_limit < 0 or edge_limit < 0:
+                self._send_error(HTTPStatus.BAD_REQUEST, "invalid_page_limit")
+                return
 
             async def _get_lineage(poly: Polylogue) -> object | None:
-                from polylogue.analysis.lineage_graph import DEFAULT_LINEAGE_PAGE_LIMIT
-
                 graph = await poly.compact_lineage(
                     conv_id,
                     node_offset=max(0, self._get_int(params, "node_offset", 0)),
-                    node_limit=self._get_int(params, "node_limit", DEFAULT_LINEAGE_PAGE_LIMIT),
+                    node_limit=node_limit,
                     edge_offset=max(0, self._get_int(params, "edge_offset", 0)),
-                    edge_limit=self._get_int(params, "edge_limit", DEFAULT_LINEAGE_PAGE_LIMIT),
+                    edge_limit=edge_limit,
                 )
                 return None if graph is None else graph.model_dump(mode="json")
 
@@ -4705,7 +4745,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _handle_get_messages(self, conv_id: str, params: dict[str, list[str]]) -> None:
         return read_detail._handle_get_messages(self, conv_id, params)
 
-    def _accept_message_window_anchor(self, around: str | None, continuation: str | None) -> bool:
+    def _accept_message_window_anchor(
+        self, around: str | None, continuation: str | None, offset: int | None = None
+    ) -> bool:
         """Refuse a request that names its window twice, and say so.
 
         ``around`` asks the route to *decide* the offset; a continuation
@@ -4713,7 +4755,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         the caller did not ask for, so the disagreement is the caller's error.
         """
 
-        if around and continuation:
+        if around is not None and (continuation or (offset is not None and offset != 0)):
             self._send_error(
                 HTTPStatus.BAD_REQUEST,
                 "invalid_request",
@@ -4738,6 +4780,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # through ``get_session`` composed the whole transcript to serve one
         # window, and composed it twice when the window was deep-linked.
         summary = await poly.get_session_summary(conv_id)
+        if summary is not None:
+            session_id = str(getattr(summary, "session_id", None) or getattr(summary, "id", None) or conv_id)
         if around and summary is None:
             raise MessageNotInSessionError(session_id, around)
         # polylogue-i5vqc: a deep link names a message, so the shared read

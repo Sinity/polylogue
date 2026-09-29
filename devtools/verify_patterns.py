@@ -90,9 +90,9 @@ def _baseline(path: Path) -> Counter[Anchor]:
             raise ValueError(f"invalid baseline entry in {path}: {raw_line!r}")
         if (
             not file_name
-            or len(digest) != hashlib.sha1().digest_size * 2
+            or len(digest) != 40
             or any(character not in "0123456789abcdef" for character in digest)
-            or len(context) != hashlib.sha1().digest_size * 2
+            or len(context) != 40
             or any(character not in "0123456789abcdef" for character in context)
             or count < 1
         ):
@@ -124,7 +124,7 @@ def _match_anchor(root: Path, item: dict[str, Any], file_lines: dict[str, list[s
     if line_number > len(lines):
         raise ValueError(f"ast-grep match line is outside {file_name}: {line_number}")
     normalized_line = lines[line_number - 1].strip()
-    digest = hashlib.sha1(normalized_line.encode("utf-8")).hexdigest()
+    digest = hashlib.sha1(normalized_line.encode("utf-8"), usedforsecurity=False).hexdigest()
     source = "\n".join(lines)
     tree = ast.parse(source, filename=file_name)
 
@@ -146,7 +146,7 @@ def _match_anchor(root: Path, item: dict[str, Any], file_lines: dict[str, list[s
         return best
 
     context_text = "/".join(path(tree) or ("Module",))
-    context = hashlib.sha1(context_text.encode("utf-8")).hexdigest()
+    context = hashlib.sha1(context_text.encode("utf-8"), usedforsecurity=False).hexdigest()
     return file_name, digest, context
 
 

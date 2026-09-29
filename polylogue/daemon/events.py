@@ -188,8 +188,10 @@ def prune_daemon_events(
     monotonic in ``id`` -- ``observed_at_ms`` is caller-supplied and the wall
     clock can step backwards -- so age retention keeps the first row the
     horizon retains and everything after it, rather than every row whose
-    timestamp happens to be old. That over-retains an out-of-order old row
-    sitting behind a young one; ``max_rows`` still bounds the ledger's size.
+    timestamp happens to be old. Deleting through the highest expired ID
+    instead would discard in-window rows ahead of it. This over-retains an
+    out-of-order old row sitting behind a young one; ``max_rows`` still bounds
+    the ledger's size.
     """
     resolved = daemon_event_retention() if retention is None else retention
     if not resolved.is_bounded:
@@ -535,10 +537,21 @@ def query_events_since(
     """
     conn = _open_events_reader()
     if conn is None:
-        # No ledger file, or an ops database predating the event schema: there
-        # is no retained range to compare a cursor against, so this stays the
-        # documented empty-ledger result rather than a fabricated refusal.
-        return DaemonEventPage(status=EventCursorStatus.OK, events=(), retained_min_id=None, latest_id=0)
+        if last_id <= 0:
+            return DaemonEventPage(status=EventCursorStatus.OK, events=(), retained_min_id=None, latest_id=0)
+        resync = build_snapshot_envelope(
+            event_id=0,
+            ts=_iso_from_ms(current_epoch_ms()),
+            event_count=0,
+            first_event_id=None,
+            last_event_id=None,
+            kind_counts={},
+            resync_reason="ledger_reset",
+            requested_since=last_id,
+        )
+        return DaemonEventPage(
+            status=EventCursorStatus.AGED_OUT, events=(), retained_min_id=None, latest_id=0, resync=resync
+        )
     try:
         conn.execute("BEGIN")
         retained_min, latest = _retained_range(conn)

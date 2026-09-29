@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from typing import Any
 
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import (
@@ -162,3 +163,97 @@ def test_stale_smaller_snapshot_is_refused(tmp_path: Path) -> None:
 
     assert result.convergence is CaptureConvergence.SUPERSEDED
     assert result.deduplicated is True
+
+
+def test_session_attachment_does_not_shift_turn_attachment_identity(tmp_path: Path) -> None:
+    """Anti-vacuity: flattened positional comparison rejects [session, turn] vs [turn]."""
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", "inline_base64": "YQ=="}]
+    incoming: dict[str, Any] = _payload(
+        turn_ids=["t1", "t2"], captured_at="2026-04-24T00:01:00Z", updated_at="2026-04-24T00:01:00Z"
+    )
+    incoming["session"]["attachments"] = [{"provider_attachment_id": "B", "content_base64": "Yg=="}]
+    incoming["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", "inline_base64": "YQ=="}]
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.PUBLISH
+
+
+def test_content_carrier_cannot_disagree_with_existing_inline_bytes(tmp_path: Path) -> None:
+    """Anti-vacuity: accepting content_base64 without comparing inline bytes changes archive data."""
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", "inline_base64": "YQ=="}]
+    incoming: dict[str, Any] = _payload(
+        turn_ids=["t1", "t2"], captured_at="2026-04-24T00:01:00Z", updated_at="2026-04-24T00:01:00Z"
+    )
+    incoming["session"]["turns"][0]["attachments"] = [
+        {"provider_attachment_id": "A", "inline_base64": "YQ==", "content_base64": "Yg=="}
+    ]
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.SUPERSEDED
+
+
+def test_self_declared_wrong_identity_is_not_acknowledged_as_native(tmp_path: Path) -> None:
+    """Anti-vacuity: copying observation fidelity alone incorrectly returns native."""
+    payload: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    payload["session"]["turns"][0]["identity_observation"] = {
+        "origin": "claude-ai-export",
+        "provider_conversation_id": "other",
+        "provider_message_id": "other-message",
+        "adapter_name": "chatgpt",
+        "fidelity": "native",
+    }
+
+    result = _write(payload, tmp_path)
+
+    assert result.accepted_identities[0].fidelity == "unknown"
+
+
+def test_empty_carrier_is_present_evidence_not_absence(tmp_path: Path) -> None:
+    """Anti-vacuity: treating ``content_base64=""`` as absent lets different bytes replace a zero-byte carrier."""
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", "content_base64": ""}]
+    incoming: dict[str, Any] = _payload(
+        turn_ids=["t1", "t2"], captured_at="2026-04-24T00:01:00Z", updated_at="2026-04-24T00:01:00Z"
+    )
+    incoming["session"]["turns"][0]["attachments"] = [{"provider_attachment_id": "A", "content_base64": "YQ=="}]
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.SUPERSEDED
+
+
+def test_duplicate_attachment_ids_in_one_scope_are_all_retained(tmp_path: Path) -> None:
+    """Anti-vacuity: a dict keyed by scoped id keeps only the last duplicate, so dropping one passes."""
+    resident: dict[str, Any] = _payload(
+        turn_ids=["t1"], captured_at="2026-04-24T00:00:00Z", updated_at="2026-04-24T00:00:00Z"
+    )
+    resident["session"]["turns"][0]["attachments"] = [
+        {"provider_attachment_id": "A", "inline_base64": "Yg=="},
+        {"provider_attachment_id": "A", "inline_base64": "YQ=="},
+    ]
+    incoming: dict[str, Any] = _payload(
+        turn_ids=["t1", "t2"], captured_at="2026-04-24T00:01:00Z", updated_at="2026-04-24T00:01:00Z"
+    )
+    incoming["session"]["turns"][0]["attachments"] = [
+        {"provider_attachment_id": "A", "inline_base64": "YQ==", "content_base64": "YQ=="}
+    ]
+
+    _write(resident, tmp_path)
+    result = _write(incoming, tmp_path)
+
+    assert result.convergence is CaptureConvergence.SUPERSEDED

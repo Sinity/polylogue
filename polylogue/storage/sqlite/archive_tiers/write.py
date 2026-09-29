@@ -37,6 +37,7 @@ import ijson
 
 from polylogue.archive.attachment.availability import AttachmentAvailability, resolve_attachment_availability
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.revision_authority import is_work_event_raw_id
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.repo_identity import normalize_repo_name, normalize_repo_path
 from polylogue.archive.topology.edge import (
@@ -1964,9 +1965,11 @@ def write_parsed_session_to_archive(
     # A work-event raw carries one event and no session header. Writing it as
     # an ordinary session would upsert default header values over the stored
     # session (and, on a same-raw full replay, replace its transcript), so it
-    # is an event-only append that keeps every session-owned field. The rule
-    # keys on the retained raw identity, so events retained before this
-    # writer existed replay the same way.
+    # is an event-only append that keeps every session-owned field, including
+    # the transcript's ``raw_id`` and ``content_hash``: the accepted revision
+    # head and later re-ingest compare against those, and an annotation does
+    # not change which raw authored the session. The rule keys on the
+    # retained raw identity, so every route replays an event the same way.
     stored_header = (
         _stored_session_header(
             conn,
@@ -7338,7 +7341,9 @@ def _bind_asserted_branch_point(
     """
     if not parent_session_id or not native_id or not native_id.strip():
         return None
-    candidate = archive_message_id(parent_session_id, native_id.strip())
+    # The same surrogate substitution ``messages.native_id`` stores, so a
+    # lone-surrogate provider id names the row it was stored as.
+    candidate = archive_message_id(parent_session_id, _sqlite_text(native_id.strip()))
     row = conn.execute("SELECT 1 FROM messages WHERE message_id = ? LIMIT 1", (candidate,)).fetchone()
     return candidate if row is not None else None
 
@@ -7354,20 +7359,23 @@ def _refill_inbound_asserted_branch_points(conn: sqlite3.Connection, parent_sess
     rows = conn.execute(
         f"""
         SELECT src_session_id, dst_origin, dst_native_id, link_type,
-               json_extract(evidence_json, '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}')
+               evidence_json -> '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}'
           FROM session_links
          WHERE resolved_dst_session_id = ?
            AND branch_point_message_id IS NULL
            AND json_valid(evidence_json)
            AND json_type(evidence_json) = 'object'
-           AND json_extract(evidence_json, '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}') IS NOT NULL
+           AND COALESCE(json_type(evidence_json, '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}'), 'null') != 'null'
            -- A materialized child owns its prefix: re-binding its assertion
            -- would compose the parent's prefix in front of its own copy.
            AND src_session_id NOT IN (SELECT session_id FROM session_identity_scopes)
         """,
         (parent_session_id,),
     ).fetchall()
-    for src_session_id, dst_origin, dst_native_id, link_type, asserted_native_id in rows:
+    for src_session_id, dst_origin, dst_native_id, link_type, asserted_json in rows:
+        # Read in its JSON spelling and decoded here: a stored lone-surrogate
+        # escape would make ``json_extract`` materialize text that is not UTF-8.
+        asserted_native_id = json.loads(asserted_json)
         bound = _bind_asserted_branch_point(conn, parent_session_id, str(asserted_native_id))
         if bound is None:
             continue
@@ -9490,11 +9498,10 @@ def _increment_provider_usage_model_rollup(
     )
 
 
-#: ``raw_id`` prefix of a retained agent work event (``ArchiveStore.append_work_event``).
-WORK_EVENT_RAW_ID_PREFIX = "agent-work-event:"
-
-#: Session-owned header columns an event-only write keeps from the stored row.
+#: Session-owned columns an event-only write keeps from the stored row.
 _EVENT_ONLY_PRESERVED_COLUMNS: tuple[str, ...] = (
+    "raw_id",
+    "content_hash",
     "branch_type",
     "active_leaf_message_id",
     "title",
@@ -9513,10 +9520,6 @@ _EVENT_ONLY_PRESERVED_COLUMNS: tuple[str, ...] = (
     "created_at_ms",
     "updated_at_ms",
 )
-
-
-def is_work_event_raw_id(raw_id: str | None) -> bool:
-    return raw_id is not None and raw_id.startswith(WORK_EVENT_RAW_ID_PREFIX)
 
 
 def _stored_session_header(
@@ -13700,7 +13703,40 @@ def _hash_bytes(*parts: str) -> bytes:
 
 
 def _json_dumps(value: object) -> str:
-    return json.dumps(_sqlite_json_value(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    """Canonical JSON text for a column; a lone surrogate stays a ``\\uXXXX`` escape.
+
+    Escaping, unlike replacing it with U+FFFD, keeps the stored payload equal
+    to the value the session's content hash was computed from.
+    """
+    encoded = json.dumps(_json_value(value), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    if encoded.isascii() or not _SURROGATE_RE.search(encoded):
+        return encoded
+    return _SURROGATE_RE.sub(lambda match: f"\\u{ord(match.group()):04x}", encoded)
+
+
+def _json_value(value: object) -> object:
+    """``value`` with every non-JSON type lowered to its stored spelling.
+
+    Strings are kept exactly, a lone surrogate included; ``_json_dumps``
+    escapes it.
+    """
+    if isinstance(value, list | tuple):
+        return [_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, set | frozenset):
+        lowered = [_json_value(item) for item in value]
+        return sorted(lowered, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
+    if isinstance(value, Enum):
+        return _json_value(value.value)
+    if isinstance(value, Decimal):
+        as_float = float(value)
+        return as_float if Decimal(as_float) == value else str(value)
+    if isinstance(value, bytes | bytearray | memoryview):
+        return bytes(value).hex()
+    if isinstance(value, datetime | date | datetime_time):
+        return value.isoformat()
+    return value
 
 
 def _sqlite_text(value: str | None) -> str | None:
@@ -13716,30 +13752,6 @@ def _sqlite_bool(value: bool | None) -> int | None:
     if value is None:
         return None
     return 1 if value else 0
-
-
-def _sqlite_json_value(value: object) -> object:
-    if isinstance(value, str):
-        return _sqlite_text(value)
-    if isinstance(value, list):
-        return [_sqlite_json_value(item) for item in value]
-    if isinstance(value, tuple):
-        return [_sqlite_json_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(_sqlite_text(str(key))): _sqlite_json_value(item) for key, item in value.items()}
-    if isinstance(value, (set, frozenset)):
-        lowered = [_sqlite_json_value(item) for item in value]
-        return sorted(lowered, key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")))
-    if isinstance(value, Enum):
-        return _sqlite_json_value(value.value)
-    if isinstance(value, Decimal):
-        as_float = float(value)
-        return as_float if Decimal(as_float) == value else str(value)
-    if isinstance(value, (bytes, bytearray, memoryview)):
-        return bytes(value).hex()
-    if isinstance(value, (datetime, date, datetime_time)):
-        return value.isoformat()
-    return value
 
 
 def _json_loads(raw_json: str | bytes) -> dict[str, object]:

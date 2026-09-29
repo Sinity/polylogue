@@ -381,3 +381,18 @@ def test_a_readable_recovered_ledger_still_clears_its_alert() -> None:
     alerts = evaluate_cursor_lag(summary, thresholds=CursorLagThresholds(), state=state, now=10_000.0)
 
     assert [a.severity for a in alerts] == [HealthSeverity.OK]
+
+
+def test_repeated_unavailable_ledger_alerts_obey_dedup_window() -> None:
+    """Unreadable intervals emit once per dedup window without resolving families.
+
+    Anti-vacuity: remove unavailable_emit_at tracking and the second interval
+    emits another backend-facing warning immediately.
+    """
+    state = CursorLagDedupState()
+    thresholds = CursorLagThresholds(dedup_window_s=60)
+    unavailable = CursorLagSummary(available=False, unavailable_reason="ledger unreadable")
+
+    assert len(evaluate_cursor_lag(unavailable, thresholds=thresholds, state=state, now=10)) == 1
+    assert evaluate_cursor_lag(unavailable, thresholds=thresholds, state=state, now=20) == []
+    assert len(evaluate_cursor_lag(unavailable, thresholds=thresholds, state=state, now=71)) == 1

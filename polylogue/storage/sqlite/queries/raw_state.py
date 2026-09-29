@@ -37,6 +37,7 @@ CASE {detected}
     WHEN 'hermes' THEN 'hermes-session'
     WHEN 'antigravity' THEN 'antigravity-session'
     WHEN 'grok' THEN 'grok-export'
+    WHEN 'beads' THEN 'beads-issue'
     WHEN 'unknown' THEN 'unknown-export'
     ELSE {origin}
 END

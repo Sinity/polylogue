@@ -48,6 +48,7 @@ from polylogue.storage.sqlite.query_objects import (
     put_evaluation_receipt,
     put_result_set,
     put_watched_query_baseline,
+    watched_query_activated_at_ms,
     watched_query_baseline_updated_at_ms,
 )
 
@@ -422,10 +423,9 @@ def _narrowed_origin_scope(
 
     * The planner publishes no bounds, or cannot bound one watched definition.
       An unbounded predicate can match any origin.
-    * A watched definition has no durable baseline yet. The first evaluation
-      establishes a baseline silently, so skipping the tick that would have
-      established it would move that silent first observation later and hide
-      the delta a subsequent tick should have reported.
+    * A watched definition has no durable baseline established since its
+      current activation. Re-enabling a watch after a historical baseline
+      cannot treat that older observation as proof this watch was rebaselined.
     * An accepted expected-count finding exists. Those drift against a stored
       expectation rather than against the previous membership, so a definition
       that is already drifting must be allowed to report it on the next tick
@@ -440,7 +440,9 @@ def _narrowed_origin_scope(
         bound = evaluator.session_origin_scope(query)
         if bound is None:
             return None
-        if get_watched_query_baseline(conn, query.query_hash) is None:
+        baseline_at = watched_query_baseline_updated_at_ms(conn, query.query_hash)
+        activated_at = watched_query_activated_at_ms(conn, query.query_hash)
+        if baseline_at is None or activated_at is None or baseline_at <= activated_at:
             return None
         union |= set(bound)
     return frozenset(union)
@@ -674,6 +676,10 @@ def _materialize_promoted_finding_drifts(
         expected = value.get("expected")
         query_reference = value.get("query_ref")
         if not isinstance(expected, dict) or not isinstance(query_reference, str):
+            continue
+        # This stage only owns member-count expectations. Unsupported future
+        # measures must be ignored even when the evaluation is non-exact.
+        if expected.get("measure") != "member_count":
             continue
         query_hash = query_reference.removeprefix("query:")
         if query_hashes is not None and query_hash not in query_hashes:

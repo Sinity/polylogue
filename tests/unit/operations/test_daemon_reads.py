@@ -283,10 +283,51 @@ def test_search_projection_hydrates_storage_rows_and_describes_real_lanes() -> N
 
     assert hits[0].session_id == summary.session_id
     assert hits[0].matched_terms == ("needle",)
-    assert hits[0].score_components == {"text_rank": 2.0, "vector_rank": 3.0}
-    assert hits[0].raw_score is None
+    # Hybrid hits carry each lane's recorded rank and its RRF contribution;
+    # the fused score is the sum of those contributions, not a rank.
+    components = hits[0].score_components
+    assert {key: components[key] for key in ("text_rank", "vector_rank")} == {"text_rank": 2.0, "vector_rank": 3.0}
+    assert set(components) == {"text_rank", "vector_rank", "text_rrf", "vector_rrf"}
+    assert hits[0].raw_score == hits[0].score
+    assert hits[0].score is not None
+    assert abs(hits[0].score - (components["text_rrf"] + components["vector_rrf"])) < 1e-9
     assert hits.execution.requested_lanes == ("text", "action", "vector")
     assert hits.execution.executed_lanes == ("text", "action", "vector")
+
+
+def test_single_lane_search_hit_keeps_its_native_rank() -> None:
+    """Anti-vacuity: deriving lane_rank only from lane_ranks leaves every dialogue hit with lane_rank=None."""
+    from polylogue.archive.query.plan import SessionQueryPlan
+    from polylogue.archive.query.search_contract import ArchiveSearchResult, SearchExecution
+    from polylogue.archive.query.search_hits import project_search_hits
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+
+    summary = ArchiveSessionSummary(
+        session_id="codex-session:fixture",
+        native_id="fixture",
+        origin="codex-session",
+        title="Fixture",
+        created_at=None,
+        updated_at=None,
+        message_count=1,
+        word_count=2,
+        tags=(),
+    )
+    native = ArchiveSessionSearchHit(
+        rank=4,
+        session_id=summary.session_id,
+        block_id="block",
+        message_id="message",
+        origin=summary.origin,
+        title=summary.title,
+        snippet="needle",
+    )
+    hits = project_search_hits(
+        SessionQueryPlan(query_terms=("needle",)),
+        ArchiveSearchResult([(native, summary)], "dialogue", SearchExecution(("text",), ("text",))),
+    )
+
+    assert hits[0].lane_rank == 4
 
 
 def test_archive_backed_completion_answers_from_the_pinned_reader(tmp_path: Path) -> None:

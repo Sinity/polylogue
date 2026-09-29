@@ -13,7 +13,7 @@ from typing import IO, Protocol, TypeAlias, TypeGuard, cast
 import ijson
 
 from polylogue.core.content_identity import JSON_TEXT_ENCODINGS
-from polylogue.core.json import JSONDecodeError
+from polylogue.core.json import JSONDecodeError, decode_provider_utf8
 from polylogue.core.json import loads as json_loads
 from polylogue.core.json_envelope import OversizedRecord, bounded_lines
 from polylogue.logging import get_logger
@@ -158,6 +158,17 @@ def _yield_jsonl_pending(
         return ([parsed], 0, None)
 
     if isinstance(raw_pending, bytes):
+        # Provider bytes with directly encoded surrogates (lone or CESU-8
+        # pairs) decode exactly; only other bytes fall to the lenient guess.
+        try:
+            provider_text: str | None = decode_provider_utf8(raw_pending)
+        except UnicodeDecodeError:
+            provider_text = None
+        if provider_text is not None:
+            try:
+                return ([cast(JsonValue, json.loads(provider_text))], 0, None)
+            except json.JSONDecodeError:
+                pass
         decoded = decode_json_bytes_with(logger_obj, raw_pending)
         if not decoded:
             if is_last:

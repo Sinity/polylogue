@@ -64,8 +64,9 @@ def _handle_get_messages(self: Any, conv_id: str, params: dict[str, list[str]]) 
     limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
     offset = max(0, self._get_int(params, "offset", 0))
     continuation = self._get_param(params, "continuation")
-    around = self._get_param(params, "around")
-    if not self._accept_message_window_anchor(around, continuation):
+    # A present-but-blank anchor stays "" so the anchor/offset conflict check sees it.
+    around = params["around"][0] if "around" in params else None
+    if not self._accept_message_window_anchor(around, continuation, offset):
         return
 
     archive_root = _web_reader_archive_root()

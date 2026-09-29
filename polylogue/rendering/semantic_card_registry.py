@@ -387,6 +387,8 @@ _ORIGIN_POLICIES: tuple[OriginPolicy, ...] = (
     OriginPolicy(Origin.CLAUDE_AI_EXPORT, "claude-ai"),
     OriginPolicy(Origin.CLAUDE_DESIGN_SESSION, "claude-design"),
     OriginPolicy(Origin.AISTUDIO_DRIVE, "gemini-cli"),
+    OriginPolicy(Origin.BEADS_ISSUE, "unknown"),
+    OriginPolicy(Origin.OTEL_GENAI, "unknown"),
     OriginPolicy(Origin.UNKNOWN_EXPORT, "unknown"),
 )
 _ORIGIN_POLICY_INDEX = {policy.origin.value: policy for policy in _ORIGIN_POLICIES}

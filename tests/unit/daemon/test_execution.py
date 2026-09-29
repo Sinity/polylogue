@@ -299,6 +299,29 @@ def test_cancelled_queued_work_never_runs_and_returns_its_reservation() -> None:
         assert not ran.is_set()
 
 
+def test_future_cancel_removes_queued_task_and_releases_reservation() -> None:
+    """Anti-vacuity: Future.cancel alone must free queue capacity behind a held worker."""
+    holder = _Blocker()
+    with _adapter(max_workers=1, queue_units=2, queue_bytes=100) as adapter:
+        try:
+            adapter.submit(holder)
+            assert holder.wait_started(1)
+            queued = adapter.submit(lambda: "must not run", estimated_bytes=20)
+            assert queued.future.cancel()
+            snapshot = adapter.snapshot()
+            assert snapshot.used_units == 1
+            assert snapshot.used_bytes == 0
+        finally:
+            holder.release.set()
+
+
+def test_admission_rejects_slot_demand_over_class_ceiling() -> None:
+    """Anti-vacuity: a task above its class ceiling otherwise never dispatches."""
+    with _adapter(max_workers=8) as adapter:
+        with pytest.raises(DaemonBackpressureError, match="slot ceiling"):
+            adapter.submit(lambda: None, admission_class="control", units=5)
+
+
 def test_cancelled_queued_work_is_not_counted_as_completed_dispatch() -> None:
     """Scheduler counters distinguish a released queue reservation from executed work.
 

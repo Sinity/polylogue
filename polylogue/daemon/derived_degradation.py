@@ -36,7 +36,13 @@ def schema_refusal_details(exc: SchemaRefusalError) -> dict[str, object]:
         actual_identity = None
         expected_version = exc.expected_version
         actual_version = exc.current_version
-        reason = "derived schema version is stale; daemon convergence owns rebuild"
+        action = exc.lifecycle_action
+        if action == "upgrade_runtime":
+            reason = "runtime upgrade required before this index can be read"
+        elif action == "retry":
+            reason = "schema inspection failed transiently; retry the read"
+        else:
+            reason = "derived schema version is stale; daemon convergence owns rebuild"
     else:  # pragma: no cover - callers restrict this helper to SchemaRefusalError
         code = "schema_refusal"
         expected_identity = None
@@ -53,6 +59,7 @@ def schema_refusal_details(exc: SchemaRefusalError) -> dict[str, object]:
         "percent": None,
         "reason": "no convergence progress measurement was available at read refusal",
     }
+    action = getattr(exc, "lifecycle_action", None)
     return {
         "code": code,
         "tier": tier,
@@ -61,8 +68,13 @@ def schema_refusal_details(exc: SchemaRefusalError) -> dict[str, object]:
         "actual_identity": actual_identity,
         "expected_version": expected_version,
         "actual_version": actual_version,
-        "state": "rebuilding",
-        "route": "daemon_convergence",
+        "state": "upgrade_required" if action == "upgrade_runtime" else "retry" if action == "retry" else "rebuilding",
+        "route": "upgrade_runtime"
+        if action == "upgrade_runtime"
+        else "retry"
+        if action == "retry"
+        else "daemon_convergence",
+        "retryable": action == "retry",
         "progress": completion,
         "completion_estimate": {
             "state": "unknown",
@@ -90,17 +102,16 @@ def schema_refusal_status_component(details: Mapping[str, object]) -> dict[str, 
     """Project refusal evidence into the common readiness component shape."""
 
     tier = str(details.get("tier") or "derived")
+    state = str(details.get("state") or "degraded")
+    route = str(details.get("route") or "daemon convergence")
     return {
         "component": f"derived:{tier}",
         "scope": "derived-read",
         "state": "degraded",
-        "summary": (
-            f"{tier} derived tier is rebuilding; reads are refused until daemon convergence "
-            "re-establishes the stamped identity"
-        ),
+        "summary": f"{tier} derived tier is {state}; reads are refused by the schema lifecycle contract",
         "counts": {"progress": details.get("progress")},
         "caveats": ["completion estimate is unknown until convergence records a measured sample"],
-        "repair_hint": "daemon convergence",
+        "repair_hint": route.replace("_", " "),
         "evidence_refs": [f"schema_identity:{tier}"],
         "degradation": dict(details),
     }

@@ -28,6 +28,7 @@ from polylogue.daemon.derivation import (
     DerivationKey,
     DerivationRegistry,
     DerivationReport,
+    KeyOutcome,
     KeyPage,
     KeyStatus,
     Outcome,
@@ -422,6 +423,30 @@ def test_publish_refusal_is_pending_not_failed() -> None:
     assert adapter.output == {}
 
 
+def test_successful_cleanup_is_pending_when_requiredness_moved_before_certification() -> None:
+    """A vanished required key is a binding race, not a broken publisher.
+
+    Anti-vacuity: omit the requiredness recheck and a successful cleanup with
+    missing output is classified FAILED instead of retryable BINDING_MOVED.
+    """
+
+    class VanishingDomain(RecordingDerivation):
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            del frame, replacement
+            self._required = ()
+            return True
+
+        def is_required_key(self, frame: DerivationFrame, key: str) -> bool:
+            del frame
+            return key in self._required
+
+    report = converge(DerivationRegistry([VanishingDomain("d", required=("vanishing",))]), FRAME)
+
+    assert report.failed == 0
+    assert report.pending == 1
+    assert report.by_outcome(Outcome.PENDING)[0].reason is PendingReason.BINDING_MOVED
+
+
 def test_a_publication_the_output_relation_does_not_confirm_is_a_failure() -> None:
     """Publishing reports a claim; the output relation certifies it.
 
@@ -611,6 +636,27 @@ def test_a_report_can_be_bounded_without_losing_its_totals() -> None:
     assert report.pending == 95
     assert len(report.outcomes) == 3
     assert report.truncated
+
+
+def test_direct_report_construction_derives_counts_from_outcomes() -> None:
+    """The exported positional report constructor keeps outcome properties truthful.
+
+    Anti-vacuity: remove DerivationReport.__post_init__ and this completed
+    outcome is exposed as zero done work.
+    """
+    report = DerivationReport(FRAME, (KeyOutcome(DerivationKey("demo", "one"), Outcome.DONE),))
+    assert report.done == 1
+    assert report.pending == 0
+
+
+def test_outer_deadline_tightens_an_existing_budget_deadline() -> None:
+    """Both relative deadlines constrain the pass to the earlier deadline.
+
+    Anti-vacuity: ignore deadline_s when a Budget already has one and the
+    returned budget keeps the later 100-second allowance.
+    """
+    limits = Budget.coerce(Budget(deadline_s=100), deadline_s=1)
+    assert limits.deadline_s == 1
 
 
 def test_repeated_bounded_passes_visit_every_key() -> None:
@@ -1110,6 +1156,35 @@ def test_a_failure_signature_names_its_exception_type() -> None:
     assert _failure_signature(type_failure.error) == "compute TypeError"
 
 
+def test_a_requiredness_recheck_failure_is_classified_and_typed() -> None:
+    """The post-publication requiredness recheck classifies and names its error.
+
+    Anti-vacuity: a FAILED outcome recorded there without ``transient`` and
+    with a phase-only ``requiredness inspection: ...`` reason turns lock
+    contention into a deterministic defect sharing one signature with every
+    other recheck error, so the item is isolated.
+    """
+    import sqlite3
+
+    from polylogue.daemon.intake import _failure_signature
+
+    class LockedRecheck(RecordingDerivation):
+        def publish(self, frame: DerivationFrame, replacement: Replacement) -> bool:
+            del frame, replacement
+            self._required = ()
+            return True
+
+        def is_required_key(self, frame: DerivationFrame, key: str) -> bool:
+            locked = sqlite3.OperationalError("database is locked")
+            locked.sqlite_errorcode = 5  # SQLITE_BUSY
+            raise locked
+
+    report = converge(DerivationRegistry([LockedRecheck("d", required=("vanishing",))]), FRAME)
+    (failed,) = report.by_outcome(Outcome.FAILED)
+    assert failed.transient is True
+    assert _failure_signature(failed.error) == "requiredness inspection OperationalError"
+
+
 def test_a_per_key_inspection_failure_is_classified_and_typed() -> None:
     """The per-key inspection fallback classifies and names its exception.
 
@@ -1132,3 +1207,59 @@ def test_a_per_key_inspection_failure_is_classified_and_typed() -> None:
     (failed,) = report.by_outcome(Outcome.FAILED)
     assert failed.transient is True
     assert _failure_signature(failed.error) == "inspect OperationalError"
+
+
+def test_required_and_excess_pagers_may_reuse_a_cursor_value() -> None:
+    """The two discovery phases are independent keysets.
+
+    Anti-vacuity: track visited cursors per domain only and the excess pager's
+    first ``next_cursor`` ("2") collides with the required pager's, raising
+    "does not advance" for a valid pass.
+    """
+    domain = RecordingDerivation("demo", required=("a0", "a1", "a2", "a3"))
+    domain.output.update(dict.fromkeys(("e0", "e1", "e2", "e3"), ""))
+    registry = DerivationRegistry([domain])
+
+    report = converge(registry, FRAME, budget=Budget(page=2))
+
+    assert report.failed == 0
+    assert {"a0", "a1", "a2", "a3"} <= set(domain.output)
+
+
+def test_report_retention_does_not_change_prerequisite_verdicts() -> None:
+    """A report-detail cap bounds the report, not the pass's own verdicts.
+
+    Anti-vacuity: evict pass-local verdicts at ``retained_outcomes`` and the
+    dependant re-inspects its upstream key, spending prerequisite inspection
+    work the uncapped pass does not.
+    """
+    upstream = RecordingDerivation("up", required=("u",))
+    dependant = RecordingDerivation("down", required=("d",), prerequisites=("up",), bindings={"d": (("up", "u"),)})
+    registry = DerivationRegistry([upstream, dependant])
+
+    report = converge(registry, FRAME, budget=Budget(page=10, inspection=4, retained_outcomes=0))
+
+    assert report.done == 2
+    assert report.work.prerequisites_inspected == 0
+    assert dependant.output == {"d": "b0"}
+
+
+def test_prerequisite_reads_do_not_starve_a_full_page_of_dependants() -> None:
+    """A full page must still converge when each dependant names upstream keys.
+
+    Anti-vacuity: meter prerequisite enumeration or inspection against the
+    pass's discovery/inspection budgets and a page that fills both leaves every
+    dependant blocked, pass after pass.
+    """
+    upstream = RecordingDerivation("up", required=("u0", "u1"))
+    upstream.output.update({"u0": "b0", "u1": "b0"})
+    both = (("up", "u0"), ("up", "u1"))
+    dependant = RecordingDerivation(
+        "down", required=("d0", "d1"), prerequisites=("up",), bindings={"d0": both, "d1": both}
+    )
+    registry = DerivationRegistry([upstream, dependant])
+
+    report = converge(registry, FRAME, budget=Budget(page=2, discovery=2, inspection=2), domains=("down",))
+
+    assert report.done == 2
+    assert dependant.output == {"d0": "b0", "d1": "b0"}

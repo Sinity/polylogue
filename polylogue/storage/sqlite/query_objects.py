@@ -433,6 +433,15 @@ def watched_query_baseline_updated_at_ms(conn: sqlite3.Connection, query_hash: s
     return None if row is None else int(row[0])
 
 
+def watched_query_activated_at_ms(conn: sqlite3.Connection, query_hash: str) -> int | None:
+    """Latest activation time among currently watched names for this query."""
+    row = conn.execute(
+        "SELECT MAX(updated_at_ms) FROM query_names WHERE query_hash = ? AND watch = 1",
+        (query_hash,),
+    ).fetchone()
+    return None if row is None or row[0] is None else int(row[0])
+
+
 def put_watched_query_baseline(
     conn: sqlite3.Connection,
     *,
@@ -652,4 +661,5 @@ __all__ = [
     "promote_result_set",
     "put_watched_query_baseline",
     "watched_query_baseline_updated_at_ms",
+    "watched_query_activated_at_ms",
 ]

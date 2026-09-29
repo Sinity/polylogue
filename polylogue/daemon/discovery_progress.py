@@ -166,6 +166,14 @@ def end_discovery(token: object, *, failed: bool = False, pending: bool = False)
         )
 
 
+def abandon_discovery(owner: object) -> None:
+    """Forget parked progress for an owner that can no longer be scheduled."""
+    with _lock:
+        for token, pending in tuple(_pending.items()):
+            if pending.owner_ref is not None and pending.owner_ref() is owner:
+                del _pending[token]
+
+
 def begin_cold_build_preparation(phase: str = "baseline_walk") -> None:
     """Mark the start of a cold build's pre-dispatcher preparation."""
     global _preparation

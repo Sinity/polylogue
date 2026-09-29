@@ -43,13 +43,13 @@ def _fingerprint(evidence: Mapping[str, Any]) -> str:
 def request_scope_fingerprint(lowered_predicate: Mapping[str, Any]) -> str:
     """Fingerprint the immutable predicate produced by request lowering."""
 
-    return _fingerprint({"kind": "lowered-predicate", "predicate": dict(lowered_predicate)})
+    return _fingerprint(dict(lowered_predicate))
 
 
 def result_scope_fingerprint(applied_scope: Mapping[str, Any]) -> str:
     """Fingerprint executor evidence read from the applied query scope."""
 
-    return _fingerprint({"kind": "applied-scope", "scope": dict(applied_scope)})
+    return _fingerprint(dict(applied_scope))
 
 
 def assert_scope_match(requested: str, applied: str) -> None:
