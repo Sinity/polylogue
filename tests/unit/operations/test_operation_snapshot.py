@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from contextlib import closing
 from dataclasses import replace
@@ -145,7 +146,7 @@ def test_topology_checkpoint_raises_the_typed_abort_for_its_reason(tmp_path: Pat
     """Anti-vacuity: the topology checkpoint used to raise a bare TimeoutError for every reason,
     which the operation envelope does not map to ``cancelled`` or ``timed-out``."""
     from polylogue.archive.query.execution_control import QueryTimeoutError
-    from polylogue.operations.operation_context import _abort_checkpoint
+    from polylogue.operations.operation_context import abort_checkpoint
     from polylogue.operations.read_view_lineage import _TopologySnapshot
 
     bootstrap_archive_root(tmp_path)
@@ -153,7 +154,7 @@ def test_topology_checkpoint_raises_the_typed_abort_for_its_reason(tmp_path: Pat
     reached: list[str] = []
     with pytest.raises(QueryCancelledError):
         with open_operation_read(tmp_path, execution_context=context) as pinned:
-            snapshot = _TopologySnapshot(pinned.archive, getattr(pinned.archive, "operation_raise_if_aborted", None))
+            snapshot = _TopologySnapshot(pinned.archive, abort_checkpoint(context))
             snapshot.check_cancelled()
             reached.append("live")
             context.cancel()
@@ -162,4 +163,36 @@ def test_topology_checkpoint_raises_the_typed_abort_for_its_reason(tmp_path: Pat
 
     expired = QueryExecutionContext(call_id="topology-deadline", query_ref="synthetic-topology", deadline_monotonic=0.0)
     with pytest.raises(QueryTimeoutError):
-        _abort_checkpoint(expired)()
+        abort_checkpoint(expired)()
+
+
+def test_topology_read_receives_the_declared_abort_checkpoint(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The checkpoint travels as a declared read dependency, not a store attribute.
+
+    Anti-vacuity: dropping ``raise_if_aborted=dependencies.raise_if_aborted``
+    from the ``read.topology`` dispatch fails with a missing required argument,
+    and reading it back off the store with ``getattr`` hands the read no checkpoint.
+    """
+    from polylogue.operations import read_view_lineage
+    from polylogue.operations.daemon_reads import DaemonReadDependencies, execute_read_operation
+
+    received: list[object] = []
+
+    def capture(payload: object, *, archive: object, raise_if_aborted: object) -> dict[str, object]:
+        received.append(raise_if_aborted)
+        return {}
+
+    def checkpoint() -> None:
+        return None
+
+    monkeypatch.setattr(read_view_lineage, "execute_topology_read", capture)
+    bootstrap_archive_root(tmp_path)
+    with open_operation_read(tmp_path) as pinned, contextlib.suppress(Exception):
+        execute_read_operation(
+            "read.topology",
+            {"session_id": "synthetic-session"},
+            archive=pinned.archive,
+            serving_identity="test",
+            dependencies=DaemonReadDependencies(raise_if_aborted=checkpoint),
+        )
+    assert received == [checkpoint]

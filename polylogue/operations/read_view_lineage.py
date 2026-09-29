@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 
 from polylogue.storage.runtime import SessionRecord
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -44,7 +44,7 @@ def execute_lineage_read(payload: Mapping[str, object], *, archive: ArchiveStore
 
 
 class _TopologySnapshot:
-    def __init__(self, archive: ArchiveStore, raise_if_aborted: object = None) -> None:
+    def __init__(self, archive: ArchiveStore, raise_if_aborted: Callable[[], None]) -> None:
         connection = archive.index_connection
         if connection is None:
             raise ValueError("topology requires an index snapshot")
@@ -54,8 +54,7 @@ class _TopologySnapshot:
     def check_cancelled(self) -> None:
         # Raises the shared controller's typed QueryCancelledError /
         # QueryTimeoutError so the operation envelope reports the real reason.
-        if callable(self.raise_if_aborted):
-            self.raise_if_aborted()
+        self.raise_if_aborted()
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         self.check_cancelled()
@@ -94,7 +93,9 @@ class _TopologySnapshot:
         return [dict(row) for row in cursor.fetchall()]
 
 
-def execute_topology_read(payload: Mapping[str, object], *, archive: ArchiveStore) -> dict[str, object]:
+def execute_topology_read(
+    payload: Mapping[str, object], *, archive: ArchiveStore, raise_if_aborted: Callable[[], None]
+) -> dict[str, object]:
     from polylogue.operations.topology_envelope import topology_public_envelope
     from polylogue.storage.derived.topology import derive_session_topology_async
 
@@ -103,7 +104,7 @@ def execute_topology_read(payload: Mapping[str, object], *, archive: ArchiveStor
         resolved = archive.resolve_session_id(session_id)
     except KeyError as exc:
         raise KeyError(f"Session not found: {session_id}") from exc
-    snapshot = _TopologySnapshot(archive, getattr(archive, "operation_raise_if_aborted", None))
+    snapshot = _TopologySnapshot(archive, raise_if_aborted)
     topology = asyncio.run(
         derive_session_topology_async(
             snapshot,
