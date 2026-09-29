@@ -695,6 +695,11 @@ def _search_payload(
         from polylogue.api.archive import _archive_count_sessions_for_spec
 
         total = _archive_count_sessions_for_spec(archive, fetch_spec)
+        if spec.latest:
+            # The ranked plan bounds ``--latest`` to one session
+            # (``query_spec_to_plan``); its total is that selection's, as on
+            # the list path, not the filter's.
+            total = min(total, 1)
     # Same projection as the API builder: ``matched`` is the query's match
     # total, ``analyzed`` the hit window this route returns.
     authority = authority_for_reader(

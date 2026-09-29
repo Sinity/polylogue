@@ -4222,17 +4222,26 @@ class ArchiveStore:
             resolved.update({str(row["session_id"]): str(row["session_id"]) for row in rows})
         return resolved
 
-    def require_stored_session_ids(self, session_ids: Sequence[str]) -> tuple[str, ...]:
-        """Return ``session_ids`` deduplicated, or raise ``KeyError`` for one not stored.
+    def stored_session_ids(self, session_ids: Sequence[str]) -> tuple[str, ...]:
+        """The given full session ids that are stored exactly, deduplicated, in order.
 
-        Durable writers act on ids their caller already resolved once, at
-        preview. They must never resolve again through ``resolve_session_id``:
-        its prefix and suffix fallbacks re-point an id that has since gone at
+        Mutations act on ids their caller already resolved once, at preview.
+        They must never resolve again through ``resolve_session_id``: its
+        prefix and suffix fallbacks re-point an id that has since gone at
         whichever session shares its prefix, and the write lands on that
-        session instead.
+        session instead. Existence of a recorded id is an exact-key question.
         """
         requested = tuple(dict.fromkeys(session_ids))
         stored = self.resolve_exact_session_ids(requested)
+        return tuple(session_id for session_id in requested if session_id in stored)
+
+    def require_stored_session_ids(self, session_ids: Sequence[str]) -> tuple[str, ...]:
+        """Return ``session_ids`` deduplicated, or raise ``KeyError`` for one not stored exactly.
+
+        The durable writers' guard: see :meth:`stored_session_ids`.
+        """
+        requested = tuple(dict.fromkeys(session_ids))
+        stored = set(self.stored_session_ids(requested))
         for session_id in requested:
             if session_id not in stored:
                 raise KeyError(session_id)

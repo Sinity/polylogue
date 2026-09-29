@@ -163,7 +163,9 @@ def test_preview_count_equals_applied_count_and_spares_prefix_siblings(archive: 
 
     preview = _json_document(_invoke(["find", TOKEN, "then", "delete", "--dry-run", "--all"]))
     assert preview["session_count"] == len(archive.selected)
-    assert set(preview["session_ids"]) == set(archive.selected)  # type: ignore[arg-type]
+    previewed = preview["session_ids"]
+    assert isinstance(previewed, list)
+    assert set(previewed) == set(archive.selected)
 
     applied = _json_document(_invoke(["find", TOKEN, "then", "delete", "--yes", "--all"]))
 

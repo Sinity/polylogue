@@ -56,20 +56,6 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
-def _exact_session_ids(archive: ArchiveStore, session_ids: Sequence[str]) -> tuple[str, ...]:
-    """The recorded full session ids still stored exactly, in the given order.
-
-    Apply and recovery act on ids a PREPARE already resolved and recorded in
-    its plan, so existence is an exact-key question. ``resolve_session_id``
-    answers a different one: an id that is gone falls back to a prefix range,
-    which re-points a recorded ``codex:abc`` at a surviving ``codex:abcdef``
-    and would delete or rewrite the sibling instead.
-    """
-
-    found = archive.resolve_exact_session_ids(tuple(session_ids))
-    return tuple(sid for sid in dict.fromkeys(session_ids) if sid in found)
-
-
 # ---------------------------------------------------------------------------
 # Session delete (mutate-delete-session)
 # ---------------------------------------------------------------------------
@@ -106,7 +92,7 @@ class SessionDeleteActuator(ConvergentReplay):
         # plans the subset that still exists right now. Every caller hands
         # full ids it resolved once, so existence is exact: a vanished id
         # never widens to another session sharing its prefix.
-        existing = _exact_session_ids(args.archive, args.session_ids)
+        existing = args.archive.stored_session_ids(args.session_ids)
         return build_plan(
             operation=self.operation,
             destructive_class="delete",
@@ -125,7 +111,7 @@ class SessionDeleteActuator(ConvergentReplay):
         # ``delete_sessions``, whose own resolver would widen a missing id to a
         # prefix match and delete a different session (crash-recovery replay
         # runs exactly this after the first apply removed the target).
-        session_ids = _exact_session_ids(args.archive, planned)
+        session_ids = args.archive.stored_session_ids(planned)
         deleted = args.archive.delete_sessions(session_ids) if session_ids else 0
         status: MutationTargetStatus = "applied" if deleted else "already_satisfied"
         return MutationReceipt(
@@ -3054,7 +3040,7 @@ def _partition_requested_session_ids(
     """
 
     requested = tuple(dict.fromkeys(session_ids))
-    resolved = _exact_session_ids(archive, requested)
+    resolved = archive.stored_session_ids(requested)
     present = set(resolved)
     return resolved, tuple(sid for sid in requested if sid not in present)
 
