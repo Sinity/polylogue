@@ -1604,3 +1604,33 @@ class TestDaemonSearchEnvelopeHonestPagination:
         )
 
         assert envelope["limit"] == 25
+
+
+def test_delete_of_ranked_matches_names_each_session_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A ranked page with several hits in one session previews that session once.
+
+    Anti-vacuity: build ``matched_session_ids`` from every hit again and the
+    preview counts three sessions and lists ``s:1`` twice.
+    """
+    import polylogue.cli.archive_query as archive_query
+
+    config = Config(archive_root=tmp_path, render_root=tmp_path, sources=[], db_path=tmp_path / "index.db")
+    payload: dict[str, object] = {
+        "hits": [{"session_id": "s:1"}, {"session_id": "s:2"}, {"session_id": "s:1"}],
+        "total": 3,
+        "limit": 10,
+    }
+    monkeypatch.setattr(archive_query, "load_effective_config", lambda _env: config)
+    monkeypatch.setattr(archive_query, "daemon_route_disabled", lambda *, flag=False: False)
+    monkeypatch.setattr(archive_query, "dispatch_read", lambda *_args, **_kwargs: (payload, None))
+
+    _execute_archive_query_stdout(
+        AppEnv(),
+        RootModeRequest.from_params({"query": ("needle",), "delete_matched": True, "dry_run": True, "limit": 10}),
+    )
+
+    document = json.loads(capsys.readouterr().out)
+    assert document["session_count"] == 2
+    assert document["session_ids"] == ["s:1", "s:2"]

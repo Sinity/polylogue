@@ -18,7 +18,7 @@ from polylogue.operations.audit import (
     machine_pages_kind,
 )
 from polylogue.operations.bindings import OperationBinding, runtime_operation_binding
-from polylogue.operations.daemon_protocol import DaemonOperationRequest
+from polylogue.operations.daemon_protocol import DaemonAuthorization, DaemonOperationRequest, daemon_operation_spec
 from polylogue.operations.delete_authorization import _canonical_session_ids
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_actuators import (
@@ -39,17 +39,6 @@ from polylogue.operations.mutation_transaction import (
 from polylogue.operations.operation_context import OperationContext, OperationControlRead, PinnedOperationRead
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
-_CONFIRMATION_REQUIRED_OPERATIONS = frozenset(
-    {
-        "mutation.session.excision",
-        "mutation.session.lifecycle-request",
-        "mutation.identity-reset",
-        "mutation.raw-authority-blocker.resolve",
-        "maintenance.reset",
-        "maintenance.blob-publications.abandon",
-    }
-)
-
 
 def _execute_named_mutation(
     request: DaemonOperationRequest,
@@ -62,8 +51,11 @@ def _execute_named_mutation(
     """Run one legacy domain actuator under the daemon's write authority."""
     assert context.runtime is not None
     binding = runtime_operation_binding(actuator)
+    spec = daemon_operation_spec(request.operation)
+    if spec is None:
+        raise ValueError(f"{request.operation} is not a declared operation")
     if (
-        request.operation in _CONFIRMATION_REQUIRED_OPERATIONS
+        spec.authorization is DaemonAuthorization.CONFIRMATION
         and binding.actuator.required_confirmation != "role_only"
         and request.payload.get("confirm") is not True
     ):

@@ -5536,6 +5536,18 @@ def enrich_sessions_from_archive(
     ).enrich_all(sessions)
 
 
+def parse_enriched_retained_raw_sessions(archive: Any, raw_id: str) -> list[ParsedSession]:
+    """Parse retained raw evidence and apply its provider's session assembly.
+
+    The writer-side parse: the live batch writer and the declared ``ingest``
+    operation both write what this returns, so a session admitted by either
+    route carries the same assembled title and enrichment.
+    """
+    sessions = parse_retained_raw_sessions(archive, raw_id)
+    provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+    return enrich_sessions_from_archive(archive, provider, source_path, sessions)
+
+
 def _replay_safe_enrich_sessions(
     *,
     provider: Provider,

@@ -293,7 +293,7 @@ def test_daemon_down_refusal_names_polylogued_run_in_terminal_format(
     """Every mutating verb refuses by name, never as a traceback or a no-op.
 
     Anti-vacuity: give ``submit_cli_mutation`` a local writer and these exit 0;
-    drop ``polylogued run`` from ``_mutation_refusal`` and every row goes red
+    drop ``polylogued run`` from ``mutation_refusal`` and every row goes red
     on the remedy assertion while still exiting non-zero, which is the failure
     mode worth separating -- a refusal with no next action is barely better
     than a traceback.
@@ -335,7 +335,7 @@ def test_daemon_down_refusal_is_typed_daemon_required_in_machine_format(
 
     Anti-vacuity: route ``DaemonRequiredError`` back through ``error_runtime``
     in ``machine_main`` (or drop the typed exception from
-    ``_mutation_refusal``) and every row here goes red on the ``code``
+    ``mutation_refusal``) and every row here goes red on the ``code``
     assertion while the terminal test above stays green -- the exact asymmetry
     that let the gap survive.
     """
