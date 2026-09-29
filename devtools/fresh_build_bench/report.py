@@ -822,6 +822,17 @@ def _derive_dependents(receipt: dict[str, Any]) -> None:
     )
 
 
+def _observation_errors(observations: list[Any]) -> dict[str, dict[str, object]]:
+    errors: dict[str, dict[str, object]] = {}
+    for observation in observations:
+        error = getattr(observation, "error", None)
+        if error is None:
+            continue
+        entry = errors.setdefault(str(error), {"count": 0, "retryable": bool(observation.error_retryable)})
+        entry["count"] = int(entry["count"]) + 1  # type: ignore[call-overload]
+    return errors
+
+
 def build_receipt(
     *,
     config: Any,
@@ -981,6 +992,9 @@ def build_receipt(
         "warnings_and_errors": events.get("warnings_and_errors"),
         "daemon_exit_code": exit_code,
         "observation_count": len(observations),
+        # Why reads of the archive failed, by message: a refused run names
+        # the error that refused it, and retried failures stay visible.
+        "observation_errors": _observation_errors(observations),
         "progress": _progress_timeline(observations),
         # Unrounded: ``refresh`` re-reduces the event log from this origin.
         "started_at_unix": started_wall,
