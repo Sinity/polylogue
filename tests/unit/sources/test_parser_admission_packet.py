@@ -246,6 +246,53 @@ def test_admission_ledger_cost_does_not_scale_with_materialized_records() -> Non
     assert sum(1 for _ in accounting.iter_outcomes()) == _LEDGER_RECORD_COUNT
 
 
+class _UnreadOutcomes(list[Any]):
+    """A recorded-outcome container that fails if anything reads it."""
+
+    def __iter__(self) -> Any:
+        raise AssertionError("next_ordinal re-read the recorded outcomes")
+
+    def __len__(self) -> int:
+        raise AssertionError("next_ordinal re-counted the recorded outcomes")
+
+    def __getitem__(self, index: Any) -> Any:
+        raise AssertionError("next_ordinal indexed the recorded outcomes")
+
+
+def test_admission_ledger_next_ordinal_reads_no_recorded_outcome() -> None:
+    """Operation-count regression: the next ordinal costs no pass over prior outcomes.
+
+    Alternating dispositions keep every outcome as its own retained model and
+    materialized run, so a recount has the most to read. Anti-vacuity:
+    restore the sum-based ordinal (counting the retained outcomes plus the
+    materialized runs for the unit on every call, quadratic in records) and
+    the guarded containers raise.
+    """
+    unit = AdmissionUnit.OUTER_RECORD
+    record_count = 1_000
+    ledger = AdmissionLedger()
+    ledger.expect(unit, record_count)
+    for ordinal in range(record_count):
+        if ordinal % 2:
+            ledger.unknown(unit, ordinal, "future_record")
+        else:
+            ledger.materialized(unit, ordinal, "parsed")
+
+    outcomes, materialized = ledger._outcomes, ledger._materialized
+    ledger._outcomes = _UnreadOutcomes()
+    guarded: dict[AdmissionUnit, list[list[int]]] = {key: _UnreadOutcomes() for key in materialized}
+    ledger._materialized = guarded
+    try:
+        assert ledger.next_ordinal(unit) == record_count
+    finally:
+        ledger._outcomes, ledger._materialized = outcomes, materialized
+
+    accounting = ledger.close()
+    accounting.assert_conserved()
+    assert len(accounting.outcomes) == record_count // 2
+    assert sum(1 for _ in accounting.iter_outcomes()) == record_count
+
+
 def test_admission_conservation_rejects_a_range_that_overcounts() -> None:
     """Anti-vacuity: dropping the range arithmetic from assert_conserved makes this pass silently."""
     overcounting = ParseAccounting(
