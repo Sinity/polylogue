@@ -5,13 +5,11 @@ from __future__ import annotations
 import json
 import tempfile
 import time
-import webbrowser
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import replace
 from itertools import chain
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 import click
 import yaml
@@ -646,53 +644,11 @@ def run_read_temporal(env: AppEnv, request: RootModeRequest, invocation: ReadVie
     deliver_content(env, content, destination=invocation.destination, out_path=invocation.out_path, output_format=fmt)
 
 
-def run_read_browser(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
-    """Open the first matched session in the daemon web reader."""
-
-    from polylogue.cli.query import _create_query_vector_provider
-
-    config = env.config
-
-    async def _find_first() -> str | None:
-        spec = replace(request.query_spec(), limit=1)
-        # polylogue-yla8.1 split-root contract: config.db_path always names a
-        # concrete index.db (explicit override or resolved active generation).
-        archive_root = archive_file_set_root(archive_root=config.archive_root, db_path=config.db_path)
-        vector_provider = _create_query_vector_provider(config, db_path=archive_root / "embeddings.db")
-        filter_chain = spec.build_filter(config, vector_provider=vector_provider)
-        first_id: str | None = None
-        if filter_chain.can_use_summaries():
-            summaries: list[SessionSummary] = list(await filter_chain.list_summaries())
-            if summaries:
-                first_id = str(summaries[0].id)
-        else:
-            sessions: list[Session] = list(await filter_chain.list())
-            if sessions:
-                first_id = str(sessions[0].id)
-        return first_id
-
-    session_id = run_coroutine_sync(_find_first())
-    if session_id is None:
-        effective_format = invocation.output_format or request.params.get("output_format")
-        if effective_format == "json":
-            from polylogue.cli.shared.machine_errors import error_no_results
-
-            error_no_results("No sessions matched.").emit(exit_code=2)
-        env.ui.error("No sessions matched.")
-        return
-
-    daemon_url = str(getattr(env, "daemon_url", None) or "http://127.0.0.1:8766").rstrip("/")
-    web_url = f"{daemon_url}/s/{quote(session_id, safe='')}"
-    webbrowser.open(web_url)
-    env.ui.console.print(f"Opened: {web_url}")
-
-
 __all__ = [
     "TemporalPhaseRecorder",
     "build_read_temporal_window",
     "exact_read_summaries",
     "run_read_dialogue",
-    "run_read_browser",
     "run_read_summary_or_transcript",
     "run_read_temporal",
 ]
