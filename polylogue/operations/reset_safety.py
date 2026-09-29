@@ -2,9 +2,60 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 
 from polylogue.core.raw_coordinates import zip_member_container
+
+_SQLITE_FILE_SUFFIXES = ("", "-wal", "-shm", "-journal")
+
+
+class LiveArchiveTierResetError(ValueError):
+    """A daemon reset named archive tier files that the daemon holds open.
+
+    The resident daemon keeps every tier database open for its lifetime: the
+    watcher cursor store, the status registry, readers and the write
+    coordinator hold their own connections. Unlinking a tier and its WAL/SHM
+    sidecars under them leaves those handles on deleted inodes while new
+    connections create fresh, empty files, so writes land in a file nobody
+    can reach and the reset still reports success. The daemon owns no route
+    that closes and reopens every handle, so the refusal is raised before any
+    audit row or deletion.
+    """
+
+    code = "reset_live_archive_tier"
+
+    def __init__(self, targets: tuple[str, ...]) -> None:
+        self.targets = targets
+        super().__init__(
+            "refusing to delete archive tier files the serving daemon holds open: "
+            + ", ".join(targets)
+            + "; stop polylogued before removing archive tier databases"
+        )
+
+
+def live_archive_tier_targets(
+    archive_root: Path, targets: Iterable[tuple[str, Path]], *, served_index_path: Path
+) -> tuple[str, ...]:
+    """Name each target that is, or is a directory holding, a tier database or sidecar.
+
+    ``served_index_path`` is the index generation the daemon's pinned read
+    opened, which a pointer-managed archive keeps outside ``index.db``.
+    """
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    databases = [archive_root / f"{tier.value}.db" for tier in ArchiveTier]
+    databases.append(served_index_path)
+    tier_files = {
+        database.with_name(f"{database.name}{suffix}").resolve(strict=False)
+        for database in databases
+        for suffix in _SQLITE_FILE_SUFFIXES
+    }
+    return tuple(
+        name
+        for name, path in targets
+        if any(tier_file.is_relative_to(path.resolve(strict=False)) for tier_file in tier_files)
+    )
 
 
 def unresolvable_raw_source_count(archive_root: Path) -> int:
@@ -54,4 +105,4 @@ def unresolvable_raw_source_count(archive_root: Path) -> int:
     return at_risk
 
 
-__all__ = ["unresolvable_raw_source_count"]
+__all__ = ["LiveArchiveTierResetError", "live_archive_tier_targets", "unresolvable_raw_source_count"]

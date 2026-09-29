@@ -1059,6 +1059,10 @@ archive as `embedding_catchup_runs`. The latest run is shown by
 sessions, embedded messages, errors, and estimated cost. This is the
 operator recovery point after interruption, OOM, restart, or a cost/error
 window stop; per-session retry state still lives in `embedding_status`.
+The backfill operation's own terminal outcome is `cancelled` for an operator
+cancel, `failed` (error code `embedding_keys_failed`) when any embedding key
+failed, even if a bound such as `--max-errors` also stopped the pass,
+`stopped` when a bound stopped it without failures, and `completed` otherwise.
 
 ## Service Recovery
 

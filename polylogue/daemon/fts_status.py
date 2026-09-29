@@ -187,8 +187,12 @@ def _archive_readiness_info(index_db: Path, *, exact: bool) -> dict[str, object]
     try:
         conn = open_readonly_connection(index_db)
         try:
+            # The binding lookup and every COUNT behind it read one snapshot;
+            # in autocommit each statement would see a different commit.
+            conn.execute("BEGIN")
             return _archive_readiness_payload(conn, exact=exact)
         finally:
+            conn.rollback()
             conn.close()
     except sqlite3.Error as exc:
         emit(

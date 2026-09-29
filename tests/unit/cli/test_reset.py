@@ -96,8 +96,6 @@ def _daemon_reset(
 # =============================================================================
 
 RESET_DELETION_CASES = [
-    ("--index", "index_db", "index database"),
-    ("--database", "archive_db", "database"),
     ("--assets", "assets_dir", "assets"),
     ("--cache", "cache_dir", "cache"),
     ("--auth", "token_path", "auth token"),
@@ -243,13 +241,6 @@ class TestResetCommandValidation:
         assert result.exit_code == 1
         assert "specify" in result.output.lower()
 
-    def test_all_flag_sets_all_targets(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """(b) daemon route: --all enables every reset target and the daemon applies them."""
-        with _daemon_reset(tmp_path, monkeypatch) as (_stack, _seeded):
-            result = CliRunner().invoke(cli, ["ops", "reset", "--all", "--yes"])
-
-            assert result.exit_code == 0, result.output
-
 
 class TestResetCommandDeletion:
     """Tests for reset file/directory deletion."""
@@ -265,12 +256,10 @@ class TestResetCommandDeletion:
         not at a path patched into the CLI module -- the CLI no longer does the
         deleting, so a CLI-side patch would prove nothing.
         """
-        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+        with _daemon_reset(tmp_path, monkeypatch) as (_stack, _seeded):
             from polylogue.paths import cache_home, data_home, drive_token_path
 
-            if path_attr in {"archive_db", "index_db"}:
-                target_path = stack.archive_root / "index.db"
-            elif path_attr == "assets_dir":
+            if path_attr == "assets_dir":
                 target_path = data_home() / "assets"
                 target_path.mkdir(parents=True, exist_ok=True)
                 (target_path / "test.png").write_bytes(b"test")
@@ -330,7 +319,10 @@ class TestResetCommandDeletion:
     def test_confirmation_names_databases_not_their_transient_sidecars(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A WAL sidecar appearing after the preview does not refuse the reset.
+        """A WAL sidecar appearing after the preview does not count as a changed target set.
+
+        The confirmed index request then reaches the live-tier refusal rather
+        than the changed-target refusal, and nothing is deleted.
 
         Anti-vacuity: compare sidecars as part of the confirmed identity and the
         index preview taken before ``index.db-wal`` exists is refused as a
@@ -342,48 +334,48 @@ class TestResetCommandDeletion:
             from polylogue.paths import cache_home
 
             index_db = stack.archive_root / "index.db"
-            for suffix in ("-wal", "-shm"):
-                index_db.with_name(index_db.name + suffix).unlink(missing_ok=True)
             preview = [str(index_db.resolve())]
-            index_db.with_name("index.db-wal").write_bytes(b"")
+            index_wal = index_db.with_name("index.db-wal")
+            if not index_wal.exists():
+                index_wal.write_bytes(b"")
+
+            def refusal_code(payload: dict[str, object]) -> str:
+                try:
+                    envelope = stack.client.operation_to_completion(
+                        "maintenance.reset", payload, archive_root=str(stack.archive_root)
+                    )
+                except DaemonOperationRejectedError as exc:
+                    return exc.outcome
+                assert envelope is not None and envelope["outcome"] == "rejected", envelope
+                return str(envelope["error"]["code"])
 
             cache = cache_home()
             cache.mkdir(parents=True, exist_ok=True)
-            try:
-                refused = stack.client.operation_to_completion(
-                    "maintenance.reset",
-                    {"index": True, "cache": True, "confirm": True, "expected_targets": preview},
-                    archive_root=str(stack.archive_root),
-                )
-            except DaemonOperationRejectedError:
-                refused = None
-            assert refused is None or refused["outcome"] != "completed"
-            assert index_db.exists()
+            changed = refusal_code({"index": True, "cache": True, "confirm": True, "expected_targets": preview})
+            assert changed != "reset_live_archive_tier"
+            assert cache.exists()
 
-            applied = stack.client.operation_to_completion(
-                "maintenance.reset",
-                {"index": True, "confirm": True, "expected_targets": preview},
-                archive_root=str(stack.archive_root),
-            )
-            assert applied is not None and applied["outcome"] == "completed", applied
-            assert not index_db.exists()
-            assert not index_db.with_name("index.db-wal").exists()
+            confirmed = refusal_code({"index": True, "confirm": True, "expected_targets": preview})
+            assert confirmed == "reset_live_archive_tier"
+            assert index_db.exists()
+            assert index_wal.exists()
 
     def test_multiple_flags(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """(b) daemon route: several flags in one request are all applied."""
-        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
-            from polylogue.paths import data_home
+        with _daemon_reset(tmp_path, monkeypatch) as (_stack, _seeded):
+            from polylogue.paths import cache_home, data_home
 
-            archive_db = stack.archive_root / "index.db"
+            cache_dir = cache_home()
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / "index").write_text("index data", encoding="utf-8")
             assets_dir = data_home() / "assets"
             assets_dir.mkdir(parents=True, exist_ok=True)
             (assets_dir / "keep.png").write_bytes(b"keep")
-            assert archive_db.exists()
 
-            result = CliRunner().invoke(cli, ["ops", "reset", "--database", "--assets", "--yes"])
+            result = CliRunner().invoke(cli, ["ops", "reset", "--cache", "--assets", "--yes"])
 
             assert result.exit_code == 0, result.output
-            assert not archive_db.exists()
+            assert not cache_dir.exists()
             assert not assets_dir.exists()
 
     def _seed_archive_tiers(self, archive_root: Path) -> tuple[Path, list[Path], Path]:
@@ -392,7 +384,7 @@ class TestResetCommandDeletion:
         Only the managed-active-generation refusals still use this: they are
         refused by the CLI before anything is dispatched or opened, so cheap
         placeholder files are enough. Every case that reaches the daemon uses
-        :meth:`_tier_paths` against a really bootstrapped archive instead.
+        :meth:`_tier_files` against a really bootstrapped archive instead.
         """
         archive_root.mkdir(exist_ok=True)
         source_db = archive_root / "source.db"
@@ -409,43 +401,74 @@ class TestResetCommandDeletion:
         return source_db, rebuildable, user_db
 
     @staticmethod
-    def _tier_paths(archive_root: Path) -> tuple[Path, list[Path], Path]:
-        """Return (source.db, rebuildable tiers that exist, user.db).
+    def _tier_files(archive_root: Path) -> list[Path]:
+        """Every archive tier database and sidecar the serving daemon has open."""
+        return sorted(
+            path
+            for tier in ArchiveTier
+            for suffix in ("", "-wal", "-shm")
+            if (path := archive_root / f"{tier.value}.db{suffix}").exists()
+        )
 
-        This used to fabricate each tier by writing the text "test database"
-        over it, which was only viable while nothing opened the archive. The
-        daemon that now performs the deletion opens every tier at startup, so
-        the tiers have to be real databases -- the bootstrapped ones the
-        fixture already creates. Resolving the list after the daemon is up also
-        catches the -wal/-shm sidecars it opened, which the old pre-seeded list
-        could not.
+    @staticmethod
+    def _reset_audit_rows(archive_root: Path) -> int:
+        with sqlite3.connect(archive_root / "audit.db") as conn:
+            return int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM operation_previews WHERE operation_name = 'mutate-filesystem-reset'"
+                ).fetchone()[0]
+            )
+
+    @pytest.mark.parametrize(
+        "flags",
+        [
+            ["--index"],
+            ["--database"],
+            ["--database", "--include-source-db", "--include-user-db"],
+            ["--all"],
+            ["--database", "--assets"],
+        ],
+        ids=["index", "database", "database-with-durable-tiers", "all", "database-and-assets"],
+    )
+    def test_reset_of_live_archive_tiers_is_refused_before_any_audit_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flags: list[str]
+    ) -> None:
+        """The daemon refuses to unlink tier databases it holds open (polylogue-9kemf 07.F012).
+
+        Unlinking ``index.db``/``ops.db`` and their WAL/SHM sidecars under the
+        daemon's watcher cursor store, status registry and readers left them
+        writing to deleted inodes while new connections created fresh empty
+        files, and the reset reported success. The whole request is refused
+        before any audit row, so no target in it is deleted, not even a
+        non-tier one named beside a tier.
+
+        Anti-vacuity: drop the ``live_archive_tier_targets`` refusal in
+        ``maintenance_reset`` and the tier files are unlinked, the command
+        exits 0, and a ``mutate-filesystem-reset`` preview row is written.
         """
-        candidates = [
-            archive_root / "index.db",
-            archive_root / "index.db-wal",
-            archive_root / "index.db-shm",
-            archive_root / "ops.db",
-        ]
-        return archive_root / "source.db", [path for path in candidates if path.exists()], archive_root / "user.db"
-
-    def test_reset_index_deletes_only_index_tier(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """``reset --index`` rebuilds the index tier without dropping raw or user evidence."""
         with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            from polylogue.paths import data_home
+
             archive_root = stack.archive_root
-            source_db, rebuildable, user_db = self._tier_paths(archive_root)
-            index_targets = {
-                archive_root / "index.db",
-                archive_root / "index.db-wal",
-                archive_root / "index.db-shm",
-            }
-            preserved = [path for path in [source_db, *rebuildable, user_db] if path not in index_targets]
+            assets_dir = data_home() / "assets"
+            assets_dir.mkdir(parents=True, exist_ok=True)
+            (assets_dir / "keep.png").write_bytes(b"keep")
+            tier_files = self._tier_files(archive_root)
+            assert archive_root / "index.db" in tier_files
+            assert archive_root / "ops.db" in tier_files
 
-            result = CliRunner().invoke(cli, ["ops", "reset", "--index", "--yes"])
+            result = CliRunner().invoke(cli, ["ops", "reset", *flags, "--yes"])
 
-        assert result.exit_code == 0, result.output
-        assert all(not path.exists() for path in index_targets)
-        assert all(path.exists() for path in preserved)
-        assert "index database" in result.output
+            assert result.exit_code != 0, result.output
+            assert "reset_live_archive_tier" in result.output
+            assert "reset complete" not in result.output.lower()
+            assert all(path.exists() for path in tier_files)
+            assert assets_dir.exists()
+            # The daemon that refused still serves reads from its handles.
+            read = stack.client.operation("cli.query", {"params": {}}, archive_root=str(archive_root))
+            assert read is not None and read["outcome"] == "completed", read
+
+        assert self._reset_audit_rows(archive_root) == 0
 
     def test_reset_index_refuses_to_delete_managed_active_generation(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -494,53 +517,63 @@ class TestResetCommandDeletion:
     def test_reset_database_preserves_source_and_irreplaceable_user_db(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``reset --database`` deletes rebuildable tiers but preserves durable tiers."""
+        """``--database`` names rebuildable tiers only; durable tiers are never among its targets."""
+        from polylogue.operations.daemon_mutations import _reset_targets
+
         with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
-            source_db, rebuildable, user_db = self._tier_paths(stack.archive_root)
+            names = {name for name, _path in _reset_targets(stack.archive_root, {"database": True})}
             result = CliRunner().invoke(cli, ["ops", "reset", "--database", "--yes"])
 
-        assert result.exit_code == 0, result.output
-        assert all(not path.exists() for path in rebuildable), "rebuildable tiers should be deleted"
-        assert source_db.exists(), "source.db is durable acquired evidence and must survive a plain --database reset"
-        assert user_db.exists(), "user.db is irreplaceable and must survive a plain --database reset"
+        assert {"index database", "ops database"} <= names
+        assert not {"source database", "user database"} & names
+        assert (stack.archive_root / "source.db").exists()
+        assert (stack.archive_root / "user.db").exists()
         assert "Preserving source.db" in result.output
         assert "Preserving user.db" in result.output
 
     def test_reset_database_preserves_the_expensive_embeddings_tier(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """``reset --database`` must not delete embeddings.db, and must say so.
+        """No ``--database`` target set names embeddings.db, and the CLI says so.
 
-        Anti-vacuity: re-adding ``embeddings.db`` to the reset target list --
-        in the CLI preview or in the daemon's ``_reset_targets``, which is what
-        actually unlinks -- deletes the file and turns the existence assertion
-        red; dropping the preservation line turns the output assertion red.
-        Nothing replays those vectors from source.db, so a silent delete is a
-        repurchase billed to the operator, not a rebuild.
+        Anti-vacuity: re-adding ``embeddings.db`` to the daemon's
+        ``_reset_targets`` names it among the resolved targets; dropping the
+        preservation line turns the output assertion red. Nothing replays those
+        vectors from source.db, so a delete is a repurchase billed to the
+        operator, not a rebuild.
         """
+        from polylogue.operations.daemon_mutations import _reset_targets
+
         with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
             embeddings_db = stack.archive_root / "embeddings.db"
             assert embeddings_db.exists(), "fixture must bootstrap the embeddings tier"
+            resolved = _reset_targets(
+                stack.archive_root,
+                {"database": True, "include_source_db": True, "include_user_db": True},
+            )
             result = CliRunner().invoke(cli, ["ops", "reset", "--database", "--yes"])
 
-        assert result.exit_code == 0, result.output
+        assert all(path.resolve() != embeddings_db.resolve() for _name, path in resolved)
         assert embeddings_db.exists(), "embeddings.db is expensive_rebuild and must survive --database"
         assert "Preserving embeddings.db" in result.output
         assert "reused after an index rebuild" in result.output
 
-    def test_reset_database_include_source_and_user_db_deletes_everything(
+    def test_reset_database_include_source_and_user_db_names_durable_tiers(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Destructive tier flags explicitly opt into deleting source.db and user.db."""
-        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
-            source_db, rebuildable, user_db = self._tier_paths(stack.archive_root)
-            result = CliRunner().invoke(
-                cli,
-                ["ops", "reset", "--database", "--include-source-db", "--include-user-db", "--yes"],
-            )
+        """Destructive tier flags explicitly opt source.db and user.db into the target set."""
+        from polylogue.operations.daemon_mutations import _reset_targets
 
-        assert result.exit_code == 0, result.output
-        assert all(not path.exists() for path in [source_db, *rebuildable, user_db])
+        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            names = {
+                name
+                for name, _path in _reset_targets(
+                    stack.archive_root,
+                    {"database": True, "include_source_db": True, "include_user_db": True},
+                )
+            }
+
+        assert {"source database", "index database", "ops database", "user database"} <= names
 
     def test_reset_database_include_source_db_refuses_missing_source_paths(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -565,14 +598,14 @@ class TestResetCommandDeletion:
         assert (archive_root / "index.db").exists()
 
     def test_reset_all_preserves_user_db_without_opt_in(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Even ``reset --all`` preserves durable tiers without explicit opt-ins."""
-        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
-            source_db, _rebuildable, user_db = self._tier_paths(stack.archive_root)
-            result = CliRunner().invoke(cli, ["ops", "reset", "--all", "--yes"])
+        """Even ``reset --all`` names no durable tier without explicit opt-ins."""
+        from polylogue.operations.daemon_mutations import _reset_targets
 
-        assert result.exit_code == 0, result.output
-        assert source_db.exists(), "source.db must survive --all without an explicit --include-source-db opt-in"
-        assert user_db.exists(), "user.db must survive --all without an explicit --include-user-db opt-in"
+        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            names = {name for name, _path in _reset_targets(stack.archive_root, {"reset_all": True})}
+
+        assert "source database" not in names, "source.db needs an explicit --include-source-db opt-in"
+        assert "user database" not in names, "user.db needs an explicit --include-user-db opt-in"
 
     def test_reset_session_records_archive_suppression_and_deletes_archive_row(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -785,13 +818,16 @@ class TestResetConfirmation:
 
     def test_force_bypasses_confirmation(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """(b) daemon route: --yes bypasses the prompt and the daemon performs the delete."""
-        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
-            archive_db = stack.archive_root / "index.db"
-            assert archive_db.exists()
-            result = CliRunner().invoke(cli, ["ops", "reset", "--database", "--yes"])
+        with _daemon_reset(tmp_path, monkeypatch) as (_stack, _seeded):
+            from polylogue.paths import cache_home
+
+            cache_dir = cache_home()
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / "index").write_text("index data", encoding="utf-8")
+            result = CliRunner().invoke(cli, ["ops", "reset", "--cache", "--yes"])
 
             assert result.exit_code == 0, result.output
-            assert not archive_db.exists()
+            assert not cache_dir.exists()
 
 
 class TestResetEmptyTargets:
@@ -831,18 +867,19 @@ class TestResetEmptyTargets:
 
     def test_partial_targets_exist(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """(b) daemon route: only the targets that exist are deleted."""
-        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
-            from polylogue.paths import data_home
+        with _daemon_reset(tmp_path, monkeypatch) as (_stack, _seeded):
+            from polylogue.paths import cache_home, data_home
 
-            archive_db = stack.archive_root / "index.db"
-            assert archive_db.exists()
+            cache_dir = cache_home()
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            (cache_dir / "index").write_text("index data", encoding="utf-8")
             assert not (data_home() / "assets").exists()
 
-            result = CliRunner().invoke(cli, ["ops", "reset", "--database", "--assets", "--yes"])
+            result = CliRunner().invoke(cli, ["ops", "reset", "--cache", "--assets", "--yes"])
 
             assert result.exit_code == 0, result.output
-            assert not archive_db.exists()
-            assert "database" in result.output.lower()
+            assert not cache_dir.exists()
+            assert "cache/indexes" in result.output
 
 
 class TestResetErrorHandling:

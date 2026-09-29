@@ -281,10 +281,19 @@ def maintenance_reset(
     operation_runs / operation_attempts rows at all. Targets are resolved once
     here and handed to :class:`FilesystemResetActuator`, so PREPARE and APPLY
     see the identical set and the audit rows precede the first deletion.
+
+    Archive tier databases are refused before any audit row: this handler
+    runs inside the daemon that holds them open (``LiveArchiveTierResetError``).
     """
     from polylogue.operations.mutation_actuators import FilesystemResetActuator, FilesystemResetArgs
+    from polylogue.operations.reset_safety import LiveArchiveTierResetError, live_archive_tier_targets
 
     targets = _reset_targets(context.archive_root, request.payload)
+    live_tiers = live_archive_tier_targets(
+        context.archive_root, targets, served_index_path=snapshot.archive.index_db_path
+    )
+    if live_tiers:
+        raise LiveArchiveTierResetError(live_tiers)
     args = FilesystemResetArgs(archive_root=context.archive_root, targets=tuple(targets))
     return _execute_named_mutation(request, context, audit, snapshot, FilesystemResetActuator(), args)
 

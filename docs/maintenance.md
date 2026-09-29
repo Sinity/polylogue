@@ -63,6 +63,12 @@ status/metrics report WAL pressure.
 The order of preference is: **do nothing → daemon → guarded recovery →
 reset**. Reset is the only one that destroys primary data.
 
+`polylogue ops reset` runs in the daemon, which holds every archive tier
+database open. A reset whose targets include a tier database or its
+`-wal`/`-shm` sidecar (`--index`, `--database`, `--all`, or a directory
+holding the tiers) is refused with `reset_live_archive_tier` before any audit
+row or deletion; the other targets in that request are not deleted either.
+
 ## Subcommands
 
 ### Blob-reference integrity — classification only

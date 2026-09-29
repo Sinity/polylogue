@@ -486,6 +486,77 @@ def test_embedding_backfill_cancel_is_request_scoped_and_keeps_partial_receipt(
         assert terminal["result"]["result"] == {"done": 1, "pending": 4, "failed": 0}
 
 
+@pytest.mark.parametrize(
+    ("done", "deferred", "effect"),
+    [
+        (0, None, "no-effect"),
+        (2, None, "committed"),
+        (0, "max_errors", "no-effect"),
+    ],
+    ids=["all-keys-failed", "some-keys-failed", "max-errors-stop"],
+)
+def test_embedding_backfill_provider_failures_are_a_failed_terminal_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, done: int, deferred: str | None, effect: str
+) -> None:
+    """A pass whose provider rejected keys never reports ``completed``.
+
+    Without ``max_errors`` no deferral reason is set, so the outcome used to
+    be ``completed`` and the attempt finalized as applied while
+    ``result.failed`` was nonzero. The returned envelope, the durable receipt
+    and a restarted daemon's replay must all say ``failed`` with the measured
+    counts.
+
+    Anti-vacuity: classify the outcome from ``stop_reason`` alone again and the
+    first two cases report ``completed``; finalize them as ``applied`` and the
+    replayed outcome after restart is ``completed``.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.daemon import embedding_owner as embedding_owner_module
+    from polylogue.daemon.embedding_owner import EmbeddingConvergenceResult
+
+    def compose(_index: Path, **_kwargs: object) -> object:
+        async def converge(_scope: object, **_limits: object) -> EmbeddingConvergenceResult:
+            report = SimpleNamespace(done=done, pending=0, failed=3, work=SimpleNamespace(computed=done))
+            return EmbeddingConvergenceResult(cast(Any, report), deferred)
+
+        return converge
+
+    monkeypatch.setattr(embedding_owner_module, "compose_embedding_convergence", compose)
+    request_id = f"embedding-provider-failures-{done}-{deferred}"
+    expected_counts = {"done": done, "pending": 0, "failed": 3}
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        terminal = stack.client.operation_to_completion(
+            "maintenance.embeddings.backfill",
+            {},
+            archive_root=str(stack.archive_root),
+            request_id=request_id,
+        )
+        assert terminal is not None
+        assert terminal["outcome"] == "failed", terminal
+        assert terminal["result"]["outcome"] == "failed"
+        assert terminal["result"]["effect"] == effect
+        assert terminal["result"]["stop_reason"] == deferred
+        assert terminal["result"]["error"]["code"] == "embedding_keys_failed"
+        assert terminal["result"]["result"] == expected_counts
+        assert terminal["result"]["progress"]["failed"] == 3
+        accepted_reference = terminal["accepted_reference"]
+
+    with running_daemon_operations(tmp_path / "archive") as restarted:
+        recovered = restarted.client.operation(
+            "maintenance.embeddings.backfill",
+            {},
+            archive_root=str(restarted.archive_root),
+            request_id=request_id,
+        )
+        assert recovered is not None
+        assert recovered["outcome"] == "failed", recovered
+        assert recovered["accepted_reference"] == accepted_reference
+        assert recovered["result"]["outcome"] == "failed"
+        assert recovered["result"]["error"]["code"] == "embedding_keys_failed"
+        assert recovered["result"]["result"] == expected_counts
+
+
 def test_machine_listener_uses_the_independent_operation_handler(tmp_path: Path) -> None:
     """Mutation: delegate machine requests through the browser handler and this fails."""
 

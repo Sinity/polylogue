@@ -189,3 +189,85 @@ def test_a_genuinely_empty_index_still_reports_its_measured_coverage(tmp_path: P
     assert payload["message_indexable_count"] == 0
     assert payload["message_indexed_count"] == 0
     assert "unavailable_reason" not in payload
+
+
+def _text_session(native_id: str, text: str) -> ParsedSession:
+    return ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=native_id,
+        title=native_id,
+        messages=[
+            ParsedMessage(
+                provider_message_id=f"{native_id}-u1",
+                role=Role.USER,
+                text=text,
+                position=0,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=text)],
+            )
+        ],
+    )
+
+
+def test_unbound_archive_fallback_measures_every_count_in_one_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The status fallback reads source and indexed counts from one snapshot.
+
+    With no standing readiness binding, ``_archive_readiness_info`` runs the
+    global inspection as separate COUNT statements. A daemon commit of new
+    blocks (and their trigger-maintained FTS rows) lands right after the
+    block-source count. Both committed states are consistent, so the report
+    must be too: indexed rows equal source rows and coverage is 100%.
+
+    Anti-vacuity: drop the ``BEGIN`` in ``_archive_readiness_info`` and the
+    later docsize count sees the new rows while the source count does not,
+    so ``indexed_rows`` exceeds ``source_rows`` and coverage exceeds 100%.
+    """
+    from polylogue.daemon import fts_status
+    from polylogue.storage.fts.derivation import fts_readiness_binding
+    from tests.infra.snapshot_probe import CommitBetweenStatements
+
+    index = tmp_path / "index.db"
+    initialize_archive_database(index, ArchiveTier.INDEX)
+    writer = sqlite3.connect(index)
+    try:
+        assert str(writer.execute("PRAGMA journal_mode=WAL").fetchone()[0]).lower() == "wal"
+        write_parsed_session_to_archive(writer, _text_session("snapshot-first", "first committed text"))
+        writer.commit()
+        assert fts_readiness_binding(writer) is None
+        committed_before = int(writer.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0])
+        assert committed_before > 0
+
+        def concurrent_commit() -> None:
+            write_parsed_session_to_archive(writer, _text_session("snapshot-second", "second committed text"))
+            writer.commit()
+
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection as real_open
+
+        probes: list[CommitBetweenStatements] = []
+
+        def open_probe(*args: object, **kwargs: object) -> CommitBetweenStatements:
+            probe = CommitBetweenStatements(
+                real_open(*args, **kwargs),  # type: ignore[arg-type]
+                trigger_sql="SELECT COUNT(*) FROM blocks WHERE search_text != ''",
+                commit=concurrent_commit,
+            )
+            probes.append(probe)
+            return probe
+
+        monkeypatch.setattr(fts_status, "open_readonly_connection", open_probe)
+        payload = fts_status._archive_readiness_info(index, exact=False)
+        committed_after = int(writer.execute("SELECT COUNT(*) FROM blocks WHERE search_text != ''").fetchone()[0])
+    finally:
+        writer.close()
+
+    assert [probe.fired for probe in probes] == [True]
+    assert committed_after > committed_before
+    assert payload is not None
+    surface = payload["surfaces"]["messages_fts"]  # type: ignore[index]
+    assert surface["source_rows"] == committed_before
+    assert surface["indexed_rows"] == committed_before
+    assert surface["ready"] is True
+    assert payload["message_indexable_count"] == payload["message_indexed_count"] == committed_before
+    assert payload["coverage_pct"] == 100.0
+    assert payload["messages_ready"] is True

@@ -545,6 +545,9 @@ def backfill_subcommand(
         click.echo(json.dumps(result, indent=2, sort_keys=True))
     else:
         click.echo(json.dumps(result, indent=2, sort_keys=True))
+    if result.get("outcome") == "failed":
+        # The receipt is printed whole; the exit status follows its outcome.
+        raise SystemExit(1)
 
 
 @embed_command.command("status")
