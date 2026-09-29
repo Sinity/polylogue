@@ -25,10 +25,10 @@
 
   function collectTurns() {
     const elements = collectTurnElements();
-    return elements.map((element, ordinal) => {
+    return elements.map((element) => {
       const text = textForElement(element);
       return {
-        provider_turn_id: element.getAttribute("data-message-id") || `gemini-dom-${ordinal}`,
+        provider_turn_id: element.getAttribute("data-message-id") || null,
         role: roleForElement(element),
         text,
         timestamp: null,

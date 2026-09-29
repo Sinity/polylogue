@@ -2892,6 +2892,12 @@ function conversationIdForUrl(url) {
     if (provider === "claude-ai") {
       return parts[0] === "chat" && parts[1] ? parts[1] : null;
     }
+    if (provider === "gemini") {
+      // Mirror src/content/gemini.js:conversationIdFromUrl exactly, so a
+      // Gemini freshness hint routed through captureTab reaches the content script.
+      return parsed.searchParams.get("conversation") || parsed.searchParams.get("id") ||
+        parsed.pathname.match(/\/app\/([A-Za-z0-9_-]+)/)?.[1] || null;
+    }
     if (provider === "grok") {
       // grok.com's own conversation URLs are /c/<uuid> (verified live,
       // 2026-07-31, same convention as ChatGPT/Claude above). The /chat/
@@ -3578,7 +3584,10 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         // The freshness queue only knows how to refetch ChatGPT. Other
         // providers recapture their own tab through captureTab, which applies
         // the same automatic-capture policy and receiver pairing checks.
-        sendResponse({ ok: true, scheduled: false, capture: await captureTab(sender.tab, message.reason || "provider_page_hint") });
+        const capture = await captureTab(sender.tab, message.reason || "provider_page_hint");
+        // captureTab returns null when it never reached the content script
+        // (no session identity, paused policy, unpaired receiver); say so.
+        sendResponse(capture ? { ok: true, scheduled: false, capture } : { ok: false, scheduled: false, error: "capture_not_started" });
         return;
       }
       sendResponse({

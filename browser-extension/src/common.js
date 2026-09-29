@@ -12,6 +12,19 @@
     return (hash >>> 0).toString(16).padStart(8, "0");
   }
 
+  // A turn without a provider-native id is named by its own semantic fields
+  // plus an occurrence counter, never its position: a DOM that inserts an
+  // earlier turn must not move an existing durable message id onto other content.
+  function semanticTurnIdFactory(sessionId) {
+    const occurrences = new Map();
+    return (turn) => {
+      const digest = fnv1a(`${turn.role}:${turn.text || ""}`);
+      const occurrence = occurrences.get(digest) || 0;
+      occurrences.set(digest, occurrence + 1);
+      return `${sessionId}:turn:${digest}:${occurrence}`;
+    };
+  }
+
   let sha256Parameters = null;
 
   function sha256Hex(text) {
@@ -179,6 +192,7 @@
       urlSessionId === "__polylogue_temporary_chat__"
       ? temporarySessionId()
         : urlSessionId;
+    const fallbackTurnId = semanticTurnIdFactory(stableProviderSessionId);
     if (!stableProviderSessionId) {
       throw new Error(`cannot capture ${provider} page without a provider-native conversation id`);
     }
@@ -230,7 +244,7 @@
         model,
         provider_meta: sessionProviderMeta,
         turns: turns.map((turn, ordinal) => ({
-          provider_turn_id: turn.provider_turn_id || `${stableProviderSessionId}:turn:${ordinal}:${fnv1a(turn.role + ":" + (turn.text || ""))}`,
+          provider_turn_id: turn.provider_turn_id || fallbackTurnId(turn),
           role: turn.role,
           text: turn.text || null,
           timestamp: turn.timestamp || null,

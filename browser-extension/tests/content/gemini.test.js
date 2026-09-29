@@ -8,8 +8,10 @@ import { describe, expect, it } from "vitest";
 const dir = dirname(fileURLToPath(import.meta.url));
 const source = readFileSync(resolve(dir, "../../src/content/gemini.js"), "utf8");
 
-function harness() {
-  const dom = new JSDOM(`<!doctype html><title>Gemini fixture</title><user-query data-message-id="u1"><message-content>Hello</message-content></user-query><model-response data-message-id="a1"><message-content>Hi there</message-content></model-response>`, {
+const DEFAULT_BODY = `<user-query data-message-id="u1"><message-content>Hello</message-content></user-query><model-response data-message-id="a1"><message-content>Hi there</message-content></model-response>`;
+
+function harness(body = DEFAULT_BODY) {
+  const dom = new JSDOM(`<!doctype html><title>Gemini fixture</title>${body}`, {
     url: "https://gemini.google.com/app/fixture-chat",
     runScripts: "outside-only",
   });
@@ -46,6 +48,22 @@ describe("Gemini DOM capture contract", () => {
       ["u1", "user", "Hello"],
       ["a1", "assistant", "Hi there"],
     ]);
+    dom.window.close();
+  });
+
+  it("anti-vacuity: an inserted earlier turn does not move a fallback id onto other content", async () => {
+    // Positional fallbacks (gemini-dom-<ordinal>) would rename "Hello" from index 0 to index 1 here.
+    const { dom, messages } = harness(`<user-query><message-content>Hello</message-content></user-query><model-response><message-content>Hi there</message-content></model-response>`);
+    await dom.window.polylogueCapture.capturePage("fixture");
+    const idsBefore = Object.fromEntries(messages.filter((m) => m.type === "polylogue.capture").at(-1).envelope.session.turns.map((turn) => [turn.text, turn.provider_turn_id]));
+    const earlier = dom.window.document.createElement("user-query");
+    earlier.innerHTML = "<message-content>Earlier</message-content>";
+    dom.window.document.body.prepend(earlier);
+    await dom.window.polylogueCapture.capturePage("fixture");
+    const idsAfter = Object.fromEntries(messages.filter((m) => m.type === "polylogue.capture").at(-1).envelope.session.turns.map((turn) => [turn.text, turn.provider_turn_id]));
+    expect(idsAfter.Hello).toBe(idsBefore.Hello);
+    expect(idsAfter["Hi there"]).toBe(idsBefore["Hi there"]);
+    expect(new Set(Object.values(idsAfter)).size).toBe(3);
     dom.window.close();
   });
 

@@ -328,7 +328,7 @@ async def search_hits_for_plan(
         raise EmbeddingRetrievalNotReadyError(
             "semantic retrieval is unavailable: no configured/constructible vector backend; "
             "configure Voyage/sqlite-vec and retry",
-            readiness_status="disabled" if vector_failure.kind == "unavailable" else "pending",
+            readiness_status="disabled" if vector_failure.kind == "unavailable" else "failed",
         )
     executable_plan = replace(plan, vector_provider=vector_provider)
     paired, resolved_lane = await run_archive_read(
