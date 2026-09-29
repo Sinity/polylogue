@@ -199,9 +199,11 @@ def _copy_private(source: Path, destination: Path) -> None:
     # A source rewritten in place while it is copied (same size or not)
     # would seal a torn mixture; the file must be the same one, unchanged,
     # on both sides of the copy.
+    # Stamps alone miss a same-size rewrite within one timestamp tick, so the
+    # copy's content is compared with the source's as well.
     before = _file_observation(source)
     shutil.copyfile(source, destination)
-    if _file_observation(source) != before:
+    if _file_observation(source) != before or _sha256(source) != _sha256(destination):
         destination.unlink(missing_ok=True)
         raise ValueError("a source file changed while it was being copied; sample a quiescent population")
     destination.chmod(0o600)
@@ -408,7 +410,7 @@ def sample_real(
         raise ValueError(f"corpus directory must be absent or empty: {out}")
     _private_root(out)
     rng = random.Random(seed)
-    observed: dict[Path, tuple[int, int, int, int]] = {}
+    observed: dict[Path, str] = {}
     population: dict[str, dict[str, int]] = {}
     census: dict[str, list[tuple[str, list[Path], int]]] = {}
     for source in sources:
@@ -442,9 +444,10 @@ def sample_real(
                     _copy_private(path, destination)
                     copied += destination.stat().st_size
                     # Kept for the end of the sampling interval: a source
-                    # rewritten in place (same size) after its copy is a
-                    # change the recount of sizes alone cannot see.
-                    observed[path] = _file_observation(path)
+                    # rewritten in place (same size, even within one
+                    # timestamp tick) after its copy is a change neither the
+                    # recount of sizes nor file stamps can see; its content can.
+                    observed[path] = _sha256(destination)
                 if copied != size:
                     # The census (population and stratum goal) saw other bytes
                     # than the sample now holds: a live transcript grew. Report
@@ -464,9 +467,9 @@ def sample_real(
         recount = {key: size for key, _paths, size in _units(source)}
         if recount != {key: size for key, _paths, size in census[source.origin]}:
             raise ValueError(f"{source.origin} sources changed while sampling; sample a quiescent tree")
-    for path, before in observed.items():
+    for path, copied_digest in observed.items():
         try:
-            unchanged = _file_observation(path) == before
+            unchanged = _sha256(path) == copied_digest
         except OSError:
             unchanged = False
         if not unchanged:
