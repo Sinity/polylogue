@@ -1450,8 +1450,15 @@ def _parser_artifact_node_message_type(
             return MessageType.PROTOCOL
         return MessageType.MESSAGE
     if provider == "codex":
-        raw_role = node.get("role")
-        return MessageType.CONTEXT if raw_role in {"system", "developer"} else MessageType.MESSAGE
+        # Protocol text takes precedence over the system/developer envelope,
+        # exactly as it does on the production Codex message route.
+        from polylogue.archive.message.artifacts import classify_message_type
+
+        return classify_message_type(
+            role=_parser_artifact_node_role(provider, node),
+            message_type=MessageType.MESSAGE,
+            text="\n".join(_parser_artifact_node_content_texts(provider, node)),
+        )
     if provider == "chatgpt":
         if _parser_artifact_node_role(provider, node) is Role.TOOL:
             return MessageType.TOOL_RESULT

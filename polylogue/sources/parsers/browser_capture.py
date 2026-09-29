@@ -238,13 +238,14 @@ def _browser_capture_attachment_inline_bytes(attachment: BrowserCaptureAttachmen
             except ValueError:
                 continue
 
-        meta_extracted = provider_meta.get("extracted_content")
-        if isinstance(meta_extracted, str):
-            return meta_extracted.encode("utf-8")
-
     extracted_content = attachment.extracted_content
     if isinstance(extracted_content, str):
         return extracted_content.encode("utf-8")
+
+    if isinstance(provider_meta, Mapping):
+        meta_extracted = provider_meta.get("extracted_content")
+        if isinstance(meta_extracted, str):
+            return meta_extracted.encode("utf-8")
 
     return None
 
@@ -328,6 +329,9 @@ def _claude_attachment_cross_route_match(
     envelope_bytes = envelope.inline_bytes
     if native_bytes is not None and envelope_bytes is not None:
         return native_bytes == envelope_bytes
+    if claude_native_file_id:
+        # An exact provider file identity needs no acquired-byte witness.
+        return True
     # With only one byte carrier, a declared size is the minimum evidence that
     # this is the same source object.  Two metadata-only rows remain distinct.
     return (
@@ -395,7 +399,7 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
         existing = merged.get(candidate.provider_attachment_id)
         if existing is None:
             matched_id = cross_route_matches.get(candidate.provider_attachment_id)
-            if matched_id is not None:
+            if matched_id is not None and _claude_attachment_cross_route_match(merged[matched_id], candidate):
                 existing = merged[matched_id]
             else:
                 cross_route_ids = [

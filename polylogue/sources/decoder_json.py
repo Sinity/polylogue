@@ -822,7 +822,9 @@ def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | Non
                 return None
             if event in {"start_array", "start_map"}:
                 if len(frames) == 1 and current_key in scalar_fields:
-                    envelope.pop(current_key, None)
+                    # Detectors may test presence rather than scalar type.
+                    # Keep a type witness without materializing the container.
+                    envelope[current_key] = {} if event == "start_map" else []
                 if len(frames) == 1 and current_key == "steps" and event == "start_array":
                     envelope["steps"] = []
                 if frames[-1].kind == "map" and frames[-1].key in {"type", "content_type", "kind", "record_type"}:

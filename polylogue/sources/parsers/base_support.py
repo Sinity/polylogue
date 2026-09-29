@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import inspect
+from collections import Counter
 from collections.abc import Callable, Iterable, Iterator, MutableSequence, Sequence
 from functools import wraps
 from typing import Any, TypeVar
@@ -212,14 +213,18 @@ def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser
                 (index, wire_type) for index, wire_type in enumerate(observed, start=1) if wire_type is not None
             ]
 
-            existing_types = (
-                {
-                    str(event.payload.get("wire_type"))
+            # A parser may already have typed some of these records itself.
+            # Count its events per wire type so each observed occurrence is
+            # evidenced exactly once: a repeated future record keeps its own
+            # event instead of collapsing into the first one of its type.
+            parser_typed: Counter[str] = (
+                Counter(
+                    wire_type
                     for event in session.session_events
-                    if event.payload.get("wire_type") is not None
-                }
+                    if isinstance(wire_type := event.payload.get("wire_type"), str)
+                )
                 if unknowns
-                else set()
+                else Counter()
             )
             # The parser owns its event sequence; a scratch-backed one must
             # stay on disk, so admission events are appended in place rather
@@ -228,7 +233,8 @@ def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser
             if not isinstance(events, MutableSequence):
                 events = list(events)
             for index, wire_type in unknowns:
-                if wire_type in existing_types:
+                if parser_typed[wire_type] > 0:
+                    parser_typed[wire_type] -= 1
                     continue
                 events.append(
                     ParsedSessionEvent(
@@ -236,7 +242,6 @@ def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser
                         payload={"source_index": index, "wire_type": wire_type},
                     )
                 )
-                existing_types.add(wire_type)
 
             accounting = session.unit_accounting
             if accounting is None:
@@ -447,6 +452,16 @@ def content_blocks_from_segments(
         "input_image",
     }
     for part_ordinal, seg in enumerate(content):
+        if (
+            isinstance(seg, dict)
+            and seg.get("type") == "tool_use"
+            and not (seg.get("name") or seg.get("id") or (isinstance(seg.get("input"), dict) and seg["input"]))
+        ):
+            if admission is not None:
+                admission.refusal(
+                    AdmissionUnit.PART, part_offset + part_ordinal, "tool_use", AdmissionRefusalReason.MALFORMED
+                )
+            continue
         if admission is not None:
             if isinstance(seg, str):
                 admission.materialized(AdmissionUnit.PART, part_offset + part_ordinal, "text")

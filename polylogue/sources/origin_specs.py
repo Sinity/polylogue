@@ -219,6 +219,16 @@ class _SchemaDdlFingerprintStripper(ast.NodeTransformer):
                 self._in_ddl = previous
         return cast(ast.Assign, self.generic_visit(node))
 
+    def visit_Call(self, node: ast.Call) -> ast.Call:
+        # A Python call is an expression, not a SQL literal. Its string
+        # operands (for example replace needles) are case/whitespace sensitive.
+        previous = self._in_ddl
+        self._in_ddl = False
+        try:
+            return cast(ast.Call, self.generic_visit(node))
+        finally:
+            self._in_ddl = previous
+
     def visit_Constant(self, node: ast.Constant) -> ast.Constant:
         if self._in_ddl and isinstance(node.value, str):
             from polylogue.storage.sqlite.archive_tiers.schema_identity import _normalize_schema_sql
@@ -440,7 +450,7 @@ def _semantic_source_paths(
 
 
 #: Bump when the normalization below changes; it is part of the disk memo key.
-_FINGERPRINT_ALGORITHM_VERSION = 4
+_FINGERPRINT_ALGORITHM_VERSION = 5
 
 
 def _fingerprint_memo_path(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> Path | None:
@@ -487,10 +497,17 @@ def _fingerprint_sources_cached(signatures: tuple[tuple[str, str, int], ...], na
     return fingerprint
 
 
+class FingerprintSourceChangedError(RuntimeError):
+    """Source bytes no longer match the observation that would key the memo."""
+
+
 def _fingerprint_sources_compute(signatures: tuple[tuple[str, str, int], ...], namespace: str) -> str:
     fragments: list[dict[str, str]] = []
-    for path_string, _digest, _size in signatures:
-        tree = ast.parse(Path(path_string).read_text(encoding="utf-8"))
+    for path_string, expected_digest, expected_size in signatures:
+        source = Path(path_string).read_bytes()
+        if len(source) != expected_size or hashlib.sha256(source).hexdigest() != expected_digest:
+            raise FingerprintSourceChangedError(f"source changed while fingerprinting: {path_string}")
+        tree = ast.parse(source.decode("utf-8"))
         normalized = _DocstringStripper().visit(tree)
         if (
             Path(path_string).name == "origin_specs.py"
@@ -1281,10 +1298,9 @@ def derived_identity_source_closure() -> tuple[Path, ...]:
 
 def in_derived_identity_closure(path: Path | str) -> bool:
     """Whether editing ``path`` would move the derived schema identity."""
-    candidate = Path(path)
-    if not candidate.is_absolute():
-        candidate = _SOURCE_ROOT / candidate
-    candidate = candidate.resolve(strict=False)
+    # Relative command/API paths belong to the caller, not this module.
+    # A missing path is not evidence of non-membership.
+    candidate = Path(path).resolve(strict=True)
     return candidate in {member.resolve(strict=False) for member in derived_identity_source_closure()}
 
 
@@ -2847,7 +2863,9 @@ def _antigravity_spec() -> OriginSpec:
             inheritance_branch_point=_absent_topology("Antigravity trajectory stores carry no branch boundary"),
             parent_dispatch=_absent_topology("Antigravity trajectory stores carry no parent-dispatch identity"),
         ),
-        tool_outcome_unknown_reasons=frozenset({ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}),
+        tool_outcome_unknown_reasons=frozenset(
+            {ToolResultUnknownReason.NOT_REPORTED, ToolResultUnknownReason.UNSUPPORTED_CONSTRUCT}
+        ),
     )
 
 
@@ -3804,36 +3822,36 @@ def artifact_observation_contracts(
     """
     rows: list[ArtifactObservationContract] = []
     for spec in ORIGIN_SPECS if specs is None else specs:
-        provider = spec.provider_wires[0] if spec.provider_wires else Provider.UNKNOWN
-        for rule in spec.artifact_rules:
-            rows.append(
-                ArtifactObservationContract(
-                    origin=spec.origin,
-                    provider=provider,
-                    family=rule.kind,
-                    strategy=rule.observation_strategy,
-                    disposition=rule.parse_policy,
-                    reason=rule.observation_reason or rule.fidelity_note,
+        for provider in spec.provider_wires or (Provider.UNKNOWN,):
+            for rule in spec.artifact_rules:
+                rows.append(
+                    ArtifactObservationContract(
+                        origin=spec.origin,
+                        provider=provider,
+                        family=rule.kind,
+                        strategy=rule.observation_strategy,
+                        disposition=rule.parse_policy,
+                        reason=rule.observation_reason or rule.fidelity_note,
+                    )
                 )
-            )
-        capability = spec.database_capability
-        if capability is None:
-            continue
-        for member in capability.members:
-            rows.append(
-                ArtifactObservationContract(
-                    origin=spec.origin,
-                    provider=provider,
-                    family=member.filename,
-                    strategy=capability.observation_strategy
-                    if member.disposition != "out-of-scope"
-                    else "opaque-non-applicable",
-                    disposition=member.disposition,
-                    reason=member.reason,
-                    consumer=member.consumer,
+            capability = spec.database_capability
+            if capability is None:
+                continue
+            for member in capability.members:
+                rows.append(
+                    ArtifactObservationContract(
+                        origin=spec.origin,
+                        provider=provider,
+                        family=member.filename,
+                        strategy=capability.observation_strategy
+                        if member.disposition != "out-of-scope"
+                        else "opaque-non-applicable",
+                        disposition=member.disposition,
+                        reason=member.reason,
+                        consumer=member.consumer,
+                    )
                 )
-            )
-    return tuple(sorted(rows, key=lambda row: (row.origin.value, row.family)))
+    return tuple(sorted(rows, key=lambda row: (row.origin.value, row.provider.value, row.family)))
 
 
 def tool_outcome_unknown_reasons_for_origin(origin: Origin) -> frozenset[ToolResultUnknownReason]:
