@@ -37,7 +37,7 @@ from polylogue.operations.daemon_protocol import (
     DaemonOperationRequest,
     daemon_operation_spec,
 )
-from polylogue.operations.daemon_reads import DaemonReadDependencies
+from polylogue.operations.daemon_reads import DaemonReadDependencies, operation_deadline_s, read_is_archive_scan
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.operations.operation_context import (
@@ -439,13 +439,18 @@ class DaemonOperationRuntime:
             else self._read_dependencies
         )
         dependencies = replace(dependencies or DaemonReadDependencies(), status_now_ms=int(time() * 1000))
-        deadline = started + min(spec.deadline_s, (request.deadline_ms or int(spec.deadline_s * 1000)) / 1000)
+        archive_scan = spec.authority is DaemonAuthority.READ and read_is_archive_scan(
+            request.operation, request.payload
+        )
+        deadline_s = operation_deadline_s(request.operation, request.payload)
+        deadline = started + min(deadline_s, (request.deadline_ms or int(deadline_s * 1000)) / 1000)
         read_control = (
             QueryExecutionContext(
                 call_id=str(request.request_id),
                 query_ref=request.fingerprint,
                 deadline_monotonic=deadline,
                 owner_ref=principal.actor_ref,
+                workload_class="scan" if archive_scan else "interactive",
             )
             if spec.authority is DaemonAuthority.READ or request.operation.startswith("operation.")
             else None
@@ -669,7 +674,13 @@ class DaemonOperationRuntime:
                     else:
                         scheduled = self._kernel.submit(
                             propagate(work),
-                            admission_class="interactive-read" if spec.authority is DaemonAuthority.READ else "control",
+                            admission_class=(
+                                "bulk-candidate"
+                                if archive_scan
+                                else "interactive-read"
+                                if spec.authority is DaemonAuthority.READ
+                                else "control"
+                            ),
                             # A control exchange keeps its durable authority after
                             # acceptance, but before that boundary a disconnect or
                             # deadline must release a queued reservation just as a

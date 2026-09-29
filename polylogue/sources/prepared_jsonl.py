@@ -60,7 +60,7 @@ from polylogue.sources.parsers import (
     local_agent,
 )
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.parsers.base_support import _unknown_wire_type
+from polylogue.sources.parsers.base_support import _unknown_wire_type, admit_parsed_sessions, hermes_unknown_wire_type
 from polylogue.sources.parsers.claude.ai_parser import parse_ai_stream, parse_design_stream
 from polylogue.sources.prepared_message_sink import (
     ChatGPTNodeMapping,
@@ -1338,14 +1338,38 @@ def prepare_jsonl_blob(
                 atif_admitted = classify_hermes_atif_object(atif_witness)
             atif_sessions: list[ParsedSession] = []
             if atif_admitted:
+                # The dispatch route proves the whole document against the
+                # Hermes discriminator scan, which reads only the envelope's
+                # and each step's ``type``/``kind``. The steps are observed
+                # as the parser consumes them, so the streamed carrier gets the
+                # same conservation proof without holding the document.
+                unknown_steps: list[JSONValue] = []
+
+                def observed_steps() -> Iterator[JSONValue]:
+                    for step in atif_items("steps"):
+                        if not unknown_steps and isinstance(step, dict):
+                            discriminators: dict[str, JSONValue] = {
+                                key: step[key] for key in ("type", "kind") if key in step
+                            }
+                            if hermes_unknown_wire_type({"steps": [discriminators]}) is not None:
+                                unknown_steps.append(discriminators)
+                        yield step
+
+                steps = observed_steps()
                 atif_sessions = hermes_spans.parse_atif_stream(
                     atif_envelope,
-                    atif_items("steps"),
+                    steps,
                     atif_items("subagent_trajectories") if atif_has_subagents else (),
                     fallback_id,
                     profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
                     new_events=store.new_event_sink,
                 )
+                if atif_sessions:
+                    for _ in steps:  # a parser that stopped early still owes the rest a scan
+                        pass
+                    atif_sessions = admit_parsed_sessions(
+                        "hermes", {**atif_envelope, "steps": unknown_steps}, atif_sessions
+                    )
             atif_sessions = require_positive_conversational_evidence(
                 atif_sessions, provider=provider, source_path=source_path
             )

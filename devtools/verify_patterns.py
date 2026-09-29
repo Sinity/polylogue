@@ -37,11 +37,22 @@ class Rule:
 
 def _rules(root: Path) -> tuple[Rule, ...]:
     raw = yaml.safe_load((root / "devtools/patterns/registry.yaml").read_text(encoding="utf-8"))
-    entries = raw.get("rules", []) if isinstance(raw, dict) else []
+    if not isinstance(raw, dict) or not isinstance(raw.get("rules"), list):
+        raise ValueError("pattern registry must be a mapping with a rules list")
+    entries = raw["rules"]
     result: list[Rule] = []
-    for entry in entries:
+    seen: set[str] = set()
+    for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
-            continue
+            raise ValueError(f"pattern registry rule {index} must be a mapping")
+        required = ("id", "rule", "baseline", "owner", "status")
+        if any(not isinstance(entry.get(key), str) or not entry[key] for key in required):
+            raise ValueError(f"pattern registry rule {index} has missing or invalid fields")
+        if entry["id"] in seen:
+            raise ValueError(f"duplicate pattern rule id: {entry['id']}")
+        if entry["status"] not in {"enforcing", "pending"}:
+            raise ValueError(f"invalid pattern rule status for {entry['id']}: {entry['status']}")
+        seen.add(entry["id"])
         result.append(
             Rule(
                 rule_id=str(entry["id"]),
@@ -250,7 +261,18 @@ def _baseline_text(content: str) -> Counter[Anchor]:
 
 
 def _payload(root: Path) -> dict[str, Any]:
-    rules = _rules(root)
+    try:
+        rules = _rules(root)
+    except (OSError, ValueError, KeyError, yaml.YAMLError) as exc:
+        gate = evidence_gate_result(
+            gate="patterns",
+            executable="ast-grep",
+            executable_available=True,
+            required_count=0,
+            inspected_count=0,
+            details=(f"malformed pattern registry: {exc}",),
+        )
+        return {"blocking": True, "new_matches": [], "stale_matches": [], "required_gate": gate.to_payload()}
     details: list[str] = []
     new_matches: list[str] = []
     stale_matches: list[str] = []

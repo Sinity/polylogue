@@ -350,6 +350,7 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
             "get_session_page",
             "get_session_stats",
             "get_session_summary",
+            "get_session_summaries",
             "get_session_topology",
             "get_session_tree",
             "get_sessions",

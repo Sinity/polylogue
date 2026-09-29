@@ -13,7 +13,7 @@ plus its paired browser-capture variants, all coalescing onto the same
 ``chatgpt-export:...`` session id) before every competing raw has been
 discovered, permanently accepting whichever raw happened to be censused
 first as an unambiguous "singleton" baseline. The direct seeder
-(``polylogue demo seed``) never hits this because ``parse_sources_archive``
+(``polylogue demo seed``) never hits this because ``ingest_one_shot_archive``
 processes sources in one fixed, deterministic order with no incremental
 discovery. This test therefore asserts the identity set and the two other
 fixed divergences from that investigation (the ``aistudio-drive`` native-id

@@ -77,12 +77,12 @@ def _write_codex_rollout(path: Path) -> None:
     path.write_text("\n".join(json.dumps(line) for line in lines) + "\n", encoding="utf-8")
 
 
-def _write_state_5_sqlite(path: Path, *, wal_mode: bool = False) -> None:
+def _write_state_5_sqlite(path: Path, *, wal_mode: bool = False, include_agent_role: bool = True) -> None:
     with sqlite3.connect(path) as conn:
         if wal_mode:
             conn.execute("PRAGMA journal_mode=WAL")
         conn.executescript(
-            """
+            f"""
             CREATE TABLE threads (
                 id TEXT PRIMARY KEY,
                 title TEXT,
@@ -92,7 +92,7 @@ def _write_state_5_sqlite(path: Path, *, wal_mode: bool = False) -> None:
                 source TEXT,
                 model TEXT,
                 agent_nickname TEXT,
-                agent_role TEXT,
+                {"agent_role TEXT," if include_agent_role else ""}
                 archived INTEGER
             );
             CREATE TABLE thread_spawn_edges (
@@ -102,10 +102,13 @@ def _write_state_5_sqlite(path: Path, *, wal_mode: bool = False) -> None:
             );
             """
         )
+        role_columns = "agent_nickname, agent_role, " if include_agent_role else "agent_nickname, "
+        role_values = "?, ?, " if include_agent_role else "?, "
+        role_args = (None, None) if include_agent_role else (None,)
         conn.execute(
             "INSERT INTO threads (id, title, cwd, created_at_ms, updated_at_ms, source, model, "
-            "agent_nickname, agent_role, archived) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (_THREAD_ID, "Synthetic curated title", "/repo", 1000, 2000, "cli", "gpt-synthetic", None, None, 0),
+            f"{role_columns}archived) VALUES (?, ?, ?, ?, ?, ?, ?, {role_values}?)",
+            (_THREAD_ID, "Synthetic curated title", "/repo", 1000, 2000, "cli", "gpt-synthetic", *role_args, 0),
         )
         conn.execute(
             "INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) VALUES (?, ?, ?)",
@@ -656,20 +659,13 @@ async def test_codex_state_snapshot_raw_never_blocks_cursor_authority(
         await archive.close()
 
 
-@pytest.mark.asyncio
-async def test_retained_codex_state_raw_without_receipt_is_resolved_from_the_blob(
-    workspace_env: dict[str, Path],
-) -> None:
-    """A codex-state raw admitted before the terminal receipt existed (the live
-    archive's ``goals_1``/``memories_1``/``state_5`` rows) is resolved from its
-    immutable blob by ``resolve_retained_codex_state_receipts`` -- the step the
-    daemon runs before the raw-materialization source-selection gate.
+async def _seed_unreceipted_codex_state_raws(workspace_env: dict[str, Path]) -> dict[str, str]:
+    """Admit ``goals_1`` and ``state_5`` exports, then strip their receipts.
 
-    Anti-vacuity: with the resolver a no-op, the seeded state keeps reporting
-    ``source_raws_without_accepted_head`` and the gate stays blocked.
+    Returns raw IDs by file name, in the pre-receipt shape: raw admitted,
+    cursor at EOF, no census, never finalized.
     """
     from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
-    from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
 
     archive, codex_root, codex_state_root = _make_processor(workspace_env, "codex-home-legacy", "codex-state-legacy.db")
     archive_root = workspace_env["archive_root"]
@@ -696,29 +692,97 @@ async def test_retained_codex_state_raw_without_receipt_is_resolved_from_the_blo
     finally:
         await archive.close()
 
-    # Seed the pre-receipt shape the live source tier carries: raw admitted,
-    # cursor at EOF, no census, never finalized.
     with sqlite3.connect(archive_root / "source.db") as conn:
-        raw_ids = [
-            str(row[0])
+        raw_ids = {
+            Path(str(row[1])).name: str(row[0])
             for row in conn.execute(
-                "SELECT raw_id FROM raw_sessions WHERE source_path IN (?, ?)", (str(goals_path), str(state_path))
+                "SELECT raw_id, source_path FROM raw_sessions WHERE source_path IN (?, ?)",
+                (str(goals_path), str(state_path)),
             )
-        ]
+        }
         assert len(raw_ids) == 2
         placeholders = ",".join("?" for _ in raw_ids)
-        conn.execute(f"DELETE FROM raw_membership_census WHERE raw_id IN ({placeholders})", raw_ids)
-        conn.execute(f"DELETE FROM raw_authority_parser_census WHERE raw_id IN ({placeholders})", raw_ids)
-        conn.execute(f"UPDATE raw_sessions SET parsed_at_ms = NULL WHERE raw_id IN ({placeholders})", raw_ids)
+        selected = list(raw_ids.values())
+        conn.execute(f"DELETE FROM raw_membership_census WHERE raw_id IN ({placeholders})", selected)
+        conn.execute(f"DELETE FROM raw_authority_parser_census WHERE raw_id IN ({placeholders})", selected)
+        conn.execute(f"UPDATE raw_sessions SET parsed_at_ms = NULL WHERE raw_id IN ({placeholders})", selected)
         conn.commit()
     assert sorted(_cursor_authority_gap_states(archive_root)) == ["source_raws_without_accepted_head"] * 2
     assert raw_frontier_source_selection_block_reason(archive_root) is not None
+    return raw_ids
+
+
+@pytest.mark.asyncio
+async def test_retained_codex_state_raw_without_receipt_is_resolved_from_the_blob(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A codex-state raw admitted before the terminal receipt existed (the live
+    archive's ``goals_1``/``memories_1``/``state_5`` rows) is resolved from its
+    immutable blob by ``resolve_retained_codex_state_receipts``.
+
+    Anti-vacuity: with the resolver a no-op, the seeded state keeps reporting
+    ``source_raws_without_accepted_head`` and the gate stays blocked.
+    """
+    from polylogue.readiness.capability import raw_frontier_source_selection_block_reason
+    from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
+
+    archive_root = workspace_env["archive_root"]
+    await _seed_unreceipted_codex_state_raws(workspace_env)
 
     assert resolve_retained_codex_state_receipts(archive_root) == 2
     assert _cursor_authority_gap_states(archive_root) == []
     assert raw_frontier_source_selection_block_reason(archive_root) is None
     # Idempotent: a second pass finds nothing left to resolve.
     assert resolve_retained_codex_state_receipts(archive_root) == 0
+
+
+@pytest.mark.asyncio
+async def test_raw_observation_owner_finalizes_an_unreceipted_codex_state_export(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Fair intake's exact-raw owner settles a Codex state export admitted
+    without its terminal receipt.
+
+    The owner's per-raw source-selection gate admits the missing accepted
+    head as an authority gap, and the canonical derivation's replay writes
+    the receipt (``_replay_retained_codex_state_evidence``). Anti-vacuity: a
+    gate that refused the gap, or a replay that skipped retained Codex state,
+    leaves the ``state_5`` raw unfinalized with its
+    ``source_raws_without_accepted_head`` gap. The ``goals_1`` raw the owner
+    was not asked about keeps its gap, so the pass is exact.
+    """
+    import asyncio
+
+    from polylogue.daemon.execution import BoundedComputeAdapter
+    from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
+    from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
+
+    archive_root = workspace_env["archive_root"]
+    raw_ids = await _seed_unreceipted_codex_state_raws(workspace_env)
+    state_raw = raw_ids["state_5.sqlite"]
+
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    owner = RawObservationConvergenceOwner(
+        archive_root,
+        compute_adapter=compute,
+        write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+    )
+    try:
+        report = await owner.converge_raw_id(state_raw)
+        assert report.failed == report.pending == 0, report.outcomes
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        finalized = {
+            str(row[0]): bool(row[1])
+            for row in conn.execute("SELECT raw_id, parsed_at_ms IS NOT NULL FROM raw_sessions")
+            if str(row[0]) in raw_ids.values()
+        }
+    assert finalized == {state_raw: True, raw_ids["goals_1.sqlite"]: False}
+    assert _cursor_authority_gap_states(archive_root) == ["source_raws_without_accepted_head"]
 
 
 def test_historical_codex_page_image_is_not_finalized_as_current_state(
@@ -745,6 +809,67 @@ def test_historical_codex_page_image_is_not_finalized_as_current_state(
     assert resolve_retained_codex_state_receipts(archive_root) == 0
     with sqlite3.connect(archive_root / "source.db") as conn:
         assert conn.execute("SELECT parsed_at_ms FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone() == (None,)
+
+
+@pytest.mark.asyncio
+async def test_schema_drift_candidate_does_not_block_other_retained_state_receipts(
+    workspace_env: dict[str, Path],
+) -> None:
+    """A malformed thread-state schema is isolated while valid candidates finalize.
+
+    Anti-vacuity: removing the resolver's per-candidate finalization guard
+    raises OperationalError for the missing ``agent_role`` column before the
+    valid goals snapshot receives its terminal receipt.
+    """
+    from polylogue.sources.codex_state_evidence import resolve_retained_codex_state_receipts
+
+    archive, codex_root, codex_state_root = _make_processor(
+        workspace_env, "codex-home-schema-drift", "codex-state-schema-drift.db"
+    )
+    processor = LiveBatchProcessor(
+        archive,
+        (
+            WatchSource(name="codex", root=codex_root),
+            WatchSource(name="codex-state", root=codex_state_root, suffixes=(".sqlite", ".db")),
+        ),
+        cursor=CursorStore(workspace_env["archive_root"] / "ops.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    bad_path = codex_state_root / "state_5.sqlite"
+    good_path = codex_state_root / "goals_1.sqlite"
+    _write_state_5_sqlite(bad_path, include_agent_role=False)
+    _write_goals_1_sqlite(good_path)
+    try:
+        await processor.ingest_files([bad_path, good_path], emit_event=False)
+    finally:
+        await archive.close()
+
+    with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+        rows = conn.execute(
+            "SELECT raw_id, source_path FROM raw_sessions WHERE source_path IN (?, ?) ORDER BY source_path",
+            (str(bad_path), str(good_path)),
+        ).fetchall()
+        assert len(rows) == 2
+        raw_ids = [str(row[0]) for row in rows]
+        placeholders = ",".join("?" for _ in raw_ids)
+        conn.execute(f"DELETE FROM raw_membership_census WHERE raw_id IN ({placeholders})", raw_ids)
+        conn.execute(f"DELETE FROM raw_authority_parser_census WHERE raw_id IN ({placeholders})", raw_ids)
+        conn.execute(
+            f"UPDATE raw_sessions SET parsed_at_ms = NULL, parse_error = NULL WHERE raw_id IN ({placeholders})", raw_ids
+        )
+        conn.commit()
+
+    assert resolve_retained_codex_state_receipts(workspace_env["archive_root"]) == 1
+    with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+        states = dict(
+            conn.execute(
+                "SELECT r.source_path, c.status FROM raw_sessions AS r "
+                "LEFT JOIN raw_membership_census AS c USING (raw_id) WHERE r.source_path IN (?, ?)",
+                (str(bad_path), str(good_path)),
+            ).fetchall()
+        )
+    assert states[str(bad_path)] is None
+    assert states[str(good_path)] == "non_session"
 
 
 @pytest.mark.asyncio

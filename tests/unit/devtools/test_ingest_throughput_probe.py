@@ -232,7 +232,7 @@ def test_unreportable_private_failure_cleans_its_scratch(tmp_path: Path, monkeyp
 def test_parse_failure_is_a_failed_cli_receipt_with_expected_denominator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from polylogue.pipeline.services import archive_ingest
+    from polylogue.operations import canonical_archive_ingest
     from polylogue.pipeline.services.parsing_models import ParseResult
 
     async def failed_parse(*args: object, **kwargs: object) -> ParseResult:
@@ -241,7 +241,7 @@ def test_parse_failure_is_a_failed_cli_receipt_with_expected_denominator(
         result.counts["skipped_sessions"] = 1
         return result
 
-    monkeypatch.setattr(archive_ingest, "parse_sources_archive", failed_parse)
+    monkeypatch.setattr(canonical_archive_ingest, "ingest_one_shot_archive", failed_parse)
     exit_code = main(
         ["--json", "--batches", "1", "--messages-min", "2", "--messages-max", "2", "--workdir", str(tmp_path)]
     )
@@ -261,7 +261,7 @@ def test_parse_failure_is_a_failed_cli_receipt_with_expected_denominator(
 def test_partial_population_keeps_expected_denominator(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from polylogue.pipeline.services import archive_ingest
+    from polylogue.operations import canonical_archive_ingest
     from polylogue.pipeline.services.parsing_models import ParseResult
 
     async def partial_parse(*args: object, **kwargs: object) -> ParseResult:
@@ -271,7 +271,7 @@ def test_partial_population_keeps_expected_denominator(
         result.counts["messages"] = 1
         return result
 
-    monkeypatch.setattr(archive_ingest, "parse_sources_archive", partial_parse)
+    monkeypatch.setattr(canonical_archive_ingest, "ingest_one_shot_archive", partial_parse)
     exit_code = main(
         ["--json", "--batches", "2", "--messages-min", "2", "--messages-max", "2", "--workdir", str(tmp_path)]
     )
@@ -363,7 +363,7 @@ def test_ordered_message_identity_mismatch_fails_membership(tmp_path: Path, monk
 def test_excision_and_budget_evidence_survive_in_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from polylogue.pipeline.services import archive_ingest
+    from polylogue.operations import canonical_archive_ingest
     from polylogue.pipeline.services.parsing_models import ParseResult
 
     async def incomplete_parse(*args: object, **kwargs: object) -> ParseResult:
@@ -372,7 +372,7 @@ def test_excision_and_budget_evidence_survive_in_report(
         result.time_budget_exceeded = True
         return result
 
-    monkeypatch.setattr(archive_ingest, "parse_sources_archive", incomplete_parse)
+    monkeypatch.setattr(canonical_archive_ingest, "ingest_one_shot_archive", incomplete_parse)
     exit_code = main(["--json", "--batches", "1", "--workdir", str(tmp_path)])
     payload = json.loads(capsys.readouterr().out)
 

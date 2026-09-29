@@ -375,6 +375,20 @@ def test_publisher_discards_one_refused_pending_blob(tmp_path: Path) -> None:
     assert publisher.receipt_id(kept) is not None
     assert [receipt.blob_hash for receipt, _ in publisher._pending] == [kept]
 
+    # An adoption of the same bytes queued behind a discarded capture keeps
+    # its own receipt; discarding the adoption leaves nothing to reserve.
+    adopted, _ = publisher.write_from_bytes(b"adopted")
+    adoption_hash, _ = publisher.adopt_published(adopted, len(b"adopted"))
+    adoption_receipt = publisher.receipt_id(adoption_hash)
+    assert adoption_receipt is not None
+    [capture_receipt] = [receipt.publication_id for receipt, _ in publisher._pending if receipt.blob_hash == adopted]
+    assert publisher.discard_pending_receipt(capture_receipt) is True
+    assert publisher.receipt_id(adopted) == adoption_receipt
+    assert publisher.discard_pending_receipt(adoption_receipt) is True
+    assert publisher.receipt_id(adopted) is None
+    assert [receipt.blob_hash for receipt, _ in publisher._pending] == [kept]
+    assert not publisher._adoptions
+
 
 def test_refused_unit_releases_every_capture_even_identical_ones(tmp_path: Path) -> None:
     """A refusal releases each capture of its unit, keyed by receipt.

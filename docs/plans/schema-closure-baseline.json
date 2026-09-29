@@ -124,6 +124,7 @@
     "polylogue/archive/write_effects.py",
     "polylogue/archive/write_gateway.py",
     "polylogue/archive/zip_admission.py",
+    "polylogue/browser_capture/capture_decode.py",
     "polylogue/browser_capture/models.py",
     "polylogue/config.py",
     "polylogue/coordination/work_events.py",

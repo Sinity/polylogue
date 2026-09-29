@@ -61,6 +61,7 @@ from polylogue.core.protocols import ArchiveRootOwner
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_coordinates import (
     MemberAddressingMode,
+    zip_member_container,
     zip_member_identity_coordinate,
     zip_member_raw_id,
     zip_member_source_index,
@@ -751,8 +752,8 @@ class _ArchiveFullWriteResult:
     # The archive can forget on purpose (polylogue-27m): a record whose blob
     # hash is durably excised is a deliberate skip, not a failure -- tracked
     # separately from ordinary parse/write failures so operators can tell
-    # the two apart (mirrors ParseResult.excised_skips on the CLI import
-    # path in pipeline/services/archive_ingest.py).
+    # the two apart (summed into ParseResult.excised_skips by the one-shot
+    # route in operations/canonical_archive_ingest.py).
     excised_skips: int = 0
     excised_paths: set[Path] = field(default_factory=set)
     # polylogue-11cg9: raw ids never attempted this pass because the declared
@@ -5093,7 +5094,13 @@ class LiveBatchProcessor:
                     # caller's cursor bookkeeping treats it the same as any
                     # other unavailable content.
                     result.excised_skips += 1
-                    result.excised_paths.add(Path(record.source_path))
+                    # A ZIP member record is offered by its container path;
+                    # normalize the durable ``container:member`` coordinate
+                    # back to that offered path for caller-side accounting.
+                    # A loose file may itself contain a colon: only a confirmed
+                    # ZIP member maps back to its container path.
+                    container = zip_member_container(record.source_path)
+                    result.excised_paths.add(container if container is not None else Path(record.source_path))
                     # The bytes were published (staged and reserved) before the
                     # write refused them. Nothing will ever reference them, so
                     # the success path's receipt consumption never runs and the

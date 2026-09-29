@@ -240,14 +240,14 @@ async def test_brain_population_types_as_non_session_artifact_not_as_a_session(
     import sqlite3
 
     from polylogue.maintenance.source_conservation import audit_source_conservation
-    from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+    from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 
     root = tmp_path / "antigravity"
     (root / "conversations").mkdir(parents=True)
     _write_brain_population(root, "aaaaaaaa-0000-4000-8000-000000000001", "plan", "report")
 
     archive_root = one_shot_workspace_env["archive_root"]
-    result = await parse_sources_archive(archive_root, [Source(name="antigravity", path=root)], parse_workers=1)
+    result = await ingest_one_shot_archive(archive_root, [Source(name="antigravity", path=root)], parse_workers=1)
 
     assert result.parse_failures == 0
     assert result.counts.get("sessions", 0) == 0

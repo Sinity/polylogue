@@ -296,7 +296,8 @@ Projection:
                                   effective_context, lineage, topology, file-
                                   edits, agent-policies, web-content, context,
                                   context-image, neighbors, correlation,
-                                  temporal, chronicle).  [default: summary]
+                                  temporal, chronicle, compact).  [default:
+                                  summary]
   --render TEXT                   Render expression, e.g. layout:context-
                                   image,timestamps:include-
                                   available,format:markdown. Known keys:
@@ -343,6 +344,7 @@ Examples:
   polylogue find id:codex-session:demo-receipts then read --view summary
   polylogue find id:codex-session:demo-receipts then read --view transcript
   polylogue find id:codex-session:demo-receipts then read --view messages
+  polylogue find repo:polylogue then read --view compact --max-tokens 4000
 ```
 
 ## Select Verb

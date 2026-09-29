@@ -1513,17 +1513,18 @@ def _unchecked_user_overlay_orphans(reason: str) -> dict[str, Any]:
 
 
 def _cost_bearing_profile_count(conn: sqlite3.Connection) -> Evidence[int]:
-    """Count profiles carrying any cost lane this archive's schema can hold.
-
-    A cost column the schema does not define is a shape fact, not a failed
-    read: an archive predating a lane has no cost-bearing rows in it, and
-    naming the column anyway would turn that into an unanswerable query.
-    """
-    lanes = [column for column in ("cost_usd", "cost_credits") if column in _columns(conn, "session_profiles")]
+    """Count sessions with cost evidence in the canonical usage projection."""
+    columns = _columns(conn, "session_model_usage")
+    lanes = [column for column in ("provider_cost_usd", "catalog_cost_usd", "cost_credits") if column in columns]
     if not lanes:
-        return Measured(0)
+        return Unavailable(reason="cost_evidence_unavailable", detail="session_model_usage cost lanes are absent")
     predicate = " OR ".join(f"{lane} IS NOT NULL" for lane in lanes)
-    return _scalar_int(conn, f"SELECT COUNT(*) FROM session_profiles WHERE {predicate}")
+    per_model = f"SELECT session_id FROM session_model_usage WHERE {predicate}"
+    # A provider-reported session total with no model row is still cost
+    # evidence the cost projections expose; count that lane too.
+    if "reported_cost_usd" in _columns(conn, "sessions"):
+        per_model += " UNION SELECT session_id FROM sessions WHERE reported_cost_usd IS NOT NULL"
+    return _scalar_int(conn, f"SELECT COUNT(*) FROM ({per_model})")
 
 
 def _record_refusal(refusals: list[Unavailable], case: Unavailable) -> int:

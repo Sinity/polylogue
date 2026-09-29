@@ -780,7 +780,7 @@ def archive_message_page_payload(
         offset_note=offset_note,
         projection_note=MESSAGE_QUERY_ROW_RICHER_OPERATION,
         authority=authority_for_reader(archive, server_identity="direct", started_at=started_at),
-        outcome=decide_outcome(matched=total),
+        outcome=decide_outcome(matched=len(messages)),
     )
 
 

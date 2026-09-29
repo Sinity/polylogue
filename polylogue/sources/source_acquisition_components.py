@@ -25,7 +25,7 @@ from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import MemberAddressingMode, split_zip_member_text
 from polylogue.sources.live.admission import (
     AdmissionAttempt,
     AdmissionReceipt,
@@ -197,9 +197,11 @@ def _artifact_payload(value: object) -> JSONValue:
 
 
 def _heartbeat_label(source_path: str) -> str:
-    base_path, separator, zip_entry = source_path.partition(":")
-    base_name = Path(base_path).name if base_path else source_path
-    return f"{base_name}:{zip_entry}" if separator else base_name
+    split = split_zip_member_text(source_path)
+    if split is None:
+        return Path(source_path).name or source_path
+    base_path, zip_entry = split
+    return f"{Path(base_path).name}:{zip_entry}"
 
 
 def make_status_heartbeat(

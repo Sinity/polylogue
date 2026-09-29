@@ -524,13 +524,37 @@ class TestSessionLevelMetadata:
         """Grounding URIs from the export envelope remain session evidence."""
         payload = _load_catalog("current_export.json")
         citations = payload["citations"]
+        assert isinstance(citations, list)
 
         session = _parse(payload, "current_export")
 
-        citation_events = [event for event in session.session_events if event.event_type == "gemini_citations"]
-        assert len(citation_events) == 1
-        assert citation_events[0].source_message_provider_id is None
-        assert citation_events[0].payload == {"citations": citations}
+        citation_events = [event for event in session.session_events if event.event_type == "gemini_citation"]
+        assert [event.payload for event in citation_events] == [
+            {"ordinal": ordinal, "citation": citation} for ordinal, citation in enumerate(citations)
+        ]
+        assert all(event.source_message_provider_id is None for event in citation_events)
+
+    def test_grown_citation_list_keeps_earlier_citation_events_identical(self) -> None:
+        """An appended citation leaves the earlier revision's events unchanged.
+
+        Anti-vacuity: fold the list back into one event and the first
+        revision's only citation event differs from the grown revision's,
+        which is what made revision membership classify growth as ambiguous.
+        """
+        payload = _load_catalog("current_export.json")
+        first = cast(JSONDocument, {**payload, "citations": [{"uri": "https://example.invalid/a"}]})
+        grown = cast(
+            JSONDocument,
+            {**payload, "citations": [{"uri": "https://example.invalid/a"}, {"uri": "https://example.invalid/b"}]},
+        )
+
+        def citations(session: ParsedSession) -> list[dict[str, object]]:
+            return [event.payload for event in session.session_events if event.event_type == "gemini_citation"]
+
+        before = citations(_parse(first, "current_export"))
+        after = citations(_parse(grown, "current_export"))
+        assert after[: len(before)] == before
+        assert len(after) == len(before) + 1
 
     def test_current_export_carries_no_document_level_identity(self) -> None:
         """The shape AI Studio writes today has no envelope to read identity from.
