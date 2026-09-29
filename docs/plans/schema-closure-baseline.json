@@ -471,7 +471,6 @@
     "polylogue/storage/sqlite/archive_tiers/embedding_write.py",
     "polylogue/storage/sqlite/archive_tiers/embeddings.py",
     "polylogue/storage/sqlite/archive_tiers/index.py",
-    "polylogue/storage/sqlite/archive_tiers/index_convergence.py",
     "polylogue/storage/sqlite/archive_tiers/ingest_precedence.py",
     "polylogue/storage/sqlite/archive_tiers/ops.py",
     "polylogue/storage/sqlite/archive_tiers/ops_write.py",

@@ -1108,10 +1108,8 @@ def test_archive_tiers_cost_price_basis_has_typed_tables(tmp_path: Path) -> None
         "session_model_usage",
         "session_provider_usage_events",
     } <= tables
-    # polylogue-v2mg: model_prices / session_reported_costs are zero-consumer
-    # tables dropped from canonical DDL and converged away by the index-tier
-    # benign-DDL registry -- a fresh archive never has them. polylogue-resk
-    # drops price_catalogs the same way.
+    # polylogue-v2mg / polylogue-resk: zero-consumer pricing tables are not
+    # part of canonical DDL, so a fresh archive never has them.
     assert "model_prices" not in tables
     assert "session_reported_costs" not in tables
     assert "price_catalogs" not in tables
@@ -1277,114 +1275,6 @@ def test_archive_tiers_database_bootstrap_leaves_current_tier_unchanged(tmp_path
             "value_json": '{"tag":"kept"}',
         }
     ]
-
-
-# ---------------------------------------------------------------------------
-# polylogue-jc1b: index-tier same-version benign-DDL convergence
-# ---------------------------------------------------------------------------
-
-
-def _plant_zombie_index_tables(conn: sqlite3.Connection) -> None:
-    """Recreate retired same-version index tables on an initialized tier."""
-    conn.executescript(
-        """
-        CREATE TABLE model_prices (
-            catalog_id             TEXT NOT NULL,
-            model_name             TEXT NOT NULL,
-            price_unit             TEXT NOT NULL,
-            input_cost_per_million REAL,
-            PRIMARY KEY(catalog_id, model_name, price_unit)
-        );
-        CREATE TABLE session_reported_costs (
-            session_id TEXT NOT NULL,
-            cost_kind  TEXT NOT NULL,
-            amount     REAL NOT NULL,
-            source     TEXT NOT NULL,
-            PRIMARY KEY(session_id, cost_kind, source)
-        );
-        CREATE TABLE agent_meta_sidecar_purge_receipts (
-            session_id TEXT PRIMARY KEY
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
-def _index_table_names(path: Path) -> set[str]:
-    conn = _connect(path)
-    try:
-        return {
-            row["name"]
-            for row in conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'"
-            ).fetchall()
-        }
-    finally:
-        conn.close()
-
-
-def test_index_benign_ddl_convergence_drops_zombie_tables_on_same_version_open(tmp_path: Path) -> None:
-    """A same-version reopen converges away zero-consumer tables, no bump."""
-    path = tmp_path / "index.db"
-    initialize_archive_database(path, ArchiveTier.INDEX)
-    conn = _connect(path)
-    version_before = conn.execute("PRAGMA user_version").fetchone()[0]
-    conn.close()
-    _plant_zombie_index_tables(_connect(path))
-    assert {"model_prices", "session_reported_costs", "agent_meta_sidecar_purge_receipts"} <= _index_table_names(path)
-
-    initialize_archive_database(path, ArchiveTier.INDEX)
-
-    tables = _index_table_names(path)
-    conn = _connect(path)
-    version_after = conn.execute("PRAGMA user_version").fetchone()[0]
-    conn.close()
-    assert "model_prices" not in tables
-    assert "session_reported_costs" not in tables
-    assert "agent_meta_sidecar_purge_receipts" not in tables
-    assert version_after == version_before == ARCHIVE_TIER_SPECS[ArchiveTier.INDEX].version
-
-
-def test_index_benign_ddl_convergence_is_idempotent(tmp_path: Path) -> None:
-    """A second same-version open after convergence is a pure no-op."""
-    path = tmp_path / "index.db"
-    initialize_archive_database(path, ArchiveTier.INDEX)
-    _plant_zombie_index_tables(_connect(path))
-
-    initialize_archive_database(path, ArchiveTier.INDEX)
-    initialize_archive_database(path, ArchiveTier.INDEX)
-
-    tables = _index_table_names(path)
-    assert "model_prices" not in tables
-    assert "session_reported_costs" not in tables
-    assert "agent_meta_sidecar_purge_receipts" not in tables
-
-
-def test_index_fresh_init_and_converged_live_archive_agree_schema_wise(tmp_path: Path) -> None:
-    """Fresh init and a converged (formerly zombie-bearing) reopen produce
-    byte-identical schema DDL -- the mission-level "fresh-init vs live
-    consistency" invariant for this convergence mechanism.
-    """
-    fresh_path = tmp_path / "fresh" / "index.db"
-    initialize_archive_database(fresh_path, ArchiveTier.INDEX)
-
-    converged_path = tmp_path / "converged" / "index.db"
-    initialize_archive_database(converged_path, ArchiveTier.INDEX)
-    _plant_zombie_index_tables(_connect(converged_path))
-    initialize_archive_database(converged_path, ArchiveTier.INDEX)
-
-    def _schema_ddl(path: Path) -> set[str]:
-        conn = _connect(path)
-        try:
-            rows = conn.execute(
-                "SELECT sql FROM sqlite_master WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type, name"
-            ).fetchall()
-            return {str(row["sql"]) for row in rows}
-        finally:
-            conn.close()
-
-    assert _schema_ddl(fresh_path) == _schema_ddl(converged_path)
 
 
 def test_threads_view_declares_no_unconditional_null_column(tmp_path: Path) -> None:

@@ -789,8 +789,7 @@ _TITLE_EVIDENCE_PRECEDENCE: tuple[tuple[tuple[TitleSource, str | None], ...], ..
 def _title_evidence_rank(session: ParsedSession) -> int:
     """Rank a chunk's title evidence; higher wins, 0 means no evidence.
 
-    ``TitleSource.PATH`` and a NULL ``title_source`` both rank 0: neither is
-    produced by any parser today, and a raw-id fallback title carries no
+    A NULL ``title_source`` ranks 0: a raw-id fallback title carries no
     evidence to prefer.
     """
     source = session.title_source

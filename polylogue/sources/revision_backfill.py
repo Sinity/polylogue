@@ -3148,7 +3148,7 @@ def validate_frozen_source_authority(
             ingest_workers=ingest_workers,
             prefetch_cache=prefetch_cache,
         )
-        _unclassified, logical_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
+        logical_keys = archive.raw_revision_rebuild_logical_keys(selected_raw_ids)
         transient_non_session_keys = _logical_keys_for_raw_ids(
             archive,
             census.transient_non_session_raw_ids,
@@ -4051,7 +4051,7 @@ def backfill_historical_revision_evidence(
         membership_candidates = census.membership_candidates
         provisional_full_raw_ids = census.provisional_full_raw_ids
 
-        _unclassified, selected_keys = archive.raw_revision_rebuild_selection(selected_raw_ids)
+        selected_keys = archive.raw_revision_rebuild_logical_keys(selected_raw_ids)
         logical_keys.update(selected_keys)
         _selected_membership_raws, selected_membership_keys = archive.expand_raw_membership_selection(selected_raw_ids)
         membership_keys = set(selected_membership_keys)

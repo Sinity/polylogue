@@ -814,44 +814,6 @@ def test_cursor_records_genuine_deferral_as_deferred_not_failed(tmp_path: Path) 
     assert rows == {"conv-1": "deferred", "conv-2": "failed"}
 
 
-def test_cursor_startup_merges_retired_insights_debt_into_derived_stage(tmp_path: Path) -> None:
-    """Retired stage debt remains retryable after the stage rename."""
-    db_path = tmp_path / "live.sqlite"
-    store = CursorStore(db_path)
-    store.record_convergence_debt(
-        stage="derived",
-        subject_type="session_id",
-        subject_id="conv-1",
-        error="current deferral",
-        deferred=True,
-    )
-    with sqlite3.connect(tmp_path / "ops.db") as conn:
-        conn.execute(
-            """
-            INSERT INTO convergence_debt (
-                debt_id, stage, target_type, target_id, status, priority, attempts,
-                last_error, next_retry_at, materializer_version, created_at_ms, updated_at_ms
-            ) VALUES (?, 'insights', 'session_id', 'conv-1', 'failed', 7, 4, ?, ?, 'legacy', 10, 20)
-            """,
-            ("legacy-insights-debt", "legacy failure", "2026-05-24T00:00:00+00:00"),
-        )
-        conn.commit()
-
-    restarted = CursorStore(db_path)
-
-    debt = restarted.list_convergence_debt(limit=2)
-    assert len(debt) == 1
-    assert debt[0].stage == "derived"
-    assert debt[0].subject_type == "session_id"
-    assert debt[0].subject_id == "conv-1"
-    assert debt[0].status == "failed"
-    with sqlite3.connect(tmp_path / "ops.db") as conn:
-        attempts, priority, retry_at = conn.execute(
-            "SELECT attempts, priority, next_retry_at FROM convergence_debt WHERE stage = 'derived'"
-        ).fetchone()
-    assert (attempts, priority, retry_at) == (4, 7, "2026-05-24T00:00:00+00:00")
-
-
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor", "polylogue.sources.live.convergence_debt_retry")
 def test_cursor_records_messages_fts_surface_debt_as_immediately_due(
     tmp_path: Path,

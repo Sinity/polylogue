@@ -47,7 +47,7 @@ def _events_db_path() -> Path:
 #: statement, and running it on EVERY emit put that aggregate wait inside the
 #: write-coordinator's shutdown window -- a SIGTERM'd daemon then exceeded its
 #: 15s exit deadline stuck in tier DDL (polylogue-b9oi8). First emit still
-#: converges the tier, so benign-DDL convergence-on-open is preserved.
+#: converges the tier.
 _CONVERGED_EVENT_DBS: set[Path] = set()
 
 
