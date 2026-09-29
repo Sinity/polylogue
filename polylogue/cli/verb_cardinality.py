@@ -112,7 +112,7 @@ class WideningSelectorError(ContextualCliError):
     """
 
     default_next_actions: ClassVar[tuple[NextAction, ...]] = (
-        NextAction("Preview exactly what the verb would act on", "polylogue find <QUERY> then delete --dry-run --all"),
+        NextAction("See the complete set the verb acts on", "polylogue find <QUERY>"),
         NextAction("Narrow the query instead of windowing it", "polylogue find 'id:<REF>' then <VERB>"),
     )
 
