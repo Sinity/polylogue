@@ -832,3 +832,36 @@ async def test_run_probe_rejects_empty_archive_subset(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="found no raw sessions"):
         await run_probe(request)
+
+
+@pytest.mark.parametrize("component", ["peak_rss_self_mb", "peak_rss_children_mb"])
+def test_budget_receipt_omits_an_unpaired_rss_component(component: str) -> None:
+    """One missing RSS component leaves both components unavailable, not half-supplied.
+
+    Anti-vacuity: supplying the present component while declaring both
+    unavailable makes the typed phase observation raise, so no report returns.
+    """
+    summary: ProbeSummary = {
+        "run_payload": {"metrics": {"peak_rss_mb": 12.0, component: 7.0}},
+        "result": {},
+        "probe": {},
+        "paths": {},
+        "provenance": {"git_commit": None, "worktree_dirty": None},
+        "db_stats": {},
+        "raw_fanout": [],
+    }
+
+    report = _build_budget_report(summary, PipelineProbeRequest(max_peak_rss_mb=20.0))
+
+    assert report is not None
+    receipt = report["workload_receipt"]
+    assert isinstance(receipt, dict)
+    phases = receipt["phases"]
+    assert isinstance(phases, list)
+    [phase] = phases
+    assert isinstance(phase, dict)
+    assert "peak_rss_self_bytes" not in phase
+    assert "peak_rss_children_bytes" not in phase
+    unavailable = phase["unavailable"]
+    assert isinstance(unavailable, list)
+    assert {"peak_rss_self_bytes", "peak_rss_children_bytes"}.issubset(unavailable)

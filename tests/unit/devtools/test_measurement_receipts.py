@@ -273,3 +273,46 @@ def test_the_reserved_home_holds_a_real_committed_measurement() -> None:
         assert payload["reason"].strip()
         assert payload["measurement"]
         assert payload["measurement_digest"]
+
+
+@pytest.mark.parametrize(
+    ("before", "after"),
+    [
+        ({"": {"latency": 10}}, {"latency": 10}),
+        ({"": 10}, {'""': 10}),
+        ({"latency.p95": 10}, {'"latency.p95"': 10}),
+    ],
+    ids=["empty-parent", "quoted-empty-key", "quoted-dotted-key"],
+)
+def test_distinct_payload_shapes_never_flatten_to_one_unchanged_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    before: dict[str, object],
+    after: dict[str, object],
+) -> None:
+    """Promotion refuses an unexplained shape change rather than calling it unchanged.
+
+    Anti-vacuity: flattening an empty key to nothing makes ``{"": {"latency": 10}}``
+    and ``{"latency": 10}`` share the path ``latency``, so the unexplained
+    record reports ``unchanged`` and exits 0.
+    """
+    monkeypatch.setattr("devtools.measurement_receipts.repo_root", lambda: tmp_path)
+    observation = tmp_path / "measurement.json"
+    observation.write_text(json.dumps(before), encoding="utf-8")
+    assert main(["--record", str(observation), "--reason", "initial", "--json"]) == 0
+    capsys.readouterr()
+    baseline = tmp_path / BASELINE_DIR / "measurement.json"
+    original = baseline.read_bytes()
+    observation.write_text(json.dumps(after), encoding="utf-8")
+
+    assert main(["--record", str(observation), "--json"]) == 1
+    refusal = json.loads(capsys.readouterr().out)
+    assert refusal["action"] == "refused"
+    assert len({movement["path"] for movement in refusal["movements"]}) == 2
+    assert baseline.read_bytes() == original
+
+    assert main(["--record", str(observation), "--reason", "changed shape", "--json"]) == 0
+    recorded = json.loads(capsys.readouterr().out)
+    assert recorded["action"] == "moved"
+    assert json.loads(baseline.read_text(encoding="utf-8"))["measurement"] == after

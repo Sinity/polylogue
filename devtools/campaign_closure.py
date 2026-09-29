@@ -109,27 +109,6 @@ def disposition_of(record: Mapping[str, Any]) -> str | None:
     return None
 
 
-def blocks_prerequisites(record: Mapping[str, Any]) -> list[str]:
-    """Ids this record depends on via ``blocks`` edges only."""
-
-    prerequisites: list[str] = []
-    edges = record.get("dependencies")
-    if not isinstance(edges, list):
-        return prerequisites
-    own_id = record.get("id")
-    for edge in edges:
-        if not isinstance(edge, Mapping):
-            continue
-        if edge.get("type") != BLOCKS:
-            continue
-        issue_id, target = edge.get("issue_id"), edge.get("depends_on_id")
-        # Edge can be attached to either endpoint's record. It always means
-        # issue_id depends on depends_on_id, regardless of its container.
-        if issue_id == own_id and isinstance(target, str) and target:
-            prerequisites.append(target)
-    return prerequisites
-
-
 def _prerequisite_index(records: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
     """id -> the ids it depends on via ``blocks``."""
     index: dict[str, list[str]] = {}
@@ -232,6 +211,7 @@ def build_report(records: Sequence[Mapping[str, Any]], roots: Sequence[str]) -> 
 
     by_id = {record["id"]: record for record in records if isinstance(record.get("id"), str)}
     member_ids = closure_ids(records, roots)
+    prerequisites = _prerequisite_index(records)
 
     named: set[str] = set(member_ids)
     members: list[Member] = []
@@ -239,11 +219,11 @@ def build_report(records: Sequence[Mapping[str, Any]], roots: Sequence[str]) -> 
         record = by_id.get(member_id)
         if record is None or is_closed(record):
             continue
-        named.update(blocks_prerequisites(record))
+        named.update(prerequisites.get(member_id, ()))
         open_prerequisites = tuple(
             sorted(
                 prerequisite
-                for prerequisite in blocks_prerequisites(record)
+                for prerequisite in prerequisites.get(member_id, ())
                 # An id absent from the export cannot be shown to be closed, so
                 # it is treated as open rather than quietly ignored.
                 if prerequisite not in by_id or not is_closed(by_id[prerequisite])
