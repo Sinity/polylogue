@@ -494,6 +494,9 @@ async def list_archive(
     served = (
         plan.limit
         if plan.limit is not None and plan.limit > 0
+        # A sampled page with no limit serves its whole sample.
+        else plan.sample
+        if plan.sample
         # A complete composed sort serves the default page; its units get
         # that page's allowance, not a candidate chunk's.
         else (default_limit if complete else None)

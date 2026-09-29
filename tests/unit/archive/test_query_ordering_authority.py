@@ -515,3 +515,32 @@ async def test_a_complete_composed_sort_streams_its_candidate_summaries(
     assert len(sessions) == 1 and len(sessions[0].messages) == 7
     assert returned == [0]
     assert sum(streamed) == 250
+
+
+@pytest.mark.asyncio
+async def test_units_of_an_unlimited_sampled_page_get_the_sample_width(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sample with no limit serves the whole sample, and its units that page's allowance.
+
+    Anti-vacuity (Codex P2, #5695): fall back to the default page of 20 and a
+    50-session sample is projected in 20-session chunks with a 20-page budget.
+    """
+    from polylogue.archive.query import archive_execution
+
+    for index in range(60):
+        _seed(tmp_path, f"u{index:02d}", updated_at="2026-01-01T00:00:00Z", messages=1 + index % 3)
+    widths: list[int | None] = []
+    original = archive_execution._attach_units_to_domain
+
+    def attach(*args: Any, **kwargs: Any) -> Any:
+        widths.append(kwargs.get("page_width"))
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(archive_execution, "_attach_units_to_domain", attach)
+    sessions = await list_archive(
+        SessionQueryPlan(sort="messages", sample=50), archive_root=tmp_path, config=None, with_units=("messages",)
+    )
+
+    assert len(sessions) == 50
+    assert widths and set(widths) == {50}
