@@ -7,9 +7,12 @@ fields remain in a span-evidence session event rather than being discarded.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from collections import defaultdict
-from collections.abc import Iterable
+import sqlite3
+from collections.abc import Callable, Iterable, Iterator, MutableSequence
+from contextlib import closing
+from typing import cast
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, Provider, ToolOutcome, ToolResultUnknownReason
@@ -158,7 +161,7 @@ def _tool_outcome(span: dict[str, object]) -> tuple[ToolOutcome, bool | None, st
     return ToolOutcome.UNKNOWN, None, reason
 
 
-def _schema_url(scope: dict[str, object]) -> str | None:
+def scope_schema_url(scope: dict[str, object]) -> str | None:
     return optional_string(scope.get("schemaUrl")) or optional_string(scope.get("schema_url"))
 
 
@@ -195,8 +198,7 @@ def _iter_spans(payload: dict[str, object]) -> Iterable[tuple[str, dict[str, obj
         return
     for resource_span in resource_spans:
         resource = _mapping(resource_span)
-        resource_attrs = _attributes(_mapping(resource.get("resource")).get("attributes"))
-        resource_id = optional_string(resource_attrs.get("service.name")) or "resource"
+        resource_id = resource_id_for(resource)
         scopes = resource.get("scopeSpans", resource.get("instrumentationLibrarySpans", ()))
         if not isinstance(scopes, list):
             continue
@@ -207,10 +209,8 @@ def _iter_spans(payload: dict[str, object]) -> Iterable[tuple[str, dict[str, obj
                 continue
             for raw_span in spans:
                 span = _mapping(raw_span)
-                trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
-                span_id = optional_string(span.get("spanId")) or optional_string(span.get("span_id"))
-                if trace_id and span_id:
-                    yield resource_id, span, _schema_url(scope)
+                if has_span_identity(span):
+                    yield resource_id, span, scope_schema_url(scope)
 
 
 def looks_like(payload: object) -> bool:
@@ -313,164 +313,382 @@ def _messages_for_span(span: dict[str, object], attrs: dict[str, object], trace_
     return messages
 
 
+def _text_key(value: str) -> bytes:
+    """Order a string by code point under SQLite's bytewise comparison.
+
+    ``surrogatepass`` keeps a lone surrogate from a JSON escape encodable and
+    places it where Python's string order does.
+    """
+    return value.encode("utf-8", "surrogatepass")
+
+
+def _from_text_key(value: bytes) -> str:
+    return value.decode("utf-8", "surrogatepass")
+
+
+def _int_key(value: int) -> bytes:
+    """Encode an integer so that bytewise order is numeric order."""
+    digits = str(abs(value))
+    if value >= 0:
+        return b"1" + f"{len(digits):010d}".encode() + digits.encode()
+    complement = digits.translate(str.maketrans("0123456789", "9876543210"))
+    return b"0" + f"{9_999_999_999 - len(digits):010d}".encode() + complement.encode()
+
+
+def resource_id_for(resource: dict[str, object]) -> str:
+    """The session scope of one ``resourceSpans`` entry."""
+    resource_attrs = _attributes(_mapping(resource.get("resource")).get("attributes"))
+    return optional_string(resource_attrs.get("service.name")) or "resource"
+
+
+def has_span_identity(span: dict[str, object]) -> bool:
+    trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
+    span_id = optional_string(span.get("spanId")) or optional_string(span.get("span_id"))
+    return bool(trace_id and span_id)
+
+
+def _span_evidence_event(
+    span: dict[str, object], attrs: dict[str, object], trace_id: str, schema_url: str | None
+) -> ParsedSessionEvent:
+    timestamp, _occurred_at_ms = _timestamp(span)
+    return ParsedSessionEvent(
+        event_type="otel_span_evidence",
+        timestamp=timestamp,
+        payload={
+            "trace_id": trace_id,
+            "span_id": span.get("spanId", span.get("span_id")),
+            "parent_span_id": span.get("parentSpanId", span.get("parent_span_id")),
+            "span_name": span.get("name"),
+            "span_kind": span.get("kind"),
+            "status": _json_value(span.get("status")),
+            "attributes": {key: _json_value(value) for key, value in attrs.items()},
+            "schema_url": schema_url,
+            "schema_url_status": "missing"
+            if schema_url is None
+            else "supported"
+            if schema_url == SEMCONV_SCHEMA_URL
+            else "unsupported",
+            "dialect": OTLP_JSON_DIALECT,
+            "message_fidelity": {
+                field: _message_fidelity(attrs, field) for field in ("gen_ai.input.messages", "gen_ai.output.messages")
+            },
+            "usage_fidelity": _usage_fidelity(attrs),
+            "events": _json_value(span.get("events", [])),
+        },
+    )
+
+
+def _append_span(
+    span: dict[str, object],
+    schema_url: str | None,
+    conflicts: Iterable[tuple[dict[str, object], str | None]],
+    messages: MutableSequence[ParsedMessage],
+    events: MutableSequence[ParsedSessionEvent],
+) -> None:
+    """Append one selected span's evidence, conflicts, messages and usage."""
+    attrs = _attributes(span.get("attributes"))
+    trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
+    if trace_id is None:
+        return
+    timestamp, _occurred_at_ms = _timestamp(span)
+    events.append(_span_evidence_event(span, attrs, trace_id, schema_url))
+    for conflicting_span, conflicting_schema_url in conflicts:
+        events.append(
+            ParsedSessionEvent(
+                event_type="otel_conflicting_span_id",
+                payload={
+                    "trace_id": trace_id,
+                    "span_id": span.get("spanId", span.get("span_id")),
+                    "conflicting_span": conflicting_span,
+                    "schema_url": conflicting_schema_url,
+                },
+            )
+        )
+    if schema_url not in (None, SEMCONV_SCHEMA_URL):
+        return
+    span_messages = _messages_for_span(span, attrs, trace_id)
+    messages.extend(span_messages)
+    model = optional_string(attrs.get("gen_ai.request.model"))
+    usage = _usage_counts(attrs)
+    if (
+        optional_string(attrs.get("gen_ai.operation.name")) == "chat"
+        and any(count is not None for count in usage)
+        and not any(
+            message.input_tokens is not None
+            or message.output_tokens is not None
+            or message.cache_read_tokens is not None
+            for message in span_messages
+        )
+    ):
+        events.append(
+            ParsedSessionEvent(
+                event_type="message_usage",
+                timestamp=timestamp,
+                payload={
+                    "last_token_usage": {
+                        key: count
+                        for key, count in zip(
+                            ("input_tokens", "output_tokens", "cached_input_tokens"), usage, strict=True
+                        )
+                        if count is not None
+                    },
+                    "model": model,
+                },
+            )
+        )
+
+
+class OtelSpanIndex:
+    """Select, deduplicate and group one OTLP document's spans in SQLite.
+
+    Span copies, conflicting variants, the parent walk that finds each span's
+    conversation, and the session grouping all live in ``conn``; Python holds
+    one span at a time whatever the document's span count. The object parser
+    runs this same index over an in-memory connection.
+    """
+
+    _TABLES = ("otel_span", "otel_seen", "otel_conflict", "otel_selected", "otel_walk")
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        self._next_seq = 0
+        #: Whether any span is one ``looks_like`` would accept.
+        self.normalizable = False
+        conn.execute(
+            "CREATE TABLE otel_span (seq INTEGER PRIMARY KEY, resource_id BLOB NOT NULL, trace_id BLOB NOT NULL, "
+            "span_id BLOB NOT NULL, schema_url TEXT NOT NULL, schema_rank INTEGER NOT NULL, "
+            "start_key BLOB NOT NULL, canonical TEXT NOT NULL, schema_sort BLOB NOT NULL, span_json TEXT NOT NULL)"
+        )
+
+    def add(self, resource_id: str, span: dict[str, object], schema_url: str | None) -> None:
+        """Record one span copy, in document order."""
+        _resource, trace_id, span_id = _span_coordinate(resource_id, span)
+        schema_rank, start, canonical, schema_sort = _span_variant_key((span, schema_url))
+        if schema_url in (None, SEMCONV_SCHEMA_URL) and any(
+            key.startswith("gen_ai.") for key in _attributes(span.get("attributes"))
+        ):
+            self.normalizable = True
+        self._conn.execute(
+            "INSERT INTO otel_span VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                self._next_seq,
+                _text_key(resource_id),
+                _text_key(trace_id),
+                _text_key(span_id),
+                json.dumps(schema_url),
+                schema_rank,
+                _int_key(start),
+                canonical,
+                _text_key(schema_sort),
+                json.dumps(span),
+            ),
+        )
+        self._next_seq += 1
+
+    def _span(self, seq: int) -> dict[str, object]:
+        row = self._conn.execute("SELECT span_json FROM otel_span WHERE seq = ?", (seq,)).fetchone()
+        span = json.loads(row[0])
+        assert isinstance(span, dict)
+        return span
+
+    def _select_variants(self) -> None:
+        """Keep the first variant of each coordinate; record distinct others."""
+        conn = self._conn
+        conn.execute(
+            "CREATE TABLE otel_seen (resource_id BLOB, trace_id BLOB, span_id BLOB, schema_url TEXT, "
+            "canonical_digest BLOB, PRIMARY KEY (resource_id, trace_id, span_id, schema_url, canonical_digest)) "
+            "WITHOUT ROWID"
+        )
+        conn.execute(
+            "CREATE TABLE otel_conflict (seq INTEGER PRIMARY KEY, resource_id BLOB NOT NULL, "
+            "trace_id BLOB NOT NULL, span_id BLOB NOT NULL, span_seq INTEGER NOT NULL)"
+        )
+        conn.execute("CREATE INDEX otel_conflict_coordinate ON otel_conflict(resource_id, trace_id, span_id, seq)")
+        conn.execute(
+            "CREATE TABLE otel_selected (resource_id BLOB NOT NULL, trace_id BLOB NOT NULL, span_id BLOB NOT NULL, "
+            "span_seq INTEGER NOT NULL, conversation_id BLOB, parent_id BLOB, model BLOB, start_key BLOB NOT NULL, "
+            "span_key BLOB NOT NULL, resolved INTEGER NOT NULL DEFAULT 0, conversation BLOB, group_kind TEXT, "
+            "group_identity BLOB, PRIMARY KEY (resource_id, trace_id, span_id)) WITHOUT ROWID"
+        )
+        current: tuple[bytes, bytes, bytes] | None = None
+        conflict_seq = 0
+        for seq, resource_id, trace_id, span_id, schema_url_json, canonical in conn.execute(
+            "SELECT seq, resource_id, trace_id, span_id, schema_url, canonical FROM otel_span "
+            "ORDER BY resource_id, trace_id, span_id, schema_rank, start_key, canonical, schema_sort, seq"
+        ):
+            coordinate = (resource_id, trace_id, span_id)
+            digest = hashlib.sha256(canonical.encode("ascii")).digest()
+            fresh = (
+                conn.execute(
+                    "INSERT OR IGNORE INTO otel_seen VALUES (?, ?, ?, ?, ?)", (*coordinate, schema_url_json, digest)
+                ).rowcount
+                == 1
+            )
+            if coordinate != current:
+                current = coordinate
+                span = self._span(seq)
+                attrs = _attributes(span.get("attributes"))
+                schema_url = json.loads(schema_url_json)
+                conversation_id = optional_string(attrs.get("gen_ai.conversation.id"))
+                parent_id = optional_string(span.get("parentSpanId")) or optional_string(span.get("parent_span_id"))
+                model = (
+                    optional_string(attrs.get("gen_ai.request.model"))
+                    if schema_url in (None, SEMCONV_SCHEMA_URL)
+                    else None
+                )
+                start, span_key = _span_key(span)
+                conn.execute(
+                    "INSERT INTO otel_selected (resource_id, trace_id, span_id, span_seq, conversation_id, "
+                    "parent_id, model, start_key, span_key) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        *coordinate,
+                        seq,
+                        _text_key(conversation_id) if conversation_id is not None else None,
+                        _text_key(parent_id) if parent_id is not None else None,
+                        _text_key(model) if model else None,
+                        _int_key(start),
+                        _text_key(span_key),
+                    ),
+                )
+            elif fresh:
+                conn.execute("INSERT INTO otel_conflict VALUES (?, ?, ?, ?, ?)", (conflict_seq, *coordinate, seq))
+                conflict_seq += 1
+        conn.execute("DROP TABLE otel_seen")
+
+    def _resolve_conversations(self) -> None:
+        """Give every selected span the conversation of its nearest ancestor.
+
+        A span's conversation is its own ``gen_ai.conversation.id`` or else
+        its parent's; the walk stops at a missing parent or a cycle. Each
+        walk's path is kept in scratch and every node on it takes the walk's
+        result, so no span is walked twice.
+        """
+        conn = self._conn
+        conn.execute("CREATE TABLE otel_walk (span_id BLOB PRIMARY KEY) WITHOUT ROWID")
+        last: tuple[bytes, bytes, bytes] = (b"", b"", b"")
+        while True:
+            row = conn.execute(
+                "SELECT resource_id, trace_id, span_id FROM otel_selected "
+                "WHERE resolved = 0 AND (resource_id, trace_id, span_id) > (?, ?, ?) "
+                "ORDER BY resource_id, trace_id, span_id LIMIT 1",
+                last,
+            ).fetchone()
+            if row is None:
+                break
+            resource_id, trace_id, node = row
+            last = (resource_id, trace_id, node)
+            result: bytes | None = None
+            while conn.execute("INSERT OR IGNORE INTO otel_walk VALUES (?)", (node,)).rowcount == 1:
+                details = conn.execute(
+                    "SELECT conversation_id, parent_id, resolved, conversation FROM otel_selected "
+                    "WHERE resource_id = ? AND trace_id = ? AND span_id = ?",
+                    (resource_id, trace_id, node),
+                ).fetchone()
+                if details is None:
+                    break
+                conversation_id, parent_id, resolved, conversation = details
+                if resolved:
+                    result = conversation
+                    break
+                if conversation_id:
+                    result = conversation_id
+                    break
+                if parent_id is None:
+                    break
+                node = parent_id
+            conn.execute(
+                "UPDATE otel_selected SET resolved = 1, conversation = ? "
+                "WHERE resource_id = ? AND trace_id = ? AND span_id IN (SELECT span_id FROM otel_walk)",
+                (result, resource_id, trace_id),
+            )
+            conn.execute("DELETE FROM otel_walk")
+        conn.execute(
+            "UPDATE otel_selected SET "
+            "group_kind = CASE WHEN conversation IS NULL THEN 'trace' ELSE 'conversation' END, "
+            "group_identity = COALESCE(conversation, trace_id)"
+        )
+        conn.execute(
+            "CREATE INDEX otel_selected_group ON otel_selected"
+            "(resource_id, group_kind, group_identity, start_key, span_key, trace_id, span_id)"
+        )
+
+    def sessions(
+        self,
+        *,
+        new_messages: Callable[[], MutableSequence[ParsedMessage]],
+        new_events: Callable[[], MutableSequence[ParsedSessionEvent]],
+    ) -> Iterator[ParsedSession]:
+        """Yield one session per resource and conversation, or trace, in order."""
+        self._select_variants()
+        self._resolve_conversations()
+        conn = self._conn
+        for resource_key, kind, identity_key in conn.execute(
+            "SELECT DISTINCT resource_id, group_kind, group_identity FROM otel_selected "
+            "ORDER BY resource_id, group_kind, group_identity"
+        ):
+            messages = new_messages()
+            events = new_events()
+            group = (resource_key, kind, identity_key)
+            for span_seq, trace_key, span_key in conn.execute(
+                "SELECT span_seq, trace_id, span_id FROM otel_selected "
+                "WHERE resource_id = ? AND group_kind = ? AND group_identity = ? "
+                "ORDER BY start_key, span_key, trace_id, span_id",
+                group,
+            ):
+                row = conn.execute("SELECT schema_url FROM otel_span WHERE seq = ?", (span_seq,)).fetchone()
+                conflicts = (
+                    (self._span(conflict_seq), cast("str | None", json.loads(schema_url_json)))
+                    for conflict_seq, schema_url_json in conn.execute(
+                        "SELECT c.span_seq, s.schema_url FROM otel_conflict c JOIN otel_span s ON s.seq = c.span_seq "
+                        "WHERE c.resource_id = ? AND c.trace_id = ? AND c.span_id = ? ORDER BY c.seq",
+                        (resource_key, trace_key, span_key),
+                    )
+                )
+                _append_span(self._span(span_seq), json.loads(row[0]), conflicts, messages, events)
+            models = [
+                _from_text_key(model)
+                for (model,) in conn.execute(
+                    "SELECT DISTINCT model FROM otel_selected WHERE resource_id = ? AND group_kind = ? "
+                    "AND group_identity = ? AND model IS NOT NULL ORDER BY model",
+                    group,
+                )
+            ]
+            resource_id = _from_text_key(resource_key)
+            group_identity = _from_text_key(identity_key)
+            session = ParsedSession(
+                source_name=Provider.OTEL_GENAI,
+                provider_session_id=f"{resource_id}:{kind}:{group_identity}",
+                title=f"OpenTelemetry GenAI {group_identity}",
+                messages=messages if isinstance(messages, list) else [],
+                session_events=events if isinstance(events, list) else [],
+                models_used=models,
+            )
+            if not isinstance(messages, list) or not isinstance(events, list):
+                session = session.model_copy(update={"messages": messages, "session_events": events})
+            yield session
+
+    def close(self) -> None:
+        for table in self._TABLES:
+            self._conn.execute(f"DROP TABLE IF EXISTS {table}")
+
+
 def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
     """Normalize OTLP GenAI spans into resource/conversation or trace sessions."""
     del fallback_id  # stable source coordinates, never an import filename
-    variants: dict[tuple[str, str, str], list[tuple[dict[str, object], str | None]]] = defaultdict(list)
-    for resource_id, span, schema_url in _iter_spans(_mapping(payload)):
-        variants[_span_coordinate(resource_id, span)].append((span, schema_url))
-    spans: list[tuple[str, dict[str, object], str | None]] = []
-    conflicts: dict[tuple[str, str, str], list[tuple[dict[str, object], str | None]]] = {}
-    for coordinate, copies in sorted(variants.items()):
-        ordered = sorted(copies, key=_span_variant_key)
-        selected = ordered[0]
-        spans.append((coordinate[0], *selected))
-        selected_identity = (selected[1], _span_variant_key(selected)[2])
-        seen = {selected_identity}
-        alternatives = []
-        for item in ordered[1:]:
-            identity = (item[1], _span_variant_key(item)[2])
-            if identity not in seen:
-                alternatives.append(item)
-                seen.add(identity)
-        if alternatives:
-            conflicts[coordinate] = alternatives
-    span_details: dict[tuple[str, str, str], tuple[str | None, str | None]] = {}
-    for resource_id, span, _schema_url in spans:
-        trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
-        span_id = optional_string(span.get("spanId")) or optional_string(span.get("span_id"))
-        if trace_id and span_id:
-            attrs = _attributes(span.get("attributes"))
-            span_details[(resource_id, trace_id, span_id)] = (
-                optional_string(attrs.get("gen_ai.conversation.id")),
-                optional_string(span.get("parentSpanId")) or optional_string(span.get("parent_span_id")),
-            )
-
-    def conversation_for(resource_id: str, trace_id: str, span_id: str) -> str | None:
-        seen: set[str] = set()
-        while span_id not in seen:
-            seen.add(span_id)
-            details = span_details.get((resource_id, trace_id, span_id))
-            if details is None:
-                break
-            conversation_id, parent_id = details
-            if conversation_id:
-                return conversation_id
-            if parent_id is None:
-                break
-            span_id = parent_id
-        return None
-
-    groups: dict[tuple[str, str, str], list[tuple[dict[str, object], str | None]]] = defaultdict(list)
-    for resource_id, span, schema_url in spans:
-        trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
-        span_id = optional_string(span.get("spanId")) or optional_string(span.get("span_id"))
-        if trace_id is None or span_id is None:
-            continue
-        conversation_id = conversation_for(resource_id, trace_id, span_id)
-        kind, group_identity = ("conversation", conversation_id) if conversation_id else ("trace", trace_id)
-        groups[(resource_id, kind, group_identity)].append((span, schema_url))
-
-    sessions: list[ParsedSession] = []
-    for (resource_id, kind, group_identity), scoped_spans in sorted(groups.items()):
-        messages: list[ParsedMessage] = []
-        events: list[ParsedSessionEvent] = []
-        models: set[str] = set()
-        for span, schema_url in sorted(
-            scoped_spans,
-            key=lambda item: (_span_key(item[0]), _span_coordinate(resource_id, item[0])[1]),
-        ):
-            attrs = _attributes(span.get("attributes"))
-            trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
-            if trace_id is None:
-                continue
-            timestamp, _occurred_at_ms = _timestamp(span)
-            events.append(
-                ParsedSessionEvent(
-                    event_type="otel_span_evidence",
-                    timestamp=timestamp,
-                    payload={
-                        "trace_id": trace_id,
-                        "span_id": span.get("spanId", span.get("span_id")),
-                        "parent_span_id": span.get("parentSpanId", span.get("parent_span_id")),
-                        "span_name": span.get("name"),
-                        "span_kind": span.get("kind"),
-                        "status": _json_value(span.get("status")),
-                        "attributes": {key: _json_value(value) for key, value in attrs.items()},
-                        "schema_url": schema_url,
-                        "schema_url_status": "missing"
-                        if schema_url is None
-                        else "supported"
-                        if schema_url == SEMCONV_SCHEMA_URL
-                        else "unsupported",
-                        "dialect": OTLP_JSON_DIALECT,
-                        "message_fidelity": {
-                            field: _message_fidelity(attrs, field)
-                            for field in ("gen_ai.input.messages", "gen_ai.output.messages")
-                        },
-                        "usage_fidelity": _usage_fidelity(attrs),
-                        "events": _json_value(span.get("events", [])),
-                    },
-                )
-            )
-            for conflicting_span, conflicting_schema_url in conflicts.get(_span_coordinate(resource_id, span), ()):
-                events.append(
-                    ParsedSessionEvent(
-                        event_type="otel_conflicting_span_id",
-                        payload={
-                            "trace_id": trace_id,
-                            "span_id": span.get("spanId", span.get("span_id")),
-                            "conflicting_span": conflicting_span,
-                            "schema_url": conflicting_schema_url,
-                        },
-                    )
-                )
-            if schema_url not in (None, SEMCONV_SCHEMA_URL):
-                continue
-            span_messages = _messages_for_span(span, attrs, trace_id)
-            messages.extend(span_messages)
-            model = optional_string(attrs.get("gen_ai.request.model"))
-            if model:
-                models.add(model)
-            usage = _usage_counts(attrs)
-            if (
-                optional_string(attrs.get("gen_ai.operation.name")) == "chat"
-                and any(count is not None for count in usage)
-                and not any(
-                    message.input_tokens is not None
-                    or message.output_tokens is not None
-                    or message.cache_read_tokens is not None
-                    for message in span_messages
-                )
-            ):
-                events.append(
-                    ParsedSessionEvent(
-                        event_type="message_usage",
-                        timestamp=timestamp,
-                        payload={
-                            "last_token_usage": {
-                                key: count
-                                for key, count in zip(
-                                    ("input_tokens", "output_tokens", "cached_input_tokens"), usage, strict=True
-                                )
-                                if count is not None
-                            },
-                            "model": model,
-                        },
-                    )
-                )
-        if events:
-            sessions.append(
-                ParsedSession(
-                    source_name=Provider.OTEL_GENAI,
-                    provider_session_id=f"{resource_id}:{kind}:{group_identity}",
-                    title=f"OpenTelemetry GenAI {group_identity}",
-                    messages=messages,
-                    session_events=events,
-                    models_used=sorted(models),
-                )
-            )
-    return sessions
+    with closing(sqlite3.connect(":memory:")) as conn:
+        index = OtelSpanIndex(conn)
+        for resource_id, span, schema_url in _iter_spans(_mapping(payload)):
+            index.add(resource_id, span, schema_url)
+        return list(index.sessions(new_messages=list, new_events=list))
 
 
-__all__ = ["OTLP_JSON_DIALECT", "SEMCONV_SCHEMA_URL", "looks_like", "parse"]
+__all__ = [
+    "OTLP_JSON_DIALECT",
+    "SEMCONV_SCHEMA_URL",
+    "OtelSpanIndex",
+    "has_span_identity",
+    "looks_like",
+    "parse",
+    "resource_id_for",
+    "scope_schema_url",
+]
