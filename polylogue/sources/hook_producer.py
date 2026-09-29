@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -428,6 +429,7 @@ def _retire(path: Path, root: Path, bucket: str) -> None:
 #: legacy spool, where a single unbounded pass re-folds everything and appends
 #: a second full copy of every event to the carriers.
 COMPACTION_CHECKPOINT_EVENTS = 10_000
+_LEGACY_COMPACTION_LOCK = threading.Lock()
 
 
 def _sorted_directory(directory: Path) -> list[os.DirEntry[str]]:
@@ -595,12 +597,17 @@ def compact_legacy_spool(
     root.mkdir(parents=True, exist_ok=True)
     lock_fd = os.open(root / _CARRIER_DRAIN_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        os.lockf(lock_fd, os.F_LOCK, 0)
-        before = _carrier_scope_summary(root)
-        summary = _compact_legacy_spool_unlocked(root, max_bytes=max_bytes, checkpoint_events=checkpoint_events)
-        after = _carrier_scope_summary(root)
+        # POSIX record locks do not serialize independent threads in one
+        # process, so retain the file lock and add an in-process mutex.
+        with _LEGACY_COMPACTION_LOCK:
+            os.lockf(lock_fd, os.F_LOCK, 0)
+            try:
+                before = _carrier_scope_summary(root)
+                summary = _compact_legacy_spool_unlocked(root, max_bytes=max_bytes, checkpoint_events=checkpoint_events)
+                after = _carrier_scope_summary(root)
+            finally:
+                os.lockf(lock_fd, os.F_ULOCK, 0)
     finally:
-        os.lockf(lock_fd, os.F_ULOCK, 0)
         os.close(lock_fd)
     summary.update(
         carrier_compaction_serialized=True,

@@ -211,6 +211,10 @@ def execute_read_operation(
         from polylogue.operations.read_view_chronicle import execute_chronicle_read
 
         result = execute_chronicle_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
+    elif name == "read.compact":
+        from polylogue.operations.read_view_compact import execute_compact_read
+
+        result = execute_compact_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
     elif name == "read.effective_context":
         from polylogue.operations.read_view_extras import execute_effective_context_read
 
@@ -353,7 +357,7 @@ def operation_deadline_s(name: str, payload: Mapping[str, object]) -> float:
 def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:
     """Return whether this declared read needs a coherent vector handle."""
 
-    if name not in {"cli.query", "read.temporal", "read.chronicle"}:
+    if name not in {"cli.query", "read.temporal", "read.chronicle", "read.compact"}:
         return False
     from polylogue.core.errors import PolylogueError
 
@@ -431,7 +435,7 @@ def _query_payload(
     # Decided after the projection runs: the attached-unit row ceiling is one
     # of this operation's own facts, and an envelope carrying a cut projection
     # is not an ``ok`` answer about those sessions.
-    outcome = decide_outcome(matched=total, degraded=attached_gaps)
+    outcome = decide_outcome(matched=len(summaries), degraded=attached_gaps)
     lineage_edges = _lineage_edges_payload(session_ids, spec=spec, archive=archive)
     return {
         "outcome": outcome.to_dict(),

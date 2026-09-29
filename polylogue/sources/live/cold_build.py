@@ -553,10 +553,20 @@ class ColdBuildGeneration:
                 prospective_material_bytes=prospective_material_bytes,
                 prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
                 prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
-                prospective_generation_baseline_bytes=len(
-                    json.dumps(
-                        {"generation_id": "gen-placeholder", "baseline": baseline.as_dict()}, indent=2, sort_keys=True
-                    ).encode()
+                prospective_generation_baseline_bytes=(
+                    (
+                        len(
+                            json.dumps(
+                                {"generation_id": "gen-placeholder", "baseline": baseline.as_dict()},
+                                indent=2,
+                                sort_keys=True,
+                            ).encode()
+                        )
+                        + max(blob_block_bytes, source_db_block_bytes)
+                        - 1
+                    )
+                    // max(blob_block_bytes, source_db_block_bytes)
+                    * max(blob_block_bytes, source_db_block_bytes)
                 ),
                 baseline_digest=baseline.digest,
                 material_byte_definition=MATERIAL_BYTE_DEFINITION,
@@ -864,10 +874,20 @@ class ColdBuildGeneration:
             prospective_material_bytes=prospective_material_bytes,
             prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
             prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
-            prospective_generation_baseline_bytes=len(
-                json.dumps(
-                    {"generation_id": self.generation_id, "baseline": merged.as_dict()}, indent=2, sort_keys=True
-                ).encode()
+            prospective_generation_baseline_bytes=(
+                (
+                    len(
+                        json.dumps(
+                            {"generation_id": self.generation_id, "baseline": merged.as_dict()},
+                            indent=2,
+                            sort_keys=True,
+                        ).encode()
+                    )
+                    + max(blob_block_bytes, source_db_block_bytes)
+                    - 1
+                )
+                // max(blob_block_bytes, source_db_block_bytes)
+                * max(blob_block_bytes, source_db_block_bytes)
             ),
             baseline_digest=merged.digest,
             material_byte_definition=MATERIAL_BYTE_DEFINITION,

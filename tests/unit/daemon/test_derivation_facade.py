@@ -466,6 +466,32 @@ def test_the_facade_resumes_where_the_last_bounded_pass_stopped() -> None:
     assert sorted(fair.output) == list(keys[2:])
 
 
+def test_coarse_prerequisite_rechecks_keys_behind_a_resumed_cursor() -> None:
+    """A prior refusal remains a blocker after the upstream cursor passes it.
+
+    Anti-vacuity: rely only on outcomes observed in the resumed pass; the
+    downstream key then publishes while upstream ``a`` is still missing.
+    """
+
+    class Upstream(StringStatusDerivation):
+        domain = "up"
+
+    class Downstream(StringStatusDerivation):
+        domain = "down"
+        prerequisites = ("up",)
+
+    upstream = Upstream(("a", "b", "c"), publish_refuses=frozenset(("a",)))
+    downstream = Downstream(("x",))
+    converger = DaemonConverger([], derivations=(upstream, downstream))
+    budget = Budget(page=2, compute=1)
+
+    for _ in range(4):
+        converger.converge_derivations(FRAME, budget=budget)
+
+    assert upstream.output == {"b": "b0", "c": "b0"}
+    assert downstream.output == {}
+
+
 def test_a_restart_drops_the_resume_position_without_dropping_work() -> None:
     """The position is process-local; losing it costs a sweep, not a key."""
     adapter = StringStatusDerivation(("a", "b", "c"))

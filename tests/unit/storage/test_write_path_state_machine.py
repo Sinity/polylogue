@@ -94,22 +94,18 @@ def test_state_parent_is_authoritative_before_prefix_normalization(tmp_path: Pat
     index.close()
 
 
-def test_vanished_branch_point_is_typed_dangling(tmp_path: Path) -> None:
-    """A branch point the replaced parent no longer contains truncates, not guesses.
+def test_vanished_branch_point_keeps_the_childs_replayed_prefix(tmp_path: Path) -> None:
+    """A branch point the replaced parent no longer contains neither guesses
+    nor truncates (polylogue-gy2yu).
 
-    The replacement drops "B", which is the child's branch point, so the
-    reference genuinely cannot resolve and the composed envelope must be the
-    child's own tail alone.
+    The replacement drops "B", the child's branch point, so the reference
+    cannot resolve against the new parent. The child's composed transcript is
+    evidence from its own bytes, so the same write materializes the prefix the
+    child replayed into its own rows.
 
-    Anti-vacuity: removing the content witness silently composes the wrong
-    parent row -- the child would inherit the prefix through whatever row now
-    sits at the branch point's coordinate instead of truncating.
-
-    This used to lean on *positional* identity: it renumbered the parent so the
-    child's ``p:<position>.<variant>`` alias landed on a different row. #5103
-    made an id-less message's identity content-derived, so that renumbering no
-    longer creates a dangling reference -- "B" resolves to the same real
-    message wherever it sits. The premise had to be rebuilt, not the rule.
+    Anti-vacuity: composing through whatever parent row now sits at the branch
+    point's coordinate yields ``X, A, tail``; skipping the materialization
+    yields the bare ``tail`` with ``dangling_branch_point``.
     """
     index = _index(tmp_path / "index.db")
     parent = _session("parent", [_message(None, "A", 0), _message(None, "B", 1)])
@@ -124,9 +120,8 @@ def test_vanished_branch_point_is_typed_dangling(tmp_path: Path) -> None:
     ).model_copy(update={"updated_at": "2027-01-01T00:00:01Z"})
     write_parsed_session_to_archive(index, replacement)
     envelope = read_archive_session_envelope(index, child_id)
-    assert [block.text for message in envelope.messages for block in message.blocks] == ["tail"]
-    assert envelope.lineage_complete is False
-    assert envelope.lineage_truncation_reason == "dangling_branch_point"
+    assert [block.text for message in envelope.messages for block in message.blocks] == ["A", "B", "tail"]
+    assert envelope.lineage_complete is True
     assert parent_id
     index.close()
 

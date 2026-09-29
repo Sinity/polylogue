@@ -1478,6 +1478,10 @@ CREATE TABLE IF NOT EXISTS session_usage_rollup_bindings (
     {TABLE_SPECS["session_usage_rollup_bindings"].ddl_body}
 ) STRICT;
 
+CREATE TABLE IF NOT EXISTS session_identity_scopes (
+    {TABLE_SPECS["session_identity_scopes"].ddl_body}
+) STRICT;
+
 CREATE INDEX IF NOT EXISTS idx_session_provider_usage_events_session
 ON session_provider_usage_events(session_id, position);
 

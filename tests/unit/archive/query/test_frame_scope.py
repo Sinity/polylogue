@@ -14,6 +14,9 @@ invalidates is worse than one that over-invalidates:
 * ``test_read_relation_write_invalidates`` and
   ``test_tag_write_invalidates_tag_scoped_read`` go red if scoping degenerates
   into a frame that drops the components a page actually depends on.
+* ``test_row_pipeline_continuation_survives_unrelated_write`` goes red if
+  a ``sort by time``/``limit``/``offset`` pipeline stage widens the frame to
+  every relation again.
 * ``test_declared_read_set_covers_traced_sql`` goes red if a lowering gains a
   join onto a tracked relation that ``frame_scope`` has not declared --
   the under-declaration that would let a resume skip or duplicate rows.
@@ -47,6 +50,7 @@ from polylogue.storage.sqlite.archive_tiers.query_unit_frame import (
 )
 
 _UNSCOPED_EXPRESSION = "messages where role:user"
+_ROW_PIPELINE_EXPRESSION = "messages where role:user | sort by time asc | offset 0 | limit 10"
 _TAG_SCOPED_EXPRESSION = "messages where role:user and session.tag:pinned"
 _FILTER_RELATION_CASES = (
     ("repo_names", ("polylogue",), "repos", "UPDATE repos SET last_seen_at_ms = last_seen_at_ms + 1"),
@@ -201,6 +205,41 @@ def test_unrelated_write_keeps_continuation_valid(tmp_path: Path) -> None:
 
     second = _resume(tmp_path, _UNSCOPED_EXPRESSION, token)
     assert len(second.items) == 1  # type: ignore[attr-defined]
+
+
+def test_row_pipeline_continuation_survives_unrelated_write(tmp_path: Path) -> None:
+    """Row-ordering and paging stages keep the plain query's read set.
+
+    ``sort by time``, ``offset`` and ``limit`` only order or slice message
+    rows, so a session-profile sweep must not 409 their continuation any more
+    than it does the equivalent unstaged query.
+    """
+    _seed(tmp_path)
+    first = _page(tmp_path, _ROW_PIPELINE_EXPRESSION)
+    token = first.continuation  # type: ignore[attr-defined]
+    assert token
+
+    _write_session_profile(tmp_path, "codex-session:s2")
+
+    second = _resume(tmp_path, _ROW_PIPELINE_EXPRESSION, token)
+    assert len(second.items) == 1  # type: ignore[attr-defined]
+
+
+def test_row_pipeline_continuation_still_invalidates_on_read_relation(tmp_path: Path) -> None:
+    """Scoping a staged request must not drop the relations its rows read."""
+    _seed(tmp_path)
+    first = _page(tmp_path, _ROW_PIPELINE_EXPRESSION)
+    token = first.continuation  # type: ignore[attr-defined]
+    assert token
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        conn.execute(
+            "INSERT INTO messages(session_id, native_id, position, role, content_hash) "
+            "VALUES ('codex-session:s0', 'extra', 1, 'user', zeroblob(32))"
+        )
+
+    with pytest.raises(QueryContinuationStaleError):
+        _resume(tmp_path, _ROW_PIPELINE_EXPRESSION, token)
 
 
 def test_read_relation_write_invalidates(tmp_path: Path) -> None:
@@ -426,6 +465,13 @@ def _unit_expressions() -> Iterator[tuple[str, str]]:
             break
 
 
+def _time_sort_supported(unit: str) -> bool:
+    from polylogue.archive.query.metadata import query_unit_descriptor
+
+    descriptor = query_unit_descriptor(unit)
+    return descriptor is not None and bool(descriptor.time_sort_supported)
+
+
 def test_declared_read_set_covers_traced_sql(tmp_path: Path) -> None:
     """Every tracked relation a real page touches must be declared.
 
@@ -446,6 +492,9 @@ def test_declared_read_set_covers_traced_sql(tmp_path: Path) -> None:
     for unit, expression in _unit_expressions():
         covered_units.add(unit)
         cases.append((f"unit:{unit}", expression, {}))
+        cases.append((f"unit:{unit}|paging", f"{expression} | offset 0 | limit 10", {}))
+        if _time_sort_supported(unit):
+            cases.append((f"unit:{unit}|sort", f"{expression} | sort by time desc", {}))
 
     assert covered_units == set(_UNIT_RELATIONS), (
         "every declared query unit needs a traced case; "

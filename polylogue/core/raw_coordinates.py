@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import re
+import zipfile
 from hashlib import sha256
 from math import isqrt
+from pathlib import Path
 
 from polylogue.core.enums import PolylogueStrEnum
 
@@ -81,7 +84,60 @@ def zip_member_identity_coordinate(
     return (entry_ordinal, split_index) if raw_id == expected_raw_id else None
 
 
+def zip_member_coordinate(source_path: str) -> tuple[Path, str] | None:
+    """Split a recorded ``<container>:<member>`` coordinate at its real ZIP.
+
+    A loose file may legally contain a colon, so the literal path wins when it
+    exists, and a missing path is read as a member coordinate only when a
+    prefix is a real ZIP file. An existing prefix directory or plain file
+    proves nothing. The container path itself may hold colons (a Windows
+    drive, a legal POSIX filename), so every colon is tried as the separator,
+    shortest container first.
+    """
+    if Path(source_path).exists():
+        return None
+    start = 0
+    while (separator_at := source_path.find(":", start)) != -1:
+        start = separator_at + 1
+        if separator_at == 0 or separator_at == len(source_path) - 1:
+            continue
+        container_path = Path(source_path[:separator_at])
+        if container_path.is_file() and zipfile.is_zipfile(container_path):
+            return container_path, source_path[start:]
+    return None
+
+
+_ZIP_MEMBER_SEPARATOR = re.compile(r"\.zip:", re.IGNORECASE)
+
+
+def split_zip_member_text(source_path: str) -> tuple[str, str] | None:
+    """Split ``<container>:<member>`` where the container may not exist here.
+
+    A container present on disk is located by :func:`zip_member_coordinate`.
+    A relocated or removed one is split lexically after its ``.zip`` suffix,
+    so a colon earlier in the container path (a Windows drive, a legal POSIX
+    filename) is not taken as the separator.
+    """
+    located = zip_member_coordinate(source_path)
+    if located is not None:
+        container, member = located
+        return source_path[: len(source_path) - len(member) - 1], member
+    match = _ZIP_MEMBER_SEPARATOR.search(source_path)
+    if match is None or match.end() == len(source_path):
+        return None
+    return source_path[: match.end() - 1], source_path[match.end() :]
+
+
+def zip_member_container(source_path: str) -> Path | None:
+    """The ZIP container a recorded ``<container>:<member>`` coordinate names."""
+    coordinate = zip_member_coordinate(source_path)
+    return coordinate[0] if coordinate is not None else None
+
+
 __all__ = [
+    "zip_member_container",
+    "zip_member_coordinate",
+    "split_zip_member_text",
     "MemberAddressingMode",
     "zip_member_identity_coordinate",
     "zip_member_raw_id",

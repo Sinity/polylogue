@@ -17,6 +17,7 @@ from polylogue.archive.raw_materialization import (
 )
 from polylogue.archive.revision_authority import RawRevisionAuthority
 from polylogue.core.errors import SchemaSkew
+from polylogue.core.raw_coordinates import zip_member_coordinate
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
@@ -875,7 +876,7 @@ def _source_artifact_exists(source_path: str) -> bool:
     if not source_path:
         return False
     outer_path = source_path.split(":", 1)[0]
-    return os.path.exists(outer_path)
+    return os.path.exists(source_path) or os.path.exists(outer_path) or zip_member_coordinate(source_path) is not None
 
 
 def _count_values(values: Iterable[Any]) -> dict[str, int]:

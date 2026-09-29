@@ -5,9 +5,9 @@ from __future__ import annotations
 import base64
 import binascii
 import inspect
-from collections.abc import Callable, Iterable, Iterator, MutableSequence, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence, Sequence
 from functools import wraps
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, MaterialOrigin, MessageType, WebConstructType
@@ -115,22 +115,139 @@ class AdmissionLedger:
         return accounting
 
 
+def _is_unknown_sentinel(candidate: object) -> bool:
+    return isinstance(candidate, str) and (
+        candidate.startswith(("future_", "unknown_", "unsupported_"))
+        or candidate in {"future", "unknown", "unsupported"}
+    )
+
+
+def claude_code_unknown_wire_type(value: object) -> str | None:
+    """Return an unknown Claude Code wire type read only from its discriminators.
+
+    A Claude Code record's discriminators are its own ``type`` and the
+    ``type`` of each ``message.content`` block. Everything beneath a block --
+    a tool call's ``input``, a tool result's body -- is user-controlled data,
+    so a tool argument ``{"type": "unknown"}`` is not a provider wire type.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    record_type = value.get("type")
+    if _is_unknown_sentinel(record_type):
+        return cast(str, record_type)
+    message = value.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    if isinstance(content, list):
+        for block in content:
+            block_type = block.get("type") if isinstance(block, Mapping) else None
+            if _is_unknown_sentinel(block_type):
+                return cast(str, block_type)
+    return None
+
+
+def codex_unknown_wire_type(value: object) -> str | None:
+    """Return an unknown Codex wire type read only from its discriminators.
+
+    A Codex rollout record's discriminators are its envelope ``type`` and its
+    payload's ``type``. Everything beneath -- tool-call arguments, MCP
+    invocation inputs, outputs -- is user-controlled data, so an argument
+    ``{"type": "unknown"}`` is not a provider wire type.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    record_type = value.get("type")
+    if _is_unknown_sentinel(record_type):
+        return cast(str, record_type)
+    payload = value.get("payload")
+    payload_type = payload.get("type") if isinstance(payload, Mapping) else None
+    if _is_unknown_sentinel(payload_type):
+        return cast(str, payload_type)
+    return None
+
+
+def hermes_unknown_wire_type(value: object) -> str | None:
+    """Return an unknown Hermes wire type read only from its discriminators.
+
+    An ATOF record's discriminators are its own ``type``/``kind``; an ATIF
+    document's are its own and each step's. Tool-call ``arguments`` and
+    every other nested value are user data, so ``{"type": "unknown"}`` inside
+    them is not a provider wire type.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    for key in ("type", "kind", "record_type"):
+        if _is_unknown_sentinel(value.get(key)):
+            return cast(str, value.get(key))
+    steps = value.get("steps")
+    for step in steps if isinstance(steps, list) else ():
+        if isinstance(step, Mapping):
+            for key in ("type", "kind"):
+                if _is_unknown_sentinel(step.get(key)):
+                    return cast(str, step.get(key))
+    return None
+
+
+def otel_genai_unknown_wire_type(value: object) -> str | None:
+    """Return an unknown OTLP wire type read only from its structural fields.
+
+    An OTLP document's discriminators are each span's ``kind`` and the
+    wrapper keys naming its resource and scope lists. Attribute values --
+    tool-call arguments, message content, resource attributes -- are user
+    data, so ``{"type": "unknown"}`` inside them is not a provider wire type.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    resource_spans = value.get("resourceSpans", value.get("resource_spans"))
+    for resource in resource_spans if isinstance(resource_spans, list) else ():
+        if not isinstance(resource, Mapping):
+            continue
+        scopes = resource.get("scopeSpans", resource.get("instrumentationLibrarySpans"))
+        for scope in scopes if isinstance(scopes, list) else ():
+            spans = scope.get("spans") if isinstance(scope, Mapping) else None
+            for span in spans if isinstance(spans, list) else ():
+                kind = span.get("kind") if isinstance(span, Mapping) else None
+                if _is_unknown_sentinel(kind):
+                    return cast(str, kind)
+    return None
+
+
+#: Keys whose values are user or tool data in every origin: a tool call's
+#: arguments or input, its output or result, span attributes. The default
+#: scan never reads a wire type from beneath them -- a tool argument
+#: ``{"type": "unknown"}`` is data, not a provider discriminator.
+_USER_DATA_KEYS = frozenset(
+    {
+        "arguments",
+        "args",
+        "input",
+        "tool_input",
+        "toolInput",
+        "parameters",
+        "params",
+        "output",
+        "result",
+        "results",
+        "attributes",
+    }
+)
+
+
 def _unknown_wire_type(value: object) -> str | None:
     """Return a deliberately future-shaped wire type, if one is visible.
 
     This is intentionally narrow.  Admission must not classify ordinary
     provider metadata as unknown merely because it contains a ``type`` field;
-    the parser-specific lowering remains authoritative for known shapes.
+    the parser-specific lowering remains authoritative for known shapes. It
+    does not descend into user data (:data:`_USER_DATA_KEYS`).
     """
     if isinstance(value, dict):
         for key in ("type", "content_type", "kind", "record_type"):
             candidate = value.get(key)
-            if isinstance(candidate, str) and (
-                candidate.startswith(("future_", "unknown_", "unsupported_"))
-                or candidate in {"future", "unknown", "unsupported"}
-            ):
-                return candidate
-        for child in value.values():
+            if _is_unknown_sentinel(candidate):
+                return cast(str, candidate)
+        for key, child in value.items():
+            if key in _USER_DATA_KEYS:
+                continue
             found = _unknown_wire_type(child)
             if found is not None:
                 return found
@@ -142,11 +259,160 @@ def _unknown_wire_type(value: object) -> str | None:
     return None
 
 
-def _observe_wire_types(payload: Iterator[Any], observed: list[str | None]) -> Iterator[Any]:
-    """Yield a one-pass payload through, recording each record's wire type."""
-    for item in payload:
-        observed.append(_unknown_wire_type(item))
-        yield item
+class AdmissionObserver:
+    """Classify each outer record of one session's input exactly once.
+
+    The single conservation boundary every production parse route shares:
+    the decorated leaf parsers (:func:`parser_admission`), the Claude Code
+    multi-session stream (one observer per session group) and the dispatch
+    routes that call undecorated entry points. Each record gets one terminal
+    disposition. A record that is not a JSON object is a typed refusal, never
+    counted as materialized: every origin's outer records are objects, and a
+    parser that skips a scalar produced no material from it (fail closed).
+    """
+
+    def __init__(self, scan: Callable[[object], str | None] | None = None) -> None:
+        #: How one record's unknown wire type is found. The default scans the
+        #: whole record; an origin with declared discriminators passes a scan
+        #: that reads only those, so nested user data is never a wire type.
+        self._scan = scan if scan is not None else _unknown_wire_type
+        self._ledger = AdmissionLedger()
+        self._count = 0
+        #: The first source index of each unknown wire type: one event per
+        #: type is emitted, so later occurrences are not retained.
+        self._unknowns: dict[str, int] = {}
+        #: The closed proof over every observed record, shared by each
+        #: session drawn from them that carries no ledger of its own.
+        self._proof: ParseAccounting | None = None
+
+    def observe(
+        self, item: object, source_index: int | None = None, *, recognized: bool = True, malformed: bool = False
+    ) -> None:
+        """Classify one record at dense ledger ordinal ``self._count``.
+
+        ``source_index`` is the record's 1-based position in the source file
+        when that differs from its position in this session (an interleaved
+        multi-session stream); the typed unknown event names that position.
+
+        ``recognized=False`` is the caller's own admission signal: it already
+        folded (or tried to fold) this record through its parser and knows
+        the parser refused to classify it -- e.g. a Claude Code record with a
+        missing or non-string ``type`` that ``_fold_code_record`` silently
+        drops. The generic nested-sentinel scan below cannot see that: it
+        only recognizes a specially-prefixed unknown marker, so an
+        unrecognized record with no such marker would otherwise be counted
+        MATERIALIZED despite producing no evidence at all.
+        """
+        ordinal = self._count
+        self._count += 1
+        if not isinstance(item, Mapping) or malformed:
+            # ``malformed`` is the caller's parser decision: a record of a
+            # known kind its parser skips for a missing required field left
+            # no material, so it is a typed refusal, never materialized.
+            self._ledger.refusal(
+                AdmissionUnit.OUTER_RECORD, ordinal, type(item).__name__, AdmissionRefusalReason.MALFORMED
+            )
+            return
+        wire_type = self._scan(item)
+        if wire_type is None and not recognized:
+            wire_type = "unrecognized_record_type"
+        if wire_type is None:
+            self._ledger.materialized(AdmissionUnit.OUTER_RECORD, ordinal, "parsed")
+        else:
+            self._ledger.unknown(AdmissionUnit.OUTER_RECORD, ordinal, wire_type)
+            self._unknowns.setdefault(wire_type, source_index if source_index is not None else ordinal + 1)
+
+    def observing(self, payload: Iterable[Any]) -> Iterator[Any]:
+        """Yield a one-pass payload through, observing each record as it is pulled."""
+        for item in payload:
+            self.observe(item)
+            yield item
+
+    def apply(self, session: ParsedSession, provider: str) -> ParsedSession:
+        """Attach the typed unknown events and, absent a parser ledger, the proof.
+
+        A disk-backed event sink (the prepared-JSONL route's
+        ``SqliteSessionEventSink``) is appended to in place and never copied
+        into a list: an event-heavy stream keeps its events on disk.
+        """
+        events = session.session_events
+        if self._unknowns:
+            existing_types = {
+                str(event.payload.get("wire_type")) for event in events if event.payload.get("wire_type") is not None
+            }
+            if isinstance(events, list) or not isinstance(events, MutableSequence):
+                events = list(events)
+            self._append_unknown_events(events, existing_types, provider)
+            if provider == "claude_code":
+                # Claude declares its event order (missing timestamps first);
+                # the untimestamped admission events take their place in it.
+                from polylogue.sources.parsers.claude.code_parser import order_session_events
+
+                events = cast(list[ParsedSessionEvent], order_session_events(events))
+        accounting = session.unit_accounting or self._closed_proof()
+        accounting.assert_conserved()
+        return session.model_copy(update={"session_events": events, "unit_accounting": accounting})
+
+    def apply_each(self, sessions: Sequence[ParsedSession], provider: str) -> list[ParsedSession]:
+        """``apply`` for every session one observed input produced.
+
+        Each session without its parser's own ledger gets the input's proof,
+        closed once and shared.
+        """
+        return [self.apply(session, provider) for session in sessions]
+
+    def _closed_proof(self) -> ParseAccounting:
+        if self._proof is None:
+            self._ledger.expect(AdmissionUnit.OUTER_RECORD, self._count)
+            self._proof = self._ledger.close()
+        return self._proof
+
+    def _append_unknown_events(
+        self, events: MutableSequence[ParsedSessionEvent], existing_types: set[str], provider: str
+    ) -> None:
+        for wire_type, index in self._unknowns.items():
+            if wire_type in existing_types:
+                continue
+            events.append(
+                ParsedSessionEvent(
+                    event_type=f"{provider}_unknown_input",
+                    payload={"source_index": index, "wire_type": wire_type},
+                )
+            )
+            existing_types.add(wire_type)
+
+
+def admit_parsed_sessions(provider: str, payload: object, sessions: list[ParsedSession]) -> list[ParsedSession]:
+    """Apply the admission boundary to a dispatch route's result.
+
+    For routes that reach an undecorated entry point. A session that already
+    carries its parser's own ledger keeps it (the Claude Code stream admits
+    each of its sessions against its own records). Every other session --
+    one of several conversations in an OTLP document, a Hermes parent and its
+    materialized subagent trajectories -- is proven against the whole
+    document it was drawn from -- observed once and the closed proof shared,
+    so an N-session document costs one scan -- and no emitted session
+    reaches the writer without a conservation proof.
+    """
+    if all(session.unit_accounting is not None for session in sessions):
+        return sessions
+    items = payload if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)) else [payload]
+    observer = AdmissionObserver(_ADMISSION_SCANS.get(provider))
+    for item in items:
+        observer.observe(item)
+    return [
+        session if session.unit_accounting is not None else observer.apply(session, provider) for session in sessions
+    ]
+
+
+#: Origins whose outer records have declared discriminators; any other origin
+#: uses the conservative whole-record scan.
+_ADMISSION_SCANS: dict[str, Callable[[object], str | None]] = {
+    "hermes": hermes_unknown_wire_type,
+    "codex": codex_unknown_wire_type,
+    "claude_code": claude_code_unknown_wire_type,
+    "opentelemetry": otel_genai_unknown_wire_type,
+}
 
 
 def _payload_parameter(parser: Callable[..., ParsedSession]) -> tuple[int, str]:
@@ -174,7 +440,9 @@ def _payload_parameter(parser: Callable[..., ParsedSession]) -> tuple[int, str]:
     return names.index(name), name
 
 
-def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser]:
+def parser_admission(
+    provider: str, *, scan: Callable[[object], str | None] | None = None
+) -> Callable[[_SessionParser], _SessionParser]:
     """Put a common conservation boundary around every session parser.
 
     Provider implementations are still responsible for their known wire
@@ -189,12 +457,12 @@ def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser
         @wraps(parser)
         def wrapped(*args: Any, **kwargs: Any) -> ParsedSession:
             payload = args[payload_index] if len(args) > payload_index else kwargs.get(payload_name)
-            observed: list[str | None] = []
+            observer = AdmissionObserver(scan)
             if isinstance(payload, Iterator):
                 # A one-pass payload can only be classified while the parser
                 # pulls it; re-reading it afterwards would see an exhausted
                 # iterator and undercount every record.
-                instrumented = _observe_wire_types(payload, observed)
+                instrumented = observer.observing(payload)
                 if len(args) > payload_index:
                     args = (*args[:payload_index], instrumented, *args[payload_index + 1 :])
                 else:
@@ -202,54 +470,12 @@ def parser_admission(provider: str) -> Callable[[_SessionParser], _SessionParser
                 session = parser(*args, **kwargs)
             else:
                 raw_items = (
-                    list(payload)
-                    if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes))
-                    else [payload]
+                    payload if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)) else [payload]
                 )
-                observed = [_unknown_wire_type(item) for item in raw_items]
+                for item in raw_items:
+                    observer.observe(item)
                 session = parser(*args, **kwargs)
-            unknowns = [
-                (index, wire_type) for index, wire_type in enumerate(observed, start=1) if wire_type is not None
-            ]
-
-            existing_types = (
-                {
-                    str(event.payload.get("wire_type"))
-                    for event in session.session_events
-                    if event.payload.get("wire_type") is not None
-                }
-                if unknowns
-                else set()
-            )
-            # The parser owns its event sequence; a scratch-backed one must
-            # stay on disk, so admission events are appended in place rather
-            # than collecting the sequence into a list.
-            events = session.session_events
-            if not isinstance(events, MutableSequence):
-                events = list(events)
-            for index, wire_type in unknowns:
-                if wire_type in existing_types:
-                    continue
-                events.append(
-                    ParsedSessionEvent(
-                        event_type=f"{provider}_unknown_input",
-                        payload={"source_index": index, "wire_type": wire_type},
-                    )
-                )
-                existing_types.add(wire_type)
-
-            accounting = session.unit_accounting
-            if accounting is None:
-                ledger = AdmissionLedger()
-                ledger.expect(AdmissionUnit.OUTER_RECORD, len(observed))
-                for index, observed_type in enumerate(observed):
-                    if observed_type is None:
-                        ledger.materialized(AdmissionUnit.OUTER_RECORD, index, "parsed")
-                    else:
-                        ledger.unknown(AdmissionUnit.OUTER_RECORD, index, observed_type)
-                accounting = ledger.close()
-            accounting.assert_conserved()
-            return session.model_copy(update={"session_events": events, "unit_accounting": accounting})
+            return observer.apply(session, provider)
 
         return wrapped  # type: ignore[return-value]
 
