@@ -686,10 +686,15 @@ copy-forward design and explicit operator consent, never a routine migration.
 `ops.db` (disposable daemon telemetry) has no column-level upgrade helpers:
 its canonical DDL is the whole shape, and a column or CHECK change is a new
 ops shape that moves its schema identity, not an in-place upgrade. The
-`devtools verify schema-manifest` check enforces the whole boundary:
-numbered durable-tier migrations are allowed, and derived tiers are held to
-their identity hash. Ad hoc open-path upgrades are not a supported runtime
-route, but the lint does not pretend to detect them from function names.
+boundary has two enforcers. `devtools gate schema-manifest` runs
+`devtools verify schema-manifest --check-evolution`, which checks only the
+durable tiers: an effective durable DDL change must arrive as a numbered
+migration. Derived tiers are held to their identity hash at open time, not by
+that gate: `assert_derived_schema_identity`
+(`storage/sqlite/schema_bootstrap.py`) compares the stamped identity and
+raises `SchemaSkew` on a mismatch. Ad hoc open-path upgrades are not a
+supported runtime route, but the lint does not pretend to detect them from
+function names.
 
 ## Archive Activation
 
