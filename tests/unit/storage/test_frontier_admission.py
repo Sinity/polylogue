@@ -16,7 +16,7 @@ from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import CursorAuthorityBlockedError, LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
 from polylogue.storage import frontier_existence
-from polylogue.storage.raw_retention import raw_frontier_blocked_selected_paths
+from polylogue.storage.raw_retention import raw_frontier_blocked_raw_ids, raw_frontier_blocked_selected_paths
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 from polylogue.storage.sqlite.archive_tiers.ops_write import upsert_ingest_cursor
 
@@ -319,6 +319,30 @@ def test_selected_chain_refuses_only_its_path_and_keeps_new_path_gap(tmp_path: P
     assert str(healthy) not in selected.source_paths
     assert str(new) not in selected.source_paths
     assert str(new_alias) in selected.gap_source_paths
+
+
+def test_selected_raw_is_refused_for_another_component_broken_on_its_path(tmp_path: Path) -> None:
+    """A broken chain of another logical source on the same file refuses that file.
+
+    ``healthy`` and ``broken`` are independent components that share one
+    physical path. Anti-vacuity: checking only the selected component's heads
+    and sessions omits ``broken`` and admits the shared path.
+    """
+    initialize_active_archive_root(tmp_path)
+    shared = tmp_path / "shared.jsonl"
+    _raw(tmp_path, "healthy", path=shared, logical_key="codex:healthy")
+    _raw(tmp_path, "broken", path=shared, logical_key="codex:broken")
+    _session(tmp_path, "healthy", 1)
+    _session(tmp_path, "broken", 2)
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        conn.execute(
+            "UPDATE raw_sessions SET revision_kind = 'append', predecessor_raw_id = 'lost' WHERE raw_id = 'broken'"
+        )
+
+    blocked = raw_frontier_blocked_raw_ids(tmp_path, ["healthy"])
+
+    assert blocked.unattributed_reason is None
+    assert blocked.source_paths == frozenset({str(shared)})
 
 
 def test_shared_logical_key_refuses_connected_paths_without_refusing_sibling(tmp_path: Path) -> None:
