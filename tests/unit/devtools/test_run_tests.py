@@ -1151,7 +1151,7 @@ def test_a_green_run_of_the_same_selection_and_tree_is_reused(tmp_path: Path) ->
     of the near-miss receipts below is returned instead of ``None``.
     """
     runs = tmp_path / ".cache" / "verify" / "runs"
-    selection = ["tests/unit/test_a.py"]
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
     expected = _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
 
     assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") == expected
@@ -1170,7 +1170,7 @@ def test_a_green_run_of_the_same_selection_and_tree_is_reused(tmp_path: Path) ->
 )
 def test_a_red_or_foreign_run_is_never_reused(tmp_path: Path, overrides: dict[str, Any]) -> None:
     runs = tmp_path / ".cache" / "verify" / "runs"
-    selection = ["tests/unit/test_a.py"]
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
     _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1", **overrides)
 
     assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
@@ -1180,7 +1180,7 @@ def test_a_green_older_than_a_pruned_red_is_not_reused(tmp_path: Path) -> None:
     """Anti-vacuity: skip the history check and the surviving older green is
     returned although a later red of unknown inputs was pruned."""
     runs = tmp_path / ".cache" / "verify" / "runs"
-    selection = ["tests/unit/test_a.py"]
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
     expected = _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
     history = tmp_path / ".cache" / "verify" / "history.jsonl"
     history.write_text(
@@ -1199,7 +1199,7 @@ def test_a_pruned_red_later_in_the_same_second_blocks_reuse(tmp_path: Path) -> N
     """Anti-vacuity: compare history run ids lexically and the pruned red,
     whose suffix sorts below the green's, is taken for an earlier run."""
     runs = tmp_path / ".cache" / "verify" / "runs"
-    selection = ["tests/unit/test_a.py"]
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
     _green_receipt(
         runs,
         "20260101T000000Z-focused-test-1-ff",
@@ -1226,7 +1226,7 @@ def test_a_later_red_in_the_same_second_outranks_a_green(tmp_path: Path) -> None
     """Anti-vacuity: order by directory name alone and the green, whose random
     suffix sorts higher, is returned although the red started after it."""
     runs = tmp_path / ".cache" / "verify" / "runs"
-    selection = ["tests/unit/test_a.py"]
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
     _green_receipt(
         runs,
         "20260101T000000Z-focused-test-1-ff",
@@ -1279,7 +1279,7 @@ def test_identical_selections_in_one_checkout_share_one_run(tmp_path: Path, monk
     import threading
 
     monkeypatch.setattr(run_tests, "ROOT", tmp_path)
-    selection = ["tests/unit/test_a.py"]
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
     lock_dir = tmp_path / ".cache" / "verify" / "inflight"
     lock_dir.mkdir(parents=True)
     digest = hashlib.sha256(json.dumps(selection).encode("utf-8")).hexdigest()[:24]
@@ -1312,7 +1312,7 @@ def test_reuse_is_keyed_on_the_execution_environment(tmp_path: Path) -> None:
     ``default``-profile lookup returns the ``verify``-profile receipt.
     """
     runs = tmp_path / ".cache" / "verify" / "runs"
-    selection = ["tests/property/test_a.py"]
+    selection = ["tests/property/test_a.py", "--randomly-seed=1"]
     verify_key = run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "verify", "SHELL": "/bin/zsh"})
     default_key = run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "default", "SHELL": "/bin/zsh"})
     receipt = _green_receipt(
@@ -1639,7 +1639,7 @@ def test_an_ignored_conftest_disables_reuse(tmp_path: Path) -> None:
     Anti-vacuity: drop the ignored-source guard and the receipt below is reused.
     """
     runs = tmp_path / ".cache" / "verify" / "runs"
-    selection = ["tests/unit/foo/test_a.py"]
+    selection = ["tests/unit/foo/test_a.py", "--randomly-seed=1"]
     receipt = _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
     assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") == receipt
 
@@ -1685,7 +1685,7 @@ def test_an_ignored_fixture_disables_reuse(tmp_path: Path) -> None:
     """Anti-vacuity: look only at ignored ``*.py`` and an ignored JSON fixture a
     parametrization globs leaves the receipt reusable."""
     runs = tmp_path / ".cache" / "verify" / "runs"
-    selection = ["tests/unit/test_a.py"]
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
     receipt = _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
     assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") == receipt
     (tmp_path / ".git" / "info").mkdir(parents=True, exist_ok=True)
@@ -1699,7 +1699,7 @@ def test_an_ignored_root_pytest_config_disables_reuse(tmp_path: Path) -> None:
     """Anti-vacuity: omit root config files from the guard and an ignored
     ``pytest.ini`` that changes collection leaves the receipt reusable."""
     runs = tmp_path / ".cache" / "verify" / "runs"
-    selection = ["tests/unit/test_a.py"]
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
     _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
     (tmp_path / ".git" / "info").mkdir(parents=True, exist_ok=True)
     (tmp_path / ".git" / "info" / "exclude").write_text("pytest.ini\n", encoding="utf-8")
@@ -1710,7 +1710,7 @@ def test_an_ignored_root_pytest_config_disables_reuse(tmp_path: Path) -> None:
 def test_a_newer_red_run_outranks_an_older_green(tmp_path: Path) -> None:
     """Anti-vacuity: skip non-green receipts while scanning and the older green is returned."""
     runs = tmp_path / ".cache" / "verify" / "runs"
-    selection = ["tests/unit/test_a.py"]
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
     _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
     _green_receipt(runs, "20260102T000000Z-focused-test-2-b", argv=selection, digest="d1", status="failed", exit_code=1)
     assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
@@ -1732,7 +1732,7 @@ def test_pruned_red_history_is_read_from_the_configured_path(tmp_path: Path, mon
     (XDG) history path is missed, so the older green is reused.
     """
     runs = tmp_path / ".cache" / "verify" / "runs"
-    selection = ["tests/unit/test_a.py"]
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
     _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
     history = tmp_path / "state" / "history.jsonl"
     history.parent.mkdir()
