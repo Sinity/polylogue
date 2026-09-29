@@ -8,6 +8,7 @@ for -- and the equivalence of the three routes that write sessions.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import sys
@@ -17,6 +18,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
+from polylogue.storage.blob_store import BlobStore
 from tests.infra.daemon_operations import cli_daemon_archive, running_daemon_operations
 
 
@@ -133,15 +135,17 @@ def test_cli_import_daemon_ingest_and_from_empty_build_write_identical_material(
     assert cli_material == expected, (cli_material, expected)
 
 
-def test_reimporting_an_excised_file_is_a_skip_not_an_unsettled_operation(tmp_path: Path) -> None:
-    """Re-offering excised bytes through ``ingest`` completes and resurrects nothing.
+def test_reimporting_an_excised_file_is_a_typed_permanent_refusal(tmp_path: Path) -> None:
+    """Re-offering excised bytes through ``ingest`` is refused, settled and effect-free.
 
-    The live batch path counts an excised record as a skip; the declared ingest
-    operation shares the same source-tier writer, so it must too.
+    Every input of the request is excised, so the publication flush refuses
+    its bytes and the request accepts nothing: it settles ``failed`` with the
+    non-retryable ``ContentExcisedError``, never ``indeterminate``, and the
+    excised bytes are not back on disk (polylogue-u6jyu).
 
-    Anti-vacuity: let ``ContentExcisedError`` escape the admission in
-    ``IngestExecution._publish_record`` and the second ingest never settles:
-    it reports ``indeterminate``.
+    Anti-vacuity: let the ingest input route reserve excised bytes again (drop
+    the excision read in ``BlobPublicationReservationStore.reserve_many``) and
+    the file's blob is published again and the request completes.
     """
     first, _second = _two_sessions(tmp_path / "capture-files")
     with running_daemon_operations(tmp_path / "archive", session_derivation=True) as stack:
@@ -160,8 +164,13 @@ def test_reimporting_an_excised_file_is_a_skip_not_an_unsettled_operation(tmp_pa
             "ingest", {"path": str(first)}, archive_root=root, request_id="reimport-excised"
         )
 
-        assert again is not None and again["outcome"] == "completed", again
+        assert again is not None and again["outcome"] == "failed", again
+        assert again["error"]["code"] == "ContentExcisedError", again
+        assert again["error"]["retryable"] is False, again
+        assert again["accepted_reference"] is None, again
         assert _session_ids(stack.archive_root) == []
+        file_hash = hashlib.sha256(first.read_bytes()).hexdigest()
+        assert not BlobStore(stack.archive_root / "blob").blob_path(file_hash).exists()
 
 
 def test_confirmation_bound_mutation_refuses_an_unconfirmed_request(tmp_path: Path) -> None:
