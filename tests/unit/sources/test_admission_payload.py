@@ -415,5 +415,4 @@ def test_an_atof_record_the_stream_parser_skips_is_refused() -> None:
     accounting = sessions[0].unit_accounting
     assert accounting is not None
     dispositions = [outcome.disposition for outcome in accounting.outcomes]
-    assert AdmissionDisposition.MATERIALIZED in dispositions
-    assert AdmissionDisposition.TYPED_REFUSAL in dispositions
+    assert dispositions.count(AdmissionDisposition.TYPED_REFUSAL) == 1

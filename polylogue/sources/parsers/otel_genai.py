@@ -512,9 +512,12 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
         for resource_id, span, schema_url in spans
         if _span_coordinate(resource_id, span)[1] in genai_traces
     ]
-    # Topology is trace-scoped: ``(trace_id, span_id)`` -> (own conversation,
-    # parent span, resource, start). Span ids are unique within a trace.
-    span_details: dict[tuple[str, str], tuple[str | None, str | None, str, int]] = {}
+    # ``(resource, trace, span)`` -> (own conversation, parent span, start).
+    span_details: dict[tuple[str, str, str], tuple[str | None, str | None, int]] = {}
+    #: Where each ``(trace, span)`` lives: a parent is looked up in its
+    #: child's resource first, then anywhere in the trace (a cross-resource
+    #: root), when exactly one resource holds it.
+    locations: dict[tuple[str, str], list[str]] = defaultdict(list)
     for resource_id, span, _schema_url in spans:
         trace_id = optional_string(span.get("traceId")) or optional_string(span.get("trace_id"))
         span_id = optional_string(span.get("spanId")) or optional_string(span.get("span_id"))
@@ -529,33 +532,39 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
                 for copy, _url in variants[_span_coordinate(resource_id, span)]
                 if (found := optional_string(_attributes(copy.get("attributes")).get("gen_ai.conversation.id")))
             }
-            span_details[(trace_id, span_id)] = (
+            span_details[(resource_id, trace_id, span_id)] = (
                 next(iter(named)) if len(named) == 1 else None,
                 optional_string(span.get("parentSpanId")) or optional_string(span.get("parent_span_id")),
-                resource_id,
                 _span_key(span)[0],
             )
+            locations[(trace_id, span_id)].append(resource_id)
 
-    def conversation_for(trace_id: str, span_id: str) -> tuple[str, str] | None:
+    def parent_of(key: tuple[str, str, str]) -> tuple[str, str, str] | None:
+        resource_id, trace_id, _span_id = key
+        parent_id = span_details[key][1]
+        if parent_id is None:
+            return None
+        if (resource_id, trace_id, parent_id) in span_details:
+            return (resource_id, trace_id, parent_id)
+        holders = locations.get((trace_id, parent_id), [])
+        return (holders[0], trace_id, parent_id) if len(holders) == 1 else None
+
+    def conversation_for(key: tuple[str, str, str]) -> tuple[str, str] | None:
         """The conversation a span or its nearest ancestor names, with that span's resource."""
-        seen: set[str] = set()
-        while span_id not in seen:
-            seen.add(span_id)
-            details = span_details.get((trace_id, span_id))
-            if details is None:
-                break
-            conversation_id, parent_id, resource_id, _start = details
+        seen: set[tuple[str, str, str]] = set()
+        current: tuple[str, str, str] | None = key
+        while current is not None and current not in seen:
+            seen.add(current)
+            conversation_id = span_details[current][0]
             if conversation_id:
-                return conversation_id, resource_id
-            if parent_id is None:
-                break
-            span_id = parent_id
+                return conversation_id, current[0]
+            current = parent_of(current)
         return None
 
     # A span joins the session of the span that supplied its conversation:
     # a GenAI span keeps its own resource, and a topology span from another
     # resource of the trace joins the conversation it relates to.
-    resolved: dict[tuple[str, str], tuple[str, str] | None] = {key: conversation_for(*key) for key in span_details}
+    resolved: dict[tuple[str, str, str], tuple[str, str] | None] = {key: conversation_for(key) for key in span_details}
     # A span with no conversation of its own or above it (the HTTP/root span
     # over a GenAI child) is topology evidence of the conversation below it,
     # not a separate trace session. When several conversations share the
@@ -563,40 +572,34 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
     # later sibling conversation appended to the export cannot displace.
     # Spans beneath it follow; a trace with exactly one conversation keeps
     # every remaining span there too.
-    adopted: dict[tuple[str, str], tuple[int, str, tuple[str, str]]] = {}
-    for (trace_id, span_id), conversation in resolved.items():
+    adopted: dict[tuple[str, str, str], tuple[int, str, tuple[str, str]]] = {}
+    for key, conversation in resolved.items():
         if conversation is None:
             continue
-        claim = (span_details[(trace_id, span_id)][3], span_id, conversation)
-        seen_ids = {span_id}
-        parent_id = span_details[(trace_id, span_id)][1]
-        while parent_id is not None and parent_id not in seen_ids:
-            seen_ids.add(parent_id)
-            parent_key = (trace_id, parent_id)
-            if parent_key not in span_details:
-                break
+        claim = (span_details[key][2], key[2], conversation)
+        seen_keys = {key}
+        parent_key = parent_of(key)
+        while parent_key is not None and parent_key not in seen_keys:
+            seen_keys.add(parent_key)
             if resolved.get(parent_key) is None and (parent_key not in adopted or claim < adopted[parent_key]):
                 adopted[parent_key] = claim
-            parent_id = span_details[parent_key][1]
+            parent_key = parent_of(parent_key)
     trace_conversations: dict[str, set[tuple[str, str]]] = defaultdict(set)
-    for (trace_id, _span_id), conversation in resolved.items():
+    for (_resource_id, trace_id, _span_id), conversation in resolved.items():
         if conversation is not None:
             trace_conversations[trace_id].add(conversation)
 
-    def group_conversation(trace_id: str, span_id: str) -> tuple[str, str] | None:
-        key = (trace_id, span_id)
+    def group_conversation(key: tuple[str, str, str]) -> tuple[str, str] | None:
         if resolved.get(key) is not None:
             return resolved[key]
-        seen_ids: set[str] = set()
-        current: str | None = span_id
-        while current is not None and current not in seen_ids:
-            seen_ids.add(current)
-            current_key = (trace_id, current)
-            if current_key in adopted:
-                return adopted[current_key][2]
-            details = span_details.get(current_key)
-            current = details[1] if details is not None else None
-        only = trace_conversations.get(trace_id, set())
+        seen_keys: set[tuple[str, str, str]] = set()
+        current: tuple[str, str, str] | None = key
+        while current is not None and current not in seen_keys:
+            seen_keys.add(current)
+            if current in adopted:
+                return adopted[current][2]
+            current = parent_of(current) if current in span_details else None
+        only = trace_conversations.get(key[1], set())
         return next(iter(only)) if len(only) == 1 else None
 
     groups: dict[tuple[str, str, str], list[tuple[dict[str, object], str | None, str]]] = defaultdict(list)
@@ -605,7 +608,7 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
         span_id = optional_string(span.get("spanId")) or optional_string(span.get("span_id"))
         if trace_id is None or span_id is None:
             continue
-        conversation = group_conversation(trace_id, span_id)
+        conversation = group_conversation((resource_id, trace_id, span_id))
         if conversation is not None:
             conversation_id, conversation_resource = conversation
             groups[(conversation_resource, "conversation", conversation_id)].append((span, schema_url, resource_id))

@@ -247,11 +247,13 @@ def test_canonical_span_precedes_schema_url_for_equal_rank_and_start() -> None:
     assert [session.model_dump(mode="json") for session in forward] == [
         session.model_dump(mode="json") for session in reversed_result
     ]
+    # The two copies name different conversations: the coordinate is
+    # identity-ambiguous and keys by its trace (Codex P2, #5711).
     assert {session.provider_session_id for session in forward} == {
-        "synthetic-agent:conversation:a-canonical",
+        "synthetic-agent:trace:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "synthetic-agent:conversation:conversation-demo-7",
     }
-    selected = next(session for session in forward if session.provider_session_id.endswith(":a-canonical"))
+    selected = next(session for session in forward if session.provider_session_id.endswith(":trace:" + "a" * 32))
     assert selected.messages == []
     assert [event.event_type for event in selected.session_events] == [
         "otel_span_evidence",
