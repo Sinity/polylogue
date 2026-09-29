@@ -31,6 +31,16 @@ immutability and refuses immutability against any other live-generation
 profile, so "immutable" can only ever mean a sealed generation and never "the
 caller intends not to write".
 
+A file is not sealed while a non-empty `-wal` or rollback journal sits beside
+it: an `immutable=1` reader reads the main file alone and would skip that
+committed state. `open_readonly_connection`, `attach_readonly_database` and
+`open_sealed_staging_connection` refuse such a file with
+`LiveGenerationImmutableError` (`immutable_over_live_state`). Freezing a
+snapshot is an exclusive-boundary checkpoint that folds the WAL into the main
+file, after which a sealed `ReadFrame` binds that file's generation identity.
+A caller that must read a live tier's committed WAL state uses a live
+`mode=ro` profile instead.
+
 Historical continuity liveness classification uses the dedicated
 `open_sealed_staging_connection` factory. It opens `mode=ro&immutable=1` with
 the bounded offline cache/time profile and `temp_store=MEMORY`, but leaves

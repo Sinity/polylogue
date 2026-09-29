@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import replace
 from pathlib import Path
 
 import aiosqlite
@@ -61,28 +60,6 @@ async def execute_raw_admission_plan_async(
         # Raise the excision error the ingest orchestrators catch: the base
         # policy error would abort the whole batch instead of skipping one file.
         raise ContentExcisedError(blob_hash=request.blob_hash, source_path=request.source_path)
-    # Before coordinate-sensitive raw ids, normal acquisition used the blob
-    # hash itself as its raw id.  Reuse that legacy row only when it proves the
-    # same coordinate and bytes; a different coordinate must retain the new
-    # distinct observation identity.
-    legacy_raw_id = request.blob_hash.hex()
-    if plan.raw_id != legacy_raw_id:
-        cursor = await conn.execute(
-            """
-            SELECT native_id, source_path, source_index, blob_hash, blob_size
-            FROM raw_sessions WHERE raw_id = ?
-            """,
-            (legacy_raw_id,),
-        )
-        legacy = await cursor.fetchone()
-        if legacy is not None and tuple(legacy) == (
-            request.native_id,
-            request.source_path,
-            request.source_index,
-            request.blob_hash,
-            request.blob_size,
-        ):
-            plan = replace(plan, raw_id=legacy_raw_id)
     cursor = await conn.execute("PRAGMA database_list")
     schemas = {str(row[1]) for row in await cursor.fetchall()}
     excision_schema = "source_tier" if "source_tier" in schemas else "main"
