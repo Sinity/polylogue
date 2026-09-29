@@ -92,7 +92,6 @@ def _collect_field_stats(
         return all_stats[path]
 
     numeric_sample_cap = 500
-    string_length_cap = 2000
 
     current_session_id: str | None = None
     current_session_token: str | None = None
@@ -206,10 +205,6 @@ def _collect_field_stats(
                 digest=value_digest,
                 session_token=current_session_token,
             )
-            if len(stats.string_lengths) < string_length_cap:
-                stats.string_lengths.append(len(value))
-            else:
-                stats.truncated_evidence["string_length_samples"] += 1
             stats.string_length_distribution.observe(len(value))
             if value in stats.observed_values or len(stats.observed_values) < ENUM_VALUE_CAP:
                 if value not in stats.observed_values:
@@ -241,7 +236,6 @@ def _collect_field_stats(
             newline_count = value.count("\n")
             if newline_count > 0:
                 stats.is_multiline += 1
-            _append_bounded(stats.newline_counts, newline_count, stats, "newline_samples")
             stats.newline_distribution.observe(newline_count)
             return
 

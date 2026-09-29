@@ -24,6 +24,7 @@ from polylogue.schemas.generation.dynamic_keys import (
     merge_observed_structure_schemas,
     observed_structure_schema,
 )
+from tests.infra.field_stats_sketches import sketch
 
 # =============================================================================
 # is_dynamic_key
@@ -230,7 +231,7 @@ class TestFieldStatsProperties:
         assert not stats.is_enum_like
 
     def test_string_length_stats(self) -> None:
-        stats = FieldStats(path="$.x", string_lengths=[3, 5, 7, 9])
+        stats = FieldStats(path="$.x", string_length_distribution=sketch([3, 5, 7, 9]))
         result = stats.string_length_stats
         assert result is not None
         assert result["min"] == 3
@@ -239,7 +240,7 @@ class TestFieldStatsProperties:
         assert result["stddev"] > 0
 
     def test_string_length_stats_single(self) -> None:
-        stats = FieldStats(path="$.x", string_lengths=[10])
+        stats = FieldStats(path="$.x", string_length_distribution=sketch([10]))
         result = stats.string_length_stats
         assert result is not None
         assert result["stddev"] == 0.0

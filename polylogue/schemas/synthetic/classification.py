@@ -152,12 +152,6 @@ _SUPPORTED_FORMAT_VALUES = frozenset(
 _SUPPORTED_SEMANTIC_ROLE_VALUES = frozenset({"message_role", "message_body", "message_timestamp", "session_title"})
 _PERSISTED_SCHEMA_METADATA_ANNOTATIONS = frozenset(
     {
-        # Inference no longer emits the Gaussian string-length summary: per-field
-        # ``string_length`` histograms in x-polylogue-observed-distribution are
-        # the only length authority the runtime reads. Packages committed before
-        # that change still carry it; it is inert metadata until the next
-        # ``devtools schema commit`` regenerates them.
-        "x-polylogue-string-lengths",
         "x-polylogue-anchor-profile-family-id",
         "x-polylogue-artifact-kind",
         "x-polylogue-element-bundle-scope-count",

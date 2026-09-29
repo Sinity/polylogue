@@ -52,8 +52,6 @@ class FieldStats:
     is_multiline: int = 0
     value_count: int = 0
     value_session_ids: dict[str, set[str]] = field(default_factory=dict)
-    string_lengths: list[int] = field(default_factory=list)
-    newline_counts: list[int] = field(default_factory=list)
     numeric_values: list[float] = field(default_factory=list)
     distinct_value_count: int = 0
     values_per_session: dict[str, set[str]] = field(default_factory=dict)
@@ -92,12 +90,6 @@ class FieldStats:
 
     def __post_init__(self) -> None:
         """Backfill sketches for direct fixtures using legacy sample lists."""
-        if not self.string_length_distribution.count:
-            for value in self.string_lengths:
-                self.string_length_distribution.observe(value)
-        if not self.newline_distribution.count:
-            for value in self.newline_counts:
-                self.newline_distribution.observe(value)
         if not self.numeric_distribution.count:
             for numeric_value in self.numeric_values:
                 self.numeric_distribution.observe(numeric_value)

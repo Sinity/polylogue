@@ -106,163 +106,163 @@
     {
       "element_hashes": [
         {
-          "content_hash": "2710e9d2d4bdc407dee2da348a7df8869b6e6c0c00fe048c017c48ca837ae3e7",
+          "content_hash": "cb4468d8e5cd531cd599aaf05b84f2a551086c251b69c6412ec3182e8dcd01a4",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "6529f5708e8c149706656cebb30a9c11293231a296b91e08e998b754e37f6fee",
       "package_version": "v1",
       "provider": "antigravity",
-      "version_hash": "c96e233e4c883b90b3ee790fce6c5371190931af7d1ad23285086150cf7e3805"
+      "version_hash": "a4e044aade9f7f71af3cac36b12f9a5a8f5953ec7d68cd1b24ebf953b525663e"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "41f6dbef45f3a0578edbae0773f5dda916da050bc63bce1bf314a134c76c4476",
+          "content_hash": "0d58f21e6a838eba13d5b41ed4e5142f3aa1923c22b204c4f272d6145b25c13d",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "a306324a17e4242a8b80555c609fdd13aada8ec46c119035715d58d69e6e1104",
       "package_version": "v2",
       "provider": "antigravity",
-      "version_hash": "50e30666ca99c5499a533e21320ae34c953d9547aef3d06bc92ca205b6b0b0e2"
+      "version_hash": "f1a0c6eb03cd698b04017fab73d4486ae7f76a928c1129b41f7b191c23b7f472"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "b07dc99fddd9029f81a5cb082f8b9ae2a84af2ca7adb6cf8d3da2655a6e96c4f",
+          "content_hash": "354d5ec0aa2208b372697d32cdebdbe1887334393899bcb47fd06d8205f5e266",
           "element_kind": "agent_sidecar_meta"
         }
       ],
       "package_hash": "8df8d922be6a39167471d9e3666ecde20123ec8497a894891cf9a61bb5fd87df",
       "package_version": "v3",
       "provider": "antigravity",
-      "version_hash": "02cbc2273a2fd1bfd9fbbd333e9954872b16e3dfc9420ca3d688fbcd72471a30"
+      "version_hash": "00fa1d445a3692eab4ae8b2069d324da7141b9be515a500105f2dcfc729cf0d6"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "3016d8d8d135da31b14ec9287281a168e7fe0f53c79fdf448c17830698db32ce",
+          "content_hash": "1443030593e7270e5a7bf12f3305d6a0dc9993b06a8bc878016eaf19e5a73182",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "fad7f060c6ca45a01e34347976a52901e835f8125749af230459a0bef7d9594b",
       "package_version": "v1",
       "provider": "chatgpt",
-      "version_hash": "8f01e09159a340d05c56a2393c4cd2645dbc17bfcaf184ee51fdcf2e72125a48"
+      "version_hash": "4bfb5d5ae24716ae92bcfe169ed991945e2cc4278df446539885eba0c19c6c30"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "9053a378f1dcb7a3e9e9c5635a71927df6edf725e22a7447348148e621ed928c",
+          "content_hash": "ecc32029fd07798c50e476c14079e1eedadef300b670f3fa93829874a47c7fc5",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "36c9f1c4df46bde6835f7792035dbbc4e90fd1b98b19bc1b04936a59110c81e5",
       "package_version": "v2",
       "provider": "chatgpt",
-      "version_hash": "d810d7d162d3e2ab1c8afb6c4b058396e9d7af1c1155e805bad1213bb5183b39"
+      "version_hash": "81fd90f0f16a1752405d21cda4053e34e679e93b2f266e8dc8129263273d71d2"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "3f040748b91e89c66cf55d2ae72ef2b29dc7658e4a202b99b5460a4024bfc789",
+          "content_hash": "267f36cc81ebf2579758a4ab2ebc1f6e95532059841f5aebb95825c1044423e0",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "37eff1b16c9790ce2099b20f6586c3f83a38dc9e1de774b24c016f258a9ad60f",
       "package_version": "v3",
       "provider": "chatgpt",
-      "version_hash": "196906aee27ef954583a50fc240763d893b437444539d03061e5b887b95a8121"
+      "version_hash": "efc2bab2c845bb1c33b60448163c53aa8563a96127e4d1af996e42e430888862"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "085e430d921e2a6bdabd42d59a271703cbfcc6e6eb2b3987318009ac7c5350ae",
+          "content_hash": "014f8b01598399093bbfb0df14660013084936e437ab96d0b6b18f716f58bb02",
           "element_kind": "export_asset"
         },
         {
-          "content_hash": "ee3ac533081870aa47ef335fe6c604216312879df4c0698dc2cef9ffda616e2a",
+          "content_hash": "855b980484fa60cf3ef6668eea2a7bfcc8ad38aacf2a76b5c2df91451621c86a",
           "element_kind": "export_asset_index"
         },
         {
-          "content_hash": "4d87a4830b6cfc1394b11aebbd7e02afee360375c403e01541fe6725eafdb731",
+          "content_hash": "1da0a8a2e1cc43901134280d611a5f5b30b961d3534ada8a8c47a4b423b7bd30",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "ecc82bbb938354504668097a0e2a24c381415d67a87e3ff651b13fa55331087c",
       "package_version": "v4",
       "provider": "chatgpt",
-      "version_hash": "4acde2427cab789abd0ff4d92afd9d3083a4715566bd8f7f835eb714337aa28c"
+      "version_hash": "02a432f030e3a0285d23aada8db3dcbe6396b8374266f4e80ccbe99a2749cfb9"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "4b2e5462b3f657316149e4ba7a1d2b98da4faba249560fbf5a2e5b4fed308798",
+          "content_hash": "4a3944c643df159a8e506cdd67778641cf6140b3c008f9f89f92237b4f0f1e6d",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "adb60ce8d5c1753b03e61addbe0649e0044d205370113e6fe771aebeaed20f8b",
       "package_version": "v1",
       "provider": "claude-ai",
-      "version_hash": "c1e4b14828e936cd77aefc263bbb459a7930d88542458d17eba3dac19e034883"
+      "version_hash": "dd792b18a6e29e8f0f04b1c154b98d1913251fabc4a996b1ca085a4e82f3e5cf"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "465a344053891829b6b65bd1c7c2557de8b7d1709ad0dec95cffe50b2a1ec01d",
+          "content_hash": "3222816a4cb28bac66ae42c43d8607b6267b6ab3a05ec38974ea04b469f58925",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "2825782e3d6fa41db6b97ad99c54455a0de1632f3b9eb91ed41d7707a732c395",
       "package_version": "v2",
       "provider": "claude-ai",
-      "version_hash": "f3c3df7c234435d756e7517f1ebff60b37af0b56b584aa3bb6aeecb52823a676"
+      "version_hash": "aaf050ccb7e54209954f75f4960c13e20116a1ab662222e7fbee2bc543ee5d2d"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "125c839598e6e926545ee7431c562f8eb5ff309a4241ff58f813be4ade620220",
+          "content_hash": "ce3753c0ed37ab3cee2b5612ee426e658cd3a09d9ec00c5c91df700485da67cf",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "2491b9ff8a42c54328c47785aa35d779a45d7f4b3ae3e2ce68e777d55fb9a91b",
       "package_version": "v3",
       "provider": "claude-ai",
-      "version_hash": "0df5e95715135b11aa5bb235457a10b854b4ae9273c69fc3bb97f854f94a0c4e"
+      "version_hash": "b9d051728e9d7f88fa11cc36854137c0a73739b8d06cdeed6581e07a5bb04551"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "3d586af0dadfbb29608bb5330e8a8bba40a3c5f34d18604d6ff29058920886b3",
+          "content_hash": "662609bb96bb25db1841aaffa81d2cc2b3a8a301b6b699c734ea1eed2e08c16f",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "fcf7657d09971f697c6fd0a122e8e05106e07ed1f565211a18faa5154c90e7d0",
       "package_version": "v4",
       "provider": "claude-ai",
-      "version_hash": "c81a0a39690c9deba0eebbf72a7160e5fc781dc00fa761a38ba952e81d168667"
+      "version_hash": "fa50d7e57eeba6dfbd0fe59578909a4d6e632acc560b52370ab9ffd1abf9d06f"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "3d392115da4d97af56d31359a0e9c616c5eb39db2ecddb358a365b8ad4283e06",
+          "content_hash": "414cd0173d89d2b3294aa7872afb2e147f85269128e70bd177106d33c64a9d15",
           "element_kind": "session_record_stream"
         }
       ],
       "package_hash": "57d07a59f05bb8ef01254bc836b7f0e754e71167c875b4aa38e6c8129d5745b7",
       "package_version": "v1",
       "provider": "claude-code",
-      "version_hash": "b59fba995b56918995803232b74c7032f8e783dfc317f06c1f43f0edcd9e159b"
+      "version_hash": "4cad57ba46b55e8da07dd8332f8af7d62d1b4238d113c24416012038e75ddce3"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "50b904866547b603eb58c9d776c7772f69735c2327b4782ab5beb5d6bf0c6dac",
+          "content_hash": "1f4954250964390ce5a887ca61e4bdd068288c934febc776b5d297a0b4cf6584",
           "element_kind": "agent_transcript"
         },
         {
-          "content_hash": "65caa799ba2f8a1fdb4fe3b2aed30b6a76b20e52c1917aee929c23a1fc57b0eb",
+          "content_hash": "a6aaff63b259405a67e6d6e801b8cd0d08e5fe1615dfb2365ddd516151bb55a8",
           "element_kind": "coordinator_session_stream"
         },
         {
@@ -273,24 +273,24 @@
       "package_hash": "321631404bdd46ba87e45508a116291f25aa7e9aece5874a378eecff25a0d830",
       "package_version": "v2",
       "provider": "claude-code",
-      "version_hash": "d26393251a332400c6e2b951f467fc2fad73a1bbb00117ae0b21ef3394e35365"
+      "version_hash": "34a1edf899e62897ea2ee07b024c45e0dd45681d3679fd167f4e4742fa7d240b"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "74707c547e00d1b7e9925a67e2733337fe0e2e278f7982cfc5fc76f0b2217cc9",
+          "content_hash": "4dc7108019d90196f79b9ee9596e204899699a2662715081ffd8129b2a83b6ac",
           "element_kind": "agent_sidecar_meta"
         },
         {
-          "content_hash": "320f97ff2b68fc03c34df47a37cc75127e85716d4dd4ffd25fe1a242048646de",
+          "content_hash": "eb524da07576ca37f21c5b844a9bda7bf093fa8305c3265b12106f56a7166020",
           "element_kind": "agent_transcript"
         },
         {
-          "content_hash": "2386e2ba40e6e4c3daf4247d9f773c69558e4b45705e4d31f52db08175d7d58f",
+          "content_hash": "e36753103c8494f5bcf2dd90d3a76e2d2667024d0b90a6e209c65357b0dbd73b",
           "element_kind": "coordinator_session_stream"
         },
         {
-          "content_hash": "b6d8ae87bd5b9988e7bd912b29141ab5f320cfe4f18e7555b3c2703c6b1e1049",
+          "content_hash": "80542e97816aae3a6bc187d68fbebeffcf9d7436693a58c5b118f40e5cb82325",
           "element_kind": "session_index"
         },
         {
@@ -298,35 +298,35 @@
           "element_kind": "session_record_stream"
         },
         {
-          "content_hash": "1a6d533e0b4a3d3fca30a377964e063b953b667995ea49be7e75a7847841a4c0",
+          "content_hash": "f8b2e3ee39615e02803673bafc6e286485e287543d27c4fe590c0a4219e7be57",
           "element_kind": "workflow_journal"
         },
         {
-          "content_hash": "64b51445dac3b434a8d37ae39e733ad74bba3d0e8c6a1218c9555670a4fde28f",
+          "content_hash": "f509575107a752b0fc0714935368925ad15a20a64f2768a445799ff24543514d",
           "element_kind": "workflow_run_snapshot"
         }
       ],
       "package_hash": "9b2151c349e811df2f29ea45193b4a57f39ccc75e98fbd9e5c04182b79bb06d4",
       "package_version": "v3",
       "provider": "claude-code",
-      "version_hash": "4f73bdbd7b58619282c336ae0469f84f9fb316c13e82abd2fe259bccd29401f1"
+      "version_hash": "11e0f9e484ead12aae21b2e84216b2de6eb9bb39f44889102a9c742367862cc8"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "6551148c7c14cc84ead2724518e3dda88fd8b44161c4d9d6d4536098f6b79fb5",
+          "content_hash": "e15cf0a1a5f22ef952142c8a3693d129c8bbda3c962e9f13f2deb8a75acf6d88",
           "element_kind": "agent_sidecar_meta"
         },
         {
-          "content_hash": "dacb1f0049d2ddaa3bcc83e6ae8ba6f4c3a141d11392269b894d308d288e6517",
+          "content_hash": "6c4dc8667746cf57f0c5e3e33c618dee50b2653f05603e0b031875d42ca5de27",
           "element_kind": "agent_transcript"
         },
         {
-          "content_hash": "fac98feba9b893980573239957ae7268d3d41cef88d2f52f77b4277b673cf02c",
+          "content_hash": "334ebcc6e0fbcd97a2dc7e5262e1da838dfaaeb0ffc8fb93f45f4ebb63ce8248",
           "element_kind": "coordinator_session_stream"
         },
         {
-          "content_hash": "30ff2503787c18082748193eb3221c0753510db2621f4bbaf6d7c5d5c013d6d2",
+          "content_hash": "fb48763702006f12866adb2193d64982f97ff73ab5573b570658c35b417b435a",
           "element_kind": "session_index"
         },
         {
@@ -334,35 +334,35 @@
           "element_kind": "session_record_stream"
         },
         {
-          "content_hash": "198cf5a46eeb4ac36c4039fc9e3d88ca0ce2b59378c61b172e25aa0b2f8a9c10",
+          "content_hash": "3aed93da450140c789021710eabcbf375f66701c1cac6699f7a5a03e2b63282c",
           "element_kind": "workflow_journal"
         },
         {
-          "content_hash": "91dde7382f7ae1df2a1c0a6b0324ff0e657235e503cc9b50e2c68fd219346a4d",
+          "content_hash": "31d3f246742ad6a97c0c76e283486e025d7ef33af3a9928848104e6fe8d126a5",
           "element_kind": "workflow_run_snapshot"
         }
       ],
       "package_hash": "bb5b4526268e0c7720f9a0285bd12e2bb26e5bd7063df3fa93547c71d68f2a94",
       "package_version": "v4",
       "provider": "claude-code",
-      "version_hash": "f867fa1a1df8875199bce8dd372a0a5b32fb4ef2b13ed3d9bb533cd120b84502"
+      "version_hash": "443ff0ea3a2d7cee00d73499bf5b7a1d9a63b308549e9de767bd333f5da7a680"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "7135a6ec129d022b7adc82746b00cb387e287b6d7ba226966568aff0679d3265",
+          "content_hash": "9840fb58bc9021018aa877211616cc19f3cdafa8474cf99dfab6b217e627f248",
           "element_kind": "agent_sidecar_meta"
         },
         {
-          "content_hash": "c95a1285474ff9f7095deaf71b0a57607e8129f4ce187adb77fe7583002adb35",
+          "content_hash": "2da2cb9607f2a693805b563cdbe4182a73880ef380c56276b434f0816eb2f617",
           "element_kind": "agent_transcript"
         },
         {
-          "content_hash": "8601d964c2c94ebf963cf1c2e3f9d38b0134585a2cf2536cc16f3f3ae3b55d4e",
+          "content_hash": "20f98c482abeed7c4ff632a24ad24ee60178e24a8a5002ad0bf2071c4d45e60d",
           "element_kind": "coordinator_session_stream"
         },
         {
-          "content_hash": "c6a2de1f77789ed5f4549cd7603653942cd7becbc6102885104a49db5d1f4a1f",
+          "content_hash": "7262c20826b75dab5314fb896bd11e532c6f2968a363c602969b65c4a58d64c2",
           "element_kind": "session_index"
         },
         {
@@ -370,230 +370,230 @@
           "element_kind": "session_record_stream"
         },
         {
-          "content_hash": "63f8e47a1da055cb2baabd9be3e848ec098f1730678d5ee6e16593aa03328982",
+          "content_hash": "8936f187802d00c4e3de075a41939691f09491455b2c2c6d348be1b0c87be24b",
           "element_kind": "workflow_journal"
         },
         {
-          "content_hash": "7f8fe08a104fb7da92ba4ff6ab1b85c10a4c957cb44b9746e57b9efdb1fbc0c6",
+          "content_hash": "7f6295c2588ceefe5f93ae5f3414739475e1e147c58d7c84659f786fcf232615",
           "element_kind": "workflow_run_snapshot"
         }
       ],
       "package_hash": "5ee5ed4fd465f084d350309aa9e10f15c38ae52ed67076a35a32d422c6d6fd06",
       "package_version": "v5",
       "provider": "claude-code",
-      "version_hash": "cab0ed7480bd618587d1f0d2cb95b9b88cc846e109a0ca9072d68f579446683c"
+      "version_hash": "26cc7547b3ce309a4016c4f49e9ad525113c86384469c54262794a1ef2ebe49f"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "cbd6d2614ec36808340eeebcf79258cb38152b3dee5801ae5a323f0ec9dc6367",
+          "content_hash": "9065c26e741cb702a5825c4556b1c82199b1282c19110569060fbe4262c8f880",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "dfee3562a91df7080123e18b214f4b102a08f4d9db566796a56c2f6d3dbbbe26",
       "package_version": "v1",
       "provider": "claude-design",
-      "version_hash": "12125d1fd0eaf6786da0781ada1e65d87bb2ff4cd6f4d7f5bd8ccfd4f9c39098"
+      "version_hash": "a5e4b187db8a87018ca7177156fae9a33c12a232586f58821c62038fe09c8b4b"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "36deff82ffd834318215bab092165693b2c621b176d46be8433dac6876c47e2a",
+          "content_hash": "c97dce5b85df9fa4f48d4b5d9cd66f22358b54e157489b9c442244d413226030",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "082fda1db5cbe7a66efd01c4ba129e3b5cfc4b136321071e47c4ad6e0fe31043",
       "package_version": "v2",
       "provider": "claude-design",
-      "version_hash": "03dc6e070e59d9abfd71fb0334620ac48c42359d09f1a39e474e26fc27ce9ab8"
+      "version_hash": "e2eabb06c6fc59ad305349ce3bbd31e70fccfe7332d87851286156286de29f05"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "f01e54799dd5d5e7befdef1804022fe95733491241898932ddd34150224c73b6",
+          "content_hash": "205aa52ca221b792b83075a3ad0c6cc291394c488e8d0c487bb6b3ed0eef025d",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "10cfb2fde865e1283173dd54c18912e5b8da1da40a580d307e6f50298b364161",
       "package_version": "v3",
       "provider": "claude-design",
-      "version_hash": "209d7438dc439d70d657cf584e71bd0b0ac84f624f1554eb22a735f2b92fface"
+      "version_hash": "f934a15a3b81840965f250b24ef930a066de921494318a14f57afb86ad0fb9bb"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "cc502db8339f39c9969bde2fc595c3922c8a32cfdda0a510a1dfd8b3de228753",
+          "content_hash": "f01fe0eb07a7739202a288b956c88b0386f1be1f3da3c45b55581c9c4b72e8cc",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "a167a80990b92a1a7f75bd73a0419b3ea6d146d49b336761141f3c377dec0242",
       "package_version": "v4",
       "provider": "claude-design",
-      "version_hash": "857d0e20a27fcf19a60252284ddfe2e9fa5d2c8654562fe9222154a01dcf80cd"
+      "version_hash": "c606462815946878bcbfaf759fe8c6ec1f418fbb9147c2bbc0279fe9fed589fb"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "0e168586888c24fc00f7219fae92ad3cf65a2f93bdff81b99071e523290230f7",
+          "content_hash": "435b560f2247f852b4c147aafea7572e43dcb14fb3962b4f48cf6cbc8acc803e",
           "element_kind": "session_record_stream"
         }
       ],
       "package_hash": "636ce174b209d5eedb0a7e80853cb3d1e58008ec652c4503bb08ce99ec97ce2f",
       "package_version": "v1",
       "provider": "codex",
-      "version_hash": "62e1cbbd52a034a3fadc81b125e911a4c7786625c9e95a635bdbb45fe661f39f"
+      "version_hash": "b31025236d095f6d7085e577df619d799904e98fc6e37845166d1bcc26dd0b87"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "7e0867932c9bad7b0e21a7063b0d8aab1a063bfdf073a4a84713962ead33dbb6",
+          "content_hash": "d30de8fd6eba86d6f9620aa48f4b9ce7b1d4d0404ca14520455f4c3a943a8f7e",
           "element_kind": "session_record_stream"
         }
       ],
       "package_hash": "ac152b7295af6ae25c899cb62658be0ec524e7478c75f2e57c01730f87eed04b",
       "package_version": "v2",
       "provider": "codex",
-      "version_hash": "37f21f47af9e0387bb69a7fd86d93b718356e7490c3ff01143284988610bb639"
+      "version_hash": "6e09cb8b5c84be6198b6ad219002a3df2462e231e2a169970a5a11725a9b1bc1"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "e8e87a72679c831cc2cda53d5fcff994c4c9f08f74dfd216a5df8483abb24703",
+          "content_hash": "fca911812c5230cfe30146e7d0489914b6517450b8bfbd6ab99f25f1d5612a5d",
           "element_kind": "session_record_stream"
         }
       ],
       "package_hash": "fc81420362415772e3012a63e1b1595f585ffff164b2a7e82bb3a8b50fcfe406",
       "package_version": "v3",
       "provider": "codex",
-      "version_hash": "cf2360befda0283607a3948db351bad3d75e86a7772d816a2ba8b7f17cd128a0"
+      "version_hash": "4f9367aec376fb3ef943c99c306801447a4848815bd08395773de2f597bbaba4"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "20fa6f4a96c18d381fe2da8513bd1eb7c563d98d369abb42e05222a5248f6a2d",
+          "content_hash": "cfaf6be5c28960a052fece6c4558e23964df0cfcbd3ba5701f3cd127a3ff02ce",
           "element_kind": "session_record_stream"
         }
       ],
       "package_hash": "4c564b32d23e7089ee8413895811a81dbb600cb512b20c25f1fc932fb0d1c89e",
       "package_version": "v4",
       "provider": "codex",
-      "version_hash": "001b4e3ad47c005d21544d6b603bded9fc264c57943c6c07b3bc697b0f7cc053"
+      "version_hash": "a13c9d16132b163af7ab33b3e1f72de2e2bff8c4186cae83d616d52b84138aee"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "3912bb58174eefdc57eaa7dcabaeeb6da97a6d7c0e2977e09a2681f2f477cd0e",
+          "content_hash": "61fd2cb7bd9248d41ab498cb3b59d2fb89015912e048d700b0f69df68fb25d50",
           "element_kind": "session_record_stream"
         }
       ],
       "package_hash": "274f6da3fa9ede2eeda744e7d58aac9497eb4ac606ae5dd1c4d076815868f0f1",
       "package_version": "v5",
       "provider": "codex",
-      "version_hash": "149e5e314d759d2f9a69ef346ee7dcb27abe0f491a0b825ec5730d5c310d5b67"
+      "version_hash": "dce65ca06a5f1906ebab846e4b6ce074e7dc9b224d6e69ef926f35590acabed6"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "062c072b7c65403137c3e13b5e206c89be0df984f53d9bbc5df34541ba0bd527",
+          "content_hash": "89b90f81ee5e328396224433b947d86b9c2b3dfed6ae0f4c9c46eaf3f89399a0",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "b812f2c428590e9e2f8b4c4c930152769f8f03a01e7f01e8d36e2c1abda986a7",
       "package_version": "v1",
       "provider": "gemini",
-      "version_hash": "f13ecaa37f9dd7a58ad460b491ec62141e56127ed8f301b66927efa3817204a4"
+      "version_hash": "79fa5c734f4cb1f4e9cc7b17042dd66da7932b09f6b30c4c15cbcb0aedb41af4"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "a610e148f50b47059edbbdd1bbb5e7b13c6849f902ee0b05d0a8ed7f414cbff5",
+          "content_hash": "4d1d373dd76bec9956d65c15bdf033cc94f9c3522f4714c370b877df06da3166",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "3ae1fb006c8177d22c1ecfb8fe9ed43476968be8c1239edec98fbf6b3959d04a",
       "package_version": "v2",
       "provider": "gemini",
-      "version_hash": "781f04377b9cfbb46527d6dfd3cdebeee6b701f2539bae2353bb4331e9b8d7c2"
+      "version_hash": "85f622e8ef131e53534651b6074748b037b4fb64e739f661c3ec0e187e3f5b78"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "4f0b9aab52c186be89962d57ce69a9ccadf8d4cafcf17858901d8cfd6bfc7c3d",
+          "content_hash": "be4bf57e2d753250587749866384556a4e74a0f14985b89426876d6a7a840eb8",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "443caf1244883b358bd82f588102f00c07bd4ad4cbef61ff3ff6e3679978a69d",
       "package_version": "v3",
       "provider": "gemini",
-      "version_hash": "d3c2278ae056b6a7df75befb9857bf1d1ecdba6277ca2c37d0a2a173b1bf7127"
+      "version_hash": "d72cbc46f8efd4909de77c9c31cb2cbfc52dd96e44942a01dd4f5758b5110432"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "fdcfe7f4ea5f1f245856f85bfcb7079f669eb46bee221f9aff764a44cda0f79a",
+          "content_hash": "6e27e6090bdab899ee5689ef01afea6d49f2c093d2d975e63d9a45273ecf8e10",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "a3b587fe9de9af0db65042dbaeddae27f3a2cfd036065bdedba46c0802bbf769",
       "package_version": "v1",
       "provider": "gemini-cli",
-      "version_hash": "04be5700a4798a5a19c84c37f84ce6b3b22a8863db58fd248b0c63844df983a5"
+      "version_hash": "5c9ab6a5e59e909eff493e2c97b674edb3687c2102aac2724d15c886e8fd85f8"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "424246ce802f1f19283cd1891b92fd6155380f22b885df5e9e427b0558cf207e",
+          "content_hash": "3a16d89d2905b328d6f874025e5d981d6b45c617cdbb277255976294bb623f92",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "4dd1ed2d6ee95f7267f241716995ae3d500020182302c1fa2b5264f76f15ef18",
       "package_version": "v2",
       "provider": "gemini-cli",
-      "version_hash": "f66472d8ec134a0a64fbb866669f5174d0bceb58b31fe560424a863605fdeb66"
+      "version_hash": "04e5505536bcdf20a47ae8c412e6d104cf7e3bcf57addd783f44e454fc0cdba3"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "b18687c2b2e21dc63a0e7010ad01017b52acd7b46d755a1e8343af92dc87a22a",
+          "content_hash": "df4e02f4c8212730f0bc8e6df9b00f0b70e8956b7c9838bcdfb8812b484f2760",
           "element_kind": "session_document"
         },
         {
-          "content_hash": "04a9301a64ee42d24e3af5226186bdd8b5b6114a0e9b9884c6a5e26a6bc4b608",
+          "content_hash": "3e7c4b983c19f49b7bd80b49f94007fa87ffe932a28981d8ab702dd196088176",
           "element_kind": "session_index"
         },
         {
-          "content_hash": "abb6213230b1963493d7a58bcf96a01454b14405c7d8c60b36d451f739fe3ad2",
+          "content_hash": "39aa3650264c0307873e4f3b3d4f21fa9712489b7dffcfe5d477576577d7a376",
           "element_kind": "session_record_stream"
         }
       ],
       "package_hash": "e0e46aef479c54f451d369a12169fd1e189df420d5433ad4d5970b45163c7bda",
       "package_version": "v3",
       "provider": "gemini-cli",
-      "version_hash": "af937a99770d6aa6249c8e1c50a8136ffcb3980616bbaf4aedbeb6644b0dfc7d"
+      "version_hash": "c71139991643cb14018417ba0821c32cbe4943b0a2f48a934009fc4273ca7b52"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "942e03a8a078f9822962d555de42a3a3e8736c207ac046045da15e92f1a85618",
+          "content_hash": "8ff649c7387ed2260562d534ff90638402a0c4d5b27881db6dc415d0fcbb7ac1",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "3a4b82ff9d933ab32f6e0a22abd7f295619df2e5d07b64123593db71f35d3df9",
       "package_version": "v1",
       "provider": "hermes",
-      "version_hash": "4c18c0f638bf73eba1a4896fe779b9357165bfc297682a5fdb45ff0190e16556"
+      "version_hash": "03bb89132f2eb45b067adae5252f5fcfdb1b708f964cb4e527b1d8853c9350cb"
     },
     {
       "element_hashes": [
         {
-          "content_hash": "cd1acbcb5366776f36bfc5cfd3c952e09df569aebae4994d488cfe3d87b98c6f",
+          "content_hash": "fc9a7cccf0b33e6045a189f29c293e1cbe15e14efc683f6e1aaae11848309590",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "ae865af052b14d2694efbbd3a22165c1bb7ea0a421c1d2b48df84984c18874d6",
       "package_version": "v2",
       "provider": "hermes",
-      "version_hash": "5f975b53c76e04aca1ad4d47153f648267fdc4e3e22092b90bdf875fc97d34a8"
+      "version_hash": "aebfcc2343a3fab5a34a2259def415fe0d7bfca309c3eb751de55537efe89f19"
     },
     {
       "element_hashes": [
@@ -602,17 +602,17 @@
           "element_kind": "database_schema"
         },
         {
-          "content_hash": "e9e34d3b037bad5471226f02dcc61fc35bb001c5f6743ec191799f5e22f4af23",
+          "content_hash": "12de01464a83b096f930c136a64902725c43d21b1aea2dfa12d2011f27fb25ff",
           "element_kind": "session_document"
         }
       ],
       "package_hash": "bd30617e1e4045a2f7aad7cbdac3d1fb171a9dc0facd4e460b4771e1f1cf62c2",
       "package_version": "v3",
       "provider": "hermes",
-      "version_hash": "f6598e12e8e82cb212d30f049167f524141fdfd9f571d600ef6cd691d009f4bd"
+      "version_hash": "18504b568228b459a079448d3d8b64d48327bfe61aae33c054cfb7b558f3b420"
     }
   ],
-  "receipt_digest": "8f28e2be78cd2f173bf2e80f6ebef0370bb069902722661bc8ad16d43b977a6a",
+  "receipt_digest": "d796ebd57b3c6890d17e87432a63547b110b5529f12c3017e45e6b741a0d4359",
   "schema": "polylogue.schema-inference-handoff.v1",
   "unsupported_decisions": [
     {
@@ -649,7 +649,6 @@
         "x-polylogue-range",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-string-lengths",
         "x-polylogue-time-deltas"
       ],
       "element_kind": "session_document",
@@ -663,11 +662,9 @@
         "x-polylogue-dynamic-keys",
         "x-polylogue-foreign-keys",
         "x-polylogue-mutually-exclusive",
-        "x-polylogue-observed-distribution",
         "x-polylogue-range",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-string-lengths",
         "x-polylogue-time-deltas"
       ],
       "element_kind": "session_document",
@@ -686,8 +683,7 @@
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "session_document",
       "package_version": "v3",
@@ -697,7 +693,6 @@
     {
       "decision": "nonrepresentable",
       "details": [
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
@@ -712,11 +707,9 @@
       "details": [
         "x-polylogue-dynamic-keys",
         "x-polylogue-mutually-exclusive",
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "export_asset_index",
       "package_version": "v4",
@@ -735,8 +728,7 @@
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "session_document",
       "package_version": "v4",
@@ -749,8 +741,7 @@
         "required",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "session_document",
       "package_version": "v1",
@@ -761,11 +752,9 @@
       "decision": "nonrepresentable",
       "details": [
         "x-polylogue-dynamic-keys",
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "session_document",
       "package_version": "v2",
@@ -779,8 +768,7 @@
         "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "session_document",
       "package_version": "v3",
@@ -794,8 +782,7 @@
         "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "session_document",
       "package_version": "v4",
@@ -808,8 +795,7 @@
         "x-polylogue-dynamic-keys",
         "x-polylogue-mutually-exclusive",
         "x-polylogue-range",
-        "x-polylogue-semantic-role",
-        "x-polylogue-string-lengths"
+        "x-polylogue-semantic-role"
       ],
       "element_kind": "session_record_stream",
       "package_version": "v1",
@@ -826,8 +812,7 @@
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "agent_transcript",
       "package_version": "v2",
@@ -844,8 +829,7 @@
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "coordinator_session_stream",
       "package_version": "v2",
@@ -856,7 +840,6 @@
       "decision": "nonrepresentable",
       "details": [
         "x-polylogue-dynamic-keys",
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
@@ -868,7 +851,6 @@
     {
       "decision": "nonrepresentable",
       "details": [
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
@@ -887,8 +869,7 @@
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "agent_transcript",
       "package_version": "v3",
@@ -905,8 +886,7 @@
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "coordinator_session_stream",
       "package_version": "v3",
@@ -916,7 +896,6 @@
     {
       "decision": "nonrepresentable",
       "details": [
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
@@ -930,7 +909,6 @@
       "decision": "nonrepresentable",
       "details": [
         "x-polylogue-dynamic-keys",
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
@@ -967,7 +945,6 @@
     {
       "decision": "nonrepresentable",
       "details": [
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
@@ -986,8 +963,7 @@
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "agent_transcript",
       "package_version": "v4",
@@ -1004,8 +980,7 @@
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "coordinator_session_stream",
       "package_version": "v4",
@@ -1015,7 +990,6 @@
     {
       "decision": "nonrepresentable",
       "details": [
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
@@ -1029,7 +1003,6 @@
       "decision": "nonrepresentable",
       "details": [
         "x-polylogue-dynamic-keys",
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
@@ -1066,7 +1039,6 @@
     {
       "decision": "nonrepresentable",
       "details": [
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
@@ -1085,8 +1057,7 @@
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "agent_transcript",
       "package_version": "v5",
@@ -1103,8 +1074,7 @@
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "coordinator_session_stream",
       "package_version": "v5",
@@ -1114,7 +1084,6 @@
     {
       "decision": "nonrepresentable",
       "details": [
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
@@ -1128,7 +1097,6 @@
       "decision": "nonrepresentable",
       "details": [
         "x-polylogue-dynamic-keys",
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
@@ -1202,8 +1170,7 @@
         "x-polylogue-mutually-exclusive",
         "x-polylogue-observed-distribution",
         "x-polylogue-ref",
-        "x-polylogue-semantic-role",
-        "x-polylogue-string-lengths"
+        "x-polylogue-semantic-role"
       ],
       "element_kind": "session_record_stream",
       "package_version": "v2",
@@ -1220,8 +1187,7 @@
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "session_record_stream",
       "package_version": "v3",
@@ -1238,8 +1204,7 @@
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "session_record_stream",
       "package_version": "v4",
@@ -1256,8 +1221,7 @@
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-ref",
         "x-polylogue-semantic-role",
-        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound",
-        "x-polylogue-string-lengths"
+        "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
       ],
       "element_kind": "session_record_stream",
       "package_version": "v5",
@@ -1279,7 +1243,6 @@
     {
       "decision": "nonrepresentable",
       "details": [
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"
@@ -1293,7 +1256,6 @@
       "decision": "nonrepresentable",
       "details": [
         "required",
-        "x-polylogue-observed-distribution",
         "x-polylogue-publication-omitted-structure-witness-count",
         "x-polylogue-semantic-role",
         "x-polylogue-source-evidence-unretained-shape-observation-lower-bound"

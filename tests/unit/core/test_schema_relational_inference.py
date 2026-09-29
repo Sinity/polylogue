@@ -16,6 +16,7 @@ from polylogue.schemas.inference.relational.inference import (
     RelationalAnnotations,
     infer_relations,
 )
+from tests.infra.field_stats_sketches import sketch
 
 
 class TestInferRelations:
@@ -45,7 +46,7 @@ class TestInferRelations:
                 total_samples=20,
                 present_count=20,
                 value_count=20,
-                string_lengths=[8, 8],
+                string_length_distribution=sketch([8, 8]),
             ),
             "$.users.*.id": FieldStats(
                 path="$.users.*.id",
@@ -91,9 +92,9 @@ class TestInferRelations:
             # String length setup
             "$.description": FieldStats(
                 path="$.description",
-                string_lengths=[50, 100, 150, 200],
+                string_length_distribution=sketch([50, 100, 150, 200]),
                 is_multiline=3,
-                newline_counts=[1, 2, 3, 2],
+                newline_distribution=sketch([1, 2, 3, 2]),
                 total_samples=4,
                 present_count=4,
                 value_count=4,
@@ -136,7 +137,7 @@ class TestDetectForeignKeys:
                 total_samples=15,
                 present_count=15,
                 value_count=15,
-                string_lengths=[6] * 15,
+                string_length_distribution=sketch([6] * 15),
             ),
             "$.id": FieldStats(
                 path="$.id",

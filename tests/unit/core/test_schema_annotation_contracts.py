@@ -33,6 +33,7 @@ from polylogue.schemas.generation.workflow import (
 from polylogue.schemas.inference.semantic.runtime import (
     infer_semantic_roles,
 )
+from tests.infra.field_stats_sketches import sketch
 from tests.infra.schema_access import (
     fail_missing_schema,
     schema_items,
@@ -70,9 +71,9 @@ class TestAnnotateSemanticAndRelational:
             "$.title": FieldStats(
                 path="$.title",
                 observed_values=Counter({"Chat A": 1, "Chat B": 1}),
-                string_lengths=[6, 6],
+                string_length_distribution=sketch([6, 6]),
                 is_multiline=0,
-                newline_counts=[0, 0],
+                newline_distribution=sketch([0, 0]),
                 total_samples=2,
                 present_count=2,
                 value_count=2,
@@ -100,7 +101,7 @@ class TestAnnotateSemanticAndRelational:
                 total_samples=100,
                 present_count=95,
                 value_count=100,
-                string_lengths=[4, 5, 9],
+                string_length_distribution=sketch([4, 5, 9]),
             ),
         }
         result_schema = _annotate_semantic_and_relational(schema, field_stats)
@@ -236,13 +237,13 @@ class TestAnnotateSemanticAndRelational:
                 total_samples=100,
                 present_count=95,
                 value_count=100,
-                string_lengths=[4, 5, 9],
+                string_length_distribution=sketch([4, 5, 9]),
             ),
             "$.messages[*].text": FieldStats(
                 path="$.messages[*].text",
-                string_lengths=[100, 200, 300],
+                string_length_distribution=sketch([100, 200, 300]),
                 is_multiline=2,
-                newline_counts=[2, 3, 1],
+                newline_distribution=sketch([2, 3, 1]),
                 total_samples=3,
                 present_count=3,
                 value_count=3,
@@ -425,9 +426,9 @@ class TestSemanticInferenceMisclassificationRegression:
                     }
                 ),
                 detected_formats=Counter({"uuid4": 2, "uuid": 1}),
-                string_lengths=[36, 36, 36],
+                string_length_distribution=sketch([36, 36, 36]),
                 is_multiline=0,
-                newline_counts=[0, 0, 0],
+                newline_distribution=sketch([0, 0, 0]),
                 total_samples=3,
                 present_count=3,
                 value_count=3,
@@ -449,9 +450,9 @@ class TestSemanticInferenceMisclassificationRegression:
                         "models/gemini-2.5-pro": 30,
                     }
                 ),
-                string_lengths=[23, 5, 22],
+                string_length_distribution=sketch([23, 5, 22]),
                 is_multiline=0,
-                newline_counts=[0, 0, 0],
+                newline_distribution=sketch([0, 0, 0]),
                 total_samples=180,
                 present_count=180,
                 value_count=180,
@@ -469,9 +470,9 @@ class TestSemanticInferenceMisclassificationRegression:
             "$.parentId": FieldStats(
                 path="$.parentId",
                 observed_values=Counter({f"id-{i}": 1 for i in range(20)}),
-                string_lengths=[5] * 20,
+                string_length_distribution=sketch([5] * 20),
                 is_multiline=0,
-                newline_counts=[0] * 20,
+                newline_distribution=sketch([0] * 20),
                 total_samples=20,
                 present_count=20,
                 value_count=20,
@@ -495,9 +496,9 @@ class TestSemanticInferenceMisclassificationRegression:
                         "gpt-4": 2,
                     }
                 ),
-                string_lengths=[22, 24, 22, 5],
+                string_length_distribution=sketch([22, 24, 22, 5]),
                 is_multiline=0,
-                newline_counts=[0, 0, 0, 0],
+                newline_distribution=sketch([0, 0, 0, 0]),
                 total_samples=25,
                 present_count=25,
                 value_count=25,
