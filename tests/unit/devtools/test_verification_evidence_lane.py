@@ -172,15 +172,18 @@ def test_configured_evidence_path_overrides_the_state_default(tmp_path: Path) ->
 def test_reconciled_abandoned_run_joins_the_durable_lane(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A run stranded as ``running`` is recorded in the durable lane once reconciled.
 
-    Anti-vacuity: route the reconciler's append back to ``runs_root.parent``
-    and the durable lane stays empty.
+    Anti-vacuity: route the checkout's reconciled append back to
+    ``runs_root.parent`` (as #5720 did) and the durable lane stays empty.
     """
+    from devtools import verify_runs
     from devtools.verify_runs import reconcile_and_record_abandoned_verify_runs
 
     state = tmp_path / "state"
     monkeypatch.setenv("XDG_STATE_HOME", str(state))
     monkeypatch.delenv("POLYLOGUE_VERIFICATION_EVIDENCE_PATH", raising=False)
     checkout = tmp_path / "worktree"
+    # This cache is the running checkout's own, as ``devtools verify`` passes it.
+    monkeypatch.setattr(verify_runs, "_checkout_root", lambda: checkout.resolve())
     # A pid above any pid_max: no process owns it, so the run is abandoned.
     run_id = f"20260101T000000Z-focused-test-{2**31 - 2}-deadbeef"
     runs_root = checkout / ".cache" / "verify" / "runs"
@@ -200,3 +203,40 @@ def test_reconciled_abandoned_run_joins_the_durable_lane(monkeypatch: pytest.Mon
     rows = read_verification_evidence(verification_evidence_path())
     assert [row["run_id"] for row in rows] == [run_id]
     assert not (checkout / ".cache" / "verify" / "evidence.jsonl").exists()
+    # The checkout's history is the shared XDG history too, not a cache file.
+    history = [row["run_id"] for row in verify_runs._iter_history_pinned(verify_runs.verify_history_path())]
+    assert history == [run_id]
+    assert not (checkout / ".cache" / "verify" / "history.jsonl").exists()
+
+
+def test_relocated_cache_reconciles_into_its_own_evidence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A cache outside the running checkout keeps its reconciled evidence local.
+
+    Anti-vacuity: send every reconciled run to the durable lane and this
+    foreign cache's run appears in the operator's lane.
+    """
+    from devtools.verify_runs import reconcile_and_record_abandoned_verify_runs
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.delenv("POLYLOGUE_VERIFICATION_EVIDENCE_PATH", raising=False)
+    run_id = f"20260101T000000Z-focused-test-{2**31 - 2}-deadbeef"
+    runs_root = tmp_path / "elsewhere" / ".cache" / "verify" / "runs"
+    (runs_root / run_id).mkdir(parents=True)
+    (runs_root / run_id / "run.json").write_text(
+        json.dumps(
+            {
+                "run_id": run_id,
+                "tier": "focused-test",
+                "status": "running",
+                "started_at": "2026-01-01T00:00:00Z",
+                "steps": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reconcile_and_record_abandoned_verify_runs(runs_root=runs_root, state_root=tmp_path / "jobs")
+
+    assert read_verification_evidence(verification_evidence_path()) == []
+    local = read_verification_evidence(runs_root.parent / "evidence.jsonl")
+    assert [row["run_id"] for row in local] == [run_id]

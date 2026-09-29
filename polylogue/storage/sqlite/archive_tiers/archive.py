@@ -6640,6 +6640,7 @@ class ArchiveStore:
         self,
         query: str,
         *,
+        actions_only: bool = False,
         session_id: str | None = None,
         origin: str | None = None,
         origins: tuple[str, ...] = (),
@@ -6725,6 +6726,10 @@ class ArchiveStore:
             # the value, so this predicate must not be what forces the join.
             where = f"{where} AND b.session_id = ?"
             filter_params.append(session_id)
+        if actions_only:
+            # The same lane restriction as ``iter_search_summaries``: an
+            # actions-lane count counts only sessions its search can return.
+            where = f"{where} AND b.block_type IN ('tool_use', 'tool_result')"
         row = self._conn.execute(
             f"""
             SELECT COUNT(DISTINCT b.session_id)

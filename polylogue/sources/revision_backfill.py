@@ -1065,21 +1065,21 @@ def enrichment_dependency_digest(
     ``provider_session_ids`` is consumed only by a provider whose evidence is
     keyed by session (``_replay_enrichment_reads_index``).
     """
-    from polylogue.sources.assembly import get_assembly_spec
-
-    assembly_digest: str | None = None
-    if get_assembly_spec(provider) is not None:
-        assembly_digest = _enrichment_evidence_digest(
-            _retained_enrichment_sidecar_data(
-                provider=provider,
-                sessions=(),
-                provider_session_ids=provider_session_ids,
-                index_conn=index_conn,
-                source_conn=source_conn,
-                blob_root=blob_root,
-                source_path=source_path,
-            )
+    # Every provider digests its (possibly empty) evidence, as the retained
+    # seals do: gating this on an assembly spec made the writer's value for a
+    # provider without one differ from the sealed value, so every prepared
+    # artifact of that provider read as stale and never published.
+    assembly_digest = _enrichment_evidence_digest(
+        _retained_enrichment_sidecar_data(
+            provider=provider,
+            sessions=(),
+            provider_session_ids=provider_session_ids,
+            index_conn=index_conn,
+            source_conn=source_conn,
+            blob_root=blob_root,
+            source_path=source_path,
         )
+    )
     parser_digest = (
         _retained_parser_sidecar_digest(source_conn, provider=provider, source_path=source_path)
         if parser_sidecars and source_conn is not None

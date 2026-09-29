@@ -67,10 +67,13 @@ def apply_declared_durable_migrations(
     archive_owner: OwnedArchiveLocation,
     write_lease: Callable[[str], AbstractContextManager[object]],
 ) -> tuple[PendingDurableMigration, ...]:
-    """Apply every pending numbered step until each tier reaches its declared version.
+    """Apply the pending numbered step of each tier behind its declared version.
 
     Each step is one train; a data-changing step gets its own backup of the
-    bytes it is about to change. Returns the steps applied, in order.
+    bytes it is about to change. Returns the steps applied, in order. A tier
+    more than one slot behind is refused with ``DurableChangeTrainError``:
+    bootstrap DDL describes only the shipped version, so an intermediate slot
+    has no fresh-DDL image to prove its step against.
 
     The caller holds exclusive archive ownership for the whole call and keeps
     it afterwards, so the train's ownership release is a no-op here. Each

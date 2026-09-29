@@ -442,9 +442,11 @@ def test_post_gc_rss_is_read_before_heap_census_allocations(monkeypatch: pytest.
         events.append("census")
         return {"collected": collected, "objects": 1, "top": {}}
 
+    # The recorder reads its RSS baseline when it is built; only the sample's
+    # own reads are under test here.
+    recorder = suite_cost.SuiteCostRecorder(tmp_path, "gw0", None, sample_heap=True)
     monkeypatch.setattr(suite_cost, "_read_rss_kib", read_rss)
     monkeypatch.setattr(suite_cost, "_heap_census_after_collect", census)
-    recorder = suite_cost.SuiteCostRecorder(tmp_path, "gw0", None, sample_heap=True)
     recorder.note_test("tests/unit/heap/test_probe.py::t")
     recorder.sample_memory()
 

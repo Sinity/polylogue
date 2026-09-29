@@ -177,6 +177,7 @@ def _parser() -> argparse.ArgumentParser:
         "--archive-root",
         type=_candidate_root,
         required=True,
+        metavar="PATH",
         help="Candidate archive root to census; active configured archives are never selected.",
     )
     parser.add_argument("--json", action="store_true", help="Emit the census as JSON on stdout.")

@@ -676,7 +676,13 @@ async def count_archive(
             workload_class="scan",
         ) as archive:
             if query_text is not None:
-                return int(archive.count_search_sessions(query_text, **filter_kwargs))
+                return int(
+                    archive.count_search_sessions(
+                        query_text,
+                        actions_only=plan.retrieval_lane == "actions",
+                        **filter_kwargs,
+                    )
+                )
             return int(archive.count_sessions(**filter_kwargs))
 
     # A count is the size of the whole result, not of one page: the SQL

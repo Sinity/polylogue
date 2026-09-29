@@ -166,8 +166,10 @@ def _make_command(spec: CommandSpec) -> click.Command:
     for flag, dest in _declared_flag_dests(spec):
         params.append(click.Option([flag, dest], is_flag=True, help=dict(spec.flags)[flag], expose_value=True))
     for flag, metavar, help_text, dest in _declared_value_option_dests(spec):
+        # The argparse parser owns requiredness: a Click-level required
+        # option would refuse ``--help`` before the native help can run.
         params.append(
-            click.Option([flag, dest], type=str, required=True, metavar=metavar, help=help_text, expose_value=True)
+            click.Option([flag, dest], type=str, required=False, metavar=metavar, help=help_text, expose_value=True)
         )
     if spec.json_flag:
         params.append(

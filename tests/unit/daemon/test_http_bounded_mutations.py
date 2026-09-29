@@ -196,6 +196,7 @@ async def test_paste_browser_walk_reports_unknown_total_when_the_page_fills() ->
 
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
+            self.summary_reads: list[list[str]] = []
 
         async def query_units(self, _query: object, *, limit: int, offset: int) -> object:
             self.calls.append({"limit": limit, "offset": offset})
@@ -214,6 +215,12 @@ async def test_paste_browser_walk_reports_unknown_total_when_the_page_fills() ->
             ]
             return SimpleNamespace(items=rows, next_offset=offset + limit)
 
+        async def get_session_summaries(self, session_ids: list[str]) -> dict[str, object]:
+            # The route resolves the page's display titles in one batch read
+            # (#5723); record it so a per-row read would show up here.
+            self.summary_reads.append(list(session_ids))
+            return {session_id: SimpleNamespace(display_title="Session one") for session_id in session_ids}
+
     handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
     poly = _Poly()
     payload = await handler._do_paste_browser(cast("Any", poly), limit=1, offset=0)
@@ -224,3 +231,5 @@ async def test_paste_browser_walk_reports_unknown_total_when_the_page_fills() ->
     assert len(payload["items"]) == 1
     assert payload["total"] is None, payload
     assert payload["total_is_exact"] is False
+    assert poly.summary_reads == [["codex-session:s1"]]
+    assert payload["items"][0]["session_title"] == "Session one"

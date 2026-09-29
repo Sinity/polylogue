@@ -220,7 +220,7 @@ def test_queued_interruption_keeps_start_time_worktree_provenance(
     """The interruption receipt must keep the provenance _run_launch captured at start."""
     provenance = {"git_head": "a" * 40, "git_branch": "fix/queued", "git_worktree_content_sha256": "start-digest"}
     monkeypatch.setattr(pytest_slot, "_focused_worktree_provenance", lambda *_args: provenance)
-    monkeypatch.setattr(pytest_slot, "resize_worker_argument", lambda argv: (argv, None))
+    monkeypatch.setattr(pytest_slot, "resize_worker_argument", lambda argv, **_sizing: (argv, None))
 
     class Process:
         pid = 12345
