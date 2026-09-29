@@ -124,7 +124,8 @@ if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHTTPServer
     from polylogue.daemon.intake_adapters import ColdBuildGeneration
     from polylogue.daemon.lifecycle import DaemonLifecycle
-    from polylogue.daemon.session_profile_composition import SessionProfileCallback
+    from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+    from polylogue.daemon.session_profile_composition import ComposedSessionProfiles, SessionProfileCallback
     from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion
     from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import EmbeddingConvergenceOwner
@@ -2488,6 +2489,9 @@ async def _run_daemon_services_under_active_writer_lease(
 
     api_server: DaemonAPIHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
+    # The ingest owner when no API server carries one (``--no-api``).
+    ingest_owner_runtime: DaemonOperationRuntime | None = None
+    owner_session_profiles: ComposedSessionProfiles | None = None
     uds_server: Any | None = None
     uds_server_task: asyncio.Task[None] | None = None
     server: BrowserCaptureHTTPServer | None = None
@@ -2630,6 +2634,31 @@ async def _run_daemon_services_under_active_writer_lease(
                     },
                 )
 
+        if api_server is None and not schema_blocked:
+            # The ingest owner does not depend on the HTTP surface: accepted
+            # ingests that startup recovery left for it are re-driven by a
+            # watcher-only daemon too.
+            from polylogue.daemon.execution import daemon_compute_adapter
+            from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+            from polylogue.daemon.session_profile_composition import compose_session_profile_callback
+
+            owner_bridge = DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop())
+            owner_session_profiles = compose_session_profile_callback(
+                archive_root_path,
+                compute_adapter=daemon_compute_adapter(),
+                write_bridge=owner_bridge,
+                now=time.time,
+            )
+            ingest_owner_runtime = DaemonOperationRuntime(
+                archive_root_path,
+                write_bridge=owner_bridge,
+                execution_kernel=daemon_compute_adapter(),
+                owner_loop=owner_bridge.owner_loop,
+                session_maintenance=owner_session_profiles.maintenance,
+            )
+            ingest_owner_runtime.start_accepted_ingest_redrive()
+            await ingest_owner_runtime.accepted_ingest_redrive_claimed()
+
         # Ensure FTS structure after HTTP surfaces are bound and before live
         # catch-up starts. Startup FTS maintenance and catch-up ingestion are
         # both write-heavy; running them concurrently makes SQLite maintenance
@@ -2659,7 +2688,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 from polylogue.daemon.execution import daemon_compute_adapter
 
                 daemon_compute = daemon_compute_adapter()
-                session_profile_callback = compose_session_profile_callback(
+                session_profile_callback = owner_session_profiles or compose_session_profile_callback(
                     archive_root_path,
                     compute_adapter=daemon_compute,
                     write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
@@ -3294,6 +3323,8 @@ async def _run_daemon_services_under_active_writer_lease(
                 await _shutdown_server_if_serving(uds_server, uds_server_task, label="uds")
             if api_server is not None:
                 await api_server.operation_runtime.shutdown()
+            if ingest_owner_runtime is not None:
+                await ingest_owner_runtime.shutdown()
 
             # One owner cancels and awaits every child inside its declared
             # deadline. Anything still running afterwards is named here

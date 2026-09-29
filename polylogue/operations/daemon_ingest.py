@@ -1492,14 +1492,25 @@ async def redrive_accepted_ingests(
 
     for position, (operation_id, record) in enumerate(claimed):
         request_id = str(record["request_id"])
-        execution = IngestRedrive(
-            runtime,
-            archive_root,
-            audit,
-            operation_id=operation_id,
-            record=record,
-            stop_requested=partial(stop_requested, request_id),
-        )
+        try:
+            execution = IngestRedrive(
+                runtime,
+                archive_root,
+                audit,
+                operation_id=operation_id,
+                record=record,
+                stop_requested=partial(stop_requested, request_id),
+            )
+        except BaseException as exc:
+            # No execution exists to drive or settle this run (its scratch
+            # state could not be created): hand it and every later claim
+            # back, since their attempts name this live process and nothing
+            # in it would ever reclaim them.
+            reason = f"the re-drive could not start: {type(exc).__name__}"
+            for remaining_id, _record in claimed[position:]:
+                with contextlib.suppress(Exception):
+                    await release_redrive_claim(runtime, audit, remaining_id, reason)
+            raise
         try:
             emit("ingest.redrive.started", operation_id=operation_id, request_id=request_id, outcome="running")
             backoff_s = 0.5
