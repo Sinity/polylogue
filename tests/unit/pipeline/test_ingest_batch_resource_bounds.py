@@ -352,71 +352,99 @@ def test_submission_fault_after_a_delivered_result_neither_replays_nor_runs_inli
     assert progress.in_flight_raw_ids == []
 
 
-def test_a_dead_worker_is_retryable_and_undelivered_raws_run_on_a_fresh_pool(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A worker death fails the raws it held, retryably, and nothing else.
+class _BrokenPool:
+    """A pool whose workers die: it accepts ``capacity`` raws, then is broken."""
 
-    Every future in flight on a broken pool raises ``BrokenProcessPool``, not
-    only the one whose worker died, so it is not a parser defect. Raws the
-    broken pool never accepted are proven undelivered and run on a new pool.
-    Anti-vacuity: classifying the death as a parser defect makes ``raw-1``
-    non-retryable; refusing instead of replacing the pool fails ``raw-2``.
-    """
-    from concurrent.futures.process import BrokenProcessPool
+    def __init__(self, capacity: int, events: list[str]) -> None:
+        from concurrent.futures.process import BrokenProcessPool
 
-    pools: list[str] = []
+        self._broken = BrokenProcessPool
+        self._capacity = capacity
+        self._events = events
+
+    def submit(self, fn: object, raw_record: RawSessionRecord, request: object) -> Future[IngestRecordResult]:
+        del fn, raw_record, request
+        if self._capacity == 0:
+            raise self._broken("a child process terminated abruptly")
+        self._capacity -= 1
+        future: Future[IngestRecordResult] = Future()
+        future.set_exception(self._broken("a child process terminated abruptly"))
+        return future
+
+    def shutdown(self, **_kwargs: object) -> None:
+        self._events.append("broken-shutdown")
+
+
+class _HealthyPool:
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    def submit(self, fn: object, raw_record: RawSessionRecord, request: object) -> Future[IngestRecordResult]:
+        del fn, request
+        return _completed(IngestRecordResult(raw_id=raw_record.raw_id, outcome_code="success"))
+
+    def shutdown(self, **_kwargs: object) -> None:
+        self._events.append("healthy-shutdown")
+
+
+def _dying_then_healthy_pools(monkeypatch: pytest.MonkeyPatch, *, capacity: int) -> tuple[list[str], list[str]]:
+    events: list[str] = []
     inline_runs: list[str] = []
 
-    class BrokenPool:
-        def __init__(self) -> None:
-            self.accepted = False
-
-        def submit(self, fn: object, raw_record: RawSessionRecord, request: object) -> Future[IngestRecordResult]:
-            del fn, request
-            if self.accepted:
-                raise BrokenProcessPool("a child process terminated abruptly")
-            self.accepted = True
-            future: Future[IngestRecordResult] = Future()
-            future.set_exception(BrokenProcessPool("a child process terminated abruptly"))
-            return future
-
-        def shutdown(self, **_kwargs: object) -> None:
-            pools.append("broken-shutdown")
-
-    class HealthyPool:
-        def submit(self, fn: object, raw_record: RawSessionRecord, request: object) -> Future[IngestRecordResult]:
-            del fn, request
-            return _completed(IngestRecordResult(raw_id=raw_record.raw_id, outcome_code="success"))
-
-        def shutdown(self, **_kwargs: object) -> None:
-            pools.append("healthy-shutdown")
-
     def factory(*, max_workers: int) -> object:
-        pools.append("start")
-        return BrokenPool() if pools.count("start") == 1 else HealthyPool()
+        events.append("start")
+        return _BrokenPool(capacity, events) if events.count("start") == 1 else _HealthyPool(events)
+
+    def record_inline(raw_record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
+        inline_runs.append(raw_record.raw_id)
+        return IngestRecordResult(raw_id=raw_record.raw_id)
 
     monkeypatch.setattr(ingest_batch_core, "process_pool_executor", factory)
-    monkeypatch.setattr(
-        ingest_batch_core, "ingest_record", lambda raw_record, *_a, **_k: inline_runs.append(raw_record.raw_id)
-    )
+    monkeypatch.setattr(ingest_batch_core, "ingest_record", record_inline)
+    return events, inline_runs
+
+
+def test_a_worker_death_shared_by_several_raws_is_retryable_for_each(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every raw in flight on a broken pool sees ``BrokenProcessPool``, not only
+    the one whose worker died, so none of them is charged a parser defect.
+    Raws the broken pool never accepted are proven undelivered and run on a
+    fresh pool. Anti-vacuity: charging every break as a parser defect makes
+    ``raw-1`` and ``raw-2`` non-retryable; refusing instead of replacing the
+    pool fails ``raw-3``.
+    """
+    events, inline_runs = _dying_then_healthy_pools(monkeypatch, capacity=2)
 
     results = list(
-        _iter_ingest_results_sync(
-            _raw_records(3),
-            request=_worker_request(),
-            worker_count=1,
-            force_process_pool=True,
-        )
+        _iter_ingest_results_sync(_raw_records(3), request=_worker_request(), worker_count=2, force_process_pool=True)
     )
 
     assert inline_runs == []
-    assert [result.raw_id for result in results] == ["raw-1", "raw-2", "raw-3"]
-    assert results[0].outcome_code == "transient_error"
-    assert results[0].retryable is True
-    assert results[0].evidence_ref == "worker:BrokenProcessPool"
-    assert [result.outcome_code for result in results[1:]] == ["success", "success"]
-    assert pools == ["start", "start", "broken-shutdown", "healthy-shutdown"]
+    assert sorted(result.raw_id for result in results) == ["raw-1", "raw-2", "raw-3"]
+    by_raw = {result.raw_id: result for result in results}
+    for raw_id in ("raw-1", "raw-2"):
+        assert by_raw[raw_id].outcome_code == "transient_error"
+        assert by_raw[raw_id].retryable is True
+        assert by_raw[raw_id].evidence_ref == "worker:BrokenProcessPool"
+    assert by_raw["raw-3"].outcome_code == "success"
+    assert events == ["start", "start", "broken-shutdown", "healthy-shutdown"]
+
+
+def test_a_worker_death_held_by_one_raw_is_charged_to_it(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With one raw on the pool the death is that raw's: a parser defect, not
+    retried forever. Its neighbours still run on a fresh pool. Anti-vacuity:
+    classifying every break as transient makes ``raw-1`` retryable."""
+    events, inline_runs = _dying_then_healthy_pools(monkeypatch, capacity=1)
+
+    results = list(
+        _iter_ingest_results_sync(_raw_records(2), request=_worker_request(), worker_count=1, force_process_pool=True)
+    )
+
+    assert inline_runs == []
+    assert [result.raw_id for result in results] == ["raw-1", "raw-2"]
+    assert results[0].outcome_code == "parser_defect"
+    assert results[0].retryable is False
+    assert results[1].outcome_code == "success"
+    assert events == ["start", "start", "broken-shutdown", "healthy-shutdown"]
 
 
 def test_a_stalled_pool_refuses_the_raws_it_never_submitted(monkeypatch: pytest.MonkeyPatch) -> None:
