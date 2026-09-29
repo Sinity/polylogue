@@ -6,6 +6,7 @@ import json
 import sqlite3
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import ijson
 import pytest
@@ -13,6 +14,7 @@ import pytest
 import polylogue.sources.prepared_jsonl as prepared_jsonl
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.decoder_json import spill_member_arrays
 from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
 from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
 from polylogue.sources.prepared_jsonl import _hermes_atif_envelope, prepare_jsonl_blob
@@ -298,18 +300,18 @@ def test_atif_subagent_entries_arrive_without_their_steps(tmp_path: Path, monkey
     expected = _expected(document, source)
     members: list[tuple[int, object, int | None]] = []
     spilled_steps: dict[int, int] = {}
-    original_walk = prepared_jsonl.spill_member_arrays
+    original_walk = spill_member_arrays
 
-    def tracked_walk(handle: object, container: str, nested: str, *, on_member: object, on_nested_item: object) -> bool:
+    def tracked_walk(handle: Any, container: str, nested: str, *, on_member: Any, on_nested_item: Any) -> bool:
         def record_member(index: int, fields: object, count: int | None) -> None:
             members.append((index, fields, count))
-            on_member(index, fields, count)  # type: ignore[operator]
+            on_member(index, fields, count)
 
         def record_step(index: int, ordinal: int, step: object) -> None:
             # A step is spilled before its entry has been reported.
             assert all(member[0] != index for member in members)
             spilled_steps[index] = spilled_steps.get(index, 0) + 1
-            on_nested_item(index, ordinal, step)  # type: ignore[operator]
+            on_nested_item(index, ordinal, step)
 
         return original_walk(handle, container, nested, on_member=record_member, on_nested_item=record_step)
 

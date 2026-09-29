@@ -11,6 +11,7 @@ import uuid
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import closing
 from dataclasses import dataclass
+from functools import partial
 from itertools import islice
 from pathlib import Path
 from typing import BinaryIO, cast, overload
@@ -282,7 +283,7 @@ def _atif_subagents(conn: sqlite3.Connection) -> Iterator[hermes_spans.AtifSubag
         yield hermes_spans.AtifSubagent(
             fields if isinstance(fields, dict) else {},
             step_count,
-            lambda ordinal=ordinal: _atif_subagent_steps(conn, ordinal),
+            partial(_atif_subagent_steps, conn, ordinal),
         )
 
 
