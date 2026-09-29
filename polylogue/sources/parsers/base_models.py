@@ -322,6 +322,13 @@ class ParsedContentBlock(BaseModel):
         return BlockType.from_string(str(v))
 
 
+#: Validation context flag for data parsed from JSON text by a parser other
+#: than pydantic's (the prepared sink reads surrogate escapes with the
+#: stdlib): fields rendered differently in JSON mode parse as JSON mode would.
+SINK_JSON_CONTEXT_KEY = "polylogue.json_sourced"
+SINK_JSON_CONTEXT: dict[str, object] = {SINK_JSON_CONTEXT_KEY: True}
+
+
 class ParsedPasteEvidence(BaseModel):
     position: int = 0
     start_offset: int | None = None
@@ -337,7 +344,8 @@ class ParsedPasteEvidence(BaseModel):
     def _parse_content_hash(cls, value: object, info: ValidationInfo) -> object:
         # JSON mode receives the hex representation emitted below; Python
         # callers continue to supply the raw digest bytes.
-        if info.mode == "json" and isinstance(value, str):
+        json_sourced = info.mode == "json" or bool(info.context and info.context.get(SINK_JSON_CONTEXT_KEY))
+        if json_sourced and isinstance(value, str):
             return bytes.fromhex(value)
         return value
 

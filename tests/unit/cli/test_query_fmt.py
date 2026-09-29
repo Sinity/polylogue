@@ -50,6 +50,20 @@ from tests.infra.builders import make_msg as build_msg
 from tests.infra.local_timezone import pinned_local_timezone
 
 
+def test_identity_fallback_is_not_ellipsized_as_a_title() -> None:
+    """Untitled rows preserve the identity carried in their title column.
+
+    Anti-vacuity: applying title ellipsizing to the fallback collapses two
+    sibling IDs that share a long origin prefix at narrow terminal widths.
+    """
+    from polylogue.cli.query_output import _display_title
+
+    first = "claude-code-session::agent-00009f"
+    second = "claude-code-session::agent-00099f"
+    assert _display_title(None, first, max_width=18) == first
+    assert _display_title(None, second, max_width=18) == second
+
+
 @dataclass(frozen=True)
 class FilterCase:
     name: str
@@ -374,6 +388,9 @@ class TestListFormatting:
             created_at=datetime(2025, 6, 1, tzinfo=timezone.utc),
             updated_at=datetime(2025, 6, 2, tzinfo=timezone.utc),
             metadata={"tags": ["alpha", "beta"], "summary": "Summary text"},
+            terminal_state="refused",
+            total_cost_usd=1.25,
+            cost_provenance="provider_reported",
         )
 
         rendered = format_summary_list(
@@ -389,6 +406,12 @@ class TestListFormatting:
             assert payload["items"][0]["id"] == "conv-summary-1"
             assert payload["items"][0]["message_count"] == 7
             assert payload["items"][0]["tags"] == ["alpha", "beta"]
+            assert "date" not in payload["items"][0]
+            assert "outcome" not in payload["items"][0]
+            assert "cost_usd" not in payload["items"][0]
+            assert "created_at" in payload["items"][0]
+            assert "terminal_state" in payload["items"][0]
+            assert "total_cost_usd" in payload["items"][0]
             assert payload["total"] == 1
         elif output_format == "yaml":
             payload = yaml.safe_load(rendered)
@@ -422,7 +445,7 @@ class TestListFormatting:
             payload = json.loads(format_summary_list([summary], "json", None))
 
         assert "2025-05-31" in text
-        assert payload["items"][0]["date"] == "2025-06-01"
+        assert payload["items"][0]["created_at"].startswith("2025-06-01T01:00:00")
 
     def test_csv_dates_stay_canonical_when_text_is_localized(self, monkeypatch: pytest.MonkeyPatch) -> None:
         with pinned_local_timezone(monkeypatch, "America/Los_Angeles"):

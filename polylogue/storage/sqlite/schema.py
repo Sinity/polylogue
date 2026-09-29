@@ -15,10 +15,6 @@ import sqlite3
 import aiosqlite
 
 from polylogue.core.errors import SchemaVersionMismatchError
-from polylogue.storage.sqlite.archive_tiers.index_convergence import (
-    apply_index_benign_ddl_convergence,
-    apply_index_benign_ddl_convergence_async,
-)
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_async, ensure_runtime_indexes_sync
 from polylogue.storage.sqlite.schema_bootstrap import (
@@ -91,11 +87,23 @@ def assert_readable_archive_layout(conn: sqlite3.Connection, *, generation_id: s
     if snapshot.current_version == SCHEMA_VERSION:
         suffix = f" Generation {generation_id}" if generation_id is not None else ""
         try:
+            canonical = canonical_schema_manifest(ArchiveTier.INDEX)
+        except sqlite3.Error as exc:
+            # This DDL runs in a fresh in-memory database, not the archive.
+            # Rebuilding or retrying the archive cannot add runtime features.
+            raise SchemaVersionMismatchError(
+                f"The SQLite runtime cannot construct the canonical index schema.{suffix} {exc}",
+                current_version=snapshot.current_version,
+                expected_version=SCHEMA_VERSION,
+                generation_id=generation_id,
+                lifecycle_action="upgrade_runtime",
+            ) from exc
+        try:
             # A missing message FTS surface degrades search and nothing else,
             # so a read reports it through the search route's degraded state
             # rather than refusing every read of the index.
             diff = schema_manifest_diff(
-                canonical_schema_manifest(ArchiveTier.INDEX),
+                canonical,
                 SchemaManifest.from_connection(conn, ArchiveTier.INDEX),
             )
             if any(diff.values()) and not schema_manifest_diff_is_message_fts_only(diff):
@@ -149,7 +157,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         conn.executescript(SCHEMA_DDL)
         ensure_vec0_table(conn)
         ensure_runtime_indexes_sync(conn)
-        apply_index_benign_ddl_convergence(conn)
         conn.executescript(PLANNER_STAT1_SEED_SQL)
         conn.execute("PRAGMA optimize")
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -174,7 +181,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     assert_derived_schema_identity(conn, "index")
     ensure_vec0_table(conn)
     ensure_runtime_indexes_sync(conn)
-    apply_index_benign_ddl_convergence(conn)
 
 
 async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
@@ -187,7 +193,6 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
         await conn.executescript(SCHEMA_DDL)
         await ensure_vec0_table_async(conn)
         await ensure_runtime_indexes_async(conn)
-        await apply_index_benign_ddl_convergence_async(conn)
         await conn.executescript(PLANNER_STAT1_SEED_SQL)
         await conn.execute("PRAGMA optimize")
         await conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -212,7 +217,6 @@ async def ensure_schema_async(conn: aiosqlite.Connection) -> None:
     await ensure_derived_schema_identity_async(conn, ArchiveTier.INDEX.value)
     await ensure_vec0_table_async(conn)
     await ensure_runtime_indexes_async(conn)
-    await apply_index_benign_ddl_convergence_async(conn)
 
 
 __all__ = [

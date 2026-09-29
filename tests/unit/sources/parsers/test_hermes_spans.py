@@ -1221,3 +1221,36 @@ def test_atif_fidelity_is_exact_only_for_the_fixture_verified_schema_version() -
     assert unverified_fidelity.capabilities["llm_request_spans"].status == "inferred"
     assert any("ATIF-v99" in caveat for caveat in unverified_fidelity.caveats)
     assert "unverified" in unverified_fidelity.producer
+
+
+def test_the_atof_stream_route_admits_every_session() -> None:
+    """Every session of the streaming ATOF route carries an admission proof.
+
+    Anti-vacuity (Codex P2, #5711): return ``parse_atof_stream`` unadmitted
+    and the parent and delegation-stub sessions reach the writer with
+    ``unit_accounting=None``.
+    """
+    records = [json.loads(line) for line in REAL_ATOF_FIXTURE.read_text().splitlines()]
+    sessions = parse_stream_payload(Provider.HERMES, iter(records), "fallback-id", source_path=str(REAL_ATOF_FIXTURE))
+
+    assert len(sessions) == 2
+    assert all(session.unit_accounting is not None for session in sessions)
+
+
+def test_an_unknown_shaped_tool_argument_is_not_a_hermes_wire_type() -> None:
+    """User data inside ATIF tool-call arguments is never an unknown wire type.
+
+    Anti-vacuity (Codex P2, #5711): admit Hermes with the recursive default
+    scan and ``{"type": "unknown"}`` in the arguments adds a false
+    ``hermes_unknown_input`` event.
+    """
+    steps = _steps()
+    steps[0]["tool_calls"] = [{"function_name": "f", "tool_call_id": "c", "arguments": {"type": "unknown"}}]
+    payload = hermes_spans.marker_payload("hermes-session-2", steps)
+
+    sessions = parse_payload(Provider.HERMES, payload, "fallback-id")
+
+    assert sessions
+    assert not [
+        event for session in sessions for event in session.session_events if event.event_type == "hermes_unknown_input"
+    ]

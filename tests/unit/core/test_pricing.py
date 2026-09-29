@@ -397,6 +397,14 @@ def test_model_normalization_accepts_provider_prefixes_and_version_suffixes() ->
     assert estimate_cost(1000, 500, "openai/gpt-4o-2024-08-06") == pytest.approx(0.0075)
 
 
+def test_exact_routed_catalog_key_precedes_bare_alias() -> None:
+    from polylogue.archive.semantic.pricing import PRICING
+
+    routed = "deepinfra/openai/gpt-oss-120b"
+    assert routed in PRICING
+    assert estimate_cost(1_000_000, 1_000_000, routed) == pytest.approx(0.5)
+
+
 def test_aistudio_drive_resource_path_model_prices_like_bare_form() -> None:
     """polylogue-6j9c: aistudio-drive's parser stores the raw Gemini API
     resource-path model identifier verbatim (e.g. ``models/gemini-2.5-pro``,

@@ -242,6 +242,18 @@ def materialize_codex_state_content(
     return receipt
 
 
+class CodexStateFinalizeError(RuntimeError):
+    """A retained Codex state candidate could not be finalized in the source tier."""
+
+
+def _record_snapshot_candidate(archive: Any, raw_id: str, **kwargs: Any) -> None:
+    """Finalize one candidate, typing SQLite failures at this seam."""
+    try:
+        record_codex_state_snapshot_terminal(archive, raw_id, **kwargs)
+    except sqlite3.Error as exc:
+        raise CodexStateFinalizeError(f"codex state candidate {raw_id} could not be finalized: {exc}") from exc
+
+
 def record_codex_state_snapshot_terminal(
     archive: Any,
     raw_id: str,
@@ -343,7 +355,9 @@ def _thread_state_projection_is_current(archive_root: Path) -> bool:
     try:
         index_db = resolve_active_index_path(archive_root)
     except Exception:
-        return True
+        # An unresolvable index cannot prove the projection current; let the
+        # projection run and fail visibly instead of skipping it as done.
+        return False
     if not index_db.is_file():
         return True
     try:
@@ -429,16 +443,31 @@ def resolve_retained_codex_state_receipts(archive_root: Path) -> int:
             if state_kind not in codex_state.IN_SCOPE_KINDS:
                 continue
             observed_at_ms = archive.raw_revision_observed_at_ms(raw_id)
-            record_codex_state_snapshot_terminal(
-                archive,
-                raw_id,
-                state_path=state_path,
-                state_kind=state_kind,
-                source_path=source_path,
-                acquired_at_ms=observed_at_ms,
-                censused_at_ms=observed_at_ms,
-                blob_hash=blob_hash,
-            )
+            # Materialization commits in bounded pages by design, so a
+            # candidate cannot be one transaction. Rows it committed are
+            # idempotent content-addressed observations; the failed raw gets no
+            # terminal receipt, so it is retried and re-materialization
+            # supersedes the same coordinates.
+            try:
+                _record_snapshot_candidate(
+                    archive,
+                    raw_id,
+                    state_path=state_path,
+                    state_kind=state_kind,
+                    source_path=source_path,
+                    acquired_at_ms=observed_at_ms,
+                    censused_at_ms=observed_at_ms,
+                    blob_hash=blob_hash,
+                )
+            except (CodexStateFinalizeError, OSError, ValueError) as exc:
+                emit(
+                    "sources.codex_state.snapshot_finalize_refused",
+                    outcome="degraded",
+                    reason="retained_snapshot_finalize_failed",
+                    raw_id=raw_id,
+                    error_type=type(exc).__name__,
+                )
+                continue
             resolved += 1
         index_conn = archive.index_connection
         if index_conn is not None:

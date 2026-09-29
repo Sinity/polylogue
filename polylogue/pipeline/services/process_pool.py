@@ -141,50 +141,25 @@ class PoolKind(StrEnum):
 class ParseDispatchPlan:
     """One call site's resolved (pool kind, worker count) decision.
 
-    polylogue-xecca: before this, four CPU-bound parse-dispatch call sites
+    polylogue-xecca: before this, the CPU-bound parse-dispatch call sites
     each computed their own worker-count formula inline (and one, the
     thread-vs-sequential choice under ``parallel_threads_effective``, also
     decided pool KIND inline) -- ``pipeline/services/validation_flow.py``,
-    ``pipeline/services/archive_ingest.py``, ``pipeline/services/
-    ingest_batch/_core.py``, and ``sources/revision_backfill.py``'s census
-    parse family. None of the three worker-count formulas were wrong, but
+    ``pipeline/services/ingest_batch/_core.py``, and
+    ``sources/revision_backfill.py``'s census parse family. None of the three worker-count formulas were wrong, but
     scattering them meant "how many workers, and thread or process, for a
     parse dispatch" had no single place to read or change. The
     ``resolve_*_dispatch`` functions below are that single place: one per
     site, since each site's formula reflects a genuinely different,
     independently measured input (workload shape, GIL-vs-free-threaded
     build, or a deliberate ignore of build capability) -- see each
-    function's docstring for its own measurement citation. None of the four
-    sites' *effective* behavior changes; only where the arithmetic lives
+    function's docstring for its own measurement citation. No site's
+    *effective* behavior changes; only where the arithmetic lives
     does.
     """
 
     pool_kind: PoolKind
     worker_count: int
-
-
-def resolve_archive_ingest_dispatch(*, path_count: int, total_bytes: int, worker_ceiling: int) -> ParseDispatchPlan:
-    """Pool-kind + worker-count decision for ``archive_ingest.py``'s file-walk parse.
-
-    Sized by the work the walk actually found, on the same byte tiers as
-    :func:`resolve_ingest_batch_dispatch`: ``<= 8 MiB`` sequential, ``<= 64
-    MiB`` capped at 4 workers, above that ``min(path_count, cpus, ceiling)``.
-    A spawn pool costs a fresh interpreter and a full ``polylogue`` import per
-    worker; below the first tier that setup exceeds the parse it replaces, and
-    a spawn failure under host pressure is absorbed by the driver's per-file
-    ``except`` as a silently dropped file rather than surfacing as an error.
-
-    ``worker_ceiling`` is the caller's already-resolved
-    :func:`resolve_parse_worker_count` value, so the operator knob keeps one
-    home. A ceiling of 1 never reaches here: it selects the caller's
-    source-iterator escape hatch, which is a different route from the walk.
-    """
-    if path_count <= 1 or total_bytes <= 8 * 1024 * 1024:
-        return ParseDispatchPlan(PoolKind.SEQUENTIAL, 1)
-    cpus = available_cpus() or 4
-    if total_bytes <= 64 * 1024 * 1024:
-        return ParseDispatchPlan(PoolKind.PROCESS, max(1, min(path_count, cpus, worker_ceiling, 4)))
-    return ParseDispatchPlan(PoolKind.PROCESS, max(1, min(path_count, cpus, worker_ceiling)))
 
 
 #: Below this aggregate blob size a validation batch runs in-process. Same
@@ -334,7 +309,6 @@ __all__ = [
     "parallel_threads_effective",
     "process_pool_context",
     "process_pool_executor",
-    "resolve_archive_ingest_dispatch",
     "resolve_ingest_batch_dispatch",
     "resolve_parse_worker_count",
     "resolve_revision_backfill_census_dispatch",

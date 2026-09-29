@@ -31,7 +31,7 @@ from polylogue.operations.session_contracts import (
     SessionTimeline,
     session_operation_contracts,
 )
-from polylogue.operations.session_reads import execute_session_operation, raw_operation
+from polylogue.operations.session_reads import execute_session_operation, raw_operation, session_timeline
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.frozen_clock import FrozenClock
@@ -207,6 +207,88 @@ def test_raw_scan_budget_advances_and_fanout_reports_unavailable(tmp_path: Path)
     assert timeline.coverage.time_basis == "session-file-mtime"
     assert timeline.outcome == "degraded"
     assert [row.mtime_ns for row in timeline.items] == sorted([row.mtime_ns for row in timeline.items], reverse=True)
+
+
+def test_deleted_reference_search_reports_degraded_coverage(tmp_path: Path) -> None:
+    """A continuation scope whose file vanished becomes a named coverage gap.
+
+    Anti-vacuity: red if reference resolution raises before the snapshot
+    comparison and the row-bearing operation returns no RawPage.
+    """
+    sources = raw_sources(tmp_path)
+    path = sources[0].root / "original-0.jsonl"
+    page = raw_operation(
+        RawSearch(origin="codex-session", query="needle", reference="codex:original-0.jsonl"),
+        sources=sources,
+    )
+    assert page.items
+    path.unlink()
+    resumed = raw_operation(
+        RawSearch(origin="codex-session", query="needle", reference="codex:original-0.jsonl"),
+        sources=sources,
+    )
+    assert resumed.outcome == "degraded"
+    assert resumed.coverage.gaps
+
+
+@pytest.mark.asyncio
+async def test_timeline_uses_falsey_summary_fallback(tmp_path: Path) -> None:
+    """An empty JSON summary falls back to the event's text in search and output.
+
+    Anti-vacuity: red if SQL COALESCE treats the empty string as present,
+    leaving the event blank and omitting it from an expression search.
+    """
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as archive_db:
+        write_index_session(
+            archive_db,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="falsey-event-summary",
+                title="Falsey summary",
+                messages=[],
+                session_events=[
+                    ParsedSessionEvent(
+                        event_type="test_event",
+                        timestamp="2024-01-01T00:00:00Z",
+                        payload={"summary": "", "text": "fallback"},
+                    )
+                ],
+            ),
+        )
+    page = await session_timeline(root, SessionTimeline(expression="fallback"))
+    assert len(page.items) == 1
+    assert page.items[0].text == "fallback"
+
+
+def test_single_source_search_missing_root_is_degraded(tmp_path: Path) -> None:
+    """A configured but absent root is named as unavailable coverage.
+
+    Anti-vacuity: red if single-source dispatch raises rather than returning
+    the zero-row degraded contract used by fan-out.
+    """
+    page = raw_operation(
+        RawSearch(origin="codex-session", query="needle"),
+        sources=(SessionSource("codex", tmp_path / "absent"),),
+    )
+    assert not page.items
+    assert page.outcome == "degraded"
+    assert page.sources[0].availability == "unavailable"
+
+
+def test_single_source_list_missing_root_is_degraded(tmp_path: Path) -> None:
+    """List degrades on an absent root exactly as search does.
+
+    Anti-vacuity: red if the list branch reaches ``service.timeline`` and
+    raises ``SessionError("session source directory is unavailable")``.
+    """
+    page = raw_operation(
+        RawList(origin="codex-session", limit=5),
+        sources=(SessionSource("codex", tmp_path / "absent"),),
+    )
+    assert not page.items
+    assert page.outcome == "degraded"
+    assert page.sources[0].availability == "unavailable"
 
 
 def test_operation_contracts_validate_real_results(tmp_path: Path) -> None:
@@ -577,3 +659,34 @@ async def test_old_archive_refuses_indexed_reads_without_migration_and_keeps_raw
         )
         assert raw.model_dump()["items"]
     assert [hashlib.sha256(path.read_bytes()).hexdigest() for path in paths] == before
+
+
+@pytest.mark.asyncio
+async def test_timeline_reads_a_lone_surrogate_event_summary(tmp_path: Path) -> None:
+    """A session event whose summary keeps a lone surrogate stays readable.
+
+    Anti-vacuity: extract ``payload_json.summary`` with bare ``json_extract``
+    again and the timeline read raises ``Could not decode to UTF-8``.
+    """
+    root = tmp_path / "archive"
+    with ArchiveStore(root) as archive:
+        write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="surrogate-event",
+                title="Surrogate event",
+                messages=[],
+                session_events=[
+                    ParsedSessionEvent(
+                        event_type="compaction",
+                        timestamp="2026-01-01T12:00:00Z",
+                        payload={"summary": "kept \ud800 text"},
+                    )
+                ],
+            ),
+        )
+    async with Polylogue(archive_root=root) as api:
+        timeline = await execute_session_operation(api, SessionTimeline(limit=5))
+
+    assert [item.text for item in timeline.items] == ["kept \\ud800 text"]

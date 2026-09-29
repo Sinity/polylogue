@@ -460,3 +460,16 @@ def test_resolve_block_anchor_quarantined_edge_precedes_lineage_search(tmp_path:
         assert f"{session_id} -> {parent_id}" in resolution.detail
     finally:
         conn.close()
+
+
+def test_unbacked_analysis_refs_resolve_as_substrate_pending(tmp_path: Path) -> None:
+    """Anti-vacuity: an unregistered metric must not become unsupported-kind."""
+    from polylogue.core.refs import ObjectRef
+
+    plan = plan_ref_resolution(ObjectRef(kind="metric", object_id="synthetic").format(), archive_root=tmp_path)
+    assert plan.payload is None
+    assert plan.read is not None
+    pending = plan.read(cast("ArchiveStore", SimpleNamespace(_conn=None, archive_root=tmp_path)))
+    assert pending.resolved is False
+    assert pending.payload_kind == "pending"
+    assert "substrate-pending" in pending.caveats[0]

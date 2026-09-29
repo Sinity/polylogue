@@ -49,6 +49,7 @@ from ..base import (
     parser_admission,
     text_blocks_prose,
 )
+from ..base_support import claude_code_unknown_wire_type
 from .common import (
     _message_duration_ms,
     _message_model_effort,
@@ -3206,7 +3207,7 @@ def order_session_events(events: MutableSequence[ParsedSessionEvent]) -> Mutable
     return [event for _, event in sorted(enumerate(events), key=sort_key)]
 
 
-@parser_admission("claude_code")
+@parser_admission("claude_code", scan=claude_code_unknown_wire_type)
 def parse_code(
     payload: Iterable[object],
     fallback_id: str,

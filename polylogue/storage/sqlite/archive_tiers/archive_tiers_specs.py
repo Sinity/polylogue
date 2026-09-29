@@ -513,7 +513,16 @@ MESSAGES_SPEC = _make_table_spec(
             "content_hash",
             f"content_hash BLOB NOT NULL {CONTENT_HASH_CHECK}",
             record_name="content_hash",
-            select_expression="lower(hex({alias}.content_hash))",
+            select_expression="CASE WHEN {alias}.content_hash IS NULL THEN NULL ELSE lower(hex({alias}.content_hash)) END",
+        ),
+        # The digest of the message's own fields (text, role, model, ...) that
+        # ``content_hash`` folds in beside its identity and its blocks. Kept so
+        # a row moved or copied outside the parse that produced it -- a
+        # materialized prefix, a shifted tail, a field-path merge -- gets the
+        # exact hash a replay of that message computes, with no text column.
+        _raw_column(
+            "fields_digest",
+            "fields_digest BLOB CHECK(fields_digest IS NULL OR length(fields_digest) = 32)",
         ),
         _raw_column(
             "occurred_at_ms",
@@ -631,7 +640,12 @@ BLOCKS_SPEC = _make_table_spec(
             domain_name="tool_result_outcome_unknown_reason",
         ),
         _raw_column("signature", "signature TEXT", record_name="signature", domain_name="signature"),
-        _raw_column("content_hash", "content_hash BLOB CHECK(content_hash IS NULL OR length(content_hash) = 32)"),
+        _raw_column(
+            "content_hash",
+            "content_hash BLOB CHECK(content_hash IS NULL OR length(content_hash) = 32)",
+            record_name="content_hash",
+            select_expression="CASE WHEN {alias}.content_hash IS NULL THEN NULL ELSE lower(hex({alias}.content_hash)) END",
+        ),
         # polylogue-7k3n0: the generated columns and the FTS projection read
         # the one declared key vocabulary, so the stored authority can never
         # again be narrower than the Python readers of the same fact.
@@ -1001,7 +1015,7 @@ SESSIONS_SPEC = _make_table_spec(
             "content_hash",
             f"""content_hash            BLOB NOT NULL {CONTENT_HASH_CHECK}""",
             record_name="content_hash",
-            select_expression="lower(hex({alias}.content_hash))",
+            select_expression="CASE WHEN {alias}.content_hash IS NULL THEN NULL ELSE lower(hex({alias}.content_hash)) END",
             conflict_update="excluded.content_hash",
         ),
         _raw_column(
@@ -1935,6 +1949,25 @@ DERIVED_REFRESH_GUARD_SPEC = _make_table_spec(
 )
 
 
+# The identity scope a lineage child's stored message IDs follow once its
+# inherited prefix was materialized (``write.py::_IdentityScope``). It belongs
+# to the child, not to any edge: a later revision may stop declaring the
+# parent, deleting the edge, and the stored IDs must still not move.
+SESSION_IDENTITY_SCOPES_SPEC = _make_table_spec(
+    "session_identity_scopes",
+    (
+        _raw_column(
+            "session_id",
+            """session_id     TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE""",
+        ),
+        _raw_column(
+            "scope_json",
+            """scope_json     TEXT NOT NULL CHECK (CASE WHEN json_valid(scope_json) THEN json_type(scope_json) = 'object' ELSE 0 END)""",
+        ),
+    ),
+)
+
+
 # The canonical ``session_model_usage`` rollup is a derived projection of
 # ``messages``, ``session_provider_usage_events`` and ``sessions``, but its
 # rows cannot say which values of those relations produced them: the rollup
@@ -2253,6 +2286,7 @@ INDEX_TABLE_SPECS = {
     "delegation_facts": DELEGATION_FACTS_SPEC,
     "delegation_refresh_scope": DELEGATION_REFRESH_SCOPE_SPEC,
     "derived_refresh_guard": DERIVED_REFRESH_GUARD_SPEC,
+    "session_identity_scopes": SESSION_IDENTITY_SCOPES_SPEC,
     "session_usage_rollup_bindings": SESSION_USAGE_ROLLUP_BINDINGS_SPEC,
     "session_summary_bindings": SESSION_SUMMARY_BINDINGS_SPEC,
     "session_enrichment_bindings": SESSION_ENRICHMENT_BINDINGS_SPEC,

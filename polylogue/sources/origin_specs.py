@@ -1956,8 +1956,9 @@ def path_declaration_refuses_session(provider: Provider, source_path: str | Path
     tool-result sidecar can reproduce a genuine export byte-for-byte
     (polylogue-omsw) and a prompt-history log carries the same ``sessionId``
     keys a transcript does (polylogue-ximhz). For those families the path rule
-    is terminal. ``fact`` and ``session`` rules keep the ordinary behaviour
-    where positive decoded session evidence may outrank a location.
+    is terminal and shape is never consulted. For ``fact`` and ``session``
+    rules, shape only validates the location's own origin: content of another
+    origin is refused (``ForeignOriginContentError``), never reinterpreted.
     """
     rule = artifact_rule_for_path(provider, str(source_path))
     return rule is not None and rule.parse_policy == "raw-only"
@@ -2396,10 +2397,8 @@ def _codex_spec() -> OriginSpec:
             "the parsed session retains and becomes its own "
             "codex_replacement_context session_event only when it is retained "
             "nowhere else; per-entry phase/ghost_commit/image annotation "
-            "stays a bounded aggregate on the compaction event. A replacement "
-            "text value over 256 KiB is not copied into the derived index: a "
-            "codex_replacement_context_omitted event records its size, SHA-256, "
-            "and source_blob reconstruction route instead.",
+            "stays a bounded aggregate on the compaction event. Each distinct "
+            "replacement-only value is stored once whatever its size or count.",
             "event_msg.task_complete.last_agent_message (acquired, "
             "polylogue-6ev92): the turn's final assistant text repeated on "
             "the completion marker. Measured over 270 real rollout files, all "
@@ -2646,6 +2645,23 @@ def _gemini_cli_spec() -> OriginSpec:
                     "Tool output is provider payload, not a stable sidecar record contract; retain bytes and join "
                     "to the owning tool result without inferring a public schema."
                 ),
+            ),
+            OriginArtifactRule(
+                kind="prompt_history_log",
+                # ``~/.gemini/tmp/<project>/logs.json`` is Gemini CLI's prompt
+                # log. Its rows carry ``sessionId``/``type``/``message`` keys
+                # that another origin's detector also recognizes, so the path
+                # rule, not content shape, decides that it is never a session.
+                path_pattern=r"(?:^|/)logs\.json$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="prompt_history_log",
+                fidelity_note=(
+                    "Gemini CLI prompt-log rows are retained verbatim as evidence; they are the user's "
+                    "prompts only and duplicate what the chat checkpoints carry, so they are never a session."
+                ),
+                path_suffixes=(".json",),
+                watch_suffixes=(),
             ),
         ),
         fidelity_notes=(
@@ -3064,7 +3080,7 @@ def _aistudio_drive_spec() -> OriginSpec:
             message_parent=TopologyCapability(
                 "carried",
                 (
-                    "drive._branch_parent_message_provider_id/_branch_child_parent_map -> ParsedMessage.parent_message_provider_id; only id/messageId are local message evidence",
+                    "drive._branch_parent_message_provider_id/_ChunkOrder.branch_parent -> ParsedMessage.parent_message_provider_id; only id/messageId are local message evidence",
                 ),
             ),
             message_branch_state=TopologyCapability(
@@ -3087,14 +3103,17 @@ def _aistudio_drive_spec() -> OriginSpec:
 
 
 def _otel_genai_spec() -> OriginSpec:
-    """Declare configured local OTLP JSON as an explicit source origin."""
+    """Declare OTLP JSON trace exports, imported through the archive inbox."""
     from polylogue.sources.parsers.otel_genai import OTLP_JSON_DIALECT, SEMCONV_SCHEMA_URL
 
     return _executable_spec(
         Origin.OTEL_GENAI,
         provider=Provider.OTEL_GENAI,
         tightness=95,
-        discovery="Explicitly configured OTLP-JSON file with GenAI span attributes.",
+        discovery=(
+            "OTLP-JSON trace export with GenAI span attributes, imported with `polylogue import`; no tool writes "
+            "these to a canonical location, so the import inbox, which classifies by shape, is its live route."
+        ),
         acquisition_modes=("otlp-json-file",),
         parser_paths=("polylogue/sources/parsers/otel_genai.py",),
         fixture_paths=("tests/unit/sources/parsers/test_otel_genai.py", "tests/fixtures/otel-genai/trace.json"),
@@ -3107,8 +3126,8 @@ def _otel_genai_spec() -> OriginSpec:
                 parser_path="polylogue/sources/parsers/otel_genai.py",
                 coverage_role="otlp_json_export",
                 fidelity_note=(
-                    "An explicitly configured root supplies the source scope; parser admission still requires an "
-                    "OTLP JSON document with a normalizable GenAI span."
+                    "The import inbox supplies the source scope; parser admission still requires an OTLP JSON "
+                    "document with a normalizable GenAI span."
                 ),
                 path_suffixes=(".json",),
                 watch_suffixes=(".json",),
@@ -3447,7 +3466,7 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
 }
 
 
-_ALL_BROWSER_CAPTURE_PROVIDERS = tuple(Provider)
+_ALL_BROWSER_CAPTURE_PROVIDERS = tuple(provider for provider in Provider if provider is not Provider.BEADS)
 
 _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
     Origin.CLAUDE_CODE_SESSION: (

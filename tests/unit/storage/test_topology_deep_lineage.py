@@ -1,6 +1,6 @@
 """A deep but acyclic lineage must classify without recursing per edge.
 
-The writer admits a parent chain up to ``_CYCLE_WALK_BUDGET`` (1024, see
+The writer admits a parent chain of any depth (``_would_create_cycle`` in
 ``storage/sqlite/archive_tiers/write.py``). The topology classifier's cycle
 detection walked that chain with a recursive depth-first search, so a lineage
 the writer accepted raised ``RecursionError`` when any topology read classified

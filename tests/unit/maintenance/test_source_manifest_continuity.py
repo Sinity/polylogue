@@ -70,11 +70,60 @@ def test_duplicate_roots_and_symlinks_fail_closed(tmp_path: Path) -> None:
                 SourceDeclaration("b", SourceRole.DIRECTORY, root, True),
             ]
         )
+    alias = tmp_path / "alias" / ".." / root.name
+    with pytest.raises(SourceContinuityError, match="duplicate roots"):
+        build_source_frontier(
+            [
+                SourceDeclaration("a", SourceRole.DIRECTORY, root, True),
+                SourceDeclaration("b", SourceRole.DIRECTORY, alias, True),
+            ]
+        )
     link = tmp_path / "link"
     link.symlink_to(root, target_is_directory=True)
     frontier = build_source_frontier([SourceDeclaration("link", SourceRole.DIRECTORY, link, True)])
     assert frontier.root_states["link"] is FrontierState.UNAVAILABLE
     assert frontier.blockers
+
+
+def test_frontier_rejects_hardlinked_members_across_declarations(tmp_path: Path) -> None:
+    """A hard link cannot be counted once under each source declaration.
+
+    Anti-vacuity: per-declaration identity sets would accept both names and
+    double the frontier denominator while pointing at the same inode.
+    """
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "one.json").write_text("same", encoding="utf-8")
+    os.link(first / "one.json", second / "two.json")
+    with pytest.raises(SourceContinuityError, match="duplicate physical member identity"):
+        build_source_frontier(
+            [
+                SourceDeclaration("first", SourceRole.DIRECTORY, first, True),
+                SourceDeclaration("second", SourceRole.DIRECTORY, second, True),
+            ]
+        )
+
+
+def test_corrupt_mutable_sqlite_becomes_unavailable_blocker(tmp_path: Path) -> None:
+    """One bad SQLite root must not abort observation of other declarations.
+
+    Anti-vacuity: if ``sqlite3.DatabaseError`` escapes, no frontier records
+    the corrupt root as unavailable and later roots are never observed.
+    """
+    corrupt = tmp_path / "corrupt.db"
+    corrupt.write_bytes(b"not sqlite")
+    healthy = _source(tmp_path, "healthy")
+    frontier = build_source_frontier(
+        [
+            SourceDeclaration("corrupt", SourceRole.MUTABLE_SQLITE, corrupt, True),
+            SourceDeclaration("healthy", SourceRole.DIRECTORY, healthy, True),
+        ]
+    )
+    assert frontier.root_states["corrupt"] is FrontierState.UNAVAILABLE
+    assert frontier.root_states["healthy"] is FrontierState.PRESENT
+    assert any(item.startswith("unavailable:corrupt:") for item in frontier.blockers)
 
 
 def test_non_regular_members_fail_closed(tmp_path: Path) -> None:
@@ -146,6 +195,33 @@ def test_wanted_source_receipt_round_trip_and_operator_preflight_are_private(tmp
     # member coordinates.
     assert "root" not in preflight.as_dict()
     assert "relative_path" not in preflight.as_dict()
+
+
+def test_first_receipt_write_fsyncs_archive_root_after_creating_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The new maintenance-state directory entry is durable before receipt publication.
+
+    Anti-vacuity: syncing only the receipt's child directories leaves the
+    newly created ``.maintenance-state`` entry vulnerable to a crash.
+    """
+    source = _source(tmp_path, "fsync-source")
+    archive = tmp_path / "fsync-archive"
+    archive.mkdir()
+    real_fsync = os.fsync
+    synced_inodes: list[int] = []
+
+    def record_fsync(fd: int) -> None:
+        synced_inodes.append(os.fstat(fd).st_ino)
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", record_fsync)
+    write_wanted_source_receipt(
+        archive,
+        [SourceDeclaration("source", SourceRole.DIRECTORY, source, True)],
+    )
+
+    assert os.stat(archive).st_ino in synced_inodes
 
 
 def test_wanted_source_receipt_rejects_tampering_and_policy_revision(tmp_path: Path) -> None:
@@ -236,6 +312,33 @@ def test_policy_classification_is_bound_when_receipt_is_loaded_and_preflighted(t
     assert preflight.receipt_sha256 == receipt.receipt_sha256
     with pytest.raises(WantedSourceReceiptError, match="declaration mismatch"):
         load_wanted_source_receipt(archive, declarations=declarations)
+
+
+def test_receipt_invalidates_changes_to_excluded_declarations(tmp_path: Path) -> None:
+    """Excluded declarations are part of the frozen source population.
+
+    Anti-vacuity: checking only selected declarations would accept the old
+    receipt after an optional source is added, despite its absence from the
+    receipt's excluded source IDs.
+    """
+    wanted = _source(tmp_path, "wanted-excluded-drift")
+    optional = _source(tmp_path, "optional-excluded-drift")
+    declaration = SourceDeclaration("wanted", SourceRole.DIRECTORY, wanted, True)
+    archive = tmp_path / "archive-excluded-drift"
+    archive.mkdir()
+    write_wanted_source_receipt(
+        archive,
+        [declaration],
+        source_kinds={},
+    )
+    receipt_path = archive / ".maintenance-state" / "wanted-sources" / "selected.json"
+    assert receipt_path.exists()
+    with pytest.raises(WantedSourceReceiptError, match="exclusions mismatch"):
+        load_wanted_source_receipt(
+            archive,
+            declarations=[declaration, SourceDeclaration("optional", SourceRole.DIRECTORY, optional, True)],
+            source_kinds={"optional": "optional"},
+        )
 
 
 #: The receipt ``write_wanted_source_receipt`` produced for an empty

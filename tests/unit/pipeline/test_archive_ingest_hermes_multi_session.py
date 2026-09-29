@@ -7,7 +7,7 @@ unique within a profile. One ``state.db`` therefore yields N ParsedSessions
 that all carry the SAME acquisition raw id and DIFFERENT native ids.
 
 That is the grouped-capture shape, and the canonical live intake owner
-(``parse_sources_archive`` delegates to it) has to treat it as such. When a
+(``ingest_one_shot_archive`` delegates to it) has to treat it as such. When a
 former one-shot importer instead admitted
 each session as its own BASELINE observation against that shared raw id, the
 second session collided: the raw row already existed, so
@@ -26,10 +26,8 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
-import pytest
-
 from polylogue.config import Source
-from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 
 SESSION_IDS = ("hermes-alpha", "hermes-beta", "hermes-gamma")
 
@@ -92,13 +90,14 @@ def _write_multi_session_state_db(path: Path) -> None:
     conn.close()
 
 
-@pytest.mark.usefixtures("workspace_env")
-def test_multi_session_hermes_snapshot_imports_as_one_shared_raw(tmp_path: Path) -> None:
-    archive_root = tmp_path / "archive"
+def test_multi_session_hermes_snapshot_imports_as_one_shared_raw(
+    tmp_path: Path, one_shot_workspace_env: dict[str, Path]
+) -> None:
+    archive_root = one_shot_workspace_env["archive_root"]
     state_db = tmp_path / "hermes-profile" / "state.db"
     _write_multi_session_state_db(state_db)
 
-    asyncio.run(parse_sources_archive(archive_root, [Source(name="hermes", path=state_db)]))
+    asyncio.run(ingest_one_shot_archive(archive_root, [Source(name="hermes", path=state_db)]))
 
     with sqlite3.connect(archive_root / "index.db") as index_conn:
         session_ids = sorted(str(row[0]) for row in index_conn.execute("SELECT session_id FROM sessions"))

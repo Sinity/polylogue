@@ -333,20 +333,6 @@
       }
     }
   ],
-  "unknown_records": [
-    {
-      "type": "future_record",
-      "payload": {
-        "value": 1
-      }
-    },
-    {
-      "type": "future_record",
-      "payload": {
-        "value": 2
-      }
-    }
-  ],
   "codex_image_event": {
     "type": "event_msg",
     "payload": {

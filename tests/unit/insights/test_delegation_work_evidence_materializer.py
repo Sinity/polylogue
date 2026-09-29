@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import shutil
 import sqlite3
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any, Literal, cast
 
 import pytest
 
@@ -24,33 +27,40 @@ from polylogue.storage.sqlite.write_guard import install_archive_write_guard
 from polylogue.storage.sqlite.write_lease import UnleasedWriteError, arm_write_lease_enforcement, write_lease
 
 
-def _seed_delegation(archive_root: Path) -> None:
+def _seed_delegation(archive_root: Path, *, count: int = 1) -> None:
     from tests.infra.archive_templates import bootstrap_archive_root
 
     bootstrap_archive_root(archive_root)
     initialize_archive_database(archive_root / "index.db", ArchiveTier.INDEX)
+    for index in range(count):
+        _seed_one_delegation(archive_root, "" if index == 0 else f"-{index}")
+
+
+def _seed_one_delegation(archive_root: Path, suffix: str) -> None:
     with sqlite3.connect(archive_root / "index.db") as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute(
             """
             INSERT INTO sessions (native_id, origin, title, content_hash, created_at_ms, updated_at_ms)
-            VALUES ('parent', 'claude-code-session', 'Parent', ?, 1, 2)
+            VALUES (?, 'claude-code-session', 'Parent', ?, 1, 2)
             """,
-            (b"p" * 32,),
+            (f"parent{suffix}", hashlib.sha256(f"parent{suffix}".encode()).digest()),
         )
         parent_id = conn.execute(
-            "SELECT session_id FROM sessions WHERE origin = 'claude-code-session' AND native_id = 'parent'"
+            "SELECT session_id FROM sessions WHERE origin = 'claude-code-session' AND native_id = ?",
+            (f"parent{suffix}",),
         ).fetchone()[0]
         conn.execute(
             """
             INSERT INTO sessions (
                 native_id, origin, title, content_hash, created_at_ms, updated_at_ms, branch_type, parent_session_id
-            ) VALUES ('child', 'claude-code-session', 'Child', ?, 1, 2, 'subagent', ?)
+            ) VALUES (?, 'claude-code-session', 'Child', ?, 1, 2, 'subagent', ?)
             """,
-            (b"c" * 32, parent_id),
+            (f"child{suffix}", hashlib.sha256(f"child{suffix}".encode()).digest(), parent_id),
         )
         child_id = conn.execute(
-            "SELECT session_id FROM sessions WHERE origin = 'claude-code-session' AND native_id = 'child'"
+            "SELECT session_id FROM sessions WHERE origin = 'claude-code-session' AND native_id = ?",
+            (f"child{suffix}",),
         ).fetchone()[0]
         conn.execute(
             """
@@ -81,9 +91,9 @@ def _seed_delegation(archive_root: Path) -> None:
             INSERT INTO session_links (
                 src_session_id, dst_origin, dst_native_id, link_type, resolved_dst_session_id,
                 parent_tool_use_block_id, observed_at_ms
-            ) VALUES (?, 'claude-code-session', 'parent', 'subagent', ?, ?, 1)
+            ) VALUES (?, 'claude-code-session', ?, 'subagent', ?, ?, 1)
             """,
-            (child_id, parent_id, block_id),
+            (child_id, f"parent{suffix}", parent_id, block_id),
         )
 
 
@@ -178,8 +188,9 @@ def test_materializer_pins_digest_and_rows_to_the_same_index_connection(
     monkeypatch.setattr(ArchiveStore, "query_delegations", record_query)
 
     assert materialize_delegation_work_evidence_archive(tmp_path) == 1
-    assert len(connections) == 2
-    assert connections[0] is connections[1]
+    # The snapshot, every page, and the terminating empty page.
+    assert len(connections) >= 2
+    assert all(conn is connections[0] for conn in connections)
 
 
 def test_delegation_stage_reads_without_daemon_writer_lease(tmp_path: Path) -> None:
@@ -319,38 +330,21 @@ def test_convergence_stage_reports_probe_and_materialization_failures_as_pending
     ]
 
 
-def test_delegation_snapshot_refuses_row_ceiling_on_the_freshness_probe(
+def test_delegation_population_larger_than_a_read_page_materializes_completely(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The freshness probe is bounded, not just the materialize path.
+    """Every delegation is materialized; no population size is refused.
 
-    Anti-vacuity: restoring the unbounded
-    ``SELECT * FROM delegation_facts ... .fetchall()`` snapshot makes
-    ``delegation_work_evidence_materialization_needed`` return a bool for an
-    over-ceiling population instead of raising, and this test goes red.
+    Anti-vacuity (polylogue-zt8is): a single bounded read, or a count ceiling
+    like the old 100,000-row refusal, stops at the first page and returns 2
+    (or raises) instead of 3 for a three-delegation archive read one row a page.
     """
-    _seed_delegation(tmp_path)
-    monkeypatch.setattr(materializer, "MAX_DELEGATION_SNAPSHOT_ROWS", 0)
+    _seed_delegation(tmp_path, count=3)
+    monkeypatch.setattr(materializer, "DELEGATION_READ_PAGE_ROWS", 1)
 
-    with pytest.raises(ValueError, match="bounded population"):
-        delegation_work_evidence_materialization_needed(tmp_path)
-
-    # The materialize path inherits the same bound, because it digests first.
-    with pytest.raises(ValueError, match="bounded population"):
-        materialize_delegation_work_evidence_archive(tmp_path)
-
-
-def test_delegation_snapshot_refuses_byte_ceiling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Few rows carrying attacker-sized text are refused too.
-
-    Anti-vacuity: a row-count-only bound (or the original unbounded snapshot)
-    accepts a small row set with multi-MB payloads, and this test goes red.
-    """
-    _seed_delegation(tmp_path)
-    monkeypatch.setattr(materializer, "MAX_DELEGATION_SNAPSHOT_BYTES", 1)
-
-    with pytest.raises(ValueError, match="bounded population"):
-        delegation_work_evidence_materialization_needed(tmp_path)
+    assert delegation_work_evidence_materialization_needed(tmp_path) is True
+    assert materialize_delegation_work_evidence_archive(tmp_path) == 3
+    assert delegation_work_evidence_materialization_needed(tmp_path) is False
 
 
 def test_delegation_snapshot_digest_is_stable_and_content_sensitive(tmp_path: Path) -> None:
@@ -375,3 +369,212 @@ def test_delegation_snapshot_digest_is_stable_and_content_sensitive(tmp_path: Pa
         conn.commit()
     assert delegation_work_evidence_snapshot(tmp_path).format() != first.format()
     assert delegation_work_evidence_materialization_needed(tmp_path) is True
+
+
+def test_folding_pages_matches_the_one_pass_projection(tmp_path: Path) -> None:
+    """The on-disk fold reproduces the single-pass graph, row for row.
+
+    Anti-vacuity: a fold that replaced an attempt node already seen on an
+    earlier page, instead of merging it, keeps one evidence ref and the later
+    ``resolved`` state, where the one-pass projection unions both refs and
+    keeps the stronger ``contradicted`` state.
+    """
+    from contextlib import closing
+
+    from polylogue.analysis.delegation_work_evidence import materialize_delegation_work_evidence_graph
+    from polylogue.core.refs import ObjectRef
+    from tests.unit.insights.test_delegation_work_evidence import _row
+
+    rows = [
+        _row(parent_session_id="codex-session:a", instruction_tool_use_block_id="t1", mapping_state="quarantined"),
+        _row(parent_session_id="codex-session:b", instruction_tool_use_block_id="t2", artifact_text="done"),
+        _row(parent_session_id="codex-session:c", child_session_id=None, instruction_tool_use_block_id="t3"),
+    ]
+    snapshot = ObjectRef(kind="context-snapshot", object_id="delegations:fold")
+    graph_id = materializer.DELEGATION_WORK_EVIDENCE_GRAPH_ID
+    whole = materialize_delegation_work_evidence_graph(graph_id=graph_id, corpus_snapshot_ref=snapshot, rows=rows)
+    with closing(sqlite3.connect(tmp_path / "scratch.db")) as scratch:
+        materializer._create_scratch_graph(scratch)
+        for row in rows:
+            page = materialize_delegation_work_evidence_graph(
+                graph_id=graph_id, corpus_snapshot_ref=snapshot, rows=[row]
+            )
+            materializer._fold_page(scratch, page)
+        nodes = materializer._published_node_rows(scratch).fetchall()
+        edges = scratch.execute("SELECT * FROM edges ORDER BY edge_ref").fetchall()
+
+    # An attempt node's evidence_refs_json is produced by SQLite's
+    # json_group_array at publish time (materializer._published_node_rows),
+    # not Python's json.dumps: same sorted, deduplicated content, different
+    # (compact) whitespace. Compare that one column parsed; every other
+    # column, including every non-attempt node's own evidence_refs_json,
+    # is still Python-serialized and compared verbatim.
+    refs_index = materializer._NODE_COLUMNS.index("evidence_refs_json")
+
+    def _normalized(row: tuple[object, ...]) -> tuple[object, ...]:
+        return row[:refs_index] + (json.loads(str(row[refs_index])),) + row[refs_index + 1 :]
+
+    assert [_normalized(row) for row in nodes] == [_normalized(materializer._node_row(node)) for node in whole.nodes]
+    assert edges == [materializer._edge_row(edge) for edge in whole.edges]
+
+
+def test_folding_a_high_fan_in_attempt_never_reads_its_own_accumulation(tmp_path: Path) -> None:
+    """Each page's fold cost is its own rows, not the whole accumulated set.
+
+    Anti-vacuity (Codex): fold an attempt node's evidence refs by reading and
+    re-serializing the full accumulated ``evidence_refs_json`` column on
+    every page (the union-in-Python approach) and this test still passes for
+    correctness, but every one of the 200 folds below does a full read of
+    the growing set -- what actually changed is that ``_fold_page`` no
+    longer touches ``evidence_refs_json`` for an existing attempt node at
+    all: assert that directly by checking the column is never read back
+    larger than one page's own contribution during folding, i.e. the
+    ``node_evidence_refs`` table alone holds the full accumulation.
+    """
+    from contextlib import closing
+
+    from polylogue.analysis.delegation_work_evidence import materialize_delegation_work_evidence_graph
+    from polylogue.core.refs import ObjectRef
+    from tests.unit.insights.test_delegation_work_evidence import _row
+
+    snapshot = ObjectRef(kind="context-snapshot", object_id="delegations:fan-in")
+    graph_id = materializer.DELEGATION_WORK_EVIDENCE_GRAPH_ID
+    with closing(sqlite3.connect(tmp_path / "scratch.db")) as scratch:
+        materializer._create_scratch_graph(scratch)
+        for index in range(200):
+            row = _row(parent_session_id=f"codex-session:parent-{index}")
+            page = materialize_delegation_work_evidence_graph(
+                graph_id=graph_id, corpus_snapshot_ref=snapshot, rows=[row]
+            )
+            materializer._fold_page(scratch, page)
+            # After every fold, the row's own evidence_refs_json column
+            # never grows past its own page's contribution -- the union
+            # lives entirely in node_evidence_refs, not in this column.
+            stored = scratch.execute("SELECT evidence_refs_json FROM nodes WHERE node_kind = 'attempt'").fetchone()
+            assert len(json.loads(stored[0])) <= 1
+
+        published = {row[0]: row[3] for row in materializer._published_node_rows(scratch) if row[1] == "attempt"}
+        (refs_json,) = published.values()
+        assert len(json.loads(refs_json)) == 200
+
+
+@pytest.mark.parametrize("direction", ["asc", "desc"])
+def test_keyset_delegation_pages_equal_the_one_pass_read(tmp_path: Path, direction: Literal["asc", "desc"]) -> None:
+    """Resuming after each page's last row reproduces the whole ordered read.
+
+    Anti-vacuity (Codex): a key that is not total over the ORDER BY, or a
+    comparison against the wrong direction, skips or repeats rows, so the
+    paged rows differ from the single read.
+    """
+    from polylogue.archive.query.predicate import QueryBoolPredicate
+    from polylogue.operations.operation_context import open_operation_read
+    from polylogue.storage.sqlite.archive_tiers.archive_query_reads import DelegationPageKey
+
+    _seed_delegation(tmp_path, count=4)
+    every = QueryBoolPredicate("and", ())
+    with open_operation_read(tmp_path) as pinned:
+        archive = pinned.archive
+        whole = archive.query_delegations(every, limit=100, sort_direction=direction)
+        paged = []
+        after = None
+        while page := archive.query_delegations(every, limit=1, sort_direction=direction, after=after):
+            paged.extend(page)
+            after = DelegationPageKey.after_row(page[-1])
+    assert len(whole) == 4
+    assert paged == whole
+
+
+def test_a_keyset_key_coalesces_only_absent_ids_as_the_sql_order_does() -> None:
+    """An empty-string block id is a key value, exactly as ``COALESCE`` sees it.
+
+    Anti-vacuity: keying with ``or`` resumes after the child session id for
+    such a row, a position the SQL order never had, so the next page skips or
+    repeats rows.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.storage.sqlite.archive_tiers.archive_query_reads import DelegationPageKey
+
+    empty = DelegationPageKey.after_row(
+        cast(Any, SimpleNamespace(parent_session_id="p", instruction_tool_use_block_id="", child_session_id="c"))
+    )
+    assert (empty.order_key, empty.edge_only) == ("", False)
+    edge = DelegationPageKey.after_row(
+        cast(Any, SimpleNamespace(parent_session_id="p", instruction_tool_use_block_id=None, child_session_id="c"))
+    )
+    assert (edge.order_key, edge.edge_only) == ("c", True)
+
+
+def test_materializer_reads_delegations_by_keyset_not_offset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Each materializer page resumes from a key; none rescans by offset.
+
+    Anti-vacuity (Codex): an OFFSET page makes SQLite visit and discard every
+    earlier row, so the full read is quadratic in the delegation count.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    _seed_delegation(tmp_path, count=3)
+    monkeypatch.setattr(materializer, "DELEGATION_READ_PAGE_ROWS", 1)
+    calls: list[tuple[int, object]] = []
+    real = ArchiveStore.query_delegations
+
+    def spy(self: ArchiveStore, *args: object, **kwargs: object) -> object:
+        calls.append((int(kwargs.get("offset", 0)), kwargs.get("after")))  # type: ignore[call-overload]
+        return real(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ArchiveStore, "query_delegations", spy)
+    assert materialize_delegation_work_evidence_archive(tmp_path) == 3
+    assert [offset for offset, _after in calls] == [0] * len(calls)
+    assert calls[0][1] is None and all(after is not None for _offset, after in calls[1:])
+
+
+def test_delegation_pages_are_bounded_by_text_bytes_and_still_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A page ends at its text-byte budget, and the population is complete.
+
+    Anti-vacuity (Codex): a row-count page alone holds up to a thousand
+    multi-megabyte tool results in memory. Under a one-byte budget each page
+    must carry exactly one row, and every row must still be materialized.
+    """
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    _seed_delegation(tmp_path, count=3)
+    monkeypatch.setattr(materializer, "DELEGATION_READ_PAGE_TEXT_BYTES", 1)
+    page_sizes: list[int] = []
+    real = ArchiveStore.query_delegations
+
+    def spy(self: ArchiveStore, *args: object, **kwargs: object) -> object:
+        page = real(self, *args, **kwargs)  # type: ignore[arg-type]
+        page_sizes.append(len(page))
+        return page
+
+    monkeypatch.setattr(ArchiveStore, "query_delegations", spy)
+    assert materialize_delegation_work_evidence_archive(tmp_path) == 3
+    assert page_sizes == [1, 1, 1, 0]
+
+
+def test_a_keyset_delegation_page_seeks_by_index_instead_of_sorting(tmp_path: Path) -> None:
+    """The keyset page's ORDER BY is served by an index, with no sort step.
+
+    Anti-vacuity (Codex): with no index over the query order, SQLite used a
+    temporary B-tree for the order, so every page re-sorted the rest of a
+    parent's cohort and the read stayed quadratic.
+    """
+    from polylogue.archive.query.predicate import QueryBoolPredicate
+    from polylogue.operations.operation_context import open_operation_read
+    from polylogue.storage.sqlite.archive_tiers.archive_query_reads import DelegationPageKey
+
+    _seed_delegation(tmp_path, count=3)
+    statements: list[str] = []
+    with open_operation_read(tmp_path) as pinned:
+        archive = pinned.archive
+        (first,) = archive.query_delegations(QueryBoolPredicate("and", ()), limit=1)
+        archive._conn.set_trace_callback(statements.append)
+        try:
+            archive.query_delegations(QueryBoolPredicate("and", ()), limit=1, after=DelegationPageKey.after_row(first))
+        finally:
+            archive._conn.set_trace_callback(None)
+        (statement,) = [text for text in statements if "FROM delegation_facts" in text]
+        plan = [str(row[-1]) for row in archive._conn.execute(f"EXPLAIN QUERY PLAN {statement}")]
+    assert not any("TEMP B-TREE" in detail for detail in plan), plan

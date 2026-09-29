@@ -617,7 +617,8 @@ def estimate_cost(
 ) -> float:
     """Estimate cost from token counts using the curated price catalog."""
 
-    normalized_model = _normalize_model(model)
+    exact_model = model.strip().casefold()
+    normalized_model = exact_model if exact_model in PRICING else _normalize_model(model)
     pricing = PRICING.get(normalized_model)
     if pricing is None:
         return 0.0

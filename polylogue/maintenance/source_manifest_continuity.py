@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -551,6 +552,12 @@ def _ensure_wanted_source_state(archive_root: Path) -> None:
         state_metadata = state.lstat()
     except FileNotFoundError:
         state.mkdir(mode=0o700)
+        # Persist the new directory entry before publishing any receipt below it.
+        descriptor = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
         return
     if stat.S_ISLNK(state_metadata.st_mode) or not stat.S_ISDIR(state_metadata.st_mode):
         raise WantedSourceReceiptError("maintenance state is not a real directory")
@@ -620,9 +627,12 @@ def load_wanted_source_receipt(
     if receipt.policy.identity != expected_policy.identity:
         raise WantedSourceReceiptError("wanted-source receipt policy mismatch")
     if declarations is not None:
-        expected, _excluded = expected_policy.select(tuple(declarations), source_kinds=source_kinds)
+        current = tuple(declarations)
+        expected, excluded = expected_policy.select(current, source_kinds=source_kinds)
         if _declaration_digest(expected) != receipt.declaration_sha256:
             raise WantedSourceReceiptError("wanted-source receipt declaration mismatch")
+        if tuple(sorted(excluded)) != receipt.excluded_source_ids:
+            raise WantedSourceReceiptError("wanted-source receipt exclusions mismatch")
     for declaration in receipt.declarations:
         try:
             _real_root(Path(declaration.root))
@@ -661,6 +671,9 @@ def preflight_rebuild(
 require_rebuild_preflight = preflight_rebuild
 
 
+_CAPTURED_INODE = re.compile(r"dev:(\d+):ino:(\d+)")
+
+
 def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFrontier:
     """Enumerate every configured root, retaining unavailable roots as blockers."""
     rows = tuple(declarations)
@@ -668,11 +681,12 @@ def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFr
         raise SourceContinuityError("source frontier declaration is empty")
     if len({row.source_id for row in rows}) != len(rows):
         raise SourceContinuityError("source frontier contains duplicate source IDs")
-    if len({Path(row.root).absolute() for row in rows}) != len(rows):
+    if len({Path(row.root).resolve(strict=False) for row in rows}) != len(rows):
         raise SourceContinuityError("source frontier contains duplicate roots")
     from polylogue.sources.source_snapshot import SourceSnapshotError, observe_source_members
 
     members: list[FrontierMember] = []
+    physical_identities: set[tuple[int, ...]] = set()
     states: dict[str, FrontierState] = {}
     blockers: list[str] = []
     for declaration in rows:
@@ -683,6 +697,43 @@ def build_source_frontier(declarations: Iterable[SourceDeclaration]) -> SourceFr
             blockers.append(f"unavailable:{declaration.source_id}:{declaration.root}:{exc}")
             continue
         states[declaration.source_id] = FrontierState.PRESENT if observed else FrontierState.VALID_EMPTY
+        disappeared: Path | None = None
+        for item in observed:
+            identity: tuple[int, ...]
+            if declaration.role is SourceRole.ARCHIVE_MEMBER:
+                # Archive member identity includes archive device/inode and
+                # the ZIP header offset; equal payloads remain distinct.
+                device, inode, _ctime, offset = item.identity.split(":")
+                identity = (int(device), int(inode), int(offset))
+            else:
+                # Reuse the identity observe_source_members captured with the
+                # bytes; re-stating the live path could see a replaced inode
+                # or raise after a concurrent deletion.
+                captured = _CAPTURED_INODE.search(item.identity)
+                if captured is not None:
+                    identity = (int(captured.group(1)), int(captured.group(2)))
+                else:
+                    # A SQLite logical-export member's identity is its export
+                    # digest, not an inode; stat the member for duplicate
+                    # detection and type a concurrent disappearance.
+                    member_path = (
+                        declaration.root if not declaration.root.is_dir() else declaration.root / item.coordinate
+                    )
+                    try:
+                        info = member_path.stat()
+                    except OSError:
+                        disappeared = member_path
+                        break
+                    identity = (info.st_dev, info.st_ino)
+            if identity in physical_identities:
+                raise SourceContinuityError("source frontier contains duplicate physical member identity")
+            physical_identities.add(identity)
+        if disappeared is not None:
+            # A member that vanished after observation makes this source's
+            # frontier incoherent: a typed blocker, not an unhandled error.
+            states[declaration.source_id] = FrontierState.UNAVAILABLE
+            blockers.append(f"unavailable:{declaration.source_id}:{declaration.root}:member disappeared:{disappeared}")
+            continue
         members.extend(
             FrontierMember(
                 item.source_id,
@@ -743,14 +794,15 @@ def canonical_source_declarations(
         SourceDeclaration(f"live-source-{n}", SourceRole.DIRECTORY, path, True) for n, path in enumerate(live_sources)
     )
     ids = [row.source_id for row in rows]
-    roots = [Path(row.root).absolute() for row in rows]
+    roots = [Path(row.root).resolve(strict=False) for row in rows]
     if len(ids) != len(set(ids)):
         raise SourceContinuityError("duplicate source_id in canonical source declaration")
     if len(roots) != len(set(roots)):
         raise SourceContinuityError("duplicate root in canonical source declaration")
-    return tuple(
-        SourceDeclaration(row.source_id, row.role, root, row.mutable) for row, root in zip(rows, roots, strict=True)
-    )
+    # Resolved roots are for duplicate detection only; the declaration keeps the
+    # configured absolute path so a symlinked root still reaches _real_root's
+    # fail-closed refusal instead of being replaced by its target.
+    return tuple(SourceDeclaration(row.source_id, row.role, Path(row.root).absolute(), row.mutable) for row in rows)
 
 
 def _real_root(root: Path) -> Path:

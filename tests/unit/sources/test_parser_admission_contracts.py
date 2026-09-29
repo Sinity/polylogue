@@ -15,7 +15,6 @@ from polylogue.sources.parsers.base import (
     ParsedSession,
 )
 from polylogue.sources.parsers.browser_capture import parse as parse_capture
-from polylogue.sources.parsers.claude import parse_code
 from polylogue.sources.parsers.codex import parse as parse_codex
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 from tests.infra.source_parser_cases import browser_thinking_turn, case
@@ -54,16 +53,6 @@ def test_capture_thinking_is_not_runtime_context() -> None:
     assert message.message_type is MessageType.MESSAGE
     assert message.material_origin is MaterialOrigin.ASSISTANT_AUTHORED
     assert len(message.blocks) == 2
-
-
-def test_repeated_unknown_records_each_have_evidence() -> None:
-    """Wire-type-only deduplication suppressed the second distinct record."""
-    session = parse_code([*case("claude_code"), *case("unknown_records")], "fallback")
-    events = [event for event in session.session_events if event.event_type == "claude_code_unknown_input"]
-    assert sorted((event.payload["source_index"], event.payload["wire_type"]) for event in events) == [
-        (2, "future_record"),
-        (3, "future_record"),
-    ]
 
 
 def test_empty_tool_part_is_refused_beside_valid_content() -> None:

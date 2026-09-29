@@ -13,6 +13,7 @@ from polylogue.archive.hydration import (
     archive_summary_to_domain,
 )
 from polylogue.archive.message.models import Message
+from polylogue.archive.query.sorting import OffsetSampledPage
 from polylogue.core.enums import MaterialOrigin, Origin
 from polylogue.operations.daemon_protocol import MAX_OPERATION_RESULT_BYTES
 from polylogue.operations.query_lowering import cli_read_request
@@ -22,9 +23,10 @@ from polylogue.surfaces.chronicle import (
 )
 
 if TYPE_CHECKING:
-    from polylogue.archive.session.domain_models import SessionSummary
+    from polylogue.archive.query.plan import SessionQueryPlan
+    from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.core.protocols import VectorProvider
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, ArchiveStore
 
 
 DEFAULT_CHRONICLE_EDGE_LIMIT = 8
@@ -132,6 +134,40 @@ def _chronicle_edges(
     return first, last_messages, total_matching
 
 
+def _chronicle_plan(payload: Mapping[str, object], *, vector_provider: VectorProvider | None) -> SessionQueryPlan:
+    params_raw = payload.get("params", {})
+    if not isinstance(params_raw, Mapping):
+        raise ValueError("chronicle params must be an object")
+    params = {str(key): value for key, value in params_raw.items()}
+    # A null limit is the declared five-session default, as an absent one is.
+    if params.get("limit") is None:
+        params["limit"] = 5
+    query_terms = params.get("query", ())
+    if not isinstance(query_terms, (list, tuple)):
+        raise ValueError("chronicle query terms must be a list")
+    params["query"] = list(query_terms)
+    session_id = payload.get("session_id")
+    if session_id is not None:
+        params["conv_id"] = str(session_id)
+    return cli_read_request(params).selection.to_plan(vector_provider=vector_provider)
+
+
+def chronicle_needs_complete_scan(plan: SessionQueryPlan) -> bool:
+    """Whether this chronicle selection must read and hydrate every candidate.
+
+    A composed-count sort ranks sessions by their recomposed totals, which the
+    index cannot order; a ranked route keeps its sized candidate pool instead.
+    """
+    from polylogue.archive.query.archive_execution import _COMPOSED_COUNT_SORTS, _ranked_window
+
+    return plan.sort in _COMPOSED_COUNT_SORTS and not _ranked_window(plan)
+
+
+def chronicle_payload_is_scan(payload: Mapping[str, object]) -> bool:
+    """Whether a ``read.chronicle`` request is archive-scan work, decided before it runs."""
+    return chronicle_needs_complete_scan(_chronicle_plan(payload, vector_provider=None))
+
+
 def _select_summaries(
     payload: Mapping[str, object],
     *,
@@ -140,60 +176,111 @@ def _select_summaries(
 ) -> list[SessionSummary]:
     """Run query candidates through the plan's filters, order and page cut."""
 
+    from dataclasses import replace
+
     from polylogue.archive.hydration import archive_envelope_to_session
-    from polylogue.archive.query.archive_execution import _archive_summaries
-
-    params_raw = payload.get("params", {})
-    if not isinstance(params_raw, Mapping):
-        raise ValueError("chronicle params must be an object")
-    params = {str(key): value for key, value in params_raw.items()}
-    params.setdefault("limit", 5)
-    query_terms = params.get("query", ())
-    if not isinstance(query_terms, (list, tuple)):
-        raise ValueError("chronicle query terms must be a list")
-    params["query"] = list(query_terms)
-    session_id = payload.get("session_id")
-    if session_id is not None:
-        params["conv_id"] = str(session_id)
-
-    plan = cli_read_request(params).selection.to_plan(vector_provider=vector_provider)
-    rows = _archive_summaries(
-        plan,
-        archive,
-        config=None,
-        archive_root=archive.archive_root,
-        default_limit=5,
+    from polylogue.archive.query.archive_execution import (
+        _COMPOSED_COUNT_SORTS,
+        _archive_summaries,
+        order_query_summaries,
     )
-    summaries: list[SessionSummary] = [archive_summary_to_domain(row) for row in rows]
-    if plan.needs_content_loading():
-        matched_ids: set[str] = set()
-        for start in range(0, len(rows), _POST_FILTER_CHUNK):
-            chunk = rows[start : start + _POST_FILTER_CHUNK]
-            sessions = [
-                archive_envelope_to_session(
-                    archive.read_session(row.session_id),
-                    display_label=row.display_label,
-                    display_label_source=row.display_label_source,
-                )
-                for row in chunk
-            ]
-            matched_ids.update(str(session.id) for session in plan._apply_full_filters(sessions, sql_pushed=True))
-        candidates = [summary for summary in summaries if str(summary.id) in matched_ids]
-    else:
-        candidates = plan._apply_common_filters(summaries, sql_pushed=True)
 
-    rank_first = bool(
-        plan.sort is None
-        and (
-            plan.fts_terms
-            or plan.similar_text
-            or plan.similar_session_id
-            or plan.retrieval_lane in {"semantic", "hybrid"}
+    plan = _chronicle_plan(payload, vector_provider=vector_provider)
+    # A composed-count sort (messages/words/longest/tokens) ranks a lineage
+    # child by its full inherited-prefix-plus-tail total, but the index only
+    # stores that child's own tail count; windowing the SQL fetch by the
+    # stored count first can exclude the child a composed rank would have
+    # kept. Fetch every candidate uncut and rank the hydrated, composed
+    # sessions instead, exactly as the generic session-list route does
+    # (``archive_execution.read``'s ``composed_order``/``complete`` path).
+    composed_order = plan.sort in _COMPOSED_COUNT_SORTS
+    # A ranked route already fetches an unwindowed candidate pool sized from
+    # the requested window; clearing that window would shrink the pool to its
+    # default, so it keeps the requested plan (as the generic route does).
+    complete = chronicle_needs_complete_scan(plan)
+    fetch_plan = replace(plan, limit=None, offset=0) if complete else plan
+    if plan.needs_content_loading() or composed_order:
+        # One hydration per candidate, chunk by chunk. A composed-count order
+        # keeps only the best ``offset + limit`` sessions seen so far, so a
+        # one-row page over a large archive never holds every transcript.
+        # A sampled request draws uniformly from every qualified candidate
+        # through a reservoir of the sample's size. A complete scan streams
+        # its candidate summaries batch by batch, keeping only the summaries
+        # of sessions still in that bound.
+        bound = None if plan.limit is None else (plan.offset or 0) + plan.limit
+        best: list[Session] = []
+        reservoir: OffsetSampledPage[Session] | None = (
+            OffsetSampledPage(offset=plan.offset or 0, sample=plan.sample, sort=plan._sort_sessions)
+            if plan.sample
+            else None
         )
-    )
-    ordered = candidates if rank_first else plan._sort_summaries(candidates)
+        matched_ids: set[str] = set()
+        summary_by_id: dict[str, SessionSummary] = {}
+
+        def consume(rows: list[ArchiveSessionSummary]) -> None:
+            nonlocal best
+            for start in range(0, len(rows), _POST_FILTER_CHUNK):
+                chunk = rows[start : start + _POST_FILTER_CHUNK]
+                for row in chunk:
+                    summary_by_id[row.session_id] = archive_summary_to_domain(row)
+                sessions = [
+                    archive_envelope_to_session(
+                        archive.read_session(row.session_id),
+                        display_label=row.display_label,
+                        display_label_source=row.display_label_source,
+                    )
+                    for row in chunk
+                ]
+                kept = plan._apply_full_filters(sessions, sql_pushed=True)
+                if composed_order and reservoir is not None:
+                    reservoir.offer(kept)
+                    best = reservoir.items()
+                elif composed_order:
+                    best = plan._sort_sessions([*best, *kept])
+                    if bound is not None:
+                        best = best[:bound]
+                else:
+                    matched_ids.update(str(session.id) for session in kept)
+                if composed_order:
+                    retained = {str(session.id) for session in best}
+                    for session_id in [key for key in summary_by_id if key not in retained]:
+                        del summary_by_id[session_id]
+
+        rows = _archive_summaries(
+            fetch_plan,
+            archive,
+            config=None,
+            archive_root=archive.archive_root,
+            default_limit=5,
+            complete=complete,
+            on_batch=consume if complete else None,
+        )
+        if not complete:
+            consume(rows)
+        if composed_order:
+            ordered = [summary_by_id[str(session.id)] for session in best]
+        else:
+            ordered = order_query_summaries(
+                plan,
+                [
+                    summary
+                    for summary in (archive_summary_to_domain(row) for row in rows)
+                    if str(summary.id) in matched_ids
+                ],
+            )
+    else:
+        rows = _archive_summaries(
+            fetch_plan,
+            archive,
+            config=None,
+            archive_root=archive.archive_root,
+            default_limit=5,
+            complete=complete,
+        )
+        summaries = [archive_summary_to_domain(row) for row in rows]
+        ordered = order_query_summaries(plan, plan._apply_common_filters(summaries, sql_pushed=True))
     ranked = bool(plan.similar_text or plan.similar_session_id or plan.retrieval_lane in {"semantic", "hybrid"})
-    if (plan.has_post_filters() or ranked) and plan.offset:
+    if (plan.has_post_filters() or ranked or composed_order) and plan.offset:
         ordered = ordered[plan.offset :]
     return plan._finalize(ordered)
 

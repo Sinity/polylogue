@@ -30,11 +30,11 @@ import json
 import sqlite3
 import threading
 import time
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import IO, Any, NoReturn
 
 import pytest
 
@@ -128,17 +128,50 @@ def _attempt_death_path_worker(
     shard_directory: str,
     attempt_directory: str | None = None,
 ) -> object:
+    from polylogue.sources.live.parse_prefetch import live_parse_path_worker
+
+    if Path(source_path).name.startswith("hung-"):
+        time.sleep(3600)
+    if Path(source_path).name.startswith("slow-"):
+        # Holds its worker long enough for a sibling's worker to die first.
+        time.sleep(2.5)
+    if Path(source_path).name.startswith("growing-"):
+        # Slow but advancing: its attempt directory grows the whole time.
+        assert attempt_directory is not None
+        stop = threading.Event()
+
+        def grow() -> None:
+            with (Path(attempt_directory) / "progress.bin").open("ab") as handle:
+                while not stop.wait(0.05):
+                    handle.write(b".")
+                    handle.flush()
+
+        grower = threading.Thread(target=grow)
+        grower.start()
+        try:
+            time.sleep(3.0)
+            return live_parse_path_worker(
+                provider_value,
+                source_path,
+                fallback_id,
+                is_stream=is_stream,
+                shard_directory=shard_directory,
+                attempt_directory=attempt_directory,
+            )
+        finally:
+            stop.set()
+            grower.join()
     if Path(source_path).name.startswith("killed-"):
         import os
 
         assert attempt_directory is not None
         attempt = Path(attempt_directory)
+        if Path(source_path).name.startswith("killed-late-"):
+            time.sleep(1.0)
         (attempt / "prepared-partial.db").write_bytes(b"partial prepared database")
         (attempt / "prepared-partial.db-journal").write_bytes(b"partial journal")
         (attempt / "shard-partial.db").write_bytes(b"partial shard")
         os._exit(7)
-    from polylogue.sources.live.parse_prefetch import live_parse_path_worker
-
     return live_parse_path_worker(
         provider_value,
         source_path,
@@ -597,21 +630,23 @@ async def test_changed_json_after_preparation_uses_captured_provider(
             }
         ]
     ).encode()
-    original_copy = ArchiveBlobPublisher.write_from_path
+    original_copy = ArchiveBlobPublisher.write_from_fileobj
     changed = False
 
-    def change_before_copy(store: ArchiveBlobPublisher, path: Path, **kwargs: object) -> tuple[str, int]:
+    def change_before_copy(store: ArchiveBlobPublisher, stream: IO[bytes], **kwargs: object) -> tuple[str, int]:
         nonlocal changed
-        if path == source and not changed:
+        # The capture streams the file through the acquisition boundary,
+        # whose raw reader names the source path; nothing is read yet.
+        if Path(stream.raw.name) == source and not changed:  # type: ignore[attr-defined]
             if malformed_initial:
                 assert stage._path_results[str(source)].error is not None
             else:
                 assert stage.resolved_path_provider(str(source)) is Provider.GEMINI_CLI
             source.write_bytes(chatgpt)
             changed = True
-        return original_copy(store, path, **kwargs)  # type: ignore[arg-type]
+        return original_copy(store, stream, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_path", change_before_copy)
+    monkeypatch.setattr(ArchiveBlobPublisher, "write_from_fileobj", change_before_copy)
     archive_root = tmp_path / "archive"
     archive_root.mkdir()
     stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "shards")
@@ -671,7 +706,9 @@ async def test_identical_json_paths_keep_distinct_prepared_fallback_ids(tmp_path
 
     stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "shards")
     try:
-        await _ingest(tmp_path / "prepared", paths, parse_stage=stage)
+        # A ChatGPT export is imported through the inbox, which classifies;
+        # a bound location (``codex``) refuses it as foreign.
+        await _ingest(tmp_path / "prepared", paths, parse_stage=stage, source_name="inbox")
     finally:
         stage.shutdown()
     with _connect(tmp_path / "prepared" / "index.db") as conn:
@@ -1935,6 +1972,7 @@ def test_path_worker_stop_unknown_blocks_cleanup_and_replacement(
             residue = tuple(attempt_root.iterdir())
             assert len(residue) == 1
             assert sorted(path.name for path in residue[0].iterdir()) == [
+                ".worker-started",
                 "prepared-partial.db",
                 "prepared-partial.db-journal",
                 "shard-partial.db",
@@ -1971,7 +2009,7 @@ async def test_killed_path_worker_retains_one_raw_and_retries_through_intake(tmp
     try:
         future = stage._executor.submit(_dead_process_worker)
         stage._path_futures[str(path)] = future  # type: ignore[assignment]
-        stage._path_sizes[str(path)] = path.stat().st_size
+        stage._path_observations[str(path)] = (path.stat().st_size, 0, 0)
         stage._path_inflight_bytes = path.stat().st_size
         with pytest.raises(BrokenProcessPool):
             future.result(timeout=15)
@@ -2488,3 +2526,415 @@ async def test_prepared_session_with_lowered_sink_keeps_identity_and_rows(
     assert outcomes and None not in outcomes
     assert copies == len(baseline["index.sessions"]) == 1
     assert baseline == _canonical_snapshot(tmp_path / "prepared")
+
+
+def _warm_within(stage: LiveParseStage, candidates: list[tuple[str, Provider, bool]], *, timeout: float = 60.0) -> None:
+    """Run one warm on a thread, failing instead of hanging when it never returns."""
+    warm = threading.Thread(target=stage.warm_paths, args=(candidates,))
+    warm.start()
+    warm.join(timeout=timeout)
+    assert not warm.is_alive(), "the warm never returned"
+
+
+@pytest.mark.uses_real_clock("real worker processes die under the warm")
+def test_a_file_that_kills_its_worker_every_time_escalates_to_a_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated worker death on one unchanged file stops being deferred.
+
+    Anti-vacuity (polylogue-7c5k6): with every death reported as deferred the
+    third attempt is still ``deferred`` and the file is retried every pass for
+    the whole build; escalation makes it a non-deferred failure the cursor's
+    failure budget can quarantine.
+    """
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", _attempt_death_path_worker)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    killer = tmp_path / "killed-every-time.json"
+    killer.write_text("worker exits before parsing")
+    outcomes = []
+    try:
+        for _ in range(parse_prefetch._MAX_WORKER_LOSSES_PER_OBSERVATION):
+            assert stage.warm_paths([(str(killer), Provider.CODEX, True)]) == frozenset()
+            result = stage.pop_path(str(killer), blob_hash="0" * 64)
+            assert result is not None and result.error is not None
+            outcomes.append(result.deferred)
+    finally:
+        stage.shutdown()
+    assert outcomes[:-1] == [True] * (len(outcomes) - 1)
+    assert outcomes[-1] is False
+
+
+def _broken_future_in_flight(
+    stage: LiveParseStage, source_path: str, *, started: bool, finished: bool = False
+) -> Future[Any]:
+    from polylogue.sources.live.parse_prefetch import _WORKER_FINISHED_MARKER, _WORKER_STARTED_MARKER
+
+    attempt_directory = stage._new_attempt_directory()
+    if started:
+        (attempt_directory / _WORKER_STARTED_MARKER).touch()
+    if finished:
+        (attempt_directory / _WORKER_FINISHED_MARKER).touch()
+    future: Future[Any] = Future()
+    future.set_exception(BrokenProcessPool("a worker died"))
+    stage._path_futures[source_path] = future
+    stage._path_attempt_dirs[source_path] = attempt_directory
+    stage._path_observations[source_path] = (0, 0, 0)
+    stage._path_progress[source_path] = (0, 0.0)
+    return future
+
+
+def test_a_broken_pool_does_not_charge_a_never_dispatched_sibling(tmp_path: Path) -> None:
+    """A pool break completes every pending future, not only the culprit's.
+
+    Anti-vacuity (Codex, polylogue-b8of0 follow-up): charge every future that
+    raises ``BrokenProcessPool`` regardless of whether its worker ever
+    started, and a healthy file merely queued behind the one that actually
+    killed its worker accumulates worker-loss charges for a death it had
+    nothing to do with.
+    """
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    source_path = str(tmp_path / "queued-never-started.json")
+    try:
+        future = _broken_future_in_flight(stage, source_path, started=False)
+
+        stage._collect_path_future(source_path, future)
+
+        result = stage._path_results.pop(source_path)
+        assert result.deferred is True
+        assert source_path not in stage._path_worker_losses
+        assert source_path not in stage._path_solo_suspects
+    finally:
+        stage.shutdown()
+
+
+@pytest.mark.parametrize("collect_first", ["healthy", "culprit"])
+def test_a_pool_break_charges_only_the_worker_still_holding_its_task(tmp_path: Path, collect_first: str) -> None:
+    """The one task started and not finished at a break is the only charge.
+
+    Anti-vacuity (Codex): with only a started marker, a healthy sibling that
+    had also been dispatched is charged when it is collected first, and the
+    real culprit is deferred uncharged by the restart; either collection
+    order must charge the culprit and only it.
+    """
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    healthy, culprit = str(tmp_path / "healthy.json"), str(tmp_path / "culprit.json")
+    try:
+        futures = {
+            healthy: _broken_future_in_flight(stage, healthy, started=True, finished=True),
+            culprit: _broken_future_in_flight(stage, culprit, started=True),
+        }
+        first = healthy if collect_first == "healthy" else culprit
+        stage._collect_path_future(first, futures[first])
+        assert set(stage._path_worker_losses) == {culprit}
+        assert stage._path_results[healthy].deferred and stage._path_results[culprit].deferred
+        assert stage._path_solo_suspects == {culprit}
+        assert stage._path_futures == {} and stage._path_observations == {} and stage._path_progress == {}
+    finally:
+        stage.shutdown()
+
+
+def test_a_success_preserved_by_a_pool_restart_ends_its_loss_streak(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A sibling success kept by the restart clears its worker-loss count.
+
+    Anti-vacuity (Codex): only a collected success reset the streak, so a
+    path with two earlier losses whose success was installed by the restart
+    escalated to a terminal failure on its next single loss.
+    """
+    from polylogue.sources.prepared_jsonl import PreparedJsonl
+
+    monkeypatch.setattr(PreparedJsonl, "verify_files", lambda self, *, full, stop=None: None)
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    monkeypatch.setattr(stage, "_validate_attempt_result", lambda result, attempt_directory: None)
+    healthy, culprit = str(tmp_path / "healthy.json"), str(tmp_path / "culprit.json")
+    try:
+        sealed: Future[Any] = Future()
+        sealed.set_result(PreparedJsonl("0" * 64, None, None))
+        stage._path_futures[healthy] = sealed
+        stage._path_attempt_dirs[healthy] = stage._new_attempt_directory()
+        stage._path_observations[healthy] = (0, 0, 0)
+        stage._path_worker_losses[healthy] = ((0, 0, 0), 2)
+        stage._path_solo_suspects.add(healthy)
+        broken = _broken_future_in_flight(stage, culprit, started=True)
+
+        stage._collect_path_future(culprit, broken)
+
+        assert stage._path_results[healthy].error is None
+        assert healthy not in stage._path_worker_losses
+        assert healthy not in stage._path_solo_suspects
+        assert set(stage._path_worker_losses) == {culprit}
+    finally:
+        stage.shutdown()
+
+
+def test_a_worker_that_returns_an_error_ends_the_loss_streak(tmp_path: Path) -> None:
+    """A preparation that raises, without losing its worker, resets the streak.
+
+    Anti-vacuity (Codex): only an error-free result reset the count, so two
+    losses, a transient ``OSError`` and one more loss escalated a file whose
+    losses were never consecutive.
+    """
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    source_path = str(tmp_path / "flaky.json")
+    try:
+        future: Future[Any] = Future()
+        future.set_exception(OSError("transient read"))
+        stage._path_futures[source_path] = future
+        stage._path_attempt_dirs[source_path] = stage._new_attempt_directory()
+        stage._path_observations[source_path] = (0, 0, 0)
+        stage._path_worker_losses[source_path] = ((0, 0, 0), 2)
+        stage._path_solo_suspects.add(source_path)
+
+        stage._collect_path_future(source_path, future)
+
+        assert stage._path_results[source_path].deferred
+        assert source_path not in stage._path_worker_losses
+        assert source_path not in stage._path_solo_suspects
+    finally:
+        stage.shutdown()
+
+
+def test_a_break_with_two_held_tasks_charges_neither(tmp_path: Path) -> None:
+    """Two tasks held at one break are both deferred uncharged, as suspects.
+
+    Anti-vacuity: charging whichever future is collected first quarantines a
+    healthy file after three such breaks.
+    """
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    first, second = str(tmp_path / "first.json"), str(tmp_path / "second.json")
+    try:
+        future = _broken_future_in_flight(stage, first, started=True)
+        _broken_future_in_flight(stage, second, started=True)
+        stage._collect_path_future(first, future)
+        assert not stage._path_worker_losses
+        assert stage._path_solo_suspects == {first, second}
+        assert stage._path_results[first].deferred and stage._path_results[second].deferred
+    finally:
+        stage.shutdown()
+
+
+def test_a_suspect_is_never_read_ahead(tmp_path: Path) -> None:
+    """Read-ahead cannot run a suspect beside other work, nor join a solo run.
+
+    Anti-vacuity: submit read-ahead without the solo check and the suspect
+    runs concurrently with whatever else is read ahead, so its next worker
+    loss is unattributable again.
+    """
+    suspect, other = _write_fixture_corpus(tmp_path / "sessions", count=2)
+    stage = LiveParseStage(max_workers=3, shard_directory=tmp_path / "parse-shards")
+    try:
+        stage._path_solo_suspects.add(str(suspect))
+        assert stage.prefetch_paths([str(suspect)], fallback_provider=Provider.CODEX) == 0
+        assert stage.warm_paths([(str(suspect), Provider.CODEX, True)]) == frozenset()
+        # The suspect ran alone and its worker came back: no longer suspect.
+        assert str(suspect) not in stage._path_solo_suspects
+        assert stage.prefetch_paths([str(other)], fallback_provider=Provider.CODEX) == 1
+    finally:
+        stage.shutdown()
+
+
+@pytest.mark.uses_real_clock("two real worker processes run concurrently until one dies")
+def test_concurrent_worker_death_is_charged_to_the_killer_after_solo_retries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A death during concurrent preparations is resolved by running each alone.
+
+    Anti-vacuity (Codex): with a healthy long preparation and a killer
+    running at once, charging every started future escalates the healthy file
+    after three breaks. Here the healthy file is never charged and succeeds,
+    and the killer alone escalates.
+    """
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", _attempt_death_path_worker)
+    (fixture,) = _write_fixture_corpus(tmp_path / "fixture", count=1)
+    slow = tmp_path / "slow-healthy.jsonl"
+    slow.write_bytes(fixture.read_bytes())
+    killer = tmp_path / "killed-late-concurrent.json"
+    killer.write_text("worker exits before parsing")
+    stage = LiveParseStage(max_workers=2, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    slow_hash = hashlib.sha256(slow.read_bytes()).hexdigest()
+    candidates = [(str(slow), Provider.CODEX, True), (str(killer), Provider.CODEX, True)]
+    killer_outcomes: list[bool] = []
+    slow_prepared = False
+    try:
+        assert stage.warm_paths(candidates) == frozenset()
+        assert not stage._path_worker_losses
+        assert stage._path_solo_suspects == {str(slow), str(killer)}
+        for preparation in (stage.pop_path(str(slow), blob_hash=slow_hash), stage.pop_path(str(killer), blob_hash="0")):
+            assert preparation is not None and preparation.deferred
+        for _ in range(8):
+            if killer_outcomes[-1:] == [False] and slow_prepared:
+                break
+            stage.warm_paths(candidates)
+            assert str(slow) not in stage._path_worker_losses
+            prepared = stage.pop_path(str(slow), blob_hash=slow_hash)
+            if prepared is not None and prepared.error is None:
+                slow_prepared = True
+                prepared.discard()
+            lost = stage.pop_path(str(killer), blob_hash="0")
+            if lost is not None and str(killer) in stage._path_worker_losses:
+                killer_outcomes.append(lost.deferred)
+    finally:
+        stage.shutdown()
+    assert slow_prepared
+    assert killer_outcomes == [True, True, False]
+
+
+def test_an_escalated_worker_loss_is_not_applied_to_a_rewritten_capture(tmp_path: Path) -> None:
+    """A lost-worker failure binds to the revision it failed on.
+
+    Anti-vacuity (Codex): the escalated failure carries no blob hash, so a
+    file rewritten after the failure and then captured received the old
+    failure and could be quarantined without ever being parsed.
+    """
+    import os
+
+    from polylogue.sources.prepared_jsonl import PreparedJsonl as LivePathPreparation
+
+    source = tmp_path / "rewritten-after-failure.json"
+    source.write_text("revision A")
+    stat = source.stat()
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards")
+    try:
+        failure = LivePathPreparation(
+            None,
+            None,
+            None,
+            "worker lost",
+            deferred=False,
+            failed_observation=(stat.st_size, stat.st_mtime_ns, stat.st_ino),
+        )
+        stage._path_results[str(source)] = failure
+        same = stage.pop_path(str(source), blob_hash="0" * 64)
+        assert same is not None and same.deferred is False
+
+        stage._path_results[str(source)] = failure
+        source.write_text("revision B")
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        rewritten = stage.pop_path(str(source), blob_hash="0" * 64)
+        assert rewritten is not None and rewritten.deferred is True
+    finally:
+        stage.shutdown()
+
+
+@pytest.mark.uses_real_clock("real worker processes die under the warm")
+def test_rewritten_content_starts_a_new_worker_loss_streak(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Losses on earlier bytes never count against rewritten content.
+
+    Anti-vacuity: keyed by path and size alone, two losses on the old bytes
+    plus one on a same-length rewrite escalated the new content on its first
+    loss.
+    """
+    import os
+
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", _attempt_death_path_worker)
+    stage = LiveParseStage(max_workers=1, shard_directory=tmp_path / "parse-shards", use_processes=True)
+    killer = tmp_path / "killed-rewritten.json"
+    killer.write_text("worker exits before parsing: A")
+    try:
+        for _ in range(parse_prefetch._MAX_WORKER_LOSSES_PER_OBSERVATION - 1):
+            assert stage.warm_paths([(str(killer), Provider.CODEX, True)]) == frozenset()
+            lost = stage.pop_path(str(killer), blob_hash="0" * 64)
+            assert lost is not None and lost.deferred
+        killer.write_text("worker exits before parsing: B")
+        stat = killer.stat()
+        os.utime(killer, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000_000))
+        assert stage.warm_paths([(str(killer), Provider.CODEX, True)]) == frozenset()
+        rewritten = stage.pop_path(str(killer), blob_hash="0" * 64)
+        assert rewritten is not None and rewritten.deferred
+        assert stage._path_worker_losses[str(killer)][1] == 1
+    finally:
+        stage.shutdown()
+
+
+@pytest.mark.uses_real_clock("the hang bound is measured against real worker processes")
+def test_a_hung_preparation_is_stopped_at_its_hang_bound_and_charged_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A required preparation that stops advancing frees its slot and is charged.
+
+    The hang bound scales with source size: the one-byte hung file gets about
+    a second and a half, the real sibling minutes, so only the hang is
+    stopped. Anti-vacuity (polylogue-7c5k6): with no hang bound the hung
+    worker holds the only slot, the warm never returns and ``_warm_within``
+    fails; charging collateral work instead records a loss on the sibling.
+    """
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", _attempt_death_path_worker)
+    monkeypatch.setattr(parse_prefetch, "_PROGRESS_POLL_SECONDS", 0.05)
+    (sibling,) = _write_fixture_corpus(tmp_path / "sessions", count=1)
+    assert sibling.stat().st_size > 100
+    hung = tmp_path / "hung-forever.json"
+    hung.write_text("x")
+    stage = LiveParseStage(
+        max_workers=1,
+        shard_directory=tmp_path / "parse-shards",
+        use_processes=True,
+        hang_base_seconds=0.5,
+        hang_floor_bytes_per_second=1.0,
+    )
+    sibling_hash = hashlib.sha256(sibling.read_bytes()).hexdigest()
+    outcomes = []
+    try:
+        with plog.capture() as records:
+            for _ in range(parse_prefetch._MAX_WORKER_LOSSES_PER_OBSERVATION):
+                _warm_within(stage, [(str(hung), Provider.CODEX, True), (str(sibling), Provider.CODEX, True)])
+                charged = stage.pop_path(str(hung), blob_hash="0" * 64)
+                assert charged is not None and charged.error is not None
+                outcomes.append(charged.deferred)
+                prepared = stage.pop_path(str(sibling), blob_hash=sibling_hash)
+                assert prepared is not None and prepared.error is None, prepared.error if prepared else None
+                prepared.discard()
+        assert outcomes == [True, True, False]
+        assert set(stage._path_worker_losses) == {str(hung)}
+        hung_events = [record for record in records if record["event"] == "live.parse_prefetch.preparation_hung"]
+        assert [record["path"] for record in hung_events] == [str(hung)] * len(outcomes)
+        assert "log.field_rejected" not in {record["event"] for record in records}
+    finally:
+        stage.shutdown()
+
+
+@pytest.mark.uses_real_clock("a real worker process advances slowly past the hang base")
+def test_a_slow_preparation_that_keeps_advancing_is_never_stopped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hang bound measures time without progress, not time since submission.
+
+    The worker runs three times the hang base while its attempt directory
+    keeps growing. Anti-vacuity: measure from submission and it is stopped at
+    the base, charged, and returned as a deferred loss instead of a
+    preparation.
+    """
+    import polylogue.sources.live.parse_prefetch as parse_prefetch
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", _attempt_death_path_worker)
+    monkeypatch.setattr(parse_prefetch, "_PROGRESS_POLL_SECONDS", 0.05)
+    (fixture,) = _write_fixture_corpus(tmp_path / "fixture", count=1)
+    growing = tmp_path / "growing-slow.jsonl"
+    growing.write_bytes(fixture.read_bytes())
+    stage = LiveParseStage(
+        max_workers=1,
+        shard_directory=tmp_path / "parse-shards",
+        use_processes=True,
+        hang_floor_bytes_per_second=1e12,
+    )
+    try:
+        # Start the worker process under the default bound first, so the
+        # short bound below measures the slow preparation, not start-up.
+        _warm_within(stage, [(str(fixture), Provider.CODEX, True)])
+        assert not stage._path_worker_losses
+        stage._hang_base_seconds = 1.0
+        _warm_within(stage, [(str(growing), Provider.CODEX, True)])
+        prepared = stage.pop_path(str(growing), blob_hash=hashlib.sha256(growing.read_bytes()).hexdigest())
+        assert prepared is not None and prepared.error is None, prepared.error if prepared else None
+        prepared.discard()
+        assert not stage._path_worker_losses
+    finally:
+        stage.shutdown()

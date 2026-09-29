@@ -200,6 +200,7 @@ Arguments:
 | `offset` | `integer` | no | Offset into ranked candidates for decimal offset pagination. |
 | `recipient_ref` | `string` | no | Recipient identity for delivery receipts. |
 | `assertion_ref` | `string` | no | Assertion identity to include in context. |
+| `segment_profile` | `string` | no | Segment compilation profile: default, or prose_with_refs for prose recaps carrying evidence refs. |
 
 Example — Compile a context snapshot:
 
@@ -224,7 +225,7 @@ A bounded context snapshot plus receipt describing selected refs, omissions, pol
 - result semantics: `single_object`, `aggregate`
 - continuation: `none`
 - emits result ref: `no`
-- purpose: Report archive identity, readiness, freshness, coverage, coordination, embeddings, and governed operation state.
+- purpose: Report status by scope: aggregate archive statistics, one source's freshness, embedding readiness, coordination, Sinex publication, or operation readiness.
 
 Arguments:
 
@@ -234,24 +235,18 @@ Arguments:
 | `include` | `array` | no | Named status facets requested from that scope. |
 | `ref` | `string` | no | Specific operation/receipt/object ref for status lookup. |
 
-Example — Establish archive authority before making a broad claim:
+Example — Read aggregate archive statistics:
 
 ```json
 {
   "arguments": {
-    "include": [
-      "identity",
-      "coverage",
-      "freshness",
-      "readiness"
-    ],
     "scope": "archive"
   },
   "name": "status"
 }
 ```
 
-Archive identity, selected source coverage, freshness/readiness state, and explicit degraded reasons.
+Archive session/message counts and origin totals only. These aggregate statistics do not establish archive identity, source coverage, freshness, or readiness.
 
 ### `write`
 

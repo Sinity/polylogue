@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import json
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import IO, Protocol, TypeAlias, TypeGuard, cast
@@ -13,7 +13,7 @@ from typing import IO, Protocol, TypeAlias, TypeGuard, cast
 import ijson
 
 from polylogue.core.content_identity import JSON_TEXT_ENCODINGS
-from polylogue.core.json import JSONDecodeError
+from polylogue.core.json import JSONDecodeError, decode_provider_utf8
 from polylogue.core.json import loads as json_loads
 from polylogue.core.json_envelope import OversizedRecord, bounded_lines
 from polylogue.logging import get_logger
@@ -158,6 +158,17 @@ def _yield_jsonl_pending(
         return ([parsed], 0, None)
 
     if isinstance(raw_pending, bytes):
+        # Provider bytes with directly encoded surrogates (lone or CESU-8
+        # pairs) decode exactly; only other bytes fall to the lenient guess.
+        try:
+            provider_text: str | None = decode_provider_utf8(raw_pending)
+        except UnicodeDecodeError:
+            provider_text = None
+        if provider_text is not None:
+            try:
+                return ([cast(JsonValue, json.loads(provider_text))], 0, None)
+            except json.JSONDecodeError:
+                pass
         decoded = decode_json_bytes_with(logger_obj, raw_pending)
         if not decoded:
             if is_last:
@@ -1157,6 +1168,231 @@ def iter_grok_export_events(
                 _skip_json_subtree(events, event)
 
 
+_CONTAINER_START = frozenset({"start_map", "start_array"})
+_CONTAINER_END = frozenset({"end_map", "end_array"})
+
+
+def _next_event(events: Iterator[tuple[str, str, object]]) -> tuple[str, str, object]:
+    try:
+        return next(events)
+    except StopIteration:
+        raise ValueError("incomplete JSON member") from None
+
+
+def _enter_root_array(events: Iterator[tuple[str, str, object]], key: str) -> None:
+    """Advance past the ``start_array`` of the root field ``key``.
+
+    Walks the root object's structure, so a differently named root key that
+    merely contains dots cannot be mistaken for a path into ``key``.
+    """
+    _prefix, event, _value = _next_event(events)
+    if event != "start_map":
+        raise ValueError("JSON document is not an object")
+    while True:
+        _prefix, event, name = _next_event(events)
+        if event == "end_map":
+            raise ValueError(f"JSON document has no {key} array")
+        _prefix, event, value = _next_event(events)
+        if name == key:
+            break
+        _skip_json_subtree(events, event)
+    if event != "start_array":
+        raise ValueError(f"JSON document {key} is not an array")
+
+
+def spill_member_arrays(
+    handle: JsonReadable,
+    container: str,
+    nested: str,
+    *,
+    on_member: Callable[[int, JsonValue, int | None], None],
+    on_nested_item: Callable[[int, int, JsonValue], None],
+) -> bool:
+    """Split each member of the root array ``container`` from its ``nested`` list.
+
+    Each ``nested`` item goes to ``on_nested_item(member, ordinal, item)``
+    before ``on_member(member, fields, count)`` receives the member without
+    that list and the list's length. A member whose ``nested`` value is not
+    a list keeps it in ``fields`` with a ``None`` count; a non-object member
+    arrives as itself (an array member as ``[]``), since the parser reads
+    neither. Only one nested item is decoded at a time.
+
+    Returns ``False`` when a member repeats the ``nested`` key: the decoder
+    keeps only its last value, while this pass would already have spilled
+    the earlier one. The caller has proved ``container`` is the one root
+    array.
+    """
+    events = iter(ijson.parse(handle))
+    _enter_root_array(events, container)
+    index = -1
+    while True:
+        _prefix, event, value = _next_event(events)
+        if event == "end_array":
+            return True
+        index += 1
+        if event == "start_array":
+            _skip_json_subtree(events, event)
+            on_member(index, [], None)
+            continue
+        if event != "start_map":
+            on_member(index, cast(JsonValue, normalize_ijson_stdlib_numbers(value)), None)
+            continue
+        builder = ijson.common.ObjectBuilder()
+        builder.event("start_map", None)
+        count: int | None = None
+        seen_nested = False
+        depth = 1
+        while True:
+            _prefix, event, value = _next_event(events)
+            if depth == 1 and event == "map_key" and value == nested:
+                if seen_nested:
+                    return False
+                seen_nested = True
+                _prefix, event, value = _next_event(events)
+                if event == "start_array":
+                    count = 0
+                    while True:
+                        _prefix, event, value = _next_event(events)
+                        if event == "end_array":
+                            break
+                        item = _json_subtree(events, event, value)
+                        on_nested_item(index, count, cast(JsonValue, item))
+                        count += 1
+                    continue
+                builder.event("map_key", nested)
+                builder.event(event, value)
+                nested_depth = 1 if event in _CONTAINER_START else 0
+                while nested_depth:
+                    _prefix, event, value = _next_event(events)
+                    builder.event(event, value)
+                    if event in _CONTAINER_START:
+                        nested_depth += 1
+                    elif event in _CONTAINER_END:
+                        nested_depth -= 1
+                continue
+            builder.event(event, value)
+            if event in _CONTAINER_START:
+                depth += 1
+            elif event in _CONTAINER_END:
+                depth -= 1
+                if depth == 0:
+                    break
+        on_member(index, cast(JsonValue, normalize_ijson_stdlib_numbers(builder.value)), count)
+
+
+_OTLP_SCOPE_FIELDS = ("scopeSpans", "instrumentationLibrarySpans")
+
+
+def _walk_otlp_scopes(
+    events: Iterator[tuple[str, str, object]],
+    resource: int,
+    field_name: str,
+    *,
+    on_scope: Callable[[int, str, int, dict[str, object]], None],
+    on_span: Callable[[int, str, int, int, dict[str, object]], None],
+) -> bool:
+    """Walk one scope array whose ``start_array`` has been read."""
+    scope = -1
+    while True:
+        _prefix, event, value = _next_event(events)
+        if event == "end_array":
+            return True
+        scope += 1
+        if event != "start_map":
+            _skip_json_subtree(events, event)
+            continue
+        schema_fields: dict[str, object] = {}
+        seen_spans = False
+        while True:
+            _prefix, event, key = _next_event(events)
+            if event == "end_map":
+                break
+            _prefix, event, value = _next_event(events)
+            if key == "spans":
+                if seen_spans:
+                    return False
+                seen_spans = True
+                if event != "start_array":
+                    _skip_json_subtree(events, event)
+                    continue
+                span = -1
+                while True:
+                    _prefix, event, value = _next_event(events)
+                    if event == "end_array":
+                        break
+                    span += 1
+                    if event == "start_map":
+                        decoded = _json_subtree(events, event, value)
+                        assert isinstance(decoded, dict)
+                        on_span(resource, field_name, scope, span, decoded)
+                    else:
+                        _skip_json_subtree(events, event)
+            elif key in {"schemaUrl", "schema_url"}:
+                schema_fields[str(key)] = _json_subtree(events, event, value)
+            else:
+                _skip_json_subtree(events, event)
+        on_scope(resource, field_name, scope, schema_fields)
+
+
+def spill_otlp_spans(
+    handle: JsonReadable,
+    root_key: str,
+    *,
+    on_resource: Callable[[int, dict[str, object], str | None], None],
+    on_scope: Callable[[int, str, int, dict[str, object]], None],
+    on_span: Callable[[int, str, int, int, dict[str, object]], None],
+) -> bool:
+    """Walk an OTLP-JSON export one span at a time.
+
+    ``root_key`` names the proved root ``resourceSpans`` array. For each
+    object entry, ``on_span`` receives every object span of both scope arrays
+    as ``(resource, scope field, scope, span, span)``; ``on_scope`` receives
+    each object scope's last ``schemaUrl``/``schema_url`` values;
+    ``on_resource`` receives the entry's last ``resource`` value and the scope
+    field the parser reads (``scopeSpans`` when present, else
+    ``instrumentationLibrarySpans``), or ``None`` when that value is not an
+    array. Non-object entries, scopes and spans carry no span and are skipped.
+
+    The walk follows the document's structure rather than ijson's dotted
+    prefixes, so a key containing a dot cannot pose as a nested path. Returns
+    ``False`` when a resource repeats a scope field or a scope repeats
+    ``spans``, since the decoder would keep only the last value.
+    """
+    events = iter(ijson.parse(handle))
+    _enter_root_array(events, root_key)
+    resource = -1
+    while True:
+        _prefix, event, value = _next_event(events)
+        if event == "end_array":
+            return True
+        resource += 1
+        if event != "start_map":
+            _skip_json_subtree(events, event)
+            continue
+        fields: dict[str, object] = {}
+        scope_arrays: dict[str, bool] = {}
+        while True:
+            _prefix, event, key = _next_event(events)
+            if event == "end_map":
+                break
+            _prefix, event, value = _next_event(events)
+            if key in _OTLP_SCOPE_FIELDS:
+                field_name = str(key)
+                if field_name in scope_arrays:
+                    return False
+                scope_arrays[field_name] = event == "start_array"
+                if event != "start_array":
+                    _skip_json_subtree(events, event)
+                elif not _walk_otlp_scopes(events, resource, field_name, on_scope=on_scope, on_span=on_span):
+                    return False
+            elif key == "resource":
+                fields["resource"] = _json_subtree(events, event, value)
+            else:
+                _skip_json_subtree(events, event)
+        selected = next((name for name in _OTLP_SCOPE_FIELDS if name in scope_arrays), None)
+        on_resource(resource, fields, selected if selected is not None and scope_arrays[selected] else None)
+
+
 def iter_json_container_records(handle: JsonReadable, prefix: str) -> Iterable[JsonValue]:
     """Yield complete array members; a corrupt suffix raises after its prefix.
 
@@ -1181,4 +1417,6 @@ __all__ = [
     "iter_json_stream_with",
     "iter_json_container_records",
     "json_record_container",
+    "spill_member_arrays",
+    "spill_otlp_spans",
 ]

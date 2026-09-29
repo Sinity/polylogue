@@ -12,6 +12,7 @@ import hashlib
 import hmac
 import json
 import sqlite3
+import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -35,9 +36,9 @@ _RETRY_STATES = frozenset({"ready", "retry_wait", "held", "completed", "abandone
 # A capture-job event is a control message: a kind, a few refs, and a small
 # structured payload. It is not a capture envelope and never carries
 # conversation content -- that travels the capture route, which owns the spool
-# quota. The registry database lives outside the spool directory the
-# receiver's SPOOL_MAX_BYTES measures, so an uncapped event body grows
-# registry.sqlite3 without any quota noticing. 64 KiB is well below the local
+# quota. The registry database lives outside the spool directory whose
+# capture bodies the receiver reserves space for, so an uncapped event body
+# grows registry.sqlite3 without any reservation noticing. 64 KiB is well below the local
 # attachment precedent (ACTION_ATTACHMENT_MAX_BYTES, 16 MiB, which does carry
 # content) and still far above any real event: the largest payloads are a
 # handful of refs and a reason string.
@@ -100,6 +101,19 @@ def _stamp(value: datetime | None = None) -> str:
     return (value or _now()).isoformat().replace("+00:00", "Z")
 
 
+_SCHEMA_LOCK = threading.Lock()
+_SCHEMA_READY: set[tuple[str, int, int]] = set()
+
+
+def _database_identity(path: Path) -> tuple[str, int, int] | None:
+    """The file a completed schema upgrade applies to: its path and inode."""
+    try:
+        status = path.stat()
+    except FileNotFoundError:
+        return None
+    return (str(path), status.st_dev, status.st_ino)
+
+
 @dataclass(slots=True)
 class CaptureJobRegistry:
     spool_path: Path | None
@@ -124,6 +138,27 @@ class CaptureJobRegistry:
         connection.execute("PRAGMA journal_mode=WAL")
         connection.execute("PRAGMA synchronous=FULL")
         connection.execute("PRAGMA foreign_keys=ON")
+        identity = _database_identity(path)
+        if identity is not None and identity in _SCHEMA_READY:
+            return connection
+        with _SCHEMA_LOCK:
+            # Serialize schema inspection and upgrades once per database file.
+            # Ordinary reads never take a write transaction.
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                self._ensure_schema(connection)
+            except BaseException:
+                connection.rollback()
+                connection.close()
+                raise
+            connection.commit()
+            identity = _database_identity(path)
+            if identity is not None:
+                _SCHEMA_READY.add(identity)
+        return connection
+
+    @staticmethod
+    def _ensure_schema(connection: sqlite3.Connection) -> None:
         connection.execute(
             """CREATE TABLE IF NOT EXISTS capture_jobs (
                 job_id TEXT PRIMARY KEY, provider TEXT NOT NULL, account_scope TEXT NOT NULL,
@@ -174,7 +209,18 @@ class CaptureJobRegistry:
             )
         if "retention_declared" not in job_columns:
             connection.execute("ALTER TABLE capture_jobs ADD COLUMN retention_declared INTEGER NOT NULL DEFAULT 0")
-        return connection
+            # Rows predating the bit may already hold a deliberate retention
+            # choice. Keep it from being replaced by retry-derived retention.
+            connection.execute(
+                # Compare the decoded retention, not its spelling: rows written by
+                # canonical_json use sorted keys.
+                "UPDATE capture_jobs SET retention_declared=1 WHERE CASE WHEN json_valid(retention_json) THEN NOT ("
+                "json_type(retention_json, '$.state') = 'text' AND json_extract(retention_json, '$.state') = 'active' "
+                "AND json_type(retention_json, '$.hold_reason') = 'null' "
+                "AND json_type(retention_json, '$.timeline_authoritative') = 'true' "
+                "AND (SELECT count(*) FROM json_each(retention_json)) = 3"
+                ") ELSE 1 END"
+            )
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
@@ -316,7 +362,10 @@ class CaptureJobRegistry:
                     unreadable.append(
                         {
                             "orphan_kind": "unreadable_legacy_checkpoint",
-                            "path": str(path),
+                            "source_digest": "path-sha256:"
+                            + hashlib.sha256(str(path).encode("utf-8", errors="surrogatepass")).hexdigest(),
+                            "diagnostic": "checkpoint bytes could not be read",
+                            "created_at": _stamp(),
                             "errno_class": type(exc).__name__,
                         }
                     )
@@ -359,6 +408,7 @@ class CaptureJobRegistry:
             body.get("provider"), body.get("account_scope"), body.get("client_protocol")
         )
         intent = self._intent(body.get("intent"))
+        self.gc()
         now = _stamp()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -411,6 +461,11 @@ class CaptureJobRegistry:
         intent_key = body.get("intent_key")
         if intent_key is not None and (not isinstance(intent_key, str) or not intent_key.startswith("i1:")):
             raise CaptureJobError(400, "invalid_intent")
+        # Every capture cycle opens with discovery and falls through to
+        # create() only for an unknown intent, so these two routes are where
+        # retired jobs are collected. Collecting before listing means the
+        # client never adopts a job this pass is about to delete.
+        self.gc()
         with self._connection() as connection:
             rows = connection.execute(
                 "SELECT * FROM capture_jobs WHERE provider=? AND account_scope=?"
@@ -421,17 +476,10 @@ class CaptureJobRegistry:
             return {"jobs": [self._summary(row) for row in rows]}
 
     def list_orphans(self, protocol: object) -> dict[str, object]:
-        """Run the receiver's spool housekeeping pass and return its census.
-
-        This route already reconciles the spool's legacy checkpoint root into
-        the durable orphan census; retention collection runs on the same pass so
-        eligible jobs are reclaimed at the cadence the receiver is already
-        polled, without a second schedule.
-        """
+        """Reconcile the spool's legacy checkpoint root into the orphan census."""
         self._validate_protocol(protocol)
-        collected = self.gc()
         with self._connection() as connection:
-            return {"orphans": self._census_legacy_orphans(connection), "collected": collected["deleted"]}
+            return {"orphans": self._census_legacy_orphans(connection)}
 
     def get(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         with self._connection() as connection:
@@ -545,7 +593,9 @@ class CaptureJobRegistry:
         event_id = str(uuid4())
         stored_payload = {"digest": digest, "value": payload}
         connection.execute(
-            "INSERT INTO capture_job_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO capture_job_events "
+            "(event_id, job_id, event_revision, job_revision, kind, refs_json, payload_json, request_id, occurred_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 event_id,
                 job_id,
@@ -706,7 +756,7 @@ class CaptureJobRegistry:
 
         Clients drive retry to ``completed``/``abandoned`` and never send a
         retention object, so without this the receiver's own creation default
-        is the only retention any job ever holds and housekeeping collects
+        is the only retention any job ever holds and ``gc()`` collects
         nothing. A job that a client has already spoken for keeps what it
         declared. Authoritativeness is read from the evidence that defines it:
         a job still holding conversation-bearing timeline events is the record
@@ -732,12 +782,12 @@ class CaptureJobRegistry:
     @staticmethod
     def _holds_conversation_timeline(connection: sqlite3.Connection, job_id: str) -> bool:
         """Whether this job still holds conversation-bearing timeline evidence."""
-        return bool(
-            connection.execute(
-                "SELECT COUNT(*) FROM capture_job_events "
-                "WHERE job_id=? AND json_extract(refs_json, '$.conversation_ref') IS NOT NULL",
-                (job_id,),
-            ).fetchone()[0]
+        return any(
+            isinstance(ref, str) and bool(ref)
+            for (refs_json,) in connection.execute("SELECT refs_json FROM capture_job_events WHERE job_id=?", (job_id,))
+            for refs in (json.loads(refs_json),)
+            for ref in (refs.get("conversation_ref"),)
+            if isinstance(refs, dict)
         )
 
     @staticmethod

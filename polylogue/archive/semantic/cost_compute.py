@@ -10,6 +10,7 @@ from polylogue.archive.semantic.cost_records import ModelUsageTotals, SessionCos
 from polylogue.archive.semantic.pricing import (
     CATALOG_EFFECTIVE_DATE,
     CATALOG_PROVENANCE,
+    PRICING,
     _normalize_model,
     estimate_cost,
     estimate_session_cost,
@@ -151,14 +152,15 @@ def compute_session_cost(
         norm = breakdown.normalized_model
         api_cost = 0.0
         credit_cost = 0.0
-        catalog_priced = norm is not None and pricing_catalog_source(norm) is not None
+        raw_model_key = (breakdown.provider_model_name or "").strip().casefold()
+        catalog_priced = norm is not None and (raw_model_key in PRICING or pricing_catalog_source(norm) is not None)
         all_catalog_priced = all_catalog_priced and catalog_priced
 
         if norm:
             api_cost = estimate_cost(
                 input_tokens=breakdown.input_tokens,
                 output_tokens=breakdown.output_tokens,
-                model=norm,
+                model=breakdown.provider_model_name or norm,
                 cache_read_tokens=breakdown.cache_read_tokens,
                 cache_write_tokens=breakdown.cache_write_tokens,
             )
@@ -184,7 +186,7 @@ def compute_session_cost(
         # indistinguishable from a genuinely free one unless the confidence is
         # downgraded here (polylogue-iuyr).
         effective_confidence = breakdown.confidence
-        if norm and not catalog_priced and breakdown.confidence in ("reported", "estimated"):
+        if norm and not catalog_priced and breakdown.confidence in ("reported", "estimated", "partial"):
             effective_confidence = "unknown"
 
         updated = SessionCostBreakdown(
@@ -257,6 +259,29 @@ def compute_session_cost(
     # message-derived estimate can be tokenless or stale (polylogue-t2ugv).
     if estimate is not None and estimate.status == "exact" and model_usage:
         total_api = float(estimate.total_usd or 0.0)
+        catalog_total = sum(item.api_cost_usd for item in breakdowns)
+        if breakdowns and catalog_total > 0:
+            # Largest-remainder allocation in whole micro-dollars: every share
+            # is non-negative and the shares sum exactly to the provider total.
+            total_micros = round(total_api * 1_000_000)
+            exact = [total_micros * item.api_cost_usd / catalog_total for item in breakdowns]
+            micros = [int(share) for share in exact]
+            leftover = total_micros - sum(micros)
+            by_remainder = sorted(range(len(exact)), key=lambda i: exact[i] - micros[i], reverse=True)
+            for index in by_remainder[:leftover]:
+                micros[index] += 1
+            breakdowns = [
+                item.model_copy(update={"api_cost_usd": amount / 1_000_000})
+                for item, amount in zip(breakdowns, micros, strict=True)
+            ]
+        elif len(breakdowns) == 1:
+            # One model: the session total is that model's exact cost.
+            breakdowns = [breakdowns[0].model_copy(update={"api_cost_usd": round(total_api, 6)})]
+        elif breakdowns:
+            # Several unpriced models and only a session total: there is no
+            # basis for attribution. The total stays on the session; the
+            # per-model rows carry no fabricated share and say so.
+            breakdowns = [item.model_copy(update={"api_cost_usd": 0.0, "confidence": "unknown"}) for item in breakdowns]
         cost_provenance = "provider_reported"
         agg_confidence = "reported"
 
@@ -294,7 +319,11 @@ def _per_model_from_model_usage(model_usage: Sequence[ModelUsageTotals]) -> dict
     for row in model_usage:
         model_name = row.model_name or None
         norm_model = _normalize_model(model_name) if model_name else None
-        key = norm_model or "unknown"
+        # Routed names with their own catalog rate keep their own bucket:
+        # merging them into the normalized model would price every token at
+        # whichever route's name happened to come last.
+        raw_key = (model_name or "").strip().casefold()
+        key = raw_key if raw_key in PRICING else (norm_model or "unknown")
         existing = per_model.get(key)
         base_input = existing.input_tokens if existing else 0
         base_output = existing.output_tokens if existing else 0
@@ -380,7 +409,7 @@ def _per_model_from_messages(
 
         word_count: int = getattr(message, "word_count", 0) or 0
 
-        if tokens is not None and getattr(tokens, "billable_tokens", 0) > 0:
+        if tokens is not None:
             per_model[key] = _add_provider_reported_tokens(per_model[key], tokens, model_name)
         elif word_count > 0:
             is_assistant_turn = getattr(message, "role", None) == Role.ASSISTANT
@@ -394,8 +423,8 @@ def _per_model_from_messages(
                 input_tokens=per_model[key].input_tokens + est.input_tokens,
                 output_tokens=per_model[key].output_tokens + est.output_tokens,
                 total_tokens=per_model[key].total_tokens + est.total_tokens,
-                confidence="estimated",
-                provenance="heuristic_estimated",
+                confidence="partial" if per_model[key].confidence == "partial" else "estimated",
+                provenance="mixed" if per_model[key].confidence == "partial" else "heuristic_estimated",
             )
     return per_model
 

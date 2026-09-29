@@ -24,6 +24,17 @@ def test_install_native_host_is_scoped_to_exact_extension_ids(tmp_path: Path) ->
     assert "auth_token" not in target.read_text()
 
 
+def test_firefox_manifest_uses_allowed_extensions(tmp_path: Path) -> None:
+    """Anti-vacuity: a Chrome-only manifest cannot launch under Firefox."""
+    target = tmp_path / "firefox-host.json"
+    native_host.install_native_host(
+        ("addon@example.invalid",), executable="/bin/host", browser="firefox", destination=target
+    )
+    manifest = json.loads(target.read_text())
+    assert manifest["allowed_extensions"] == ["addon@example.invalid"]
+    assert "allowed_origins" not in manifest
+
+
 def test_native_host_rejects_missing_browser_sender(monkeypatch: pytest.MonkeyPatch) -> None:
     payload = json.dumps({"endpoint": "http://127.0.0.1:8765"}).encode()
     output = io.BytesIO()
@@ -53,6 +64,27 @@ def test_native_host_binds_expected_receiver_identity(monkeypatch: pytest.Monkey
     assert native_host.main() == 1
     size = struct.unpack("<I", output.getvalue()[:4])[0]
     assert json.loads(output.getvalue()[4 : 4 + size])["error"] == "receiver_identity_mismatch"
+
+
+def test_native_host_returns_the_persisted_effective_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: returning an independently minted token fails this pairing response."""
+    import polylogue.runtime
+
+    payload = json.dumps({"endpoint": "http://127.0.0.1:8765"}).encode()
+    output = io.BytesIO()
+    monkeypatch.setattr(polylogue.runtime, "require_free_threaded_runtime", lambda **_kwargs: None)
+    monkeypatch.setattr(sys, "argv", ["host", "chrome-extension://good-id/"])
+    monkeypatch.setattr(
+        sys, "stdin", type("S", (), {"buffer": io.BytesIO(struct.pack("<I", len(payload)) + payload)})()
+    )
+    monkeypatch.setattr(sys, "stdout", type("S", (), {"buffer": output})())
+    monkeypatch.setattr(native_host, "load_or_mint_receiver_identity", lambda: "rx-actual")
+    monkeypatch.setattr(native_host, "load_or_mint_receiver_token", lambda: "configured-effective-token")
+
+    assert native_host.main() == 0
+    size = struct.unpack("<I", output.getvalue()[:4])[0]
+    response = json.loads(output.getvalue()[4 : 4 + size])
+    assert response["auth_token"] == "configured-effective-token"
 
 
 def test_install_resolves_a_bare_command_to_an_absolute_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

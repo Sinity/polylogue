@@ -105,6 +105,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from polylogue.archive.revision_authority import WORK_EVENT_RAW_ID_PREFIX
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, Origin, Provider
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.security.excision_carriers import (
@@ -365,6 +366,7 @@ def _resolve_session_excision_target(
             # every retained revision of that same file is covered too.
             fact_raw_ids = _session_fact_raw_ids(conn, session_id)
             raw_ids.extend(fact_raw_ids)
+            raw_ids.extend(_session_work_event_raw_ids(conn, session_id))
             marker_target_raw_ids = frozenset(raw_ids)
             resolved = _durable_revision_closure(conn, raw_ids) if raw_ids else ()
             marker_target_raw_ids = frozenset(resolved)
@@ -676,6 +678,25 @@ def _bind_cascade_container_disposition(
     return tuple(
         replace(target, containers=disposition if index == 0 else ContainerDisposition())
         for index, target in enumerate(targets)
+    )
+
+
+def _session_work_event_raw_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
+    """Raw ids of the agent work events retained for this session.
+
+    Each work event is its own logical source, so neither the transcript's
+    revision closure nor ``sessions.raw_id`` reaches it. Its raw row carries
+    the annotated session's ``(origin, native_id)``, which is the link.
+    """
+    origin, _, native_id = session_id.partition(":")
+    if not origin or not native_id:
+        return ()
+    return tuple(
+        str(row[0])
+        for row in conn.execute(
+            "SELECT raw_id FROM raw_sessions WHERE raw_id GLOB ? AND origin = ? AND native_id = ?",
+            (f"{WORK_EVENT_RAW_ID_PREFIX}*", origin, native_id),
+        ).fetchall()
     )
 
 

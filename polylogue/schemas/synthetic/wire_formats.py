@@ -366,19 +366,18 @@ PROVIDER_WIRE_CAPABILITIES = PROVIDER_WIRE_ROUTES
 def _route_conservation_exclusions(provider: str, payload: JSONValue) -> frozenset[str]:
     """Exclude typed envelope projections the selected parser does not own.
 
-    The generated v2/v3 ChatGPT and Claude AI packages combine a native
-    provider tree with a browser-capture envelope.  The receipt deliberately
-    strips ``raw_provider_payload`` before parser dispatch, so the envelope's
-    native-looking mapping/message fields are not parser evidence.  They are
-    typed transport projections, not silently dropped conversational bodies.
-    Keep these exclusions local to that envelope shape; v1 native exports
-    still exercise their real content-bearing annotations.
+    The ChatGPT receipt strips only ``raw_provider_payload`` before dispatch,
+    so the envelope's top-level ``mapping`` and ``title`` reach
+    ``chatgpt.parse`` and stay in the conservation denominator. The capture
+    envelope's ``session.title`` is its own copy of the conversation title;
+    the parser owns ``$.title`` and never reads it. Claude AI's transport
+    projections are scoped separately to that provider's envelope shape.
     """
     if not isinstance(payload, Mapping):
         return frozenset()
     is_capture_envelope = "polylogue_capture_kind" in payload or "raw_provider_payload" in payload
     if provider == "chatgpt" and is_capture_envelope:
-        return frozenset({"$.mapping", "$.title", "$.session.title"})
+        return frozenset({"$.raw_provider_payload", "$.session.title"})
     if provider == "claude-ai":
         exclusions = {"$.name"}
         if is_capture_envelope:

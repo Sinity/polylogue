@@ -196,7 +196,7 @@
         // real turn -- requiring text would drop image-only and tool-only turns.
         if (!text && !blocks.length && !attachments.length) return null;
         return {
-          provider_turn_id: String(message.uuid || message.id || `claude-message-${index}`),
+          provider_turn_id: message.uuid || message.id ? String(message.uuid || message.id) : null,
           role: roleFromNativeMessage(message),
           text,
           timestamp: message.created_at || message.updated_at || null,
