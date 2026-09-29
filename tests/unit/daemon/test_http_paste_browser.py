@@ -121,3 +121,26 @@ async def test_pages_concatenate_each_match_exactly_once(tmp_path: Path, monkeyp
     assert first["total_lower_bound"] == 2
     assert second["total"] == 3
     assert second["total_is_exact"] is True
+
+
+@pytest.mark.asyncio
+async def test_empty_page_past_the_end_claims_no_count(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Three matches read at offset 100: the empty page proves no row count.
+
+    Anti-vacuity: deriving ``total_lower_bound`` from ``offset + len(rows)``
+    again publishes 100 for an archive holding three matches.
+    """
+    index_db = tmp_path / "archive" / "index.db"
+    _seed(index_db, empty_sessions=0, paste_messages=3)
+
+    polylogue = Polylogue(archive_root=index_db.parent, db_path=index_db)
+    try:
+        _forbid_session_walk(polylogue, monkeypatch)
+        payload = cast(dict[str, object], await _handler()._do_paste_browser(polylogue, limit=2, offset=100))
+    finally:
+        await polylogue.close()
+
+    assert payload["items"] == []
+    assert payload["total"] is None
+    assert payload["total_is_exact"] is False
+    assert "total_lower_bound" not in payload

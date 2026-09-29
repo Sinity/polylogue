@@ -158,9 +158,88 @@ def test_session_messages_preserves_giant_single_message_and_continuation() -> N
             archive=archive,
             adapters=_adapters(),
         )
+    assert result is not None
     assert cast(list[dict[str, object]], result["messages"])[0]["text"] == giant_text
     assert result["continuation"] == "snapshot-token"
     assert result["next_offset"] == 1
     assert result["authority"] == {"mode": "daemon"}
     assert result["lineage_complete"] is False
     assert result["lineage_truncation_reason"] == "missing_parent"
+
+
+def test_session_messages_reports_a_missing_session_as_absent() -> None:
+    """An unresolvable reference is not found, not a 200 page with an error outcome.
+
+    Anti-vacuity: returning the old ``session_not_found`` payload makes the
+    route send it with HTTP 200, and this ``is None`` assertion is red.
+    """
+    archive = MagicMock()
+    archive.resolve_session_id.side_effect = KeyError("definitely-absent")
+
+    result = execute_http_session_messages(
+        {"session_id": "definitely-absent", "limit": 5, "offset": 0},
+        archive=archive,
+        adapters=_adapters(),
+    )
+
+    assert result is None
+    archive.read_session_page.assert_not_called()
+
+
+def test_session_messages_authority_elapsed_covers_the_window_read() -> None:
+    """The authority envelope is timed after the read it attributes.
+
+    A one-second window read must show in ``elapsed_ms``. Anti-vacuity:
+    serializing the authority before resolving and reading the session (the
+    reviewed shape) fixes ``elapsed_ms`` at 0 here.
+    """
+    from polylogue.surfaces.authority import build_authority_envelope
+
+    clock = {"now": 100.0}
+    archive = MagicMock()
+    archive.resolve_session_id.return_value = "codex-session:child"
+    envelope = SimpleNamespace(
+        session_id="codex-session:child",
+        origin="codex-session",
+        messages=(),
+        total_message_count=0,
+        lineage_complete=True,
+        lineage_truncation_reason=None,
+    )
+
+    def _slow_page(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        clock["now"] += 1.0
+        return envelope
+
+    archive.read_session_page.side_effect = _slow_page
+    placement = MagicMock()
+    placement.session_entries = ()
+
+    def _window(_archive: object, _request: object, *, read: Any, **_kwargs: object) -> SimpleNamespace:
+        rows, total, _completeness = read(5, 0)
+        return SimpleNamespace(rows=rows, total=total, limit=5, offset=0, next_offset=None, continuation=None)
+
+    def _authority(_reader: object, *, server_identity: Any, started_at: float | None) -> object:
+        return build_authority_envelope(
+            archive_epoch="epoch",
+            generation_id="generation",
+            tier_schema_versions={},
+            server_identity=server_identity,
+            started_at=started_at,
+        )
+
+    with (
+        patch("polylogue.operations.http_session_reads.monotonic", side_effect=lambda: clock["now"]),
+        patch("polylogue.surfaces.authority.monotonic", side_effect=lambda: clock["now"]),
+        patch("polylogue.operations.http_session_reads.read_transcript_window_sync", side_effect=_window),
+        patch("polylogue.operations.http_session_reads._semantic_placement", return_value=placement),
+        patch("polylogue.operations.http_session_reads.authority_for_reader", side_effect=_authority),
+    ):
+        result = execute_http_session_messages(
+            {"session_id": "child", "limit": 5, "offset": 0},
+            archive=archive,
+            adapters=_adapters(),
+        )
+
+    assert result is not None
+    assert cast(dict[str, object], result["authority"])["elapsed_ms"] == 1000

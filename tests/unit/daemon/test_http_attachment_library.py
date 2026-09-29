@@ -125,3 +125,61 @@ async def test_attachment_library_uses_canonical_summary_label() -> None:
 
     item = cast(list[dict[str, object]], payload["items"])[0]
     assert item["session_title"] == "Synthesized session"
+
+
+class _ArchiveReaderHandler:
+    """Request double for the archive-reader branch of the library route."""
+
+    def __init__(self, params: dict[str, int]) -> None:
+        self.params = params
+        self.sent: list[tuple[object, object]] = []
+
+    def _get_int(self, _params: object, name: str, default: int) -> int:
+        return self.params.get(name, default)
+
+    def _send_json(self, status: object, payload: object) -> None:
+        self.sent.append((status, payload))
+
+
+def _archive_reader_page(
+    monkeypatch: pytest.MonkeyPatch, rows: list[tuple[object, str, str | None]], **params: int
+) -> dict[str, object]:
+    from contextlib import contextmanager
+    from pathlib import Path
+
+    import polylogue.archive.query.transaction as transaction
+    import polylogue.daemon.http as daemon_http
+    import polylogue.operations.http_read_models as read_models
+    from polylogue.daemon.route_families import read_query
+
+    @contextmanager
+    def _context(*_args: object, **_kwargs: object) -> Any:
+        yield object()
+
+    def _page(_archive: object, *, limit: int, offset: int, **_filters: object) -> list[tuple[object, str, str | None]]:
+        return rows[offset : offset + limit]
+
+    monkeypatch.setattr(daemon_http, "_web_reader_archive_root", lambda: Path("/archive"))
+    monkeypatch.setattr(transaction, "archive_read_context", _context)
+    monkeypatch.setattr(read_models, "read_attachment_library_page", _page)
+    handler = _ArchiveReaderHandler(params)
+    read_query._handle_attachment_library(handler, {})
+    [(_status, payload)] = handler.sent
+    return cast(dict[str, object], payload)
+
+
+def test_archive_reader_library_empty_page_past_the_end_claims_no_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Two matches read at offset 100 on the archive-reader route.
+
+    Anti-vacuity: publishing ``offset + len(entries)`` as an exact total for
+    an untruncated page reports ``total=100, total_is_exact=true`` here.
+    """
+    rows = [(_attachment(index), f"title-{index}", "codex") for index in range(2)]
+
+    payload = _archive_reader_page(monkeypatch, rows, limit=10, offset=100)
+
+    assert payload["items"] == []
+    assert payload["total"] is None
+    assert payload["total_is_exact"] is False
+    assert "total_lower_bound" not in payload
+    assert _archive_reader_page(monkeypatch, rows, limit=10, offset=1)["total"] == 2

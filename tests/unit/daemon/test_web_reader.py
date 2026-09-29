@@ -4096,3 +4096,49 @@ def test_observability_monitor_renders_cold_build_preparation_only_while_prepari
 
     ingesting = _render_build_monitor({"mode": "catching_up", "current_phase": "parse"}, {"state": "fresh"})
     assert "data-preparation" not in ingesting
+
+
+def test_archive_bounded_query_translates_a_cancelled_handle_interrupt() -> None:
+    """A cancelled request handle interrupts SQLite and answers as cancelled.
+
+    Anti-vacuity: without the cancellation branch in the ``interrupted``
+    handler the ``OperationalError`` escapes and the route classifies it as
+    ``sqlite_error`` (HTTP 500) instead of ``DaemonOperationCancelled`` (408).
+    """
+    from polylogue.daemon import execution
+    from polylogue.daemon.execution import CancellationHandle, DaemonOperationCancelled
+    from polylogue.daemon.http import DaemonAPIHandler
+
+    class _Archive:
+        def __init__(self, conn: sqlite3.Connection) -> None:
+            self._conn = conn
+
+    conn = sqlite3.connect(":memory:")
+    handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
+    handler._client_disconnected = lambda: False  # type: ignore[method-assign]
+    handle = CancellationHandle()
+
+    def cancel_then_scan() -> object:
+        handle.cancel()
+        return conn.execute(
+            """
+            WITH RECURSIVE counter(value) AS (
+              VALUES(0)
+              UNION ALL
+              SELECT value + 1 FROM counter WHERE value < 1000000
+            )
+            SELECT SUM(value) FROM counter
+            """
+        ).fetchone()
+
+    token = execution._CURRENT_CANCELLATION.set(handle)
+    try:
+        with pytest.raises(DaemonOperationCancelled):
+            handler._run_archive_bounded_query(
+                _Archive(conn),  # type: ignore[arg-type]
+                deadline_s=None,
+                compute=cancel_then_scan,
+            )
+    finally:
+        execution._CURRENT_CANCELLATION.reset(token)
+        conn.close()
