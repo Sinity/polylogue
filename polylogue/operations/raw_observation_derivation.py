@@ -94,6 +94,21 @@ def raw_observation_output_session_ids(archive_root: Path, raw_id: str) -> tuple
         return tuple(str(row[0]) for row in rows)
 
 
+def raw_observation_payload_bytes(archive_root: Path, raw_id: str) -> int:
+    """The retained payload size a raw observation's parse holds, for compute admission.
+
+    A read fault propagates: it is retryable, and admitting the parse as a
+    zero-byte task would let it run beside a full byte reservation.
+    """
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+    with closing(open_readonly_connection(archive_root / "source.db")) as conn:
+        row = conn.execute("SELECT blob_size FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
 def raw_observation_frame(
     archive_root: Path,
     *,

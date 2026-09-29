@@ -353,6 +353,20 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         cadence_s=60.0,
     ),
     _spec(
+        # The promoted generation's session audit (summary, usage rollup,
+        # profile) and profile demand. Every profile that runs intake can
+        # promote a cold generation, so each one resumes that audit; under
+        # INTAKE nothing else would.
+        "session_profile_audit",
+        owner="daemon.session_profiles",
+        trigger=ServiceTrigger.PERIODIC,
+        requires=(ServiceCapability.DERIVED_WRITES,),
+        profiles=_WITH_INTAKE,
+        readiness=ServiceReadiness.ON_FIRST_PASS,
+        status_component="session_profiles",
+        cadence_s=60.0,
+    ),
+    _spec(
         "raw_observation_convergence",
         owner="daemon.raw_observation_owner",
         trigger=ServiceTrigger.PERIODIC,

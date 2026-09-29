@@ -359,3 +359,30 @@ async def test_multi_session_raw_overlapping_a_byte_chain_decides_every_member(
             }
     finally:
         await _shutdown(compute, coordinator)
+
+
+@pytest.mark.asyncio
+async def test_raw_parse_reserves_its_retained_payload_bytes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The raw parse is admitted with its payload size, not as a zero-byte task.
+
+    Anti-vacuity: submitting without ``estimated_bytes`` records 0 here.
+    """
+    bootstrap_archive_root(tmp_path)
+    raw_id = _admit(tmp_path)
+    owner, compute, coordinator = await _owner(tmp_path)
+    reserved: list[int] = []
+    real_submit = compute.submit
+
+    def recording_submit(function: object, **kwargs: object) -> object:
+        reserved.append(int(kwargs.get("estimated_bytes", 0)))  # type: ignore[call-overload]
+        return real_submit(function, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(compute, "submit", recording_submit)
+    try:
+        await owner.converge_raw_id(raw_id)
+        with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+            size = archive.raw_payload_sizes((raw_id,))[raw_id]
+        assert size > 0
+        assert reserved == [size]
+    finally:
+        await _shutdown(compute, coordinator)

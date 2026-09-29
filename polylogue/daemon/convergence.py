@@ -143,7 +143,14 @@ class DerivationConvergenceOwner:
         deadline_s: float | None = None,
         resume: bool = True,
         domains: Sequence[str] | None = None,
+        estimated_bytes: int = 0,
     ) -> DerivationReport:
+        """Run one derivation pass on the bounded compute pool.
+
+        ``estimated_bytes`` is the input this pass will hold in memory (a raw
+        parse's retained payload, say); the pool reserves it so its byte bound
+        accounts for the work it admits.
+        """
         async with self._converge_lock:
             return await self._converge_serialized(
                 frame,
@@ -151,6 +158,7 @@ class DerivationConvergenceOwner:
                 deadline_s=deadline_s,
                 resume=resume,
                 domains=domains,
+                estimated_bytes=estimated_bytes,
             )
 
     async def _converge_serialized(
@@ -161,6 +169,7 @@ class DerivationConvergenceOwner:
         deadline_s: float | None = None,
         resume: bool = True,
         domains: Sequence[str] | None = None,
+        estimated_bytes: int = 0,
     ) -> DerivationReport:
         from polylogue.daemon.write_coordinator import daemon_write_lease_active
 
@@ -188,6 +197,7 @@ class DerivationConvergenceOwner:
                 )
             ),
             admission_class="incremental-background",
+            estimated_bytes=estimated_bytes,
         )
         compute_cancel.reset(cancel_token)
         operation = asyncio.wrap_future(submitted.future, loop=loop)

@@ -550,3 +550,53 @@ def test_combined_classes_cannot_take_the_interactive_queue() -> None:
             assert admitted >= reserved_units
         finally:
             blocker.release.set()
+
+
+def test_multi_slot_background_head_is_not_overtaken_by_one_slot_bulk() -> None:
+    """A four-slot incremental head runs before later one-slot bulk work.
+
+    With eight workers the control and interactive reserves leave four slots
+    for background work. One bulk task holds a slot, so the incremental head
+    needs every remaining one. Anti-vacuity: letting the complement check
+    ``continue`` to later turns dispatches each new bulk task ahead of it, and
+    the head never starts while bulk work keeps arriving.
+    """
+
+    first_bulk, incremental, later_bulk = _Blocker(), _Blocker(), _Blocker()
+    adapter = BoundedComputeAdapter(max_workers=8, queue_units=16)
+    try:
+        running = adapter.submit(first_bulk, admission_class="bulk-candidate")
+        assert first_bulk.wait_started(1)
+        queued_incremental = adapter.submit(incremental, admission_class="incremental-background", units=4)
+        queued_bulk = adapter.submit(later_bulk, admission_class="bulk-candidate")
+
+        assert not later_bulk.wait_started(1, timeout=0.3)
+        first_bulk.release.set()
+        running.future.result(timeout=5)
+        assert incremental.wait_started(1)
+        assert later_bulk.starts == 0
+        incremental.release.set()
+        queued_incremental.future.result(timeout=5)
+        assert later_bulk.wait_started(1)
+        later_bulk.release.set()
+        queued_bulk.future.result(timeout=5)
+    finally:
+        for body in (first_bulk, incremental, later_bulk):
+            body.release.set()
+        adapter.shutdown(wait=True)
+
+
+def test_a_unit_larger_than_the_byte_envelope_runs_alone_instead_of_being_refused() -> None:
+    """An input bigger than the byte pool reserves all of it and still runs.
+
+    Anti-vacuity: refusing ``estimated_bytes > capacity_bytes`` outright makes
+    the daemon unable to ever process that input.
+    """
+
+    adapter = BoundedComputeAdapter(max_workers=2, queue_units=2, queue_bytes=10)
+    try:
+        submitted = adapter.submit(lambda: "parsed", estimated_bytes=25)
+        assert submitted.future.result(timeout=5) == "parsed"
+        assert adapter.snapshot().used_bytes == 0
+    finally:
+        adapter.shutdown(wait=True)

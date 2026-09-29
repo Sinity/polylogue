@@ -18,6 +18,7 @@ from polylogue.operations.raw_observation_derivation import (
     RAW_OBSERVATION_DOMAIN,
     make_raw_observation_derivation,
     raw_observation_frame,
+    raw_observation_payload_bytes,
 )
 
 
@@ -63,6 +64,7 @@ class RawObservationConvergenceOwner:
                 budget=Budget(page=1, discovery=1, inspection=2, compute=1, publication=1),
                 domains=(RAW_OBSERVATION_DOMAIN,),
                 resume=False,
+                estimated_bytes=raw_observation_payload_bytes(self._archive_root, raw_id),
             )
 
     def _require_source_frontier_authority(self, raw_id: str) -> None:

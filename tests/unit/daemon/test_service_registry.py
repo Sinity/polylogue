@@ -267,3 +267,21 @@ def test_the_capability_predicate_agrees_with_the_composed_callback() -> None:
             return (await composed(None)).deferred_reason
 
         assert asyncio.run(compose()) == expected, f"composer disagreed for enabled={enabled} key={key!r}"
+
+
+def test_every_intake_profile_resumes_the_promoted_session_audit() -> None:
+    """Each profile that can promote a cold generation schedules the session audit.
+
+    Anti-vacuity: leaving the audit inside ``convergence_check``, which INTAKE
+    does not select, strands a promoted audit that four promotion ticks did
+    not finish.
+    """
+    for profile in (ServiceProfile.PRODUCTION, ServiceProfile.INTAKE, ServiceProfile.REPLAY):
+        selected = {spec.name for spec in select_service_specs(profile=profile, capabilities=ALL_CAPABILITIES)}
+        assert "fair_intake" in selected
+        assert "session_profile_audit" in selected, profile
+    blocked = {
+        spec.name
+        for spec in select_service_specs(capabilities={ServiceCapability.API, ServiceCapability.SCHEMA_BLOCKED})
+    }
+    assert "session_profile_audit" not in blocked

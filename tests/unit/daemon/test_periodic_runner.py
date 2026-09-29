@@ -312,6 +312,7 @@ def test_declared_cadence_matches_the_interval_each_loop_registers() -> None:
         "wal_checkpoint": daemon_cli._WAL_CHECKPOINT_INTERVAL_SECONDS,
         "status_snapshot_refresh": daemon_cli._STATUS_SNAPSHOT_REFRESH_INTERVAL_SECONDS,
         "convergence_check": daemon_cli._CONVERGENCE_DEBT_RETRY_INTERVAL_SECONDS,
+        "session_profile_audit": daemon_cli._SESSION_PROFILE_AUDIT_INTERVAL_SECONDS,
         "raw_observation_convergence": daemon_cli._RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS,
         "schema_preflight_recheck": daemon_cli._SCHEMA_PREFLIGHT_RECHECK_INTERVAL_SECONDS,
         "lifecycle_heartbeat": DAEMON_HEARTBEAT_INTERVAL_SECONDS,
