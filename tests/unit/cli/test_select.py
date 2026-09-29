@@ -46,18 +46,18 @@ def test_select_row_carries_shared_informativeness_fields() -> None:
         origin=Origin.CODEX_SESSION,
         title="Context",
         message_count=7,
-        git_repository_url="https://example.test/org/polylogue",
-        working_directories=("/workspace/polylogue",),
+        git_repository_url="https://example.test/org/archive-repo",
+        working_directories=("/workspace/active-checkout",),
     )
 
     row = select_row_from_result(summary)
 
     assert row.message_count == 7
-    assert row.repo == "polylogue"
-    assert row.cwd_display == "polylogue"
+    assert row.repo == "archive-repo"
+    assert row.cwd_display == "active-checkout"
     assert row.to_json()["message_count"] == 7
-    assert row.to_json()["repo"] == "polylogue"
-    assert row.to_json()["cwd_display"] == "polylogue"
+    assert row.to_json()["repo"] == "archive-repo"
+    assert row.to_json()["cwd_display"] == "active-checkout"
 
 
 @pytest.mark.frozen_clock_modules("polylogue.surfaces.query_rows")

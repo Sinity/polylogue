@@ -52,10 +52,10 @@ def message_sets(draw: st.DrawFn) -> list[ParsedMessage]:
     """Generate bounded message sets, including duplicate native IDs."""
     size = draw(st.integers(min_value=0, max_value=7))
     messages: list[ParsedMessage] = []
-    for index in range(size):
-        # Keep one repeated native ID in every multi-message batch so the
-        # writer's duplicate-identity normalization is exercised on all paths.
-        provider_message_id = "duplicate" if index else "seed"
+    for _ in range(size):
+        # The initial write contains the first row; repeat its ID in the tail
+        # so append must also handle a collision across the write boundary.
+        provider_message_id = "duplicate"
         role = draw(st.sampled_from(_ROLES))
         material_origin = draw(st.sampled_from(_MATERIAL_ORIGINS))
         text = draw(st.one_of(st.just(""), st.text(min_size=1, max_size=30)))

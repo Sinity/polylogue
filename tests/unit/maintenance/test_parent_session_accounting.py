@@ -106,6 +106,7 @@ def _acquire_only(
         source_path=str(path),
         acquired_at_ms=_ACQUIRED_AT_MS + order,
         native_id=native_id,
+        post_parse=True,
     )
     return raw_id, path
 

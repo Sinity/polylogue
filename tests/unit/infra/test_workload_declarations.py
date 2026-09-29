@@ -191,8 +191,11 @@ def test_workload_profile_wrappers_reject_semantic_fields_and_unknown_providers(
     named = named_workload_profile("cli-chatgpt")
     with pytest.raises(ValueError, match="named workload profile cannot repeat"):
         dataclasses.replace(named, provider_session_counts=(("chatgpt", 1), ("chatgpt", 2)))
+    invalid_workload = dataclasses.replace(named.workload)
+    # Bypass only the inner constructor to test the wrapper's own validation.
+    object.__setattr__(invalid_workload, "purpose", "expected_semantics")
     with pytest.raises(ValueError, match="semantic metadata"):
-        dataclasses.replace(named, workload=dataclasses.replace(named.workload, purpose="expected_semantics"))
+        dataclasses.replace(named, workload=invalid_workload)
 
     benchmark = benchmark_workload_profile(BenchmarkWorkloadTier.SMOKE)
     with pytest.raises(ValueError, match="benchmark workload cannot repeat"):

@@ -1325,7 +1325,8 @@ def test_reconcile_blob_publications_clears_terminal_receipts_at_startup(
     with sqlite3.connect(source_db) as conn:
         # A live referenced blob is retained for explicit abandonment; only
         # the missing-bytes terminal receipt is safe to clear automatically.
-        assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone()[0] == 1
+        remaining = conn.execute("SELECT blob_hash FROM blob_publication_reservations").fetchall()
+        assert remaining == [(bytes.fromhex(referenced_hash),)]
 
 
 def test_daemon_rebuild_lease_refusal_precedes_startup_blob_reconciliation(

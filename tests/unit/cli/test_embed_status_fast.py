@@ -1243,8 +1243,9 @@ def test_status_json_reads_index_when_db_anchor_exists(tmp_path: Path) -> None:
 def test_status_json_bypasses_schema_version_gate_for_operator_readiness(tmp_path: Path) -> None:
     db_path = tmp_path / "archive.db"
     _seed_archive_without_embedding_ledgers(db_path)
-    with sqlite3.connect(db_path) as conn:
+    with sqlite3.connect(_index_path(db_path)) as conn:
         conn.execute("PRAGMA user_version = 9")
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 9
 
     payload = _run_status(db_path, cfg=_cfg(embedding_enabled=False, voyage_api_key="vk-live"))
 

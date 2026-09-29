@@ -817,13 +817,17 @@ def test_get_uses_one_snapshot_for_job_and_receipts(tmp_path: Path, monkeypatch:
             nonlocal injected
             if injected or not _statement.startswith("SELECT receipt_json FROM capture_job_receipts"):
                 return
-            injected = True
             other = sqlite3.connect(capture_job_database_path(tmp_path), isolation_level=None)
             try:
                 other.execute(
-                    "INSERT INTO capture_job_receipts VALUES (?, ?, ?, ?)",
-                    (job_id, "interleaved", 1, json.dumps({"receipt_id": "interleaved"})),
+                    "INSERT INTO capture_job_receipts "
+                    "(job_id, request_id, checkpoint_sequence, checkpoint_digest, receipt_json) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (job_id, "interleaved", 1, canonical_digest(payload), json.dumps({"receipt_id": "interleaved"})),
                 )
+                # Trace callback exceptions are swallowed by sqlite3. Set this
+                # only after the autocommit insert has actually succeeded.
+                injected = True
             finally:
                 other.close()
 
@@ -832,7 +836,10 @@ def test_get_uses_one_snapshot_for_job_and_receipts(tmp_path: Path, monkeypatch:
 
     monkeypatch.setattr(CaptureJobRegistry, "_connect", connect_with_interleaved_commit)
     result = registry.get(job_id, {"provider": "chatgpt", "account_scope": SCOPE, "client_protocol": 1})
+    assert injected
     assert result["receipts"] == []
+    next_snapshot = registry.get(job_id, {"provider": "chatgpt", "account_scope": SCOPE, "client_protocol": 1})
+    assert next_snapshot["receipts"] == [{"receipt_id": "interleaved"}]
 
 
 def test_registry_storage_failure_is_a_structured_receiver_error(tmp_path: Path, monkeypatch: Any) -> None:

@@ -362,8 +362,7 @@ class TestXDGPaths:
         monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
 
         db_path = polylogue.paths.db_path()
-        assert db_path.name == "index.db"
-        assert db_path.is_relative_to(tmp_path / "data" / "polylogue")
+        assert db_path == tmp_path / "data" / "polylogue" / "index.db"
 
     def test_relative_archive_root_env_is_refused(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """A relative archive root names a different directory per process cwd.

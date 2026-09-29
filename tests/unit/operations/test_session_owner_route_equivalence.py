@@ -181,7 +181,7 @@ async def test_lexical_search_selects_the_same_sessions_on_both_read_routes(tmp_
     The generic route answers a ranked search envelope and the owner route a
     typed page; what must not differ is *which* sessions matched and how many
     the archive reports. Mutation: change the owner route's distinct-by-session
-    collapse or its lexical term extraction and the id sets diverge.
+    collapse, ordering or lexical term extraction and the ID sequences diverge.
     """
 
     root = tmp_path / "archive"
@@ -202,7 +202,9 @@ async def test_lexical_search_selects_the_same_sessions_on_both_read_routes(tmp_
     assert isinstance(hits, list)
     generic_ids = [str(hit["session"]["id"]) for hit in hits]
 
-    assert set(owner_ids) == set(generic_ids) == set(seeded)
+    assert owner_ids == generic_ids
+    assert len(owner_ids) == len(seeded)
+    assert set(owner_ids) == set(seeded)
     assert owner_page.total == envelope["total"]
     assert owner_page.next_offset == envelope["next_offset"]
 

@@ -172,7 +172,7 @@ def test_query_law_unmutated_run_is_green_for_the_same_probes(
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def census_snapshot(
     query_law_corpus: QueryCorpus, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[ArchiveSnapshot]:
@@ -182,11 +182,10 @@ def census_snapshot(
     shutil.rmtree(snapshot.root, ignore_errors=True)
 
 
-@pytest.fixture
-def census(census_snapshot: ArchiveSnapshot, monkeypatch: pytest.MonkeyPatch) -> tuple[CensusObservation, ...]:
-    # The census runs against the reflink copy, so its CLI leg needs a daemon
-    # rooted at that copy rather than the source corpus archive.
-    with cli_daemon_archive(census_snapshot.root, monkeypatch):
+@pytest.fixture(scope="module")
+def census(census_snapshot: ArchiveSnapshot) -> tuple[CensusObservation, ...]:
+    # Own the environment patch at the same scope as the shared census.
+    with pytest.MonkeyPatch.context() as monkeypatch, cli_daemon_archive(census_snapshot.root, monkeypatch):
         return asyncio.run(run_workload_census(census_snapshot))
 
 

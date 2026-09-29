@@ -8,7 +8,7 @@ import queue
 import socket
 import sqlite3
 import threading
-from contextlib import closing
+from contextlib import ExitStack, closing
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -1080,7 +1080,8 @@ def test_disconnected_after_durable_acceptance_recovers_without_replaying_mutati
     request_id = "disconnect-after-acceptance"
     accepted_reference: dict[str, object]
     authorization_refs: list[str]
-    with running_daemon_operations(root, seed_archive=seed) as stack:
+    with running_daemon_operations(root, seed_archive=seed) as stack, ExitStack() as cleanup:
+        cleanup.callback(release_apply.set)
         preview = stack.client.operation_to_completion(
             "mutation.session.delete.preview",
             {"session_ids": list(session_ids)},

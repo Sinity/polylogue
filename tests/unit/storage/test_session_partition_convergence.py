@@ -743,10 +743,10 @@ def test_provider_usage_correction_makes_the_partition_stale(archive_root: Path)
         changed = conn.execute(
             """
             UPDATE session_provider_usage_events
-            SET last_output_tokens = 10_000
+            SET last_output_tokens = ?
             WHERE session_id = ? AND position = 99
             """,
-            (session_id,),
+            (10_000, session_id),
         ).rowcount
         message_after = conn.execute(
             "SELECT COUNT(*), MAX(occurred_at_ms), MAX(position) FROM messages WHERE session_id = ?", (session_id,)

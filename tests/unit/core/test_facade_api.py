@@ -732,7 +732,8 @@ class TestPolylogueArchiveInsights:
         assert root_cost.estimate.status == "unavailable"
         # "no_tokens" is the declared availability vocabulary in
         # storage/usage.py, distinct from "known_zero": absent token evidence is
-        # not a recorded zero. "missing_token_usage" is not produced anywhere.
+        # not a recorded zero. Pricing's "missing_token_usage" is a separate
+        # unavailable reason; this rollup reports the storage availability reason.
         assert root_cost.estimate.missing_reasons == ("no_tokens",)
         assert cost_rollups[0].total_usd == pytest.approx(0.0)
 

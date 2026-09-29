@@ -1055,6 +1055,7 @@ class TestBoundedArchiveQueryExecutor:
 
     @pytest.mark.uses_real_clock("waits for real daemon-owned writer and compute threads to exit")
     def test_server_close_shuts_down_archive_query_executor(self, tmp_path: Path) -> None:
+        import asyncio
         import threading
         import time
         from unittest.mock import patch
@@ -1067,43 +1068,43 @@ class TestBoundedArchiveQueryExecutor:
             capabilities={ServiceCapability.API},
         )
         harness.require_selected("api_server")
-        before = {
-            thread.ident
-            for thread in threading.enumerate()
-            if thread.name in {"daemon-http-writer", "polylogue-compute"}
-        }
-        server = harness.api_server(tmp_path)
-        submitted = server.execution_kernel.submit(lambda: "completed")
-        assert submitted.future.result(timeout=2) == "completed"
-        shutdown = server.execution_kernel.shutdown
-        calls = 0
 
-        def counted_shutdown(**kwargs: object) -> None:
-            nonlocal calls
-            calls += 1
-            shutdown(**kwargs)
-
-        with patch.object(server.execution_kernel, "shutdown", side_effect=counted_shutdown):
-            server.server_close()
-            server.server_close()
-
-        assert calls == 1
-        assert server._owned_write_runtime is None
-        deadline = time.monotonic() + 2
-        remaining = {"daemon-http-writer", "polylogue-compute"}
-        while time.monotonic() < deadline:
-            remaining = {
-                thread.name
+        def owned_threads() -> dict[int | None, str]:
+            return {
+                thread.ident: thread.name
                 for thread in threading.enumerate()
-                if thread.name in {"daemon-http-writer", "polylogue-compute"} and thread.ident not in before
+                if thread.name == "daemon-http-writer" or thread.name.startswith("polylogue-compute_")
             }
-            if not remaining:
-                break
-            time.sleep(0.01)
-        assert not remaining
-        import asyncio
 
-        assert asyncio.run(harness.close()).clean
+        before = owned_threads()
+        server = harness.api_server(tmp_path)
+        try:
+            submitted = server.execution_kernel.submit(lambda: "completed")
+            assert submitted.future.result(timeout=2) == "completed"
+            created = owned_threads().keys() - before.keys()
+            assert created, "the shutdown witness must start a real executor worker"
+            shutdown = server.execution_kernel.shutdown
+            calls = 0
+
+            def counted_shutdown(**kwargs: object) -> None:
+                nonlocal calls
+                calls += 1
+                shutdown(**kwargs)
+
+            with patch.object(server.execution_kernel, "shutdown", side_effect=counted_shutdown):
+                server.server_close()
+                server.server_close()
+
+            assert calls == 1
+            assert server._owned_write_runtime is None
+            deadline = time.monotonic() + 2
+            remaining = owned_threads().keys() - before.keys()
+            while remaining and time.monotonic() < deadline:
+                time.sleep(0.01)
+                remaining = owned_threads().keys() - before.keys()
+            assert not remaining
+        finally:
+            assert asyncio.run(harness.close()).clean
 
     def test_server_close_preserves_borrowed_write_runtime(self, tmp_path: Path) -> None:
         from polylogue.daemon.http import _StandaloneWriteRuntime
