@@ -113,6 +113,12 @@ def _pytest_outcomes(aggregate: Mapping[str, Any]) -> dict[str, Any]:
     return projected
 
 
+#: Diagnoses that record a run stopped before it finished, whatever its exit
+#: code: the whole-verify signal handlers and the focused pytest runner. The
+#: one vocabulary both the result summary and the evidence receipt read.
+INTERRUPTED_DIAGNOSES: Final = frozenset({"verification_interrupted", "pytest_interrupted"})
+
+
 def _semantic_status(payload: Mapping[str, Any], verification_scope: str | None) -> str:
     if payload.get("status") == "running":
         return "running"
@@ -123,5 +129,5 @@ def _semantic_status(payload: Mapping[str, Any], verification_scope: str | None)
             "complete": "complete-passed",
             "non-test": "non-test-passed",
         }.get(verification_scope or "", "passed")
-    interrupted = exit_code == 130 or payload.get("diagnosis") in {"verification_interrupted", "pytest_interrupted"}
+    interrupted = exit_code == 130 or payload.get("diagnosis") in INTERRUPTED_DIAGNOSES
     return "interrupted" if interrupted else "failed"
