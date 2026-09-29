@@ -96,6 +96,18 @@ from polylogue.storage.sqlite.connection_profile import open_isolated_write_conn
 _T = TypeVar("_T")
 
 
+def _excised_member(
+    connection: sqlite3.Connection, publisher: ArchiveBlobPublisher, prepared: PreparedSourceRecord
+) -> bool:
+    """Whether a prepared container member's bytes are excised."""
+    from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+    blob_hash = prepared.record.blob_hash
+    if prepared.member.entry_ordinal is None or not blob_hash:
+        return False
+    return publication_refused(publisher, blob_hash) or is_blob_hash_excised(connection, bytes.fromhex(blob_hash))
+
+
 class IngestStoppedError(RuntimeError):
     def __init__(self, reason: str) -> None:
         self.reason = reason
@@ -708,6 +720,32 @@ class IngestExecution:
                     disposition=SourceItemMemberDisposition(prepared.disposition),
                     diagnostic=prepared.diagnostic,
                     observed_at_ms=observed_at_ms,
+                )
+            elif prepared is not None and _excised_member(connection, self.publisher, prepared):
+                # A container member whose bytes are excised -- refused by
+                # this page's flush, or excised since -- is a permanent skip
+                # of that one member, never an abort of the accepted ingest.
+                from polylogue.storage.sqlite.archive_tiers.source_items import (
+                    SourceItemMemberDisposition,
+                    record_source_item_member_disposition,
+                )
+
+                assert prepared.member.entry_ordinal is not None
+                record_source_item_member_disposition(
+                    connection,
+                    source_generation_id=prepared.member.source_generation_id,
+                    source_item_id=prepared.member.source_item_id,
+                    entry_ordinal=prepared.member.entry_ordinal,
+                    member_name=prepared.record.source_path,
+                    disposition=SourceItemMemberDisposition.REFUSED,
+                    diagnostic="content_excised",
+                    observed_at_ms=observed_at_ms,
+                )
+                emit(
+                    "ingest.accepted_input.content_excised",
+                    outcome="skipped",
+                    reason="content_excised",
+                    blob_hash=prepared.record.blob_hash,
                 )
             elif prepared is not None:
                 execute_source_item_admission(connection, prepared.admission, prepared.member)

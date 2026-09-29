@@ -79,8 +79,13 @@ def iter_antigravity_language_server_sessions(
     blob_root: Path | None = None,
     blob_store: BlobStore | None = None,
     only_cascade_ids: frozenset[str] | None = None,
+    excised: set[Path] | None = None,
 ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
     """Yield Antigravity language-server export sessions for a source.
+
+    ``excised`` collects the ``.pb`` paths whose raw snapshot was refused as
+    durably excised, so a caller settles them as a terminal skip rather than
+    as a retryable conversion failure.
 
     Primary acquisition route for the real ``.pb`` conversation trajectories
     under ``conversations/`` (polylogue-eo81): each is converted via the
@@ -171,6 +176,8 @@ def iter_antigravity_language_server_sessions(
                     path=str(outcome.source_path),
                     blob_hash=exc.blob_hash.hex(),
                 )
+                if excised is not None:
+                    excised.add(Path(outcome.source_path))
                 continue
             yield (raw_data, session)
     except antigravity.AntigravityBinaryUnavailableError as exc:

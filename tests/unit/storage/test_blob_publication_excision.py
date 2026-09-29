@@ -434,3 +434,86 @@ def test_retained_replay_writes_hold_the_publisher_slot_through_their_commit(tmp
         monkeypatch.undo()
 
     assert seen == [False, False]
+
+
+def test_membership_and_single_retained_writes_hold_the_publisher_slot(tmp_path: Path) -> None:
+    """Every retained write route orders itself against excision by the slot.
+
+    Anti-vacuity (Codex P1, #5696): leave membership classification (or the
+    single retained write) outside the exclusion and an excision can remove the
+    session between its checks and its commit, which the replay recreates.
+    """
+    import fcntl
+
+    import pytest
+
+    import polylogue.storage.sqlite.archive_tiers.archive as archive_module
+    from polylogue.storage.blob_publication import _writer_lock_path
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    lock_path = _writer_lock_path(root / "source.db")
+
+    def exclusion_available() -> bool:
+        with lock_path.open("a+b") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return True
+
+    seen: list[bool] = []
+
+    def observed(*_args: object, **_kwargs: object) -> object:
+        seen.append(exclusion_available())
+        return ("session", "raw")
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(archive_module, "apply_raw_membership_classification", observed)
+    monkeypatch.setattr(archive_module, "write_parsed_for_retained_raw", observed)
+    try:
+        with ArchiveStore(root, read_only=False) as store:
+            store.apply_raw_membership_classification("key", object(), {}, {}, acquired_at_ms=1)  # type: ignore[arg-type]
+            store.write_parsed_for_retained_raw(object(), raw_id="raw", source_path="s.jsonl", acquired_at_ms=1)  # type: ignore[arg-type]
+    finally:
+        monkeypatch.undo()
+
+    assert seen == [False, False]
+
+
+def test_an_excised_container_member_is_recognized_for_a_skip(tmp_path: Path) -> None:
+    """A ZIP member whose bytes are excised is skipped, never admitted.
+
+    Anti-vacuity (Codex P1, #5696): check only the top-level input and the
+    member reaches admission, whose blob-ref write raises and aborts the
+    accepted ingest on every retry.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.operations.daemon_ingest import _excised_member
+
+    payload = b"excised zip member"
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    with sqlite3.connect(root / "source.db") as source:
+        record_excised_blob_hash(
+            source,
+            blob_hash=hashlib.sha256(payload).digest(),
+            reason="synthetic excision",
+            actor="test",
+            excised_at_ms=1,
+        )
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+
+    def prepared(entry_ordinal: int | None) -> object:
+        return SimpleNamespace(
+            record=SimpleNamespace(blob_hash=hashlib.sha256(payload).hexdigest()),
+            member=SimpleNamespace(entry_ordinal=entry_ordinal),
+        )
+
+    with sqlite3.connect(root / "source.db") as source:
+        assert _excised_member(source, publisher, prepared(3)) is True  # type: ignore[arg-type]
+        assert _excised_member(source, publisher, prepared(None)) is False  # type: ignore[arg-type]

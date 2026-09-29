@@ -2149,19 +2149,20 @@ class ArchiveStore:
         revision_authoritative: bool = False,
     ) -> tuple[str, str]:
         self._require_writable("write retained source.db and index.db evidence")
-        return write_parsed_for_retained_raw(
-            self,
-            session,
-            raw_id=raw_id,
-            source_path=source_path,
-            acquired_at_ms=acquired_at_ms,
-            source_index=source_index,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            finalize_raw_parse=finalize_raw_parse,
-            revision_authoritative=revision_authoritative,
-        )
+        with self._retained_replay_exclusion(manage_transaction=manage_transaction):
+            return write_parsed_for_retained_raw(
+                self,
+                session,
+                raw_id=raw_id,
+                source_path=source_path,
+                acquired_at_ms=acquired_at_ms,
+                source_index=source_index,
+                stage_timings_s=stage_timings_s,
+                stage_timing_prefix=stage_timing_prefix,
+                manage_transaction=manage_transaction,
+                finalize_raw_parse=finalize_raw_parse,
+                revision_authoritative=revision_authoritative,
+            )
 
     def write_parsed_for_retained_raw_result(
         self,
@@ -2522,27 +2523,28 @@ class ArchiveStore:
         prepared_write: PreparedSessionWrite | None = None,
     ) -> str | None:
         self._require_writable("apply source.db membership classification")
-        return apply_raw_membership_classification(
-            self,
-            logical_source_key,
-            classification,
-            parsed_by_raw_id,
-            projections_by_raw_id,
-            acquired_at_ms=acquired_at_ms,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            bulk_fts=bulk_fts,
-            bulk_build=bulk_build,
-            fresh_build=fresh_build,
-            fresh_build_batch=fresh_build_batch,
-            defer_fts=defer_fts,
-            preacquired_attachment_blobs=preacquired_attachment_blobs,
-            preacquired_attachment_refs=preacquired_attachment_refs,
-            prepared_by_raw_id=prepared_by_raw_id,
-            prepared_required_raw_ids=prepared_required_raw_ids,
-            prepared_write=prepared_write,
-        )
+        with self._retained_replay_exclusion(manage_transaction=manage_transaction):
+            return apply_raw_membership_classification(
+                self,
+                logical_source_key,
+                classification,
+                parsed_by_raw_id,
+                projections_by_raw_id,
+                acquired_at_ms=acquired_at_ms,
+                stage_timings_s=stage_timings_s,
+                stage_timing_prefix=stage_timing_prefix,
+                manage_transaction=manage_transaction,
+                bulk_fts=bulk_fts,
+                bulk_build=bulk_build,
+                fresh_build=fresh_build,
+                fresh_build_batch=fresh_build_batch,
+                defer_fts=defer_fts,
+                preacquired_attachment_blobs=preacquired_attachment_blobs,
+                preacquired_attachment_refs=preacquired_attachment_refs,
+                prepared_by_raw_id=prepared_by_raw_id,
+                prepared_required_raw_ids=prepared_required_raw_ids,
+                prepared_write=prepared_write,
+            )
 
     def finalize_raw_parse_state(self, raw_id: str, *, state: RawSessionStateUpdate) -> None:
         self._require_writable("finalize source.db parse state")
