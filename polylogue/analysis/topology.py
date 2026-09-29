@@ -279,7 +279,7 @@ class SessionTopology(BaseModel):
                 break
         if parent_of is None:
             return ()
-        return tuple(
+        return tuple(dict.fromkeys(
             edge.child_id
             for edge in self.edges
             if edge.composable
@@ -287,7 +287,7 @@ class SessionTopology(BaseModel):
             and edge.parent_id is not None
             and str(edge.parent_id) == str(parent_of)
             and str(edge.child_id) != str(session_id)
-        )
+        ))
 
     def unresolved_edges(self) -> tuple[TopologyEdge, ...]:
         """Return only the unresolved (native-pointer-only) edges."""

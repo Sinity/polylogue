@@ -177,8 +177,8 @@ def test_seed_is_present_on_every_node_page(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     _seed_family(conn)
 
-    first = derive_compact_lineage(conn, _FORK, node_limit=2, node_offset=0)
-    second = derive_compact_lineage(conn, _FORK, node_limit=2, node_offset=1)
+    first = derive_compact_lineage(conn, _FORK, node_limit=1, node_offset=0)
+    second = derive_compact_lineage(conn, _FORK, node_limit=1, node_offset=1)
     last = derive_compact_lineage(conn, _FORK, node_limit=1, node_offset=99)
 
     for page in (first, second, last):
@@ -269,3 +269,62 @@ def test_compact_execution_reads_no_message_body(tmp_path: Path) -> None:
         # ``messages`` may only be counted or ordered by, never projected.
         if " from messages" in sql:
             assert "count(*)" in sql or "select position, variant_index" in sql, sql
+
+
+def test_w5_one_node_pages_advance_past_the_seed(tmp_path: Path) -> None:
+    """99.15: a one-node budget used to return zero non-seed nodes forever."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        _seed_family(conn)
+        offset = 0
+        seen: list[str] = []
+        for _ in range(2):
+            page = derive_compact_lineage(conn, _FORK, node_limit=1, node_offset=offset)
+            assert page is not None
+            assert page.node_page.returned == 1
+            seen.extend(str(node.session_id) for node in page.nodes if not node.is_seed)
+            offset += page.node_page.returned
+        assert set(seen) == {_PARENT, _SPAWNED}
+        assert len(seen) == len(set(seen))
+        assert not page.node_page.has_more
+    finally:
+        conn.close()
+
+
+def test_w5_deep_lineage_accounting_uses_no_python_recursion(tmp_path: Path) -> None:
+    """99.14: production accounting previously overflowed Python before its own depth guard."""
+    conn = _connect(tmp_path / "index.db")
+    try:
+        parent_id: str | None = None
+        parent_message_id: str | None = None
+        count = 1100
+        for depth in range(count):
+            native = f"w5-deep-{depth}"
+            child = write_parsed_session_to_archive(
+                conn,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id=native,
+                    messages=[_message("m", Role.USER, f"own message {depth}")],
+                ),
+            )
+            if parent_id is not None:
+                conn.execute("UPDATE sessions SET parent_session_id=? WHERE session_id=?", (parent_id, child))
+                conn.execute(
+                    "INSERT INTO session_links(src_session_id,dst_origin,dst_native_id,link_type,"
+                    "resolved_dst_session_id,branch_point_message_id,inheritance,status,confidence,evidence_json,observed_at_ms) "
+                    "VALUES (?, 'codex-session', ?, 'fork', ?, ?, 'prefix-sharing', NULL, 1.0, '[]', 0)",
+                    (child, f"w5-deep-{depth-1}", parent_id, parent_message_id),
+                )
+            parent_id = child
+            parent_message_id = str(conn.execute(
+                "SELECT message_id FROM messages WHERE session_id=? ORDER BY position LIMIT 1", (child,),
+            ).fetchone()[0])
+        conn.commit()
+        assert parent_id is not None
+        graph = derive_compact_lineage(conn, parent_id, node_limit=1, edge_limit=1)
+        assert graph is not None
+        assert graph.seed_node().accounting.status is LineageAccountingStatus.KNOWN
+        assert graph.seed_node().accounting.composed == count
+    finally:
+        conn.close()

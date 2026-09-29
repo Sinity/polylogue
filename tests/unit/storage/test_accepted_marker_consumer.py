@@ -73,7 +73,7 @@ def test_consumer_uses_retained_history_and_keeps_a_human_deletion(tmp_path: Pat
     frame = object()
 
     keys, next_cursor = adapter.required_page(frame, cursor=None, limit=20)
-    assert len(keys) == 1 and next_cursor is None
+    assert len(keys) == 1 and next_cursor == keys[0]
     replacement = adapter.compute(frame, keys[0])
     assert adapter.publish(frame, replacement) is True
 
@@ -249,3 +249,30 @@ def test_primary_barrier_holds_a_carrier_whose_session_awaits_publication(tmp_pa
 
     released = converge(DerivationRegistry([adapter]), frame, barrier=lambda sessions: set())
     assert released.done == 1
+
+
+def test_w5_one_convergence_sweep_delivers_all_accepted_marker_batches(tmp_path: Path) -> None:
+    """100.02: the terminal cursor on a one-item page previously delivered only the first batch."""
+    from polylogue.daemon.derivation import DerivationFrame, DerivationRegistry, Outcome, converge
+
+    source_db, user_db = tmp_path / "source.db", tmp_path / "user.db"
+    _new_user_tier(user_db)
+    for ordinal in range(3):
+        _append_source_batch(
+            source_db, raw_id=f"w5-{ordinal}",
+            candidate=_candidate_record(f"::note: batch {ordinal}", message_id=f"w5-m{ordinal}"),
+        )
+    adapter = _adapter(source_db, user_db)
+    frame = DerivationFrame(archive_root=str(tmp_path), source_revision="w5")
+    registry = DerivationRegistry([adapter])
+    held = converge(registry, frame, barrier=lambda sessions: {"source:w5-0"} & set(sessions))
+    assert held.done == 0
+    assert all(outcome.outcome is Outcome.PENDING for outcome in held.outcomes)
+    assert len(held.outcomes) == 1, "a held stream head must not loop or overtake its sequence"
+    delivered = converge(registry, frame, barrier=lambda sessions: set())
+    assert delivered.done == 3
+    assert delivered.count(Outcome.FAILED) == 0
+    with sqlite3.connect(user_db) as user:
+        assert user.execute("SELECT COUNT(*) FROM assertions").fetchone() == (3,)
+        assert user.execute("SELECT applied_sequence FROM accepted_marker_delivery_cursor").fetchone() == (3,)
+    assert converge(registry, frame).done == 0

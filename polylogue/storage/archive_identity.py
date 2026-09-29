@@ -92,14 +92,8 @@ def is_index_generation_member(path: Path) -> bool:
     so the canonical pointer would classify itself as a member.
     """
 
-    parts = path.absolute().parts
-    try:
-        depth = parts.index(GENERATIONS_DIRNAME)
-    except ValueError:
-        return False
-    # A direct child is `.index-generations/<name>` (one part after the root);
-    # anything deeper is inside a generation.
-    return len(parts) - depth > 2
+    absolute = path.absolute()
+    return absolute.name == "index.db" and absolute.parent.parent.name == GENERATIONS_DIRNAME
 
 
 def archive_root_for_index_path(index_path: Path) -> Path:
@@ -118,7 +112,7 @@ def archive_root_for_index_path(index_path: Path) -> Path:
     absolute = index_path.absolute()
     if not is_index_generation_member(absolute):
         return absolute.parent
-    return Path(*absolute.parts[: absolute.parts.index(GENERATIONS_DIRNAME)])
+    return absolute.parent.parent.parent
 
 
 def archive_file_set_root(*, archive_root: Path, db_path: Path) -> Path:
@@ -207,7 +201,7 @@ class ArchiveLocation:
             durable_tiers_are_links = [
                 tier.configured_path.is_symlink()
                 for tier in configured
-                if tier.name != "index" and tier.configured_path.exists()
+                if tier.name in {"source", "user", "audit"} and tier.configured_path.exists()
             ]
             root_is_symlink_farm = bool(durable_tiers_are_links) and all(durable_tiers_are_links)
             pointer_is_configured_symlink_target = (

@@ -49,7 +49,7 @@ _MAX_DEPTH = LINEAGE_ITERATIVE_DEPTH_LIMIT
 DEFAULT_PAGE_LIMIT = DEFAULT_LINEAGE_PAGE_LIMIT
 
 _ACCOUNTING_DANGLING = "branch point resolves to no stored message"
-_ACCOUNTING_DEPTH_LIMIT = "lineage chain exceeds the composition depth limit"
+_ACCOUNTING_UNREPRODUCIBLE = "lineage composition is cyclic or has an unresolved branch point"
 _ACCOUNTING_NOT_REQUESTED = "accounting not requested for this read"
 
 
@@ -269,34 +269,30 @@ class _CompositionShape:
         ).fetchone()
         return int(count[0])
 
-    def segments(self, session_id: str, _depth: int = 0) -> list[tuple[str, int]] | None:
-        """Composed transcript as ``(owning_session, length)`` runs, or ``None``.
-
-        ``None`` means composition is not reproducible from stored rows, which
-        is exactly when an accounting number would have to be invented.
-        """
-        if session_id in self._segments:
-            return self._segments[session_id]
-        if _depth >= _MAX_DEPTH:
-            self._segments[session_id] = None
-            return None
-        edge = self._prefix_edge(session_id)
-        if edge is None:
-            result: list[tuple[str, int]] | None = [(session_id, self._own_count(session_id))]
-            self._segments[session_id] = result
-            return result
-        parent_id, branch_point_message_id = edge
-        # Guard the recursion against a cyclic link before descending.
-        self._segments[session_id] = None
-        parent_segments = self.segments(parent_id, _depth + 1)
-        if parent_segments is None:
-            return None
-        prefix = self._truncate_at(parent_segments, branch_point_message_id)
-        if prefix is None:
-            return None
-        result = [*prefix, (session_id, self._own_count(session_id))]
-        self._segments[session_id] = result
-        return result
+    def segments(self, session_id: str) -> list[tuple[str, int]] | None:
+        """Compose counts with an explicit stack, refusing cycles or dangling cuts."""
+        pending: list[tuple[str, str, str]] = []
+        visiting: set[str] = set()
+        current = session_id
+        while current not in self._segments:
+            if current in visiting:
+                self._segments[current] = None
+                break
+            visiting.add(current)
+            edge = self._prefix_edge(current)
+            if edge is None:
+                self._segments[current] = [(current, self._own_count(current))]
+                break
+            parent_id, branch_point_message_id = edge
+            pending.append((current, parent_id, branch_point_message_id))
+            current = parent_id
+        for child_id, parent_id, branch_point_message_id in reversed(pending):
+            parent_segments = self._segments[parent_id]
+            prefix = None if parent_segments is None else self._truncate_at(parent_segments, branch_point_message_id)
+            self._segments[child_id] = (
+                None if prefix is None else [*prefix, (child_id, self._own_count(child_id))]
+            )
+        return self._segments[session_id]
 
     def _truncate_at(
         self, segments: Sequence[tuple[str, int]], branch_point_message_id: str
@@ -320,7 +316,7 @@ class _CompositionShape:
         parent_id, branch_point_message_id = edge
         parent_segments = self.segments(parent_id)
         if parent_segments is None:
-            return LineageMessageAccounting(status=LineageAccountingStatus.UNKNOWN, reason=_ACCOUNTING_DEPTH_LIMIT)
+            return LineageMessageAccounting(status=LineageAccountingStatus.UNKNOWN, reason=_ACCOUNTING_UNREPRODUCIBLE)
         prefix = self._truncate_at(parent_segments, branch_point_message_id)
         if prefix is None:
             return LineageMessageAccounting(status=LineageAccountingStatus.UNKNOWN, reason=_ACCOUNTING_DANGLING)
@@ -407,14 +403,14 @@ def derive_compact_lineage(
             )
         )
 
-    # Stable order, seed first: the seed occupies one slot of every page, so a
-    # caller paging by depth never loses the session it asked about.
+    # The seed accompanies every page; node_limit budgets the other nodes so
+    # even a one-node page can make progress through the family.
     nodes.sort(key=lambda node: (node.depth_from_root, str(node.session_id)))
     seed_node = next(node for node in nodes if node.is_seed)
     remainder = [node for node in nodes if not node.is_seed]
     node_window = (
         seed_node,
-        *_window(remainder, node_offset, None if node_limit is None else max(0, node_limit - 1)),
+        *_window(remainder, node_offset, node_limit),
     )
     # Accounting is the only per-node work, so it runs for the page the caller
     # asked for, not for the whole family behind it.

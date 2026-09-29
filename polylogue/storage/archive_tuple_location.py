@@ -256,6 +256,35 @@ class ArchiveTupleManifest:
     def from_dict(cls, payload: dict[str, object]) -> ArchiveTupleManifest:
         payload_any = cast(dict[str, Any], payload)
         try:
+            expected_keys = {
+                "manifest_version", "tuple_id", "owner_id", "archive_root", "archive_identity_digest",
+                "generations", "stable_identities", "ops_policy", "schema_fingerprints",
+                "semantic_fingerprints", "expected_seals", "state", "created_at_ns",
+                "manifest_digest", "manifest_seal",
+            }
+            if not isinstance(payload_any, dict) or set(payload_any) != expected_keys:
+                raise TypeError("manifest has missing or unknown fields")
+            integer_keys = {"manifest_version", "created_at_ns"}
+            object_keys = {
+                "generations", "stable_identities", "schema_fingerprints",
+                "semantic_fingerprints", "expected_seals",
+            }
+            for key in integer_keys:
+                if type(payload_any[key]) is not int:
+                    raise TypeError(f"manifest {key} must be an integer")
+            for key in expected_keys - integer_keys - object_keys:
+                if not isinstance(payload_any[key], str):
+                    raise TypeError(f"manifest {key} must be a string")
+            for key in object_keys:
+                value = payload_any[key]
+                if not isinstance(value, dict) or any(
+                    not isinstance(k, str) or not isinstance(v, str) for k, v in value.items()
+                ):
+                    raise TypeError(f"manifest {key} must be a string-valued object")
+            if set(payload_any["generations"]) != {"source", "index", "embeddings"}:
+                raise TypeError("manifest generations have missing or unknown fields")
+            if set(payload_any["stable_identities"]) != {"user", "audit"}:
+                raise TypeError("manifest stable identities have missing or unknown fields")
             generations = payload_any["generations"]
             stable = payload_any["stable_identities"]
             if not isinstance(generations, dict) or not isinstance(stable, dict):
@@ -279,7 +308,7 @@ class ArchiveTupleManifest:
                     sorted((str(k), str(v)) for k, v in dict(payload_any["semantic_fingerprints"]).items())
                 ),
                 expected_seals=tuple(sorted((str(k), str(v)) for k, v in dict(payload_any["expected_seals"]).items())),
-                state=str(payload_any.get("state", ArchiveTupleState.INACTIVE.value)),
+                state=payload_any["state"],
                 created_at_ns=int(payload_any["created_at_ns"]),
             )
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
@@ -314,6 +343,8 @@ def _validate_manifest_shape(manifest: ArchiveTupleManifest) -> None:
         raise ArchiveTupleError("archive tuple manifest has no archive identity")
     if set(dict(manifest.schema_fingerprints)) != {tier.value for tier in ArchiveTier}:
         raise ArchiveTupleError("archive tuple manifest schema inventory is incomplete")
+    if manifest.schema_fingerprints != _schema_fingerprints():
+        raise ArchiveTupleStaleError("archive tuple schema fingerprints differ from the current writer")
     if (
         dict(manifest.expected_seals).get("user") != manifest.user_identity
         or dict(manifest.expected_seals).get("audit") != manifest.audit_identity
@@ -466,6 +497,16 @@ def validate_inactive_destination(
         raise ArchiveTupleActiveError("inactive destination is the active tier")
     if path is not None and _absolute(path) != expected_path:
         raise ArchiveTuplePathError("writer path does not match its typed inactive destination")
+    try:
+        destination_stat = expected_path.lstat()
+    except FileNotFoundError:
+        destination_stat = None
+    except OSError as exc:
+        raise ArchiveTuplePathError("cannot inspect inactive tier destination") from exc
+    if destination_stat is not None and (
+        not stat.S_ISREG(destination_stat.st_mode) or destination_stat.st_nlink != 1
+    ):
+        raise ArchiveTuplePathError("inactive tier destination must be an unshared regular file")
     manifest_path = candidate / ARCHIVE_TUPLE_MANIFEST_FILENAME
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise ArchiveTuplePathError("inactive tuple manifest is missing or unsafe")
@@ -477,9 +518,18 @@ def validate_inactive_destination(
         raise ArchiveTupleForeignError("inactive destination owner or tuple identity mismatch")
     if manifest.manifest_digest != destination.manifest_digest:
         raise ArchiveTupleForeignError("inactive destination manifest digest mismatch")
-    current_identity = ArchiveIdentity.resolve_location(location)
+    manifest_generation = {
+        ArchiveTier.SOURCE: manifest.source_generation,
+        ArchiveTier.INDEX: manifest.index_generation,
+        ArchiveTier.EMBEDDINGS: manifest.embeddings_generation,
+    }[destination.tier]
+    if destination.generation_id != manifest_generation:
+        raise ArchiveTupleStaleError("inactive destination generation does not match its manifest")
+    current_identity = ArchiveIdentity.resolve_location(ArchiveLocation.resolve(location.configured_root))
     if manifest.archive_identity_digest != current_identity.authority_identity_digest:
         raise ArchiveTupleStaleError("active archive generation changed after tuple allocation")
+    if manifest.audit_identity != current_identity.tier("audit").stable_id:
+        raise ArchiveTupleStaleError("audit identity changed after tuple allocation")
     if manifest.state != ArchiveTupleState.INACTIVE.value:
         raise ArchiveTupleActiveError("inactive destination is no longer inactive")
 
@@ -500,8 +550,12 @@ def validate_inactive_tuple(
         raise ArchiveTuplePathError("tuple candidate root must be absolute")
     if tuple_location.manifest_path != tuple_location.candidate_root / ARCHIVE_TUPLE_MANIFEST_FILENAME:
         raise ArchiveTuplePathError("tuple manifest path is not canonical")
+    if expected_tier is not None:
+        # The writer must have a destination in this tuple, but the complete
+        # tuple still contains (and validates) the other candidate tiers.
+        tuple_location.destination(expected_tier)
     for destination in tuple_location.destinations:
-        validate_inactive_destination(destination, location, expected_tier=expected_tier)
+        validate_inactive_destination(destination, location)
 
 
 class ArchiveTupleAllocator:
@@ -515,6 +569,7 @@ class ArchiveTupleAllocator:
             raise ArchiveTuplePathError("archive tuple root is not an owned directory")
         self.tuples_root.mkdir(mode=0o700, parents=True, exist_ok=True)
         _assert_no_symlink_ancestry(self.tuples_root, label="archive tuple root")
+        _fsync_directory(self.archive_root)
 
     @classmethod
     def for_archive_root(cls, archive_root: Path) -> ArchiveTupleAllocator:
@@ -548,6 +603,7 @@ class ArchiveTupleAllocator:
             except FileExistsError:
                 continue
             try:
+                _fsync_directory(self.tuples_root)
                 manifest = ArchiveTupleManifest.for_location(
                     self.location,
                     tuple_id=tuple_id,
@@ -600,8 +656,11 @@ def allocate_inactive_archive_tuple(
 def is_archive_tuple_candidate_path(path: Path) -> bool:
     """Whether a path is lexically below an archive tuple reservation root."""
 
-    absolute = _absolute(path)
-    return ARCHIVE_TUPLES_DIRNAME in absolute.parts
+    parts = _absolute(path).parts
+    return any(
+        parent == ARCHIVE_TUPLES_DIRNAME and _TUPLE_ID.fullmatch(child) is not None
+        for parent, child in zip(parts, parts[1:])
+    )
 
 
 __all__ = [

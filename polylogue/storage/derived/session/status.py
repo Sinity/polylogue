@@ -44,9 +44,9 @@ _VIEW_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # else is missing, and their bodies select through the substrate relations
     # named here -- an ungated read of one raised ``no such table:
     # session_events`` from a status call on an archive that had not built them.
-    "session_runs": ("messages", "blocks", "session_events"),
-    "session_observed_events": ("messages", "blocks", "session_events"),
-    "session_context_snapshots": ("messages", "blocks", "session_events"),
+    "session_runs": ("sessions",),
+    "session_observed_events": ("sessions", "messages", "blocks"),
+    "session_context_snapshots": ("sessions", "messages", "session_events"),
 }
 
 
