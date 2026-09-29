@@ -515,6 +515,15 @@ MESSAGES_SPEC = _make_table_spec(
             record_name="content_hash",
             select_expression="lower(hex({alias}.content_hash))",
         ),
+        # The digest of the message's own fields (text, role, model, ...) that
+        # ``content_hash`` folds in beside its identity and its blocks. Kept so
+        # a row moved or copied outside the parse that produced it -- a
+        # materialized prefix, a shifted tail, a field-path merge -- gets the
+        # exact hash a replay of that message computes, with no text column.
+        _raw_column(
+            "fields_digest",
+            "fields_digest BLOB CHECK(fields_digest IS NULL OR length(fields_digest) = 32)",
+        ),
         _raw_column(
             "occurred_at_ms",
             "occurred_at_ms INTEGER",
