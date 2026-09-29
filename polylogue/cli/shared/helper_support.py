@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 import click
 
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
+
+if TYPE_CHECKING:
+    from polylogue.cli.operation_kernel import OperationIndeterminateError
 
 
 class DaemonRequiredError(click.ClickException):
@@ -42,6 +45,25 @@ class DaemonRequiredError(click.ClickException):
         super().__init__(detail)
 
 
+class OperationIndeterminateRefusal(click.ClickException):
+    """A write the daemon accepted whose outcome never came back.
+
+    ``recovery`` is the operation's declared recovery
+    (:class:`~polylogue.operations.daemon_protocol.DaemonRecovery`) and travels
+    to machine callers as ``details.recovery`` beside the unresolved
+    ``request_id``, so a client settles the write without parsing prose.
+    """
+
+    #: Matched against ``machine_errors.OPERATION_INDETERMINATE``.
+    code = "operation_indeterminate"
+
+    def __init__(self, detail: str, *, operation: str, recovery: str, request_id: str | None) -> None:
+        self.operation = operation
+        self.recovery = recovery
+        self.request_id = request_id
+        super().__init__(detail)
+
+
 def mutation_refusal(exc: Exception, operation: str) -> click.ClickException:
     """Translate one typed operation failure into the CLI's refusal voice.
 
@@ -67,10 +89,7 @@ def mutation_refusal(exc: Exception, operation: str) -> click.ClickException:
         # Deliberately NOT a daemon-required refusal: the daemon accepted the
         # request, so the write may have happened. Telling the operator to
         # start a daemon and retry would invite a duplicate mutation.
-        return click.ClickException(
-            f"{operation} outcome is indeterminate after the daemon accepted the request; "
-            "do not retry offline, inspect daemon audit state before retrying"
-        )
+        return indeterminate_refusal(exc, operation)
     if isinstance(exc, OperationUnavailableError):
         return DaemonRequiredError(
             f"daemon is unavailable; it must execute {operation}. Start one with `polylogued run` "
@@ -80,6 +99,34 @@ def mutation_refusal(exc: Exception, operation: str) -> click.ClickException:
     if isinstance(exc, OperationFailedError):
         return click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}")
     return click.ClickException(f"{operation} failed: {exc}")
+
+
+def indeterminate_refusal(exc: OperationIndeterminateError, operation: str) -> OperationIndeterminateRefusal:
+    """Name the declared way to settle a write whose outcome never came back.
+
+    The recovery is the operation's own declaration
+    (:attr:`~polylogue.operations.daemon_protocol.DaemonOperationSpec.recovery`),
+    so a request the daemon recorded durably is settled by replaying its id and
+    any other write is never resent blindly.
+    """
+    from polylogue.operations.daemon_protocol import DaemonRecovery, daemon_operation_spec
+
+    spec = daemon_operation_spec(operation)
+    recovery = spec.recovery if spec is not None else DaemonRecovery.RECONCILE
+    request = f"request {exc.request_id}" if exc.request_id else "the request"
+    if recovery is DaemonRecovery.AWAIT_REQUEST:
+        remedy = f"the daemon recorded {request}; resubmitting its id replays the outcome without executing again"
+    else:
+        remedy = (
+            f"do not retry {request}: the daemon settles the attempt from durable evidence, "
+            "so read the target's state before issuing a new request"
+        )
+    return OperationIndeterminateRefusal(
+        f"{operation} outcome is indeterminate after the daemon accepted the request; {remedy}",
+        operation=operation,
+        recovery=recovery.value,
+        request_id=exc.request_id,
+    )
 
 
 def fail(command: str, message: str) -> NoReturn:
@@ -92,4 +139,11 @@ def load_effective_config(env: AppEnv) -> Config:
     return env.config
 
 
-__all__ = ["DaemonRequiredError", "fail", "load_effective_config", "mutation_refusal"]
+__all__ = [
+    "DaemonRequiredError",
+    "OperationIndeterminateRefusal",
+    "fail",
+    "indeterminate_refusal",
+    "load_effective_config",
+    "mutation_refusal",
+]

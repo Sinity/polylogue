@@ -65,10 +65,33 @@ def _argv_demo_seed(root: Path, scratch: Path) -> tuple[str, ...]:
     return ("demo", "seed", "--root", str(root))
 
 
+def _argv_demo_receipts(root: Path, scratch: Path) -> tuple[str, ...]:
+    del scratch
+    return ("demo", "receipts", "--root", str(root), "--seed")
+
+
+def _argv_demo_tour(root: Path, scratch: Path) -> tuple[str, ...]:
+    return ("demo", "tour", "--out-dir", str(scratch / "tour"), "--root", str(root), "--no-force")
+
+
 #: ``(id, argv builder, archive state the row needs, machine-format argv tail)``.
 _OFFLINE_WRITERS: tuple[tuple[str, Callable[[Path, Path], tuple[str, ...]], str, tuple[str, ...]], ...] = (
-    ("demo-seed", _argv_demo_seed, _NEEDS_NOTHING, ("--format", "json")),
+    ("demo seed", _argv_demo_seed, _NEEDS_NOTHING, ("--format", "json")),
+    ("demo receipts", _argv_demo_receipts, _NEEDS_NOTHING, ("--format", "json")),
+    ("demo tour", _argv_demo_tour, _NEEDS_NOTHING, ("--format", "json")),
 )
+
+
+def test_rows_are_exactly_the_declared_offline_writers() -> None:
+    """The production declaration and this matrix name the same commands.
+
+    Anti-vacuity: declare a new offline writer in ``CLI_OFFLINE_WRITERS``
+    without a row here (or drop one) and this is red, so no in-process writer
+    is declared without its refusal proof.
+    """
+    from polylogue.cli.operation_bindings import CLI_OFFLINE_WRITERS
+
+    assert {row[0] for row in _OFFLINE_WRITERS} == set(CLI_OFFLINE_WRITERS)
 
 
 @pytest.fixture

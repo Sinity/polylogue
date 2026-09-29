@@ -44,6 +44,33 @@ class DaemonFallback(StrEnum):
     NEVER = "never"
 
 
+class DaemonAuthorization(StrEnum):
+    """What a request must present before a mutating operation executes."""
+
+    #: The principal's capability is the whole authorization.
+    NONE = "none"
+    #: The request carries ``confirm=true``; the daemon then prepares and
+    #: authorizes its own preview inside the one execution.
+    CONFIRMATION = "confirmation"
+    #: The request consumes exact daemon-issued preview or authorization
+    #: references; target, generation, plan or body drift since issue refuses.
+    PREVIEW = "preview"
+
+
+class DaemonRecovery(StrEnum):
+    """How a client settles an operation whose outcome it never received."""
+
+    #: A read: sending the request again is safe.
+    RETRY = "retry"
+    #: A durable request record exists: ``operation.await`` or resubmitting
+    #: the same request id replays the recorded outcome and never re-executes.
+    AWAIT_REQUEST = "await-request"
+    #: No durable request record: never resend blindly. Daemon startup settles
+    #: an interrupted attempt from durable evidence; read the target's state
+    #: before issuing a new request.
+    RECONCILE = "reconcile"
+
+
 DAEMON_OPERATION_OUTCOMES = frozenset(
     {
         *(status.value for status in OperationStatus),
@@ -1339,10 +1366,27 @@ class DaemonOperationSpec:
         "disconnected-after-acceptance",
         "indeterminate",
     )
+    authorization: DaemonAuthorization = DaemonAuthorization.NONE
+    """What a request must present before this operation executes."""
+    durable_request: bool = False
+    """The handler records every request under its id before any effect and
+    answers a repeat of that id from the record, without an accepted
+    reference. Implied by ``accepted_reference``."""
+
+    @property
+    def recovery(self) -> DaemonRecovery:
+        """How a client settles this operation when its outcome is lost."""
+        if self.authority is DaemonAuthority.READ:
+            return DaemonRecovery.RETRY
+        if self.accepted_reference or self.durable_request:
+            return DaemonRecovery.AWAIT_REQUEST
+        return DaemonRecovery.RECONCILE
 
     def __post_init__(self) -> None:
         if self.request_model is _OperationPayload or self.result_model is _OperationResult:
             raise ValueError("operation declarations require concrete request and result models")
+        if self.authority is DaemonAuthority.READ and self.authorization is not DaemonAuthorization.NONE:
+            raise ValueError("a read operation carries no authorization binding")
         if not self.handler:
             object.__setattr__(self, "handler", self.name.replace(".", "_"))
         if self.request_type and self.result_type:
@@ -1375,6 +1419,8 @@ class DaemonOperationSpec:
             "idempotent": self.idempotent,
             "handler": self.handler,
             "cancellation_outcomes": list(self.cancellation_outcomes),
+            "authorization": self.authorization.value,
+            "recovery": self.recovery.value,
         }
 
 
@@ -2198,6 +2244,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="MutationResult",
         request_model=DeletePreviewRequest,
         result_model=MutationResult,
+        durable_request=True,
     ),
     DaemonOperationSpec(
         "mutation.session.delete.authorize",
@@ -2215,6 +2262,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="MutationResult",
         request_model=DeleteAuthorizeRequest,
         result_model=MutationResult,
+        authorization=DaemonAuthorization.PREVIEW,
+        durable_request=True,
     ),
     DaemonOperationSpec(
         "mutation.session.delete.cancel",
@@ -2231,6 +2280,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="MutationResult",
         request_model=DeleteCancelRequest,
         result_model=MutationResult,
+        authorization=DaemonAuthorization.PREVIEW,
+        durable_request=True,
     ),
     DaemonOperationSpec(
         "mutation.session.delete.execute",
@@ -2248,6 +2299,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="MutationResult",
         request_model=DeleteExecuteRequest,
         result_model=MutationResult,
+        authorization=DaemonAuthorization.PREVIEW,
     ),
     DaemonOperationSpec(
         "mutation.session.tag",
@@ -2276,6 +2328,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_type="MutationResult",
         request_model=SessionMetadataRequest,
         result_model=MutationResult,
+        durable_request=True,
     ),
     DaemonOperationSpec(
         "mutation.session.mark",
@@ -2384,6 +2437,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=SessionExcisionRequest,
         result_model=MutationResult,
         handler="mutation_session_excision",
+        authorization=DaemonAuthorization.CONFIRMATION,
     ),
     DaemonOperationSpec(
         "mutation.session.lifecycle-request",
@@ -2398,6 +2452,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=SessionLifecycleRequest,
         result_model=MutationResult,
         handler="mutation_session_lifecycle_request",
+        authorization=DaemonAuthorization.CONFIRMATION,
     ),
     DaemonOperationSpec(
         "mutation.identity-reset",
@@ -2420,6 +2475,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=IdentityResetRequest,
         result_model=MutationResult,
         handler="mutation_identity_reset",
+        authorization=DaemonAuthorization.CONFIRMATION,
     ),
     DaemonOperationSpec(
         "mutation.raw-authority-blocker.resolve",
@@ -2434,6 +2490,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=RawAuthorityBlockerResolveRequest,
         result_model=MutationResult,
         handler="mutation_raw_authority_blocker_resolve",
+        authorization=DaemonAuthorization.CONFIRMATION,
     ),
     DaemonOperationSpec(
         "maintenance.reset",
@@ -2449,6 +2506,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=ResetRequest,
         result_model=MutationResult,
         handler="maintenance_reset",
+        authorization=DaemonAuthorization.CONFIRMATION,
     ),
     DaemonOperationSpec(
         "maintenance.blob-publications.abandon",
@@ -2463,6 +2521,7 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         request_model=BlobPublicationsAbandonRequest,
         result_model=MutationResult,
         handler="maintenance_blob_publications_abandon",
+        authorization=DaemonAuthorization.CONFIRMATION,
     ),
     DaemonOperationSpec(
         "maintenance.demo.augment",

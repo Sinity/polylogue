@@ -115,6 +115,7 @@ def running_daemon_operations(
     compute_workers: int = 2,
     compute_queue_units: int = 4,
     socket_path: Path | None = None,
+    session_derivation: bool = False,
 ) -> Iterator[DaemonOperationStack]:
     """Start one real machine operation stack rooted at ``archive_root``.
 
@@ -156,8 +157,21 @@ def running_daemon_operations(
     kernel = BoundedComputeAdapter(
         max_workers=compute_workers, queue_units=compute_queue_units, thread_name_prefix="test-daemon-operation"
     )
+    session_maintenance = None
+    if session_derivation:
+        from time import time
+
+        from polylogue.daemon.session_profile_composition import compose_session_profile_callback
+
+        session_maintenance = compose_session_profile_callback(
+            archive_root, compute_adapter=kernel, write_bridge=bridge, now=time
+        ).maintenance
     runtime = DaemonOperationRuntime(
-        archive_root, write_bridge=bridge, execution_kernel=kernel, owner_loop=bridge.owner_loop
+        archive_root,
+        write_bridge=bridge,
+        execution_kernel=kernel,
+        owner_loop=bridge.owner_loop,
+        session_maintenance=session_maintenance,
     )
     server = DaemonAPIUnixHTTPServer(
         socket_path,
@@ -204,6 +218,7 @@ def cli_daemon_archive(
     *,
     seed_archive: Callable[[Path], None] | None = None,
     home: Path | None = None,
+    session_derivation: bool = False,
 ) -> Iterator[DaemonOperationStack]:
     """Run a real daemon and point the CLI's mutation route at it.
 
@@ -222,7 +237,9 @@ def cli_daemon_archive(
     """
 
     archive_root = archive_root.resolve()
-    with running_daemon_operations(archive_root, seed_archive=seed_archive) as stack:
+    with running_daemon_operations(
+        archive_root, seed_archive=seed_archive, session_derivation=session_derivation
+    ) as stack:
         monkeypatch.setattr("polylogue.daemon.socket_path.daemon_socket_path", lambda _root: stack.socket_path)
         monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root))
         monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
