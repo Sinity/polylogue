@@ -330,3 +330,54 @@ def test_a_source_key_named_like_probe_metadata_stays_on_the_object_parser() -> 
         b'{"id":"p","__admission_future_type":"future_x","chunkedPrompt":{"chunks":[{"role":"user","text":"hello"}]}}'
     )
     assert drive_chunked_prompt_envelope(BytesIO(document)) is None
+
+
+def test_chunked_prompt_keeps_ordering_and_branch_rows_in_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ambiguous, prompt-declared and single-parent branch children match the parser.
+
+    The streamed route writes its per-message ordering rows to the artifact's
+    scratch database, never to a resident in-memory one, and drops them
+    before sealing.
+    """
+    chunks = [
+        {"id": "a", "role": "user", "text": "Neutral a", "createTime": "2026-01-01T00:00:02+02:00"},
+        {"id": "b", "role": "model", "text": "Neutral b", "branchChildren": ["c", {"id": "d"}]},
+        {"id": "e", "role": "model", "text": "Neutral e", "branchChildren": [{"messageId": "d"}]},
+        {"id": "c", "role": "user", "text": "Neutral c", "createTime": "2026-01-01T00:00:01Z"},
+        {"id": "d", "role": "user", "text": "Neutral d"},
+        {"id": "f", "role": "model", "text": "Neutral f", "branchParent": {"promptId": "other-prompt"}},
+        {"id": "g", "role": "user", "text": "Neutral g", "branchChildren": [{"promptId": "a"}]},
+    ]
+    payload = {"id": "neutral-branches", "chunkedPrompt": {"chunks": chunks}}
+    source = tmp_path / "prompt.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    expected = _expected(Provider.DRIVE, payload, source)
+    assert expected.parent_session_provider_id == "other-prompt"
+    parents = {message.provider_message_id: message.parent_message_provider_id for message in expected.messages}
+    assert parents["c"] == "b"
+    assert parents["d"] is None  # declared under two parents
+
+    _refuse_whole_document(monkeypatch)
+
+    def refuse_memory(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("streamed preparation opened a resident scratch database")
+
+    monkeypatch.setattr("polylogue.sources.parsers.drive.sqlite3.connect", refuse_memory)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.DRIVE.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    [actual] = artifact.iter_sessions()
+    assert artifact.shard_path is not None
+    _assert_same_publication(actual, expected, artifact.shard_path, tmp_path)
+    assert artifact.sessions_path is not None
+    with sqlite3.connect(artifact.sessions_path) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert not {table for table in tables if table.startswith("drive_")}

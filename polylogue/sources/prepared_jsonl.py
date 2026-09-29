@@ -1474,6 +1474,7 @@ def prepare_jsonl_blob(
                     messages=store.new_sink(),
                     session_events=store.new_event_sink(),
                     attachments=store.new_attachment_sink(),
+                    scratch=store.conn,
                 )
             session_count = 0
             if session is not None and require_positive_conversational_evidence(

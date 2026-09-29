@@ -3062,7 +3062,7 @@ def _aistudio_drive_spec() -> OriginSpec:
             message_parent=TopologyCapability(
                 "carried",
                 (
-                    "drive._branch_parent_message_provider_id/_branch_child_parent_map -> ParsedMessage.parent_message_provider_id; only id/messageId are local message evidence",
+                    "drive._branch_parent_message_provider_id/_ChunkOrder.branch_parent -> ParsedMessage.parent_message_provider_id; only id/messageId are local message evidence",
                 ),
             ),
             message_branch_state=TopologyCapability(
