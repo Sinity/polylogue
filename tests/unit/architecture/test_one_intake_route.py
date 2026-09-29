@@ -56,6 +56,11 @@ RETIRED_NAMES = {
     "drain_hook_event_spool": "watcher hook-spool drain",
     "FairAdmissionScheduler": "the unwired source-admission round-robin scheduler",
     "AdmissionFailure": "the unwired source-admission round-robin scheduler",
+    "AdmissionState": "the unpersisted source-admission receipt state machine",
+    "AdmissionReceipt": "the unpersisted source-admission receipt state machine",
+    "AdmissionAttempt": "the unpersisted source-admission receipt state machine",
+    "ContinuationDecision": "the unpersisted source-admission receipt state machine",
+    "SemanticFrontier": "the unpersisted source-admission receipt state machine",
 }
 
 
