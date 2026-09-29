@@ -63,6 +63,11 @@ class _EmbeddingStatusEnv:
     config: Config
 
 
+#: Pause between same-id cancel attempts while a submission is not yet
+#: registered with the daemon.
+_CANCEL_RETRY_INTERVAL_S = 0.05
+
+
 async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dict[str, object]) -> str:
     """Submit a privileged request to the resident daemon only."""
     from polylogue.daemon.api_auth import resolve_api_auth_token
@@ -101,13 +106,19 @@ async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dic
         response = await asyncio.shield(submission)
     except asyncio.CancelledError:
         # Cancelling the await cannot stop the transport thread, which may
-        # still be submitting. Signal the daemon by the same request id at
-        # once, as the CLI does on interrupt, then join the thread and signal
-        # again in case the request was accepted after the first cancel. The
-        # daemon, not a blind client retry, decides the outcome; the caller
-        # still sees the cancellation.
-        with suppress(Exception):
-            await asyncio.to_thread(client.cancel, request_id, archive_root=archive_root)
+        # still be submitting. Cancel the same request id, as the CLI does on
+        # interrupt. The daemon keeps no cancellation for an id it has not
+        # registered yet, so retry while the submission is outstanding, then
+        # join the thread and cancel once more in case it was accepted last.
+        # The daemon, not a blind client retry, decides the outcome; the
+        # caller still sees the cancellation.
+        while not submission.done():
+            try:
+                await asyncio.to_thread(client.cancel, request_id, archive_root=archive_root)
+            except Exception:
+                await asyncio.wait({submission}, timeout=_CANCEL_RETRY_INTERVAL_S)
+                continue
+            break
         with suppress(Exception):
             await asyncio.shield(submission)
         with suppress(Exception):

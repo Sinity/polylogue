@@ -1208,17 +1208,19 @@ async def test_cancelled_daemon_submission_cancels_the_same_request(
     """A cancelled MCP call waits for its transport thread and cancels that request.
 
     Anti-vacuity: awaiting ``asyncio.to_thread`` directly abandons the thread
-    on cancellation, so no ``operation.cancel`` names its request id; waiting
-    for the blocked submission before the first cancel never sets
-    ``cancel_sent`` and the test times out on it.
+    on cancellation, so no ``operation.cancel`` names its request id; giving
+    up after one cancel refused as unregistered, or joining the submission
+    before a cancel lands, never sets ``cancel_sent`` while it is blocked.
     """
     import asyncio
     import threading
+    import time
     from types import SimpleNamespace
 
     from polylogue.mcp import server_cutover
 
     submitted = threading.Event()
+    registered = threading.Event()
     release = threading.Event()
     cancel_sent = threading.Event()
     calls: list[tuple[str, str | None]] = []
@@ -1231,11 +1233,17 @@ async def test_cancelled_daemon_submission_cancels_the_same_request(
             self, operation: str, payload: object, *, archive_root: str, request_id: str
         ) -> dict[str, object]:
             submitted.set()
+            # The daemon registers the request id a moment after the POST
+            # starts; a cancel before that finds no such request.
+            time.sleep(0.2)
+            registered.set()
             release.wait(timeout=10)
             calls.append((operation, request_id))
             return {"outcome": "accepted", "request_id": request_id}
 
         def cancel(self, request_id: str, *, archive_root: str) -> dict[str, object]:
+            if not registered.is_set():
+                raise RuntimeError("operation_reference_unknown")
             calls.append(("operation.cancel", request_id))
             cancel_sent.set()
             return {"outcome": "completed"}
@@ -1257,7 +1265,8 @@ async def test_cancelled_daemon_submission_cancels_the_same_request(
     with pytest.raises(asyncio.CancelledError):
         await task
 
-    # The first cancel is sent while the submission is still blocked, the
-    # second after it returned; every call names the same request.
+    # A cancel reaches the daemon while the submission is still blocked --
+    # after it registered, before it returned -- and again once it returned;
+    # every call names the same request.
     assert [name for name, _ in calls] == ["operation.cancel", "maintenance.insights.rebuild", "operation.cancel"]
     assert len({request_id for _, request_id in calls}) == 1
