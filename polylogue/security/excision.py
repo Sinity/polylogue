@@ -136,6 +136,7 @@ from polylogue.storage.accepted_marker_inputs import (
     excise_marker_input_targets_sync,
     marker_input_excision_targets_sync,
 )
+from polylogue.storage.blob_gc_index_watermark import index_liveness_authority_blocker
 from polylogue.storage.blob_liveness import LivenessState, inspect_session_blob_reference
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
@@ -1196,9 +1197,14 @@ def _apply_single_session_excision(
         conn = _connect_rw(source_db, archive_root=archive_root)
         conn.execute("PRAGMA foreign_keys = ON")
         # The live batch records attachments only in the index; read it to
-        # find another session's reference to a blob this session owned.
+        # find another session's reference to a blob this session owned. A
+        # replacement index that has not re-materialized cannot prove that
+        # nobody else references a hash, so marking one is refused then.
         index_conn = _connect_ro(index_db) if index_db.exists() else None
         try:
+            index_authority_blocker = index_liveness_authority_blocker(
+                blob_root=archive_root / "blob", index_path=index_db, index_conn=index_conn, record=False
+            )
             #: Every blob hash this session's deleted rows named, with the
             #: first row that named it as the marker's prior revision.
             owned_hashes: dict[bytes, str | None] = {}
@@ -1339,6 +1345,7 @@ def _apply_single_session_excision(
                         blob_hash,
                         index_conn=index_conn,
                         excluding_session_ids=frozenset({session_id}),
+                        index_authority_blocker=index_authority_blocker,
                     )
                     if reference.state is LivenessState.BLOCKED:
                         raise ExcisionBlobReferenceUnknownError(blob_hash=blob_hash, blockers=reference.blockers)

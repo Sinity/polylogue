@@ -116,11 +116,6 @@ _HASHED_FIELDS: dict[str, frozenset[str]] = {
     ),
 }
 
-#: Session-event payload keys kept as evidence but excluded from every event
-#: hash, by event type, with the reason. Gemini thought signatures leave the
-#: hashed block for session evidence (``drive_support_blocks``); they are
-#: provider attestations re-issued on replay, like a block ``signature``, so a
-#: signature-only change must not move the session or event identity.
 #: Session-event families whose payload names a tool-result sidecar. Both
 #: carry the same ``{acquisition_status, tool_use_id, content_replaced}``
 #: payload shape, and the ingest batch publishes each matched sidecar's text
@@ -136,6 +131,12 @@ _SIDECAR_LOCATOR_KEYS: dict[str, str] = {
     "blob_refusal": "typed refusal to republish durably excised sidecar bytes, added after identity binding",
 }
 SIDECAR_LOCATOR_KEYS: frozenset[str] = frozenset(_SIDECAR_LOCATOR_KEYS)
+
+#: Session-event payload keys kept as evidence but excluded from every event
+#: hash, by event type, with the reason. Gemini thought signatures leave the
+#: hashed block for session evidence (``drive_support_blocks``); they are
+#: provider attestations re-issued on replay, like a block ``signature``, so a
+#: signature-only change must not move the session or event identity.
 _EVENT_PAYLOAD_EXCLUDED_KEYS: dict[str, dict[str, str]] = {
     "gemini_thinking_evidence": {
         "thoughtSignature": "provider cryptographic signatures are re-issued on replay",

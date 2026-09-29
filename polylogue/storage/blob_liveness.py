@@ -313,6 +313,7 @@ def inspect_session_blob_reference(
     *,
     index_conn: sqlite3.Connection | None,
     excluding_session_ids: frozenset[str],
+    index_authority_blocker: str | None = None,
 ) -> BlobLiveness:
     """Whether a session outside ``excluding_session_ids`` still references a blob.
 
@@ -331,7 +332,10 @@ def inspect_session_blob_reference(
 
     ``blocked`` means the answer cannot be decided (an unknown ``blob_refs``
     type, a missing owner table), and the caller must refuse rather than
-    guess in either direction.
+    guess in either direction. ``index_authority_blocker`` names why the
+    index cannot currently prove absence (see
+    :mod:`polylogue.storage.blob_gc_index_watermark`); as in
+    :func:`inspect_blob_liveness`, it blocks only a hash no surface claims.
     """
     blockers = _source_global_blockers(source_conn)
     if index_conn is not None:
@@ -359,6 +363,8 @@ def inspect_session_blob_reference(
         return BlobLiveness(LivenessState.BLOCKED, blockers=(f"blob reference query is unreadable: {exc}",))
     if surfaces:
         return BlobLiveness(LivenessState.LIVE, tuple(dict.fromkeys(surfaces)))
+    if index_authority_blocker is not None:
+        return BlobLiveness(LivenessState.BLOCKED, blockers=(index_authority_blocker,))
     return BlobLiveness(LivenessState.UNREFERENCED)
 
 
