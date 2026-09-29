@@ -635,7 +635,7 @@ def _parse_claude_fallback_envelope(
         session_kind=_session_kind_for_browser_capture(envelope, provider_session_id),
         created_at=created_at,
         updated_at=updated_at,
-        messages=normalized.messages,
+        messages=list(normalized.messages),
         active_leaf_message_provider_id=normalized.active_leaf_message_provider_id,
         attachments=attachments,
         session_events=[*normalized.session_events, *_capture_session_events(envelope)],

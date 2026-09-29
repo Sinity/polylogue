@@ -159,6 +159,8 @@ def run_machine_entry(
             archive_root=exc.archive_root,
         ).emit(exit_code=exc.exit_code)
     except OperationUnavailableError as exc:
+        from polylogue.cli.render.outcome import FAILED_READ_EXIT_CODE
+
         # The kernel's own daemon-absent refusal. It is a RuntimeError rather
         # than a ClickException, so without this branch it reached the generic
         # handler and emitted ``runtime_error`` -- the precise flattening the
@@ -171,7 +173,7 @@ def run_machine_entry(
             command=command,
             operation=exc.operation,
             archive_root=exc.archive_root,
-        ).emit(exit_code=2)
+        ).emit(exit_code=FAILED_READ_EXIT_CODE)
     except click.ClickException as exc:
         error_runtime(
             exc.format_message(),

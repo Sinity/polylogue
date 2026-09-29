@@ -17,6 +17,7 @@ from pathlib import Path
 
 from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, BoundedMemberReport, ZipAdmission
 from polylogue.config import Source
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_raw_id, zip_member_source_index
 from polylogue.logging import WARNING, emit
@@ -146,28 +147,33 @@ def iter_retained_source_records(
             if provider is Provider.UNKNOWN:
                 entry_provider = declared_artifact_provider(entry.filename) or provider
             context = ZipEntryReadContext(source, logical_path, entry, None, entry_provider, blob_store)
-            for data in iter_zip_entry_raw_data(archive, context):
-                split = data.source_index or 0
-                mode = data.addressing_mode
-                if mode not in {MemberAddressingMode.WHOLE_MEMBER, MemberAddressingMode.ELEMENT_OF_CONTAINER}:
-                    raise ValueError("retained ZIP record has no exact addressing mode")
-                if data.blob_hash is None:
-                    raise ValueError("retained ZIP decoder did not retain its raw bytes")
-                yield RetainedRawRecord(
-                    json.dumps(["zip-v2", ordinal, split, mode.value], separators=(",", ":")),
-                    data.model_copy(
-                        update={"source_index": zip_member_source_index(entry_ordinal=ordinal, split_index=split)}
-                    ),
-                    zip_member_raw_id(
-                        source_path=data.source_path,
-                        entry_ordinal=ordinal,
-                        split_index=split,
-                        blob_hash=data.blob_hash,
-                    ),
-                    ordinal,
-                    split,
-                    member_count=len(entries),
-                )
+            try:
+                for data in iter_zip_entry_raw_data(archive, context):
+                    split = data.source_index or 0
+                    mode = data.addressing_mode
+                    if mode not in {MemberAddressingMode.WHOLE_MEMBER, MemberAddressingMode.ELEMENT_OF_CONTAINER}:
+                        raise ValueError("retained ZIP record has no exact addressing mode")
+                    if data.blob_hash is None:
+                        raise ValueError("retained ZIP decoder did not retain its raw bytes")
+                    yield RetainedRawRecord(
+                        json.dumps(["zip-v2", ordinal, split, mode.value], separators=(",", ":")),
+                        data.model_copy(
+                            update={"source_index": zip_member_source_index(entry_ordinal=ordinal, split_index=split)}
+                        ),
+                        zip_member_raw_id(
+                            source_path=data.source_path,
+                            entry_ordinal=ordinal,
+                            split_index=split,
+                            blob_hash=data.blob_hash,
+                        ),
+                        ordinal,
+                        split,
+                        member_count=len(entries),
+                    )
+            except ContentIdentityRefusal as exc:
+                # The member cannot be stored: a recorded refusal, not an
+                # aborted acquisition of the whole ZIP.
+                record_rejected(entry, f"content_identity_refused: {exc}")
     for ordinal, member_name, disposition, diagnostic in dispositions:
         if on_member_disposition is None:
             continue

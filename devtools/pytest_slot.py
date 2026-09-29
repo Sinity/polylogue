@@ -155,6 +155,48 @@ class SlotOutcome:
     #: Where the queued run's output landed, or None when it streamed.
     log_path: Path | None = None
     receipt: dict[str, Any] | None = None
+    #: How the queued job's unit was ended, when something outside the run
+    #: ended it: ``{"killer": "oom-kill", "unit": ...}`` from AgentCTL's
+    #: outcome record.
+    termination: dict[str, Any] | None = None
+
+
+#: The diagnosis of a queued run systemd-oomd killed.
+OOM_KILLED_DIAGNOSIS = "oom_killed"
+
+
+def _job_termination(reference: str | None) -> dict[str, Any] | None:
+    """The killer AgentCTL recorded for a finished job's unit, if any.
+
+    An oomd kill takes the whole unit, including the in-unit writer of the
+    slot receipt, so this record is the only evidence of the cause.
+    """
+    from devtools.verify_runs import read_agentctl_outcome
+
+    outcome = read_agentctl_outcome(reference) if reference else None
+    if outcome is None:
+        return None
+    killer = outcome.get("systemd_result")
+    if not isinstance(killer, str) or not killer:
+        return None
+    unit = outcome.get("unit")
+    return {"killer": killer, "unit": unit if isinstance(unit, str) else None}
+
+
+def termination_metadata(outcome: SlotOutcome) -> dict[str, Any]:
+    """Step fields naming what ended a queued run from outside it.
+
+    A systemd-oomd kill is the typed ``oom_killed`` diagnosis, not the missing
+    report or bare exit 137 it otherwise leaves.
+    """
+    termination = outcome.termination
+    if not termination:
+        return {}
+    killer = termination.get("killer")
+    metadata: dict[str, Any] = {"termination_killer": killer, "termination_unit": termination.get("unit")}
+    if killer == "oom-kill":
+        metadata.update({"diagnosis": OOM_KILLED_DIAGNOSIS, "termination_reason": OOM_KILLED_DIAGNOSIS})
+    return metadata
 
 
 #: Names the directory managed pytest runs put their temporary trees under.
@@ -732,6 +774,9 @@ def _submit(
     launch_path.unlink(missing_ok=True)
     if returncode == 0:
         _telemetry_path(log_path).unlink(missing_ok=True)
+    termination = _job_termination(reference) if returncode != 0 else None
+    if termination is not None:
+        sys.stderr.write(f"  {AGENTCTL} job {job_id} was ended by {termination['killer']} ({termination['unit']})\n")
     sys.stderr.write(f"  pytest slot released; output: {log_path}\n")
     sys.stderr.flush()
     return SlotOutcome(
@@ -739,6 +784,7 @@ def _submit(
         slot=f"{AGENTCTL} job {job_id}",
         log_path=log_path,
         receipt=receipt,
+        termination=termination,
     )
 
 

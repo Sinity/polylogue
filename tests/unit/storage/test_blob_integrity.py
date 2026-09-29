@@ -1003,3 +1003,26 @@ def test_generation_resolved_index_scans_the_configured_blob_root(tmp_path: Path
 
     assert report.total_references_seen == 1
     assert report.missing_referenced_blobs == 0
+
+
+def test_a_candidate_whose_identity_is_refused_is_not_a_match(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A member value past the physical value limit has no recorded identity.
+
+    Anti-vacuity: let the refusal escape ``_payload_matches`` or the replay
+    candidate's identity and one such value aborts the whole integrity or
+    replay pass instead of failing only its own reference.
+    """
+    from polylogue.core import content_identity
+    from polylogue.core.raw_coordinates import MemberAddressingMode
+    from polylogue.operations.zip_acquisition_replay import MemberCandidate, resolve_member_candidate
+
+    monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
+    refused = b'{"n": 1.' + b"2" * 64 + b"}"
+    with pytest.raises(content_identity.ContentIdentityRefusal):
+        content_identity.payload_content_identity(refused)
+    assert not blob_integrity._payload_matches(refused, blob_hash=None, content_identity="0" * 64)
+    candidate = MemberCandidate(MemberAddressingMode.ELEMENT_OF_CONTAINER, 0, refused)
+    resolution = resolve_member_candidate(
+        [candidate], expected_digest="0" * 64, hint_mode=None, hint_index=None, expected_is_structural=True
+    )
+    assert resolution.outcome == "unmatched"

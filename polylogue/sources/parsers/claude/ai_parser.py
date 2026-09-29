@@ -22,7 +22,6 @@ Four distinct wire shapes live under the ``claude-ai`` acquisition family:
 
 from __future__ import annotations
 
-from collections import Counter
 from collections.abc import Iterable, Mapping, MutableSequence
 
 from polylogue.archive.message.artifacts import classify_material_origin
@@ -47,14 +46,17 @@ from ..base import (
     synthetic_message_id,
 )
 from .common import (
+    ClaudeAttachmentRows,
+    ClaudeEvidenceStore,
     _first_identity_field,
     _first_string_field,
-    _merge_attachment_rows,
     _message_model_effort,
     _message_model_name,
     _thinking_configuration,
+    merge_attachment_row,
     normalize_chat_messages,
     normalize_timestamp,
+    resident_attachment_rows,
 )
 
 CLAUDE_TEMPORARY_CHAT_INGEST_FLAG = "capture:temporary-chat"
@@ -825,9 +827,7 @@ def _session_timestamp(payload: Mapping[str, object], *keys: str) -> str | None:
 
 
 def _conversation_level_identity(
-    meta: object,
-    attachment: ParsedAttachment,
-    owned_by_descriptor: Mapping[tuple[str, str | None], ParsedAttachment | None],
+    meta: object, attachment: ParsedAttachment, rows: ClaudeAttachmentRows
 ) -> ParsedAttachment:
     """Adopt the owning message's identity for a conversation-level repeat.
 
@@ -843,37 +843,27 @@ def _conversation_level_identity(
     """
     if meta_carries_provider_attachment_id(meta) or not attachment.name:
         return attachment
-    owned = owned_by_descriptor.get((attachment.name, attachment.mime_type))
+    owned = rows.unique_by_descriptor(attachment.name, attachment.mime_type)
     if owned is None:
         return attachment
     return attachment.model_copy(update={"provider_attachment_id": owned.provider_attachment_id})
 
 
-def _merge_session_attachments(
-    message_attachments: list[ParsedAttachment],
-    payload: Mapping[str, object],
-) -> list[ParsedAttachment]:
-    descriptor_counts: Counter[tuple[str, str | None]] = Counter(
-        (attachment.name, attachment.mime_type) for attachment in message_attachments if attachment.name
-    )
-    owned_by_descriptor: dict[tuple[str, str | None], ParsedAttachment | None] = {}
-    for attachment in message_attachments:
-        if not attachment.name:
-            continue
-        descriptor = (attachment.name, attachment.mime_type)
-        owned_by_descriptor[descriptor] = attachment if descriptor_counts[descriptor] == 1 else None
-
-    attachments = list(message_attachments)
+def _merge_session_attachments(rows: ClaudeAttachmentRows, payload: Mapping[str, object]) -> None:
     top_level: list[object] = []
     for key in ("attachments", "files"):
         value = payload.get(key)
         if isinstance(value, list):
             top_level.extend(value)
-    for meta in top_level:
-        parsed = attachment_from_meta(meta, None)
-        if parsed is not None:
-            attachments.append(_conversation_level_identity(meta, parsed, owned_by_descriptor))
-    return _merge_attachment_rows(attachments)
+    # Every conversation-level identity is resolved against the message-level
+    # rows before any of them is merged in.
+    resolved = [
+        _conversation_level_identity(meta, parsed, rows)
+        for meta in top_level
+        if (parsed := attachment_from_meta(meta, None)) is not None
+    ]
+    for attachment in resolved:
+        merge_attachment_row(rows, attachment)
 
 
 @parser_admission("claude_ai")
@@ -890,6 +880,60 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
 
     raw_messages = payload.get("chat_messages")
     chat_messages = raw_messages if isinstance(raw_messages, list) else []
+    attachments = resident_attachment_rows()
+    session = _parse_ai_records(payload, chat_messages, fallback_id, attachment_rows=attachments)
+    return session.model_copy(update={"attachments": list(attachments)})
+
+
+def parse_ai_stream(
+    envelope: Mapping[str, object],
+    records: Iterable[object],
+    fallback_id: str,
+    *,
+    evidence_store: ClaudeEvidenceStore,
+    messages: MutableSequence[ParsedMessage],
+    session_events: MutableSequence[ParsedSessionEvent],
+    attachment_rows: ClaudeAttachmentRows,
+    attachments: MutableSequence[ParsedAttachment],
+) -> ParsedSession:
+    """Lower a proved single conversation without retaining its chat_messages.
+
+    ``envelope`` holds every root field except ``chat_messages``; the probe
+    that built it has already sent memories, projects, browser captures and
+    session wrappers to the object parser. Admission runs over a stub that
+    carries the document's first future wire type, so accounting and the
+    typed unknown event match ``parse_ai`` on the whole document.
+    """
+    future_type = envelope.get("__admission_future_type")
+    payload = {key: value for key, value in envelope.items() if key != "__admission_future_type"}
+    session = _parse_ai_records(
+        payload,
+        records,
+        fallback_id,
+        evidence_store=evidence_store,
+        messages=messages,
+        session_events=session_events,
+        attachment_rows=attachment_rows,
+    )
+    attachments.extend(attachment_rows)
+    admission_stub: dict[str, object] = {"chat_messages": []}
+    if isinstance(future_type, str):
+        admission_stub["type"] = future_type
+    admitted = parse_ai(admission_stub, fallback_id)
+    session_events.extend(admitted.session_events)
+    return session.model_copy(update={"attachments": attachments, "unit_accounting": admitted.unit_accounting})
+
+
+def _parse_ai_records(
+    payload: Mapping[str, object],
+    chat_messages: Iterable[object],
+    fallback_id: str,
+    *,
+    attachment_rows: ClaudeAttachmentRows,
+    evidence_store: ClaudeEvidenceStore | None = None,
+    messages: MutableSequence[ParsedMessage] | None = None,
+    session_events: MutableSequence[ParsedSessionEvent] | None = None,
+) -> ParsedSession:
     created_at = _session_timestamp(payload, "created_at", "create_time", "timestamp")
     updated_at = _session_timestamp(payload, "updated_at", "update_time")
     session_model = _message_model_name(payload)
@@ -926,9 +970,14 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         session_created_at=created_at,
         session_updated_at=updated_at,
         active_leaf_message_provider_id=active_leaf_message_provider_id,
+        evidence_store=evidence_store,
+        messages=messages,
+        session_events=session_events,
+        attachment_rows=attachment_rows,
     )
+    _merge_session_attachments(attachment_rows, payload)
 
-    session_events = list(normalized.session_events)
+    session_events = normalized.session_events
     provider_status = _first_string_field(payload, "status", "conversation_status")
     if provider_status is not None:
         session_events.append(
@@ -957,7 +1006,7 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     title, title_source, title_ref = _resolve_claude_ai_title(
         payload, resolved_session_id, ref_prefix="claude-ai-title"
     )
-    return ParsedSession(
+    session = ParsedSession(
         source_name=Provider.CLAUDE_AI,
         provider_session_id=resolved_session_id,
         title=str(title),
@@ -966,10 +1015,10 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         session_kind=_session_kind(payload),
         created_at=created_at,
         updated_at=updated_at,
-        messages=normalized.messages,
+        messages=normalized.messages if isinstance(normalized.messages, list) else [],
         active_leaf_message_provider_id=normalized.active_leaf_message_provider_id,
-        attachments=_merge_session_attachments(normalized.attachments, payload),
-        session_events=session_events,
+        attachments=[],
+        session_events=session_events if isinstance(session_events, list) else [],
         reported_duration_ms=normalized.reported_duration_ms,
         models_used=normalized.models_used,
         ingest_flags=list(
@@ -981,6 +1030,9 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
             )
         ),
     )
+    if isinstance(normalized.messages, list) and isinstance(session_events, list):
+        return session
+    return session.model_copy(update={"messages": normalized.messages, "session_events": session_events})
 
 
 __all__ = [
@@ -990,6 +1042,7 @@ __all__ = [
     "looks_like_claude_design",
     "looks_like_claude_memories",
     "parse_ai",
+    "parse_ai_stream",
     "parse_design",
     "parse_memories",
 ]

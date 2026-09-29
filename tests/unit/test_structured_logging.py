@@ -7,6 +7,7 @@ is not evidence.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import io
 import json
 import threading
@@ -124,6 +125,44 @@ def test_executor_submit_requires_propagate_and_then_correlates() -> None:
 
     ticks = [r["run_id"] for r in records if r["event"] == "pool.tick"]
     assert ticks == ["first", "second"]
+
+
+def test_carried_correlation_replaces_a_reused_workers_stale_context() -> None:
+    """A reused worker reports its current submitter, never an earlier one.
+
+    The worker thread is left holding a stale run context, the state a
+    free-threaded build's ``thread_inherit_context`` gives a pool thread
+    created under an earlier span. Only correlation crosses: an unrelated
+    context variable in the submitter stays at its default in the worker.
+
+    Anti-vacuity: make ``carry_context`` the identity function and the worker
+    reports ``stale-run``; make it ``propagate`` and the unrelated variable
+    leaks into the worker.
+    """
+    unrelated: contextvars.ContextVar[str] = contextvars.ContextVar("unrelated", default="absent")
+    seen: list[str] = []
+
+    def work(event: str) -> None:
+        seen.append(unrelated.get())
+        plog.emit(event)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        pool.submit(plog.set_run_context, run_id="stale-run").result()
+        with plog.capture() as records:
+            unrelated_token = unrelated.set("submitter-only")
+            try:
+                with plog.bind(attempt_id="attempt-current"):
+                    pool.submit(plog.carry_context(work), "pool.carried").result()
+            finally:
+                unrelated.reset(unrelated_token)
+            pool.submit(plog.carry_context(work), "pool.carried.empty").result()
+
+    by_event = {r["event"]: r for r in records}
+    assert by_event["pool.carried"]["attempt_id"] == "attempt-current"
+    assert "run_id" not in by_event["pool.carried"]
+    assert "attempt_id" not in by_event["pool.carried.empty"]
+    assert "run_id" not in by_event["pool.carried.empty"]
+    assert seen == ["absent", "absent"]
 
 
 def test_nested_spans_share_a_trace_and_chain_parentage() -> None:

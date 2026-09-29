@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from pydantic import BaseModel
 
-from polylogue.core.content_identity import payload_content_identity
+from polylogue.core.content_identity import ContentIdentityRefusal, payload_content_identity
 from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import SchemaSkew
@@ -1052,7 +1052,11 @@ def _payload_matches_reference(row: Mapping[str, object], payload: bytes, blob_h
         except ValueError:
             pass
         else:
-            return payload_content_identity(payload) == content_identity.lower()
+            try:
+                return payload_content_identity(payload) == content_identity.lower()
+            except ContentIdentityRefusal:
+                # Acquisition refuses such a value, so it is not the recorded one.
+                return False
     return hashlib.sha256(payload).hexdigest() == blob_hash
 
 

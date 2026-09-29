@@ -17,7 +17,7 @@ from polylogue.archive.zip_admission import (
     ZipBombError,
     open_bounded_zip_entry,
 )
-from polylogue.core.content_identity import STRUCTURAL_IDENTITY_MAX_BYTES, bounded_payload_content_identity
+from polylogue.core.content_identity import ContentIdentityRefusal, stream_payload_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDecodeError
 from polylogue.core.json import loads as json_loads
@@ -306,20 +306,16 @@ def process_zip(
                     # entry's (forgeable) declared header sizes.
                     with open_bounded_zip_entry(zf, info) as handle:
                         blob_hash, blob_size = store.write_from_fileobj(handle)
-                    with store.open(blob_hash) as stored_handle:
-                        content_identity, identity_skipped = bounded_payload_content_identity(
-                            stored_handle, size=blob_size, byte_digest=blob_hash
-                        )
-                    if identity_skipped is not None:
-                        emit(
-                            "sources.zip.structural_identity_skipped",
-                            level=WARNING,
-                            outcome="degraded",
-                            reason=identity_skipped,
-                            entry=name,
-                            blob_bytes=blob_size,
-                            identity_ceiling_bytes=STRUCTURAL_IDENTITY_MAX_BYTES,
-                        )
+                    try:
+                        with store.open(blob_hash) as stored_handle:
+                            content_identity = stream_payload_content_identity(stored_handle)
+                    except ContentIdentityRefusal:
+                        # No raw record will reference the refused member, so
+                        # its queued publication must not be reserved later.
+                        discard_queued = getattr(store, "discard_queued", None)
+                        if discard_queued is not None:
+                            discard_queued(blob_hash)
+                        raise
                     receipt_id = publication_receipt_id(store, blob_hash)
                     flush_blob_publications(store)
                     precomputed_raw = RawSessionData(
@@ -328,7 +324,6 @@ def process_zip(
                         source_index=None,
                         addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
                         content_identity=content_identity,
-                        content_identity_skipped_reason=identity_skipped,
                         file_mtime=file_mtime,
                         provider_hint=entry_provider_hint,
                         blob_hash=blob_hash,
@@ -342,7 +337,9 @@ def process_zip(
                         precomputed_raw=precomputed_raw,
                         session_artifact=session_artifact,
                     )
-            except ZipBombError as exc:
+            except (ZipBombError, ContentIdentityRefusal) as exc:
+                # A refused member is a recorded gap; the rest of the ZIP
+                # is still acquired.
                 logger.warning(
                     "Skipping ZIP entry %s in %s: %s",
                     name,

@@ -204,7 +204,8 @@ def _delete_operation(client: _DeleteDaemonClient, step: str, body: dict[str, ob
 def _prepare_authorize(client: _DeleteDaemonClient, session_ids: tuple[str, ...]) -> str:
     preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
     assert preview is not None
-    assert preview["session_ids"] == list(session_ids)
+    assert preview["session_count"] == len(session_ids)
+    assert preview["session_ids_sample"] == list(session_ids[:20])
     authorization = _delete_operation(client, "authorize", {"preview_ref": preview["preview_ref"]})
     assert authorization is not None
     return str(authorization["authorization_ref"])
@@ -677,7 +678,9 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
 
     Anti-vacuity: restoring the old single-chunk cap (or losing the chunked
     preview/authorize/execute lifecycle) leaves rows in ``sessions`` and the
-    chunk-count assertions fail. The client budget comes from
+    chunk-count assertions fail. Echoing the whole selection in the preview
+    result (which grows past the operation result bound for a large accepted
+    selection) fails the sample assertions. The client budget comes from
     ``_prepared_work_budget_s`` so the route's behavior, not the host's
     current load, decides the outcome (polylogue-ga8vn).
     """
@@ -689,6 +692,9 @@ def test_cli_delete_real_daemon_route_deletes_a_selection_larger_than_legacy_cap
     with _delete_authority_daemon(monkeypatch, archive_root) as client:
         preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
         assert preview is not None
+        assert preview["session_count"] == 513
+        assert preview["session_ids_sample"] == list(session_ids[:20])
+        assert "session_ids" not in preview
         preview_refs = preview["preview_refs"]
         assert isinstance(preview_refs, list)
         assert len(preview_refs) == 3
@@ -779,31 +785,41 @@ def test_cli_delete_real_daemon_route_reports_partial_chunk_application(
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
 
 
-def test_cli_delete_real_daemon_route_refuses_selection_beyond_preview_work_budget(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """The durable preview route must bound target work independently of request bytes.
+def test_delete_protocol_accepts_selections_of_any_size() -> None:
+    """Every delete phase accepts a selection above the retired 10,000-id cap.
 
-    The typed UDS client rejects 10,001 IDs before opening a request because
-    the protocol contract caps this list at 10,000. This must happen before
-    any archive lookup or durable preview write.
+    The preview splits a selection into bounded audit chunks and the
+    operation's ``max_body_bytes`` bounds the transport, so no phase counts
+    targets or chunk references.
+
+    Anti-vacuity: restore ``max_length=10_000`` on the preview ids or
+    ``max_length=40`` on the preview/authorization refs and model validation
+    raises here.
     """
-    archive_root = tmp_path / "archive"
-    archive_root.mkdir()
-    _seed_delete_authority_archive(archive_root, 0)
-    selection = [f"codex-session:over-budget-{index}" for index in range(10_001)]
+    from polylogue.operations.daemon_protocol import (
+        DeleteAuthorizeRequest,
+        DeleteCancelRequest,
+        DeleteExecuteRequest,
+        DeletePreviewRequest,
+    )
 
-    with _delete_authority_daemon(monkeypatch, archive_root) as client:
-        with patch.object(
-            client,
-            "_request_json_response",
-            side_effect=AssertionError("client-side payload validation must precede the daemon request"),
-        ):
-            with pytest.raises(ValueError, match="invalid DeletePreviewRequest payload"):
-                _delete_operation(client, "preview", {"session_ids": selection})
+    selection = [f"codex-session:large-{index}" for index in range(10_001)]
+    refs = [f"ref-{index}" for index in range(41)]
 
-    with sqlite3.connect(archive_root / "audit.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM operation_previews").fetchone() == (0,)
+    assert len(DeletePreviewRequest.model_validate({"session_ids": selection}).session_ids) == 10_001
+    assert DeleteAuthorizeRequest.model_validate({"preview_refs": refs}).preview_refs == refs
+    assert DeleteCancelRequest.model_validate({"preview_refs": refs}).preview_refs == refs
+    assert DeleteExecuteRequest.model_validate({"authorization_refs": refs}).authorization_refs == refs
+
+    # The follow-up phases carry one ref per preview chunk of the same
+    # selection, so they share the preview's transport bound.
+    from polylogue.operations.daemon_protocol import daemon_operation_spec
+
+    body_limits = {
+        step: cast(Any, daemon_operation_spec(f"mutation.session.delete.{step}")).max_body_bytes
+        for step in ("preview", "authorize", "cancel", "execute")
+    }
+    assert len(set(body_limits.values())) == 1, body_limits
 
 
 def test_cli_delete_preparation_resolves_canonical_ids_in_bounded_pages(tmp_path: Path) -> None:
@@ -1368,3 +1384,93 @@ def test_an_indeterminate_mutation_keeps_the_writer_gate_until_its_body_settles(
         thread.join(timeout=5.0)
         handler.server.execution_kernel.shutdown(wait=True)
         stop()
+
+
+def test_cli_delete_pages_every_phase_past_one_machine_batch(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A selection larger than one machine batch is accepted, authorized and
+    executed page by page (polylogue-zxbbl).
+
+    The page and chunk sizes are shrunk so seven sessions make four plans in
+    four one-part pages. Anti-vacuity: accept each phase as one batch again and
+    the audit tier refuses more parts than a page holds, so no phase returns.
+    """
+    from polylogue.operations import daemon_mutations
+
+    monkeypatch.setattr(daemon_mutations, "MAX_MUTATION_PLAN_TARGETS", 2)
+    monkeypatch.setattr(daemon_mutations, "MACHINE_PAGE_PARTS", 1)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    session_ids = _seed_delete_authority_archive(archive_root, 7)
+
+    with _delete_authority_daemon(monkeypatch, archive_root) as client:
+        preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
+        assert preview["session_count"] == 7
+        preview_refs = preview["preview_refs"]
+        assert isinstance(preview_refs, list) and len(preview_refs) == 4
+        authorization = _delete_operation(client, "authorize", {"preview_refs": preview_refs})
+        tokens = authorization["authorization_refs"]
+        assert isinstance(tokens, list) and len(tokens) == 4
+        result = _delete_operation(client, "execute", {"authorization_refs": tokens})
+
+    _assert_completed_delete(result, affected=7, chunks=4)
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        kinds = sorted(str(row[0]) for row in conn.execute("SELECT artifact_kind FROM machine_requests"))
+        assert kinds == ["authorization-batch", "execution-batch", "preview-batch"]
+        expiries = {int(row[0]) for row in conn.execute("SELECT expires_at_ms FROM operation_previews")}
+        assert len(expiries) == 1, "pages of one preview expire together"
+        assert {int(row[0]) for row in conn.execute("SELECT part_count FROM machine_requests")} == {4}
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+
+
+def test_cli_delete_cancels_a_preview_of_many_pages(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: cancel every preview ref in one batch and a preview wider
+    than one page cannot be released."""
+    from polylogue.operations import daemon_mutations
+
+    monkeypatch.setattr(daemon_mutations, "MAX_MUTATION_PLAN_TARGETS", 2)
+    monkeypatch.setattr(daemon_mutations, "MACHINE_PAGE_PARTS", 1)
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    session_ids = _seed_delete_authority_archive(archive_root, 5)
+
+    with _delete_authority_daemon(monkeypatch, archive_root) as client:
+        preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
+        preview_refs = preview["preview_refs"]
+        assert isinstance(preview_refs, list) and len(preview_refs) == 3
+        cancelled = _delete_operation(client, "cancel", {"preview_refs": preview_refs})
+        assert cancelled["preview_refs"] == preview_refs
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        states = {str(row[0]) for row in conn.execute("SELECT state FROM operation_previews")}
+    assert states == {"cancelled"}
+
+
+def test_cli_delete_keeps_progressing_past_its_request_deadline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A durably accepted paged delete finishes every phase past its deadline.
+
+    The runtime reports every request past its deadline throughout. Anti-vacuity:
+    fence staging pages or execution parts on ``deadline`` and the selection is
+    left partly deleted, with a request stopped as ``deadline``.
+    """
+    from polylogue.daemon import operation_runtime
+    from polylogue.operations import daemon_mutations
+
+    monkeypatch.setattr(daemon_mutations, "MAX_MUTATION_PLAN_TARGETS", 2)
+    monkeypatch.setattr(daemon_mutations, "MACHINE_PAGE_PARTS", 1)
+    monkeypatch.setattr(operation_runtime.DaemonOperationRuntime, "stop_reason", lambda _self, _request: "deadline")
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    session_ids = _seed_delete_authority_archive(archive_root, 7)
+
+    with _delete_authority_daemon(monkeypatch, archive_root) as client:
+        preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
+        authorization = _delete_operation(client, "authorize", {"preview_refs": preview["preview_refs"]})
+        result = _delete_operation(client, "execute", {"authorization_refs": authorization["authorization_refs"]})
+
+    _assert_completed_delete(result, affected=7, chunks=4)
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM machine_requests WHERE stop_reason IS NOT NULL").fetchone() == (0,)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)

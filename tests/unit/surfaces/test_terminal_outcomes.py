@@ -262,6 +262,17 @@ class TestEnvelopesRequireAnOutcome:
             == "empty"
         )
 
+    def test_search_page_past_the_last_hit_is_empty_not_ok(self) -> None:
+        """A page's outcome describes the rows it returns, not the query's total.
+
+        Red if the builder decides ``matched`` from ``total``: an offset past
+        the last hit would then report ``ok`` over zero rows.
+        """
+        from polylogue.surfaces.payloads import build_search_envelope
+
+        envelope = build_search_envelope([], total=5, limit=10, offset=10, query="x", retrieval_lane="auto")
+        assert envelope.outcome.state == "empty"
+
 
 # ---------------------------------------------------------------------------
 # CLI adapter

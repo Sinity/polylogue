@@ -59,7 +59,7 @@ if TYPE_CHECKING:
     from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.sources.parsers.base import ParsedSession
-    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
+    from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionRows, PreparedSessionWrite
 
 
 logger = get_logger(__name__)
@@ -94,6 +94,9 @@ class SessionWritePayload:
     # A parent-stage carrier may be attached after worker IPC, before writer
     # admission. The process worker never serializes an open scratch owner.
     prepared_write: PreparedSessionWrite | None = None
+    # Row tuples and message content identities the parse worker built for a
+    # full-replace write, so the writer validates them instead of hashing.
+    prepared_rows: PreparedSessionRows | None = None
 
 
 @dataclass(slots=True)
@@ -864,6 +867,25 @@ def _with_hook_recovered_tool_results(convo: ParsedSession, *, archive_root: Pat
         return convo
 
 
+def _worker_prepared_rows(session: ParsedSession, *, append_only: bool) -> PreparedSessionRows | None:
+    """Build a resident full-replace session's rows and identities in the parse worker.
+
+    An append publishes a delta the writer derives from stored rows, and a
+    disk-backed session is lowered through its own shard route, so neither
+    has a full-session carrier to build here.
+    """
+    if append_only or type(session.messages) is not list:
+        return None
+    from polylogue.storage.sqlite.archive_tiers.write import prepare_session_rows
+
+    try:
+        return prepare_session_rows(session)
+    except Exception:
+        # The carrier is optional. Without it the writer lowers the session
+        # itself and refuses it there, per session, under its own outcome.
+        return None
+
+
 def _materialize_parsed_sessions(
     context: _IngestContext,
     plan: _ParsePlan,
@@ -892,6 +914,7 @@ def _materialize_parsed_sessions(
         try:
             content_hash = str(session_content_hash(normalized_convo))
             normalized_convo = normalized_convo.model_copy(update={"content_hash": content_hash})
+            append_only = context.raw_record.source_index == -1
             session_payloads.append(
                 SessionWritePayload(
                     session_id=str(make_session_id(normalized_convo.source_name, normalized_convo.provider_session_id)),
@@ -900,8 +923,9 @@ def _materialize_parsed_sessions(
                     message_count=len(normalized_convo.messages),
                     attachment_count=len(normalized_convo.attachments),
                     raw_id=context.raw_record.raw_id,
-                    append_only=context.raw_record.source_index == -1,
+                    append_only=append_only,
                     fallback_timestamp=context.fallback_timestamp,
+                    prepared_rows=_worker_prepared_rows(normalized_convo, append_only=append_only),
                 )
             )
         except Exception as exc:

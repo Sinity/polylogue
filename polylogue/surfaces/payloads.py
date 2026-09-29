@@ -143,7 +143,9 @@ def model_json_document(payload: BaseModel, *, exclude_none: bool = False) -> JS
 class SurfacePayloadModel(BaseModel):
     """Shared base for immutable JSON payload models exposed by surfaces."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    # Surface fields such as ``model_name`` and ``model_ref`` are payload data,
+    # not pydantic API; generated projection models inherit this setting.
+    model_config = ConfigDict(extra="forbid", frozen=True, protected_namespaces=())
 
     def to_json(self, *, exclude_none: bool = False) -> str:
         return serialize_surface_payload(self, exclude_none=exclude_none)
@@ -222,6 +224,7 @@ class MachineErrorEnvelope(TypedDict):
     message: str
     command: NotRequired[list[str]]
     details: NotRequired[JSONDocument]
+    outcome: NotRequired[JSONDocument]
 
 
 class MachineSuccessEnvelope(TypedDict):
@@ -239,6 +242,9 @@ class MachineErrorPayload(SurfacePayloadModel):
     message: str
     command: Sequence[str] = ()
     details: Mapping[str, object] = Field(default_factory=dict)
+    # The terminal outcome envelope (surfaces/outcome.py) the CLI error path
+    # emits alongside the error; declared so the published schema admits it.
+    outcome: OutcomeEnvelope | None = None
 
     def to_dict(self) -> MachineErrorEnvelope:
         payload: MachineErrorEnvelope = {
@@ -250,6 +256,8 @@ class MachineErrorPayload(SurfacePayloadModel):
             payload["command"] = list(self.command)
         if self.details:
             payload["details"] = require_json_document(dict(self.details), context="machine error details")
+        if self.outcome is not None:
+            payload["outcome"] = require_json_document(self.outcome.to_dict(), context="machine error outcome")
         return payload
 
     def to_json(self, *, exclude_none: bool = False) -> str:
@@ -2944,6 +2952,7 @@ class DelegationCardPayload(SurfacePayloadModel):
     parent_followup: tuple[DelegationContextRowPayload, ...] = ()
     parent_followup_truncated: bool = False
     annotation_refs: tuple[str, ...] = ()
+    annotation_refs_truncated: bool = False
     evidence_refs: tuple[str, ...] = ()
 
     @classmethod
@@ -2983,6 +2992,7 @@ class DelegationCardPayload(SurfacePayloadModel):
             ),
             parent_followup_truncated=card.parent_followup_truncated,
             annotation_refs=card.annotation_refs,
+            annotation_refs_truncated=card.annotation_refs_truncated,
             evidence_refs=card.evidence_refs,
         )
 
@@ -3910,7 +3920,7 @@ def build_search_envelope(
         gaps.extend(f"lane_failed:{failure.lane}" for failure in execution.failed_lanes)
         gaps.extend(f"lane_unavailable:{lane}" for lane in execution.unavailable_lanes)
     return SearchEnvelope(
-        outcome=decide_outcome(matched=total if total is not None else len(hits_tuple), degraded=gaps),
+        outcome=decide_outcome(matched=len(hits_tuple), degraded=gaps),
         hits=hits_tuple,
         total=total,
         limit=limit,

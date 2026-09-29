@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 import math
 
-from polylogue.operations.audit import AuditRepository, MachineRequestBinding
+from polylogue.operations.audit import MACHINE_PAGE_KINDS, AuditRepository, MachineRequestBinding
 from polylogue.operations.daemon_protocol import AcceptedOperationReference
 from polylogue.operations.machine_receipts import (
     IngestHistoricalReceiptV2,
+    InsightPartHistoricalReceipt,
     decode_machine_receipt,
     encode_machine_receipt,
     ingest_terminal_outcome,
@@ -100,6 +101,13 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
         return {**state, "outcome": "accepted", "effect": "indeterminate"}
     if kind == "insight-preview-pages":
         return {**state, "outcome": "running", "effect": "no-effect", "accepted": False}
+    if kind in MACHINE_PAGE_KINDS:
+        # A paged batch still accepting pages: durably accepted, not done --
+        # or fenced at startup because the daemon preparing it died.
+        if record.get("stop_reason"):
+            outcome = "cancelled" if record["stop_reason"] == "cancelled" else "interrupted"
+            return {**state, "outcome": outcome, "effect": "no-effect", "stop_reason": record["stop_reason"]}
+        return {**state, "outcome": "running", "effect": "no-effect"}
     if kind not in {"operation", "execution-batch", "source-generation"}:
         refs = [part["artifact_ref"] for part in parts] or [record["artifact_ref"]]
         state["artifact_refs"] = refs
@@ -206,6 +214,23 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
                 "sequence": receipt["final_sequence"],
                 "historical_receipt": receipt,
             }
+    if record.get("operation_name") == "maintenance.insights.rebuild" and outcome == "completed":
+        # The declared result is the terminal summary the final page's receipt
+        # closed; the generic lifecycle counters are not that result. A
+        # completed sweep whose final page carries no summary cannot report
+        # one, so it is indeterminate rather than a contract violation.
+        final = max(attempted, key=lambda part: _audit_int(part["ordinal"], field="part ordinal"), default=None)
+        summary = None
+        if final is not None and final["receipt"] is not None:
+            final_history = decode_machine_receipt(final["receipt"])
+            if not isinstance(final_history, InsightPartHistoricalReceipt):
+                raise ValueError("insight rebuild run carries a non-insight historical receipt")
+            if final_history.ordinal == final_history.page_count - 1:
+                summary = final_history.terminal_summary
+        if summary is None:
+            outcome = "indeterminate"
+        else:
+            result = summary.model_dump(mode="json")
     if record.get("operation_name") == "maintenance.embeddings.backfill" and attempted:
         run = audit.get_operation(str(attempted[0]["operation_id"])) if attempted[0]["operation_id"] else None
         result = None if run is None else _embedding_terminal_receipt(run.get("error_summary"))

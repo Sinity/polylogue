@@ -88,7 +88,7 @@ def maybe_optimize_archive_tiers(
             continue
         conn: sqlite3.Connection | None = None
         try:
-            conn = open_daemon_connection(db, timeout=timeout_s)
+            conn = open_daemon_connection(db, timeout=timeout_s, archive_root=archive_root)
             observations.append(maybe_optimize_sqlite(conn, reason=reason, analysis_limit=analysis_limit))
         except sqlite3.Error as exc:
             observations.append(
