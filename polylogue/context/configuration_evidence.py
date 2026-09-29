@@ -190,7 +190,7 @@ def join_invocations(
             artifact
             for artifact in artifacts
             if artifact.kind == kind
-            and (declaration_names or {}).get(name, artifact.path) == artifact.path
+            and (declaration_names or {}).get(name, name) == artifact.path
             and artifact.observed_from_ms <= observed_at_ms
             and (artifact.observed_until_ms is None or observed_at_ms < artifact.observed_until_ms)
         ]
@@ -203,20 +203,39 @@ def git_artifact_history(
 ) -> tuple[ConfigurationArtifactVersion, ...]:
     """Read authoritative committed revisions without treating the worktree as history."""
 
+    # ``--name-only`` names the file as it was called in each followed commit,
+    # so a revision from before a rename is read under its historical name.
+    # NUL-separated output keeps unusual file names intact.
     result = subprocess.run(
-        ["git", "log", "--follow", f"--max-count={limit}", "--format=%H", "--", path],
+        ["git", "log", "--follow", f"--max-count={limit}", "--format=%x00commit:%H", "--name-only", "-z", "--", path],
         cwd=repository,
         capture_output=True,
-        text=True,
         check=False,
     )
     if result.returncode:
         return ()
     revisions: list[ConfigurationArtifactVersion] = []
     deleted_at: list[int] = []
-    commits = [line.strip() for line in result.stdout.splitlines() if line.strip()]
-    for commit in reversed(commits):
-        show = subprocess.run(["git", "show", f"{commit}:{path}"], cwd=repository, capture_output=True, check=False)
+    located: list[tuple[str, str]] = []
+    pending: str | None = None
+    for token in result.stdout.split(b"\0"):
+        token = token.strip(b"\n")
+        if not token:
+            continue
+        if token.startswith(b"commit:"):
+            if pending is not None:
+                # A commit that lists no name keeps the newer record's name.
+                located.append((pending, located[-1][1] if located else path))
+            pending = token.removeprefix(b"commit:").decode("ascii")
+        elif pending is not None:
+            located.append((pending, os.fsdecode(token)))
+            pending = None
+    if pending is not None:
+        located.append((pending, located[-1][1] if located else path))
+    for commit, historical_path in reversed(located):
+        show = subprocess.run(
+            ["git", "show", f"{commit}:{historical_path}"], cwd=repository, capture_output=True, check=False
+        )
         timestamp = subprocess.run(
             ["git", "show", "-s", "--format=%ct", commit],
             cwd=repository,
@@ -258,7 +277,8 @@ def git_artifact_history(
             if previous_same_second and not same_second:
                 start = revision.observed_from_ms + 1000
                 end = min((stamp for stamp in (later_time, deletion) if stamp is not None), default=None)
-                result_revisions.append(replace(revision, observed_from_ms=start, observed_until_ms=end))
+                if end is None or end > start:
+                    result_revisions.append(replace(revision, observed_from_ms=start, observed_until_ms=end))
         else:
             end = min((stamp for stamp in (later_time, deletion) if stamp is not None), default=None)
             if end is not None and end <= revision.observed_from_ms:

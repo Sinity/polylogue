@@ -116,7 +116,7 @@ from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.digest import REFERENCE, canonical_bytes
-from polylogue.core.enums import BranchType, DisplayLabelSource, Origin, Provider, SessionKind
+from polylogue.core.enums import DisplayLabelSource, Origin, Provider
 from polylogue.core.errors import (
     ArchiveTierUnavailableError,
     PostFilterAfterLimitError,
@@ -314,6 +314,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_workspace,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
+    WORK_EVENT_RAW_ID_PREFIX,
     ArchiveSessionEnvelope,
     PreparedRows,
     PreparedSessionShardRows,
@@ -1606,45 +1607,30 @@ class ArchiveStore:
         event_id = validate_work_event_id(event_id)
         event_type = validate_work_event_type(event_type)
         resolved = self.resolve_session_id(session_id)
-        existing = self.read_session(resolved)
-        existing_row = self._conn.execute(
-            "SELECT commit_hash, pending_drafts_json FROM sessions WHERE session_id = ?",
+        existing = self._conn.execute(
+            "SELECT native_id, origin FROM sessions WHERE session_id = ?",
             (resolved,),
         ).fetchone()
-        if existing_row is None:
+        if existing is None:
             raise KeyError(f"session not found: {resolved}")
-        provider = provider_from_origin(Origin.from_string(existing.origin))
+        native_id, origin = str(existing[0]), str(existing[1])
+        provider = provider_from_origin(Origin.from_string(origin))
         event_payload = {"event_id": event_id, "summary": summary, **payload}
         event = ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=event_payload)
-        # Keep the ordinary append writer's session upsert lossless. This
-        # lightweight ParsedSession intentionally has no messages, so copy
-        # every session-owned field represented on the archive envelope.
+        # The event carries no header. The writer recognizes the work-event
+        # raw and appends only the event, keeping every session-owned field;
+        # replay of the retained raw takes the same route.
         session = ParsedSession(
             source_name=provider,
-            provider_session_id=existing.native_id,
-            title=existing.title,
-            session_kind=SessionKind(existing.session_kind),
-            created_at=existing.created_at,
-            updated_at=existing.updated_at,
+            provider_session_id=native_id,
             messages=[],
             session_events=[event],
-            active_leaf_message_provider_id=existing.active_leaf_message_id,
-            instructions_text=existing.instructions_text,
-            reported_cost_usd=existing.reported_cost_usd,
-            pending_drafts=json.loads(existing_row["pending_drafts_json"] or "[]"),
-            git_branch=existing.git_branch,
-            git_repository_url=existing.git_repository_url,
-            git_commit_hash=existing_row["commit_hash"],
-            branch_type=BranchType(existing.branch_type) if existing.branch_type else None,
-            working_directories=list(existing.working_directories),
-            provider_project_ref=existing.provider_project_ref,
-            display_name=existing.display_name,
         )
         raw_payload = json.dumps(
             {
                 "_polylogue_work_event": 1,
                 "provider": provider.value,
-                "native_session_id": existing.native_id,
+                "native_session_id": native_id,
                 "event_id": event_id,
                 "event_type": event_type,
                 "timestamp": timestamp,
@@ -1653,11 +1639,11 @@ class ArchiveStore:
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
-        raw_id = "agent-work-event:" + hashlib.sha256((resolved + "\0" + event_id).encode()).hexdigest()
+        raw_id = WORK_EVENT_RAW_ID_PREFIX + hashlib.sha256((resolved + "\0" + event_id).encode()).hexdigest()
         result = self.write_raw_and_parsed_result(
             session,
             payload=raw_payload,
-            source_path=f"agent-work-event:{resolved}",
+            source_path=f"{WORK_EVENT_RAW_ID_PREFIX}{resolved}",
             acquired_at_ms=int(time.time() * 1000),
             source_index=-1,
             raw_id=raw_id,

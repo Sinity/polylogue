@@ -577,6 +577,32 @@ def test_a_cursor_page_emits_the_builder_page_its_outcome_describes(tmp_path: Pa
     assert hits[0]["session"]["id"] != first_hits[0]["session"]["id"]
 
 
+def test_search_authority_counts_the_match_total_and_the_returned_window(tmp_path: Path) -> None:
+    """The operation route reports ``matched``/``analyzed`` as the API builder does.
+
+    Anti-vacuity: swap the two counters back and a one-hit page over four
+    matching sessions reports ``matched=1, analyzed=4``.
+    """
+    from tests.infra.storage_records import SessionBuilder
+
+    for name in ("alpha", "beta", "gamma", "delta"):
+        SessionBuilder(tmp_path / "index.db", name).provider("claude-code").title(name).add_message(
+            "m-0000", role="user", text=f"needle body {name}"
+        ).save()
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        page = execute_read_operation(
+            "cli.query",
+            {"params": {"query": "needle", "limit": 1}},
+            archive=archive,
+            serving_identity="daemon",
+        )
+
+    authority = cast(dict[str, Any], page["authority"])
+    assert page["total"] == 4
+    assert (authority["matched"], authority["analyzed"]) == (4, len(cast(list[object], page["hits"]))) == (4, 1)
+
+
 def test_a_short_ranked_page_still_terminates(tmp_path: Path) -> None:
     """The opposite direction: a page under its own bound ends the walk."""
     from tests.infra.storage_records import SessionBuilder

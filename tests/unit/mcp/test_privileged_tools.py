@@ -1198,3 +1198,61 @@ class TestQuerySessionsProjection:
             result = json.loads(await invoke_surface_async(query_fn, projection="sessions", continuation="bogus"))
             assert result.get("is_error") is True
             assert result.get("code") == "invalid_continuation"
+
+
+@pytest.mark.asyncio
+@pytest.mark.uses_real_clock("waits on a real transport thread that outlives the cancelled await")
+async def test_cancelled_daemon_submission_cancels_the_same_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cancelled MCP call waits for its transport thread and cancels that request.
+
+    Anti-vacuity: awaiting ``asyncio.to_thread`` directly abandons the thread
+    on cancellation, so the submission completes after the call has ended and
+    no ``operation.cancel`` names its request id.
+    """
+    import asyncio
+    import threading
+    from types import SimpleNamespace
+
+    from polylogue.mcp import server_cutover
+
+    submitted = threading.Event()
+    release = threading.Event()
+    calls: list[tuple[str, str | None]] = []
+
+    class SlowClient:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def operation(
+            self, operation: str, payload: object, *, archive_root: str, request_id: str
+        ) -> dict[str, object]:
+            submitted.set()
+            release.wait(timeout=10)
+            calls.append((operation, request_id))
+            return {"outcome": "accepted", "request_id": request_id}
+
+        def cancel(self, request_id: str, *, archive_root: str) -> dict[str, object]:
+            calls.append(("operation.cancel", request_id))
+            return {"outcome": "completed"}
+
+    monkeypatch.setattr("polylogue.daemon_client.DaemonClient", SlowClient)
+    monkeypatch.setattr("polylogue.cli.read_dispatch.daemon_route_disabled", lambda **_kwargs: False)
+    hooks = SimpleNamespace(
+        get_config=lambda: SimpleNamespace(archive_root=tmp_path, api_auth_token=None, api_allow_no_auth=True),
+        error_json=lambda message, **extra: json.dumps({"error": message, **extra}),
+    )
+
+    task = asyncio.ensure_future(
+        server_cutover._daemon_operation(hooks, "maintenance.insights.rebuild", {})  # type: ignore[arg-type]
+    )
+    await asyncio.to_thread(submitted.wait, 10)
+    task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert [name for name, _ in calls] == ["maintenance.insights.rebuild", "operation.cancel"]
+    assert calls[0][1] == calls[1][1]

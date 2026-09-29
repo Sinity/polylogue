@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
@@ -86,10 +87,29 @@ async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dic
             getattr(config, "api_auth_token", None), allow_no_auth=getattr(config, "api_allow_no_auth", False)
         ),
     )
-    try:
-        import asyncio
+    import asyncio
+    import uuid
 
-        response = await asyncio.to_thread(client.operation, operation, payload, archive_root=str(config.archive_root))
+    archive_root = str(config.archive_root)
+    # The request id exists before the first byte is sent, so a cancelled call
+    # can still name -- and cancel -- the exact request it may have submitted.
+    request_id = uuid.uuid4().hex
+    submission = asyncio.ensure_future(
+        asyncio.to_thread(client.operation, operation, payload, archive_root=archive_root, request_id=request_id)
+    )
+    try:
+        response = await asyncio.shield(submission)
+    except asyncio.CancelledError:
+        # Cancelling the await cannot stop the transport thread, which may
+        # still submit the request. Let it finish, then cancel that same
+        # request by id -- as the CLI does on interrupt -- so the daemon, not a
+        # blind client retry, decides the outcome. The caller still sees the
+        # cancellation.
+        with suppress(Exception):
+            await asyncio.shield(submission)
+        with suppress(Exception):
+            await asyncio.to_thread(client.cancel, request_id, archive_root=archive_root)
+        raise
     except Exception:
         return hooks.error_json("daemon operation unavailable", code="daemon_required")
     if response is None:
