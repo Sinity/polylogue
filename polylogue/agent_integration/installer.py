@@ -1382,6 +1382,25 @@ class AgentIntegrationManager:
             selected = set(clients or cast(Sequence[AgentClient], tuple(clients_state)))
             receipts: list[dict[str, object]] = []
             try:
+                # Journal every selected client's removals before the first
+                # effect is touched, as install does: a kill mid-removal then
+                # leaves each removed effect recorded as a journaled removal,
+                # not as drift that keeps the client from converging.
+                journaled = False
+                for client in tuple(clients_state):
+                    raw_client = clients_state.get(client)
+                    if client not in selected or not isinstance(raw_client, dict):
+                        continue
+                    removals = sorted(
+                        cast(str, operation["identity"])
+                        for operation, _unconfirmed in _reconciled_operations(raw_client)
+                    )
+                    if removals and raw_client.get("prepared_removals") != removals:
+                        raw_client["prepared_removals"] = removals
+                        journaled = True
+                if journaled:
+                    state["clients"] = clients_state
+                    self._write_state(state, transaction)
                 for client in tuple(clients_state):
                     if client not in selected:
                         continue

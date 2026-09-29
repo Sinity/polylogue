@@ -845,12 +845,11 @@ def test_client_reads_only_its_own_discovery_file_and_sends_csrf_token(
     """
     daemon_dir = tmp_path / "daemon"
     daemon_dir.mkdir()
-    launched_at_ns = 0
     (daemon_dir / "ls_aaaa.json").write_text('{"pid": 111, "httpPort": 40001}')
     (daemon_dir / "ls_bbbb.json").write_text('{"pid": 222, "httpPort": 40002}')
     client = AntigravityLanguageServerClient(tmp_path, startup_timeout_s=2.0)
     client._process = _FakeProcess(222)  # type: ignore[assignment]
-    assert client._await_discovered_port(launched_at_ns=launched_at_ns) == 40002
+    assert client._await_discovered_port(before_launch={}) == 40002
     client.port = 40002
 
     seen: list[Any] = []
@@ -882,9 +881,7 @@ def test_client_launches_vendor_on_a_random_port_with_a_run_token(
     binary.write_bytes(b"")
     monkeypatch.setattr("polylogue.sources.parsers.antigravity.subprocess.Popen", fake_popen)
     monkeypatch.setattr("polylogue.sources.parsers.antigravity._discover_language_server_version", lambda _b: "1.11.0")
-    monkeypatch.setattr(
-        AntigravityLanguageServerClient, "_await_discovered_port", lambda self, *, launched_at_ns: 40003
-    )
+    monkeypatch.setattr(AntigravityLanguageServerClient, "_await_discovered_port", lambda self, *, before_launch: 40003)
     monkeypatch.setattr(AntigravityLanguageServerClient, "_wait_until_ready", lambda self: None)
     client = AntigravityLanguageServerClient(tmp_path / "antigravity", language_server_path=binary)
     client.start()
@@ -903,8 +900,8 @@ def test_a_discovery_file_older_than_the_launch_is_not_accepted_for_a_reused_pid
     stale = daemon_dir / "ls_stale.json"
     stale.write_text('{"pid": 444, "httpPort": 40009}')
     os.utime(stale, ns=(1_000_000_000, 1_000_000_000))
-    launched_at_ns = 2_000_000_000
     client = AntigravityLanguageServerClient(tmp_path)
+    before_launch = client._discovery_snapshot()
     client._process = _FakeProcess(444)  # type: ignore[assignment]
     waits: list[float] = []
 
@@ -915,7 +912,7 @@ def test_a_discovery_file_older_than_the_launch_is_not_accepted_for_a_reused_pid
 
     monkeypatch.setattr("polylogue.sources.parsers.antigravity.time.sleep", child_rewrites)
 
-    assert client._await_discovered_port(launched_at_ns=launched_at_ns) == 40010
+    assert client._await_discovered_port(before_launch=before_launch) == 40010
     assert waits
 
 
@@ -938,7 +935,7 @@ def test_a_slow_child_is_still_waited_for(tmp_path: Path, monkeypatch: pytest.Mo
 
     monkeypatch.setattr("polylogue.sources.parsers.antigravity.time.sleep", publish_late)
 
-    assert client._await_discovered_port(launched_at_ns=0) == 40011
+    assert client._await_discovered_port(before_launch={}) == 40011
     assert len(waits) == 50
 
 
@@ -965,9 +962,7 @@ def test_a_start_that_fails_stops_its_child(monkeypatch: pytest.MonkeyPatch, tmp
     binary.write_bytes(b"")
     monkeypatch.setattr("polylogue.sources.parsers.antigravity.subprocess.Popen", lambda *_a, **_k: Child(666))
     monkeypatch.setattr("polylogue.sources.parsers.antigravity._discover_language_server_version", lambda _b: "1.11.0")
-    monkeypatch.setattr(
-        AntigravityLanguageServerClient, "_await_discovered_port", lambda self, *, launched_at_ns: 40012
-    )
+    monkeypatch.setattr(AntigravityLanguageServerClient, "_await_discovered_port", lambda self, *, before_launch: 40012)
 
     def refuse(self: AntigravityLanguageServerClient) -> None:
         raise AntigravityExportError("not ready")
@@ -1026,3 +1021,23 @@ def test_language_server_rpcs_never_go_through_an_environment_proxy(
         server.shutdown()
         server.server_close()
     assert len(seen) == 1
+
+
+def test_a_discovery_file_with_a_coarse_timestamp_is_accepted(tmp_path: Path) -> None:
+    """A file the child wrote after launch is accepted even if its mtime reads earlier.
+
+    Anti-vacuity (Codex P1, #5704): compare mtime with the nanosecond launch
+    instant and a filesystem that rounds timestamps down rejects the child's
+    own port forever.
+    """
+    daemon_dir = tmp_path / "daemon"
+    daemon_dir.mkdir()
+    client = AntigravityLanguageServerClient(tmp_path)
+    before_launch = client._discovery_snapshot()
+    written = daemon_dir / "ls_new.json"
+    written.write_text('{"pid": 777, "httpPort": 40013}')
+    # Rounded down to a whole second, before any plausible launch instant.
+    os.utime(written, ns=(1_000_000_000, 1_000_000_000))
+    client._process = _FakeProcess(777)  # type: ignore[assignment]
+
+    assert client._await_discovered_port(before_launch=before_launch) == 40013

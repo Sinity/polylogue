@@ -1202,7 +1202,7 @@ class AntigravityLanguageServerClient:
             f"-app_data_dir={self.root.name}",
             "-override_ide_name=antigravity",
         ]
-        launched_at_ns = time.time_ns()
+        before_launch = self._discovery_snapshot()
         self._process = subprocess.Popen(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -1211,7 +1211,7 @@ class AntigravityLanguageServerClient:
             start_new_session=True,
         )
         try:
-            self.port = self._await_discovered_port(launched_at_ns=launched_at_ns)
+            self.port = self._await_discovered_port(before_launch=before_launch)
             self._wait_until_ready()
         except BaseException:
             # A start that does not complete (a refusal, a cancellation) must
@@ -1255,15 +1255,29 @@ class AntigravityLanguageServerClient:
             raise AntigravityExportError(f"Antigravity returned no markdown for cascade {cascade_id}")
         return markdown
 
-    def _await_discovered_port(self, *, launched_at_ns: int) -> int:
+    def _discovery_snapshot(self) -> dict[str, tuple[int, int, int, int]]:
+        """``{name: (inode, mtime_ns, ctime_ns, size)}`` of the discovery files present now."""
+        discovery_dir = self.root / "daemon"
+        snapshot: dict[str, tuple[int, int, int, int]] = {}
+        for candidate in discovery_dir.glob("ls_*.json") if discovery_dir.is_dir() else ():
+            try:
+                status = candidate.stat()
+            except OSError:
+                continue
+            snapshot[candidate.name] = (status.st_ino, status.st_mtime_ns, status.st_ctime_ns, status.st_size)
+        return snapshot
+
+    def _await_discovered_port(self, *, before_launch: Mapping[str, tuple[int, int, int, int]]) -> int:
         """Read the port our own child published in its persistent-mode discovery file.
 
         The directory can also hold a discovery file from the operator's
         running IDE, so only the file naming this child's pid is accepted. A
         file left by a crashed server whose pid the child has since reused
-        also names that pid, so a file is accepted only once it was written
-        at or after this launch; an older one is watched until the child
-        rewrites it.
+        also names that pid, so a file is accepted only once it differs from
+        the directory as it stood before this launch (new, replaced or
+        rewritten); an unchanged one is watched until the child rewrites it.
+        Comparing against that snapshot, not a clock cutoff, holds on a
+        filesystem whose timestamps are coarser than the launch instant.
 
         There is no deadline: a slow child that is still alive is still
         starting. The child's exit ends the wait, and a cancellation of the
@@ -1278,7 +1292,9 @@ class AntigravityLanguageServerClient:
                 raise AntigravityExportError(f"Antigravity language server exited with code {process.returncode}")
             for candidate in sorted(discovery_dir.glob("ls_*.json")) if discovery_dir.is_dir() else ():
                 try:
-                    if candidate.stat().st_mtime_ns < launched_at_ns:
+                    status = candidate.stat()
+                    fingerprint = (status.st_ino, status.st_mtime_ns, status.st_ctime_ns, status.st_size)
+                    if before_launch.get(candidate.name) == fingerprint:
                         continue
                     published = loads(candidate.read_bytes())
                 except (OSError, ValueError):

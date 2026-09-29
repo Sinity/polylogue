@@ -613,3 +613,32 @@ def test_a_killed_replace_clients_removal_converges_on_rerun(tmp_path: Path, mon
     assert receipt["ok"] is True
     assert receipt["retained_drift"] == []
     assert "claude-code" in receipt["removed_clients"]  # type: ignore[operator]
+
+
+def test_a_killed_uninstall_converges_on_rerun(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Uninstall journals its removals before any native effect goes.
+
+    Anti-vacuity (Codex P2, #5704): remove before journaling and a kill after
+    the first removal leaves the committed record claiming an absent effect,
+    which the next uninstall reports as drift and never converges.
+    """
+    from polylogue.agent_integration import installer
+
+    manager, home, polylogue, server = _manager(tmp_path)
+    assert manager.install(_options(polylogue, server, clients=("claude-code",)))["ok"] is True
+    real_remove = installer._remove_operation
+
+    def remove_then_die(*args: object, **kwargs: object) -> tuple[bool, str]:
+        real_remove(*args, **kwargs)  # type: ignore[arg-type]
+        raise _KilledMidInstall()
+
+    monkeypatch.setattr(installer, "_remove_operation", remove_then_die)
+    with pytest.raises(_KilledMidInstall):
+        manager.uninstall(("claude-code",))
+    monkeypatch.undo()
+
+    receipt = AgentIntegrationManager(home=home, environment=manager.environment).uninstall(("claude-code",))
+
+    assert receipt["ok"] is True
+    clients = cast(list[dict[str, object]], receipt["clients"])
+    assert all(not client["retained_drift"] for client in clients)
