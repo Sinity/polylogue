@@ -10,7 +10,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from decimal import Decimal
 from io import BytesIO
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 from unittest.mock import MagicMock
 
 import ijson
@@ -2561,13 +2561,21 @@ def test_iter_source_raw_data_avoids_whole_blob_provider_detection_for_zip_entri
             ).encode("utf-8"),
         )
 
-    def _fail(*args: object, **kwargs: object) -> None:
-        del args, kwargs
-        raise AssertionError("ZIP acquisition should not use whole-blob provider detection")
+    from polylogue.sources import source_acquisition_components as components
+
+    real_detect = components.detect_provider_from_raw_bytes_evidence
+
+    def _prefix_only(payload: bytes, *args: Any, **kwargs: Any) -> Any:
+        # The inbox provider sniff reads a bounded prefix of each member; a
+        # whole member's bytes here would be the whole-blob detection this
+        # law forbids.
+        if len(payload) > components._DETECTION_PREFIX_SIZE:
+            raise AssertionError("ZIP acquisition should not use whole-blob provider detection")
+        return real_detect(payload, *args, **kwargs)
 
     monkeypatch.setattr(
         "polylogue.sources.source_acquisition_components.detect_provider_from_raw_bytes_evidence",
-        _fail,
+        _prefix_only,
     )
 
     items = list(iter_source_raw_data(Source(name="inbox", path=archive_path)))
