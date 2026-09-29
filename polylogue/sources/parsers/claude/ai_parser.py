@@ -22,7 +22,8 @@ Four distinct wire shapes live under the ``claude-ai`` acquisition family:
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, MutableSequence
+import sqlite3
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence
 
 from polylogue.archive.message.artifacts import classify_material_origin
 from polylogue.archive.message.roles import Role
@@ -500,7 +501,7 @@ def _design_user_message(
 def parse_design(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     raw_messages = payload.get("messages")
     design_messages = raw_messages if isinstance(raw_messages, list) else []
-    return _parse_design_records(payload, design_messages, fallback_id, [], [])
+    return _parse_design_records(payload, design_messages, fallback_id, [], [], [])
 
 
 def parse_design_stream(
@@ -510,14 +511,20 @@ def parse_design_stream(
     *,
     message_sink: MutableSequence[ParsedMessage],
     event_sink: MutableSequence[ParsedSessionEvent],
+    attachment_sink: MutableSequence[ParsedAttachment],
 ) -> ParsedSession:
-    """Lower a proved Design object without retaining its message array."""
-    session = _parse_design_records(envelope, records, fallback_id, message_sink, event_sink)
+    """Lower a proved Design object without retaining its messages or their attachments."""
+    session = _parse_design_records(envelope, records, fallback_id, message_sink, event_sink, attachment_sink)
     ledger = AdmissionLedger()
     ledger.expect(AdmissionUnit.OUTER_RECORD, 1)
     ledger.materialized(AdmissionUnit.OUTER_RECORD, 0, "parsed")
     return session.model_copy(
-        update={"messages": message_sink, "session_events": event_sink, "unit_accounting": ledger.close()}
+        update={
+            "messages": message_sink,
+            "session_events": event_sink,
+            "attachments": attachment_sink,
+            "unit_accounting": ledger.close(),
+        }
     )
 
 
@@ -527,10 +534,10 @@ def _parse_design_records(
     fallback_id: str,
     messages: MutableSequence[ParsedMessage],
     session_events: MutableSequence[ParsedSessionEvent],
+    attachments: MutableSequence[ParsedAttachment],
 ) -> ParsedSession:
     resolved_session_id = str(payload.get("uuid") or payload.get("id") or fallback_id)
 
-    attachments: list[ParsedAttachment] = []
     position = 0
     for raw_message in design_messages:
         if not isinstance(raw_message, Mapping):
@@ -590,11 +597,13 @@ def _parse_design_records(
         updated_at=str(payload.get("updated_at")) if payload.get("updated_at") else None,
         messages=messages if isinstance(messages, list) else [],
         active_leaf_message_provider_id=active_leaf_message_provider_id,
-        attachments=attachments,
+        attachments=attachments if isinstance(attachments, list) else [],
         session_events=session_events if isinstance(session_events, list) else [],
     )
-    if not isinstance(messages, list) or not isinstance(session_events, list):
-        return session.model_copy(update={"messages": messages, "session_events": session_events})
+    if not isinstance(messages, list) or not isinstance(session_events, list) or not isinstance(attachments, list):
+        return session.model_copy(
+            update={"messages": messages, "session_events": session_events, "attachments": attachments}
+        )
     return session
 
 
@@ -827,7 +836,10 @@ def _session_timestamp(payload: Mapping[str, object], *keys: str) -> str | None:
 
 
 def _conversation_level_identity(
-    meta: object, attachment: ParsedAttachment, rows: ClaudeAttachmentRows
+    meta: object,
+    attachment: ParsedAttachment,
+    owner_of: Callable[[str, str | None], str | None],
+    row_of: Callable[[str], ParsedAttachment | None],
 ) -> ParsedAttachment:
     """Adopt the owning message's identity for a conversation-level repeat.
 
@@ -839,31 +851,43 @@ def _conversation_level_identity(
     once with no owner at all. The export still supplies the descriptors
     ``attachment_from_meta`` seeds that identity with, so match on those --
     and only when exactly one message-level record answers to them, because
-    two make the owner a guess.
+    two make the owner a guess. Two records that both carry bytes and
+    disagree are two files, whatever their descriptors say.
     """
     if meta_carries_provider_attachment_id(meta) or not attachment.name:
         return attachment
-    owned = rows.unique_by_descriptor(attachment.name, attachment.mime_type)
+    owned = owner_of(attachment.name, attachment.mime_type)
     if owned is None:
         return attachment
-    return attachment.model_copy(update={"provider_attachment_id": owned.provider_attachment_id})
+    held = row_of(owned)
+    if (
+        held is not None
+        and held.inline_bytes is not None
+        and attachment.inline_bytes is not None
+        and held.inline_bytes != attachment.inline_bytes
+    ):
+        return attachment
+    return attachment.model_copy(update={"provider_attachment_id": owned})
 
 
-def _merge_session_attachments(rows: ClaudeAttachmentRows, payload: Mapping[str, object]) -> None:
-    top_level: list[object] = []
+def _conversation_attachment_metas(payload: Mapping[str, object]) -> Iterator[object]:
     for key in ("attachments", "files"):
         value = payload.get(key)
         if isinstance(value, list):
-            top_level.extend(value)
+            yield from value
+
+
+def _merge_session_attachments(rows: ClaudeAttachmentRows, metas: Iterable[object]) -> None:
     # Every conversation-level identity is resolved against the message-level
-    # rows before any of them is merged in.
-    resolved = [
-        _conversation_level_identity(meta, parsed, rows)
-        for meta in top_level
-        if (parsed := attachment_from_meta(meta, None)) is not None
-    ]
-    for attachment in resolved:
-        merge_attachment_row(rows, attachment)
+    # rows as they stood before any of them was merged in.
+    owner_of: Callable[[str, str | None], str | None] | None = None
+    for meta in metas:
+        parsed = attachment_from_meta(meta, None)
+        if parsed is None:
+            continue
+        if owner_of is None:
+            owner_of = rows.descriptor_owners()
+        merge_attachment_row(rows, _conversation_level_identity(meta, parsed, owner_of, rows.get))
 
 
 @parser_admission("claude_ai")
@@ -881,7 +905,13 @@ def parse_ai(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     raw_messages = payload.get("chat_messages")
     chat_messages = raw_messages if isinstance(raw_messages, list) else []
     attachments = resident_attachment_rows()
-    session = _parse_ai_records(payload, chat_messages, fallback_id, attachment_rows=attachments)
+    session = _parse_ai_records(
+        payload,
+        chat_messages,
+        fallback_id,
+        conversation_attachments=_conversation_attachment_metas(payload),
+        attachment_rows=attachments,
+    )
     return session.model_copy(update={"attachments": list(attachments)})
 
 
@@ -890,7 +920,9 @@ def parse_ai_stream(
     records: Iterable[object],
     fallback_id: str,
     *,
+    conversation_attachments: Iterable[object],
     evidence_store: ClaudeEvidenceStore,
+    graph_connection: sqlite3.Connection,
     messages: MutableSequence[ParsedMessage],
     session_events: MutableSequence[ParsedSessionEvent],
     attachment_rows: ClaudeAttachmentRows,
@@ -898,11 +930,14 @@ def parse_ai_stream(
 ) -> ParsedSession:
     """Lower a proved single conversation without retaining its chat_messages.
 
-    ``envelope`` holds every root field except ``chat_messages``; the probe
-    that built it has already sent memories, projects, browser captures and
-    session wrappers to the object parser. Admission runs over a stub that
-    carries the document's first future wire type, so accounting and the
-    typed unknown event match ``parse_ai`` on the whole document.
+    ``envelope`` holds every root field except ``chat_messages`` and the
+    root ``attachments``/``files`` arrays, which ``records`` and
+    ``conversation_attachments`` stream in that order; the probe that built
+    it has already sent memories, projects, browser captures and session
+    wrappers to the object parser. The lineage graph lives in
+    ``graph_connection``. Admission runs over a stub that carries the
+    document's first future wire type, so accounting and the typed unknown
+    event match ``parse_ai`` on the whole document.
     """
     future_type = envelope.get("__admission_future_type")
     payload = {key: value for key, value in envelope.items() if key != "__admission_future_type"}
@@ -910,7 +945,9 @@ def parse_ai_stream(
         payload,
         records,
         fallback_id,
+        conversation_attachments=conversation_attachments,
         evidence_store=evidence_store,
+        graph_connection=graph_connection,
         messages=messages,
         session_events=session_events,
         attachment_rows=attachment_rows,
@@ -929,8 +966,10 @@ def _parse_ai_records(
     chat_messages: Iterable[object],
     fallback_id: str,
     *,
+    conversation_attachments: Iterable[object],
     attachment_rows: ClaudeAttachmentRows,
     evidence_store: ClaudeEvidenceStore | None = None,
+    graph_connection: sqlite3.Connection | None = None,
     messages: MutableSequence[ParsedMessage] | None = None,
     session_events: MutableSequence[ParsedSessionEvent] | None = None,
 ) -> ParsedSession:
@@ -974,8 +1013,9 @@ def _parse_ai_records(
         messages=messages,
         session_events=session_events,
         attachment_rows=attachment_rows,
+        graph_connection=graph_connection,
     )
-    _merge_session_attachments(attachment_rows, payload)
+    _merge_session_attachments(attachment_rows, conversation_attachments)
 
     session_events = normalized.session_events
     provider_status = _first_string_field(payload, "status", "conversation_status")

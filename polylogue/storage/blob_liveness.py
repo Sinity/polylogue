@@ -9,6 +9,7 @@ part of this relation.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -290,6 +291,109 @@ def inspect_blob_liveness(
     return BlobLiveness(LivenessState.UNREFERENCED)
 
 
+#: Source owners that are not a session's reference to its bytes.
+#: ``source_attachments`` is a generation-local census of what an acquisition
+#: fetched, keyed by (generation, reference); no session key reaches it, so
+#: session excision never removes it, and counting it would make every blob
+#: it names look shared with a session that does not exist.
+_CENSUS_OWNER_TABLES: frozenset[str] = frozenset({"source_attachments"})
+
+
+#: Hashes per ``IN (...)`` query: one scan per owner per chunk, well under
+#: SQLite's bound-parameter limit.
+_REFERENCE_QUERY_CHUNK = 500
+
+
+def inspect_session_blob_references(
+    source_conn: sqlite3.Connection,
+    blob_hashes: Sequence[bytes],
+    *,
+    index_conn: sqlite3.Connection | None,
+    excluding_session_ids: frozenset[str],
+    index_authority_blocker: str | None = None,
+) -> dict[bytes, BlobLiveness]:
+    """Whether a session outside ``excluding_session_ids`` still references each blob.
+
+    Session excision owns a blob only while no other session references it:
+    blobs are content-addressed, so two sessions with the same tool output or
+    the same attachment share one hash. Excision calls this after deleting
+    the excised session's source rows, in the same transaction, and marks a
+    hash forgotten only when its answer is ``unreferenced``.
+
+    Source owners come from :data:`BLOB_OWNERS` (direct columns and ledger
+    rows whose referent still exists), minus :data:`_CENSUS_OWNER_TABLES`.
+    The live batch records attachments only in ``index.attachments``, so the
+    index is asked too: an attachment still linked through ``attachment_refs``
+    to a session outside the excision is a live reference. The index only
+    withholds a marker here; it never causes one.
+
+    ``blocked`` means the answer cannot be decided (an unknown ``blob_refs``
+    type, a missing owner table), and the caller must refuse rather than
+    guess in either direction. ``index_authority_blocker`` names why the
+    index cannot currently prove absence (see
+    :mod:`polylogue.storage.blob_gc_index_watermark`); as in
+    :func:`inspect_blob_liveness`, it blocks only a hash no surface claims.
+
+    Each owner is queried once per chunk of hashes, not once per hash: an
+    owner without a ``blob_hash`` index is scanned per query. A query that
+    fails propagates, so the caller's transaction rolls back.
+    """
+    hashes = tuple(dict.fromkeys(blob_hashes))
+    blockers = _source_global_blockers(source_conn)
+    if index_conn is not None:
+        blockers.extend(_schema_blockers(index_conn, tier="index", required=True))
+        if not _table_exists(index_conn, "attachment_refs"):
+            blockers.append("index.attachment_refs is missing")
+    if blockers:
+        blocked = BlobLiveness(LivenessState.BLOCKED, blockers=tuple(dict.fromkeys(blockers)))
+        return dict.fromkeys(hashes, blocked)
+    surfaces: dict[bytes, list[str]] = {blob_hash: [] for blob_hash in hashes}
+    excluded = tuple(sorted(excluding_session_ids))
+    outside = f" AND r.session_id NOT IN ({','.join('?' for _ in excluded)})" if excluded else ""
+    for start in range(0, len(hashes), _REFERENCE_QUERY_CHUNK):
+        chunk = hashes[start : start + _REFERENCE_QUERY_CHUNK]
+        marks = ",".join("?" for _ in chunk)
+        for owner in _owners(tier="source", ledger=False):
+            assert owner.blob_column is not None
+            if (
+                owner.table in _CENSUS_OWNER_TABLES
+                or not _table_exists(source_conn, owner.table)
+                or not _column_exists(source_conn, owner.table, owner.blob_column)
+            ):
+                continue
+            for (found,) in source_conn.execute(
+                f"SELECT DISTINCT {owner.blob_column} FROM {owner.table} WHERE {owner.blob_column} IN ({marks})",
+                chunk,
+            ):
+                surfaces[bytes(found)].append(f"source.db.{owner.table}")
+        for owner in _owners(tier="source", ledger=True):
+            assert owner.ref_type is not None and owner.referent_column is not None
+            for (found,) in source_conn.execute(
+                f"""SELECT DISTINCT ref.blob_hash FROM blob_refs AS ref
+                WHERE ref.blob_hash IN ({marks}) AND ref.ref_type = ?
+                AND EXISTS (SELECT 1 FROM {owner.table} AS owner WHERE owner.{owner.referent_column} = ref.ref_id)""",
+                (*chunk, owner.ref_type),
+            ):
+                surfaces[bytes(found)].append("source.db.blob_refs")
+        if index_conn is not None:
+            for (found,) in index_conn.execute(
+                "SELECT DISTINCT a.blob_hash FROM attachments AS a "
+                "JOIN attachment_refs AS r ON r.attachment_id = a.attachment_id "
+                f"WHERE a.blob_hash IN ({marks}){outside}",
+                (*chunk, *excluded),
+            ):
+                surfaces[bytes(found)].append("index.db.attachment_refs")
+    decisions: dict[bytes, BlobLiveness] = {}
+    for blob_hash, found_surfaces in surfaces.items():
+        if found_surfaces:
+            decisions[blob_hash] = BlobLiveness(LivenessState.LIVE, tuple(dict.fromkeys(found_surfaces)))
+        elif index_authority_blocker is not None:
+            decisions[blob_hash] = BlobLiveness(LivenessState.BLOCKED, blockers=(index_authority_blocker,))
+        else:
+            decisions[blob_hash] = BlobLiveness(LivenessState.UNREFERENCED)
+    return decisions
+
+
 def inspect_blob_reservation(source_conn: sqlite3.Connection, blob_hash: str) -> BlobLiveness:
     """Return an exact-ID protocol decision for a hash's remaining receipts.
 
@@ -378,36 +482,6 @@ def project_live_blob_hashes(
     )
 
 
-def project_index_blob_hashes(index_conn: sqlite3.Connection) -> BlobLivenessProjection:
-    """Project the active index's direct blob owners without source evidence.
-
-    Historical source fallback uses this narrow descriptor-owned projection to
-    retain readable index attachments. It intentionally cannot decide source
-    ledger ownership, which remains with :func:`project_live_blob_hashes`.
-    """
-
-    blockers = _schema_blockers(index_conn, tier="index", required=True)
-    if blockers:
-        return BlobLivenessProjection(frozenset(), tuple(dict.fromkeys(blockers)))
-    hashes: set[str] = set()
-    owner_hashes: dict[str, set[str]] = {}
-    try:
-        for owner in _owners(tier="index", ledger=False):
-            assert owner.blob_column is not None
-            owner_name = f"index.db.{owner.table}"
-            for row in index_conn.execute(f"SELECT DISTINCT {owner.blob_column} FROM {owner.table}"):
-                if isinstance(row[0], bytes) and len(row[0]) == 32:
-                    blob_hash = row[0].hex()
-                    hashes.add(blob_hash)
-                    owner_hashes.setdefault(owner_name, set()).add(blob_hash)
-    except sqlite3.Error as exc:
-        return BlobLivenessProjection(frozenset(), (f"index blob liveness query is unreadable: {exc}",))
-    return BlobLivenessProjection(
-        frozenset(hashes),
-        owner_hashes=tuple((owner, frozenset(values)) for owner, values in sorted(owner_hashes.items())),
-    )
-
-
 __all__ = [
     "BLOB_OWNERS",
     "acquired_attachment_missing_ref_predicate",
@@ -419,7 +493,7 @@ __all__ = [
     "index_tier_blob_population",
     "inspect_blob_liveness",
     "inspect_blob_reservation",
-    "project_index_blob_hashes",
+    "inspect_session_blob_references",
     "project_live_blob_hashes",
     "validated_blob_ref_liveness_joins",
 ]

@@ -97,11 +97,6 @@ _MCP_SESSION_RELATION_CHECK = literal_check("relation", *get_args(McpCallSession
 _ROUTE_DAEMON_PATH_CHECK = literal_check("daemon_path", *get_args(RouteDaemonPath))
 _ROUTE_OBSERVATION_STATUS_CHECK = literal_check("status", *get_args(RouteObservationStatus))
 _CONTEXT_INJECTION_DECISION_CHECK = literal_check("decision", *get_args(ContextInjectionDecision))
-# Split out of OPS_DDL (polylogue-sd9s) so the ops-bootstrap convergence step
-# that repairs a stale live CHECK (``_ensure_schema_drift_samples_check`` in
-# bootstrap.py) can re-execute exactly this fragment after a DROP TABLE,
-# rather than maintaining a second, hand-copied definition that could itself
-# drift from the canonical fresh-create DDL.
 SCHEMA_DRIFT_SAMPLES_DDL = f"""
 CREATE TABLE IF NOT EXISTS schema_drift_samples (
     sample_id             TEXT PRIMARY KEY,
@@ -217,6 +212,9 @@ ON ingest_attempts(status, heartbeat_at_ms);
 CREATE INDEX IF NOT EXISTS idx_ingest_attempts_storage_route
 ON ingest_attempts(storage_route);
 
+CREATE INDEX IF NOT EXISTS idx_ingest_attempts_outcome_code
+ON ingest_attempts(outcome_code, started_at_ms);
+
 -- polylogue-0glm0: the exact-source attempt lookup behind
 -- ``ops status --source <path>`` keys on source_path alone. None of the
 -- indexes above can serve it -- SQLite reads an index left to right, so
@@ -231,17 +229,6 @@ ON ingest_attempts(storage_route);
 -- widen every attempt write without removing the temp b-tree.
 CREATE INDEX IF NOT EXISTS idx_ingest_attempts_source_path
 ON ingest_attempts(source_path);
-
--- polylogue-cnu3: idx_ingest_attempts_outcome_code is deliberately NOT
--- declared here. This DDL block reruns verbatim on every same-version
--- reopen of an existing disposable ops.db (see initialize_archive_tier's
--- OPS reapply path), including archives created before ``outcome_code``
--- existed -- an unconditional ``CREATE INDEX ... ON
--- ingest_attempts(outcome_code, ...)`` would raise "no such column" on
--- those, since ``IF NOT EXISTS`` only guards the index name, not whether
--- the referenced column exists yet. The index is created instead by
--- ``_ensure_ops_ingest_attempt_outcome_columns`` (bootstrap.py), which
--- runs its ALTER TABLE ADD COLUMN step first.
 
 CREATE TABLE IF NOT EXISTS convergence_debt (
     debt_id        TEXT PRIMARY KEY,
@@ -479,15 +466,7 @@ ON fts_drift_samples(surface, sampled_at_ms DESC);
 -- 'known_field_unread' rows despite the classifier actively producing that
 -- label. Generating the CHECK from DriftClassification via literal_check
 -- closes the gap; ops.db is disposable so this needs no migration/version
--- bump, just the corrected DDL for the next bootstrap/bootstrap-repair.
---
--- polylogue-sd9s: ``CREATE TABLE IF NOT EXISTS`` never rewrites an
--- *existing* table's CHECK, so any ops.db bootstrapped before the fix above
--- (#3451) keeps rejecting ``known_field_unread`` forever on reopen. See
--- ``_ensure_schema_drift_samples_check`` (bootstrap.py) for the drop+recreate
--- convergence step that detects and repairs a stale live CHECK; it reuses
--- this exact DDL fragment (``SCHEMA_DRIFT_SAMPLES_DDL``) so the two can never
--- drift apart from each other.
+-- bump, just the corrected DDL for the next bootstrap.
 {SCHEMA_DRIFT_SAMPLES_DDL}
 
 CREATE TABLE IF NOT EXISTS context_injection_ledger (

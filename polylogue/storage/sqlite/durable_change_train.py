@@ -645,15 +645,10 @@ def _fresh_ddl_parity_for_train(
     """Compare a live result, or two canonical creates, against bootstrap DDL."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 
-    def prepare_target_schema(connection: sqlite3.Connection) -> None:
-        _migration_runner._prepare_fresh_connection_for_target(connection, train.tier, train.target_version)
-
     if migrated_connection is None:
         with sqlite_connection(":memory:") as migrated, sqlite_connection(":memory:") as fresh:
             initialize_archive_tier(migrated, train.tier)
             initialize_archive_tier(fresh, train.tier)
-            prepare_target_schema(migrated)
-            prepare_target_schema(fresh)
             return prove_durable_fresh_ddl_parity(
                 train.tier,
                 train.target_version,
@@ -663,7 +658,6 @@ def _fresh_ddl_parity_for_train(
             )
     with sqlite_connection(":memory:") as fresh:
         initialize_archive_tier(fresh, train.tier)
-        prepare_target_schema(fresh)
         return prove_durable_fresh_ddl_parity(
             train.tier,
             train.target_version,
@@ -723,9 +717,7 @@ def _runtime_consumer_results(
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_raw_failure_lifecycle(
-                        cast(Callable[..., object], value), archive_root, train.target_version
-                    )
+                    detail = _probe_raw_failure_lifecycle(cast(Callable[..., object], value), archive_root)
                 elif reference.endswith(":_record_zip_container_coordinate"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
@@ -749,7 +741,7 @@ def _runtime_consumer_results(
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_raw_artifact_upsert(cast(Callable[..., object], value), train.target_version)
+                    detail = _probe_raw_artifact_upsert(cast(Callable[..., object], value))
                 elif reference.endswith(":AuditRepository.reconcile_continuity"):
                     from polylogue.operations.audit import AuditRepository
 
@@ -774,93 +766,85 @@ def _runtime_consumer_results(
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_source_generation_publish(cast(Callable[..., object], value), train.target_version)
+                    detail = _probe_source_generation_publish(cast(Callable[..., object], value))
                 elif reference.endswith(":read_excision_policy_projection"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_excision_policy_projection_read(
-                        cast(Callable[..., object], value), train.target_version
-                    )
+                    detail = _probe_excision_policy_projection_read(cast(Callable[..., object], value))
                 elif reference.endswith(":record_source_attachments"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_source_attachment_record(cast(Callable[..., object], value), train.target_version)
+                    detail = _probe_source_attachment_record(cast(Callable[..., object], value))
                 elif reference.endswith(":source_attachment_census"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_source_attachment_census(cast(Callable[..., object], value), train.target_version)
+                    detail = _probe_source_attachment_census(cast(Callable[..., object], value))
                 elif reference.endswith(":source_generation_census"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_source_generation_census(cast(Callable[..., object], value), train.target_version)
+                    detail = _probe_source_generation_census(cast(Callable[..., object], value))
                 elif reference.endswith(":admit_material"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_material_admission(cast(Callable[..., object], value), train.target_version)
+                    detail = _probe_material_admission(cast(Callable[..., object], value))
                 elif reference.endswith(":get_material"):
                     if train.tier is not ArchiveTier.SOURCE:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is source-tier-only: {reference}"
                         )
-                    detail = _probe_material_read(cast(Callable[..., object], value), train.target_version)
+                    detail = _probe_material_read(cast(Callable[..., object], value))
                 elif reference.endswith(":promote_query"):
                     if train.tier is not ArchiveTier.USER:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
                         )
-                    detail = _probe_query_promotion(cast(Callable[..., object], value), train.target_version)
+                    detail = _probe_query_promotion(cast(Callable[..., object], value))
                 elif reference.endswith(":apply_query_excision"):
                     if train.tier is not ArchiveTier.USER:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
                         )
-                    detail = _probe_query_excision(cast(Callable[..., object], value), train.target_version)
+                    detail = _probe_query_excision(cast(Callable[..., object], value))
                 elif reference.endswith(":upsert_assertion"):
                     if train.tier is not ArchiveTier.USER:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
                         )
-                    detail = _probe_assertion_upsert(cast(Callable[..., object], value), train.target_version)
+                    detail = _probe_assertion_upsert(cast(Callable[..., object], value))
                 elif reference.endswith(":mark_assertion_status"):
                     if train.tier is not ArchiveTier.USER:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
                         )
-                    detail = _probe_assertion_status_mark(cast(Callable[..., object], value), train.target_version)
+                    detail = _probe_assertion_status_mark(cast(Callable[..., object], value))
                 elif reference.endswith(":advance_session_marker_delivery"):
                     if train.tier is not ArchiveTier.USER:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
                         )
-                    detail = _probe_session_marker_delivery_writer(
-                        cast(Callable[..., object], value), train.target_version
-                    )
+                    detail = _probe_session_marker_delivery_writer(cast(Callable[..., object], value))
                 elif reference.endswith(":advance_accepted_marker_delivery_cursor"):
                     if train.tier is not ArchiveTier.USER:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
                         )
-                    detail = _probe_accepted_marker_delivery_cursor_writer(
-                        cast(Callable[..., object], value), train.target_version
-                    )
+                    detail = _probe_accepted_marker_delivery_cursor_writer(cast(Callable[..., object], value))
                 elif reference.endswith(":accepted_marker_delivery_cursor"):
                     if train.tier is not ArchiveTier.USER:
                         raise DurableChangeTrainError(
                             f"runtime consumer {consumer.consumer_id} is user-tier-only: {reference}"
                         )
-                    detail = _probe_accepted_marker_delivery_cursor_reader(
-                        cast(Callable[..., object], value), train.target_version
-                    )
+                    detail = _probe_accepted_marker_delivery_cursor_reader(cast(Callable[..., object], value))
                 elif not any(
                     parameter.default is inspect.Parameter.empty
                     and parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
@@ -960,8 +944,8 @@ def _probe_source_hook_event_writer(writer: Callable[..., object]) -> str:
     return "wrote and read back a hook payload in a fresh source tier"
 
 
-def _probe_raw_artifact_upsert(upsert: Callable[..., object], target_version: int) -> str:
-    """Exercise raw-artifact admission against the train's projected source schema."""
+def _probe_raw_artifact_upsert(upsert: Callable[..., object]) -> str:
+    """Exercise raw-artifact admission against the canonical source schema."""
     from polylogue.core.enums import ArtifactSupportStatus, Origin
     from polylogue.storage.sqlite.archive_tiers.source_write import (
         ArchiveSourceArtifact,
@@ -984,7 +968,7 @@ def _probe_raw_artifact_upsert(upsert: Callable[..., object], target_version: in
         first_observed_at_ms=1_780_000_000_000,
         last_observed_at_ms=1_780_000_000_000,
     )
-    with _runtime_probe_source_connection(target_version) as probe:
+    with _runtime_probe_source_connection() as probe:
         write_source_raw_session_blob_ref(
             probe,
             origin=Origin.CODEX_SESSION,
@@ -1011,7 +995,7 @@ def _probe_raw_artifact_upsert(upsert: Callable[..., object], target_version: in
     )
     if row != expected:
         raise DurableChangeTrainError("raw-artifact upsert probe did not persist the expected artifact contract")
-    return "wrote and read back one raw artifact in the projected source tier"
+    return "wrote and read back one raw artifact in the canonical source tier"
 
 
 def _probe_accepted_marker_input_writer() -> str:
@@ -1059,13 +1043,12 @@ def _probe_accepted_marker_input_writer() -> str:
     return "accepted marker replay is immutable and source rollback removes the batch"
 
 
-def _runtime_probe_source_connection(target_version: int) -> sqlite3.Connection:
-    """Create a source-tier probe projected to the train's schema slot."""
+def _runtime_probe_source_connection() -> sqlite3.Connection:
+    """Create a fresh canonical source-tier probe."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 
     connection = sqlite3.connect(":memory:")
     initialize_archive_tier(connection, ArchiveTier.SOURCE)
-    _migration_runner._prepare_fresh_connection_for_target(connection, ArchiveTier.SOURCE, target_version)
     return connection
 
 
@@ -1083,24 +1066,10 @@ def _probe_excision_policy_snapshot(source_generation_id: str) -> ExcisionPolicy
     )
 
 
-def _probe_excision_policy_projection_columns(probe: sqlite3.Connection) -> bool:
-    """Report whether the projected schema slot carries the policy binding."""
-    return (
-        probe.execute(
-            "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'excision_policy_projections'"
-        ).fetchone()
-        is not None
-    )
-
-
-def _probe_source_generation_publish(publish: Callable[..., object], target_version: int) -> str:
-    """Exercise manifest-coordinate publication against the train's projected source schema."""
+def _probe_source_generation_publish(publish: Callable[..., object]) -> str:
+    """Exercise manifest-coordinate publication against the canonical source schema."""
     generation_id = "durable-change-train-source-generation"
-    with _runtime_probe_source_connection(target_version) as probe:
-        # The current source DDL owns the policy binding, so the writer must
-        # land its row in a table it never creates. Probe the projected catalog
-        # so this remains honest for any target shape that lacks the table.
-        projects_policy = _probe_excision_policy_projection_columns(probe)
+    with _runtime_probe_source_connection() as probe:
         ids = publish(
             probe,
             source_generation_id=generation_id,
@@ -1108,7 +1077,7 @@ def _probe_source_generation_publish(publish: Callable[..., object], target_vers
             addressing_mode="path",
             coordinates=("probe/one.jsonl", "probe/two.jsonl"),
             observed_at_ms=1_780_000_000_000,
-            **({"policy_snapshot": _probe_excision_policy_snapshot(generation_id)} if projects_policy else {}),
+            policy_snapshot=_probe_excision_policy_snapshot(generation_id),
         )
         generation_row = probe.execute(
             "SELECT item_count FROM source_generations WHERE source_generation_id = ?",
@@ -1118,28 +1087,24 @@ def _probe_source_generation_publish(publish: Callable[..., object], target_vers
             "SELECT COUNT(*) FROM source_items WHERE source_generation_id = ?",
             (generation_id,),
         ).fetchone()
-        policy_rows = (
-            probe.execute(
-                "SELECT COUNT(*) FROM excision_policy_projections WHERE source_generation_id = ?",
-                (generation_id,),
-            ).fetchone()
-            if projects_policy
-            else (0,)
-        )
+        policy_rows = probe.execute(
+            "SELECT COUNT(*) FROM excision_policy_projections WHERE source_generation_id = ?",
+            (generation_id,),
+        ).fetchone()
     if not isinstance(ids, tuple) or len(ids) != 2 or generation_row != (2,) or item_count != (2,):
         raise DurableChangeTrainError("source generation probe did not publish every manifest coordinate")
-    if projects_policy and policy_rows != (1,):
+    if policy_rows != (1,):
         raise DurableChangeTrainError("source generation probe did not record its excision policy projection")
     return f"published probe source generation with {len(ids)} pending items"
 
 
-def _probe_excision_policy_projection_read(read: Callable[..., object], target_version: int) -> str:
+def _probe_excision_policy_projection_read(read: Callable[..., object]) -> str:
     """Read back one policy binding the ordinary writer left in canonical DDL."""
     from polylogue.storage.sqlite.archive_tiers.source_items import publish_source_generation
 
     generation_id = "durable-change-train-excision-policy-generation"
     snapshot = _probe_excision_policy_snapshot(generation_id)
-    with _runtime_probe_source_connection(target_version) as probe:
+    with _runtime_probe_source_connection() as probe:
         absent = read(probe, generation_id)
         publish_source_generation(
             probe,
@@ -1161,7 +1126,7 @@ def _probe_excision_policy_projection_read(read: Callable[..., object], target_v
     return "read back one generation-local excision policy binding from canonical DDL"
 
 
-def _probe_source_attachment_record(record: Callable[..., object], target_version: int) -> str:
+def _probe_source_attachment_record(record: Callable[..., object]) -> str:
     """Exercise the source attachment denominator's idempotent writer."""
     from polylogue.storage.sqlite.archive_tiers.source_attachments import SourceAttachment
     from polylogue.storage.sqlite.archive_tiers.source_items import publish_source_generation
@@ -1174,7 +1139,7 @@ def _probe_source_attachment_record(record: Callable[..., object], target_versio
         disposition="policy_rejected",
         reason="probe",
     )
-    with _runtime_probe_source_connection(target_version) as probe:
+    with _runtime_probe_source_connection() as probe:
         publish_source_generation(
             probe,
             source_generation_id=generation_id,
@@ -1204,12 +1169,12 @@ def _probe_source_attachment_record(record: Callable[..., object], target_versio
     return "recorded one source attachment and replayed it idempotently"
 
 
-def _probe_source_attachment_census(census: Callable[..., object], target_version: int) -> str:
-    """Exercise the source attachment census against a real projected table."""
+def _probe_source_attachment_census(census: Callable[..., object]) -> str:
+    """Exercise the source attachment census against a real canonical table."""
     from polylogue.storage.sqlite.archive_tiers.source_items import publish_source_generation
 
     generation_id = "durable-change-train-attachment-census-generation"
-    with _runtime_probe_source_connection(target_version) as probe:
+    with _runtime_probe_source_connection() as probe:
         publish_source_generation(
             probe,
             source_generation_id=generation_id,
@@ -1226,12 +1191,12 @@ def _probe_source_attachment_census(census: Callable[..., object], target_versio
     return "read an empty source attachment denominator as sealable"
 
 
-def _probe_source_generation_census(census: Callable[..., object], target_version: int) -> str:
-    """Exercise reconciliation census against the train's projected source schema."""
+def _probe_source_generation_census(census: Callable[..., object]) -> str:
+    """Exercise reconciliation census against the canonical source schema."""
     from polylogue.storage.sqlite.archive_tiers.source_items import publish_source_generation
 
     generation_id = "durable-change-train-census-generation"
-    with _runtime_probe_source_connection(target_version) as probe:
+    with _runtime_probe_source_connection() as probe:
         publish_source_generation(
             probe,
             source_generation_id=generation_id,
@@ -1248,9 +1213,9 @@ def _probe_source_generation_census(census: Callable[..., object], target_versio
     return "census reported the probe generation as pending and unsealable"
 
 
-def _probe_material_admission(admit: Callable[..., object], target_version: int) -> str:
-    """Exercise claim-only material admission against the projected source schema."""
-    with _runtime_probe_source_connection(target_version) as probe:
+def _probe_material_admission(admit: Callable[..., object]) -> str:
+    """Exercise claim-only material admission against the canonical source schema."""
+    with _runtime_probe_source_connection() as probe:
         observation = admit(
             probe,
             blob_store=cast(Any, None),  # claim-only admission publishes no bytes
@@ -1268,11 +1233,11 @@ def _probe_material_admission(admit: Callable[..., object], target_version: int)
     return f"admitted probe material {str(material_id)[:12]} as a claimed observation"
 
 
-def _probe_material_read(get: Callable[..., object], target_version: int) -> str:
-    """Exercise material read-back against the projected source schema."""
+def _probe_material_read(get: Callable[..., object]) -> str:
+    """Exercise material read-back against the canonical source schema."""
     from polylogue.storage.materials import admit_material
 
-    with _runtime_probe_source_connection(target_version) as probe:
+    with _runtime_probe_source_connection() as probe:
         observation = admit_material(
             probe,
             blob_store=cast(Any, None),
@@ -1286,21 +1251,20 @@ def _probe_material_read(get: Callable[..., object], target_version: int) -> str
     return f"read back probe material {observation.material_id[:12]}"
 
 
-def _runtime_probe_user_connection(target_version: int) -> sqlite3.Connection:
-    """Create a user-tier probe projected to the train's schema slot."""
+def _runtime_probe_user_connection() -> sqlite3.Connection:
+    """Create a fresh canonical user-tier probe."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 
     connection = sqlite3.connect(":memory:")
     initialize_archive_tier(connection, ArchiveTier.USER)
-    _migration_runner._prepare_fresh_connection_for_target(connection, ArchiveTier.USER, target_version)
     return connection
 
 
-def _probe_query_promotion(promote: Callable[..., object], target_version: int) -> str:
-    """Exercise privacy-contracted promotion against the train's projected user schema."""
+def _probe_query_promotion(promote: Callable[..., object]) -> str:
+    """Exercise privacy-contracted promotion against the canonical user schema."""
     from polylogue.storage.sqlite.query_objects import get_query, put_query
 
-    with _runtime_probe_user_connection(target_version) as probe:
+    with _runtime_probe_user_connection() as probe:
         query = put_query(
             probe,
             {"field": "body", "value": "durable-change-train promotion probe"},
@@ -1328,12 +1292,12 @@ def _probe_query_promotion(promote: Callable[..., object], target_version: int) 
     return f"promoted probe query {query.query_hash[:12]} under a complete privacy contract"
 
 
-def _probe_query_excision(apply_excision: Callable[..., object], target_version: int) -> str:
-    """Exercise excise-and-tombstone against the train's projected user schema."""
+def _probe_query_excision(apply_excision: Callable[..., object]) -> str:
+    """Exercise excise-and-tombstone against the canonical user schema."""
     from polylogue.security.query_excision import plan_query_excision
     from polylogue.storage.sqlite.query_objects import get_query, promote_query, put_query
 
-    with _runtime_probe_user_connection(target_version) as probe:
+    with _runtime_probe_user_connection() as probe:
         query = put_query(
             probe,
             {"field": "body", "value": "durable-change-train excision probe"},
@@ -1368,8 +1332,8 @@ def _probe_query_excision(apply_excision: Callable[..., object], target_version:
     return f"excised probe query {query.query_hash[:12]} with a non-resurrection ledger row"
 
 
-def _probe_assertion_upsert(upsert: Callable[..., object], target_version: int) -> str:
-    """Exercise the assertion writer against the train's projected user schema.
+def _probe_assertion_upsert(upsert: Callable[..., object]) -> str:
+    """Exercise the assertion writer against the canonical user schema.
 
     The rider's behavior proof is ``upsert-resolves-absent-status``: an
     ordinary write that supplies no status must land a resolved status value,
@@ -1378,7 +1342,7 @@ def _probe_assertion_upsert(upsert: Callable[..., object], target_version: int) 
     instead of silently relying on the column's nullability.
     """
     assertion_id = "durable-change-train-assertion"
-    with _runtime_probe_user_connection(target_version) as probe:
+    with _runtime_probe_user_connection() as probe:
         envelope = upsert(
             probe,
             assertion_id=assertion_id,
@@ -1401,8 +1365,8 @@ def _probe_assertion_upsert(upsert: Callable[..., object], target_version: int) 
     return f"upserted probe assertion with resolved status {stored[0]!r} and no NULL fallback"
 
 
-def _probe_assertion_status_mark(mark: Callable[..., object], target_version: int) -> str:
-    """Exercise the status marker against the train's projected user schema.
+def _probe_assertion_status_mark(mark: Callable[..., object]) -> str:
+    """Exercise the status marker against the canonical user schema.
 
     The rider's behavior proof is ``mark-needs-no-null-coalesce``. Fresh user
     DDL declares the status column non-null, so the marker's legacy
@@ -1414,7 +1378,7 @@ def _probe_assertion_status_mark(mark: Callable[..., object], target_version: in
     from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 
     assertion_id = "durable-change-train-assertion-mark"
-    with _runtime_probe_user_connection(target_version) as probe:
+    with _runtime_probe_user_connection() as probe:
         upsert_assertion(
             probe,
             assertion_id=assertion_id,
@@ -1439,7 +1403,7 @@ def _probe_assertion_status_mark(mark: Callable[..., object], target_version: in
 
 
 @contextmanager
-def _runtime_probe_user_file_connection(target_version: int) -> Iterator[sqlite3.Connection]:
+def _runtime_probe_user_file_connection() -> Iterator[sqlite3.Connection]:
     """Make a file-backed user tier for cursor transaction probes."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 
@@ -1448,15 +1412,14 @@ def _runtime_probe_user_file_connection(target_version: int) -> Iterator[sqlite3
         initialize_archive_database(path, ArchiveTier.USER)
         connection = sqlite3.connect(path)
         try:
-            _migration_runner._prepare_fresh_connection_for_target(connection, ArchiveTier.USER, target_version)
             yield connection
         finally:
             connection.close()
 
 
-def _probe_session_marker_delivery_writer(writer: Callable[..., object], target_version: int) -> str:
+def _probe_session_marker_delivery_writer(writer: Callable[..., object]) -> str:
     """Exercise the v003 per-session cursor through its real user writer."""
-    with _runtime_probe_user_file_connection(target_version) as probe:
+    with _runtime_probe_user_file_connection() as probe:
         writer(probe, session_id="session:marker-probe", input_binding="first", applied_at_ms=10)
         writer(probe, session_id="session:marker-probe", input_binding="older", applied_at_ms=9)
         writer(probe, session_id="session:marker-probe", input_binding="newer", applied_at_ms=11)
@@ -1469,11 +1432,11 @@ def _probe_session_marker_delivery_writer(writer: Callable[..., object], target_
     return "advanced the v003 session marker cursor monotonically in a file-backed user tier"
 
 
-def _probe_accepted_marker_delivery_cursor_writer(writer: Callable[..., object], target_version: int) -> str:
+def _probe_accepted_marker_delivery_cursor_writer(writer: Callable[..., object]) -> str:
     """Exercise the v004 source-stream cursor through its canonical writer."""
     from polylogue.storage.sqlite.archive_tiers.user_write import accepted_marker_delivery_cursor
 
-    with _runtime_probe_user_file_connection(target_version) as probe:
+    with _runtime_probe_user_file_connection() as probe:
         writer(
             probe,
             stream_id="durable-marker-stream",
@@ -1506,11 +1469,11 @@ def _probe_accepted_marker_delivery_cursor_writer(writer: Callable[..., object],
     return "advanced one contiguous accepted-marker source cursor in a file-backed user tier"
 
 
-def _probe_accepted_marker_delivery_cursor_reader(reader: Callable[..., object], target_version: int) -> str:
+def _probe_accepted_marker_delivery_cursor_reader(reader: Callable[..., object]) -> str:
     """Exercise the v004 cursor reader against a row written by the real writer."""
     from polylogue.storage.sqlite.archive_tiers.user_write import advance_accepted_marker_delivery_cursor
 
-    with _runtime_probe_user_file_connection(target_version) as probe:
+    with _runtime_probe_user_file_connection() as probe:
         advance_accepted_marker_delivery_cursor(
             probe,
             stream_id="durable-marker-stream",
@@ -1750,8 +1713,8 @@ def _probe_raw_record_hydration(mapper: Callable[..., object]) -> str:
     return "hydrated a raw record preserving both acquisition origin and detected provider"
 
 
-def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Path, target_version: int) -> str:
-    """Exercise the source-tier failure lifecycle reader against its projected schema."""
+def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Path) -> str:
+    """Exercise the source-tier failure lifecycle reader against the canonical source schema."""
     del archive_root
     with tempfile.TemporaryDirectory(prefix="polylogue-durable-train-failure-") as directory:
         source_path = Path(directory) / "source.db"
@@ -1759,7 +1722,6 @@ def _probe_raw_failure_lifecycle(reader: Callable[..., object], archive_root: Pa
             from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 
             initialize_archive_tier(connection, ArchiveTier.SOURCE)
-            _migration_runner._prepare_fresh_connection_for_target(connection, ArchiveTier.SOURCE, target_version)
         snapshot = reader(source_path, sample_limit=1)
     if not getattr(snapshot, "available", False):
         raise DurableChangeTrainError("raw failure lifecycle probe could not read source.db")
@@ -1875,7 +1837,6 @@ def _canonical_schema_inventory_for_ddl(
         fresh.execute("PRAGMA foreign_keys = ON")
         fresh.executescript(archive_ddl)
         fresh.execute(f"PRAGMA user_version = {target_version}")
-        _migration_runner._prepare_fresh_connection_for_target(fresh, tier, target_version)
         fresh.commit()
         return _migration_runner.capture_durable_schema_inventory(fresh)
 

@@ -43,7 +43,9 @@ def test_prose_with_refs_collapses_tools_and_preserves_resolvable_markers() -> N
     assert "<ref:action:session:m2:1> Bash" in (segment.markdown or "")
     assert "<ref:action:session:m3:0> tool_result" in (segment.markdown or "")
     assert ObjectRef.parse("action:session:m2:1").format() == "action:session:m2:1"
-    assert ObjectRef(kind="action", object_id="session:m2:1") in segment.object_refs
+    # An action ref carries its block index as a qualifier, exactly as
+    # ``ObjectRef.parse`` reads the marker back.
+    assert ObjectRef(kind="action", object_id="session:m2", qualifiers=("1",)) in segment.object_refs
 
 
 def test_prose_with_refs_records_budget_recaps_after_sixty_percent() -> None:
@@ -52,13 +54,20 @@ def test_prose_with_refs_records_budget_recaps_after_sixty_percent() -> None:
         for i in range(8)
     ]
 
+    # The budget is a hard cap (#5722): 80 tokens cannot hold even the
+    # recaps, so they would be omitted. 600 tokens (a 360-token prose share)
+    # is under the ~650-token full render but fits once unprotected rows are
+    # recapped, which is the path this test pins: no row is omitted.
     segment, recapped = compile_prose_with_refs_context_segment(
-        session_id="s", title="large", messages=messages, max_tokens=80, keep_last_messages=2
+        session_id="s", title="large", messages=messages, max_tokens=600, keep_last_messages=2
     )
 
+    markdown = segment.markdown or ""
     assert recapped is True
-    assert "[recap]" in (segment.markdown or "")
-    assert "old prose old prose" in (segment.markdown or "")
+    assert "[recap] old prose old prose" in markdown
+    assert "[omitted]" not in markdown
+    assert ("old prose " * 30).strip() in markdown
+    assert segment.token_estimate <= 360
     assert segment.lossiness == "budget_recapped_prose"
 
 

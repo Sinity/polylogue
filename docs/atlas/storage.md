@@ -28,7 +28,7 @@ path causes an indexed refusal because an alias cannot be matched to a
 selected path without inspecting every source row
 (`polylogue/storage/raw_retention.py:1182-1380`;
 `polylogue/storage/sqlite/archive_tiers/source.py:525-531`;
-`polylogue/storage/sqlite/archive_tiers/ops.py:220-227`).
+`polylogue/storage/sqlite/archive_tiers/ops.py:218-225`).
 
 ## Identity and generated columns
 

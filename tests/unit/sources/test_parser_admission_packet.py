@@ -252,7 +252,7 @@ def test_admission_conservation_rejects_a_range_that_overcounts() -> None:
         expected={AdmissionUnit.OUTER_RECORD: 3},
         materialized_ordinals={AdmissionUnit.OUTER_RECORD: [(0, 4)]},
     )
-    with pytest.raises(ValueError, match="admission denominator mismatch"):
+    with pytest.raises(ValueError, match="invalid materialized admission range"):
         overcounting.assert_conserved()
 
     overlapping = ParseAccounting(

@@ -1767,7 +1767,7 @@ AFTER INSERT ON attachment_refs BEGIN
     {_profile_demand_sql("NEW.session_id")}
 END;
 CREATE TRIGGER IF NOT EXISTS session_profile_binding_refs_au
-AFTER UPDATE OF session_id, {_binding_columns(SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS)} ON attachment_refs BEGIN
+AFTER UPDATE OF session_id, attachment_id, position, {_binding_columns(SESSION_ATTACHMENT_REF_PROJECTION_COLUMNS)} ON attachment_refs BEGIN
     UPDATE session_profiles SET input_content_hash = NULL
      WHERE session_id IN (OLD.session_id, NEW.session_id);
     {_profile_demand_sql("OLD.session_id")}

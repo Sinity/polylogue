@@ -21,7 +21,7 @@ from polylogue.daemon.execution import (
     DaemonOperationCancelled,
 )
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
-from polylogue.logging import propagate
+from polylogue.logging import WARNING, emit, propagate
 from polylogue.operations.audit import (
     MACHINE_PAGE_KINDS,
     AuditContinuityError,
@@ -72,6 +72,10 @@ _STAGED_OPERATIONS = frozenset(
 )
 
 
+#: Name prefix of the ingest owner's re-drive task on its owner loop.
+REDRIVE_TASK_PREFIX = "polylogue-ingest-redrive:"
+
+
 class BeforeAcceptanceCancelledError(RuntimeError):
     """Cancellation won the lock before durable prepare could begin."""
 
@@ -86,11 +90,18 @@ class _StagedTask(Generic[_T]):
     takes the task's terminal state only when the task has actually finished.
     """
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, start: Callable[[], Coroutine[Any, Any, _T]]) -> None:
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        start: Callable[[], Coroutine[Any, Any, _T]],
+        *,
+        name: str | None = None,
+    ) -> None:
         self.future: Future[_T] = Future()
         self._loop = loop
         self._task: asyncio.Task[_T] | None = None
         self._cancelled = False
+        self._name = name
         loop.call_soon_threadsafe(self._start, start)
 
     def cancel(self) -> None:
@@ -102,7 +113,7 @@ class _StagedTask(Generic[_T]):
         # order, so a cancellation either precedes the task or reaches it.
         if self._cancelled:
             return
-        self._task = self._loop.create_task(start())
+        self._task = self._loop.create_task(start(), name=self._name)
         self._task.add_done_callback(self._settle)
 
     def _cancel(self) -> None:
@@ -168,6 +179,87 @@ class DaemonOperationRuntime:
         self._condition = threading.Condition(threading.RLock())
         self._exchanges: dict[str, _Exchange] = {}
         self._closing = False
+        # The ingest owner's re-drive of accepted generations a dead process
+        # left without a terminal checkpoint, and the request ids a cancel
+        # has fenced while it runs.
+        self._redrive: Future[None] | None = None
+        self._redrive_cancelled: set[str] = set()
+        # Set on the owner loop once every eligible run is claimed.
+        self._redrive_claimed: threading.Event = threading.Event()
+
+    def start_accepted_ingest_redrive(self) -> None:
+        """Re-drive accepted ingests left without a terminal checkpoint, once per owner start.
+
+        Startup recovery leaves such runs to this owner
+        (``IngestRecovery``); it must run after that recovery. The re-drive
+        runs on the owner loop beside request exchanges and uses the same
+        writer and compute phases as a fresh ingest request.
+        """
+        if self._owner_loop is None or self._session_maintenance is None:
+            return
+        with self._condition:
+            if self._redrive is not None or self._closing:
+                return
+            from polylogue.operations.daemon_ingest import redrive_accepted_ingests
+
+            def stop_requested(request_id: str) -> str | None:
+                with self._condition:
+                    if request_id in self._redrive_cancelled:
+                        return "cancelled"
+                    return "shutdown" if self._closing else None
+
+            claimed = self._redrive_claimed
+
+            async def redrive() -> None:
+                try:
+                    await redrive_accepted_ingests(
+                        self,
+                        self.archive_root,
+                        stop_requested=stop_requested,
+                        on_commit=self._notify,
+                        on_claimed=claimed.set,
+                    )
+                except Exception as exc:
+                    emit(
+                        "ingest.redrive.unavailable",
+                        level=WARNING,
+                        outcome="refused",
+                        error_type=type(exc).__name__,
+                        error_detail=str(exc)[:512],
+                    )
+
+            # Named: the re-drive is this runtime's own declared child on the
+            # owner loop, not an anonymous task.
+            self._redrive = _StagedTask(
+                self._owner_loop, redrive, name=f"{REDRIVE_TASK_PREFIX}{self.archive_root}"
+            ).future
+            redrive_future = self._redrive
+        try:
+            on_owner_loop = asyncio.get_running_loop() is self._owner_loop
+        except RuntimeError:
+            on_owner_loop = False
+        if on_owner_loop:
+            # The claim phase runs on this very loop: blocking here would
+            # deadlock it. The caller awaits ``accepted_ingest_redrive_claimed``.
+            return
+        # Hold the caller -- the server, before it exposes its listeners --
+        # until every eligible run is claimed: a resent request then reads
+        # its run as ``running`` and follows it to the receipt, instead of
+        # reading the still-``interrupted`` run as indeterminate.
+        while not claimed.wait(0.05):
+            if redrive_future.done():
+                break
+
+    async def accepted_ingest_redrive_claimed(self) -> None:
+        """Wait, on the owner loop, until the started re-drive claimed every eligible run.
+
+        The owner-loop composition (``polylogued run``) constructs its server
+        on the loop the re-drive runs on, so it awaits this before its
+        listeners serve instead of blocking in the constructor.
+        """
+        redrive = self._redrive
+        while redrive is not None and not self._redrive_claimed.is_set() and not redrive.done():
+            await asyncio.sleep(0.02)
 
     async def shutdown(self) -> None:
         """Stop admission and settle actual operation workers before owner teardown."""
@@ -176,9 +268,11 @@ class DaemonOperationRuntime:
             exchanges = tuple(self._exchanges.values())
             for exchange in exchanges:
                 exchange.cancellation.cancel()
+            redrive = self._redrive
             self._condition.notify_all()
         pending = asyncio.gather(
             *(asyncio.wrap_future(exchange.future) for exchange in exchanges if exchange.future is not None),
+            *(() if redrive is None else (asyncio.wrap_future(redrive),)),
             return_exceptions=True,
         )
         try:
@@ -194,7 +288,7 @@ class DaemonOperationRuntime:
     @property
     def shutdown_settled(self) -> bool:
         with self._condition:
-            return self._closing and not self._exchanges
+            return self._closing and not self._exchanges and (self._redrive is None or self._redrive.done())
 
     def publication_guard(self) -> AbstractContextManager[object]:
         return self._bridge.hold("operation.pin-read")
@@ -244,18 +338,18 @@ class DaemonOperationRuntime:
 
     async def converge_ingest_sessions(
         self,
-        request: DaemonOperationRequest,
         session_ids: tuple[str, ...],
         *,
         expected_recipe: str,
         stop_requested: Callable[[], str | None],
     ) -> SessionInsightPartReceipt:
+        """Derive one page of ingested sessions; ``stop_requested`` is the ingest attempt's own stop."""
         self.require_session_maintenance()
         assert self._session_maintenance is not None
         return await self._session_maintenance.converge_ingest_sessions(
             session_ids,
             expected_recipe=expected_recipe,
-            stop_requested=lambda: self.stop_reason(request) or stop_requested(),
+            stop_requested=stop_requested,
         )
 
     async def converge_insight_part(
@@ -848,15 +942,52 @@ class DaemonOperationRuntime:
                 if exchange is not None:
                     if exchange.context.principal != principal:
                         raise PermissionError("operation reference belongs to another principal")
-                    cancelled_before_acceptance = not exchange.acceptance_started
                     exchange.cancellation.cancel()
                     self._condition.notify_all()
-            if exchange is None:
-                # A settled request has no live worker. Queue the durable fence
-                # through the same writer owner, never under the waiter lock.
+                    # A retry resend of the original request creates its own
+                    # exchange entry, so ``exchange is None`` alone cannot
+                    # gate the durable fence: a resumed ingest crossed
+                    # ``before_machine_prepare`` on an earlier attempt and
+                    # never re-enters this exchange's own acceptance path,
+                    # so a live re-drive can still be running this exact
+                    # target. Cancelling only the exchange's reporting
+                    # coroutine leaves that re-drive unfenced and unnotified,
+                    # and it can still materialize and finalize the
+                    # generation after the client believes it cancelled.
+                    #
+                    # Acceptance is therefore read from the durable request,
+                    # never from this exchange's own flag: a resend of an
+                    # accepted request reads its record and never sets it.
+                    live_exchange = True
+                    acceptance_in_flight = exchange.acceptance_started
+                else:
+                    live_exchange = False
+                    acceptance_in_flight = False
+            # A live exchange with no durable request was cancelled before
+            # acceptance: nothing is committed, so no writer fence is queued.
+            # Read without the writer, so a busy writer cannot turn that
+            # cancellation into an indeterminate answer.
+            # Once acceptance has started, its durable write may be in flight
+            # (source prepared, audit not yet committed): absence is then
+            # decided under the writer, after that write, never by a plain read.
+            cancelled_before_acceptance = (
+                live_exchange
+                and not acceptance_in_flight
+                and audit.machine_request_for_principal(archive_identity, target, principal.actor_ref) is None
+            )
+            if not cancelled_before_acceptance:
+                # Queue the durable fence through the same writer owner, never
+                # under the waiter lock.
+                absent_after_serialization = [False]
+
                 def fence() -> None:
                     record = audit.machine_request_for_principal(archive_identity, target, principal.actor_ref)
                     if record is None:
+                        if live_exchange:
+                            # Serialized after any in-flight acceptance: the
+                            # cancellation won, and nothing was accepted.
+                            absent_after_serialization[0] = True
+                            return
                         raise ValueError("operation_reference_unknown")
                     if record["artifact_kind"] in {"execution-batch", "source-generation"}:
                         binding = MachineRequestBinding(
@@ -881,6 +1012,12 @@ class DaemonOperationRuntime:
 
                 try:
                     self._bridge.run_sync_with_timeout("operation.cancel", 2.0, fence)
+                    cancelled_before_acceptance = absent_after_serialization[0]
+                    with self._condition:
+                        # A running re-drive of this request observes the
+                        # fence at its next stop check.
+                        if self._redrive is not None and not self._redrive.done():
+                            self._redrive_cancelled.add(target)
                 except TimeoutError:
                     return OperationControlResult(
                         {"outcome": "indeterminate", "sequence": 0, "cancellation_requested": True},

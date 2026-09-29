@@ -223,7 +223,6 @@ def excise_command(
                 f"  source.db raw rows: {plan.source_raw_rows}"
                 + (f" (including {plan.source_fact_rows} fact/plan snapshot row(s))" if plan.source_fact_rows else ""),
                 f"  source.db hook events: {plan.source_hook_events}",
-                f"  source.db telemetry spans: {plan.source_otlp_spans}",
                 f"  source.db container members: {plan.source_container_members}"
                 + (
                     f" (releasing {plan.source_container_items} container item(s))"
@@ -363,6 +362,14 @@ def excise_command(
         detail_message += (
             f"; INCOMPLETE: {len(retained_containers)} source container(s) still hold this session's "
             f"bytes for other live sessions: {', '.join(retained_containers)}"
+        )
+    shared_blobs = cast("list[object]", domain_receipt.get("shared_blob_hashes", ()))
+    if shared_blobs:
+        # Excision forgets this session, not the other sessions that share a
+        # content-addressed blob with it; those blobs stay theirs, unmarked.
+        detail_message += (
+            f"; kept {len(shared_blobs)} blob(s) another live session still references "
+            "(excising that session too forgets them)"
         )
     _emit(
         env,

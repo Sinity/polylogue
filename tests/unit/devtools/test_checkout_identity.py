@@ -219,7 +219,7 @@ def test_a_checkout_that_moves_during_verification_voids_the_result(
     monkeypatch.setattr(verify_module, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
     monkeypatch.setattr(verify_module, "build_verify_steps", lambda **_kwargs: [("gate only", ["true"])])
     monkeypatch.setattr(verify_module, "_run", gate_that_switches_branch)
-    monkeypatch.setattr(verify_module, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify_module, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify_module._main(["--quick"]) == 1
     assert history["diagnosis"] == "checkout_moved_during_run"
@@ -284,7 +284,7 @@ def test_a_content_edit_during_verification_voids_the_result(monkeypatch: pytest
     monkeypatch.setattr(verify_module, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
     monkeypatch.setattr(verify_module, "build_verify_steps", lambda **_kwargs: [("gate only", ["true"])])
     monkeypatch.setattr(verify_module, "_run", gate_that_edits)
-    monkeypatch.setattr(verify_module, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify_module, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify_module._main(["--quick"]) == 1
     assert history["diagnosis"] == "checkout_moved_during_run"
@@ -340,6 +340,9 @@ def test_a_focused_run_whose_content_moves_during_pytest_is_void(
         )
         return SlotOutcome(returncode=0, slot="agentctl job 1", receipt={"worktree_provenance": provenance})
 
+    # The selection names a module that exists: a missing one is refused
+    # before the run is queued at all.
+    (root / "seed_test.py").write_text("", encoding="utf-8")
     monkeypatch.setattr(run_tests, "ROOT", root)
     monkeypatch.chdir(root)
     monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
@@ -404,7 +407,7 @@ def test_pytest_on_another_head_with_identical_content_voids_verification(
     monkeypatch.setattr(verify_module, "assert_polylogue_matches_checkout", lambda *_a, **_k: None)
     monkeypatch.setattr(verify_module, "build_verify_steps", lambda **_kwargs: [("gate only", ["true"])])
     monkeypatch.setattr(verify_module, "_run", pytest_step)
-    monkeypatch.setattr(verify_module, "append_verify_history", lambda payload: history.update(payload))
+    monkeypatch.setattr(verify_module, "append_verify_history", lambda payload, **_kwargs: history.update(payload))
 
     assert verify_module._main(["--quick"]) == 1
     assert history["diagnosis"] == "checkout_moved_during_run"

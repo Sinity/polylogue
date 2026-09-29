@@ -25,6 +25,7 @@ import stat
 import tempfile
 import zipfile
 from collections.abc import Iterable, Mapping
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
@@ -942,6 +943,15 @@ def _validate_path_component(value: str, *, label: str) -> None:
 def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> SourceCutResult:
     """Create and atomically publish one immutable candidate cohort."""
     destination = destination.absolute()
+    physical_destination = destination.resolve()
+    physical_parent = destination.parent.resolve()
+    for binding in preflight.bindings:
+        source_root = Path(binding.source.root).resolve()
+        if physical_destination == source_root or (
+            binding.root_identity.kind == "directory"
+            and (physical_parent.is_relative_to(source_root) or source_root.is_relative_to(physical_destination))
+        ):
+            raise SourceSnapshotError(f"candidate destination overlaps source root: {binding.source.source_id}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     _reclaim_orphaned_staging(destination.parent, preflight.request_id)
     if not destination.exists():
@@ -962,13 +972,14 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
     preflight.verify_roots()
     staging = Path(tempfile.mkdtemp(prefix=f".{preflight.request_id}.", dir=destination.parent))
     try:
+        _write_durable(staging / _STAGING_OWNER_MARKER, f"{preflight.request_id}\n")
         baselines = {binding.source.source_id: _observe(binding) for binding in preflight.bindings}
         _preflight_copy_capacity(preflight, baselines, staging.parent)
         candidate_items: list[CutItem] = []
         for binding in preflight.bindings:
             source_destination = staging / "candidate" / binding.source.source_id
             if binding.policy.mode is SnapshotMode.SQLITE_LOGICAL_EXPORT:
-                source_destination = source_destination.with_suffix(".jsonl")
+                source_destination = source_destination.with_name(source_destination.name + ".jsonl")
             elif binding.policy.mode is SnapshotMode.ARCHIVE_MEMBER or not Path(binding.source.root).is_dir():
                 source_destination = source_destination.with_name(
                     source_destination.name + Path(binding.source.root).suffix
@@ -1049,6 +1060,9 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
             "cut_identity": cut_identity,
         }
         _write_durable(staging / "candidate-manifest.json", json.dumps(manifest_payload, sort_keys=True, indent=2))
+        # The owner marker only licenses reclaiming a crashed staging
+        # directory; the published cut does not carry it.
+        (staging / _STAGING_OWNER_MARKER).unlink()
         _fsync_tree(staging)
         os.replace(staging, destination)
         _fsync_directory(destination.parent)
@@ -1061,10 +1075,22 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
         raise
 
 
+#: Written first into every staging directory this module creates. A name that
+#: merely shares the request prefix proves no ownership, so reclamation
+#: requires this marker naming the same request.
+_STAGING_OWNER_MARKER = ".source-cut-staging-owner"
+
+
 def _reclaim_orphaned_staging(parent: Path, request_id: str) -> None:
     prefix = f".{request_id}."
     for path in parent.iterdir():
-        if path.name.startswith(prefix) and path.is_dir():
+        if not path.name.startswith(prefix) or path.is_symlink() or not path.is_dir():
+            continue
+        try:
+            owner = (path / _STAGING_OWNER_MARKER).read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        if owner == f"{request_id}\n":
             shutil.rmtree(path)
 
 
@@ -1077,19 +1103,47 @@ def reacquire_candidate(
     if source_id is not None and source_id not in {item.source_id for item in result.candidate_manifest.items}:
         raise CandidateCohortError(f"candidate request names outside cohort: {source_id}")
     inputs: list[CandidateInput] = []
-    for item in result.candidate_manifest.items:
-        if source_id is not None and item.source_id != source_id:
-            continue
-        if selected is not None and item.coordinate not in selected:
-            continue
-        if item.snapshot_path is None:
-            raise CandidateCohortError(f"candidate item has no immutable snapshot: {item.coordinate}")
-        path = result.candidate_root / item.snapshot_path
-        if not path.is_relative_to(result.candidate_root):
-            raise CandidateCohortError(f"candidate path escapes published snapshot: {item.coordinate}")
-        if not path.is_file() or path.stat().st_size != item.size_bytes or _sha256_path(path) != item.content_sha256:
-            raise SourceMutationError(f"candidate snapshot mutated: {item.coordinate}")
-        inputs.append(CandidateInput(item.source_id, item.coordinate, path, item.content_sha256, item.size_bytes))
+    modes = dict(result.ownership_modes)
+    # Keep each central directory open once, rather than reparsing a ZIP for
+    # every member. The manifest names member bytes, not container bytes, and
+    # a member is read by name exactly as the cut read it.
+    archives: dict[Path, zipfile.ZipFile] = {}
+    with ExitStack() as stack:
+        for item in result.candidate_manifest.items:
+            if source_id is not None and item.source_id != source_id:
+                continue
+            if selected is not None and item.coordinate not in selected:
+                continue
+            if item.snapshot_path is None:
+                raise CandidateCohortError(f"candidate item has no immutable snapshot: {item.coordinate}")
+            path = result.candidate_root / item.snapshot_path
+            if not path.is_relative_to(result.candidate_root):
+                raise CandidateCohortError(f"candidate path escapes published snapshot: {item.coordinate}")
+            if modes[item.source_id] is SnapshotMode.ARCHIVE_MEMBER:
+                _, separator, member_name = item.coordinate.partition("!")
+                if not separator:
+                    raise CandidateCohortError(f"candidate member has no archive coordinate: {item.coordinate}")
+                try:
+                    if path not in archives:
+                        archives[path] = stack.enter_context(zipfile.ZipFile(path))
+                    digest = hashlib.sha256()
+                    size = 0
+                    with archives[path].open(member_name) as stream:
+                        while chunk := stream.read(1024 * 1024):
+                            digest.update(chunk)
+                            size += len(chunk)
+                    unchanged = size == item.size_bytes and digest.hexdigest() == item.content_sha256
+                except (OSError, zipfile.BadZipFile, KeyError, RuntimeError) as exc:
+                    raise SourceMutationError(f"candidate archive mutated: {item.coordinate}") from exc
+            else:
+                unchanged = (
+                    path.is_file()
+                    and path.stat().st_size == item.size_bytes
+                    and _sha256_path(path) == item.content_sha256
+                )
+            if not unchanged:
+                raise SourceMutationError(f"candidate snapshot mutated: {item.coordinate}")
+            inputs.append(CandidateInput(item.source_id, item.coordinate, path, item.content_sha256, item.size_bytes))
     if selected is not None:
         actual = {item.coordinate for item in inputs}
         missing = selected - actual

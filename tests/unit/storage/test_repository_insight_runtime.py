@@ -89,9 +89,13 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
 
     with (
         patch(
-            "polylogue.storage.repository.raw.repository_raw.raw_queries.save_raw_session",
-            new=AsyncMock(return_value=True),
-        ) as mock_save_raw,
+            "polylogue.storage.repository.raw.repository_raw.plan_raw_admission",
+            return_value="admission-plan",
+        ) as mock_plan_admission,
+        patch(
+            "polylogue.storage.repository.raw.repository_raw.raw_writes.execute_raw_admission_plan_async",
+            new=AsyncMock(return_value="admission-execution"),
+        ) as mock_admit_raw,
         patch(
             "polylogue.storage.repository.raw.repository_raw.artifacts_q.save_artifact_observation",
             new=AsyncMock(return_value=True),
@@ -142,7 +146,7 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
             new=AsyncMock(return_value=9),
         ) as mock_count,
     ):
-        assert await repo.save_raw_session("record") is True
+        assert await repo.admit_raw("admission-request") == "admission-execution"
         assert await repo.save_artifact_observation("artifact") is True
         assert await repo.get_raw_session("raw-1") == "raw-record"
         await repo.update_raw_state("raw-1", state="state-update")
@@ -167,7 +171,8 @@ async def test_repository_raw_forwards_query_and_mutation_calls() -> None:
         assert await repo.get_raw_session_states(["raw-1"]) == {"a": "state"}
         assert await repo.get_raw_session_count("chatgpt") == 9
 
-    mock_save_raw.assert_awaited_once_with(conn, "record", 7)
+    mock_plan_admission.assert_called_once_with("admission-request")
+    mock_admit_raw.assert_awaited_once_with(conn, "admission-plan", 7)
     mock_save_artifact.assert_awaited_once_with(conn, "artifact", 7)
     mock_get_raw.assert_awaited_once_with(conn, "raw-1")
     mock_update_state.assert_awaited_once_with(conn, "raw-1", state="state-update", transaction_depth=7)

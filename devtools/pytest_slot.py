@@ -35,6 +35,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -45,7 +46,7 @@ from typing import IO, Any, Final
 from devtools.agent_env import PYTEST_POOL, PYTEST_POOLS, inside_pytest_pool
 from devtools.cloud_sentinels import cloud_sentinel_declined
 from devtools.pytest_memory import ProcessGroupMemorySampler
-from devtools.worker_memory import corroborate_profile, resize_worker_argument
+from devtools.worker_memory import ChargeProfile, charge_profile_for, corroborate_profile, resize_worker_argument
 
 __all__ = [
     "BASETEMP_ROOT_ENV",
@@ -960,6 +961,7 @@ def _slot_receipt(
     exit_code: int | None = None,
     log_path: Path | None = None,
     extra: Mapping[str, Any] | None = None,
+    profile: ChargeProfile | None = None,
 ) -> dict[str, Any]:
     """The run's durable result: how wide it ran, and what it took to run that wide.
 
@@ -989,7 +991,9 @@ def _slot_receipt(
         receipt["sizing"] = dict(sizing)
     if memory is not None:
         receipt["memory"] = dict(memory)
-    corroboration = corroborate_profile(memory, sizing)
+    corroboration = (
+        corroborate_profile(memory, sizing) if profile is None else corroborate_profile(memory, sizing, profile=profile)
+    )
     if corroboration is not None:
         receipt["corroboration"] = corroboration
     if extra is not None:
@@ -1052,6 +1056,7 @@ def _write_interrupted_result(
     worktree_provenance: Mapping[str, Any] | None,
     sizing: Mapping[str, Any] | None = None,
     memory: Mapping[str, Any] | None = None,
+    profile: ChargeProfile | None = None,
 ) -> dict[str, Any]:
     """Atomically preserve an interruption result before the worker dies."""
     receipt = _slot_receipt(
@@ -1059,6 +1064,7 @@ def _write_interrupted_result(
         elapsed_s=time.monotonic() - started,
         sizing=sizing,
         memory=memory,
+        profile=profile,
         extra={
             "diagnosis": "pytest_interrupted",
             "signal": signal.Signals(signal_number).name,
@@ -1098,7 +1104,8 @@ def _run_held(
     """
     started = time.monotonic()
     worktree_provenance = _focused_worktree_provenance(cwd, env)
-    command, sizing = resize_worker_argument(list(argv))
+    profile, max_workers = charge_profile_for(env)
+    command, sizing = resize_worker_argument(list(argv), profile=profile, max_workers=max_workers)
     note = _sizing_note(sizing)
     if note is not None:
         sys.stderr.write(note + "\n")
@@ -1146,6 +1153,7 @@ def _run_held(
                 signal_number=signal_number,
                 worktree_provenance=worktree_provenance,
                 sizing=sizing,
+                profile=profile,
                 memory=sampler.persist(),
             )
 
@@ -1173,12 +1181,42 @@ def _run_held(
         memory = sampler.stop()
     return returncode, _slot_receipt(
         status="success" if returncode == 0 else "failed",
+        profile=profile,
         exit_code=returncode,
         elapsed_s=time.monotonic() - started,
         sizing=sizing,
         memory=memory,
         extra={"worktree_provenance": worktree_provenance} if worktree_provenance is not None else None,
     )
+
+
+def _in_slot_rerun_cleared(env: Mapping[str, str], *, first_provenance: object = None) -> bool:
+    """Whether this launch's in-slot rerun passed every failure it reran, on the same content."""
+    from devtools.pytest_rerun import RERUN_IN_SLOT_ENV, RERUN_IN_SLOT_RESULT
+
+    raw = env.get(RERUN_IN_SLOT_ENV)
+    if not raw:
+        return False
+    try:
+        spec = json.loads(raw)
+        step_dir = Path(spec["step_dir"])
+        record = json.loads((step_dir / RERUN_IN_SLOT_RESULT).read_text(encoding="utf-8"))
+        rerun = json.loads((step_dir / "pytest-rerun.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    if not isinstance(record, dict) or record.get("rerun_exit") != 0 or not isinstance(rerun, dict):
+        return False
+    # Exit 0 is not enough: a rerun can skip a node. Every attempted node must
+    # have passed, as the client's adjudication will require.
+    outcomes = {
+        str(test.get("nodeid")): test.get("outcome") for test in rerun.get("tests", []) if isinstance(test, dict)
+    }
+    attempted = record.get("attempted")
+    # A rerun over different content is rejected by the client, which leaves
+    # the run red; its scratch is diagnostic evidence then.
+    if record.get("worktree_provenance") != first_provenance:
+        return False
+    return isinstance(attempted, list) and all(outcomes.get(str(nodeid)) == "passed" for nodeid in attempted)
 
 
 def run_pytest(
@@ -1246,7 +1284,13 @@ def run_pytest(
                 resource_state=resource_state,
                 preserve_guard=guard.cancel,
             )
-        keep = outcome.returncode != 0
+        # A queued job keeps its first attempt's exit code even when its
+        # in-slot rerun cleared every failure; that run is green, so its
+        # scratch goes like any green run's.
+        keep = outcome.returncode != 0 and not _in_slot_rerun_cleared(
+            env,
+            first_provenance=outcome.receipt.get("worktree_provenance") if isinstance(outcome.receipt, dict) else None,
+        )
         return outcome
     finally:
         dispose()
@@ -1313,6 +1357,194 @@ def _read_launch(path: Path) -> dict[str, Any]:
     return document
 
 
+def _rerun_failures_in_slot(
+    environment: Mapping[str, str],
+    *,
+    cwd: str,
+    log: IO[bytes],
+    on_start: Callable[[subprocess.Popen[Any]], None],
+    first_group: int | None = None,
+) -> None:
+    """Rerun a failed run's failures once, alone, while this job holds the slot.
+
+    A focused client used to adjudicate its failures by queueing a second
+    job, which on a contended pool cost another full queue wait for a
+    handful of tests. The client names its report and step directory in
+    ``RERUN_IN_SLOT_ENV``; this job runs the same one-process rerun the client
+    would have, and records its exit so the client adjudicates from it. The
+    exit code of the job stays the first run's: adjudication belongs to the
+    client, which also owns the report it patches.
+    """
+    from devtools.pytest_rerun import (
+        RERUN_IN_SLOT_ENV,
+        RERUN_IN_SLOT_RESULT,
+        build_rerun,
+        rerun_cost_dir,
+        rerun_environment,
+    )
+    from devtools.pytest_suite_cost_plugin import write_run_receipt
+
+    raw = environment.get(RERUN_IN_SLOT_ENV)
+    if not raw:
+        return
+    try:
+        spec = json.loads(raw)
+        report_path, step_dir, root = Path(spec["report_path"]), Path(spec["step_dir"]), Path(spec["root"])
+        command = [str(argument) for argument in spec.get("command") or []]
+    except (ValueError, KeyError, TypeError):
+        return
+    from devtools.pytest_rerun import semantic_rerun_options
+
+    options = semantic_rerun_options(command) if command else []
+    plan = build_rerun(report_path=report_path, step_dir=step_dir, root=root, options=options)
+    if plan is None:
+        return
+    failed, command, _rerun_report = plan
+    if first_group is not None and not _group_reaped(first_group):
+        # A descendant of the first attempt (a server, a lock holder) would
+        # share the rerun's slot and state, so no rerun happens and the
+        # failures stand.
+        log.write(f"\n  rerun skipped: first attempt's process group {first_group} survived termination\n".encode())
+        with contextlib.suppress(OSError):
+            (step_dir / RERUN_IN_SLOT_RESULT).write_text(
+                json.dumps({"attempted": failed, "rerun_exit": 125, "first_group_survived": first_group}),
+                encoding="utf-8",
+            )
+        return
+    log.write(f"\n  rerun {len(failed)} failed test(s) alone, in this slot ...\n".encode())
+    log.flush()
+    # Fresh scratch for the second attempt, as a separately queued rerun had:
+    # a test that leaves a sentinel in the temp dir must not see its own.
+    rerun_env = rerun_environment(environment, step_dir=step_dir)
+    first_scratch = environment.get("TMPDIR")
+    if first_scratch:
+        try:
+            fresh = tempfile.mkdtemp(prefix="in-slot-rerun-", dir=first_scratch)
+        except OSError as exc:
+            # A rerun on the first attempt's scratch could pass on that
+            # attempt's leftovers, so none happens and the failures stand.
+            log.write(f"\n  rerun skipped: fresh scratch unavailable ({exc})\n".encode())
+            with contextlib.suppress(OSError):
+                (step_dir / RERUN_IN_SLOT_RESULT).write_text(
+                    json.dumps({"attempted": failed, "rerun_exit": 125, "scratch_error": str(exc)[:500]}),
+                    encoding="utf-8",
+                )
+            return
+        rerun_env.update({"TMPDIR": fresh, "TMP": fresh, "TEMP": fresh})
+    # Taken as the rerun starts, like the first run's -- after the first
+    # attempt's group is reaped and the scratch made, immediately before the
+    # launch: the client compares the two and refuses to clear a failure of
+    # content the rerun never ran.
+    try:
+        provenance = _focused_worktree_provenance(cwd, environment)
+    except Exception as exc:
+        # Without the rerun's identity nothing it proves can be attributed to
+        # the failing run's content, so no rerun happens and the failures stand.
+        log.write(f"\n  rerun skipped: worktree provenance unavailable ({exc})\n".encode())
+        with contextlib.suppress(OSError):
+            (step_dir / RERUN_IN_SLOT_RESULT).write_text(
+                json.dumps({"attempted": failed, "rerun_exit": 125, "provenance_error": str(exc)[:500]}),
+                encoding="utf-8",
+            )
+        return
+    # Published before the rerun starts: if its result cannot be written
+    # afterwards, this typed record (the rerun ran, its outcome is unknown)
+    # stands, and the client neither clears the failures nor runs them a third
+    # time. When even this record cannot be written, no rerun happens.
+    try:
+        (step_dir / RERUN_IN_SLOT_RESULT).write_text(
+            json.dumps(
+                {
+                    "attempted": failed,
+                    "rerun_exit": 125,
+                    "result_unpublished": True,
+                    "worktree_provenance": provenance,
+                }
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        log.write(f"\n  rerun skipped: its result could not be recorded ({exc})\n".encode())
+        return
+    try:
+        process = subprocess.Popen(
+            command,
+            cwd=cwd,
+            env=rerun_env,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        log.write(f"devtools.pytest_slot: could not start the rerun: {exc}\n".encode())
+        with contextlib.suppress(OSError):
+            (step_dir / RERUN_IN_SLOT_RESULT).write_text(
+                json.dumps({"attempted": failed, "rerun_exit": 125, "launch_error": str(exc)[:500]}),
+                encoding="utf-8",
+            )
+        return
+    # The launch's signal handlers stop whichever child is registered, so a
+    # cancelled or deadline-killed job reaps the rerun and still writes its
+    # interrupted receipt.
+    on_start(process)
+    rerun_exit = process.wait()
+    with contextlib.suppress(OSError):
+        write_run_receipt(rerun_cost_dir(step_dir))
+    with contextlib.suppress(OSError):
+        (step_dir / RERUN_IN_SLOT_RESULT).write_text(
+            json.dumps({"attempted": failed, "rerun_exit": rerun_exit, "worktree_provenance": provenance}),
+            encoding="utf-8",
+        )
+
+
+def _group_alive(pgid: int) -> bool:
+    """Whether any process of group ``pgid`` still runs.
+
+    A zombie is not running: it holds no slot state and is waiting only on a
+    reaper this launch does not own (a subreaper that never waits can keep
+    one for the life of the job). ``killpg(pgid, 0)`` succeeds on a
+    zombie-only group, so where ``/proc`` exists, members are read from it.
+    """
+    proc = Path("/proc")
+    if not proc.is_dir():
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat_line = (entry / "stat").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        # ``pid (comm) state ppid pgrp ...``; comm may itself contain ")".
+        fields = stat_line[stat_line.rfind(")") + 2 :].split()
+        if len(fields) >= 3 and fields[2] == str(pgid) and fields[0] not in {"Z", "X"}:
+            return True
+    return False
+
+
+def _group_reaped(pgid: int) -> bool:
+    """Terminate what is left of a process group; whether it is gone.
+
+    The group leader is already reaped, so what remains are its descendants,
+    which are waited on by polling the group rather than by ``wait``.
+    """
+    for sig, grace in ((signal.SIGTERM, STOP_TERM_GRACE_S), (signal.SIGKILL, STOP_KILL_GRACE_S)):
+        if not _group_alive(pgid):
+            return True
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(pgid, sig)
+        deadline = time.monotonic() + grace
+        while time.monotonic() < deadline and _group_alive(pgid):
+            time.sleep(0.05)
+    return not _group_alive(pgid)
+
+
 def _run_launch(launch_path: Path) -> int:
     """Run one launch file inside the job holding the pytest slot."""
     try:
@@ -1337,6 +1569,13 @@ def _run_launch(launch_path: Path) -> int:
     terminating = False
     terminal_status = "running"
 
+    # Chosen before the signal handler exists: an interrupted receipt must
+    # corroborate against the same profile the width was admitted under.
+    profile, max_workers = charge_profile_for(environment)
+
+    #: Process groups this launch started, reaped by the signal handler.
+    started_groups: list[int] = []
+
     def terminate_on_signal(signal_number: int, _frame: object) -> None:
         nonlocal terminating
         if terminating:
@@ -1352,6 +1591,11 @@ def _run_launch(launch_path: Path) -> int:
                     os.killpg(child.pid, signal.SIGKILL)
                 with contextlib.suppress(subprocess.TimeoutExpired):
                     child.wait(timeout=STOP_KILL_GRACE_S)
+        # Every group this launch started, the first attempt's included: a
+        # signal during the rerun's setup (while the first group's lingering
+        # descendants are being reaped) must still finish that reaping.
+        for group in started_groups:
+            _group_reaped(group)
         with contextlib.suppress(OSError):
             receipt = _write_interrupted_result(
                 log_path,
@@ -1360,6 +1604,7 @@ def _run_launch(launch_path: Path) -> int:
                 signal_number=signal_number,
                 worktree_provenance=worktree_provenance,
                 sizing=sizing,
+                profile=profile,
                 memory=sampler.persist() if sampler is not None else None,
             )
             _print_result(receipt)
@@ -1369,7 +1614,7 @@ def _run_launch(launch_path: Path) -> int:
     # The width is chosen here rather than where the command was built: a run
     # can sit in this queue for hours, and what matters is the memory this job
     # may take when its workers start.
-    command, sizing = resize_worker_argument(list(launch["argv"]))
+    command, sizing = resize_worker_argument(list(launch["argv"]), profile=profile, max_workers=max_workers)
     _persist_telemetry_seed(telemetry_path, sizing=sizing, progress=progress)
     note = _sizing_note(sizing)
     with open(log_path, "wb") as log:
@@ -1385,19 +1630,40 @@ def _run_launch(launch_path: Path) -> int:
                 stderr=log,
                 start_new_session=True,
             )
+            # The process being measured; the in-slot rerun replaces it, and
+            # live telemetry names whichever attempt is running now.
+            measured = [child]
+            started_groups.append(child.pid)
             sampler = ProcessGroupMemorySampler(
                 child.pid,
                 snapshot_path=telemetry_path,
                 snapshot_context=lambda: {
                     "status": terminal_status,
-                    "pid": child.pid,
-                    "process_group": child.pid,
+                    "pid": measured[0].pid,
+                    "process_group": measured[0].pid,
                     "sizing": sizing,
                     "progress": progress(),
                 },
             )
             sampler.start()
             returncode = child.wait()
+            if returncode == 1:
+
+                def register(process: subprocess.Popen[Any]) -> None:
+                    nonlocal child
+                    child = process
+                    measured[0] = process
+                    started_groups.append(process.pid)
+                    if sampler is not None:
+                        sampler.follow(process.pid)
+
+                _rerun_failures_in_slot(
+                    environment,
+                    cwd=launch["working_directory"],
+                    log=log,
+                    on_start=register,
+                    first_group=child.pid,
+                )
             terminal_status = "passed" if returncode == 0 else "failed"
         except OSError as exc:
             log.write(f"devtools.pytest_slot: could not start pytest: {exc}\n".encode())
@@ -1409,6 +1675,7 @@ def _run_launch(launch_path: Path) -> int:
                     signal.signal(number, handler)
     receipt = _slot_receipt(
         status="success" if returncode == 0 else "failed",
+        profile=profile,
         exit_code=returncode,
         elapsed_s=time.monotonic() - started,
         sizing=sizing,

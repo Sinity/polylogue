@@ -9,6 +9,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, TypeAlias
 
@@ -190,6 +191,10 @@ def _unsafe_property_name(name: str) -> bool:
     return name not in _PUBLIC_PROPERTY_NAMES and is_dynamic_key(name)
 
 
+def _contains_secret(value: str) -> bool:
+    return any(pattern.search(value) for pattern in _SECRET_PATTERNS.values())
+
+
 def _secret_findings(*, artifact: str, json_path: str, value: str) -> list[PromotionAuditFinding]:
     findings = []
     for category, pattern in _SECRET_PATTERNS.items():
@@ -204,6 +209,101 @@ def _secret_findings(*, artifact: str, json_path: str, value: str) -> list[Promo
                 )
             )
     return findings
+
+
+#: Annotations whose strings are identifiers Polylogue itself derived (digests
+#: of structure, profile families, internal refs), not observed provider values.
+_DERIVED_IDENTIFIER_ANNOTATIONS = frozenset(
+    {
+        "x-polylogue-anchor-profile-family-id",
+        "x-polylogue-exact-structure-ids",
+        "x-polylogue-package-profile-family-ids",
+        "x-polylogue-profile-family-ids",
+        "x-polylogue-ref",
+    }
+)
+
+#: Annotations the generator itself stamps with a timestamp. Their value is
+#: never observed provider data, but an ISO timestamp reads as a
+#: high-entropy token, so a well-formed one is exempt from the value bar.
+_GENERATED_TIMESTAMP_ANNOTATIONS = frozenset({"x-polylogue-generated-at"})
+
+
+def _is_generated_timestamp(key: str, value: object) -> bool:
+    if key not in _GENERATED_TIMESTAMP_ANNOTATIONS or not isinstance(value, str):
+        return False
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _observed_value_leak(value: str) -> bool:
+    """A UUID or long hex run is an observed identifier, never a field name or path."""
+    return bool(_UUID_RE.match(value) or _HEX_RE.match(value))
+
+
+def _annotation_findings(
+    value: object,
+    *,
+    artifact: str,
+    json_path: str,
+    findings: list[PromotionAuditFinding],
+) -> None:
+    """Apply the value predicates to every string nested under an annotation.
+
+    ``x-polylogue-values`` is not the only route a provider value can take
+    into a package: distribution annotations carry observed field names as
+    map keys (``co_occurring_fields``), and other annotations carry observed
+    names or defaults. The keyword-scoped checks above never looked inside
+    them, so a rejected value could publish through a nested annotation
+    (polylogue-mdlft). Every key and string beneath an annotation is held to
+    the same bar as a property name or an enum value.
+    """
+    if isinstance(value, dict):
+        for key, child in value.items():
+            # Secret status is decided before the path is built: a credential
+            # used as a map key must never appear in a finding's path.
+            unsafe_key = _contains_secret(key) or _unsafe_property_name(key) or _observed_value_leak(key)
+            key_path = f"{json_path}[{_redacted_value(key) if unsafe_key else key!r}]"
+            key_secrets = _secret_findings(artifact=artifact, json_path=key_path, value=key)
+            findings.extend(key_secrets)
+            if not key_secrets and unsafe_key:
+                findings.append(
+                    PromotionAuditFinding(
+                        severity="blocker",
+                        category="unsafe_annotation_key",
+                        artifact=artifact,
+                        json_path=key_path,
+                        value=_redacted_value(key),
+                    )
+                )
+            _annotation_findings(child, artifact=artifact, json_path=key_path, findings=findings)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _annotation_findings(child, artifact=artifact, json_path=f"{json_path}[{index}]", findings=findings)
+    elif isinstance(value, str):
+        value_secrets = _secret_findings(artifact=artifact, json_path=json_path, value=value)
+        findings.extend(value_secrets)
+        # A field name (e.g. ``content_sha256``) can read as a high-entropy
+        # token, so a string at a field-name position is held to the
+        # property-name bar; any other annotation string also gets the
+        # entropy predicate the ``x-polylogue-values`` guard applies.
+        field_name = "['fields'][" in json_path.rsplit("x-polylogue-", 1)[-1]
+        leaks = _observed_value_leak(value) or (
+            _unsafe_property_name(value) if field_name else _looks_high_entropy_token(value)
+        )
+        if not value_secrets and leaks:
+            findings.append(
+                PromotionAuditFinding(
+                    severity="blocker",
+                    category="unsafe_annotation_value",
+                    artifact=artifact,
+                    json_path=json_path,
+                    value=_redacted_value(value),
+                )
+            )
 
 
 def _walk_artifact(
@@ -242,6 +342,13 @@ def _walk_artifact(
                         value=f"field={key};value_count={len(_strings(child))}",
                     )
                 )
+            if (
+                key.startswith("x-polylogue-")
+                and key not in _REVIEW_FIELDS
+                and key not in _DERIVED_IDENTIFIER_ANNOTATIONS
+                and not _is_generated_timestamp(key, child)
+            ):
+                _annotation_findings(child, artifact=artifact, json_path=child_path, findings=findings)
             if key in _REVIEW_FIELDS:
                 for text in _strings(child):
                     secret_findings = _secret_findings(artifact=artifact, json_path=child_path, value=text)

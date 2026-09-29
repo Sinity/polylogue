@@ -451,6 +451,29 @@ def test_all_measured_lanes_report_no_unmeasured_bucket() -> None:
     assert "message_token_lanes_unmeasured" not in evidence.gaps
 
 
+def test_truncated_orchestration_children_belong_to_retained_topology() -> None:
+    """Keeping the pre-truncation child list returns a child with no retained node."""
+    from polylogue.analysis.orchestration_evidence import build_session_orchestration
+    from polylogue.analysis.topology import SessionTopology, TopologyEdge, TopologyEdgeKind, TopologyNode
+    from polylogue.core.types import SessionId
+
+    root = SessionId("codex-session:root")
+    children = [SessionId(f"codex-session:child-{i:04d}") for i in range(1000)]
+    topology = SessionTopology(
+        target_id=root,
+        root_id=root,
+        nodes=(TopologyNode(session_id=root), *(TopologyNode(session_id=child) for child in children)),
+        edges=tuple(TopologyEdge(parent_id=root, child_id=child, kind=TopologyEdgeKind.SUBAGENT) for child in children),
+    )
+    evidence = build_session_orchestration(str(root), topology)
+    assert evidence.topology is not None
+    nodes = cast(list[dict[str, object]], evidence.topology["nodes"])
+    retained = {node["session_id"] for node in nodes}
+    assert evidence.children
+    assert {child["session_id"] for child in evidence.children} <= retained
+    assert "observation_limit" in evidence.gaps
+
+
 @pytest.mark.asyncio
 async def test_orchestration_streams_own_records_without_hydrating_the_session(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

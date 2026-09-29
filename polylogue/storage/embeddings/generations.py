@@ -325,14 +325,17 @@ class EmbeddingGenerationStore:
             "membership_digest": digest.hexdigest(),
         }
 
-    def prepare_legacy_active_database(self) -> None:
-        """Checkpoint a pre-lifecycle active database before copying it.
+    def prepare_bootstrap_active_database(self) -> None:
+        """Checkpoint a not-yet-adopted active database before copying it.
 
-        The lifecycle never copies bytes accompanied by SQLite sidecars.  The
-        daemon owns the archive writer when this route runs, so ask SQLite to
-        complete a truncate checkpoint and reject the handoff if any sidecar
-        remains.  In particular, do not unlink a WAL or SHM file ourselves:
-        SQLite remains the authority for recovery and lock safety.
+        Archive bootstrap (``initialize_active_archive_root``) and the first
+        embedding write create ``embeddings.db`` as a plain WAL-mode file; the
+        lifecycle adopts it into its first generation.  The lifecycle never
+        copies bytes accompanied by SQLite sidecars.  The daemon owns the
+        archive writer when this route runs, so ask SQLite to complete a
+        truncate checkpoint and reject the handoff if any sidecar remains.  In
+        particular, do not unlink a WAL or SHM file ourselves: SQLite remains
+        the authority for recovery and lock safety.
         """
         if self.active_path.is_symlink():
             self.prepare_active_database_for_writer()
@@ -341,12 +344,12 @@ class EmbeddingGenerationStore:
             return
         if not _regular_file(self.active_path):
             raise EmbeddingGenerationError("embedding active path is not a regular file")
-        self._checkpoint_database(self.active_path, label="legacy embedding database")
+        self._checkpoint_database(self.active_path, label="unadopted embedding database")
 
     def prepare_active_database_for_writer(self) -> None:
         """Settle the active generation before validating it for a lifecycle write."""
         if not self.active_path.is_symlink():
-            self.prepare_legacy_active_database()
+            self.prepare_bootstrap_active_database()
             return
         pointer_identity = self._link_identity(self.active_path, label="embedding active pointer")
         try:
@@ -661,7 +664,7 @@ class EmbeddingGenerationStore:
                     )
                 elif active is None and generation.predecessor_generation_id is None:
                     # Adoption intent was durable before the pointer swap.  Complete
-                    # it rather than creating a second owner for the legacy file.
+                    # it rather than creating a second owner for the bootstrap file.
                     if self.active_path.exists() and not _regular_file(self.active_path):
                         raise EmbeddingGenerationError("embedding active path is not a regular file")
                     temporary = self.active_path.with_name(f".{self.active_path.name}.{uuid.uuid4().hex}.tmp")
@@ -716,6 +719,7 @@ class EmbeddingGenerationStore:
             return self.active_path
 
     def _adopt_existing_active_locked(self) -> EmbeddingGeneration | None:
+        """Move a bootstrap-created regular ``embeddings.db`` into its first generation."""
         if self.active_path.is_symlink() or not _regular_file(self.active_path):
             return None
         self._validate_database(self.active_path)
@@ -967,9 +971,9 @@ class EmbeddingGenerationStore:
 
 
 def ensure_embedding_lifecycle(archive_root: str | Path, *, active_path: str | Path | None = None) -> Path:
-    """Actual daemon/CLI entrypoint for recovery, legacy adoption, and collection."""
+    """Actual daemon/CLI entrypoint for recovery, bootstrap adoption, and collection."""
     store = EmbeddingGenerationStore(archive_root, active_path=active_path)
-    store.prepare_legacy_active_database()
+    store.prepare_bootstrap_active_database()
     store.recover_interrupted()
     path = store.ensure_active()
     store.collect()

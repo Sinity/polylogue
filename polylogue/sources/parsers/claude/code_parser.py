@@ -1204,9 +1204,19 @@ def _safe_int(value: object) -> int:
 
 def _optional_safe_int(value: object) -> int | None:
     """Parse an explicitly present message counter without inventing zero."""
-    if value is None:
+    if value is None or isinstance(value, bool):
         return None
-    return _safe_int(value)
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float):
+        return int(value) if math.isfinite(value) and value.is_integer() and value >= 0 else None
+    if isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return None
+        return parsed if parsed >= 0 else None
+    return None
 
 
 _HOOK_OUTCOME_EVENT_TYPE = "claude_hook_outcome"

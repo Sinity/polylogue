@@ -121,10 +121,18 @@ def _status_operation_result(
 
     config = load_effective_config(env)
     polylogue_config = load_polylogue_config()
+    from polylogue.cli.read_dispatch import daemon_route_disabled
+
+    # ``--no-daemon`` is a root flag and the opt-out is also configurable;
+    # ``daemon_route_disabled`` owns that decision for every read route.
+    click_context = click.get_current_context(silent=True)
+    root_flag = bool(click_context.find_root().params.get("no_daemon")) if click_context is not None else False
+    daemon_disabled = daemon_route_disabled(flag=root_flag)
     # The status command's public endpoint is HTTP. Other operation reads use
     # the archive-scoped UDS, but bare status must honor its configured URL.
+    # An opted-out invocation contacts no daemon over either transport.
     url = daemon_url or getattr(env, "daemon_url", None) or polylogue_config.daemon_url or _BUILTIN_DAEMON_URL
-    if url.rstrip("/") != _BUILTIN_DAEMON_URL:
+    if url.rstrip("/") != _BUILTIN_DAEMON_URL and not daemon_disabled:
         import urllib.request
 
         from polylogue.daemon.api_auth import resolve_api_auth_token
@@ -148,7 +156,7 @@ def _status_operation_result(
         config,
         "status",
         {"include_archive_readiness": include_archive_readiness},
-        daemon_disabled=bool(getattr(env, "no_daemon", False)),
+        daemon_disabled=daemon_disabled,
     )
 
 
@@ -269,7 +277,7 @@ def status_command(
         route="cli.status",
         verb="full" if full_payload else "compact",
     ) as obs:
-        from polylogue.cli.operation_kernel import OperationKernelError
+        from polylogue.cli.operation_kernel import OperationKernelError, OperationUnavailableError
 
         try:
             operation_result = _status_operation_result(
@@ -301,6 +309,15 @@ def status_command(
             else:
                 _show_daemon_status_unavailable(env, compact=not full_payload)
             raise click.exceptions.Exit(1) from None
+        except OperationUnavailableError as exc:
+            # No daemon socket answered for this archive, or the daemon route
+            # is disabled, so no status read was attempted. That differs from
+            # a read that failed in flight ("unreachable"): it renders as "not
+            # running", with the first-run hint when no archive exists yet.
+            obs.attributes["daemon_reachable"] = False
+            obs.daemon_path = "unreachable"
+            _show_daemon_absent(env, str(exc), archive_root=observed_archive_root, output_format=output_format)
+            raise SystemExit(1) from None
         except OperationKernelError:
             # A failed status read proves nothing about daemon liveness; it
             # must never be recorded or rendered as a reachable daemon.
@@ -338,10 +355,15 @@ def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
     and bounded SQLite queries to stay under 2 seconds.
     """
     del daemon_url
-    from polylogue.cli.operation_kernel import OperationKernelError
+    from polylogue.cli.operation_kernel import OperationKernelError, OperationUnavailableError
 
     try:
         result = _status_operation_result(env, probe_timeout_s=_FAST_STATUS_PROBE_TIMEOUT_S)
+    except OperationUnavailableError as exc:
+        # The probe stays a compact liveness line; ``ops status`` adds the
+        # first-run hint.
+        _show_daemon_absent(env, str(exc), archive_root=None, output_format=None)
+        return
     except OperationKernelError:
         _show_daemon_status_unavailable(env, compact=True)
         return
@@ -894,6 +916,38 @@ def _show_daemon_status_unavailable(env: AppEnv, *, compact: bool = False) -> No
     env.ui.console.print("  Status snapshot: [yellow]unavailable[/yellow]")
     if not compact:
         env.ui.console.print("  [dim]The status read did not answer; daemon liveness was not observed.[/dim]")
+
+
+def _show_daemon_absent(env: AppEnv, detail: str, *, archive_root: Path | None, output_format: str | None) -> None:
+    """Render a daemon that no socket answered for: status is daemon-only.
+
+    With no archive either, the first-run diagnostic names the next step; the
+    status read still did not happen, so the caller exits non-zero.
+    """
+    diagnostic = None
+    if _archive_snapshot_is_absent(archive_root):
+        from polylogue.cli.commands.status_diagnostics import diagnose_first_run
+
+        candidate = diagnose_first_run(daemon_alive=False)
+        diagnostic = candidate if candidate.kind == "no_archive" else None
+    if output_format == "json":
+        from polylogue.cli.commands.status_diagnostics import diagnostic_payload
+
+        payload: dict[str, Any] = {
+            "daemon_liveness": False,
+            "status_snapshot": {"state": "unavailable", "reason": "daemon_absent", "detail": detail},
+        }
+        compact = _compact_status_payload(payload, source="daemon")
+        if diagnostic is not None:
+            compact["diagnostic"] = diagnostic_payload(diagnostic)
+        env.ui.console.print(json.dumps(compact, indent=2, default=str))
+        return
+    env.ui.console.print("\n[bold yellow]Daemon: not running[/bold yellow]")
+    env.ui.console.print(f"  {detail}")
+    if diagnostic is not None:
+        env.ui.console.print(f"  {diagnostic.headline}")
+        if diagnostic.detail:
+            env.ui.console.print(f"  {diagnostic.detail}")
 
 
 def _show_direct_status_diagnostic(env: AppEnv, diagnostic: Any, *, output_format: str | None) -> None:

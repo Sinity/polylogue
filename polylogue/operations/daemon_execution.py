@@ -59,7 +59,6 @@ class OperationRuntime(Protocol):
 
     async def converge_ingest_sessions(
         self,
-        request: DaemonOperationRequest,
         session_ids: tuple[str, ...],
         *,
         expected_recipe: str,
@@ -243,7 +242,7 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                 audit = runtime.audit_for_request(request, context)
                 result = resolve_operation_handler(spec)(request, context, audit, snapshot)
                 validate_operation_result(request.operation, result)
-                # The handler may adopt a legacy embeddings.db into a
+                # The handler may adopt a bootstrap-created embeddings.db into a
                 # generation, changing the archive identity after admission.
                 # Keep the request bound to the pre-write snapshot but report
                 # the settled identity in the successful response.

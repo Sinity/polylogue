@@ -919,7 +919,7 @@ def test_the_cold_build_refuses_before_it_allocates_a_generation(
     assert refused[0].status == "refused"
 
 
-def test_a_first_daemon_start_is_not_refused_by_the_preflight(tmp_path: Path) -> None:
+def test_a_first_daemon_start_is_not_refused_by_the_preflight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """The preflight is unconditional, so it must clear a fresh root on its own.
 
     A freshly bootstrapped archive needs 276.8 MiB (the 256 MiB reserve floor
@@ -927,10 +927,12 @@ def test_a_first_daemon_start_is_not_refused_by_the_preflight(tmp_path: Path) ->
     under 4 MiB), which is why this guard does not need an operator-intent
     gate to avoid blocking an ordinary first start.
 
-    Anti-vacuity: raising ``RESERVE_FLOOR_BYTES`` above real free space, or
-    making the projection scale from the filesystem rather than the archive,
-    makes this red.
+    Anti-vacuity: raising ``RESERVE_FLOOR_BYTES`` above the supplied 512 MiB,
+    or making the projection scale from the filesystem rather than the
+    archive, makes this red independently of the runner's actual free space.
     """
+    available_bytes = 512 * 1024 * 1024
+    _free_space(monkeypatch, available_bytes)
     generation = ColdBuildGeneration.begin(
         tmp_path, reason="test", sources=(WatchSource("fixture", tmp_path / "absent-source"),)
     )
@@ -938,7 +940,8 @@ def test_a_first_daemon_start_is_not_refused_by_the_preflight(tmp_path: Path) ->
         receipts = read_capacity_receipts(tmp_path)
         assert [receipt.operation_id for receipt in receipts] == [generation.operation_id]
         receipt = receipts[0]
-        assert receipt.required_free_bytes < 512 * 1024 * 1024
+        assert receipt.required_free_bytes < available_bytes
+        assert receipt.available_bytes_at_prediction == available_bytes
         assert receipt.available_bytes_at_prediction >= receipt.required_free_bytes
         assert receipt.final_candidate_allocated_bytes == 0
         assert receipt.baseline_digest == generation.source_baseline.digest

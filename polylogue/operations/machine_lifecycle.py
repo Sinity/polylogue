@@ -6,7 +6,7 @@ import json
 import math
 
 from polylogue.operations.audit import MACHINE_PAGE_KINDS, AuditRepository, MachineRequestBinding
-from polylogue.operations.daemon_protocol import AcceptedOperationReference
+from polylogue.operations.daemon_protocol import AcceptedOperationReference, MutationResult, daemon_operation_spec
 from polylogue.operations.machine_receipts import (
     IngestHistoricalReceiptV2,
     InsightPartHistoricalReceipt,
@@ -239,8 +239,19 @@ def machine_request_state(audit: AuditRepository, record: dict[str, object]) -> 
             # generic operation counters cannot reconstruct. Missing or
             # malformed audit data must not be presented as a complete result.
             outcome = "indeterminate"
+    # A single audited mutation has one durable handle, the one
+    # ``OperationExecutor`` stamps on its receipt; a replay of the same request
+    # reads it back, so a duplicate submission names the first execution.
+    # Multi-part batches name each execution in ``parts`` instead.
+    spec = daemon_operation_spec(str(record.get("operation_name")))
+    receipt_ref = (
+        f"mutation-operation:{attempted[0]['operation_id']}"
+        if spec is not None and spec.result_model is MutationResult and len(attempted) == 1 and not unattempted
+        else None
+    )
     return {
         **state,
+        **({"receipt_ref": receipt_ref} if receipt_ref is not None else {}),
         "sequence": sequence,
         "outcome": outcome,
         "effect": "indeterminate"

@@ -220,7 +220,7 @@
       const updatedAt = typeof payload.update_time === "number"
         ? new Date(payload.update_time < 10_000_000_000 ? payload.update_time * 1000 : payload.update_time).toISOString()
         : typeof payload.update_time === "string" ? payload.update_time : null;
-      return { nativeId, updatedAt };
+      return { nativeId, updatedAt, temporary: payload.is_temporary === true };
     } catch {
       return null;
     }
@@ -233,7 +233,17 @@
     nativeCaptures.push(data.capture);
     if (nativeCaptures.length > 8) nativeCaptures.splice(0, nativeCaptures.length - 8);
     const identity = nativeCaptureIdentity(data.capture);
-    if (identity && data.capture.source !== "polylogue_native_fetch") {
+    // A MAIN-world message is page data: page scripts can post it too. It may
+    // wake a capture only for the conversation this tab's URL already names,
+    // never supply that identity itself (polylogue-l6v61 / qut1). A temporary
+    // chat's URL names no conversation, so there the wake is admitted by the
+    // same predicate parseNativeCapture uses: a temporary-chat page and a
+    // payload that declares itself temporary.
+    const urlBoundId = conversationIdFromUrl();
+    const boundToThisTab = urlBoundId
+      ? identity?.nativeId === urlBoundId
+      : isTemporaryChatUrl() && identity?.temporary === true;
+    if (identity && data.capture.source !== "polylogue_native_fetch" && boundToThisTab) {
       queueFreshnessHint("provider_native_observed", identity.nativeId, 3000, identity.updatedAt);
     }
   });

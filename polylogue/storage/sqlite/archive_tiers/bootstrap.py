@@ -142,7 +142,7 @@ _TIER_PROTOTYPE_LOCK = threading.Lock()
 #:   ~102ms re-stamping an unchanged derived identity -- which is why an
 #:   already-current tier now takes :func:`converge_same_version_tier`.
 #: * ``schema_convergence`` -- ops.db proved current by its recorded schema
-#:   digest, so only the additive same-version convergence steps ran.
+#:   digest, so only the schema-state record and identity stamp ran.
 #:
 #: Kept because the split is not observable from the outside: all of them look
 #: like "initialize a tier" to a caller, while their costs differ by two orders
@@ -312,37 +312,16 @@ def _record_tier_prototype(conn: sqlite3.Connection, tier: ArchiveTier, required
         _TIER_PROTOTYPES.setdefault(key, destination)
 
 
-def _apply_derived_identity_policy(conn: sqlite3.Connection, tier: ArchiveTier, policy: str) -> None:
-    """Apply the caller's existing derived-identity policy; see the caller's docstring."""
-    from polylogue.storage.sqlite.schema_bootstrap import (
-        ensure_derived_schema_identity,
-        stamp_derived_schema_identity,
-    )
-
-    if policy == "stamp":
-        stamp_derived_schema_identity(conn, tier.value)
-        # The stamp lands after the convergence commit, so it is its own open
-        # transaction: without this it rolls back on close.
-        conn.commit()
-        return
-    if policy != "verify":
-        raise ValueError(f"unknown derived identity policy: {policy!r}")
-    ensure_derived_schema_identity(conn, tier.value)
-
-
-def converge_same_version_tier(
-    conn: sqlite3.Connection, tier: ArchiveTier, *, derived_identity: str = "verify"
-) -> None:
+def converge_same_version_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
     """Bring an already-materialised tier at the current version up to date.
 
     The declared same-version policy, and the whole of it. A tier whose stored
     ``user_version`` is the spec's has already had its canonical DDL executed
     and committed, so re-running ``executescript`` over it buys nothing but the
     ``IF NOT EXISTS`` no-ops -- and re-stamping its derived schema identity buys
-    nothing but the commit fsync that stamp needs. Measured on this checkout,
-    Measured warm on this checkout, re-opening the six tiers of an initialized
-    archive root costs 123.7ms through the full initialization route and 26.7ms
-    through this one, with ddl_reapply going 50 -> 0 over ten passes. index.db
+    nothing but the commit fsync that stamp needs. Measured warm on this
+    checkout, re-opening the six tiers of an initialized archive root costs
+    123.7ms through the full initialization route and 26.7ms through this one, with ddl_reapply going 50 -> 0 over ten passes. index.db
     is where the saving is (35.5ms -> 21.4ms per open); the other five tiers
     were only paying 0.3-4ms of no-op DDL each.
 
@@ -350,18 +329,11 @@ def converge_same_version_tier(
     without a version bump, so it keeps the full pass; user.db gains declared
     annotation schemas; index.db takes its runtime indexes.
 
-    ``derived_identity`` selects which of the two existing identity policies the
-    caller already had, because they are not interchangeable and this function
-    is not the place to unify them. ``"verify"`` adopts an unstamped tier and
-    refuses a stale one -- what ``initialize_archive_database`` has always done.
-    ``"stamp"`` rewrites the stamp unconditionally, which is what the open path
-    has always done: an archive it opens may carry a superseded identity that
-    convergence is expected to overwrite in place. Changing the open path to
-    refuse instead is a correctness decision with live consequences, not a
-    performance one, so it is left exactly as it was -- and it costs nothing to
-    leave alone: with the redundant DDL gone the two policies measure the same
-    (21.4ms vs 21.1ms), because what made the stamp look expensive was the DDL
-    transaction it was committing.
+    index.db verifies its derived schema identity and refuses a stale or absent
+    stamp with a typed ``SchemaSkew``: fresh materialisation stamps it in the
+    same transaction that writes ``user_version``, so a current-version index
+    without a matching stamp was not produced by this runtime and is rebuilt
+    through the daemon rather than re-stamped in place.
     """
     if tier is ArchiveTier.OPS:
         # ops.db is disposable and evolves through idempotent additive DDL
@@ -373,10 +345,11 @@ def converge_same_version_tier(
         conn.commit()
     elif tier is ArchiveTier.INDEX:
         from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
+        from polylogue.storage.sqlite.schema_bootstrap import assert_derived_schema_identity
         from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
         ensure_runtime_indexes_sync(conn)
-        _apply_derived_identity_policy(conn, tier, derived_identity)
+        assert_derived_schema_identity(conn, tier.value)
         assert_schema_manifest(conn, tier)
     elif tier is ArchiveTier.EMBEDDINGS:
         # Every embeddings connection needs the extension loaded, not just the
@@ -396,16 +369,13 @@ def initialize_fresh_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier, r
 
 
 def initialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
-    """Materialise a tier on an open connection and stamp derived identities."""
-    _materialize_archive_tier(conn, tier)
-    if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
-        from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
+    """Materialise a tier on an open connection.
 
-        stamp_derived_schema_identity(conn, tier.value)
-        # The stamp lands after the materialisation commit, so it is its own
-        # open transaction: without this it rolls back on close and the tier
-        # reads as unstamped to the identity assertion that follows.
-        conn.commit()
+    Derived tiers (index, ops) are stamped with their schema identity by
+    :func:`_apply_archive_tier_convergence`, in the transaction that commits
+    ``user_version``.
+    """
+    _materialize_archive_tier(conn, tier)
 
 
 def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> None:
@@ -423,6 +393,9 @@ def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> No
     overwrite existing content.
     """
     spec = archive_tier_spec(tier)
+    # Foreign-key enforcement is connection state, not schema: every branch
+    # below, including the OPS same-digest shortcut, must leave it enabled.
+    conn.execute("PRAGMA foreign_keys = ON")
     if tier is ArchiveTier.OPS and int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]) > 0:
         digest = _tier_prototype_key(conn, tier, spec.version)[2]
         state = conn.execute(
@@ -497,20 +470,10 @@ def _apply_archive_tier_convergence(
     """Replay same-version convergence after either DDL or page-copy restore.
 
     Prototypes accelerate canonical DDL; they are not a second schema
-    authority.  Any idempotent same-version repair must run on cache hits too.
+    authority.  The steps here (user annotation schemas, the ops schema-state
+    record, the derived identity stamp, the version write) run on cache hits
+    too.
     """
-    if tier is ArchiveTier.OPS:
-        from polylogue.storage.sqlite.archive_tiers.ops_write import (
-            ensure_embedding_catchup_run_outcome_columns,
-            ensure_ops_status_checks,
-        )
-
-        _ensure_ops_runtime_columns(conn)
-        _ensure_ops_cursor_lag_sample_columns(conn)
-        _ensure_ops_ingest_attempt_outcome_columns(conn)
-        ensure_embedding_catchup_run_outcome_columns(conn)
-        ensure_ops_status_checks(conn)
-        _ensure_schema_drift_samples_check(conn)
     if tier is ArchiveTier.USER:
         _ensure_user_annotation_schemas(conn)
     if tier is ArchiveTier.OPS:
@@ -523,6 +486,14 @@ def _apply_archive_tier_convergence(
         from polylogue.storage.sqlite.archive_tiers.ops_write import _record_ops_schema_state
 
         _record_ops_schema_state(conn, _tier_prototype_key(conn, tier, spec.version)[2])
+    if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
+        from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
+
+        # Stamp before the version write so both land in the commit below. A
+        # tier that reaches its current ``user_version`` is therefore always
+        # stamped; an interrupted initialization leaves version 0, which the
+        # next open re-materialises instead of meeting an unstamped tier.
+        stamp_derived_schema_identity(conn, tier.value)
     # Write the version ONLY when it actually changes. ``PRAGMA user_version = N``
     # rewrites the database header even when N is already the stored value, so an
     # unconditional write dirties a page on every same-version reapply and turns a
@@ -533,41 +504,11 @@ def _apply_archive_tier_convergence(
     # The DDL was never the cost; the header write was (polylogue-c1jgh).
     #
     # Deliberately NOT a short-circuit of the schema pass itself: the reapply is
-    # how an existing same-version archive receives newly introduced OPS tables,
-    # and skipping it would also skip ``_ensure_schema_drift_samples_check``,
-    # which repairs a stale CHECK at an unchanged ``user_version``
-    # (#3451 / polylogue-u6tl). Only the redundant header write is removed.
+    # how an existing same-version archive receives newly introduced OPS tables.
+    # Only the redundant header write is removed.
     if int(conn.execute("PRAGMA user_version").fetchone()[0]) != spec.version:
         conn.execute(f"PRAGMA user_version = {spec.version}")
     conn.commit()
-
-
-def _ensure_schema_drift_samples_check(conn: sqlite3.Connection) -> None:
-    """Repair a ``schema_drift_samples`` table bootstrapped with a stale CHECK.
-
-    ``CREATE TABLE IF NOT EXISTS`` (the ``OPS_DDL`` reapply path every
-    ``initialize_archive_tier(..., ArchiveTier.OPS)`` call goes through) never
-    rewrites an *existing* table's constraints. An ops.db bootstrapped before
-    the ``literal_check(DriftClassification)`` fix (#3451 / polylogue-u6tl)
-    keeps a live CHECK naming only 3 of ``DriftClassification``'s 4 values --
-    ``known_field_unread`` rows raise ``sqlite3.IntegrityError`` on every
-    insert attempt against that archive forever, not just until the code
-    ships. Detect the stale CHECK via ``sqlite_master.sql`` and drop+recreate:
-    ``schema_drift_samples`` is disposable bounded telemetry (polylogue-da1),
-    so losing its rows on repair is an accepted, documented cost -- there is
-    no migration/version-bump ceremony for this tier.
-    """
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'schema_drift_samples'"
-    ).fetchone()
-    if row is None or row[0] is None:
-        return
-    if "known_field_unread" in row[0]:
-        return
-    from polylogue.storage.sqlite.archive_tiers.ops import SCHEMA_DRIFT_SAMPLES_DDL
-
-    conn.execute("DROP TABLE IF EXISTS schema_drift_samples")
-    conn.executescript(SCHEMA_DRIFT_SAMPLES_DDL)
 
 
 def _ensure_user_annotation_schemas(conn: sqlite3.Connection) -> None:
@@ -576,77 +517,6 @@ def _ensure_user_annotation_schemas(conn: sqlite3.Connection) -> None:
     from polylogue.storage.sqlite.archive_tiers.user_annotations import persist_builtin_annotation_schemas
 
     persist_builtin_annotation_schemas(conn, registered_at_ms=0)
-
-
-def _ensure_ops_runtime_columns(conn: sqlite3.Connection) -> None:
-    """Ensure disposable OPS-tier databases have the current cursor shape."""
-    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(ingest_cursor)")}
-    additions = {
-        "record_count": "INTEGER NOT NULL DEFAULT 0 CHECK(record_count >= 0)",
-        "last_record_ts_ms": "INTEGER",
-        "failure_count": "INTEGER NOT NULL DEFAULT 0 CHECK(failure_count >= 0)",
-        "next_retry_at": "TEXT",
-        "excluded": "INTEGER NOT NULL DEFAULT 0 CHECK(excluded IN (0, 1))",
-        "deferred_end_offset": "INTEGER",
-    }
-    for name, definition in additions.items():
-        if name not in existing:
-            conn.execute(f"ALTER TABLE ingest_cursor ADD COLUMN {name} {definition}")
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_ingest_cursor_attention
-        ON ingest_cursor(failure_count, excluded, source_path)
-        """
-    )
-
-
-def _ensure_ops_ingest_attempt_outcome_columns(conn: sqlite3.Connection) -> None:
-    """Ensure disposable OPS-tier ingest attempts carry a typed disposition (polylogue-cnu3).
-
-    Pre-existing rows (written before this vocabulary existed) get
-    ``outcome_code='legacy_unknown'`` via the column default -- never
-    guess-classified into a real outcome (AC4).
-    """
-    from polylogue.core.enums import IngestOutcome
-    from polylogue.storage.sqlite.archive_tiers.common import check
-
-    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(ingest_attempts)")}
-    additions = {
-        "outcome_code": f"TEXT NOT NULL DEFAULT 'legacy_unknown' CHECK ({check('outcome_code', IngestOutcome)})",
-        "retryable": "INTEGER CHECK(retryable IN (0, 1))",
-        "evidence_ref": "TEXT",
-        "diagnostic": "TEXT",
-        "remediation": "TEXT",
-    }
-    for name, definition in additions.items():
-        if name not in existing:
-            conn.execute(f"ALTER TABLE ingest_attempts ADD COLUMN {name} {definition}")
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_ingest_attempts_outcome_code
-        ON ingest_attempts(outcome_code, started_at_ms)
-        """
-    )
-
-
-def _ensure_ops_cursor_lag_sample_columns(conn: sqlite3.Connection) -> None:
-    """Ensure disposable OPS-tier cursor lag samples carry family rollups."""
-    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(cursor_lag_samples)")}
-    additions = {
-        "family": "TEXT",
-        "stuck_file_count": "INTEGER NOT NULL DEFAULT 1 CHECK(stuck_file_count >= 0)",
-        "p50_lag_ms": "INTEGER NOT NULL DEFAULT 0 CHECK(p50_lag_ms >= 0)",
-        "p95_lag_ms": "INTEGER NOT NULL DEFAULT 0 CHECK(p95_lag_ms >= 0)",
-    }
-    for name, definition in additions.items():
-        if name not in existing:
-            conn.execute(f"ALTER TABLE cursor_lag_samples ADD COLUMN {name} {definition}")
-    conn.execute(
-        """
-        CREATE INDEX IF NOT EXISTS idx_cursor_lag_samples_family_time
-        ON cursor_lag_samples(family, sampled_at_ms DESC)
-        """
-    )
 
 
 def initialize_archive_database(
@@ -759,11 +629,6 @@ def initialize_archive_database(
 
             initialize_source_tier_database_mode(conn)
         initialize_fresh_archive_tier(conn, tier, required_version)
-        if tier in (ArchiveTier.INDEX, ArchiveTier.OPS):
-            from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
-
-            stamp_derived_schema_identity(conn, tier.value)
-            conn.commit()
         if tier is ArchiveTier.INDEX:
             from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
@@ -933,8 +798,14 @@ def _initialize_active_archive_root(root: Path) -> None:
         # with respect to continuity, including their steady-state path.
         if recovering_fresh_durable_bootstrap:
             assert_owned_root()
+            # Keep the pending intent until both completed markers exist.
+            # Publication may have succeeded just before a crash: validate that
+            # same fresh bootstrap's marker instead of attempting to replace it.
+            if format_marker.exists():
+                assert_archive_format_lineage(root)
+            else:
+                record_fresh_archive_format(root)
             _record_fresh_durable_bootstrap(root)
-            record_fresh_archive_format(root)
         elif has_pending_bootstrap:
             # A crash after publishing the completed marker but before
             # removing the intent is harmless. Keep the intent until the
@@ -1148,10 +1019,7 @@ def open_initialized_tier_connection(
         # initialization. Version 0 is the create-it case and keeps the DDL
         # route, which is what stamps the version this branch reads.
         if stored_version == required_version:
-            # Performance only: the redundant whole-tier DDL goes, the identity
-            # policy this route has always applied stays. See
-            # converge_same_version_tier on why the two are separable.
-            converge_same_version_tier(conn, tier, derived_identity="verify")
+            converge_same_version_tier(conn, tier)
         else:
             initialize_archive_tier(conn, tier)
         assert_tier_schema_supported(conn, path, tier)

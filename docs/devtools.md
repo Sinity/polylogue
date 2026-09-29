@@ -44,8 +44,8 @@ These are the commands worth remembering during normal repo work:
 
 - `devtools status`: Check repo state, generated-surface drift, and the next default verification steps.
   Common forms: `devtools status`, `devtools status --json`, `devtools status --verify-generated`.
-- `devtools test`: Run a specific test file, directory, or -k/-m selection in the inner loop, or inspect the latest full-run timing receipts, without invoking raw pytest. Refuses in a checkout on the default branch unless given --on-default-branch.
-  Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`, `devtools test --outliers 20`.
+- `devtools test`: Run a specific test file, directory, or -k/-m selection in the inner loop, or inspect the latest full-run timing receipts, without invoking raw pytest. Refuses in a checkout on the default branch unless given --on-default-branch. A selection naming eight or more test modules runs under xdist (-n 4) unless it passes -n or -p no:xdist. A selection with a fixed test order (-p no:randomly or --randomly-seed=N) that already passed on the identical tree is answered from its receipt; pass --rerun to run it anyway.
+  Common forms: `devtools test tests/unit/pipeline`, `devtools test tests/unit/pipeline --rerun`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`, `devtools test --outliers 20`.
 - `devtools why`: A verify failed, bootstrapped unexpectedly, or refused to run, and you want the cause without reading receipt JSON by hand.
   Common forms: `devtools why`, `devtools why --history 24`, `devtools why --run 20260817T213631Z-2709409-d5c6e72c`.
 - `devtools verify`: Run the gates and bounded affected tests locally before pushing. --quick stops at static gates; --all runs the complete corpus at the explicit master/corpus boundary. Unknown or oversized affected plans are refused before pytest and name the count, reason, and next boundary. Pattern baselines use path:sha1:context_sha1[:count] content anchors, not source line numbers.
@@ -105,6 +105,7 @@ These are the commands worth remembering during normal repo work:
 | --- | --- |
 | `devtools bench baseline` | List or record committed measurement receipts under tests/benchmarks/baselines/. |
 | `devtools bench collection` | Measure what a pytest selection costs to collect, before any test runs. |
+| `devtools bench fresh-build` | Build a fresh archive from a sealed corpus through polylogued run and write a comparable receipt. |
 | `devtools bench ingest-throughput` | Measure ingest throughput against synthetic source records. |
 | `devtools bench memory` | Measure query-memory envelopes on generated fixtures. |
 | `devtools bench parser-census` | Parse a recorded source denominator with no archive and diff the result against the last census. |

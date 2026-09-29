@@ -10,9 +10,9 @@ This module contains tests for:
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
-import aiosqlite
 import pytest
 
 from polylogue.archive.revision_authority import RawRevisionAuthority, RawRevisionEnvelope, RawRevisionKind
@@ -20,15 +20,17 @@ from polylogue.core.enums import Provider
 from polylogue.storage.raw.models import RawSessionStateUpdate
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.runtime import RawSessionRecord
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
-from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+from polylogue.storage.sqlite.archive_tiers.source_write import bind_source_raw_revision
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.queries.raw_reads import get_capture_mode_resolution
-from polylogue.storage.sqlite.queries.raw_reads import get_raw_session as get_query_raw_session
-from polylogue.storage.sqlite.queries.raw_writes import save_raw_session as save_query_raw_session
-from tests.infra.storage_records import make_raw_session, make_session, save_session_to_archive
-
-# test_db and test_conn fixtures are in conftest.py
+from tests.infra.storage_records import (
+    admit_raw_record,
+    make_raw_session,
+    make_session,
+    raw_admission_request,
+    save_session_to_archive,
+)
 
 # test_db and test_conn fixtures are in conftest.py
 
@@ -42,8 +44,8 @@ class TestRawSessionStorage:
         db_path = tmp_path / "test.db"
         return SQLiteBackend(db_path=db_path)
 
-    async def test_save_raw_session_new(self, backend: SQLiteBackend) -> None:
-        """Saving a new raw session returns True."""
+    async def test_admit_raw_new(self, backend: SQLiteBackend) -> None:
+        """Admitting a new raw inserts it with a blob ref and the pending envelope."""
         record = make_raw_session(
             raw_id="abc123",
             source_name="test-provider",
@@ -54,7 +56,7 @@ class TestRawSessionStorage:
             file_mtime=None,
         )
 
-        result = await backend.save_raw_session(record)
+        result = await admit_raw_record(backend, record)
 
         assert result is True
         async with backend._get_connection() as conn:
@@ -85,7 +87,8 @@ class TestRawSessionStorage:
         initialize_active_archive_root(tmp_path)
         source_backend = SQLiteBackend(db_path=tmp_path / "source.db")
         try:
-            await source_backend.save_raw_session(
+            await admit_raw_record(
+                source_backend,
                 make_raw_session(
                     raw_id="raw-split",
                     source_name="chatgpt-export",
@@ -93,7 +96,7 @@ class TestRawSessionStorage:
                     source_index=0,
                     blob_size=2,
                     acquired_at="2026-02-02T12:00:00+00:00",
-                )
+                ),
             )
         finally:
             await source_backend.close()
@@ -126,8 +129,8 @@ class TestRawSessionStorage:
         assert record.validation_status == "skipped"
         assert record.validation_error == "duplicate materialization"
 
-    async def test_save_raw_session_duplicate(self, backend: SQLiteBackend) -> None:
-        """Saving a duplicate raw_id returns False (INSERT OR IGNORE)."""
+    async def test_admit_raw_duplicate(self, backend: SQLiteBackend) -> None:
+        """Re-admitting the same observation does not insert a second row."""
         record = make_raw_session(
             raw_id="abc123",
             source_name="test-provider",
@@ -137,11 +140,11 @@ class TestRawSessionStorage:
             acquired_at="2026-02-02T12:00:00+00:00",
         )
 
-        # First save succeeds
-        assert await backend.save_raw_session(record) is True
+        # First admission inserts
+        assert await admit_raw_record(backend, record) is True
 
-        # Second save is ignored (same raw_id)
-        assert await backend.save_raw_session(record) is False
+        # Second admission is idempotent (same raw_id)
+        assert await admit_raw_record(backend, record) is False
 
     async def test_conflicting_duplicate_is_immutable_inside_caller_transaction(
         self,
@@ -157,7 +160,7 @@ class TestRawSessionStorage:
             acquired_at="2026-02-02T12:00:00+00:00",
             file_mtime="2026-01-15T08:30:00+00:00",
         )
-        assert await backend.save_raw_session(original) is True
+        assert await admit_raw_record(backend, original) is True
 
         conflicting = original.model_copy(
             update={
@@ -167,8 +170,8 @@ class TestRawSessionStorage:
             }
         )
         async with backend.transaction():
-            with pytest.raises(ValueError, match="conflicting identity"):
-                await backend.save_raw_session(conflicting)
+            with pytest.raises(ValueError, match="different acquisition evidence"):
+                await admit_raw_record(backend, conflicting)
             async with backend._get_connection() as conn:
                 raw = await (
                     await conn.execute(
@@ -197,15 +200,15 @@ class TestRawSessionStorage:
             acquired_at="2026-02-02T12:00:00+00:00",
             file_mtime=None,
         )
-        assert await backend.save_raw_session(original) is True
+        assert await admit_raw_record(backend, original) is True
         first_observation = original.model_copy(update={"file_mtime": "2026-01-15T08:30:00+00:00"})
-        assert await backend.save_raw_session(first_observation) is False
+        assert await admit_raw_record(backend, first_observation) is False
         retained = await backend.get_raw_session(original.raw_id)
         assert retained is not None
         assert retained.file_mtime == first_observation.file_mtime
 
         second_observation = original.model_copy(update={"file_mtime": "2026-02-16T08:30:00+00:00"})
-        assert await backend.save_raw_session(second_observation) is False
+        assert await admit_raw_record(backend, second_observation) is False
         retained = await backend.get_raw_session(original.raw_id)
         assert retained is not None
         assert retained.file_mtime == first_observation.file_mtime
@@ -222,7 +225,7 @@ class TestRawSessionStorage:
             file_mtime="2026-01-15T08:30:00+00:00",
         )
 
-        await backend.save_raw_session(original)
+        await admit_raw_record(backend, original)
         retrieved = await backend.get_raw_session("xyz789")
 
         assert retrieved is not None
@@ -251,8 +254,8 @@ class TestRawSessionStorage:
             acquired_at="2026-02-02T12:00:00+00:00",
         ).model_copy(update={"capture_mode": Provider.DRIVE})
 
-        assert await backend.save_raw_session(gemini) is True
-        assert await backend.save_raw_session(drive) is True
+        assert await admit_raw_record(backend, gemini) is True
+        assert await admit_raw_record(backend, drive) is True
 
         recovered_gemini = await backend.get_raw_session(gemini.raw_id)
         recovered_drive = await backend.get_raw_session(drive.raw_id)
@@ -282,8 +285,8 @@ class TestRawSessionStorage:
         ).model_copy(update={"capture_mode": Provider.DRIVE})
         canonical_retry = drive.model_copy(update={"capture_mode": Provider.GEMINI})
 
-        assert await backend.save_raw_session(drive) is True
-        assert await backend.save_raw_session(canonical_retry) is False
+        assert await admit_raw_record(backend, drive) is True
+        assert await admit_raw_record(backend, canonical_retry) is False
 
         recovered = await backend.get_raw_session(drive.raw_id)
         assert recovered is not None
@@ -308,8 +311,8 @@ class TestRawSessionStorage:
             update={"capture_mode": Provider.DRIVE, "acquired_at": "2026-02-02T12:00:01+00:00"}
         )
 
-        assert await backend.save_raw_session(gemini) is True
-        assert await backend.save_raw_session(live_retry) is False
+        assert await admit_raw_record(backend, gemini) is True
+        assert await admit_raw_record(backend, live_retry) is False
 
         recovered = await backend.get_raw_session(gemini.raw_id)
         assert recovered is not None
@@ -321,7 +324,7 @@ class TestRawSessionStorage:
         assert resolution.modes == (Provider.GEMINI, Provider.DRIVE)
 
     async def test_rehydrated_unknown_capture_mode_remains_unknown(self, backend: SQLiteBackend) -> None:
-        """A legacy NULL must not become the canonical GEMINI projection on save."""
+        """Re-admitting a hydrated row never turns its NULL capture mode into the GEMINI projection."""
         legacy = make_raw_session(
             raw_id="legacy-aistudio-unknown",
             source_name="gemini",
@@ -331,46 +334,17 @@ class TestRawSessionStorage:
         )
         assert legacy.capture_mode is None
 
-        assert await backend.save_raw_session(legacy) is True
+        assert await admit_raw_record(backend, legacy) is True
         rehydrated = await backend.get_raw_session(legacy.raw_id)
 
         assert rehydrated is not None
         assert rehydrated.capture_mode is None
         assert rehydrated.payload_provider is Provider.GEMINI
 
-        assert await backend.save_raw_session(rehydrated) is False
+        assert (await backend.admit_raw(raw_admission_request(rehydrated))).inserted is False
         reread = await backend.get_raw_session(legacy.raw_id)
         assert reread is not None
         assert reread.capture_mode is None
-
-    async def test_query_writer_preserves_rehydrated_unknown_capture_mode(self, tmp_path: Path) -> None:
-        """Repository raw writes do not promote a legacy NULL from its fallback."""
-        source_db = tmp_path / "source.db"
-        initialize_archive_database(source_db, ArchiveTier.SOURCE)
-        legacy = make_raw_session(
-            raw_id="query-legacy-aistudio-unknown",
-            source_name="gemini",
-            source_path="/tmp/pre-capture-mode.json",
-            blob_size=2,
-            acquired_at="2026-02-02T12:00:00+00:00",
-        )
-
-        async with aiosqlite.connect(source_db) as conn:
-            conn.row_factory = aiosqlite.Row
-            assert await save_query_raw_session(conn, legacy, transaction_depth=0) is True
-            rehydrated = await get_query_raw_session(conn, legacy.raw_id)
-
-            assert rehydrated is not None
-            assert rehydrated.capture_mode is None
-            assert rehydrated.payload_provider is Provider.GEMINI
-
-            assert await save_query_raw_session(conn, rehydrated, transaction_depth=0) is False
-            row = await (
-                await conn.execute("SELECT capture_mode FROM raw_sessions WHERE raw_id = ?", (legacy.raw_id,))
-            ).fetchone()
-
-        assert row is not None
-        assert row[0] is None
 
     async def test_raw_session_state_preserves_capture_mode(self, backend: SQLiteBackend) -> None:
         """Planning-state reads preserve the live-Drive fiber member."""
@@ -381,7 +355,7 @@ class TestRawSessionStorage:
             blob_size=2,
             acquired_at="2026-02-02T12:00:00+00:00",
         ).model_copy(update={"capture_mode": Provider.DRIVE})
-        assert await backend.save_raw_session(record) is True
+        assert await admit_raw_record(backend, record) is True
 
         state = (await backend.get_raw_session_states([record.raw_id]))[record.raw_id]
         assert state.source_name == Provider.DRIVE.value
@@ -408,7 +382,7 @@ class TestRawSessionStorage:
         ]
 
         for r in records:
-            await backend.save_raw_session(r)
+            await admit_raw_record(backend, r)
 
         all_records = [r async for r in backend.iter_raw_sessions()]
         assert len(all_records) == 5
@@ -427,7 +401,7 @@ class TestRawSessionStorage:
         ]
 
         for r in records:
-            await backend.save_raw_session(r)
+            await admit_raw_record(backend, r)
 
         chatgpt_records = [r async for r in backend.iter_raw_sessions(origin="chatgpt")]
         assert len(chatgpt_records) == 3
@@ -449,7 +423,7 @@ class TestRawSessionStorage:
         ]
 
         for record in records:
-            await backend.save_raw_session(record)
+            await admit_raw_record(backend, record)
 
         chatgpt_ids = [raw_id async for raw_id in backend.iter_raw_ids(source_name="chatgpt")]
         claude_ids = [raw_id async for raw_id in backend.iter_raw_ids(source_name="claude-ai")]
@@ -472,7 +446,7 @@ class TestRawSessionStorage:
         ]
 
         for record in records:
-            await backend.save_raw_session(record)
+            await admit_raw_record(backend, record)
 
         chatgpt_headers = [header async for header in backend.iter_raw_headers(source_name="chatgpt")]
 
@@ -481,14 +455,15 @@ class TestRawSessionStorage:
     async def test_get_raw_blob_sizes_preserves_requested_order(self, backend: SQLiteBackend) -> None:
         """Blob-size lookups should preserve caller order for batch shaping."""
         for raw_id, blob_size in (("raw-a", 10), ("raw-b", 20), ("raw-c", 30)):
-            await backend.save_raw_session(
+            await admit_raw_record(
+                backend,
                 make_raw_session(
                     raw_id=raw_id,
                     source_name="chatgpt",
                     source_path=f"/path/{raw_id}.json",
                     blob_size=blob_size,
                     acquired_at="2026-02-02T12:00:00+00:00",
-                )
+                ),
             )
 
         blob_sizes = await backend.get_raw_blob_sizes(["raw-c", "raw-a", "missing", "raw-b"])
@@ -498,14 +473,15 @@ class TestRawSessionStorage:
     async def test_get_raw_sessions_batch_preserves_requested_order(self, backend: SQLiteBackend) -> None:
         """Hydrated raw batch reads should preserve caller order for replay planning."""
         for raw_id in ("raw-a", "raw-b", "raw-c"):
-            await backend.save_raw_session(
+            await admit_raw_record(
+                backend,
                 make_raw_session(
                     raw_id=raw_id,
                     source_name="chatgpt",
                     source_path=f"/path/{raw_id}.json",
                     blob_size=len(b"{}"),
                     acquired_at="2026-02-02T12:00:00+00:00",
-                )
+                ),
             )
 
         records = await backend.get_raw_sessions_batch(["raw-c", "raw-a", "missing", "raw-b"])
@@ -513,17 +489,8 @@ class TestRawSessionStorage:
         assert [record.raw_id for record in records] == ["raw-c", "raw-a", "raw-b"]
 
 
-class TestRawSessionWriterParity:
-    """The async backend and canonical raw writer must persist identical evidence.
-
-    ``SQLiteRawMixin.save_raw_session`` (async_sqlite_raw.py) used to hand-roll
-    its own 18-column ``INSERT OR REPLACE``, while the durable-tier writer
-    (queries/raw_writes.py) used a 28-column ``INSERT OR IGNORE`` including
-    revision-authority evidence. A re-save through the async path silently
-    reset revision lineage to defaults. The async mixin now delegates to the
-    same writer function; these tests guard against either a column-list
-    regression in that writer or a second hand-rolled INSERT reappearing.
-    """
+class TestRawSessionRevisionAndQueries:
+    """Revision evidence survives re-admission; raw reads see admitted rows."""
 
     @pytest.fixture
     def backend(self, tmp_path: Path) -> SQLiteBackend:
@@ -531,62 +498,16 @@ class TestRawSessionWriterParity:
         db_path = tmp_path / "test.db"
         return SQLiteBackend(db_path=db_path)
 
-    async def test_async_backend_matches_canonical_writer_for_revision_evidence(self, tmp_path: Path) -> None:
-        """Both production entry points persist the same complete durable row."""
-        direct_db = tmp_path / "direct" / "source.db"
-        backend_root = tmp_path / "backend"
-        backend_db = backend_root / "source.db"
-        initialize_archive_database(direct_db, ArchiveTier.SOURCE)
-        initialize_active_archive_root(backend_root)
+    async def test_readmission_never_alters_bound_revision_evidence(self, backend: SQLiteBackend) -> None:
+        """Re-admitting a raw after its parser bound a revision keeps that revision."""
         record = make_raw_session(
-            raw_id="revision-parity",
-            source_name="codex",
-            source_path="/tmp/rollout.jsonl",
-            source_index=7,
-            blob_size=41,
+            raw_id="revision-guarded",
+            source_name="chatgpt",
+            source_path="/tmp/export.json",
+            blob_size=2,
             acquired_at="2026-02-02T12:00:00+00:00",
-            revision=RawRevisionEnvelope(
-                logical_source_key="codex:session-1",
-                kind=RawRevisionKind.APPEND,
-                source_revision="revision-2",
-                predecessor_source_revision="revision-1",
-                predecessor_raw_id="raw-1",
-                baseline_raw_id="raw-0",
-                append_start_offset=10,
-                append_end_offset=51,
-                acquisition_generation=2,
-                authority=RawRevisionAuthority.BYTE_PROVEN,
-            ),
         )
-
-        async with aiosqlite.connect(direct_db) as conn:
-            assert await save_query_raw_session(conn, record, 0) is True
-
-        backend = SQLiteBackend(db_path=backend_root / "index.db")
-        try:
-            assert await backend.save_raw_session(record) is True
-        finally:
-            await backend.close()
-
-        async def persisted_rows(path: Path) -> tuple[tuple[object, ...], tuple[object, ...]]:
-            async with aiosqlite.connect(path) as conn:
-                raw = await (
-                    await conn.execute("SELECT * FROM raw_sessions WHERE raw_id = ?", (record.raw_id,))
-                ).fetchone()
-                blob_ref = await (
-                    await conn.execute(
-                        "SELECT * FROM blob_refs WHERE ref_type = 'raw_payload' AND ref_id = ?",
-                        (record.raw_id,),
-                    )
-                ).fetchone()
-            assert raw is not None
-            assert blob_ref is not None
-            return tuple(raw), tuple(blob_ref)
-
-        assert await persisted_rows(backend_db) == await persisted_rows(direct_db)
-
-    async def test_resave_never_alters_revision_evidence(self, backend: SQLiteBackend) -> None:
-        """Re-saving an existing raw_id must never reset durable revision authority."""
+        assert await admit_raw_record(backend, record) is True
         envelope = RawRevisionEnvelope(
             logical_source_key="chatgpt:conv-1",
             kind=RawRevisionKind.FULL,
@@ -594,26 +515,12 @@ class TestRawSessionWriterParity:
             acquisition_generation=1,
             authority=RawRevisionAuthority.BYTE_PROVEN,
         )
-        original = make_raw_session(
-            raw_id="revision-guarded",
-            source_name="chatgpt",
-            source_path="/tmp/export.json",
-            blob_size=2,
-            acquired_at="2026-02-02T12:00:00+00:00",
-            revision=envelope,
-        )
-        assert await backend.save_raw_session(original) is True
+        with sqlite3.connect(backend._source_db_path) as conn:
+            bind_source_raw_revision(conn, record.raw_id, envelope)
 
-        # A retried/duplicate acquisition of the same raw_id carries no revision
-        # evidence of its own; it must not be able to wipe the original's.
-        resave = make_raw_session(
-            raw_id="revision-guarded",
-            source_name="chatgpt",
-            source_path="/tmp/export.json",
-            blob_size=2,
-            acquired_at="2026-02-02T12:00:00+00:00",
-        )
-        assert await backend.save_raw_session(resave) is False
+        # A retried acquisition of the same raw_id carries only the pending
+        # envelope; it must not be able to wipe the bound one.
+        assert await admit_raw_record(backend, record) is False
 
         recovered = await backend.get_raw_session("revision-guarded")
         assert recovered is not None
@@ -621,7 +528,8 @@ class TestRawSessionWriterParity:
 
     async def test_raw_provider_filters_prefer_payload_provider_when_present(self, backend: SQLiteBackend) -> None:
         """Raw provider filtering should use payload_provider when validation/parsing has classified the payload."""
-        await backend.save_raw_session(
+        await admit_raw_record(
+            backend,
             make_raw_session(
                 raw_id="raw-generic",
                 payload_provider="chatgpt",
@@ -629,7 +537,7 @@ class TestRawSessionWriterParity:
                 source_path="/path/raw.json",
                 blob_size=len(b"{}"),
                 acquired_at="2026-02-02T12:00:00+00:00",
-            )
+            ),
         )
 
         matched_records = [record async for record in backend.iter_raw_sessions(origin="chatgpt")]
@@ -643,14 +551,15 @@ class TestRawSessionWriterParity:
     async def test_iter_raw_sessions_with_limit(self, backend: SQLiteBackend) -> None:
         """Limit the number of records returned."""
         for i in range(10):
-            await backend.save_raw_session(
+            await admit_raw_record(
+                backend,
                 make_raw_session(
                     raw_id=f"raw-{i}",
                     source_name="test",
                     source_path=f"/path/{i}.json",
                     blob_size=len(b"{}"),
                     acquired_at="2026-02-02T12:00:00+00:00",
-                )
+                ),
             )
 
         limited = [r async for r in backend.iter_raw_sessions(limit=3)]
@@ -670,7 +579,7 @@ class TestRawSessionWriterParity:
             blob_size=len(b'{"id": "test-conv"}'),
             acquired_at="2026-02-02T12:00:00+00:00",
         )
-        await backend.save_raw_session(raw_record)
+        await admit_raw_record(backend, raw_record)
 
         # Then store parsed session with link to raw
         conv = make_session(
@@ -724,14 +633,15 @@ class TestRawSessionWriterParity:
 
         # Add some records
         for i in range(5):
-            await backend.save_raw_session(
+            await admit_raw_record(
+                backend,
                 make_raw_session(
                     raw_id=f"count-{i}",
                     source_name="chatgpt" if i < 3 else "claude-ai",
                     source_path=f"/path/{i}.json",
                     blob_size=len(b"{}"),
                     acquired_at="2026-02-02T12:00:00+00:00",
-                )
+                ),
             )
 
         # Total count
@@ -755,7 +665,7 @@ class TestRawSessionWriterParity:
                 acquired_at="2026-02-02T12:00:00+00:00",
                 file_mtime=None,
             )
-            await backend.save_raw_session(record)
+            await admit_raw_record(backend, record)
 
         # Iterate without limit
         results = []

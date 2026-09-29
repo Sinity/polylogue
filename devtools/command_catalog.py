@@ -88,10 +88,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when=(
             "Run a specific test file, directory, or -k/-m selection in the inner loop, or inspect the latest "
             "full-run timing receipts, without invoking raw pytest. Refuses in a checkout on the default branch "
-            "unless given --on-default-branch."
+            "unless given --on-default-branch. A selection naming eight or more test modules runs under xdist "
+            "(-n 4) unless it passes -n or -p no:xdist. A selection with a fixed test order (-p no:randomly or "
+            "--randomly-seed=N) that already passed on the identical tree is answered from its receipt; pass "
+            "--rerun to run it anyway."
         ),
         examples=(
             "devtools test tests/unit/pipeline",
+            "devtools test tests/unit/pipeline --rerun",
             "devtools test -k hybrid",
             "devtools test tests/unit/storage -x",
             "devtools test --outliers 20",
@@ -442,6 +446,28 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools bench parser-census --source claude-code=tests/fixtures/corpus --no-baseline",
             "devtools bench parser-census --subject codex --workers 8",
+        ),
+    ),
+    CommandSpec(
+        "bench fresh-build",
+        "benchmarking",
+        "Build a fresh archive from a sealed corpus through polylogued run and write a comparable receipt.",
+        "devtools.fresh_build_bench.cli",
+        use_when=(
+            "Measure the ordinary cold build end to end (stage timings, writer share, RSS, per-origin cost, time "
+            "to promotion and terminal convergence) or compare two candidates on one corpus. Corpora are "
+            "`corpus sample` (a private stratified sample of real sources) or `corpus files` (named files, "
+            "such as one whale); `--max-rss-mib` and the other budgets make a run a qualification. "
+            "`components` times one production stage in seconds. Start `run` through the declared "
+            "fresh_build_bench AgentCTL operation."
+        ),
+        examples=(
+            "devtools bench fresh-build corpus sample --out /realm/tmp/work/fb/corpus --seed 1 --fraction 0.005",
+            "devtools bench fresh-build run --corpus /realm/tmp/work/fb/corpus --work /realm/tmp/work/fb/run-a",
+            "devtools bench fresh-build compare /realm/tmp/work/fb/run-a/receipt.json "
+            "/realm/tmp/work/fb/run-b/receipt.json",
+            "devtools bench fresh-build components parse --corpus /realm/tmp/work/fb/corpus "
+            "--scratch /realm/tmp/work/fb/c --workers 8",
         ),
     ),
     CommandSpec(

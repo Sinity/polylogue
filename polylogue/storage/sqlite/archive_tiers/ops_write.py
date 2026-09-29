@@ -15,7 +15,6 @@ from polylogue.core.enums import (
     IngestOutcome,
     OperationStatus,
     Origin,
-    require_operation_lifecycle_status,
 )
 from polylogue.core.types import (
     ConvergenceDebtStatus,
@@ -1241,7 +1240,6 @@ def upsert_embedding_catchup_run(
     if run_id is None:
         run_id = str(uuid.uuid4())
     status_value = require_literal(status, OperationRunStatus, name="embedding catchup status")
-    ensure_embedding_catchup_run_outcome_columns(conn)
     conn.execute(
         """
         INSERT INTO embedding_catchup_runs (
@@ -1294,24 +1292,23 @@ def upsert_embedding_catchup_run(
 def list_embedding_catchup_runs(
     conn: sqlite3.Connection,
     *,
-    status: OperationStatus | str | None = None,
+    status: OperationStatus | OperationRunStatus | str | None = None,
     schema: str = "main",
 ) -> tuple[ArchiveEmbeddingCatchupRun, ...]:
     """Return embedding catchup runs ordered by newest start first."""
     if schema not in {"main", "ops_tier"}:
         raise ValueError(f"unsupported embedding catchup reader schema: {schema!r}")
-    outcome_columns = _embedding_catchup_run_outcome_columns(conn, schema=schema)
-    query = """
+    query = f"""
         SELECT
             run_id, started_at_ms, finished_at_ms, status, origin,
-            scanned_sessions, {embedded_sessions}, {skipped_sessions}, {error_count},
+            scanned_sessions, embedded_sessions, skipped_sessions, error_count,
             embedded_messages, estimated_cost_usd, error_message
         FROM {schema}.embedding_catchup_runs
-    """.format(schema=schema, **outcome_columns)
+    """
     params: tuple[object, ...] = ()
     if status is not None:
         query += " WHERE status = ?"
-        params = (require_operation_lifecycle_status(status).value,)
+        params = (require_literal(status, OperationRunStatus, name="embedding catchup status"),)
     query += " ORDER BY started_at_ms DESC, run_id DESC"
 
     return tuple(ArchiveEmbeddingCatchupRun(*row) for row in conn.execute(query, params).fetchall())
@@ -1319,134 +1316,20 @@ def list_embedding_catchup_runs(
 
 def read_embedding_catchup_run(conn: sqlite3.Connection, run_id: str) -> ArchiveEmbeddingCatchupRun:
     """Read one embedding catchup run by ``run_id``."""
-    outcome_columns = _embedding_catchup_run_outcome_columns(conn)
     row = conn.execute(
         """
         SELECT
             run_id, started_at_ms, finished_at_ms, status, origin,
-            scanned_sessions, {embedded_sessions}, {skipped_sessions}, {error_count},
+            scanned_sessions, embedded_sessions, skipped_sessions, error_count,
             embedded_messages, estimated_cost_usd, error_message
         FROM embedding_catchup_runs
         WHERE run_id = ?
-        """.format(**outcome_columns),
+        """,
         (run_id,),
     ).fetchone()
     if row is None:
         raise KeyError(run_id)
     return ArchiveEmbeddingCatchupRun(*row)
-
-
-def ensure_embedding_catchup_run_outcome_columns(conn: sqlite3.Connection) -> None:
-    """Converge pre-existing ops.db files onto the full outcome column set.
-
-    Single implementation — ops-tier bootstrap calls this too. A prior
-    bootstrap-local copy drifted (it lacked ``skipped_sessions``), so a
-    freshly bootstrapped-but-never-written ops.db under-provisioned the
-    table relative to this writer's expectations.
-    """
-    existing = {str(row[1]) for row in conn.execute("PRAGMA table_info(embedding_catchup_runs)")}
-    additions = {
-        "embedded_sessions": "INTEGER NOT NULL DEFAULT 0 CHECK(embedded_sessions >= 0)",
-        "skipped_sessions": "INTEGER NOT NULL DEFAULT 0 CHECK(skipped_sessions >= 0)",
-        "error_count": "INTEGER NOT NULL DEFAULT 0 CHECK(error_count >= 0)",
-    }
-    for name, definition in additions.items():
-        if name not in existing:
-            conn.execute(f"ALTER TABLE embedding_catchup_runs ADD COLUMN {name} {definition}")
-
-
-def ensure_ops_status_checks(conn: sqlite3.Connection) -> None:
-    """Converge same-version OPS status CHECKs without discarding rows.
-
-    The disposable tier intentionally has no migration chain, but SQLite does
-    not rewrite a table constraint when ``CREATE TABLE IF NOT EXISTS`` runs.
-    Rebuild only a table whose live status CHECK predates the canonical
-    lifecycle vocabulary. The replacement happens in the caller's transaction
-    and copies every row; the old embedding ``cancelled`` spelling is the
-    established equivalent of canonical ``interrupted`` and is normalized
-    while the row is copied.
-    """
-    from polylogue.storage.sqlite.archive_tiers.ops import (
-        _OPS_EMBEDDING_CATCHUP_RUNS_DDL,
-        _OPS_INGEST_ATTEMPTS_DDL,
-        _OPS_RUN_STATUS_CHECK,
-    )
-
-    _rebuild_ops_status_table_if_stale(
-        conn,
-        table="ingest_attempts",
-        table_ddl=_OPS_INGEST_ATTEMPTS_DDL,
-        status_check=_OPS_RUN_STATUS_CHECK,
-        indexes=(
-            "CREATE INDEX IF NOT EXISTS idx_ingest_attempts_status ON ingest_attempts(status, heartbeat_at_ms)",
-            "CREATE INDEX IF NOT EXISTS idx_ingest_attempts_storage_route ON ingest_attempts(storage_route)",
-            "CREATE INDEX IF NOT EXISTS idx_ingest_attempts_outcome_code "
-            "ON ingest_attempts(outcome_code, started_at_ms)",
-        ),
-    )
-    _rebuild_ops_status_table_if_stale(
-        conn,
-        table="embedding_catchup_runs",
-        table_ddl=_OPS_EMBEDDING_CATCHUP_RUNS_DDL,
-        status_check=_OPS_RUN_STATUS_CHECK,
-    )
-
-
-def _rebuild_ops_status_table_if_stale(
-    conn: sqlite3.Connection,
-    *,
-    table: str,
-    table_ddl: str,
-    status_check: str,
-    indexes: tuple[str, ...] = (),
-) -> None:
-    """Replace one stale status-constrained OPS table while retaining rows."""
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
-        (table,),
-    ).fetchone()
-    if row is None or row[0] is None or status_check in str(row[0]):
-        return
-
-    temporary_table = f"__polylogue_{table}_converged"
-    conn.execute(f"DROP TABLE IF EXISTS {temporary_table}")
-    temporary_ddl = table_ddl.replace(
-        f"CREATE TABLE IF NOT EXISTS {table}",
-        f"CREATE TABLE {temporary_table}",
-        1,
-    )
-    conn.executescript(temporary_ddl)
-
-    columns = tuple(str(info[1]) for info in conn.execute(f"PRAGMA table_info({table})"))
-    target_columns = tuple(str(info[1]) for info in conn.execute(f"PRAGMA table_info({temporary_table})"))
-    if not set(target_columns).issubset(columns):
-        missing = set(target_columns) - set(columns)
-        raise RuntimeError(f"cannot converge {table}: missing source columns {sorted(missing)}")
-    select_columns = ", ".join(
-        "CASE status WHEN 'cancelled' THEN 'interrupted' ELSE status END" if column == "status" else column
-        for column in target_columns
-    )
-    target_sql = ", ".join(target_columns)
-    conn.execute(f"INSERT INTO {temporary_table} ({target_sql}) SELECT {select_columns} FROM {table}")
-    conn.execute(f"DROP TABLE {table}")
-    conn.execute(f"ALTER TABLE {temporary_table} RENAME TO {table}")
-    for index_ddl in indexes:
-        conn.execute(index_ddl)
-
-
-def _embedding_catchup_run_outcome_columns(
-    conn: sqlite3.Connection,
-    *,
-    schema: str = "main",
-) -> dict[str, str]:
-    existing = {str(row[1]) for row in conn.execute(f"PRAGMA {schema}.table_info(embedding_catchup_runs)")}
-    return {
-        "embedded_sessions": "embedded_sessions" if "embedded_sessions" in existing else "0 AS embedded_sessions",
-        "skipped_sessions": "skipped_sessions" if "skipped_sessions" in existing else "0 AS skipped_sessions",
-        "error_count": "error_count"
-        if "error_count" in existing
-        else "CASE WHEN error_message IS NULL THEN 0 ELSE 1 END AS error_count",
-    }
 
 
 def record_mcp_call(
@@ -1832,8 +1715,6 @@ __all__ = [
     "SchemaDriftOriginSummary",
     "OpsCompactState",
     "add_convergence_debt",
-    "ensure_embedding_catchup_run_outcome_columns",
-    "ensure_ops_status_checks",
     "list_cursor_lag_samples",
     "list_fts_drift_samples",
     "list_schema_drift_samples",

@@ -120,7 +120,7 @@ classified with explicit auth and response posture.
 
 | Route class | Auth policy | Examples |
 |-------------|-------------|----------|
-| Browser WebUI bootstrap | unauthenticated loopback HTML | `GET /`, `GET /sessions`, `GET /sessions/:session_id`, `GET /search`, `GET /s/:id`, `GET /p`, `GET /a` |
+| Browser WebUI bootstrap | open when no token is configured; otherwise bearer or owner web credential (a navigation without one gets the sign-in page with `401`) | `GET /`, `GET /sessions`, `GET /sessions/:session_id`, `GET /search`, `GET /s/:id`, `GET /p`, `GET /a` |
 | WebUI observability page | bearer or scoped web credential when configured | `GET /observability` |
 | WebUI cost/usage page | bearer or scoped web credential when configured | `GET /cost` |
 | Operational probes | unauthenticated loopback probe/scrape | `GET /healthz/live`, `GET /healthz/ready`, `GET /metrics` |
@@ -203,7 +203,7 @@ tool-use/thinking/paste-evidence flags). The message body projection is
 deliberately simple — a richer semantic-card transcript renderer is a separate
 vertical. Local Preact assets add bounded message paging through the existing
 `GET /api/sessions/:id/read?view=messages` endpoint. Shares `/`'s
-unauthenticated loopback bootstrap posture.
+bootstrap auth posture.
 
 ### GET /api/webui/observability
 
@@ -291,8 +291,15 @@ envelope for a mutation that never ran.
 
 ### GET /
 
-Web shell (localhost-only, no auth). A lightweight browser interface for
-querying the archive through the daemon.
+Web shell. A lightweight browser interface for querying the archive through
+the daemon. Loopback is not identity, so when an API auth token is configured
+the shell HTML is served only to that bearer or to the owner's first-party web
+credential cookie. A browser navigation without either receives the sign-in
+page with `401 Unauthorized`; any other client receives the typed `401`. The
+CLI signs a browser in when it opens a WebUI page: it exchanges the owner-only
+bearer for a one-time ticket, which the daemon's `/web-auth/sign-in` page
+consumes from the URL fragment before continuing to the requested page. With
+no token configured, the shell is open on loopback.
 
 ### Authentication
 

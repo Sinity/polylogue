@@ -15,8 +15,8 @@ the kernel work in polylogue-bp12n.1. Every file:line below was read at
 
 > **Status, 2026-09-21 (polylogue-6kur).** Superseded in its apply-side half.
 > The census-ledger drop and the `raw_authority_blockers` re-keying this
-> document sequences (§4, M1-M5) landed: the ledger tables are in
-> `RETIRED_SOURCE_SCHEMA_OBJECTS` and blockers key on `plan_input_digest`.
+> document sequences (§4, M1-M5) landed: the ledger tables are gone from
+> source DDL and blockers key on `plan_input_digest`.
 > Everything below that describes selecting, applying, or validating a replay
 > *plan* now describes deleted code -- `polylogue/storage/raw_convergence.py`
 > is gone with the generic repair framework, and `storage/raw_reconciler.py`

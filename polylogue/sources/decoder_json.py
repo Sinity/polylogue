@@ -5,10 +5,11 @@ from __future__ import annotations
 import io
 import json
 import re
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Generator, Iterable, Iterator
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import IO, Protocol, TypeAlias, TypeGuard, cast
+from pathlib import Path
+from typing import IO, Protocol, TypeAlias, TypeGuard, TypeVar, cast
 
 import ijson
 
@@ -670,14 +671,18 @@ def _root_envelope_without(
     handle: JsonReadable,
     streamed: frozenset[str],
     rerouted_root_keys: frozenset[str],
+    *,
+    optional: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, JsonValue], dict[str, int]] | None:
     """Build a root object without the arrays that a caller streams separately.
 
     Returns the remaining document, how many arrays each ``streamed`` path
     held, and, under ``__admission_future_type``, the first future wire type
     parser admission would report. A root key in ``rerouted_root_keys``, a
-    streamed path holding a non-array, or invalid JSON refuses the document.
-    The pass reads the complete input, so a truncated suffix refuses it too.
+    streamed path holding a non-array (unless it is ``optional``, whose
+    non-array value stays in the document), or invalid JSON refuses the
+    document. The pass reads the complete input, so a truncated suffix
+    refuses it too.
     """
     builder = ijson.common.ObjectBuilder()
     future_type = _FirstFutureType()
@@ -689,6 +694,7 @@ def _root_envelope_without(
     seen_guarded: set[str] = set()
     skipped: str | None = None
     expect_array: str | None = None
+    expect_key: object = None
     try:
         events = ijson.parse(handle)
         first = next(events, None)
@@ -699,7 +705,13 @@ def _root_envelope_without(
             future_type.observe(event, value)
             if expect_array is not None:
                 if event != "start_array":
-                    return None
+                    if expect_array not in optional:
+                        return None
+                    arrays[expect_array] -= 1
+                    expect_array = None
+                    builder.event("map_key", expect_key)
+                    builder.event(event, value)
+                    continue
                 skipped, expect_array = expect_array, None
                 continue
             if skipped is not None:
@@ -717,6 +729,7 @@ def _root_envelope_without(
                 if path in arrays:
                     arrays[path] += 1
                     expect_array = path
+                    expect_key = value
                     continue
             builder.event(event, value)
     except ijson.common.JSONError:
@@ -735,20 +748,29 @@ def _root_envelope_without(
     return cast(dict[str, JsonValue], envelope), arrays
 
 
-def claude_ai_object_envelope(handle: JsonReadable) -> dict[str, JsonValue] | None:
-    """Prove one claude.ai conversation and keep every root field but its messages.
+#: Conversation-level attachment arrays, read after the messages in this order.
+CLAUDE_AI_ATTACHMENT_ARRAYS = ("attachments", "files")
 
-    Shapes the object parser routes elsewhere (account memories, projects,
-    browser captures, ``sessions`` wrappers) stay on that route.
+
+def claude_ai_object_envelope(handle: JsonReadable) -> tuple[dict[str, JsonValue], tuple[str, ...]] | None:
+    """Prove one claude.ai conversation and keep every root field but its arrays.
+
+    Returns the envelope without ``chat_messages`` and the root attachment
+    arrays it names, each streamed separately; a non-array ``attachments``
+    or ``files`` value stays in the envelope. Shapes the object parser
+    routes elsewhere (account memories, projects, browser captures,
+    ``sessions`` wrappers) stay on that route.
     """
     result = _root_envelope_without(
         handle,
-        frozenset({"chat_messages"}),
+        frozenset({"chat_messages", *CLAUDE_AI_ATTACHMENT_ARRAYS}),
         frozenset({"sessions", "account_uuid", "docs", "polylogue_capture_kind"}),
+        optional=frozenset(CLAUDE_AI_ATTACHMENT_ARRAYS),
     )
     if result is None or result[1]["chat_messages"] != 1:
         return None
-    return result[0]
+    envelope, arrays = result
+    return envelope, tuple(key for key in CLAUDE_AI_ATTACHMENT_ARRAYS if arrays[key])
 
 
 def drive_chunked_prompt_envelope(handle: JsonReadable) -> tuple[dict[str, JsonValue], str] | None:
@@ -833,7 +855,9 @@ def hermes_snapshot_envelope(handle: JsonReadable) -> dict[str, JsonValue] | Non
                 return None
             if event in {"start_array", "start_map"}:
                 if len(frames) == 1 and current_key in scalar_fields:
-                    envelope.pop(current_key, None)
+                    # Detectors may test presence rather than scalar type.
+                    # Keep a type witness without materializing the container.
+                    envelope[current_key] = {} if event == "start_map" else []
                 if len(frames) == 1 and current_key == "steps" and event == "start_array":
                     envelope["steps"] = []
                 if frames[-1].kind == "map" and frames[-1].key in {"type", "content_type", "kind", "record_type"}:
@@ -888,13 +912,18 @@ def grok_export_item_count(
     handle: JsonReadable,
     *,
     on_item: Callable[[int, bool, str | None], None] | None = None,
-    on_positive_marker: Callable[[bool], None] | None = None,
+    detect: bool = True,
 ) -> int | None:
     """Validate a Grok object and report each member's shape without decoding it.
 
     ``on_item`` also receives the member's first future wire type, which the
     per-conversation parser admission reports; the collecting lowering admits
     conversation members only, so a future type elsewhere carries no event.
+
+    With ``detect``, a document whose root also carries a hook event's or a
+    transcript extract's markers is refused, so provider detection weighs
+    it whole. A route whose provider is already Grok passes ``detect=False``:
+    the Grok lowering reads only ``conversations`` whatever else the root holds.
     """
     count = 0
     keys = 0
@@ -905,47 +934,13 @@ def grok_export_item_count(
     member_responses = False
     member_future_type: _FirstFutureType | None = None
     valid_members = 0
-    taxonomy_keys: set[str] = set()
-    taxonomy_values: dict[str, bool] = {}
-    root_field_count = 0
-    messages_array = False
-    messages_items = 0
-    messages_positive = False
-    recordish_keys = {"record_type", "sessionId", "parentUuid", "message", "payload", "tool_name", "tool_input"}
     envelope_keys = {"uuid", "sessionId", "parentUuid", "message", "payload", "cwd", "version"}
     provenance_keys = {"file", "source_file", "source_path", "transcript", "session_file"}
     content_keys = {"content", "text", "message_text", "body"}
-    required_string_keys = {"id", "kind", "created_at", "issue_id", "event_type", "session_id", "timestamp"}
-    taxonomy_fields = (
-        recordish_keys
-        | envelope_keys
-        | provenance_keys
-        | content_keys
-        | {
-            "id",
-            "kind",
-            "created_at",
-            "issue_id",
-            "extra",
-            "event_type",
-            "session_id",
-            "timestamp",
-            "provider",
-            "type",
-            "role",
-            "mapping",
-            "chat_messages",
-            "chunkedPrompt",
-            "chunks",
-            "source",
-            "cascadeId",
-            "markdown",
-            "session",
-            "parent",
-            "child",
-            "conversation",
-        }
-    )
+    hook_keys = {"event_type", "session_id", "timestamp", "provider"}
+    taxonomy_fields = envelope_keys | provenance_keys | content_keys | hook_keys
+    taxonomy_keys: set[str] = set()
+    taxonomy_values: dict[str, bool] = {}
 
     def finish_member() -> None:
         nonlocal valid_members, member_future_type
@@ -964,15 +959,13 @@ def grok_export_item_count(
             if member_future_type is not None:
                 member_future_type.observe(event, value)
             if prefix == "" and event == "map_key":
-                root_field_count = min(root_field_count + 1, 17)
                 if value in {"sessions", "polylogue_capture_kind"}:
+                    return None
+                if isinstance(value, str) and value.startswith("conversations."):
+                    # A dotted root key would pose as a member path below.
                     return None
                 if value == "conversations":
                     keys += 1
-                elif value == "messages":
-                    messages_array = False
-                    messages_items = 0
-                    messages_positive = False
                 elif value in taxonomy_fields:
                     taxonomy_keys.add(value)
                     taxonomy_values[value] = False
@@ -983,29 +976,8 @@ def grok_export_item_count(
                     taxonomy_values[prefix] = value.lower().endswith((".jsonl", ".jsonl.txt", ".ndjson", ".json"))
                 elif prefix in content_keys:
                     taxonomy_values[prefix] = bool(value)
-                elif prefix == "source":
-                    taxonomy_values[prefix] = value == "antigravity_language_server"
-                elif prefix in {"cascadeId", "markdown"} or prefix in required_string_keys:
+                elif prefix in hook_keys:
                     taxonomy_values[prefix] = True
-            elif prefix in taxonomy_keys and event == "start_map":
-                if prefix in {"mapping", "chunkedPrompt", "extra"}:
-                    taxonomy_values[prefix] = True
-            elif prefix in taxonomy_keys and event == "start_array":
-                if prefix in {"chat_messages", "chunks"}:
-                    taxonomy_values[prefix] = True
-            elif prefix == "messages" and event == "start_array":
-                messages_array = True
-            elif prefix == "messages.item" and event in {
-                "start_map",
-                "start_array",
-                "string",
-                "number",
-                "boolean",
-                "null",
-            }:
-                messages_items += 1
-            elif prefix == "messages.item" and event == "map_key" and messages_items <= 12:
-                messages_positive = messages_positive or value in {"role", "content", "text", "parts", "author"}
             elif prefix == "conversations" and event == "start_array":
                 arrays += 1
             elif prefix == "conversations.item" and event in {
@@ -1038,36 +1010,53 @@ def grok_export_item_count(
         return None
     finally:
         handle.seek(0)
-    if all(taxonomy_values.get(key, False) for key in ("event_type", "session_id", "timestamp", "provider")):
+    if detect and all(taxonomy_values.get(key, False) for key in hook_keys):
         return None
     if (
-        not taxonomy_keys.intersection(envelope_keys)
+        detect
+        and not taxonomy_keys.intersection(envelope_keys)
         and any(taxonomy_values.get(key, False) for key in provenance_keys)
         and any(taxonomy_values.get(key, False) for key in content_keys)
     ):
         return None
-    has_envelope = bool(taxonomy_keys.intersection(envelope_keys))
-    relationship_index = {"session", "parent", "child", "type", "timestamp"} <= taxonomy_keys or {
-        "conversation",
-        "parent",
-        "child",
-        "type",
-        "timestamp",
-    } <= taxonomy_keys
-    record_marker = bool(
-        taxonomy_keys.intersection(recordish_keys)
-        or ("type" in taxonomy_keys and has_envelope)
-        or ("role" in taxonomy_keys and taxonomy_keys.intersection({"content", "text"}) and root_field_count <= 16)
-    ) and not (relationship_index and not has_envelope)
-    session_marker = (
-        any(taxonomy_values.get(key, False) for key in ("mapping", "chat_messages", "chunkedPrompt", "chunks"))
-        or (messages_array and messages_positive)
-        or all(taxonomy_values.get(key, False) for key in ("source", "cascadeId", "markdown"))
-    )
-    beads_overlap = all(taxonomy_values.get(key, False) for key in ("id", "kind", "created_at", "issue_id", "extra"))
-    if on_positive_marker is not None:
-        on_positive_marker(bool(record_marker or session_marker) and not beads_overlap)
     return count if keys == arrays == 1 and (count == 0 or valid_members > 0) else None
+
+
+def grok_taxonomy_witness(handle: JsonReadable) -> JsonValue:
+    """The Grok document as artifact taxonomy weighs it, within a bounded size.
+
+    Every root field is kept, each container cut to its first 64 entries;
+    ``conversations`` keeps its first 64 members, each member's fields cut
+    the same way, so every response kept is whole. Numbers read as
+    ``json.load`` reads them, since the collecting route classifies that
+    decode. The caller has proved the document with ``grok_export_item_count``.
+    """
+    events = iter(ijson.parse(handle))
+    try:
+        _prefix, event, _value = _next_event(events)
+        if event != "start_map":
+            raise ValueError("JSON document is not an object")
+        witness: dict[str, object] = {}
+        while True:
+            _prefix, event, key = _next_event(events)
+            if event == "end_map":
+                return cast(JsonValue, witness)
+            _prefix, event, value = _next_event(events)
+            witness[str(key)] = _stdlib_floats(
+                _witness_subtree(events, event, value, levels=3 if key == "conversations" else 1)
+            )
+    finally:
+        handle.seek(0)
+
+
+def _stdlib_floats(value: object) -> object:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, list):
+        return [_stdlib_floats(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _stdlib_floats(item) for key, item in value.items()}
+    return value
 
 
 def _json_subtree(events: Iterable[tuple[str, str, object]], event: str, value: object) -> object:
@@ -1391,6 +1380,277 @@ def spill_otlp_spans(
         on_resource(resource, fields, selected if selected is not None and scope_arrays[selected] else None)
 
 
+_Member = TypeVar("_Member")
+
+#: Entries kept from each container field of a taxonomy witness member.
+_WITNESS_WIDTH = 64
+
+
+def _record_container_members(
+    events: Iterator[tuple[str, str, object]],
+    container: str,
+    on_member: Callable[[str, object], _Member],
+) -> Generator[_Member, None, bool]:
+    """Hand each member of the root array or root ``sessions`` array to ``on_member``.
+
+    ``on_member(event, value)`` receives a member's first event, consumes
+    the rest of that member from ``events``, and its result is yielded. The
+    walk follows the document's structure, so a dotted key cannot pose as
+    the container path. Returns ``False`` for a root object that repeats
+    ``sessions`` (the decoder keeps only its last value, while this walk
+    would already have handed over the earlier one) or has none. The whole
+    input is read, so trailing garbage raises.
+    """
+    _prefix, event, _value = _next_event(events)
+    if container == "item":
+        if event != "start_array":
+            raise ValueError("JSON document is not an array")
+        while True:
+            _prefix, event, value = _next_event(events)
+            if event == "end_array":
+                break
+            yield on_member(event, value)
+    else:
+        if event != "start_map":
+            raise ValueError("JSON document is not an object")
+        seen_sessions = False
+        while True:
+            _prefix, event, name = _next_event(events)
+            if event == "end_map":
+                break
+            _prefix, event, value = _next_event(events)
+            if name != "sessions":
+                _skip_json_subtree(events, event)
+                continue
+            if seen_sessions or event != "start_array":
+                return False
+            seen_sessions = True
+            while True:
+                _prefix, event, value = _next_event(events)
+                if event == "end_array":
+                    break
+                yield on_member(event, value)
+        if not seen_sessions:
+            return False
+    for _event in events:
+        pass
+    return True
+
+
+def _witness_subtree(
+    events: Iterator[tuple[str, str, object]], event: str, value: object, *, levels: int = 1
+) -> object:
+    """Decode one value with its containers cut to their first 64 entries, ``levels`` deep.
+
+    Entries past the cut are skipped unread; below ``levels`` every kept
+    entry is whole. A repeated key keeps its first position and last value,
+    as the decoder's dict does.
+    """
+    if event not in _CONTAINER_START:
+        return value
+    result: dict[str, object] | list[object] = {} if event == "start_map" else []
+    entries = 0
+    while True:
+        _prefix, child_event, child_value = _next_event(events)
+        if child_event in _CONTAINER_END:
+            return result
+        key: str | None = None
+        if isinstance(result, dict):
+            key = str(child_value)
+            _prefix, child_event, child_value = _next_event(events)
+        if entries >= _WITNESS_WIDTH:
+            _skip_json_subtree(events, child_event)
+        else:
+            if levels > 1:
+                entry = _witness_subtree(events, child_event, child_value, levels=levels - 1)
+            else:
+                builder = ijson.common.ObjectBuilder()
+                _build_subtree(events, builder, child_event, child_value)
+                entry = builder.value
+            if isinstance(result, dict):
+                assert key is not None
+                result[key] = entry
+            else:
+                result.append(entry)
+        entries += 1
+
+
+def _build_subtree(
+    events: Iterator[tuple[str, str, object]], builder: ijson.common.ObjectBuilder, event: str, value: object
+) -> None:
+    builder.event(event, value)
+    depth = 1 if event in _CONTAINER_START else 0
+    while depth:
+        _prefix, event, value = _next_event(events)
+        builder.event(event, value)
+        if event in _CONTAINER_START:
+            depth += 1
+        elif event in _CONTAINER_END:
+            depth -= 1
+
+
+def _shape_value(event: str, value: object) -> JsonValue:
+    if event == "start_map":
+        return {}
+    if event == "start_array":
+        return []
+    return cast(JsonValue, value)
+
+
+def scan_container_members(
+    handle: JsonReadable,
+    container: str,
+    *,
+    shape_keys: frozenset[str],
+    witnesses: int,
+    on_member: Callable[[int, JsonValue, JsonValue | None], None],
+) -> int | None:
+    """Walk a record container once without decoding any whole member.
+
+    ``container`` is ``json_record_container``'s answer. For each member,
+    ``on_member(index, shape, witness)`` receives its ``shape`` -- the
+    member's ``shape_keys`` fields, each a scalar or an empty container of
+    its type, the last repeated key winning as in the decoder; a non-object
+    member is reduced the same way -- and, for the first ``witnesses``
+    members, a taxonomy witness: the member with each container field cut to
+    its first 64 entries, every kept entry whole. Numbers keep ijson's
+    ``Decimal``, as the container's decoded members do.
+
+    Returns the member count, or ``None`` when a repeated root ``sessions``
+    key leaves the decoder a different container than a stream would read.
+    Invalid JSON anywhere, including a truncated suffix, raises.
+    """
+    events = iter(ijson.parse(handle))
+    index = -1
+
+    def member(event: str, value: object) -> None:
+        nonlocal index
+        index += 1
+        witness: JsonValue | None = None
+        if event != "start_map":
+            if index < witnesses:
+                witness = cast(JsonValue, _witness_subtree(events, event, value))
+            else:
+                _skip_json_subtree(events, event)
+            on_member(index, _shape_value(event, value), witness)
+            return
+        shape: dict[str, JsonValue] = {}
+        fields: dict[str, object] | None = {} if index < witnesses else None
+        while True:
+            _prefix, key_event, key = _next_event(events)
+            if key_event == "end_map":
+                break
+            _prefix, field_event, field_value = _next_event(events)
+            if key in shape_keys:
+                shape[str(key)] = _shape_value(field_event, field_value)
+            if fields is not None:
+                fields[str(key)] = _witness_subtree(events, field_event, field_value)
+            else:
+                _skip_json_subtree(events, field_event)
+        on_member(index, shape, cast(JsonValue, fields) if fields is not None else None)
+
+    walk = _record_container_members(events, container, member)
+    try:
+        while True:
+            next(walk)
+    except StopIteration as stop:
+        if not stop.value:
+            return None
+    finally:
+        handle.seek(0)
+    return index + 1
+
+
+def _json_text(value: object) -> bytes:
+    if isinstance(value, str):
+        try:
+            return json.dumps(value, ensure_ascii=False).encode("utf-8")
+        except UnicodeEncodeError:
+            return json.dumps(value).encode("ascii")
+    if value is None:
+        return b"null"
+    if value is True:
+        return b"true"
+    if value is False:
+        return b"false"
+    if isinstance(value, Decimal) and value == value.to_integral_value():
+        # The bundle lowering reads an integral number as an ``int``
+        # (``normalize_json_decimal``); written as one, it reads back as one.
+        return str(int(value)).encode("ascii")
+    return str(value).encode("ascii")
+
+
+def iter_container_member_files(
+    handle: JsonReadable, container: str, member_path: Path
+) -> Generator[int | None, None, None]:
+    """Write each object member of a record container to ``member_path`` in turn.
+
+    Yields the member's index after its complete JSON text is on disk, or
+    ``None`` for a member that is not an object: no bundle lowering reads
+    one. Only one scalar is resident at a time, so a member of any size is
+    handed to the single-object streaming routes. The caller reads the file
+    before resuming the iterator, which overwrites it.
+    """
+    events = iter(ijson.parse(handle))
+    index = -1
+
+    def member(event: str, value: object) -> int | None:
+        nonlocal index
+        index += 1
+        if event != "start_map":
+            _skip_json_subtree(events, event)
+            return None
+        with member_path.open("wb") as output:
+            write = output.write
+            # One entry per open container: whether it already holds a value.
+            filled: list[bool] = []
+            while True:
+                if event in _CONTAINER_START:
+                    if filled and filled[-1]:
+                        write(b",")
+                    if filled:
+                        filled[-1] = True
+                    write(b"{" if event == "start_map" else b"[")
+                    filled.append(False)
+                elif event in _CONTAINER_END:
+                    filled.pop()
+                    write(b"}" if event == "end_map" else b"]")
+                    if not filled:
+                        break
+                elif event == "map_key":
+                    if filled[-1]:
+                        write(b",")
+                    write(_json_text(value))
+                    write(b":")
+                    # The key's value supplies no separator of its own.
+                    filled[-1] = False
+                else:
+                    if filled[-1]:
+                        write(b",")
+                    filled[-1] = True
+                    write(_json_text(value))
+                _prefix, event, value = _next_event(events)
+        return index
+
+    if not (yield from _record_container_members(events, container, member)):
+        raise ValueError("JSON record container changed during preparation")
+
+
+def iter_root_array_items(handle: JsonReadable, key: str) -> Iterator[JsonValue]:
+    """Yield each item of the root object's ``key`` array, one decoded at a time.
+
+    The walk follows the document's structure and stops at the first
+    ``key``; callers have proved it is the only one.
+    """
+    events = iter(ijson.parse(handle))
+    _enter_root_array(events, key)
+    while True:
+        _prefix, event, value = _next_event(events)
+        if event == "end_array":
+            return
+        yield cast(JsonValue, _json_subtree(events, event, value))
+
+
 def iter_json_container_records(handle: JsonReadable, prefix: str) -> Iterable[JsonValue]:
     """Yield complete array members; a corrupt suffix raises after its prefix.
 
@@ -1413,8 +1673,12 @@ __all__ = [
     "decode_json_bytes_with",
     "iter_json_stream",
     "iter_json_stream_with",
+    "grok_taxonomy_witness",
+    "iter_container_member_files",
     "iter_json_container_records",
+    "iter_root_array_items",
     "json_record_container",
+    "scan_container_members",
     "spill_member_arrays",
     "spill_otlp_spans",
 ]

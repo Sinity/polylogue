@@ -777,7 +777,10 @@ class TestTagAddActuator:
             (WriteOperation.TAG_UPDATE, "user-overlay"),
             (WriteOperation.TAG_UPDATE, "user-overlay"),
         ]
-        assert cache_invalidations == []
+        # Cached search results carry session tags and answer tag filters, so
+        # each tag write that changed a row drops the result cache (#5727);
+        # metadata writes and the no-op re-add leave it alone.
+        assert cache_invalidations == [True, True, True]
 
     def test_full_lifecycle_writes_the_tag_assertion(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"

@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 from http import HTTPStatus
 from http.cookies import SimpleCookie
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from polylogue.daemon.web_auth import (
     WEB_CREDENTIAL_COOKIE,
+    WEB_SIGN_IN_HTML,
     WebCredentialBootstrapPayload,
     WebCredentialDecision,
     WebCredentialRegistry,
@@ -95,9 +97,11 @@ def test_registry_bounds_rotation_records_and_preserves_recent_lifecycle_state()
 def test_bootstrap_rotates_http_only_cookie_and_authenticates_read_route() -> None:
     server = MockDaemonServer(auth_token="secret")
     origin = "http://127.0.0.1:8766"
+    ticket, _ = server.web_credentials.issue_sign_in_ticket()
     bootstrap = _make_handler(
         "POST",
         "/api/web-auth/session",
+        auth_header=f"Bearer {ticket}",
         origin=origin,
         host="127.0.0.1:8766",
         web_client=True,
@@ -170,6 +174,36 @@ def test_web_credential_cannot_execute_archive_control_routes(path: str, handler
     route_handler.assert_not_called()
 
 
+def test_web_credential_from_an_untrusted_peer_is_refused_even_with_a_valid_cookie() -> None:
+    """A cookie carries no port scoping, so a same-host different-uid process can
+    receive it and replay it here with any Host/Origin/Sec-Fetch-Site it likes; the
+    kernel-reported peer uid (``trusted_peer=False`` stands in for a mismatch) is the
+    one thing such a replay cannot forge."""
+    server = MockDaemonServer(auth_token="secret")
+    origin = "http://127.0.0.1:8766"
+    issued = server.web_credentials.issue(origin)
+    handler = _make_handler(
+        "GET",
+        "/api/status",
+        origin=origin,
+        host="127.0.0.1:8766",
+        cookie=f"{WEB_CREDENTIAL_COOKIE}={issued.token}",
+        fetch_site="same-origin",
+        web_client=True,
+        server=server,
+        trusted_peer=False,
+    )
+    send_error, _ = capture_responses(handler)
+
+    handler.do_GET()
+
+    send_error.assert_called_once_with(
+        HTTPStatus.UNAUTHORIZED,
+        "web_credential_missing",
+        extra_headers={"Cache-Control": "no-store", "X-Polylogue-Web-Credential-State": "web_credential_missing"},
+    )
+
+
 def test_bootstrap_rejects_wrong_origin_without_minting_cookie() -> None:
     handler = _make_handler(
         "POST",
@@ -232,10 +266,12 @@ def test_non_ascii_cookie_is_total_across_bootstrap_read_and_revoke() -> None:
     origin = "http://127.0.0.1:8766"
     malformed_cookie = f'{WEB_CREDENTIAL_COOKIE}="\N{LATIN SMALL LETTER E WITH ACUTE}"'
     server = MockDaemonServer(auth_token="secret")
+    ticket, _ = server.web_credentials.issue_sign_in_ticket()
 
     bootstrap = _make_handler(
         "POST",
         "/api/web-auth/session",
+        auth_header=f"Bearer {ticket}",
         origin=origin,
         host="127.0.0.1:8766",
         cookie=malformed_cookie,
@@ -302,3 +338,314 @@ def test_cookie_and_origin_helpers_reject_authority_confusion() -> None:
     header = credential_cookie("opaque-value", ttl_s=30)
     assert read_web_credential_cookie(header) == "opaque-value"
     assert read_web_credential_cookie("not a valid cookie; =") is None
+
+
+def _bootstrap(server: MockDaemonServer, *, auth_header: str = "", cookie: str = "") -> tuple[MagicMock, MagicMock]:
+    handler = _make_handler(
+        "POST",
+        "/api/web-auth/session",
+        auth_header=auth_header,
+        cookie=cookie,
+        origin="http://127.0.0.1:8766",
+        host="127.0.0.1:8766",
+        web_client=True,
+        server=server,
+    )
+    send_error, _ = capture_responses(handler)
+    send_cookie_json = MagicMock()
+    handler._send_json_with_cookie = send_cookie_json  # type: ignore[method-assign]
+    handler.do_POST()
+    return send_error, send_cookie_json
+
+
+def test_loopback_alone_does_not_bootstrap_a_web_credential() -> None:
+    """Any local uid reaches loopback, so a bare request must not mint a cookie (polylogue-n3xdn).
+
+    Anti-vacuity: drop the bootstrap proof check and this request receives a
+    first-party credential that reads every archived transcript.
+    """
+    server = MockDaemonServer(auth_token="secret")
+    send_error, send_cookie_json = _bootstrap(server)
+
+    send_cookie_json.assert_not_called()
+    assert send_error.call_args.args[:2] == (HTTPStatus.UNAUTHORIZED, "web_credential_missing")
+
+
+def test_sign_in_ticket_bootstraps_once_and_is_then_spent() -> None:
+    """Anti-vacuity: keep tickets after redemption and a leaked fragment signs in any browser."""
+    server = MockDaemonServer(auth_token="secret")
+    ticket, _ = server.web_credentials.issue_sign_in_ticket()
+
+    first_error, first_cookie = _bootstrap(server, auth_header=f"Bearer {ticket}")
+    second_error, second_cookie = _bootstrap(server, auth_header=f"Bearer {ticket}")
+
+    first_error.assert_not_called()
+    assert first_cookie.call_args.args[0] == HTTPStatus.CREATED
+    second_cookie.assert_not_called()
+    assert second_error.call_args.args[:2] == (HTTPStatus.UNAUTHORIZED, "web_credential_missing")
+
+
+def test_sign_in_ticket_expires() -> None:
+    now = [1000.0]
+    registry = WebCredentialRegistry(ttl_s=30, clock=lambda: now[0])
+    ticket, expires_at = registry.issue_sign_in_ticket(ttl_s=60)
+    assert expires_at == 1060.0
+    now[0] = 1061.0
+    assert registry.redeem_sign_in_ticket(ticket) is False
+
+
+def test_valid_cookie_rotation_needs_no_other_proof() -> None:
+    server = MockDaemonServer(auth_token="secret")
+    issued = server.web_credentials.issue("http://127.0.0.1:8766")
+    send_error, send_cookie_json = _bootstrap(server, cookie=f"{WEB_CREDENTIAL_COOKIE}={issued.token}")
+    send_error.assert_not_called()
+    assert send_cookie_json.call_args.args[0] == HTTPStatus.CREATED
+
+
+def test_ticket_route_requires_the_daemon_bearer() -> None:
+    server = MockDaemonServer(auth_token="secret")
+    anonymous = _make_handler("POST", "/api/web-auth/ticket", host="127.0.0.1:8766", server=server)
+    anonymous_error, anonymous_json = capture_responses(anonymous)
+    anonymous.do_POST()
+    anonymous_json.assert_not_called()
+    assert anonymous_error.call_args.args[:2] == (HTTPStatus.UNAUTHORIZED, "unauthorized")
+
+    owner = _make_handler(
+        "POST", "/api/web-auth/ticket", auth_header="Bearer secret", host="127.0.0.1:8766", server=server
+    )
+    owner_error, owner_json = capture_responses(owner)
+    owner.do_POST()
+    owner_error.assert_not_called()
+    status, payload = owner_json.call_args.args
+    assert status == HTTPStatus.CREATED
+    assert server.web_credentials.redeem_sign_in_ticket(payload["ticket"]) is True
+
+
+def test_uncredentialed_browser_gets_the_sign_in_page_not_archive_html() -> None:
+    """Anti-vacuity: restore the loopback exemption and the overview HTML is served."""
+    server = MockDaemonServer(auth_token="secret")
+    handler = _make_handler("GET", "/", host="127.0.0.1:8766", server=server)
+    handler.headers._headers["Accept"] = "text/html,application/xhtml+xml"  # type: ignore[attr-defined]
+    send_html = MagicMock()
+    handler._send_webui_html = send_html  # type: ignore[method-assign]
+    handler._serve_webui_archive_overview = MagicMock()  # type: ignore[method-assign]
+    handler.do_GET()
+    handler._serve_webui_archive_overview.assert_not_called()
+    status, body = send_html.call_args.args
+    assert status == HTTPStatus.UNAUTHORIZED
+    assert body == WEB_SIGN_IN_HTML
+    assert "/web-auth/sign-in.js" in body
+
+
+def test_credentialed_browser_reads_the_shell() -> None:
+    server = MockDaemonServer(auth_token="secret")
+    issued = server.web_credentials.issue("http://127.0.0.1:8766")
+    handler = _make_handler(
+        "GET",
+        "/",
+        host="127.0.0.1:8766",
+        cookie=f"{WEB_CREDENTIAL_COOKIE}={issued.token}",
+        fetch_site="same-origin",
+        server=server,
+    )
+    handler._serve_webui_archive_overview = MagicMock()  # type: ignore[method-assign]
+    handler.do_GET()
+    handler._serve_webui_archive_overview.assert_called_once_with()
+
+
+def test_bookmark_navigation_with_a_valid_cookie_reads_the_shell() -> None:
+    """Anti-vacuity: validate navigations like fetches and a bookmark lands on the sign-in page."""
+    server = MockDaemonServer(auth_token="secret")
+    issued = server.web_credentials.issue("http://127.0.0.1:8766")
+    handler = _make_handler(
+        "GET",
+        "/sessions",
+        host="127.0.0.1:8766",
+        cookie=f"{WEB_CREDENTIAL_COOKIE}={issued.token}",
+        fetch_site="none",
+        server=server,
+    )
+    handler._serve_webui_session_list = MagicMock()  # type: ignore[method-assign]
+    handler.do_GET()
+    handler._serve_webui_session_list.assert_called_once()
+
+
+def test_the_exchange_page_is_served_even_to_a_credentialed_browser() -> None:
+    """Anti-vacuity: gate it like the shell and a credentialed browser gets archive HTML, leaving the ticket unspent in the URL."""
+    server = MockDaemonServer(auth_token="secret")
+    issued = server.web_credentials.issue("http://127.0.0.1:8766")
+    handler = _make_handler(
+        "GET",
+        "/web-auth/sign-in",
+        host="127.0.0.1:8766",
+        cookie=f"{WEB_CREDENTIAL_COOKIE}={issued.token}",
+        fetch_site="none",
+        server=server,
+    )
+    send_html = MagicMock()
+    handler._send_webui_html = send_html  # type: ignore[method-assign]
+    handler.do_GET()
+    status, body = send_html.call_args.args
+    assert status == HTTPStatus.OK
+    assert body == WEB_SIGN_IN_HTML
+
+
+def _peer(**overrides: object) -> dict[str, object]:
+    return {"local_ip": "127.0.0.1", "local_port": 8765, "remote_ip": "127.0.0.1", "remote_port": 52345, **overrides}
+
+
+def test_peer_ownership_is_decided_without_procfs_on_non_linux_hosts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A host without ``/proc/net/tcp`` still attributes the peer socket to its uid.
+
+    Anti-vacuity (Codex P1/P2, #5704): consult only procfs and a macOS peer is
+    never the owner; pass the lookup a deadline and a slow ``lsof`` under load
+    invalidates a valid cookie. Our own accepted socket (named the other way
+    round) must not count as the peer.
+    """
+    import subprocess
+    from types import SimpleNamespace
+
+    from polylogue.daemon import peer_identity
+
+    listings = {
+        "peer": "p100\nn127.0.0.1:52345->127.0.0.1:8765\n",
+        "server_side_only": "p200\nn127.0.0.1:8765->127.0.0.1:52345\n",
+    }
+    listing = "peer"
+
+    def fake_run(command: list[str], **kwargs: object) -> SimpleNamespace:
+        assert command[0].endswith("lsof")
+        assert "-iTCP@127.0.0.1:52345" in command
+        assert "timeout" not in kwargs
+        return SimpleNamespace(returncode=0, stdout=listings[listing], stderr="")
+
+    monkeypatch.setattr(peer_identity, "sys", SimpleNamespace(platform="darwin"))
+    monkeypatch.setattr(peer_identity, "shutil", SimpleNamespace(which=lambda _name: "/usr/sbin/lsof"))
+    fake_subprocess = SimpleNamespace(run=fake_run, SubprocessError=subprocess.SubprocessError)
+    monkeypatch.setattr(peer_identity, "subprocess", fake_subprocess)
+    monkeypatch.setattr(
+        peer_identity, "tcp_socket_owner_uid", lambda **_kwargs: pytest.fail("procfs is not consulted off Linux")
+    )
+
+    assert peer_identity.peer_socket_owned_by_current_uid(**_peer()) is True  # type: ignore[arg-type]
+    listing = "server_side_only"
+    assert peer_identity.peer_socket_owned_by_current_uid(**_peer()) is False  # type: ignore[arg-type]
+
+    def missing(*_args: object, **_kwargs: object) -> SimpleNamespace:
+        raise OSError("lsof is gone")
+
+    monkeypatch.setattr(fake_subprocess, "run", missing)
+    assert peer_identity.peer_socket_owned_by_current_uid(**_peer()) is False  # type: ignore[arg-type]
+
+
+def test_the_procfs_lookup_keys_on_the_accepted_loopback_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A daemon bound to ``127.0.0.2`` still finds its peer's table entry.
+
+    Anti-vacuity (Codex P2, #5704): hard-code ``127.0.0.1`` as the local key
+    and the ``127.0.0.2`` peer never matches, so every cookie is discarded.
+    """
+    import os
+
+    from polylogue.daemon import peer_identity
+
+    table = tmp_path / "tcp"
+    # local 127.0.0.1:52345 -> remote 127.0.0.2:8765, owned by our uid.
+    table.write_text(
+        "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid\n"
+        f"   0: 0100007F:CC79 0200007F:223D 01 00000000:00000000 00:00000000 00000000  {os.getuid()}\n",
+        encoding="ascii",
+    )
+    monkeypatch.setattr(peer_identity, "_PROC_NET_TCP", table)
+
+    assert (
+        peer_identity.tcp_socket_owner_uid(
+            local_ip="127.0.0.2", local_port=8765, remote_ip="127.0.0.1", remote_port=52345
+        )
+        == os.getuid()
+    )
+
+
+def test_the_browser_proxy_forwards_the_cookie_only_for_an_owned_peer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A foreign uid's replay through the browser proxy reaches the daemon without the cookie.
+
+    Anti-vacuity (Codex P1, #5704): forward every ``Cookie`` header and the
+    daemon's peer check sees the owner-run proxy, accepting the replay.
+    """
+    from starlette.requests import Request
+
+    from polylogue.daemon import browser_host
+
+    def request() -> Request:
+        return Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": "/",
+                "headers": [(b"cookie", b"polylogue_web=secret"), (b"host", b"127.0.0.1:9000")],
+                "client": ("127.0.0.1", 40000),
+                "server": ("127.0.0.1", 9000),
+            }
+        )
+
+    monkeypatch.setattr(browser_host, "peer_socket_owned_by_current_uid", lambda **_kwargs: False)
+    foreign = dict(browser_host._backend_headers(request(), "http://127.0.0.1:8765"))
+    monkeypatch.setattr(browser_host, "peer_socket_owned_by_current_uid", lambda **_kwargs: True)
+    owned = dict(browser_host._backend_headers(request(), "http://127.0.0.1:8765"))
+
+    assert "cookie" not in {name.lower() for name in foreign}
+    assert owned.get("cookie") == "polylogue_web=secret"
+
+
+def test_the_procfs_lookup_reads_ipv6_peers_from_tcp6(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A daemon on ``::1`` finds its peer's entry in ``/proc/net/tcp6``.
+
+    Anti-vacuity (Codex P1, #5704): parse only IPv4 endpoints from
+    ``/proc/net/tcp`` and every IPv6 peer is unowned, discarding every cookie.
+    """
+    import os
+
+    from polylogue.daemon import peer_identity
+
+    loopback = "00000000000000000000000001000000"
+    table = tmp_path / "tcp6"
+    # local [::1]:52345 -> remote [::1]:8765, owned by our uid.
+    table.write_text(
+        "  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid\n"
+        f"   0: {loopback}:CC79 {loopback}:223D 01 00000000:00000000 00:00000000 00000000  {os.getuid()}\n",
+        encoding="ascii",
+    )
+    monkeypatch.setattr(peer_identity, "_PROC_NET_TCP6", table)
+
+    assert (
+        peer_identity.tcp_socket_owner_uid(local_ip="::1", local_port=8765, remote_ip="::1", remote_port=52345)
+        == os.getuid()
+    )
+
+
+def test_the_peer_lookup_runs_once_per_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Reading the cookie twice for one request asks the kernel once.
+
+    Anti-vacuity (Codex P2, #5704): look the peer up on every credential read
+    and each cookie request runs the lookup (``lsof`` on macOS) twice.
+    """
+    from types import SimpleNamespace
+    from typing import Any, cast
+
+    from polylogue.daemon import http
+
+    calls: list[int] = []
+
+    def owned(**_kwargs: object) -> bool:
+        calls.append(1)
+        return True
+
+    monkeypatch.setattr(http, "peer_socket_owned_by_current_uid", owned)
+    handler = object.__new__(http.DaemonAPIHandler)
+    handler.client_address = ("127.0.0.1", 52345)
+    handler.server = cast(Any, SimpleNamespace(server_address=("127.0.0.1", 8765)))
+
+    assert handler._peer_is_owner() is True
+    assert handler._peer_is_owner() is True
+    assert calls == [1]

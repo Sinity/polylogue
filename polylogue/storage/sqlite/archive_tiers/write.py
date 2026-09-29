@@ -75,6 +75,8 @@ from polylogue.core.timestamps import parse_timestamp, to_epoch_ms
 from polylogue.core.types import AttachmentDirection, LineageInheritance, require_literal
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.ids import (
+    SIDECAR_BLOB_EVENT_TYPES,
+    SIDECAR_LOCATOR_KEYS,
     MessageContentIdentity,
     MessageOwnerResolution,
     attachment_message_owner_key,
@@ -1885,6 +1887,7 @@ def write_parsed_session_to_archive(
     stage_timing_prefix: str = "append",
     signature_cache: _SignatureCacheLike | None = None,
     preacquired_attachment_blobs: dict[Any, tuple[bytes | None, int, str]] | None = None,
+    sidecar_blob_locators: Mapping[str, Mapping[str, str]] | None = None,
     manage_transaction: bool = True,
     bulk_fts: bool = False,
     bulk_build: bool = False,
@@ -1961,6 +1964,11 @@ def write_parsed_session_to_archive(
     proving that this session id has not been written in the generation.  A
     repeated id is an assertion failure rather than an implicit duplicate or
     overwrite; live ingest never enables this mode.
+
+    ``sidecar_blob_locators`` maps a sidecar event's ``tool_use_id`` to the
+    publication metadata stored beside it (see ``_stored_event_payload``).
+    It is outside the session object, so the session written is the one
+    whose identity was bound, on the prepared and unprepared routes alike.
     """
     # A work-event raw carries one event and no session header. Writing it as
     # an ordinary session would upsert default header values over the stored
@@ -2690,6 +2698,7 @@ def write_parsed_session_to_archive(
                 inherited_source_message_ids=inherited_source_message_ids,
                 ambiguous_source_provider_ids=event_duplicate_message_native_ids,
                 content_identities=content_identities,
+                sidecar_blob_locators=sidecar_blob_locators,
             )
             add_timing("index.session_events", t0)
             if projection_carry_forward is not None:
@@ -8581,6 +8590,31 @@ def _last_agent_policy_values(
     return (row[0], row[1], row[2])
 
 
+def _stored_event_payload(
+    event: ParsedSessionEvent, sidecar_blob_locators: Mapping[str, Mapping[str, str]] | None
+) -> Mapping[str, object]:
+    """The event payload as stored, with its sidecar blob locator beside it.
+
+    The locator (``blob_hash``, or the typed ``blob_refusal``) is publication
+    metadata the ingest batch learns when it publishes the sidecar's bytes,
+    after the session's identity was bound over its parsed events
+    (polylogue-bgnxh). It is added to the stored row only; the parsed event,
+    and so the session's content hash, never carry it.
+    """
+    if not sidecar_blob_locators or event.event_type not in SIDECAR_BLOB_EVENT_TYPES:
+        return event.payload
+    tool_use_id = event.payload.get("tool_use_id")
+    locator = sidecar_blob_locators.get(tool_use_id) if isinstance(tool_use_id, str) else None
+    if locator is None:
+        return event.payload
+    undeclared = set(locator) - SIDECAR_LOCATOR_KEYS
+    if undeclared:
+        # A key outside the declared locator set would enter the stored row
+        # without the hash partition excluding it.
+        raise ValueError(f"sidecar locator carries undeclared keys: {sorted(undeclared)}")
+    return {**event.payload, **locator}
+
+
 def _write_session_events(
     conn: sqlite3.Connection,
     session_id: str,
@@ -8593,6 +8627,7 @@ def _write_session_events(
     duplicate_native_ids: frozenset[str] = frozenset(),
     inherited_source_message_ids: Mapping[str, str] | None = None,
     ambiguous_source_provider_ids: frozenset[str] = frozenset(),
+    sidecar_blob_locators: Mapping[str, Mapping[str, str]] | None = None,
 ) -> SessionEventWriteResult:
     source = messages.messages if isinstance(messages, _MessageTail) else messages
     disk_index = _DiskMessageEventIndex(source.path.parent) if isinstance(source, SqliteMessageSink) else None
@@ -8687,7 +8722,7 @@ def _write_session_events(
                     _sqlite_text(source_message_provider_id),
                     position,
                     _sqlite_text(event.event_type),
-                    _json_dumps(event.payload),
+                    _json_dumps(_stored_event_payload(event, sidecar_blob_locators)),
                     to_epoch_ms(event.timestamp, numeric_unit="seconds"),
                     event.boundary_start_position + position_offset
                     if event.boundary_start_position is not None

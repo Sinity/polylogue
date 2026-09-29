@@ -593,7 +593,6 @@ class RawFailureSample(BaseModel):
         "deferred_hot_jsonl_capture",
         "deferred_claude_code_partial_jsonl",
         "deferred_cas_frontier",
-        "deferred_codex_cas_frontier",
         "terminal_corrupt_input",
         "terminal_unknown_json_decode",
         "terminal_unknown_export_no_session",

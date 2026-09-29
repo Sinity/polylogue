@@ -50,12 +50,12 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.archive.revision_replay import RevisionReplayPlan
 from polylogue.archive.session_revision_membership import (
-    MembershipDecision,
     MembershipRevision,
     classify_membership_revisions,
 )
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
+from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamp_authority import normalize_session_timestamps
@@ -1277,14 +1277,14 @@ def prepare_retained_jsonl_artifact(
                     return iter(())
                 return chain(sample, source)
 
-            def classify_grok_export(count: int, record_marker: bool) -> bool:
-                # The stream probe has already proved the complete Grok
-                # wrapper. This bounded witness gives taxonomy the same
-                # shape, while its path rules still outrank session content.
-                witness: JSONValue = {"conversations": [] if count == 0 else [{"conversation": {}, "responses": []}]}
-                if record_marker:
-                    assert isinstance(witness, dict)
-                    witness["record_type"] = "grok_export"
+            def classify_bundle_members(witnesses: Sequence[JSONValue]) -> bool:
+                # The member scan keeps the first 64 members, each container
+                # field cut to 64 entries, as the bounded record sample.
+                return _declared_non_session_artifact_classification(provider, source_path, sample=witnesses) is None
+
+            def classify_grok_export(witness: JSONValue) -> bool:
+                # The root fields, with containers cut to their first 64
+                # entries, are the bounded record sample.
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
 
             def classify_generic_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
@@ -1356,6 +1356,7 @@ def prepare_retained_jsonl_artifact(
                 classify_chatgpt_object=classify_chatgpt_object,
                 classify_gemini_object=classify_gemini_object,
                 classify_otel_object=classify_otel_object,
+                classify_bundle_members=classify_bundle_members,
                 # The publisher recomputes this digest from the retained
                 # evidence for every artifact, so a pass that enriched nothing
                 # (no assembly spec, or no admitted session) must bind the
@@ -3105,141 +3106,6 @@ def _current_source_raw_id_selections(
         yield raw_ids
 
 
-def _logical_keys_for_raw_ids(archive: ArchiveStore, raw_ids: Set[str]) -> set[str]:
-    """Read typed logical keys for an arbitrary-size raw selection."""
-    keys: set[str] = set()
-    ordered_raw_ids = sorted(raw_ids)
-    conn = archive._ensure_source_conn()
-    for offset in range(0, len(ordered_raw_ids), 500):
-        chunk = ordered_raw_ids[offset : offset + 500]
-        placeholders = ",".join("?" for _ in chunk)
-        keys.update(
-            str(row[0])
-            for row in conn.execute(
-                f"""
-                SELECT DISTINCT logical_source_key FROM raw_sessions
-                WHERE raw_id IN ({placeholders}) AND logical_source_key IS NOT NULL
-                """,
-                chunk,
-            )
-        )
-    return keys
-
-
-def validate_frozen_source_authority(
-    archive_root: Path,
-    *,
-    active_index_path: Path | None = None,
-    selected_raw_ids: list[str] | None = None,
-    max_payload_bytes: int | None = None,
-    ingest_workers: int = 1,
-    prefetch_cache: RawParsePrefetchCache | None = None,
-) -> None:
-    """Re-derive every selected source decision before allocating a candidate."""
-    with (
-        ArchiveStore.open_frozen_source_validation(
-            archive_root,
-            active_index_path=active_index_path,
-        ) as archive,
-        _ParsedSessionSpill(
-            archive_root,
-            index_path=active_index_path,
-            max_cached_payload_bytes=max_payload_bytes,
-        ) as spill,
-    ):
-        census = _load_frozen_revision_evidence(
-            archive,
-            spill,
-            selected_raw_ids=selected_raw_ids,
-            max_payload_bytes=max_payload_bytes,
-            ingest_workers=ingest_workers,
-            prefetch_cache=prefetch_cache,
-        )
-        logical_keys = archive.raw_revision_rebuild_logical_keys(selected_raw_ids)
-        transient_non_session_keys = _logical_keys_for_raw_ids(
-            archive,
-            census.transient_non_session_raw_ids,
-        )
-        _membership_raw_ids, persisted_membership_keys = archive.expand_raw_membership_selection(selected_raw_ids)
-        membership_keys = {*persisted_membership_keys, *census.membership_candidates}
-        byte_replayed_keys: set[str] = set()
-
-        source_conn = archive._ensure_source_conn()
-        # The candidate installs each byte chain's head before membership
-        # replay runs; frozen validation has no index, so it predicts that
-        # head from the same frozen classification.
-        byte_chain_heads: dict[str, str] = {}
-        for logical_key in sorted(set(logical_keys) - transient_non_session_keys):
-            if pending_raw_envelope_has_membership_authority(source_conn, logical_key):
-                continue
-            plan = archive.classify_raw_revision_cohort_for_frozen_candidate(logical_key)
-            if not plan.accepted_raw_ids:
-                convertible = archive.convertible_full_revision_raw_ids(logical_key)
-                if convertible:
-                    raise FrozenSourceRemediationRequiredError(
-                        "inactive candidate found a full-revision cohort that still requires membership "
-                        f"remediation in frozen source: {logical_key}"
-                    )
-                continue
-            byte_replayed_keys.add(logical_key)
-            byte_chain_heads[logical_key] = plan.accepted_raw_ids[-1]
-
-        for logical_key in sorted(
-            key
-            for key in membership_keys
-            if key not in byte_replayed_keys or membership_key_has_pending_envelope_member(source_conn, key)
-        ):
-            candidate_raw_ids = set(archive.raw_membership_rebuild_raw_ids(logical_key))
-            candidate_raw_ids.update(census.membership_candidates.get(logical_key, ()))
-            revisions: list[MembershipRevision] = []
-            for raw_id in sorted(candidate_raw_ids):
-                sessions, _payload_bytes = spill.for_raw(archive, raw_id)
-                for session in sessions:
-                    session_logical_key = (
-                        f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
-                    )
-                    if session_logical_key != logical_key:
-                        continue
-                    projection = session_revision_projection(session)
-                    revisions.append(
-                        MembershipRevision(
-                            raw_id,
-                            projection,
-                            session.updated_at,
-                            browser_snapshot_fidelity=_browser_snapshot_fidelity(session.ingest_flags),
-                            provider_message_ids=(
-                                session.messages.provider_message_ids(include_none=True)
-                                if isinstance(session.messages, SqliteMessageSink)
-                                else frozenset(message.provider_message_id for message in session.messages)
-                            ),
-                            provider_attachment_ids=frozenset(
-                                attachment.provider_attachment_id for attachment in session.attachments
-                            ),
-                        )
-                    )
-            # Re-derive exactly what membership replay persists: it classifies
-            # against the byte chain head installed before it and, when that
-            # chain-governed head lies outside the cohort, records every member
-            # as yielding to it.
-            head_raw_id = byte_chain_heads.get(logical_key)
-            classification = classify_membership_revisions(revisions, existing_accepted_raw_id=head_raw_id)
-            yield_decisions: dict[str, MembershipDecision] | None = None
-            if (
-                classification.accepted_raw_ids
-                and head_raw_id is not None
-                and head_raw_id not in {*classification.accepted_raw_ids, *classification.equivalent_raw_ids}
-            ):
-                yield_decisions = dict.fromkeys(
-                    (
-                        *classification.accepted_raw_ids,
-                        *classification.equivalent_raw_ids,
-                        *classification.ambiguous_raw_ids,
-                    ),
-                    MembershipDecision.SUPERSEDED_EQUIVALENT,
-                )
-            archive.require_frozen_membership_authority(logical_key, classification, yield_decisions)
-
-
 def census_historical_revision_evidence(
     archive_root: Path,
     *,
@@ -3627,7 +3493,7 @@ def _required_shard_prepared_rows(
     bindings: Mapping[str, PreparedRows],
 ) -> dict[str, PreparedRows]:
     """Bind exactly the session the frozen replay is about to full-replace."""
-    session_id = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+    session_id = archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
     try:
         return {raw_id: bindings[session_id]}
     except KeyError as exc:
@@ -3788,6 +3654,7 @@ def _owned_generation_is_empty(archive_root: Path, *, generation: tuple[str, str
         initialize=False,
         read_only=True,
         owned_inactive_generation=generation,
+        validate_index_layout=False,
     ) as probe:
         return probe._conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is None
 

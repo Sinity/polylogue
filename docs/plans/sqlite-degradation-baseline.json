@@ -786,10 +786,6 @@
       "digest": "3e5082ddfdedca0c4373cb30565b811227d46390"
     },
     {
-      "file": "polylogue/storage/blob_integrity.py",
-      "digest": "a4c37e1604c343e45838ae1f84100d37932ea886"
-    },
-    {
       "file": "polylogue/storage/blob_liveness.py",
       "digest": "03173b692274a711b86203eb6af5e9ad03a74f42"
     },
@@ -803,24 +799,11 @@
     },
     {
       "file": "polylogue/storage/blob_liveness.py",
-      "digest": "c7663a4df926a6a69b95fc4fb48c49116ca37162"
-    },
-    {
-      "file": "polylogue/storage/blob_liveness.py",
       "digest": "f27ddac5d09f47e68f9abc0aaf8ab9ab04213447"
     },
     {
       "file": "polylogue/storage/embeddings/materialization.py",
-      "digest": "3962dc1243d3e6bb84b3d4e2362a83f5593009c5"
-    },
-    {
-      "file": "polylogue/storage/embeddings/materialization.py",
-      "digest": "7d74bb8df702297e3dbd655d8e8ce2729486be20"
-    },
-    {
-      "file": "polylogue/storage/embeddings/materialization.py",
-      "digest": "a6d5e48c23163c07a7f9dca708e3ebab97e6a2eb",
-      "count": 2
+      "digest": "a6d5e48c23163c07a7f9dca708e3ebab97e6a2eb"
     },
     {
       "file": "polylogue/storage/embeddings/preflight.py",
@@ -904,7 +887,7 @@
     },
     {
       "file": "polylogue/storage/raw_retention.py",
-      "digest": "cdc8ba6c105b396f2d421059328b53c972600623"
+      "digest": "cb7167b3325a15636f2cbc4c82fcde97e67ff56d"
     },
     {
       "file": "polylogue/storage/search_providers/sqlite_vec_runtime.py",
@@ -958,10 +941,6 @@
     {
       "file": "polylogue/storage/sqlite/migration_runner.py",
       "digest": "61f1a67754f35b2198b73613ef5c66849fdfe8bf"
-    },
-    {
-      "file": "polylogue/storage/sqlite/migration_runner.py",
-      "digest": "a095bfe20fd7b06390be79c3a78d88b7a27072c6"
     },
     {
       "file": "polylogue/storage/sqlite/wal_checkpoint.py",

@@ -13,7 +13,6 @@ import time
 import types
 import uuid
 from collections.abc import Iterable, Mapping, Sequence
-from collections.abc import Set as AbstractSet
 from contextlib import closing
 from dataclasses import dataclass, fields, is_dataclass, replace
 from enum import StrEnum
@@ -29,7 +28,6 @@ from polylogue.storage.backup_attestation import (
     verify_verification_receipt,
 )
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
-from polylogue.storage.sqlite.archive_tiers.source import RETIRED_SOURCE_SCHEMA_OBJECTS
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
@@ -40,12 +38,6 @@ _VERIFICATION_RECEIPT_FILE = "verification-receipt.json"
 _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _ADDITIVE_NO_BACKUP_MARKER = "-- migration-safety: additive-no-backup"
 _SQL_TRANSACTION_CONTROL_RE = re.compile(r"^(?:BEGIN|COMMIT|END|ROLLBACK|SAVEPOINT|RELEASE)\b", re.IGNORECASE)
-_CREATE_SCHEMA_OBJECT_RE = re.compile(
-    r"\bCREATE\s+(?:UNIQUE\s+)?(?P<kind>TABLE|INDEX|TRIGGER|VIEW)\s+"
-    r"(?:IF\s+NOT\s+EXISTS\s+)?"
-    r"(?:\"(?P<double>[^\"]+)\"|`(?P<backtick>[^`]+)`|\[(?P<bracket>[^\]]+)\]|(?P<bare>[A-Za-z_][A-Za-z0-9_]*))",
-    re.IGNORECASE,
-)
 DURABLE_CHANGE_TRAIN_FORMAT: Final = "polylogue.durable-change-train.v1"
 DURABLE_MIGRATION_COLLISION_REPORT_FORMAT: Final = "polylogue.durable-migration-collisions.v1"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -307,198 +299,6 @@ def _load_migrations(tier: ArchiveTier) -> tuple[MigrationStep, ...]:
             raise
         raise MigrationError(str(exc)) from exc
     return tuple(steps)
-
-
-def _prepare_fresh_connection_for_target(
-    connection: sqlite3.Connection,
-    tier: ArchiveTier,
-    target_version: int,
-) -> None:
-    """Project current canonical DDL to an earlier additive migration slot.
-
-    The shipped bootstrap is necessarily at the newest version.  A durable
-    archive can be paused between numbered trains, so parity for one historical
-    step must exclude objects explicitly owned by later train riders.  Existing
-    object rewrites remain in the comparison and fail closed.
-    """
-    runtime_target = ARCHIVE_VERSION_BY_TIER[tier]
-    if target_version >= runtime_target:
-        return
-    foreign_keys_were_on = bool(connection.execute("PRAGMA foreign_keys").fetchone()[0])
-    if foreign_keys_were_on:
-        connection.execute("PRAGMA foreign_keys = OFF")
-    steps = _load_migrations(tier)
-    from polylogue.storage.sqlite.durable_change_train import validate_durable_migration_sidecars
-
-    sidecars = validate_durable_migration_sidecars(tier, tuple((step.name, step.sql) for step in steps))
-    future_refs = {
-        schema_object
-        for sidecar in sidecars
-        if sidecar.slot > target_version
-        for rider in sidecar.train.riders
-        for schema_object in rider.schema_objects
-    }
-
-    # A later train may *replace* an object which already existed at the
-    # historical target.  Such an object must remain in the projected
-    # historical schema: dropping it would turn a v30 index replacement into
-    # a fictitious "object introduced at v30".  The train carrier lists the
-    # post-train object, so recover the earlier existence from the numbered
-    # migration SQL itself.  Objects that have no earlier CREATE are genuinely
-    # future-only and can be removed below.
-    historical_create_sql: dict[str, str] = {}
-    historical_create_versions: dict[str, int] = {}
-    rename_re = re.compile(
-        r"ALTER\s+TABLE\s+(?:[\"`\[]?)([A-Za-z_][A-Za-z0-9_]*)(?:[\"`\]]?)\s+"
-        r"RENAME\s+TO\s+(?:[\"`\[]?)([A-Za-z_][A-Za-z0-9_]*)(?:[\"`\]]?)\s*;",
-        re.IGNORECASE,
-    )
-    for step in steps:
-        if step.version > target_version:
-            continue
-        events: list[tuple[int, str, tuple[str, str]]] = []
-        for match in _CREATE_SCHEMA_OBJECT_RE.finditer(step.sql):
-            name = next(value for value in match.group("double", "backtick", "bracket", "bare") if value is not None)
-            statement_end = step.sql.find(";", match.start())
-            if match.group("kind").lower() == "trigger":
-                trigger_end = step.sql.find("END;", match.start())
-                if trigger_end >= 0:
-                    statement_end = trigger_end + len("END")
-            if statement_end >= 0:
-                events.append(
-                    (
-                        match.start(),
-                        "create",
-                        (f"{match.group('kind').lower()}:{name}", step.sql[match.start() : statement_end + 1]),
-                    )
-                )
-        for match in rename_re.finditer(step.sql):
-            events.append((match.start(), "rename", (f"table:{match.group(1)}", f"table:{match.group(2)}")))
-        for _, event_kind, payload in sorted(events):
-            if event_kind == "create":
-                object_ref, statement = payload
-                historical_create_sql[object_ref] = statement
-                historical_create_versions[object_ref] = step.version
-                continue
-            source_ref, destination_ref = payload
-            renamed_statement = historical_create_sql.get(source_ref)
-            renamed_version = historical_create_versions.get(source_ref)
-            if renamed_statement is None or renamed_version is None:
-                continue
-            del historical_create_sql[source_ref]
-            del historical_create_versions[source_ref]
-            historical_create_sql[destination_ref] = renamed_statement
-            historical_create_versions[destination_ref] = renamed_version
-    historically_created = set(historical_create_sql)
-    replaced_refs = future_refs & historically_created
-    future_refs.difference_update(historically_created)
-    future_refs.difference_update(replaced_refs)
-
-    # ALTER TABLE ... ADD COLUMN is represented in a train as a column
-    # object, while SQLite's canonical DDL necessarily contains the newest
-    # table definition.  Remove those future columns from the in-memory
-    # projection before inventory capture.  This is deliberately confined to
-    # the fresh connection used for parity; it never mutates an archive.
-    future_columns = {
-        schema_object.removeprefix("column:")
-        for schema_object in future_refs
-        if schema_object.startswith("column:") and "." in schema_object.removeprefix("column:")
-    }
-    drop_order = {"index": 0, "trigger": 0, "view": 0, "table": 1}
-    for schema_object in sorted(
-        future_refs | replaced_refs,
-        key=lambda item: (drop_order.get(item.partition(":")[0], 2), item),
-    ):
-        object_type, separator, object_name = schema_object.partition(":")
-        if not separator or object_type not in drop_order:
-            continue
-        quoted_name = '"' + object_name.replace('"', '""') + '"'
-        connection.execute(f"DROP {object_type.upper()} IF EXISTS {quoted_name}")
-    # Reapply the historical definition for a later train that replaced an
-    # object which was already present at this target.  In particular, v30
-    # replaces this index with a partial uniqueness domain; v28 must retain
-    # the earlier unconditional uniqueness definition.
-    reapply_order = {"table": 0, "view": 1, "index": 2, "trigger": 3}
-    # Keep parent tables available while their historical indexes are rebuilt.
-    for schema_object in sorted(
-        replaced_refs,
-        key=lambda item: (
-            reapply_order.get(item.partition(":")[0], 4),
-            0 if item == "table:raw_sessions" else 1,
-            item,
-        ),
-    ):
-        historical_statement = historical_create_sql.get(schema_object)
-        if historical_statement is not None:
-            if schema_object.startswith("table:"):
-                table_name = schema_object.partition(":")[2]
-                historical_statement = re.sub(
-                    r"(CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?)[A-Za-z_][A-Za-z0-9_]*",
-                    rf"\g<1>{table_name}",
-                    historical_statement,
-                    count=1,
-                    flags=re.IGNORECASE,
-                )
-            try:
-                connection.execute(historical_statement)
-            except sqlite3.OperationalError as exc:
-                if schema_object == "index:idx_raw_hook_events_source_hash" and "no such column" in str(exc):
-                    connection.execute(
-                        "ALTER TABLE raw_hook_events ADD COLUMN blob_hash BLOB CHECK(blob_hash IS NULL OR length(blob_hash) = 32)"
-                    )
-                    connection.execute(historical_statement)
-                    continue
-                if schema_object.startswith("index:") and "no such table" in str(exc):
-                    table_match = re.search(r"\bON\s+([A-Za-z_][A-Za-z0-9_]*)", historical_statement, re.IGNORECASE)
-                    if table_match is not None:
-                        table_name = table_match.group(1)
-                        table_pattern = re.compile(
-                            rf"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?{re.escape(table_name)}\b.*?;",
-                            re.IGNORECASE | re.DOTALL,
-                        )
-                        for step in steps:
-                            if step.version <= target_version:
-                                fallback = table_pattern.search(step.sql)
-                                if fallback is not None:
-                                    connection.execute(fallback.group(0))
-                                    connection.execute(historical_statement)
-                                    break
-                        else:
-                            raise sqlite3.OperationalError(f"historical {schema_object}: {exc}") from exc
-                        continue
-                raise sqlite3.OperationalError(f"historical {schema_object}: {exc}") from exc
-        create_version = historical_create_versions[schema_object]
-        table_name = schema_object.partition(":")[2]
-        if schema_object.startswith("table:"):
-            for step in steps:
-                if not create_version < step.version <= target_version:
-                    continue
-                for alter_match in re.finditer(
-                    rf"ALTER\s+TABLE\s+(?:[\"`\[]?){re.escape(table_name)}(?:[\"`\]]?)\s+ADD\s+COLUMN\s+[^;]+;",
-                    step.sql,
-                    re.IGNORECASE,
-                ):
-                    connection.execute(alter_match.group(0))
-    for qualified_column in sorted(future_columns):
-        table_name, _, column_name = qualified_column.partition(".")
-        if not table_name or not column_name:
-            continue
-        table_exists = connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (table_name,),
-        ).fetchone()
-        if table_exists is None:
-            continue
-        quoted_table = '"' + table_name.replace('"', '""') + '"'
-        columns = {str(row[1]) for row in connection.execute(f"PRAGMA table_info({quoted_table})")}
-        if column_name in columns:
-            quoted_column = '"' + column_name.replace('"', '""') + '"'
-            connection.execute(f"ALTER TABLE {quoted_table} DROP COLUMN {quoted_column}")
-    if future_refs or replaced_refs or future_columns:
-        connection.execute(f"PRAGMA user_version = {target_version}")
-        connection.commit()
-    if foreign_keys_were_on:
-        connection.execute("PRAGMA foreign_keys = ON")
 
 
 def durable_migration_claims(tier: ArchiveTier) -> tuple[DurableMigrationClaim, ...]:
@@ -1304,7 +1104,6 @@ def migrate_archive_tier(
                 fresh_connection.execute("PRAGMA foreign_keys = ON")
                 fresh_connection.executescript(ARCHIVE_DDL_BY_TIER[tier])
                 fresh_connection.execute(f"PRAGMA user_version = {target_version}")
-                _prepare_fresh_connection_for_target(fresh_connection, tier, target_version)
                 fresh_connection.commit()
                 fresh_parity = prove_durable_fresh_ddl_parity(
                     tier,
@@ -1475,26 +1274,10 @@ class DurableSchemaInventory:
 class DurableFreshDDLParityProof:
     """Comparison between an upgraded database and a fresh canonical create.
 
-    Two digests describe the migrated side because they answer two different
-    questions, and a tier that retires anything makes them differ
-    (polylogue-jkoah):
-
-    - ``migrated_inventory_sha256`` is the migrated database's inventory
-      exactly as it is on disk, with no retirement projection. It is the digest
-      ``capture_durable_database_evidence`` records as
-      ``DurableDatabaseEvidence.schema_inventory_sha256``, so the train gates
-      that compare this proof against ``apply_evidence.post`` are comparing two
-      captures of the same bytes -- the binding that proves the applied
-      migration produced the inventory this proof verified.
-    - ``parity_inventory_sha256`` is the same inventory projected through the
-      tier's retirement declaration: retired objects removed, retired columns
-      dropped from their owning table. Only this digest is comparable to
-      ``fresh_inventory_sha256``, because fresh DDL already omits every
-      retirement.
-
-    Comparing the projected digest against an unprojected ``post`` capture
-    would refuse every tier that actually exercises the retirement exemption,
-    since the two can only be equal when the tier retires nothing.
+    ``migrated_inventory_sha256`` is the digest ``capture_durable_database_evidence``
+    records as ``DurableDatabaseEvidence.schema_inventory_sha256``, so the train
+    gates that compare this proof against ``apply_evidence.post`` compare two
+    captures of the same bytes.
     """
 
     tier: ArchiveTier
@@ -1502,7 +1285,6 @@ class DurableFreshDDLParityProof:
     migrated_version: int
     fresh_version: int
     migrated_inventory_sha256: str
-    parity_inventory_sha256: str
     fresh_inventory_sha256: str
     missing_objects: tuple[str, ...]
     unexpected_objects: tuple[str, ...]
@@ -1782,84 +1564,8 @@ def _schema_pragma_rows(conn: sqlite3.Connection, pragma: str, object_name: str)
     return [list(row) for row in conn.execute(f"PRAGMA {pragma}({quoted})")]
 
 
-def _retired_columns_by_table(retired_refs: AbstractSet[str]) -> dict[str, frozenset[str]]:
-    """Group the declared ``column:<table>.<name>`` retirements by owning table.
-
-    ``RETIRED_SOURCE_SCHEMA_OBJECTS`` is maintained by hand beside the DDL it
-    documents, so its members stay unqualified: the tier is already decided by
-    whoever asked for the set. That is also the shape
-    ``DurableSchemaObjectEvidence.object_ref`` emits, so table/index/trigger/view
-    retirements compare by plain set intersection. Columns are the one grain
-    ``capture_durable_schema_inventory`` never emits as its own object -- a
-    retired column shows up as a changed *table* declaration -- so they are
-    projected out of the migrated table instead of subtracted from a ref set.
-    """
-    by_table: dict[str, set[str]] = {}
-    for ref in retired_refs:
-        if not ref.startswith("column:"):
-            continue
-        qualified = ref.split(":", 1)[1]
-        table_name, _, column_name = qualified.partition(".")
-        if not table_name or not column_name:
-            continue
-        by_table.setdefault(table_name, set()).add(column_name)
-    return {table: frozenset(columns) for table, columns in by_table.items()}
-
-
-def _project_retired_columns(
-    conn: sqlite3.Connection,
-    table_name: str,
-    sql: str,
-    retired_columns: AbstractSet[str],
-) -> sqlite3.Connection | None:
-    """Re-declare one table without its declared-retired columns.
-
-    SQLite performs the removal itself -- the migrated ``CREATE TABLE`` text is
-    replayed into a scratch database and each retired column is dropped there --
-    so the projected declaration, ``table_xinfo`` and ``foreign_key_list`` are
-    exactly what SQLite would have stored had the column never been declared.
-    No text surgery happens here.
-
-    Returns ``None`` when this table carries none of the declared retirements.
-    Only the table is replayed, so an index over a retired column is not
-    projected away with it: that index has to be declared retired in its own
-    right or parity still reports it. When SQLite refuses the drop -- a column
-    another column's CHECK or generated expression reads -- the declaration is
-    wrong rather than the database, so this raises instead of exempting a
-    retirement the engine cannot perform.
-    """
-    present = {str(row[1]) for row in conn.execute(f"PRAGMA table_xinfo({_quote_sqlite_identifier(table_name)})")}
-    retained = sorted(retired_columns & present)
-    if not retained:
-        return None
-    scratch = sqlite3.connect(":memory:")
-    try:
-        scratch.executescript(sql)
-        for column_name in retained:
-            scratch.execute(
-                f"ALTER TABLE {_quote_sqlite_identifier(table_name)} "
-                f"DROP COLUMN {_quote_sqlite_identifier(column_name)}"
-            )
-    except sqlite3.Error as error:
-        scratch.close()
-        raise MigrationError(
-            f"declared retired columns {retained} cannot be removed from {table_name}: {error}"
-        ) from error
-    return scratch
-
-
-def capture_durable_schema_inventory(
-    conn: sqlite3.Connection,
-    *,
-    retired_columns: Mapping[str, frozenset[str]] | None = None,
-) -> DurableSchemaInventory:
-    """Capture the canonical object universe from SQLite itself, not a hand list.
-
-    ``retired_columns`` maps a table to columns that fresh DDL no longer
-    declares but a migrated historical tier still carries. Those tables are
-    fingerprinted from the projection in ``_project_retired_columns``; every
-    other object is read straight from this connection.
-    """
+def capture_durable_schema_inventory(conn: sqlite3.Connection) -> DurableSchemaInventory:
+    """Capture the canonical object universe from SQLite itself, not a hand list."""
     rows = conn.execute(
         """
         SELECT type, name, tbl_name, sql
@@ -1874,30 +1580,17 @@ def capture_durable_schema_inventory(
         object_type = str(raw_type)
         name = str(raw_name)
         table_name = str(raw_table_name)
-        sql_text = str(raw_sql) if raw_sql is not None else None
-        source_conn = conn
-        projection: sqlite3.Connection | None = None
-        if object_type == "table" and retired_columns and sql_text is not None:
-            projection = _project_retired_columns(conn, name, sql_text, retired_columns.get(name, frozenset()))
-            if projection is not None:
-                source_conn = projection
-                projected_sql = projection.execute(
-                    "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?", (name,)
-                ).fetchone()
-                sql_text = str(projected_sql[0]) if projected_sql and projected_sql[0] is not None else sql_text
         payload: dict[str, object] = {
             "type": object_type,
             "name": name,
             "table_name": table_name,
-            "sql": _normalize_schema_sql(sql_text),
+            "sql": _normalize_schema_sql(str(raw_sql) if raw_sql is not None else None),
         }
         if object_type == "table":
-            payload["table_xinfo"] = _schema_pragma_rows(source_conn, "table_xinfo", name)
-            payload["foreign_key_list"] = _schema_pragma_rows(source_conn, "foreign_key_list", name)
+            payload["table_xinfo"] = _schema_pragma_rows(conn, "table_xinfo", name)
+            payload["foreign_key_list"] = _schema_pragma_rows(conn, "foreign_key_list", name)
         elif object_type == "index":
-            payload["index_xinfo"] = _schema_pragma_rows(source_conn, "index_xinfo", name)
-        if projection is not None:
-            projection.close()
+            payload["index_xinfo"] = _schema_pragma_rows(conn, "index_xinfo", name)
         objects.append(
             DurableSchemaObjectEvidence(
                 object_type=object_type,
@@ -1906,16 +1599,7 @@ def capture_durable_schema_inventory(
                 definition_sha256=_canonical_json_sha256(payload),
             )
         )
-    inventory_payload = [
-        {
-            "object_type": item.object_type,
-            "name": item.name,
-            "table_name": item.table_name,
-            "definition_sha256": item.definition_sha256,
-        }
-        for item in objects
-    ]
-    return DurableSchemaInventory(objects=tuple(objects), sha256=_canonical_json_sha256(inventory_payload))
+    return _schema_inventory_from_objects(tuple(objects))
 
 
 def prove_durable_fresh_ddl_parity(
@@ -1932,27 +1616,12 @@ def prove_durable_fresh_ddl_parity(
     evidence = _require_nonempty(evidence_ref, label="fresh-DDL parity evidence")
     migrated_version = int(migrated_connection.execute("PRAGMA user_version").fetchone()[0] or 0)
     fresh_version = int(fresh_connection.execute("PRAGMA user_version").fetchone()[0] or 0)
-    retired_refs = _retired_schema_objects_for_parity(tier)
-    # Fresh DDL already omits every retirement, so only the migrated side is
-    # projected. Both sides then key on the same unqualified object_ref shape.
-    # Three captures, not two. ``observed`` is the migrated database exactly as
-    # it stands, and is the only one that can equal the unprojected
-    # ``DurableDatabaseEvidence.schema_inventory_sha256`` the apply step
-    # recorded for the same file. ``migrated``/``parity_migrated`` carry the
-    # retirement projection that makes a comparison against fresh DDL
-    # meaningful.
-    observed = capture_durable_schema_inventory(migrated_connection)
-    migrated = capture_durable_schema_inventory(
-        migrated_connection, retired_columns=_retired_columns_by_table(retired_refs)
-    )
+    migrated = capture_durable_schema_inventory(migrated_connection)
     fresh = capture_durable_schema_inventory(fresh_connection)
     migrated_by_ref = {item.object_ref: item for item in migrated.objects}
     fresh_by_ref = {item.object_ref: item for item in fresh.objects}
     missing = tuple(sorted(set(fresh_by_ref) - set(migrated_by_ref)))
-    retired_extras = (set(migrated_by_ref) - set(fresh_by_ref)) & retired_refs
-    unexpected = tuple(sorted((set(migrated_by_ref) - set(fresh_by_ref)) - retired_extras))
-    parity_migrated_objects = tuple(item for item in migrated.objects if item.object_ref not in retired_extras)
-    parity_migrated = _schema_inventory_from_objects(parity_migrated_objects)
+    unexpected = tuple(sorted(set(migrated_by_ref) - set(fresh_by_ref)))
     changed = tuple(
         sorted(
             object_ref
@@ -1966,15 +1635,14 @@ def prove_durable_fresh_ddl_parity(
         and not missing
         and not unexpected
         and not changed
-        and parity_migrated.sha256 == fresh.sha256
+        and migrated.sha256 == fresh.sha256
     )
     return DurableFreshDDLParityProof(
         tier=tier,
         target_version=target_version,
         migrated_version=migrated_version,
         fresh_version=fresh_version,
-        migrated_inventory_sha256=observed.sha256,
-        parity_inventory_sha256=parity_migrated.sha256,
+        migrated_inventory_sha256=migrated.sha256,
         fresh_inventory_sha256=fresh.sha256,
         missing_objects=missing,
         unexpected_objects=unexpected,
@@ -1982,18 +1650,6 @@ def prove_durable_fresh_ddl_parity(
         evidence_ref=evidence,
         matches=matches,
     )
-
-
-def _retired_schema_objects_for_parity(tier: ArchiveTier) -> frozenset[str]:
-    """Return migrated-only objects explicitly retired from fresh DDL.
-
-    Members are unqualified ``<type>:<name>`` or ``column:<table>.<name>``: the
-    tier is the argument, not part of the ref. That matches
-    ``DurableSchemaObjectEvidence.object_ref`` exactly, so callers intersect
-    directly; callers keyed on the tier-qualified
-    ``SchemaObject.object_ref`` strip the leading tier token first.
-    """
-    return RETIRED_SOURCE_SCHEMA_OBJECTS if tier is ArchiveTier.SOURCE else frozenset()
 
 
 def _schema_inventory_from_objects(objects: tuple[DurableSchemaObjectEvidence, ...]) -> DurableSchemaInventory:
@@ -2382,6 +2038,14 @@ def admit_durable_change_train(
     if train.migration.requires_backup and not train.backup_plan_ref:
         raise DurableChangeTrainError("durable train migration requires backup authority but declares no backup plan")
     _validate_riders(train)
+    if fresh_ddl_parity.tier is train.tier and fresh_ddl_parity.fresh_version != train.target_version:
+        # Bootstrap DDL describes only the shipped version; there is no
+        # historical projection, so an intermediate slot has no fresh image.
+        raise DurableChangeTrainError(
+            f"durable train v{train.target_version} has no canonical fresh-DDL image: shipped "
+            f"{train.tier.value} DDL is v{fresh_ddl_parity.fresh_version}; catch-up across more than "
+            "one numbered slot is not supported"
+        )
     if (
         fresh_ddl_parity.tier is not train.tier
         or fresh_ddl_parity.target_version != train.target_version
@@ -2942,10 +2606,8 @@ def prove_durable_change_train(
         not fresh_ddl_parity.matches
         or fresh_ddl_parity.tier is not train.tier
         or fresh_ddl_parity.target_version != train.target_version
-        # See ``DurableFreshDDLParityProof``: the unprojected digest is the one
-        # that can equal an unprojected ``post`` capture of the same file.
         or fresh_ddl_parity.migrated_inventory_sha256 != train.apply_evidence.post.schema_inventory_sha256
-        or fresh_ddl_parity.parity_inventory_sha256 != fresh_ddl_parity.fresh_inventory_sha256
+        or fresh_ddl_parity.migrated_inventory_sha256 != fresh_ddl_parity.fresh_inventory_sha256
         or fresh_ddl_parity.fresh_inventory_sha256 != train.fresh_ddl_parity.fresh_inventory_sha256
     ):
         raise DurableChangeTrainError("actual post-apply bytes do not have admitted fresh-DDL parity")
@@ -3065,7 +2727,6 @@ def _validate_admission_evidence(train: DurableChangeTrain) -> None:
     ):
         raise DurableChangeTrainError("fresh-DDL parity does not bind the train tier and target")
     _validate_sha256(parity.migrated_inventory_sha256, label="migrated fresh-DDL inventory")
-    _validate_sha256(parity.parity_inventory_sha256, label="retirement-projected fresh-DDL inventory")
     _validate_sha256(parity.fresh_inventory_sha256, label="canonical fresh-DDL inventory")
     parity_ref = _require_nonempty(parity.evidence_ref, label="fresh-DDL parity evidence")
     if (
@@ -3073,9 +2734,7 @@ def _validate_admission_evidence(train: DurableChangeTrain) -> None:
         or parity.missing_objects
         or parity.unexpected_objects
         or parity.changed_objects
-        # The projected digest is the operand fresh DDL can be equal to; the
-        # unprojected one carries whatever the tier declared it would retain.
-        or parity.parity_inventory_sha256 != parity.fresh_inventory_sha256
+        or parity.migrated_inventory_sha256 != parity.fresh_inventory_sha256
     ):
         raise DurableChangeTrainError("admitted fresh-DDL parity is not an exact match")
     required_refs = {admission_ref, parity_ref}
@@ -3274,16 +2933,12 @@ def _validate_train_proof(train: DurableChangeTrain) -> None:
         or parity.missing_objects
         or parity.unexpected_objects
         or parity.changed_objects
-        # Unprojected against unprojected: both are captures of the live
-        # migrated file. Using the retirement-projected digest here would
-        # refuse every tier that actually retires something (polylogue-jkoah).
         or parity.migrated_inventory_sha256 != apply_evidence.post.schema_inventory_sha256
-        or parity.parity_inventory_sha256 != parity.fresh_inventory_sha256
+        or parity.migrated_inventory_sha256 != parity.fresh_inventory_sha256
         or parity.fresh_inventory_sha256 != admitted_parity.fresh_inventory_sha256
     ):
         raise DurableChangeTrainError("proof fresh-DDL parity does not bind admitted and applied schema bytes")
     _validate_sha256(parity.migrated_inventory_sha256, label="proof migrated inventory")
-    _validate_sha256(parity.parity_inventory_sha256, label="proof retirement-projected inventory")
     _validate_sha256(parity.fresh_inventory_sha256, label="proof fresh inventory")
     expected_consumers = {
         consumer.consumer_id: consumer for rider in train.riders for consumer in rider.runtime_consumers

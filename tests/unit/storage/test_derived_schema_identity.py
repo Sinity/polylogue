@@ -298,38 +298,24 @@ async def test_async_fresh_index_carries_current_identity(tmp_path: Path) -> Non
     assert row[0] == derived_schema_identity(DerivedTier.INDEX)
 
 
-def test_current_unstamped_derived_tier_is_adopted_before_identity_validation(tmp_path: Path) -> None:
-    """Legacy current-version derived files gain identity metadata on reopen."""
+def test_current_unstamped_index_is_refused_not_adopted(tmp_path: Path) -> None:
+    """A current-version index without an identity stamp is a typed skew.
+
+    Fresh initialization stamps in the transaction that writes ``user_version``,
+    so this state has no producer; re-stamping it in place would certify read
+    models this runtime never built.
+    """
     path = tmp_path / "index.db"
     with sqlite3.connect(path) as conn:
         initialize_archive_tier(conn, ArchiveTier.INDEX)
-        conn.execute("DROP TABLE schema_identity")
-        assert (
-            conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_identity'").fetchone()
-            is None
-        )
+        conn.execute("DELETE FROM schema_identity")
 
-    initialize_archive_database(path, ArchiveTier.INDEX)
+    with pytest.raises(SchemaSkew) as caught:
+        initialize_archive_database(path, ArchiveTier.INDEX)
+    assert caught.value.found is None
 
     with sqlite3.connect(path) as conn:
-        assert read_schema_identity(conn, DerivedTier.INDEX) == derived_schema_identity(DerivedTier.INDEX)
-
-
-def test_current_unstamped_ops_tier_is_adopted_before_identity_validation(tmp_path: Path) -> None:
-    """The legacy adoption route applies to both rebuildable tiers."""
-    path = tmp_path / "ops.db"
-    with sqlite3.connect(path) as conn:
-        initialize_archive_tier(conn, ArchiveTier.OPS)
-        conn.execute("DROP TABLE schema_identity")
-        assert (
-            conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_identity'").fetchone()
-            is None
-        )
-
-    initialize_archive_database(path, ArchiveTier.OPS)
-
-    with sqlite3.connect(path) as conn:
-        assert read_schema_identity(conn, DerivedTier.OPS) == derived_schema_identity(DerivedTier.OPS)
+        assert read_schema_identity(conn, DerivedTier.INDEX) is None
 
 
 def test_superseded_ops_identity_converges_to_the_current_schema(tmp_path: Path) -> None:
@@ -348,30 +334,30 @@ def test_superseded_ops_identity_converges_to_the_current_schema(tmp_path: Path)
         assert read_schema_identity(conn, DerivedTier.OPS) == derived_schema_identity(DerivedTier.OPS)
 
 
-def test_canonical_sync_bootstrap_adopts_current_unstamped_index(tmp_path: Path) -> None:
+def test_canonical_sync_bootstrap_refuses_current_unstamped_index(tmp_path: Path) -> None:
     path = tmp_path / "index.db"
     with sqlite3.connect(path) as conn:
         initialize_archive_tier(conn, ArchiveTier.INDEX)
-        conn.execute("DROP TABLE schema_identity")
+        conn.execute("DELETE FROM schema_identity")
 
     with sqlite3.connect(path) as conn:
-        _ensure_schema(conn)
-        assert read_schema_identity(conn, DerivedTier.INDEX) == derived_schema_identity(DerivedTier.INDEX)
+        with pytest.raises(SchemaSkew) as caught:
+            _ensure_schema(conn)
+        assert caught.value.found is None
+        assert read_schema_identity(conn, DerivedTier.INDEX) is None
 
 
 @pytest.mark.asyncio
-async def test_canonical_async_bootstrap_adopts_current_unstamped_index(tmp_path: Path) -> None:
+async def test_canonical_async_bootstrap_refuses_current_unstamped_index(tmp_path: Path) -> None:
     path = tmp_path / "index.db"
     with sqlite3.connect(path) as conn:
         initialize_archive_tier(conn, ArchiveTier.INDEX)
-        conn.execute("DROP TABLE schema_identity")
+        conn.execute("DELETE FROM schema_identity")
 
     async with aiosqlite.connect(path) as conn:
-        await ensure_schema_async(conn)
-        cursor = await conn.execute("SELECT identity FROM schema_identity WHERE tier = ?", (DerivedTier.INDEX.value,))
-        row = await cursor.fetchone()
-    assert row is not None
-    assert row[0] == derived_schema_identity(DerivedTier.INDEX)
+        with pytest.raises(SchemaSkew) as caught:
+            await ensure_schema_async(conn)
+    assert caught.value.found is None
 
 
 def test_read_only_archive_open_refuses_stale_index_identity(tmp_path: Path) -> None:

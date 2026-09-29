@@ -46,7 +46,7 @@ from polylogue.cli.render.rows import (
     summary_line_renderer,
 )
 from polylogue.cli.root_request import RootModeRequest
-from polylogue.cli.shared.helpers import load_effective_config
+from polylogue.cli.shared.helpers import load_effective_config, mutation_refusal
 from polylogue.cli.shared.machine_errors import error_no_results
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
@@ -913,8 +913,14 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     ranked = isinstance(payload.get("hits"), list)
     raw_rows = payload.get("hits") if ranked else payload.get("items")
     rows = [row for row in raw_rows if isinstance(row, Mapping)] if isinstance(raw_rows, list) else []
+    # A ranked page can carry several hits of one session; a mutation acts on
+    # each matched session once, in first-hit order.
     matched_session_ids = tuple(
-        session_id for session_id in (str(row.get("id") or row.get("session_id") or "") for row in rows) if session_id
+        dict.fromkeys(
+            session_id
+            for session_id in (str(row.get("id") or row.get("session_id") or "") for row in rows)
+            if session_id
+        )
     )
 
     if stream:
@@ -1086,7 +1092,9 @@ def _open_session(env: AppEnv, session_id: str, *, output_format: str, print_url
             click.echo(web_url)
         return
 
-    webbrowser.open(web_url)
+    from polylogue.cli.shared.web_sign_in import signed_in_web_url
+
+    webbrowser.open(signed_in_web_url(env, daemon_url, web_url))
     env.ui.console.print(f"Opened: {web_url}")
 
 
@@ -1426,7 +1434,7 @@ def _emit_user_mutations(
         try:
             result = _submit_mutation_operation(config, operation, payload)
         except OperationKernelError as exc:
-            raise _mutation_refusal(exc, operation) from exc
+            raise mutation_refusal(exc, operation) from exc
         return _object_int(result.get("affected_count"))
 
     changes: dict[str, int] = {}
@@ -1573,20 +1581,6 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
     )
 
 
-def _mutation_refusal(exc: Exception, operation: str) -> click.ClickException:
-    """Alias onto the CLI's one refusal translator.
-
-    Kept as a module-local name because several tests and call sites reference
-    it; the message and the typing live in one place
-    (:func:`polylogue.cli.shared.helpers.mutation_refusal`) so a route cannot
-    drift into a refusal that withholds ``polylogued run`` or that reaches a
-    machine caller as ``runtime_error``.
-    """
-    from polylogue.cli.shared.helpers import mutation_refusal
-
-    return mutation_refusal(exc, operation)
-
-
 def submit_cli_mutation(env: AppEnv, operation: str, payload: dict[str, object]) -> dict[str, object]:
     """Run one declared write for a CLI verb, or refuse in the route's voice.
 
@@ -1601,7 +1595,7 @@ def submit_cli_mutation(env: AppEnv, operation: str, payload: dict[str, object])
     try:
         return _submit_mutation_operation(load_effective_config(env), operation, payload)
     except OperationKernelError as exc:
-        raise _mutation_refusal(exc, operation) from exc
+        raise mutation_refusal(exc, operation) from exc
 
 
 def _delete_refusal(exc: Exception, stage: str) -> click.ClickException:
@@ -1612,17 +1606,18 @@ def _delete_refusal(exc: Exception, stage: str) -> click.ClickException:
         OperationUnavailableError,
     )
 
+    # The prepare stage is the declared ``preview`` operation.
+    operation = f"mutation.session.delete.{'preview' if stage == 'prepare' else stage}"
     if isinstance(exc, OperationIndeterminateError):
-        return click.ClickException(
-            f"delete {stage} outcome is indeterminate after the daemon accepted the request; "
-            "do not retry offline, inspect daemon audit state before retrying"
-        )
+        from polylogue.cli.shared.helpers import indeterminate_refusal
+
+        return indeterminate_refusal(exc, operation)
     if isinstance(exc, OperationUnavailableError):
         from polylogue.cli.shared.helpers import DaemonRequiredError
 
         return DaemonRequiredError(
             f"daemon is unavailable; it must {stage} the delete. Start one with `polylogued run`.",
-            operation=f"mutation.session.delete.{stage}",
+            operation=operation,
         )
     if isinstance(exc, OperationFailedError):
         if exc.code == "delete_partially_applied":

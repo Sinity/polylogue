@@ -186,7 +186,7 @@ def read_failure_exit_code(exc: BaseException) -> int:
     return FAILED_READ_EXIT_CODE
 
 
-def read_failure_message(exc: BaseException) -> str:
+def read_failure_message(exc: BaseException, *, remedies: Mapping[str, str] | None = None) -> str:
     """Render a failed read as one operator-facing line plus its remedy.
 
     The call id is included whenever the transport reported one: a daemon-side
@@ -207,11 +207,13 @@ def read_failure_message(exc: BaseException) -> str:
         if isinstance(deadline_ms, int):
             parts.append(f"deadline {deadline_ms} ms")
     line = "; ".join(parts)
-    remedy = _READ_FAILURE_REMEDIES.get(code)
+    # A command whose options differ from the query verbs names its own
+    # remedy, so the operator is never pointed at a flag it does not take.
+    remedy = (remedies or {}).get(code) or _READ_FAILURE_REMEDIES.get(code)
     return f"{line}\nRemedy: {remedy}" if remedy else line
 
 
-def exit_for_read_failure(exc: BaseException) -> NoReturn:
+def exit_for_read_failure(exc: BaseException, *, remedies: Mapping[str, str] | None = None) -> NoReturn:
     """Emit a failed read's refusal and leave with its own status.
 
     The single terminal for a read that produced no envelope. Machine callers
@@ -230,7 +232,7 @@ def exit_for_read_failure(exc: BaseException) -> NoReturn:
     )
 
     code = read_failure_exit_code(exc)
-    message = read_failure_message(exc)
+    message = read_failure_message(exc, remedies=remedies)
     argv = list(sys.argv[1:])
     if wants_json(argv):
         command = extract_command(argv)

@@ -1,4 +1,4 @@
-"""Equivalent finished builds across two production backfill arms.
+"""Equivalent finished builds across two configurations of the production replay route.
 
 The sealed 516-raw measurement in
 ``tests/benchmarks/test_finished_build_measurement.py`` runs ONE selected
@@ -11,10 +11,13 @@ data or a dedicated measurement host: one sealed raw population, cloned into
 two isolated arms, each completed through
 ``backfill_historical_revision_evidence`` --
 
-* baseline: the retained active-index replay, the shape
-  ``RawObservationPublisher.publish`` drives in production;
-* replacement: the owned inactive generation with the sealed session-shard
-  transport, the shape a fresh cold build drives.
+* baseline: retained active-index replay without session shards;
+* replacement: replay into an owned inactive generation with session shards.
+
+Both arms call the same replay entry point. They do not execute live intake
+through ``RawObservationPublisher.publish`` or cold-start orchestration through
+``ArchiveStore.open_cold_build_generation``; equivalence of those drivers is
+not established by this fixture.
 
 Equivalence is over the completed logical output (every comparable index
 table, the public insight reads, FTS readiness, open debt and the canonical
@@ -40,6 +43,7 @@ in the receipt rather than being hidden by a bound.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,13 +89,12 @@ _LEDGER_TOLERANCE_S = 0.5
 
 @dataclass(frozen=True, slots=True)
 class _Arm:
-    """One production route shape, named by what production drives it."""
+    """One configuration of the production backfill entry point."""
 
     name: str
     owned_inactive_generation: bool
     use_session_shards: bool
     ingest_workers: int
-    production_driver: str
 
 
 _BASELINE_ARM = _Arm(
@@ -99,14 +102,12 @@ _BASELINE_ARM = _Arm(
     owned_inactive_generation=False,
     use_session_shards=False,
     ingest_workers=1,
-    production_driver="polylogue.storage.derived.raw.RawObservationPublisher.publish",
 )
 _REPLACEMENT_ARM = _Arm(
     name="fresh-generation-sealed-shard",
     owned_inactive_generation=True,
     use_session_shards=True,
     ingest_workers=2,
-    production_driver="polylogue.storage.sqlite.archive_tiers.archive.ArchiveStore.open_cold_build_generation",
 )
 
 
@@ -187,7 +188,7 @@ def test_replay_enrichment_counts_are_request_local() -> None:
 
 
 def _run_arm(template: Path, destination: Path, sealed: SealedRawInput, arm: _Arm) -> _ArmRun:
-    """Complete one production arm over an isolated clone of the sealed input."""
+    """Complete one replay configuration over an isolated clone of the sealed input."""
     archive_root = clone_sealed_arm(template, destination, sealed)
     route_root = archive_root
     if arm.owned_inactive_generation:
@@ -266,7 +267,7 @@ def _arms(
     _sealed_template: tuple[Path, SealedRawInput],
     tmp_path_factory: pytest.TempPathFactory,
 ) -> tuple[_ArmRun, _ArmRun]:
-    """Complete both production arms once over the same sealed input."""
+    """Complete both replay configurations once over the same sealed input."""
     template, sealed = _sealed_template
     root = tmp_path_factory.mktemp("finished-build-arms")
     return (
@@ -275,7 +276,7 @@ def _arms(
     )
 
 
-def test_both_production_arms_finish_the_same_work(
+def test_both_replay_configurations_finish_the_same_work(
     _sealed_template: tuple[Path, SealedRawInput],
     _arms: tuple[_ArmRun, _ArmRun],
 ) -> None:
@@ -283,9 +284,10 @@ def test_both_production_arms_finish_the_same_work(
     _template, sealed = _sealed_template
     baseline, replacement = _arms
 
-    # The comparison is only meaningful if the two arms really ran different
-    # production shapes over one identical input.
-    assert baseline.arm.production_driver != replacement.arm.production_driver
+    # Configuration differences are real; different driver entry points are
+    # not. The callable identity below must name the route actually executed.
+    assert baseline.arm.use_session_shards is False
+    assert replacement.arm.use_session_shards is True
     assert baseline.index_path != replacement.index_path
     assert baseline.arm.owned_inactive_generation is False
     assert replacement.arm.owned_inactive_generation is True
@@ -351,7 +353,7 @@ def test_each_arm_attributes_its_elapsed_time_to_a_named_phase(
         receipts.append(
             {
                 "arm": run.arm.name,
-                "production_driver": run.arm.production_driver,
+                "replay_callable": run.output.route.callable_identity,
                 "ingest_workers": run.arm.ingest_workers,
                 "input_digest": sealed.digest,
                 "input_bytes": sealed.byte_count,
@@ -379,13 +381,16 @@ def test_each_arm_attributes_its_elapsed_time_to_a_named_phase(
             "verdict": {
                 "conclusion": "equivalent-finished-output",
                 "reason": (
-                    "both production arms reached one canonical logical digest; "
+                    "both replay configurations reached one canonical logical digest; "
                     "no transport or width ranking is claimed at this scale"
                 ),
             },
         },
     )
-    print(f"finished-build-equivalence receipt: {emitted}")
+    # The receipt must attribute the callable we actually executed, never
+    # claim that an uncalled live-intake/cold-start driver was exercised.
+    observed_arms = json.loads(emitted.read_text(encoding="utf-8"))["measurement"]["arms"]
+    assert [arm["replay_callable"] for arm in observed_arms] == [run.output.route.callable_identity for run in _arms]
 
 
 def test_finished_build_comparison_rejects_a_diverged_or_indebted_arm(tmp_path: Path) -> None:

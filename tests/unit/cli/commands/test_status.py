@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
@@ -100,35 +101,58 @@ class TestStatusOperationUrlPolicy:
     """The status route accepts every URL ``_default_daemon_url`` can produce."""
 
     def test_configured_override_url_is_not_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """A configured non-builtin URL reads through the configured route.
+        """A configured non-builtin URL is read over HTTP at that URL.
 
         ``_default_daemon_url`` exists so site/user TOML and
         ``POLYLOGUE_DAEMON_URL`` can point the CLI at an address other than the
         built-in one. Refusing exactly those values produced an
         ``OperationKernelError`` the renderer then published as "Daemon:
-        running" (polylogue-2d8oq). Anti-vacuity: reinstating the
-        ``daemon_url not in (None, _BUILTIN_DAEMON_URL)`` refusal makes this
-        raise instead of returning the read, and turns it red.
+        running" (polylogue-2d8oq). Since #5722 the status command reads a
+        non-builtin endpoint's public ``/api/status`` rather than the
+        archive-scoped UDS. Anti-vacuity: reinstating the refusal raises
+        instead of returning the read, and a read of any other endpoint never
+        reaches this server.
         """
+        import http.server
+        import threading
+
         from polylogue.cli.commands import status as status_module
 
-        monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:1")
-        seen: dict[str, object] = {}
+        requested: list[str] = []
 
-        def _fake_read(config: object, operation: str, arguments: object, **kwargs: object) -> str:
-            seen["operation"] = operation
-            return "read-result"
+        class _StatusHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                requested.append(self.path)
+                body = json.dumps({"daemon": "served-by-override"}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
 
-        monkeypatch.setattr("polylogue.cli.shared.helpers.load_effective_config", lambda _env: object())
-        monkeypatch.setattr("polylogue.cli.operation_kernel.configured_read_operation", _fake_read)
+            def log_message(self, *_args: object) -> None:
+                return None
 
-        result = status_module._status_operation_result(
-            object(),  # type: ignore[arg-type]
-            daemon_url=_default_daemon_url(),
-        )
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _StatusHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            monkeypatch.setenv("POLYLOGUE_DAEMON_URL", f"http://127.0.0.1:{server.server_address[1]}")
+            monkeypatch.setattr("polylogue.cli.shared.helpers.load_effective_config", lambda _env: object())
+            monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_a, **_k: None)
 
-        assert result == "read-result"
-        assert seen["operation"] == "status"
+            result = status_module._status_operation_result(
+                object(),  # type: ignore[arg-type]
+                daemon_url=_default_daemon_url(),
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+        assert requested == ["/api/status"]
+        assert result.operation == "status"
+        assert result.value == {"daemon": "served-by-override"}
 
 
 class TestFmtBytes:

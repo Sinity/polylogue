@@ -11,9 +11,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, fields
 from typing import Any
 
+from pydantic import TypeAdapter
+
 from polylogue.archive.query.spec import SessionQuerySpec
-from polylogue.archive.viewport import read_view_choices
+from polylogue.archive.viewport import READ_VIEW_PROFILES
 from polylogue.surfaces.projection_spec import (
+    RENDER_FORMAT_ALIASES,
     ProjectionSpec,
     QueryProjectionSpec,
     RenderDestination,
@@ -74,10 +77,12 @@ class ReadPreset:
                 else None
             ),
             correlation_github_api=(
-                bool(params["correlation_github_api"]) if params.get("correlation_github_api") is not None else None
+                _boolean(params["correlation_github_api"], default=False)
+                if params.get("correlation_github_api") is not None
+                else None
             ),
-            redact_paths=bool(params.get("redact_paths", True)),
-            include_assertions=bool(params.get("include_assertions", False)),
+            redact_paths=_boolean(params.get("redact_paths"), default=True),
+            include_assertions=_boolean(params.get("include_assertions"), default=False),
         )
 
 
@@ -123,6 +128,14 @@ class ReadRequest:
         )
 
 
+def _default_render_format(formats: tuple[str, ...]) -> RenderFormat:
+    """Markdown when the view renders it, else the view's first declared format."""
+    if "markdown" in formats:
+        return RenderFormat.MARKDOWN
+    first = formats[0]
+    return RENDER_FORMAT_ALIASES[first] if first in RENDER_FORMAT_ALIASES else RenderFormat(first)
+
+
 #: One preset per declared read view, generated from the single view
 #: declaration rather than restated here.  The hand-maintained list this
 #: replaces had drifted: it omitted ``lineage`` and ``effective_context``
@@ -131,7 +144,13 @@ class ReadRequest:
 #: shared declaration ``cli.read_view_registry`` already validates against, so
 #: deriving from it makes the drift impossible rather than merely detectable.
 READ_PRESETS: tuple[ReadPreset, ...] = tuple(
-    ReadPreset(name=view, description=f"Read the {view} view.", views=(view,)) for view in read_view_choices()
+    ReadPreset(
+        name=profile.view_id,
+        description=f"Read the {profile.view_id} view.",
+        views=(profile.view_id,),
+        format=_default_render_format(profile.formats),
+    )
+    for profile in READ_VIEW_PROFILES
 )
 _PRESETS = {preset.name: preset for preset in READ_PRESETS}
 
@@ -175,6 +194,14 @@ def read_contract_schema() -> dict[str, Any]:
             "preset": {"type": "string", "enum": sorted(_PRESETS)},
         },
     }
+
+
+_BOOLEAN = TypeAdapter(bool)
+
+
+def _boolean(value: object, *, default: bool) -> bool:
+    """Parse an explicit override; absence retains the preset default."""
+    return default if value is None else _BOOLEAN.validate_python(value)
 
 
 def _optional_int(value: object) -> int | None:

@@ -244,46 +244,50 @@ def test_tolerated_effect_failure_has_failed_receipt(tmp_path: Path, monkeypatch
     )
 
 
-def test_deferred_insight_invalidation_follows_a_repointed_index(tmp_path: Path) -> None:
-    """The deferred invalidation writes the generation the path names now.
+def test_insight_invalidation_rides_the_admitted_transaction(tmp_path: Path) -> None:
+    """Profile invalidation commits or rolls back with the caller's write.
 
-    Anti-vacuity: reopen through the thread-local cached ``connection_context``
-    and the second delivery reuses the handle to the retired file, leaving the
-    promoted generation's profile marked fresh.
+    #5727 moved this effect from an async-deferred reopen by path into the
+    admitted transaction, so there is no later delivery to follow a repointed
+    index. Anti-vacuity: an effect that opened its own connection by path would
+    commit independently, and the rollback below would leave the key cleared.
     """
     import sqlite3
     from typing import Any, cast
 
     from polylogue.archive.write_effects import WriteEffectContext, _invalidate_insights_effect
 
-    def generation(name: str) -> Path:
-        path = tmp_path / name
-        conn = sqlite3.connect(path)
-        conn.execute("CREATE TABLE session_profiles (session_id TEXT, source_sort_key TEXT, source_updated_at TEXT)")
-        conn.execute("INSERT INTO session_profiles VALUES ('s1', 'k', 'u')")
-        conn.commit()
-        conn.close()
-        return path
+    path = tmp_path / "index.db"
+    with sqlite3.connect(path) as setup:
+        setup.execute("CREATE TABLE session_profiles (session_id TEXT, source_sort_key TEXT, source_updated_at TEXT)")
+        setup.execute("INSERT INTO session_profiles VALUES ('s1', 'k', 'u')")
 
-    old, new = generation("gen-a.db"), generation("gen-b.db")
-    active = tmp_path / "profiles.db"
-    active.symlink_to(old)
-
-    def deliver() -> None:
-        ctx = WriteEffectContext(
-            conn=cast(Any, None),
-            op=cast(Any, None),
-            payload={"_db_path": str(active)},
-            changed_session_ids=("s1",),
-            staleness_key="k",
-            run_archive_effects=True,
+    def invalidate(conn: sqlite3.Connection) -> None:
+        _invalidate_insights_effect(
+            WriteEffectContext(
+                conn=conn,
+                op=cast(Any, None),
+                payload={},
+                changed_session_ids=("s1",),
+                staleness_key="k",
+                run_archive_effects=True,
+            )
         )
-        _invalidate_insights_effect(ctx)
 
-    deliver()
-    active.unlink()
-    active.symlink_to(new)
-    deliver()
+    def stored_key() -> object:
+        with sqlite3.connect(path) as reader:
+            return reader.execute("SELECT source_sort_key FROM session_profiles").fetchone()[0]
 
-    row = sqlite3.connect(new).execute("SELECT source_sort_key FROM session_profiles").fetchone()
-    assert row == (None,)
+    conn = sqlite3.connect(path, isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        invalidate(conn)
+        conn.execute("ROLLBACK")
+        assert stored_key() == "k"
+
+        conn.execute("BEGIN IMMEDIATE")
+        invalidate(conn)
+        conn.execute("COMMIT")
+    finally:
+        conn.close()
+    assert stored_key() is None

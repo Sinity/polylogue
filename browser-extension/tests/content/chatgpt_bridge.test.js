@@ -668,9 +668,11 @@ describe("ChatGPT authenticated asset capture envelope", () => {
     expect(textReads).toBe(baselineReads + turns.length);
   });
 
-  it("debounces native freshness hints independently per conversation", async () => {
+  // Anti-vacuity: let a MAIN-world capture supply its own identity again and
+  // the forged "conversation-foreign" wake reaches the background.
+  it("wakes capture only for the conversation the tab URL names, never a page-supplied one", async () => {
     const harness = installFullCapture(syntheticEndpointAdapter());
-    for (const conversationId of ["conversation-a", "conversation-b"]) {
+    for (const conversationId of ["conversation-1", "conversation-foreign"]) {
       harness.dom.window.postMessage({
         type: "polylogue.chatgpt.nativeCapture",
         capture: {
@@ -682,10 +684,26 @@ describe("ChatGPT authenticated asset capture envelope", () => {
 
     await new Promise((resolve) => harness.dom.window.setTimeout(resolve, 800));
     const hints = harness.runtimeMessages.filter((message) => message.type === "polylogue.captureFreshnessHint");
-    expect(hints.map((message) => message.provider_session_id).sort()).toEqual([
-      "conversation-a",
-      "conversation-b",
-    ]);
+    expect(hints.map((message) => message.provider_session_id)).toEqual(["conversation-1"]);
+  });
+
+  // Anti-vacuity: require a URL-named id unconditionally and a temporary
+  // chat's later turns never wake a recapture.
+  it("wakes capture on a temporary-chat page only for a payload that declares itself temporary", async () => {
+    const harness = installFullCapture(syntheticEndpointAdapter(), { url: "https://chatgpt.com/?temporary-chat=true" });
+    for (const [conversationId, isTemporary] of [["ephemeral-1", true], ["conversation-foreign", false]]) {
+      harness.dom.window.postMessage({
+        type: "polylogue.chatgpt.nativeCapture",
+        capture: {
+          ok: true,
+          body: JSON.stringify({ conversation_id: conversationId, is_temporary: isTemporary, update_time: 1781366460 }),
+        },
+      });
+    }
+
+    await new Promise((resolve) => harness.dom.window.setTimeout(resolve, 800));
+    const hints = harness.runtimeMessages.filter((message) => message.type === "polylogue.captureFreshnessHint");
+    expect(hints.map((message) => message.provider_session_id)).toEqual(["ephemeral-1"]);
   });
 
   it("captures typed live generation start and terminal UI timing before native reconciliation", async () => {

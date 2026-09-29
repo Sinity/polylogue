@@ -81,6 +81,7 @@ def make_daemon_handler(
     web_client: bool = False,
     extra_headers: dict[str, str] | None = None,
     server: object | None = None,
+    trusted_peer: bool = True,
 ) -> DaemonAPIHandler:
     """Build a real ``DaemonAPIHandler`` with only its transport replaced.
 
@@ -101,12 +102,20 @@ def make_daemon_handler(
     default). ``extra_headers`` is a low-level escape hatch for header
     shapes the named kwargs don't cover; named kwargs win on conflict since
     they are applied first and ``extra_headers`` is merged in last.
+
+    ``trusted_peer`` stands in for the kernel connection-table fact a real
+    socket would carry (``DaemonAPIHandler._peer_is_owner``): there is no
+    ``/proc/net/tcp`` entry for this fabricated ``client_address``, so the
+    production check would otherwise always fail closed. Defaults to
+    ``True``, matching every pre-existing caller's assumption of a
+    same-uid caller; pass ``False`` to test the peer-ownership gate itself.
     """
     from polylogue.daemon.http import DaemonAPIHandler
 
     handler = DaemonAPIHandler.__new__(DaemonAPIHandler)
     handler.server = cast("DaemonAPIHTTPServer", server or MockDaemonServer())
     handler.client_address = ("127.0.0.1", 12345)
+    handler._peer_is_owner = lambda: trusted_peer  # type: ignore[method-assign]
     handler.path = path
     handler.command = method
     handler.requestline = f"{method} {path} HTTP/1.1"

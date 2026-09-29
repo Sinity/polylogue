@@ -679,7 +679,9 @@ def test_the_slot_resizes_the_queued_command(tmp_path: Path, monkeypatch: pytest
         f'"working_directory": "{tmp_path}", "log_path": "{log}"}}'
     )
     monkeypatch.setattr(subprocess, "Popen", _popen)
-    monkeypatch.setattr(slot, "resize_worker_argument", lambda argv: (argv[:-3] + ["-n", "3", "tests"], None))
+    monkeypatch.setattr(
+        slot, "resize_worker_argument", lambda argv, **_kwargs: (argv[:-3] + ["-n", "3", "tests"], None)
+    )
     assert slot.main([str(launch)]) == 0
     assert launched["command"][launched["command"].index("-n") + 1] == "3"
 
@@ -713,7 +715,9 @@ def test_the_slot_records_which_bound_narrowed_the_run(tmp_path: Path, monkeypat
     monkeypatch.setattr(
         slot,
         "resize_worker_argument",
-        lambda argv: resize_worker_argument(argv, meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **paths),
+        lambda argv, **kwargs: resize_worker_argument(
+            argv, meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **paths, **kwargs
+        ),
     )
     assert slot.main([str(launch)]) == 0
     assert "from the job cgroup" in log.read_text(encoding="utf-8")
@@ -746,7 +750,9 @@ def test_a_run_that_already_holds_the_slot_is_narrowed_too(tmp_path: Path, monke
     monkeypatch.setattr(
         pytest_slot,
         "resize_worker_argument",
-        lambda argv: resize_worker_argument(argv, meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **paths),
+        lambda argv, **kwargs: resize_worker_argument(
+            argv, meminfo=_meminfo(tmp_path, HOST_NOT_THE_BOUND_MIB), **paths, **kwargs
+        ),
     )
 
     outcome = pytest_slot.run_pytest(
@@ -1053,3 +1059,50 @@ def test_the_estimate_travels_on_the_sizing_payload_the_slot_publishes() -> None
     assert "margin_fraction" in sizing
     assert sizing["budget_mib"] == pytest.approx(float(sizing["available_mib"]), abs=0.1)
     assert sizing["predicted_charge_mib"] == pytest.approx(MEASURED_CHARGE.charge_mib(int(sizing["workers"])), abs=0.1)
+
+
+def test_a_focused_selection_is_sized_by_its_own_charge_not_the_corpus_model(tmp_path: Path) -> None:
+    """A focused ``-n 4`` fits a slice the corpus model would narrow to one worker.
+
+    Anti-vacuity: size the focused request with ``MEASURED_CHARGE`` (drop the
+    ``profile`` argument) and the same 4.5 GiB of headroom narrows it to a
+    single worker; drop ``max_workers`` and an idle slice widens it past the
+    focused ceiling.
+    """
+    from devtools.worker_memory import FOCUSED_CHARGE, FOCUSED_MAX_WORKERS
+
+    paths = _pytest_slice(tmp_path, current_mib=PYTEST_SLICE_HIGH_MIB - 4608)
+    meminfo = _meminfo(tmp_path, available_mib=12000)
+
+    argv, basis = resize_worker_argument(
+        ["pytest", "-n", "4"],
+        meminfo=meminfo,
+        **paths,
+        profile=FOCUSED_CHARGE,
+        max_workers=FOCUSED_MAX_WORKERS,
+    )
+    assert basis is not None
+    assert basis["workers"] == 4
+    assert argv == ["pytest", "-n", "4"]
+
+    _corpus_argv, corpus_basis = resize_worker_argument(["pytest", "-n", "4"], meminfo=meminfo, **paths)
+    assert corpus_basis is not None
+    assert corpus_basis["workers"] < 4
+
+
+def test_sizing_telemetry_names_the_profile_that_admitted_the_run(tmp_path: Path) -> None:
+    """Anti-vacuity: report the corpus controller constant and a focused
+    receipt says 1,075 MiB beside a prediction computed with 300."""
+    from devtools.worker_memory import FOCUSED_CHARGE, FOCUSED_MAX_WORKERS
+
+    paths = _pytest_slice(tmp_path, current_mib=PYTEST_SLICE_HIGH_MIB - 4608)
+    _argv, basis = resize_worker_argument(
+        ["pytest", "-n", "4"],
+        meminfo=_meminfo(tmp_path, available_mib=12000),
+        **paths,
+        profile=FOCUSED_CHARGE,
+        max_workers=FOCUSED_MAX_WORKERS,
+    )
+    assert basis is not None
+    assert basis["controller_peak_mib"] == FOCUSED_CHARGE.controller_mib
+    assert basis["worker_peak_cache_mib"] == FOCUSED_CHARGE.worker_cache_mib
