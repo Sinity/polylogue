@@ -6,8 +6,13 @@ This command forwards a selection (paths, ``-k``/``-m`` expressions, ``-x``,
 
 - the repository's managed environment (``POLYLOGUE_ROOT`` and friends, a
   repo-local pycache prefix);
-- a single-process default; parallelism is an explicit ``-n``
-  request and is narrowed at the admitted pytest pool when necessary;
+- one process for a small selection; a selection naming
+  :data:`LARGE_SELECTION_MODULES` or more test modules runs under xdist
+  unless it passes its own ``-n`` or ``-p no:xdist``, and a worker count is
+  narrowed at the admitted pytest pool when necessary;
+- receipt reuse: a selection with a fixed test order (``-p no:randomly`` or
+  ``--randomly-seed=N``) that already passed on the identical tree, and that
+  measures no real clock, is answered from its receipt (``--rerun`` runs it);
 - the same pytest progress ledger, JSON report, and typed outcome receipt used
   by ``devtools verify``.
 
@@ -21,6 +26,7 @@ loop, not a substitute for it.
 
 from __future__ import annotations
 
+import ast
 import functools
 import json
 import os
@@ -310,21 +316,63 @@ _REUSABLE_VALUE_OPTIONS = frozenset({"-k", "-m"})
 _REUSABLE_PREFIXES = ("--tb=", "--maxfail=", "-k=", "-m=")
 
 
+def _real_clock_module(path: Path) -> bool:
+    """Whether a test module declares a ``uses_real_clock`` measurement anywhere.
+
+    The same predicate the clock guard reads: the marker as a module
+    ``pytestmark`` or on any test. Such a test measures the host's current
+    timing, an input no receipt key carries.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        return True
+    return any(isinstance(node, ast.Attribute) and node.attr == "uses_real_clock" for node in ast.walk(tree))
+
+
+def _explicit_order(argument: str, following: str | None) -> tuple[bool, int] | None:
+    """``(fixed, consumed)`` when ``argument`` fixes the test order, else ``None``.
+
+    pytest-randomly draws a new seed on every invocation unless one is given
+    (``--randomly-seed=<int>``) or it is disabled (``-p no:randomly``); only
+    such a run's order is an input the selection itself carries.
+    """
+    if argument in {"-pno:randomly", "-p=no:randomly"}:
+        return True, 1
+    if argument == "-p" and following == "no:randomly":
+        return True, 2
+    if argument.startswith("--randomly-seed="):
+        return argument.removeprefix("--randomly-seed=").isdigit(), 1
+    if argument == "--randomly-seed":
+        return following is not None and following.isdigit(), 2
+    return None
+
+
 def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
     """Whether every argument is a checkout-local selection or an inert option.
 
     The digest a receipt is keyed on covers the checkout's Git-visible tree,
     so a path outside it (``/tmp/test_x.py``) could change without changing
-    the key; it is never reused.
+    the key; it is never reused. A reused run must also have fixed its test
+    order (see :func:`_explicit_order`) and measure no real clock.
     """
     if _selection_targets_benchmarks(selection):
         # Benchmarks measure current wall-clock timing, an input no receipt
         # key carries: a stale pass must never answer for a new one.
         return False
     resolved_root = root.resolve()
+    order_fixed = False
     index = 0
     while index < len(selection):
         argument = selection[index]
+        order = _explicit_order(argument, selection[index + 1] if index + 1 < len(selection) else None)
+        if order is not None:
+            fixed, consumed = order
+            if not fixed:
+                return False
+            order_fixed = True
+            index += consumed
+            continue
         if argument in _REUSABLE_VALUE_OPTIONS:
             index += 2
             continue
@@ -339,8 +387,10 @@ def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
         # omits; only named files are reusable.
         if not target.is_relative_to(resolved_root) or not target.is_file() or _git_ignored(target, root=resolved_root):
             return False
+        if _real_clock_module(target):
+            return False
         index += 1
-    return True
+    return order_fixed
 
 
 def _ignored_python_sources(root: Path) -> bool:

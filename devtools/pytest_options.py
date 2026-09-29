@@ -96,7 +96,17 @@ def pytest_option_nargs(plugins: tuple[str, ...] = ()) -> Mapping[str, object]:
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in {"PYTEST_ADDOPTS", "PYTEST_DISABLE_PLUGIN_AUTOLOAD"}
+        # The same ambient pytest state the managed run removes
+        # (``_normalize_managed_pytest_environment``): a probe that loads a
+        # caller's ``PYTEST_PLUGINS`` fails where the admitted run would not.
+        if key
+        not in {
+            "PYTEST_ADDOPTS",
+            "PYTEST_DISABLE_PLUGIN_AUTOLOAD",
+            "PYTEST_PLUGINS",
+            "PYTEST_XDIST_WORKER",
+            "PYTEST_CURRENT_TEST",
+        }
     }
     result = subprocess.run(
         [venv_python(root=_CHECKOUT), "-c", _PROBE, *plugins_args, "tests", "tests/benchmarks"],

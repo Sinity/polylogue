@@ -1262,7 +1262,7 @@ def test_main_reuses_a_green_receipt_without_queueing(
 
     monkeypatch.setattr("devtools.run_tests.run_pytest", must_not_queue)
 
-    assert run_tests.main(["tests/unit/devtools/test_run_tests.py"]) == 0
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly"]) == 0
     assert f"receipt={receipt}" in capsys.readouterr().err
 
 
@@ -1342,7 +1342,7 @@ def test_a_reused_receipt_is_emitted_as_json_when_asked(
     monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: receipt)
     monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "d1")
 
-    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "--json"]) == 0
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["run_id"] == "r1"
 
 
@@ -1363,7 +1363,11 @@ def test_stateful_selectors_are_never_answered_from_a_receipt(tmp_path: Path, fl
 @pytest.mark.parametrize(
     ("selection", "eligible"),
     [
-        (["tests/unit/test_a.py", "-k", "fast", "-x", "--tb=short"], True),
+        (["tests/unit/test_a.py", "-k", "fast", "-x", "--tb=short", "-p", "no:randomly"], True),
+        (["tests/unit/test_a.py", "--randomly-seed=7"], True),
+        # pytest-randomly draws a new order each run unless one is fixed.
+        (["tests/unit/test_a.py"], False),
+        (["tests/unit/test_a.py", "--randomly-seed=last"], False),
         (["tests/unit/test_a.py", "-v"], False),
         (["tests/unit/test_a.py", "--junitxml=/tmp/report.xml"], False),
         (["tests/unit/test_a.py", "--cache-clear"], False),
@@ -1433,7 +1437,7 @@ def test_a_git_ignored_selection_is_never_reused(tmp_path: Path) -> None:
     (tmp_path / "test_y.py").write_text("", encoding="utf-8")
 
     assert run_tests._reuse_eligible([".cache/test_x.py"], root=tmp_path) is False
-    assert run_tests._reuse_eligible(["test_y.py"], root=tmp_path) is True
+    assert run_tests._reuse_eligible(["test_y.py", "-p", "no:randomly"], root=tmp_path) is True
 
 
 def test_reuse_is_refused_when_the_tree_changes_during_lookup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -1455,7 +1459,7 @@ def test_reuse_is_refused_when_the_tree_changes_during_lookup(monkeypatch: pytes
 
     monkeypatch.setattr("devtools.run_tests.run_pytest", reached_the_slot)
 
-    assert run_tests.main(["tests/unit/devtools/test_run_tests.py"]) != 0
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly"]) != 0
     assert queued == [True]
 
 
@@ -1478,7 +1482,7 @@ def test_a_branch_switch_during_lookup_refuses_reuse(monkeypatch: pytest.MonkeyP
 
     from devtools.checkout_identity import REFUSAL_EXIT
 
-    assert run_tests.main(["tests/unit/devtools/test_run_tests.py"]) == REFUSAL_EXIT
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly"]) == REFUSAL_EXIT
 
 
 def test_a_standalone_flag_before_a_large_directory_keeps_xdist() -> None:
@@ -1581,7 +1585,7 @@ def test_reuse_is_refused_when_the_example_database_moves_during_lookup(
 
     monkeypatch.setattr("devtools.run_tests.run_pytest", reached_the_slot)
 
-    run_tests.main(["tests/unit/devtools/test_run_tests.py"])
+    run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly"])
     assert queued == [True]
 
 
@@ -1606,7 +1610,7 @@ def test_a_receipt_pruned_during_lookup_sends_the_selection_to_run(
 
     monkeypatch.setattr("devtools.run_tests.run_pytest", reached_the_slot)
 
-    run_tests.main(["tests/unit/devtools/test_run_tests.py", "--json"])
+    run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly", "--json"])
     assert queued == [True]
 
 
@@ -1621,11 +1625,11 @@ def test_a_broad_selection_is_sized_by_the_corpus_model(monkeypatch: pytest.Monk
 
     monkeypatch.setattr("devtools.run_tests.run_pytest", capture)
     monkeypatch.setattr(run_tests, "_selected_test_modules", lambda _selection: run_tests.BROAD_SELECTION_MODULES)
-    run_tests.main(["tests/unit/devtools/test_run_tests.py"])
+    run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly"])
     assert seen["profile"] is None
 
     monkeypatch.setattr(run_tests, "_selected_test_modules", lambda _selection: 1)
-    run_tests.main(["tests/unit/devtools/test_run_tests.py"])
+    run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly"])
     assert seen["profile"] == "focused"
 
 
@@ -1932,3 +1936,91 @@ def test_a_queued_run_keeps_its_slot_receipt_and_any_recorded_killer(
     assert timed_out["diagnosis"] == "pytest_failed"
     assert timed_out["termination_killer"] == "timeout"
     assert timed_out["termination_unit"] == "u"
+
+
+def test_a_selection_measuring_the_real_clock_is_never_reused(tmp_path: Path) -> None:
+    """A module that declares ``uses_real_clock`` measures current timing.
+
+    Anti-vacuity (Codex P2, #5708): exclude only ``tests/benchmarks`` and a
+    green latency bound is answered from a receipt without measuring.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "test_latency.py").write_text(
+        "import pytest\n\npytestmark = pytest.mark.uses_real_clock('asserts current CLI latency')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_plain.py").write_text("def test_x() -> None: ...\n", encoding="utf-8")
+
+    assert run_tests._reuse_eligible(["test_latency.py", "-p", "no:randomly"], root=tmp_path) is False
+    assert run_tests._reuse_eligible(["test_plain.py", "-p", "no:randomly"], root=tmp_path) is True
+
+
+def test_a_revision_read_waits_for_an_unfinished_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reader never records a token taken while a write is still mutating.
+
+    Anti-vacuity (Codex P2, #5708): bump without a shared lock and the reader
+    returns the writer's first token at once; a writer killed after its
+    mutation then leaves that token standing for changed examples.
+    """
+    import threading
+
+    from hypothesis.database import DirectoryBasedExampleDatabase
+
+    from devtools.hypothesis_database import RevisionedExampleDatabase, read_revision
+
+    examples = tmp_path / "examples"
+    database = RevisionedExampleDatabase(examples)
+    database.save(b"k", b"v0")
+    entered, release, read_done = threading.Event(), threading.Event(), threading.Event()
+    original = DirectoryBasedExampleDatabase.save
+
+    def paused(self: DirectoryBasedExampleDatabase, key: bytes, value: bytes) -> None:
+        entered.set()
+        assert release.wait(10)
+        original(self, key, value)
+
+    monkeypatch.setattr(DirectoryBasedExampleDatabase, "save", paused)
+    writer = threading.Thread(target=database.save, args=(b"k", b"v1"))
+    writer.start()
+    assert entered.wait(10)
+    seen: list[str] = []
+
+    def read() -> None:
+        seen.append(read_revision(examples))
+        read_done.set()
+
+    reader = threading.Thread(target=read)
+    reader.start()
+    assert not read_done.wait(0.3)
+    release.set()
+    writer.join(10)
+    reader.join(10)
+
+    assert seen == [read_revision(examples)]
+
+
+def test_the_option_probe_ignores_ambient_pytest_plugins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probe loads the plugins the admitted run loads, not ``PYTEST_PLUGINS``.
+
+    Anti-vacuity (Codex P2, #5708): inherit ``PYTEST_PLUGINS`` and a missing
+    ambient plugin fails sizing before a valid selection reaches the pool.
+    """
+    from devtools import pytest_options
+
+    seen: dict[str, str] = {}
+
+    def fake_run(*_args: object, env: dict[str, str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.update(env)
+        return subprocess.CompletedProcess([], 0, stdout='{"-x": 0}\n', stderr="")
+
+    monkeypatch.setenv("PYTEST_PLUGINS", "missing_plugin")
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw3")
+    monkeypatch.setattr("devtools.pytest_options.subprocess.run", fake_run)
+    pytest_options.pytest_option_nargs.cache_clear()
+    try:
+        assert pytest_options.pytest_option_nargs(("probe-only",)) == {"-x": 0}
+    finally:
+        pytest_options.pytest_option_nargs.cache_clear()
+
+    assert "PYTEST_PLUGINS" not in seen
+    assert "PYTEST_XDIST_WORKER" not in seen

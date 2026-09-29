@@ -9,8 +9,12 @@ reuse key reads only that marker.
 
 from __future__ import annotations
 
+import fcntl
 import os
+import threading
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from hypothesis.database import DirectoryBasedExampleDatabase
@@ -23,10 +27,32 @@ def revision_marker(examples: Path) -> Path:
     return examples.with_name(examples.name + REVISION_SUFFIX)
 
 
+@contextmanager
+def _revision_lock(examples: Path, *, exclusive: bool) -> Iterator[None]:
+    """Serialize a write's bump-mutate-bump against every other write and read.
+
+    A writer holds it exclusively across its whole sequence and a reader
+    shares it, so no reader sees a token taken between a write's first bump
+    and its mutation, and no second writer's final bump can stand for a
+    mutation still in flight. A killed holder's lock is released by the OS.
+    """
+    lock_path = examples.with_name(examples.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 def read_revision(examples: Path) -> str:
     """The marker's token, or ``absent`` when nothing was ever written."""
+    if not examples.parent.is_dir():
+        return "absent"
     try:
-        return revision_marker(examples).read_text(encoding="utf-8").strip() or "empty"
+        with _revision_lock(examples, exclusive=False):
+            return revision_marker(examples).read_text(encoding="utf-8").strip() or "empty"
     except FileNotFoundError:
         return "absent"
     except OSError:
@@ -40,6 +66,29 @@ class RevisionedExampleDatabase(DirectoryBasedExampleDatabase):
     def __init__(self, path: os.PathLike[str] | str) -> None:
         super().__init__(path)
         self._examples = Path(path)
+        #: Hypothesis's own ``save`` and ``move`` call ``save``/``delete``
+        #: again (the meta-key entry); only the outermost call of a thread
+        #: takes the lock and bumps.
+        self._nesting = threading.local()
+
+    @contextmanager
+    def _write(self) -> Iterator[None]:
+        depth = getattr(self._nesting, "depth", 0)
+        if depth:
+            self._nesting.depth = depth + 1
+            try:
+                yield
+            finally:
+                self._nesting.depth = depth
+            return
+        with _revision_lock(self._examples, exclusive=True):
+            self._nesting.depth = 1
+            try:
+                self._bump()
+                yield
+                self._bump()
+            finally:
+                self._nesting.depth = 0
 
     def _bump(self) -> None:
         marker = revision_marker(self._examples)
@@ -54,19 +103,16 @@ class RevisionedExampleDatabase(DirectoryBasedExampleDatabase):
     # it did not see.
 
     def save(self, key: bytes, value: bytes) -> None:
-        self._bump()
-        super().save(key, value)
-        self._bump()
+        with self._write():
+            super().save(key, value)
 
     def delete(self, key: bytes, value: bytes) -> None:
-        self._bump()
-        super().delete(key, value)
-        self._bump()
+        with self._write():
+            super().delete(key, value)
 
     def move(self, src: bytes, dest: bytes, value: bytes) -> None:
-        self._bump()
-        super().move(src, dest, value)
-        self._bump()
+        with self._write():
+            super().move(src, dest, value)
 
 
 __all__ = ["REVISION_SUFFIX", "RevisionedExampleDatabase", "read_revision", "revision_marker"]

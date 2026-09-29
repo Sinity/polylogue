@@ -88,8 +88,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when=(
             "Run a specific test file, directory, or -k/-m selection in the inner loop, or inspect the latest "
             "full-run timing receipts, without invoking raw pytest. Refuses in a checkout on the default branch "
-            "unless given --on-default-branch. A selection that already passed on the identical tree is answered "
-            "from its receipt; pass --rerun to run it anyway."
+            "unless given --on-default-branch. A selection naming eight or more test modules runs under xdist "
+            "(-n 4) unless it passes -n or -p no:xdist. A selection with a fixed test order (-p no:randomly or "
+            "--randomly-seed=N) that already passed on the identical tree is answered from its receipt; pass "
+            "--rerun to run it anyway."
         ),
         examples=(
             "devtools test tests/unit/pipeline",

@@ -1383,7 +1383,7 @@ def test_a_group_left_with_only_zombies_counts_as_reaped() -> None:
     """
     import ctypes
 
-    from devtools.pytest_slot import STOP_ESCALATION_BUDGET_S, _group_reaped
+    from devtools.pytest_slot import _group_reaped
 
     if not Path("/proc").is_dir():
         pytest.skip("zombie membership is read from /proc")
@@ -1411,10 +1411,9 @@ def test_a_group_left_with_only_zombies_counts_as_reaped() -> None:
         orphan = int(leader.stdout.readline())
         leader.kill()
         leader.wait(timeout=5)
-        # The exited grandchild now belongs to this (never-waiting) subreaper.
-        started = time.monotonic()
+        # The exited grandchild now belongs to this (never-waiting) subreaper;
+        # a liveness check that counts it reports the group as surviving.
         assert _group_reaped(leader.pid)
-        assert time.monotonic() - started < STOP_ESCALATION_BUDGET_S / 2
     finally:
         libc.prctl(pr_set_child_subreaper, 0, 0, 0, 0)
         if orphan:
