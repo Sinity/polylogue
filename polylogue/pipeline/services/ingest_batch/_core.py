@@ -91,6 +91,7 @@ from polylogue.storage.blob_publication import (
     ArchiveBlobPublisher,
     _archive_blob_publisher_slot,
     consume_blob_publication_receipt,
+    publication_refused,
     refuse_excised_attachment_blobs,
 )
 from polylogue.storage.raw.models import RawSessionStateUpdate
@@ -675,7 +676,7 @@ def _preacquire_sidecar_blobs(
     publication_receipts: list[tuple[str, bytes]],
     *,
     source_conn: sqlite3.Connection | None,
-) -> tuple[dict[str, dict[str, str]], dict[str, int]]:
+) -> tuple[dict[str, dict[str, str]], list[tuple[str, str, int, bool]]]:
     """Content-address + dedup acquired tool-result sidecar text (polylogue-rujy AC4).
 
     ``apply_tool_result_sidecars`` / ``apply_gemini_tool_output_sidecars``
@@ -706,6 +707,10 @@ def _preacquire_sidecar_blobs(
     ``blob_refusal: content_excised`` and the rest of the session still
     writes.
 
+    Returns the locators and the queued ``(tool_use_id, blob_hash, size,
+    already_present)`` publications; ``_settle_sidecar_blobs`` counts them
+    after the flush, which may still refuse excised bytes.
+
     A no-op unless the session actually carries a matched+replaced sidecar
     event, so a session from an origin without sidecars never pays this cost.
     """
@@ -718,7 +723,7 @@ def _preacquire_sidecar_blobs(
         and isinstance(tool_use_id := event.payload.get("tool_use_id"), str)
     }
     if not matched_tool_use_ids:
-        return {}, {}
+        return {}, []
 
     text_by_tool_use_id: dict[str, str] = {
         block.tool_id: block.text
@@ -730,13 +735,10 @@ def _preacquire_sidecar_blobs(
         and block.text is not None
     }
     if not text_by_tool_use_id:
-        return {}, {}
+        return {}, []
 
     locators: dict[str, dict[str, str]] = {}
-    bytes_new = 0
-    bytes_dedup = 0
-    written = 0
-    refused = 0
+    queued: list[tuple[str, str, int, bool]] = []
     for tool_use_id, text in text_by_tool_use_id.items():
         encoded = unicodedata.normalize("NFC", text).encode("utf-8")
         precomputed_hash = hashlib.sha256(encoded).hexdigest()
@@ -745,27 +747,52 @@ def _preacquire_sidecar_blobs(
             # referencing session then. Publishing it again would put the
             # forgotten bytes back on disk, so this sidecar alone is refused.
             locators[tool_use_id] = {"blob_refusal": "content_excised"}
-            refused += 1
             continue
         already_present = blob_publisher.exists(precomputed_hash)
         hash_hex, size = blob_publisher.write_from_bytes(encoded)
         locators[tool_use_id] = {"blob_hash": hash_hex}
+        queued.append((tool_use_id, hash_hex, size, already_present))
+        receipt_id = blob_publisher.receipt_id(hash_hex)
+        if receipt_id is not None:
+            publication_receipts.append((receipt_id, bytes.fromhex(hash_hex)))
+
+    return locators, queued
+
+
+def _settle_sidecar_blobs(
+    locators: dict[str, dict[str, str]],
+    queued: list[tuple[str, str, int, bool]],
+    blob_publisher: ArchiveBlobPublisher,
+) -> dict[str, int]:
+    """Count the sidecar blobs the flush published; record the ones it refused.
+
+    The flush reads the excision ledger in its own reservation transaction, so
+    it can refuse bytes the pre-check passed (no ``source_conn``, or an
+    excision committed in between). Such a locator gets the same typed
+    refusal as a pre-checked one instead of naming a discarded blob.
+    """
+    if not locators:
+        return {}
+    bytes_new = 0
+    bytes_dedup = 0
+    written = 0
+    for tool_use_id, hash_hex, size, already_present in queued:
+        if publication_refused(blob_publisher, hash_hex):
+            locators[tool_use_id] = {"blob_refusal": "content_excised"}
+            continue
         written += 1
         if already_present:
             bytes_dedup += size
         else:
             bytes_new += size
-        receipt_id = blob_publisher.receipt_id(hash_hex)
-        if receipt_id is not None:
-            publication_receipts.append((receipt_id, bytes.fromhex(hash_hex)))
-
-    counts = {
+    return {
         "sidecar_blob_bytes_new": bytes_new,
         "sidecar_blob_bytes_dedup": bytes_dedup,
         "sidecar_blobs_written": written,
-        "sidecar_blobs_refused_excised": refused,
+        "sidecar_blobs_refused_excised": sum(
+            1 for locator in locators.values() if locator.get("blob_refusal") == "content_excised"
+        ),
     }
-    return locators, counts
 
 
 # polylogue-ojjet: the Drive revision-cohort classifier
@@ -1444,11 +1471,11 @@ def _write_session(
             preacquired_attachment_blobs[attachment.acquisition_key] = (blob_hash, size, "acquired")
             if receipt_id is not None:
                 publication_receipts.append((receipt_id, blob_hash))
-        sidecar_blob_locators, sidecar_blob_counts = _preacquire_sidecar_blobs(
+        sidecar_blob_locators, queued_sidecar_blobs = _preacquire_sidecar_blobs(
             session_to_write, blob_publisher, publication_receipts, source_conn=source_conn
         )
-        counts.update(sidecar_blob_counts)
         blob_publisher.flush()
+        counts.update(_settle_sidecar_blobs(sidecar_blob_locators, queued_sidecar_blobs, blob_publisher))
     for attachment in session_to_write.attachments if blob_publisher is None else ():
         # bd polylogue-8ac0: bytes for this attachment were already streamed
         # into the blob store during sidecar discovery (e.g. ChatGPT ``.dat``
