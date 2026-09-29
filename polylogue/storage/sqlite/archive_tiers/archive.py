@@ -17,7 +17,7 @@ import sqlite3
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -931,6 +931,15 @@ class ArchiveStore:
         self._source_conn: sqlite3.Connection | None = None
         self._blob_publisher: ArchiveBlobPublisher | None = None
         self._pending_index_blob_receipts: list[tuple[str, bytes]] = []
+        #: The shared blob-publisher slot held by a retained replay from its
+        #: first excision check until its index/source commit (or rollback).
+        #: Excision takes the slot exclusively before it resolves anything,
+        #: so it cannot remove a session between this replay's checks and
+        #: its commit, only before or after the whole write.
+        self._replay_publisher_slot: ExitStack | None = None
+        #: Retained writes in progress; a commit inside one (a batched
+        #: replay commits its prior cohorts before a flush) keeps the slot.
+        self._retained_writes_in_progress = 0
         self._pending_raw_parse_states: list[tuple[str, RawSessionStateUpdate]] = []
         if getattr(self, "_source_tier_acquisition", False):
             # polylogue-gbs02: acquire-only mode validates the DURABLE tiers it
@@ -1517,6 +1526,39 @@ class ArchiveStore:
         self._flush_pending_raw_parse_states()
         if self._source_conn is not None:
             self._source_conn.commit()
+        self._release_replay_publisher_slot()
+
+    def _hold_replay_publisher_slot(self) -> None:
+        if self._replay_publisher_slot is not None:
+            return
+        from polylogue.storage.blob_publication import _archive_blob_publisher_slot
+
+        slot = ExitStack()
+        slot.enter_context(_archive_blob_publisher_slot(self.source_db_path))
+        self._replay_publisher_slot = slot
+
+    def _release_replay_publisher_slot(self) -> None:
+        if self._retained_writes_in_progress:
+            return
+        slot, self._replay_publisher_slot = self._replay_publisher_slot, None
+        if slot is not None:
+            slot.close()
+
+    @contextmanager
+    def _retained_replay_exclusion(self, *, manage_transaction: bool) -> Iterator[None]:
+        """Hold the publisher slot across one retained write and its commit.
+
+        A self-committing write releases it when it returns; a batched one
+        keeps it until the batch's ``commit``/``rollback``/``close``.
+        """
+        self._hold_replay_publisher_slot()
+        self._retained_writes_in_progress += 1
+        try:
+            yield
+        finally:
+            self._retained_writes_in_progress -= 1
+            if manage_transaction:
+                self._release_replay_publisher_slot()
 
     def rollback(self) -> None:
         """Roll back the index.db and (if open) source.db write connections.
@@ -1533,6 +1575,7 @@ class ArchiveStore:
         self._pending_raw_parse_states.clear()
         if self._source_conn is not None:
             self._source_conn.rollback()
+        self._release_replay_publisher_slot()
 
     def close(self) -> None:
         if self.operation_vector_connection is not None:
@@ -1540,6 +1583,7 @@ class ArchiveStore:
             self.operation_vector_connection = None
         if self._blob_publisher is not None:
             self._blob_publisher.discard_pending()
+        self._release_replay_publisher_slot()
         # Deferral is never restored at close. Index deferral is only ever
         # granted to an OWNED INACTIVE generation, which no reader can open:
         # there is nothing to protect, and a close-time restore made a
@@ -2134,19 +2178,20 @@ class ArchiveStore:
         revision_authoritative: bool = False,
     ) -> ArchiveRawParsedWriteResult:
         self._require_writable("write retained source.db and index.db evidence")
-        return write_parsed_for_retained_raw_result(
-            self,
-            session,
-            raw_id=raw_id,
-            source_path=source_path,
-            acquired_at_ms=acquired_at_ms,
-            source_index=source_index,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            finalize_raw_parse=finalize_raw_parse,
-            revision_authoritative=revision_authoritative,
-        )
+        with self._retained_replay_exclusion(manage_transaction=manage_transaction):
+            return write_parsed_for_retained_raw_result(
+                self,
+                session,
+                raw_id=raw_id,
+                source_path=source_path,
+                acquired_at_ms=acquired_at_ms,
+                source_index=source_index,
+                stage_timings_s=stage_timings_s,
+                stage_timing_prefix=stage_timing_prefix,
+                manage_transaction=manage_transaction,
+                finalize_raw_parse=finalize_raw_parse,
+                revision_authoritative=revision_authoritative,
+            )
 
     def bind_raw_revision(self, raw_id: str, revision: RawRevisionEnvelope, *, manage_transaction: bool = True) -> None:
         self._require_writable("bind source.db revision")
@@ -2428,30 +2473,31 @@ class ArchiveStore:
         prepared_aggregate_content_hash: bytes | None = None,
     ) -> tuple[str, tuple[str, ...]]:
         self._require_writable("apply source.db revision replay")
-        return apply_raw_revision_replay(
-            self,
-            plan,
-            parsed_by_raw_id,
-            acquired_at_ms=acquired_at_ms,
-            stage_timings_s=stage_timings_s,
-            stage_timing_prefix=stage_timing_prefix,
-            manage_transaction=manage_transaction,
-            bulk_fts=bulk_fts,
-            bulk_build=bulk_build,
-            fresh_build=fresh_build,
-            fresh_build_batch=fresh_build_batch,
-            defer_fts=defer_fts,
-            skip_already_applied=skip_already_applied,
-            prepared_by_raw_id=prepared_by_raw_id,
-            prepared_required_raw_ids=prepared_required_raw_ids,
-            preacquired_attachment_blobs_by_raw_id=preacquired_attachment_blobs_by_raw_id,
-            preacquired_attachment_refs_by_raw_id=preacquired_attachment_refs_by_raw_id,
-            prepared_aggregate_session=prepared_aggregate_session,
-            prepared_pending_session=prepared_pending_session,
-            prepared_aggregate_rows=prepared_aggregate_rows,
-            prepared_write=prepared_write,
-            prepared_aggregate_content_hash=prepared_aggregate_content_hash,
-        )
+        with self._retained_replay_exclusion(manage_transaction=manage_transaction):
+            return apply_raw_revision_replay(
+                self,
+                plan,
+                parsed_by_raw_id,
+                acquired_at_ms=acquired_at_ms,
+                stage_timings_s=stage_timings_s,
+                stage_timing_prefix=stage_timing_prefix,
+                manage_transaction=manage_transaction,
+                bulk_fts=bulk_fts,
+                bulk_build=bulk_build,
+                fresh_build=fresh_build,
+                fresh_build_batch=fresh_build_batch,
+                defer_fts=defer_fts,
+                skip_already_applied=skip_already_applied,
+                prepared_by_raw_id=prepared_by_raw_id,
+                prepared_required_raw_ids=prepared_required_raw_ids,
+                preacquired_attachment_blobs_by_raw_id=preacquired_attachment_blobs_by_raw_id,
+                preacquired_attachment_refs_by_raw_id=preacquired_attachment_refs_by_raw_id,
+                prepared_aggregate_session=prepared_aggregate_session,
+                prepared_pending_session=prepared_pending_session,
+                prepared_aggregate_rows=prepared_aggregate_rows,
+                prepared_write=prepared_write,
+                prepared_aggregate_content_hash=prepared_aggregate_content_hash,
+            )
 
     def apply_raw_membership_classification(
         self,

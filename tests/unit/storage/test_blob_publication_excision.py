@@ -339,3 +339,98 @@ def test_an_excision_after_a_successful_flush_is_reconciled_from_the_ledger(tmp_
 
     assert reconciled["a"] == (None, len(payload), "unavailable")
     assert kept_refs == ()
+
+
+def test_require_published_refuses_a_hash_excised_after_the_flush(tmp_path: Path) -> None:
+    """An excision committed after the flush is still the typed refusal.
+
+    Anti-vacuity (Codex P2, #5696): consult only the flush's own refusals and
+    a snapshot whose bytes were excised a moment later is accepted.
+    """
+    import pytest
+
+    from polylogue.storage.blob_publication import require_published
+    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    publisher = ArchiveBlobPublisher(root / "source.db", root / "blob")
+    payload = b"raw capture excised after its flush"
+    blob_hash, _size = publisher.write_from_bytes(payload)
+    publisher.flush()
+    require_published(publisher, blob_hash, source_path="capture.jsonl")
+
+    with sqlite3.connect(root / "source.db") as source:
+        record_excised_blob_hash(
+            source,
+            blob_hash=hashlib.sha256(payload).digest(),
+            reason="synthetic excision",
+            actor="test",
+            excised_at_ms=1,
+        )
+
+    with pytest.raises(ContentExcisedError):
+        require_published(publisher, blob_hash, source_path="capture.jsonl")
+
+
+def test_retained_replay_writes_hold_the_publisher_slot_through_their_commit(tmp_path: Path) -> None:
+    """An excision cannot take its exclusion while a retained write is uncommitted.
+
+    Anti-vacuity (Codex P1, #5696): release the shared publisher slot before
+    the replay's commit and an excision can remove the session in between,
+    which the replay then recreates.
+    """
+    import fcntl
+
+    import pytest
+
+    import polylogue.storage.sqlite.archive_tiers.archive as archive_module
+    from polylogue.storage.blob_publication import _writer_lock_path
+
+    root = tmp_path / "archive"
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    lock_path = _writer_lock_path(root / "source.db")
+
+    def exclusion_available() -> bool:
+        with lock_path.open("a+b") as handle:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            return True
+
+    seen: list[bool] = []
+
+    def observed_write(*_args: object, **_kwargs: object) -> object:
+        seen.append(exclusion_available())
+        return object()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(archive_module, "write_parsed_for_retained_raw_result", observed_write)
+    try:
+        with ArchiveStore(root, read_only=False) as store:
+            store.write_parsed_for_retained_raw_result(
+                object(),  # type: ignore[arg-type]
+                raw_id="raw-1",
+                source_path="s.jsonl",
+                acquired_at_ms=1,
+            )
+            assert exclusion_available()
+            store.write_parsed_for_retained_raw_result(
+                object(),  # type: ignore[arg-type]
+                raw_id="raw-2",
+                source_path="s.jsonl",
+                acquired_at_ms=1,
+                manage_transaction=False,
+            )
+            # A batched write keeps the slot until its batch commits.
+            assert not exclusion_available()
+            store.commit()
+            assert exclusion_available()
+    finally:
+        monkeypatch.undo()
+
+    assert seen == [False, False]

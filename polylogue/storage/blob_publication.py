@@ -271,6 +271,26 @@ class ArchiveBlobPublisher(BlobStore):
         """Whether a flush() refused *blob_hash* because it is excised."""
         return blob_hash in self._refused_as_excised
 
+    def excised_now(self, blob_hash: str) -> bool:
+        """Whether the durable ledger names *blob_hash*, read under publisher exclusion.
+
+        A flush's refusals cover only excisions committed before it; one that
+        committed after the flush released its slot is visible only in the
+        ledger. The shared slot orders this read against any excision that
+        is still running, and a hit is remembered like a flush refusal.
+        """
+        if blob_hash in self._refused_as_excised:
+            return True
+        with _archive_blob_publisher_slot(self.source_db_path):
+            conn = open_readonly_connection(self.source_db_path, timeout_class="background-read", validate_schema=False)
+            try:
+                excised = bool(_excised_hashes(conn, {blob_hash}))
+            finally:
+                conn.close()
+        if excised:
+            self._refused_as_excised.add(blob_hash)
+        return excised
+
     def forget_refusals(self) -> None:
         """Drop the refusals a caller has already reconciled.
 
@@ -401,14 +421,17 @@ def reconcile_refused_attachments(
 
 
 def require_published(blob_store: BlobStore, blob_hash: str, *, source_path: str) -> None:
-    """Raise ContentExcisedError when a flush refused *blob_hash* as excised.
+    """Raise ContentExcisedError when *blob_hash* is excised, by the flush or since.
 
     A caller that reads its snapshot back from the store after flushing must
     stop here: the refused bytes were discarded, so the path it would open
     does not exist, and the outcome is the typed excision, not a parse
-    failure.
+    failure. An archive publisher also rechecks the durable ledger under
+    publisher exclusion, so an excision committed after the flush is refused
+    here too.
     """
-    if publication_refused(blob_store, blob_hash):
+    excised_now = getattr(blob_store, "excised_now", None)
+    if publication_refused(blob_store, blob_hash) or (callable(excised_now) and excised_now(blob_hash)):
         from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
 
         raise ContentExcisedError(blob_hash=bytes.fromhex(blob_hash), source_path=source_path)
