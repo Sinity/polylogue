@@ -266,6 +266,12 @@ DOCS_REFERENCE_ENTRIES: tuple[DocsEntry, ...] = (
     # Operations
     _entry("Developer Tools", "devtools.md", "Generated surfaces, validation, and repo hygiene.", "operations"),
     _entry(
+        "Fresh-Build Benchmark",
+        "fresh-build-benchmark.md",
+        "End-to-end cold-build measurement through the daemon route: corpora, receipts, budgets, comparison.",
+        "operations",
+    ),
+    _entry(
         "Artifact Publication",
         "artifact-publication.md",
         "Filesystem contract shared by the cache and reusable-fixture publication routes.",
