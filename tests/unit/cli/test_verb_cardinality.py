@@ -12,6 +12,7 @@ All three verbs share the single :func:`check_cardinality` path from
 
 from __future__ import annotations
 
+import json
 from contextlib import AbstractContextManager
 from pathlib import Path
 from types import SimpleNamespace
@@ -537,6 +538,38 @@ class TestDeleteVerbCardinality:
         ):
             with pytest.raises(click.UsageError, match="No sessions matched"):
                 self._call_delete(child, yes_flag=True, all_flag=True)
+
+    @pytest.mark.parametrize("all_flag", [False, True])
+    def test_zero_match_delete_submits_no_mutation(self, all_flag: bool, capsys: pytest.CaptureFixture[str]) -> None:
+        """A selection that matches nothing never reaches the daemon write.
+
+        ``delete --yes`` refuses with the typed empty-cardinality error, and
+        ``delete --dry-run`` reports an empty preview, both before any
+        declared mutation is submitted.
+
+        Anti-vacuity: move the cardinality check after
+        ``execute_delete_by_session_ids`` and the exploding submit runs.
+        """
+        from polylogue.cli.verb_cardinality import EmptyCardinalityError
+
+        _, child = _context_pair()
+        child.obj = SimpleNamespace(config=MagicMock(), ui=SimpleNamespace(plain=True))
+
+        def _no_submit(*_args: object, **_kwargs: object) -> object:
+            raise AssertionError("a zero-match delete submitted a mutation")
+
+        with (
+            patch("polylogue.cli.verb_cardinality.probe_session_ids_for_verb", return_value=[]),
+            patch("polylogue.cli.verb_cardinality.resolve_session_ids_for_verb", return_value=[]),
+            patch("polylogue.cli.operation_kernel.configured_mutation_operation", _no_submit),
+            patch("polylogue.cli.archive_query._submit_mutation_operation", _no_submit),
+        ):
+            with pytest.raises(EmptyCardinalityError):
+                self._call_delete(child, yes_flag=True, all_flag=all_flag)
+            self._call_delete(child, dry_run=True, all_flag=all_flag)
+
+        preview = json.loads(capsys.readouterr().out)
+        assert (preview["status"], preview["session_count"], preview["affected_count"]) == ("preview", 0, 0)
 
     def test_delete_uses_shared_check_cardinality(self) -> None:
         """delete_verb must call check_cardinality (the shared path)."""
