@@ -343,6 +343,10 @@ class IngestExecution:
         self.started_mutation: StartedBoundMutation | None = None
         self.resumed = False
         self.terminalized = False
+        #: Set once this execution may have durably accepted its request (the
+        #: acceptance write began, or a resent request found its record).
+        #: Before that there is no accepted attempt to fence or settle.
+        self.acceptance_attempted = False
         fd, name = tempfile.mkstemp(prefix="polylogue-ingest-state-", suffix=".sqlite", dir=os.environ.get("TMPDIR"))
         os.close(fd)
         self.state_path = Path(name)
@@ -681,6 +685,7 @@ class IngestExecution:
                 assert record is not None
                 return record
 
+            self.acceptance_attempted = True
             try:
                 self.record = await self.runtime.write_phase("ingest.accept", accept_prepared)
             except BaseException:
@@ -694,6 +699,7 @@ class IngestExecution:
                 raise
         else:
             self.resumed = True
+            self.acceptance_attempted = True
         if self.resumed:
             # A resent request reads its durable state only. The daemon's
             # ingest owner re-drives an interrupted accepted generation
@@ -1843,8 +1849,9 @@ async def execute_ingest_operation(
     except IngestStoppedError as exc:
         # Fence first: once the request carries its stop reason, a process
         # death before the attempt settles cannot hand it to the re-driver.
-        await execution.fence(exc.reason)
-        await execution.mark_unknown(exc.reason)
+        if execution.acceptance_attempted:
+            await execution.fence(exc.reason)
+            await execution.mark_unknown(exc.reason)
         return operation_envelope(
             request,
             context,
@@ -1856,11 +1863,18 @@ async def execute_ingest_operation(
     except (IngestReprepareRequiredError, ArchiveIdentityStaleError, DaemonBackpressureError):
         # Transient after acceptance: left unstopped, the accepted generation
         # stays eligible for its ingest owner's re-drive.
-        await execution.mark_unknown("accepted ingest met a transient refusal before its terminal checkpoint")
+        if execution.acceptance_attempted:
+            await execution.mark_unknown("accepted ingest met a transient refusal before its terminal checkpoint")
         raise
     except Exception:
-        await execution.fence("refused")
-        await execution.mark_unknown("accepted ingest lacks a terminal checkpoint")
+        # A failure before acceptance (such as every input refused as
+        # excised) has no accepted attempt to fence or settle. Settling anyway
+        # takes a settled audit read, which a concurrent reader (the caller
+        # polling this request) makes fail, and that error would replace the
+        # typed refusal.
+        if execution.acceptance_attempted:
+            await execution.fence("refused")
+            await execution.mark_unknown("accepted ingest lacks a terminal checkpoint")
         raise
     finally:
         await asyncio.to_thread(execution.publisher.discard_pending)
