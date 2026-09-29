@@ -252,12 +252,15 @@ def _ingest_append_plans_archive(
         t0 = time.perf_counter()
         with _open_archive_for_live_write(archive_root) as archive:
             _add_timing(timings, "append.archive_open", t0)
-            for plan in plans:
-                try:
-                    check_write_hold_budget("append_plan")
-                except WriteHoldBudgetError:
-                    write_hold_exhausted = True
-                    break
+            for plan_index, plan in enumerate(plans):
+                # Opening the archive can itself outlast the hold. The first
+                # admitted plan still makes progress; later plans remain backlog.
+                if plan_index:
+                    try:
+                        check_write_hold_budget("append_plan")
+                    except WriteHoldBudgetError:
+                        write_hold_exhausted = True
+                        break
                 provider: Provider | None = None
                 raw_id: str | None = None
                 session_artifact = None

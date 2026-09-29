@@ -2075,8 +2075,10 @@ def test_free_threaded_profile_refuses_frame_traversal_but_keeps_cpu_accounting(
 ) -> None:
     from devtools.fresh_build_bench import sampler as sampler_module
 
-    monkeypatch.setattr(sampler_module.sysconfig, "get_config_var", lambda name: 1)
-    monkeypatch.setattr(sampler_module.sys, "_current_frames", lambda: pytest.fail("unsafe live frame traversal"))
+    monkeypatch.setattr("devtools.fresh_build_bench.sampler.sysconfig.get_config_var", lambda name: 1)
+    monkeypatch.setattr(
+        "devtools.fresh_build_bench.sampler.sys._current_frames", lambda: pytest.fail("unsafe live frame traversal")
+    )
     sampler = sampler_module.StackSampler(tmp_path / "stacks.json", interval_s=0.0, stacks=True)
     waits = iter([False, True])
     monkeypatch.setattr(sampler._stop, "wait", lambda timeout: next(waits))
