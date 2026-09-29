@@ -347,9 +347,7 @@ class AdmissionObserver:
         else:
             self._pending.append([ordinal, ordinal + 1])
 
-    def observe_input(
-        self, payload: object, *, recognizes: Callable[[Mapping[str, object]], bool] | None = None
-    ) -> None:
+    def observe_input(self, payload: object, *, recognizes: Callable[[Any], bool] | None = None) -> None:
         """Observe a payload that is fully in memory: one document or a record sequence.
 
         ``recognizes`` is the parser's own per-record recognition for a
@@ -471,7 +469,7 @@ def admit_parsed_sessions(
     payload: object,
     sessions: list[ParsedSession],
     *,
-    recognizes: Callable[[Mapping[str, object]], bool] | None = None,
+    recognizes: Callable[[Any], bool] | None = None,
 ) -> list[ParsedSession]:
     """Apply the admission boundary to a dispatch route's result.
 
