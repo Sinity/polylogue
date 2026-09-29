@@ -4575,9 +4575,9 @@ def test_a_deep_chain_composes_in_linear_time(tmp_path: Path) -> None:
     """One list is cut and extended down the chain; no level's transcript is kept.
 
     Covers the writer's signatures, the envelope planner and compact
-    accounting. Anti-vacuity: rebuild ``prefix + own`` at every level and
-    cache each, and the composition holds every intermediate transcript,
-    quadratic in depth.
+    accounting of every level. Anti-vacuity: rebuild ``prefix + own`` at every
+    level and cache each, and the composition holds every intermediate
+    transcript, quadratic in depth.
     """
     from polylogue.storage.sqlite.archive_tiers import write as write_module
 
@@ -4598,10 +4598,16 @@ def test_a_deep_chain_composes_in_linear_time(tmp_path: Path) -> None:
     from polylogue.storage.derived.lineage.compact import _CompositionShape
 
     shape = _CompositionShape(conn)
-    accounting = shape.accounting(leaf)
-    assert (accounting.unique, accounting.inherited) == (1, depth - 1)
-    # Only the walked base and the requested parent are kept, not every level.
-    assert len(shape._segments) == 2
+    for level in range(depth):
+        accounting = shape.accounting(f"codex-session:s{level}")
+        assert (accounting.unique, accounting.inherited) == (1, level)
+    # Every level shares its parent's segments: one new node per level.
+    distinct: set[int] = set()
+    for node in shape._segments.values():
+        while node is not None and id(node) not in distinct:
+            distinct.add(id(node))
+            node = node.prev
+    assert len(distinct) <= 2 * depth
     conn.close()
 
 
@@ -4636,3 +4642,63 @@ def test_a_scoped_replay_keeps_an_appended_duplicate_of_a_copy(tmp_path: Path) -
     conn.close()
     assert len(stored) == 4 and set(materialized) <= set(stored)
     assert _replay_child(tmp_path, [*child, appended]) == stored
+
+
+def test_the_writer_admits_a_chain_deeper_than_any_walk_budget(tmp_path: Path) -> None:
+    """Each level is written through the production writer with its parent claim.
+
+    Anti-vacuity: bound the admission cycle walk (``_would_create_cycle``) by a
+    step budget below ``_VERY_DEEP_CHAIN_LEVELS`` and the deeper edges are
+    quarantined as indeterminate instead of resolved.
+    """
+    conn = _connect(tmp_path / "index.db")
+    conn.execute("BEGIN")
+    for level in range(_VERY_DEEP_CHAIN_LEVELS):
+        write_parsed_session_to_archive(
+            conn,
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=f"deep-{level:04d}",
+                title=f"deep-{level:04d}",
+                parent_session_provider_id=f"deep-{level - 1:04d}" if level else None,
+                branch_type=BranchType.FORK if level else None,
+                messages=[_msg("m", Role.USER, f"level {level}", 0)],
+            ),
+            manage_transaction=False,
+        )
+    conn.commit()
+    quarantined = conn.execute("SELECT COUNT(*) FROM session_links WHERE status = 'quarantined'").fetchone()[0]
+    resolved = conn.execute("SELECT COUNT(*) FROM session_links WHERE resolved_dst_session_id IS NOT NULL").fetchone()[
+        0
+    ]
+    assert (quarantined, resolved) == (0, _VERY_DEEP_CHAIN_LEVELS - 1)
+    conn.close()
+
+
+def test_a_scoped_replay_finds_an_edited_native_prefix_row(tmp_path: Path) -> None:
+    """A copied row stored under its native ID is found by that ID.
+
+    Anti-vacuity: match the copied prefix by content alone and editing the
+    text of ``m1`` refuses the replay as a prefix that no longer appears.
+    """
+    parent = [_msg("m0", Role.USER, "hello", 0), _msg("m1", Role.ASSISTANT, "hi there", 1)]
+    child = [*parent, _msg("x", Role.USER, "child diverges here", 2)]
+    _inheriting, materialized, _replayed = _materialize_then_replay(
+        tmp_path, parent, child, [_msg("m0", Role.USER, "hello", 0)]
+    )
+    edited = [child[0], _msg("m1", Role.ASSISTANT, "hi there, edited", 1), child[2]]
+    assert _replay_child(tmp_path, edited) == materialized
+
+
+def test_a_scoped_replay_refuses_a_duplicate_inserted_inside_the_tail(tmp_path: Path) -> None:
+    """Anti-vacuity: number the rows after the prefix in their new order and
+    the inserted ``hi`` takes the old tail row's ``hi.0``, moving it to ``hi.2``."""
+    from polylogue.storage.sqlite.archive_tiers.write import InheritedPrefixMaterializationError
+
+    parent = [_msg("", Role.USER, "hi", 0), _msg("", Role.ASSISTANT, "answer", 1)]
+    child = [*parent, _msg("", Role.USER, "hi", 2), _msg("", Role.USER, "tail", 3)]
+    rewritten = [_msg("", Role.USER, "hi", 0), _msg("", Role.ASSISTANT, "another answer", 1)]
+    _materialize_then_replay(tmp_path, parent, child, rewritten)
+    inserted = [*parent, _msg("", Role.USER, "hi", 2), _msg("", Role.USER, "hi", 3), _msg("", Role.USER, "tail", 4)]
+    with pytest.raises(InheritedPrefixMaterializationError, match="inside the tail"):
+        _replay_child(tmp_path, inserted)

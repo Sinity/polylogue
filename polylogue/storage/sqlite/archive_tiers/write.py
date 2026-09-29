@@ -751,6 +751,14 @@ class _IdentityScope:
     #: from that point on (a later append) numbers past the copies, as the
     #: append allocated it, so a replay never hands it a copy's ID.
     copy_bases: Mapping[str, int] = field(default_factory=dict)
+    #: The tail as materialization found it: its length and the digest of
+    #: its content identities in order. A replay whose first ``tail_length``
+    #: rows after the prefix still hash to it has only appended since.
+    tail_length: int = 0
+    tail_digest: str = ""
+    #: Per copied prefix row, ``n`` when it was stored under its native ID
+    #: (found by that ID) or ``c`` when by content (found by its content).
+    prefix_kinds: str = ""
 
     def to_json(self) -> str:
         return json.dumps(
@@ -760,6 +768,9 @@ class _IdentityScope:
                 "prefix_digest": self.prefix_digest,
                 "first_identity": self.first_identity,
                 "copy_bases": dict(sorted(self.copy_bases.items())),
+                "tail_length": self.tail_length,
+                "tail_digest": self.tail_digest,
+                "prefix_kinds": self.prefix_kinds,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -775,10 +786,20 @@ class _IdentityScope:
                 for key, value in dict(raw.get("content_copies") or {}).items()
             }
             bases = {str(key): int(value) for key, value in dict(raw.get("copy_bases") or {}).items()}
+            tail_length = int(raw.get("tail_length") or 0)
         except (TypeError, ValueError, KeyError):
             return None
         return (
-            cls(count, copies, str(raw.get("prefix_digest") or ""), str(raw.get("first_identity") or ""), bases)
+            cls(
+                count,
+                copies,
+                str(raw.get("prefix_digest") or ""),
+                str(raw.get("first_identity") or ""),
+                bases,
+                tail_length,
+                str(raw.get("tail_digest") or ""),
+                str(raw.get("prefix_kinds") or ""),
+            )
             if count > 0
             else None
         )
@@ -790,6 +811,17 @@ def _record_identity_scope(conn: sqlite3.Connection, session_id: str, scope: _Id
            ON CONFLICT(session_id) DO UPDATE SET scope_json = excluded.scope_json""",
         (session_id, scope.to_json()),
     )
+
+
+def _prefix_key(native_id: str | None, content_identity: str | None) -> str | None:
+    """The key a copied prefix row is found by: its native ID when it has one.
+
+    A native row stays the same message across a content edit, so it is found
+    by that ID; only an ID-less row is found by its content.
+    """
+    if native_id is not None:
+        return f"n:{native_id}"
+    return None if content_identity is None else f"c:{content_identity}"
 
 
 def _identity_sequence_digest(identities: Iterable[str]) -> str:
@@ -899,7 +931,8 @@ def _scoped_identities(
     """
     count = min(scope.inherited_messages, len(messages))
     digests = [message_content_identity(message) for message in messages]
-    start = _copied_prefix_start(digests, scope, count)
+    natives_seen = [_normalized_message_native_id(message) for message in messages]
+    start = _copied_prefix_start(natives_seen, digests, scope, count)
     tail_counts: Counter[str] = Counter()
     tail_natives: Counter[str] = Counter()
     prefix_keys: list[tuple[int, int]] = []
@@ -948,6 +981,20 @@ def _scoped_identities(
     # copies take theirs, and rows the materialization never saw (gained
     # before the prefix, or an unrecorded ID-less prefix row) take fresh
     # occurrences past every one of those.
+    after = digests[start + count :]
+    tail_changed = bool(scope.tail_digest) and (
+        len(after) < scope.tail_length or _identity_sequence_digest(after[: scope.tail_length]) != scope.tail_digest
+    )
+    if tail_changed:
+        after_counts = Counter(after)
+        for digest in scope.content_copies:
+            if after_counts[digest] > scope.copy_bases.get(digest, tail_counts[digest]):
+                # A message identical to a copy was added among the tail, not
+                # only appended after it: which rows hold the stored
+                # occurrences is no longer evident. Refused, never guessed.
+                raise InheritedPrefixMaterializationError(
+                    "a message identical to a copied prefix row was added inside the tail; its stored IDs are ambiguous"
+                )
     occurrences: dict[int, int] = {}
     cleared: set[int] = set()
     taken: dict[str, set[int]] = defaultdict(set)
@@ -1003,7 +1050,9 @@ def _scoped_identities(
     return view, tuple(identities)
 
 
-def _copied_prefix_start(digests: Sequence[str], scope: _IdentityScope, count: int) -> int:
+def _copied_prefix_start(
+    natives: Sequence[str | None], digests: Sequence[str], scope: _IdentityScope, count: int
+) -> int:
     """Where the materialized prefix sits in this transcript, found by content.
 
     The copied messages are the run of ``count`` whose content identities
@@ -1014,11 +1063,20 @@ def _copied_prefix_start(digests: Sequence[str], scope: _IdentityScope, count: i
     """
     if not scope.prefix_digest:
         return 0
+    kinds = scope.prefix_kinds or "c" * count
+
+    def key(ordinal: int, kind: str) -> str:
+        # A row stored under its native ID is found by that ID, so a content
+        # edit does not lose it; a row stored by content is found by content.
+        native = natives[ordinal]
+        return f"n:{native}" if kind == "n" and native is not None else f"c:{digests[ordinal]}" if kind == "c" else ""
+
     matches = [
         start
         for start in range(0, len(digests) - count + 1)
-        if digests[start] == scope.first_identity
-        and _identity_sequence_digest(digests[start : start + count]) == scope.prefix_digest
+        if key(start, kinds[0]) == scope.first_identity
+        and _identity_sequence_digest(key(start + offset, kinds[offset]) for offset in range(count))
+        == scope.prefix_digest
     ]
     if len(matches) > 1:
         # Two runs hold the copied content: choosing one could hand a new
@@ -7506,7 +7564,6 @@ def _branch_type_from_link_type(link_type: object) -> str | None:
 # and _composed_db_signatures' visited-set truncation, which silently pick
 # an arbitrary root/branch point rather than persisting evidence of the
 # rejected edge -- session_links.status stayed NULL/empty on every row.
-_CYCLE_WALK_BUDGET = 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -7569,29 +7626,30 @@ def _would_create_cycle(
 
     Walks the resolved parent chain upward from ``proposed_parent_id`` (see
     ``_walk_parent_of`` for which edge that is). The walk is full-chain, not
-    single-hop, and ``_CYCLE_WALK_BUDGET`` bounds it: budget exhaustion is
-    indeterminate and must remain quarantined, but it is not evidence that the
-    proposed edge closes a cycle. A loop that does not contain ``child_id``
-    cannot be produced through the two guarded resolution routes, and the
-    budget terminates the walk if one is ever hand-written into the tier.
+    single-hop, and a visited set alone terminates it, so a valid lineage of
+    any depth is admitted. A loop that does not contain ``child_id`` cannot be
+    produced through the two guarded resolution routes; if one is ever
+    hand-written into the tier the walk stops there, which is indeterminate
+    (``budget_exhausted``, the steps walked as its budget) and stays
+    quarantined, but is not evidence that the proposed edge closes a cycle.
     """
     if proposed_parent_id == child_id:
         return _CycleWalkResult("cycle", (child_id, child_id))
     path: list[str] = [child_id, proposed_parent_id]
+    visited = {proposed_parent_id}
     current = proposed_parent_id
-    steps = 0
     while True:
-        if steps >= _CYCLE_WALK_BUDGET:
-            return _CycleWalkResult("budget_exhausted", tuple(path))
         next_parent = _walk_parent_of(conn, current)
         if next_parent is None:
             return _CycleWalkResult("acyclic", tuple(path))
         if next_parent == child_id:
             path.append(child_id)
             return _CycleWalkResult("cycle", tuple(path))
+        if next_parent in visited:
+            return _CycleWalkResult("budget_exhausted", tuple(path))
         path.append(next_parent)
+        visited.add(next_parent)
         current = next_parent
-        steps += 1
 
 
 def _quarantine_session_link(
@@ -7615,7 +7673,8 @@ def _quarantine_session_link(
         evidence_payload = {
             "reason": "cycle_walk_budget_exhausted",
             "walk_path": list(cycle_walk.path),
-            "walk_budget": _CYCLE_WALK_BUDGET,
+            # The steps walked before the loop stopped it.
+            "walk_budget": len(cycle_walk.path) - 2,
             "detected_at_ms": observed_at_ms,
         }
     else:
@@ -8021,10 +8080,27 @@ def _projected_session_kind(conn: sqlite3.Connection, session_id: str, branch_ty
 
 
 def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, seen: set[str]) -> None:
-    if session_id in seen:
-        return
-    seen.add(session_id)
-    parent_link = conn.execute(
+    """Refresh the projection of ``session_id`` and every unrefreshed ancestor.
+
+    Walks up to the first session already refreshed (or a root), then projects
+    top-down, so a lineage of any depth never recurses; ``seen`` stops a cycle.
+    """
+    pending: list[tuple[str, str, Any]] = []
+    current = session_id
+    while current not in seen:
+        seen.add(current)
+        parent_link = _projection_parent_link(conn, current)
+        if parent_link is None:
+            _project_lineage_root(conn, current)
+            break
+        pending.append((current, str(parent_link[0]), parent_link[1]))
+        current = str(parent_link[0])
+    for child_session_id, parent_session_id, link_type in reversed(pending):
+        _project_lineage_child(conn, child_session_id, parent_session_id, link_type)
+
+
+def _projection_parent_link(conn: sqlite3.Connection, session_id: str) -> tuple[Any, ...] | None:
+    row: tuple[Any, ...] | None = conn.execute(
         f"""
         SELECT resolved_dst_session_id, link_type
         FROM session_links
@@ -8035,41 +8111,43 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
         """,
         (session_id,),
     ).fetchone()
-    if parent_link is None:
-        unresolved_link = conn.execute(
-            """
-            SELECT link_type
-            FROM session_links
-            WHERE src_session_id = ?
-            ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_origin, dst_native_id, link_type
-            LIMIT 1
-            """,
+    return row
+
+
+def _project_lineage_root(conn: sqlite3.Connection, session_id: str) -> None:
+    unresolved_link = conn.execute(
+        """
+        SELECT link_type
+        FROM session_links
+        WHERE src_session_id = ?
+        ORDER BY observed_at_ms IS NULL, observed_at_ms, dst_origin, dst_native_id, link_type
+        LIMIT 1
+        """,
+        (session_id,),
+    ).fetchone()
+    branch_type: str | None
+    if unresolved_link is not None:
+        branch_type = _branch_type_from_link_type(unresolved_link[0])
+    else:
+        existing_branch = conn.execute(
+            "SELECT branch_type FROM sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
-        branch_type: str | None
-        if unresolved_link is not None:
-            branch_type = _branch_type_from_link_type(unresolved_link[0])
-        else:
-            existing_branch = conn.execute(
-                "SELECT branch_type FROM sessions WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-            branch_type = str(existing_branch[0]) if existing_branch is not None and existing_branch[0] else None
-        conn.execute(
-            """
-            UPDATE sessions
-            SET parent_session_id = NULL,
-                root_session_id = session_id,
-                branch_type = ?,
-                session_kind = ?
-            WHERE session_id = ?
-            """,
-            (branch_type, _projected_session_kind(conn, session_id, branch_type), session_id),
-        )
-        return
+        branch_type = str(existing_branch[0]) if existing_branch is not None and existing_branch[0] else None
+    conn.execute(
+        """
+        UPDATE sessions
+        SET parent_session_id = NULL,
+            root_session_id = session_id,
+            branch_type = ?,
+            session_kind = ?
+        WHERE session_id = ?
+        """,
+        (branch_type, _projected_session_kind(conn, session_id, branch_type), session_id),
+    )
 
-    parent_session_id = str(parent_link[0])
-    _refresh_session_projection(conn, parent_session_id, seen=seen)
+
+def _project_lineage_child(conn: sqlite3.Connection, session_id: str, parent_session_id: str, link_type: Any) -> None:
     parent_root_row = conn.execute(
         """
         SELECT COALESCE(root_session_id, session_id)
@@ -8079,7 +8157,7 @@ def _refresh_session_projection(conn: sqlite3.Connection, session_id: str, *, se
         (parent_session_id,),
     ).fetchone()
     parent_root_id = str(parent_root_row[0]) if parent_root_row is not None else parent_session_id
-    projected_branch_type = _branch_type_from_link_type(parent_link[1])
+    projected_branch_type = _branch_type_from_link_type(link_type)
     conn.execute(
         """
         UPDATE sessions
@@ -11136,13 +11214,27 @@ def _materialize_inherited_prefix(
             content_copies[str(identity)].append(ordinal_in_prefix)
             assert planned[4] is not None
             copy_bases.setdefault(str(identity), planned[4])
-    prefix_identities = [str(row[4]) for _old_id, row in sources if row[4] is not None]
+    prefix_keys = [
+        key
+        for _old_id, row in sources
+        if (key := _prefix_key(None if row[3] is None else str(row[3]), None if row[4] is None else str(row[4])))
+        is not None
+    ]
+    tail_identities = [
+        str(row[0] or "")
+        for row in conn.execute(
+            "SELECT content_identity FROM messages WHERE session_id = ? ORDER BY position, variant_index", (child,)
+        )
+    ]
     identity_scope = _IdentityScope(
         len(inherited_ids),
         {identity: tuple(ordinals) for identity, ordinals in content_copies.items()},
-        _identity_sequence_digest(prefix_identities) if len(prefix_identities) == len(sources) else "",
-        prefix_identities[0] if prefix_identities and len(prefix_identities) == len(sources) else "",
+        _identity_sequence_digest(prefix_keys) if len(prefix_keys) == len(sources) else "",
+        prefix_keys[0] if prefix_keys and len(prefix_keys) == len(sources) else "",
         copy_bases,
+        len(tail_identities),
+        _identity_sequence_digest(tail_identities),
+        "".join(key[0] for key in prefix_keys) if len(prefix_keys) == len(sources) else "",
     )
     conn.execute(
         f"""CREATE TEMP TABLE {_GUARD_PREFIX}plan (
