@@ -145,7 +145,7 @@ from polylogue.storage.sqlite.archive_tiers.write_shard import (
     copy_shard_session_rows,
     open_session_shard,
 )
-from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_for_session
+from polylogue.storage.sqlite.delegation_facts import refresh_delegation_facts_for_sessions
 from polylogue.storage.usage import provider_usage_event_identity
 
 
@@ -501,6 +501,10 @@ class LineageSignatureCache:
     The cache lives for one ordered ingest drain. ``pop`` removes the rewritten
     session and any composed entries that depended on it, retaining unrelated
     parent work while preventing stale branch identities after replacement.
+    Each composed entry records its whole ancestor closure, not just the
+    sessions its own walk visited, because a walk that stopped at a cached
+    ancestor never saw that ancestor's parents and the ancestor's entry can be
+    evicted before one of them is rewritten.
     """
 
     _ENTRY_OVERHEAD_BYTES = 96
@@ -556,7 +560,8 @@ class LineageSignatureCache:
             previous = self._entries.pop(key, None)
             if previous is not None:
                 self._bytes -= previous[1]
-            self._dependencies.pop(session_id, None)
+            if kind == "composed":
+                self._dependencies.pop(session_id, None)
             return
         previous = self._entries.pop(key, None)
         if previous is not None:
@@ -583,6 +588,12 @@ class LineageSignatureCache:
     def get_composed(self, session_id: str) -> list[tuple[str, str]] | None:
         return self._get("composed", session_id)
 
+    def composed_dependencies(self, session_id: str) -> frozenset[str] | None:
+        """The closure a resident composed entry depends on, or ``None`` when absent."""
+        if ("composed", session_id) not in self._entries:
+            return None
+        return self._dependencies.get(session_id)
+
     def set_composed(
         self,
         session_id: str,
@@ -596,14 +607,13 @@ class LineageSignatureCache:
         """Invalidate one session and every composed descendant depending on it."""
         if not self.enabled:
             return default
+        # Every composed entry carries its full ancestor closure, so one pass
+        # finds each dependent without relying on intermediate entries that
+        # may already have been evicted.
         impacted = {session_id}
-        changed = True
-        while changed:
-            changed = False
-            for composed_id, dependencies in tuple(self._dependencies.items()):
-                if composed_id not in impacted and dependencies & impacted:
-                    impacted.add(composed_id)
-                    changed = True
+        impacted.update(
+            composed_id for composed_id, dependencies in self._dependencies.items() if session_id in dependencies
+        )
         removed: object = default
         for key in tuple(self._entries):
             if key[1] not in impacted:
@@ -2760,17 +2770,23 @@ def write_parsed_session_to_archive(
                 graph_kwargs["invalidated_session_ids"] = invalidated_identity_children
             if source_conn is not None:
                 graph_kwargs["source_conn"] = source_conn
-            _resolve_session_graph(conn, session_id, native_id, origin.value, **graph_kwargs)
+            graph_changed_ids = _resolve_session_graph(conn, session_id, native_id, origin.value, **graph_kwargs)
             add_timing("index.graph_resolve", t0)
+            materialized_ids: set[str] = set()
             if prefix_guard is not None:
                 t0 = time.perf_counter()
-                _settle_inherited_prefixes(
+                materialized_ids = _settle_inherited_prefixes(
                     conn, prefix_guard, cache=signature_cache, bulk_fts=bulk_fts, bulk_build=bulk_build
                 )
                 add_timing("index.inherited_prefix_guard", t0)
             t0 = time.perf_counter()
             if not bulk_build:
-                refresh_delegation_facts_for_session(conn, session_id)
+                # The session-write guard suppresses the block and link
+                # triggers that would refresh these cohorts, and graph
+                # resolution and prefix settlement change other sessions' rows
+                # and edges: a late parent deletes each child's inherited
+                # prefix, a replace copies one into a child.
+                refresh_delegation_facts_for_sessions(conn, {session_id, *graph_changed_ids, *materialized_ids})
             add_timing("index.delegation_facts", t0)
             conn.execute("DELETE FROM derived_refresh_guard WHERE guard_name = 'session-write'")
             if bulk_build:
@@ -7266,6 +7282,14 @@ def _authoritative_parent_claim(
 
     ``None`` means "hook evidence is silent about this child", which is not the
     same as "hook evidence disagrees" -- only the latter is a conflict.
+
+    A Claude Code claim can only be confirmed under a named parent (the spool
+    is keyed by the dispatching session), so the parser's candidate is asked
+    first and then every parent a preserved authoritative edge of this child
+    names. When the parser moves the child from A to B and only A's journal
+    attributes the agent's calls, A's durable claim still decides the edge;
+    asking the candidate alone would read B's silence as no evidence and leave
+    two composing parents.
     """
     if not child_native_id:
         return None
@@ -7274,13 +7298,28 @@ def _authoritative_parent_claim(
     if source_conn is None:
         return None
     if origin == Origin.CLAUDE_CODE_SESSION.value and parent_candidate:
-        return _claude_agent_dispatch_parent_claim(
-            conn,
-            source_conn,
-            child_session_id=child_session_id,
-            child_provider_values=child_provider_values,
-            parent_candidate=parent_candidate,
-        )
+        provider_values = tuple(child_provider_values)
+        preserved = [
+            str(row[0])
+            for row in conn.execute(
+                """
+                SELECT DISTINCT dst_native_id FROM session_links
+                WHERE src_session_id = ? AND dst_origin = ? AND method = ? AND dst_native_id IS NOT ?
+                ORDER BY dst_native_id
+                """,
+                (child_session_id, origin, HOOK_AUTHORITATIVE_LINK_METHOD, parent_candidate),
+            ).fetchall()
+        ]
+        for candidate in (parent_candidate, *preserved):
+            claim = _claude_agent_dispatch_parent_claim(
+                conn,
+                source_conn,
+                child_session_id=child_session_id,
+                child_provider_values=provider_values,
+                parent_candidate=candidate,
+            )
+            if claim is not None:
+                return claim
     return None
 
 
@@ -7668,6 +7707,16 @@ def _write_session_link(
             winning_dst_native_id=hook_parent,
             observed_at_ms=observed_at_ms,
         )
+        # The dispatch block above was resolved against the parser's parent,
+        # which the hook just contradicted. A block the hook parent's own edge
+        # already names is a call in that parent and stays bound.
+        hook_edge_block = conn.execute(
+            """
+            SELECT parent_tool_use_block_id FROM session_links
+            WHERE src_session_id = ? AND dst_origin = ? AND dst_native_id = ? AND link_type = ?
+            """,
+            (session_id, origin, hook_parent, link_type),
+        ).fetchone()
         _upsert_session_link(
             conn,
             src_session_id=session_id,
@@ -7678,7 +7727,11 @@ def _write_session_link(
             branch_point_content_address=branch_point_content_address,
             inheritance=inheritance,
             status=None,
-            parent_tool_use_block_id=parent_tool_use_block_id,
+            parent_tool_use_block_id=(
+                hook_edge_block[0]
+                if hook_edge_block is not None and hook_edge_block[0] is not None
+                else parent_tool_use_block_id
+            ),
             method=HOOK_AUTHORITATIVE_LINK_METHOD,
             confidence=1.0,
             evidence_json=_json_dumps({**hook_evidence, "superseded_parser_parent": dst_native_id}),
@@ -7744,9 +7797,9 @@ def rederive_codex_spawn_parent_links(conn: sqlite3.Connection, child_native_ids
     session ids whose edges were rewritten.
 
     Each rewritten child's parent pointer is set as soon as its edges resolve,
-    because the next child's cycle check reads it; roots and branch types are
-    then refreshed once over the closure of every rewritten child and its
-    descendants.
+    because the next child's cycle check reads it; each rewritten child's
+    projection is then refreshed once, and a moved root reaches its
+    descendants through the same projection step.
     """
     origin = Origin.CODEX_SESSION.value
     rewritten: list[str] = []
@@ -7880,27 +7933,11 @@ def rederive_codex_spawn_parent_links(conn: sqlite3.Connection, child_native_ids
             (str(parent_link[0]) if parent_link is not None else None, child_session_id),
         )
         rewritten.append(child_session_id)
-    if not rewritten:
-        return rewritten
-    # A rewritten child's descendants inherit its root, so the closure is
-    # refreshed in one pass: one seen set means each session, and each
-    # ancestor the refresh climbs to, is projected once.
-    impacted = [
-        str(row[0])
-        for row in conn.execute(
-            """
-            WITH RECURSIVE below(session_id) AS (
-                SELECT value FROM json_each(?)
-                UNION
-                SELECT s.session_id FROM sessions AS s JOIN below ON s.parent_session_id = below.session_id
-            )
-            SELECT session_id FROM below
-            """,
-            (json.dumps(rewritten),),
-        )
-    ]
+    # One seen set means each rewritten child, and each ancestor the refresh
+    # climbs to, is projected once; a child whose root moves carries its
+    # descendants along (``_propagate_root_to_descendants``).
     seen: set[str] = set()
-    for session_id in impacted:
+    for session_id in rewritten:
         _refresh_session_projection(conn, session_id, seen=seen)
     return rewritten
 
@@ -8115,13 +8152,17 @@ def _resolve_session_graph(
     bulk_build: bool = False,
     invalidated_session_ids: set[str] | None = None,
     source_conn: sqlite3.Connection | None = None,
-) -> None:
+) -> set[str]:
     """Resolve this session's lineage edges and re-anchor what its write moved.
 
     A branch point this write relocated onto identical content elsewhere in the
     lineage is re-anchored here. Whatever cannot be re-anchored is kept intact
     by :func:`_settle_inherited_prefixes`, which the caller runs next
     (polylogue-gy2yu).
+
+    Returns the sessions whose rows or edges this resolution may have changed,
+    ``session_id`` included, so the caller can refresh the derived relations
+    the session-write guard kept their triggers from refreshing.
     """
 
     def record_substage(name: str, started_at: float) -> None:
@@ -8189,7 +8230,7 @@ def _resolve_session_graph(
         and _root_projection_current(conn, session_id)
     ):
         record_substage("root_current_check", t0)
-        return
+        return {session_id}
     record_substage("root_current_check", t0)
     composed_cache: dict[str, list[tuple[str, str]]] = {}
     t0 = time.perf_counter()
@@ -8291,6 +8332,7 @@ def _resolve_session_graph(
     for impacted_session_id in impacted_session_ids:
         _refresh_session_projection(conn, impacted_session_id, seen=projection_seen)
     record_substage("projection_refresh", t0)
+    return impacted_session_ids
 
 
 def _refill_inbound_dispatch_block_ids(
@@ -8534,6 +8576,7 @@ def _project_lineage_root(conn: sqlite3.Connection, session_id: str) -> None:
             (session_id,),
         ).fetchone()
         branch_type = str(existing_branch[0]) if existing_branch is not None and existing_branch[0] else None
+    previous_root_id = _stored_root_session_id(conn, session_id)
     conn.execute(
         """
         UPDATE sessions
@@ -8545,6 +8588,8 @@ def _project_lineage_root(conn: sqlite3.Connection, session_id: str) -> None:
         """,
         (branch_type, _projected_session_kind(conn, session_id, branch_type), session_id),
     )
+    if previous_root_id != session_id:
+        _propagate_root_to_descendants(conn, session_id, session_id)
 
 
 def _project_lineage_child(conn: sqlite3.Connection, session_id: str, parent_session_id: str, link_type: Any) -> None:
@@ -8558,6 +8603,7 @@ def _project_lineage_child(conn: sqlite3.Connection, session_id: str, parent_ses
     ).fetchone()
     parent_root_id = str(parent_root_row[0]) if parent_root_row is not None else parent_session_id
     projected_branch_type = _branch_type_from_link_type(link_type)
+    previous_root_id = _stored_root_session_id(conn, session_id)
     conn.execute(
         """
         UPDATE sessions
@@ -8574,6 +8620,40 @@ def _project_lineage_child(conn: sqlite3.Connection, session_id: str, parent_ses
             _projected_session_kind(conn, session_id, projected_branch_type),
             session_id,
         ),
+    )
+    if previous_root_id != parent_root_id:
+        _propagate_root_to_descendants(conn, session_id, parent_root_id)
+
+
+def _stored_root_session_id(conn: sqlite3.Connection, session_id: str) -> str | None:
+    row = conn.execute("SELECT root_session_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+    return None if row is None or row[0] is None else str(row[0])
+
+
+def _propagate_root_to_descendants(conn: sqlite3.Connection, session_id: str, root_session_id: str) -> None:
+    """Give every projected descendant of ``session_id`` its new root.
+
+    A descendant's root is its parent's root, so when a late parent or a moved
+    edge changes ``session_id``'s root, the whole subtree below it changes with
+    it. The projection refresh only walks upward, and the ``threads`` view
+    groups on the stored root, so a grandchild left on the old root would
+    surface as a second thread. The walk follows the indexed
+    ``parent_session_id`` projection, touches only this subtree, and ``UNION``
+    terminates it on a cycle.
+    """
+    conn.execute(
+        """
+        WITH RECURSIVE below(session_id) AS (
+            SELECT session_id FROM sessions WHERE parent_session_id = :session_id
+            UNION
+            SELECT s.session_id FROM sessions AS s JOIN below ON s.parent_session_id = below.session_id
+        )
+        UPDATE sessions
+           SET root_session_id = :root_session_id
+         WHERE session_id IN (SELECT session_id FROM below)
+           AND root_session_id IS NOT :root_session_id
+        """,
+        {"session_id": session_id, "root_session_id": root_session_id},
     )
 
 
@@ -10608,6 +10688,30 @@ def _signature_cache_set_composed(
         cache.set_composed(session_id, signatures, dependencies=dependencies)
 
 
+def _prefix_lineage_closure(
+    conn: sqlite3.Connection,
+    session_id: str,
+    cache: _SignatureCacheLike | None,
+) -> frozenset[str]:
+    """``session_id`` and every ancestor its composed transcript can draw from.
+
+    A resident composed entry already records this closure. Otherwise the
+    prefix-sharing edges are walked without reading any signatures; the walk
+    ignores staleness witnesses, so it may name an ancestor the composition
+    stopped short of, which only widens invalidation.
+    """
+    if isinstance(cache, LineageSignatureCache):
+        known = cache.composed_dependencies(session_id)
+        if known is not None:
+            return known
+    closure = {session_id}
+    cursor = session_id
+    while (edge := _prefix_sharing_edge_sync(conn, cursor)) is not None and edge[0] not in closure:
+        cursor = edge[0]
+        closure.add(cursor)
+    return frozenset(closure)
+
+
 def _composed_db_signatures(
     conn: sqlite3.Connection,
     session_id: str,
@@ -10646,9 +10750,15 @@ def _composed_db_signatures(
             _signature_cache_set(cache, target_session_id, own)
         return own
 
+    # Only a LineageSignatureCache keeps dependencies, so only it pays for
+    # the closure walks below.
+    tracks_dependencies = isinstance(cache, LineageSignatureCache)
+
     # Collect (child, branch point, child-owned rows) leaf-first, then compose
     # from the oldest reached ancestor down. The visited set is the cycle guard
-    # and bounds the walk: every step adds a new session.
+    # and bounds the walk: every step adds a new session. ``dependencies`` ends
+    # as the requested session's full ancestor closure: the sessions walked
+    # plus the closure of wherever the walk stopped.
     chain: list[tuple[str, str, list[tuple[str, str]]]] = []
     visited = {session_id}
     dependencies = {session_id}
@@ -10660,6 +10770,8 @@ def _composed_db_signatures(
             cached_composed = _signature_cache_get_composed(cache, cursor_session_id)
         if cached_composed is not None:
             composed = cached_composed
+            if tracks_dependencies:
+                dependencies |= _prefix_lineage_closure(conn, cursor_session_id, cache)
             break
         own = own_signatures(cursor_session_id)
         edge = conn.execute(
@@ -10688,6 +10800,12 @@ def _composed_db_signatures(
             current = _message_content_address_for_id(conn, branch_point_message_id)
             if current is None or current != witness:
                 composed = own
+                # The refusal holds only while the branch point's content
+                # differs from the witness, and that row belongs to the parent
+                # or one of its ancestors: a rewrite of any of them can restore
+                # the match.
+                if tracks_dependencies:
+                    dependencies |= _prefix_lineage_closure(conn, parent_id, cache)
                 if composed_cache is not None:
                     composed_cache[cursor_session_id] = composed
                 _signature_cache_set_composed(cache, cursor_session_id, composed, dependencies=frozenset(dependencies))
@@ -11099,6 +11217,14 @@ def _reextract_prefix_tail_db(
     conn.execute("DELETE FROM session_profiles WHERE session_id = ?", (child_session_id,))
     conn.execute("DELETE FROM session_latency_profiles WHERE session_id = ?", (child_session_id,))
     record_substage("count_refresh", t0)
+    if not bulk_build:
+        # The session-write guard kept the blocks delete trigger from
+        # re-deriving the child's action pairs; its delegation cohort is
+        # refreshed by the write that owns this resolution, after the edges
+        # settle.
+        t0 = time.perf_counter()
+        refresh_action_pairs(conn, child_session_id)
+        record_substage("action_pairs", t0)
     return invalidated_branch_point_sources
 
 
@@ -11709,8 +11835,7 @@ def _restore_dispatch_refs(
         if dispatcher is not None:
             refreshed.add(dispatcher)
     if not bulk_build:
-        for owner in sorted(refreshed):
-            refresh_delegation_facts_for_session(conn, owner)
+        refresh_delegation_facts_for_sessions(conn, refreshed)
 
 
 def _copy_in_lineage(conn: sqlite3.Connection, dispatcher: str | None, message_id: str) -> tuple[str, str] | None:
@@ -12084,8 +12209,7 @@ def _materialize_inherited_prefix(
             (rewritten_session_id, *dispatchers, rewritten_session_id),
         )
         if not bulk_build:
-            for dispatcher in sorted(str(row[0]) for row in redispatched):
-                refresh_delegation_facts_for_session(conn, dispatcher)
+            refresh_delegation_facts_for_sessions(conn, {str(row[0]) for row in redispatched})
     # Every prefix-sharing edge of the child stops inheriting, not only the
     # one to this parent: the child now owns its whole transcript, and a
     # second composing edge would put another prefix in front of the copy.

@@ -181,3 +181,95 @@ def test_one_byte_prefix_difference_is_a_miss_and_stays_spawned_fresh(tmp_path: 
     assert tuple(link) == ("spawned-fresh", None)
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 3
     conn.close()
+
+
+def test_evicting_a_cached_ancestor_keeps_the_descendant_invalidatable(tmp_path: Path) -> None:
+    """A composed entry stays tied to every ancestor after the one it stopped at is evicted.
+
+    C composes by stopping at B's cached entry, so its own walk never visits
+    A. Red twin: record only the walked sessions as C's dependencies. Once B's
+    entry is evicted, rewriting A pops nothing that reaches C, and a later
+    child of C is aligned against A's pre-rewrite signatures: it lands
+    spawned-fresh and stores the whole replayed transcript.
+    """
+    conn = _connect(tmp_path / "index.db")
+    cache = LineageSignatureCache(max_bytes=64 * 1024 * 1024)
+    prefix = ["hello", "reply", "B tail", "C tail"]
+
+    def lineage_messages(stem: str, texts: list[str]) -> list[ParsedMessage]:
+        return [_msg(f"{stem}{position}", text, position) for position, text in enumerate(texts)]
+
+    write_parsed_session_to_archive(conn, _session("a", lineage_messages("a", prefix[:2])), signature_cache=cache)
+    b_id = write_parsed_session_to_archive(
+        conn, _session("b", lineage_messages("b", prefix[:3]), parent="a"), signature_cache=cache
+    )
+    c_id = write_parsed_session_to_archive(
+        conn, _session("c", lineage_messages("c", prefix), parent="b"), signature_cache=cache
+    )
+    write_parsed_session_to_archive(
+        conn, _session("d1", lineage_messages("d1", [*prefix, "D1 tail"]), parent="c"), signature_cache=cache
+    )
+    composed_c = cache.get_composed(c_id)
+    assert composed_c is not None, "C's composition is cached once a child of C was aligned"
+
+    # Memory pressure: size the cache so the next entry evicts everything
+    # older than C's composed entry, B's included.
+    filler = [("filler:message", "f" * 64)]
+    cache.max_bytes = LineageSignatureCache._weight(c_id, composed_c) + LineageSignatureCache._weight("filler", filler)
+    cache["filler"] = filler
+    cache.max_bytes = 64 * 1024 * 1024
+    assert cache.get_composed(b_id) is None
+    assert cache.get_composed(c_id) == composed_c
+
+    # Rewrite A in place: same message ids, the first message's content edited.
+    edited = ["hello, edited", *prefix[1:]]
+    write_parsed_session_to_archive(conn, _session("a", lineage_messages("a", edited[:2])), signature_cache=cache)
+
+    d2_id = write_parsed_session_to_archive(
+        conn, _session("d2", lineage_messages("d2", [*edited, "D2 tail"]), parent="c"), signature_cache=cache
+    )
+    link = conn.execute(
+        "SELECT inheritance, branch_point_message_id FROM session_links WHERE src_session_id = ?", (d2_id,)
+    ).fetchone()
+    c_last = conn.execute(
+        "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position DESC LIMIT 1", (c_id,)
+    ).fetchone()[0]
+    assert tuple(link) == ("prefix-sharing", c_last)
+    assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (d2_id,)).fetchone()[0] == 1
+    conn.close()
+
+
+def test_pop_reaches_a_descendant_through_its_recorded_closure() -> None:
+    """``pop`` finds every dependent from its own entry, not through intermediates."""
+    cache = LineageSignatureCache(max_bytes=1024 * 1024)
+    signatures = [("message", "s" * 64)]
+    cache.set_composed("b", signatures, dependencies=frozenset({"b", "a"}))
+    cache.set_composed("c", signatures, dependencies=frozenset({"c", "b", "a"}))
+    cache.set_composed("unrelated", signatures, dependencies=frozenset({"unrelated"}))
+    assert cache.composed_dependencies("c") == frozenset({"c", "b", "a"})
+
+    cache.pop("a")
+
+    assert cache.get_composed("b") is None
+    assert cache.get_composed("c") is None
+    assert cache.composed_dependencies("c") is None
+    assert cache.get_composed("unrelated") == signatures
+
+
+def test_an_oversized_own_entry_keeps_the_composed_entry_dependencies() -> None:
+    """Refusing a whale own entry must not strip the same session's composed dependencies.
+
+    Red twin: drop the dependency set on every oversized put. C's composed
+    entry then stays resident with nothing tying it to A, and ``pop('a')``
+    leaves it serving pre-rewrite signatures.
+    """
+    signatures = [("message", "s" * 64)]
+    cache = LineageSignatureCache(max_bytes=LineageSignatureCache._weight("c", signatures) * 2)
+    cache.set_composed("c", signatures, dependencies=frozenset({"c", "b", "a"}))
+    cache["c"] = [(f"message-{index}", "w" * 64) for index in range(64)]
+    assert cache.get("c") is None
+    assert cache.composed_dependencies("c") == frozenset({"c", "b", "a"})
+
+    cache.pop("a")
+
+    assert cache.get_composed("c") is None
