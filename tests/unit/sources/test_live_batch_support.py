@@ -9740,8 +9740,8 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
     """
     root = tmp_path / "sessions"
     root.mkdir()
-    first, second = root / "revision-1.json", root / "revision-2.json"
-    for path in (first, second):
+    first, second, third = root / "revision-1.json", root / "revision-2.json", root / "later.json"
+    for path in (first, second, third):
         path.write_text("{}", encoding="utf-8")
     cursor = CursorStore(tmp_path / "live.sqlite")
     processor = LiveBatchProcessor(
@@ -9768,6 +9768,9 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
         return None
 
     monkeypatch.setattr(processor, "_append_plan", fake_append_plan)
+    monkeypatch.setattr(
+        "polylogue.sources.live.batch._full_parse_progress_groups", lambda paths: iter([paths[:2], paths[2:]])
+    )
     monkeypatch.setattr(processor, "_ingest_full_paths", holding_full_ingest)
     monkeypatch.setattr(processor, "_converge_paths", lambda paths: (set(paths), 0.0, {}, []))
     monkeypatch.setattr(processor, "_record_full_cursor", lambda *_args, **_kwargs: 0)
@@ -9776,12 +9779,16 @@ async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
     if halt == "stop_requested":
         monkeypatch.setattr(processor, "_stop_requested", lambda: bool(published))
 
-    metrics = await processor.ingest_files([first, second], emit_event=False)
+    metrics = await processor.ingest_files([first, second, third], emit_event=False)
 
     assert published == [[first, second]]
     assert metrics.succeeded_file_count == 1
     assert str(second) in metrics.deferred_paths
     assert deferred == [second]
+    assert metrics.excluded_paths == {
+        str(third): "unattempted_time_budget" if halt == "write_hold_spent" else "unattempted"
+    }
+    assert metrics.time_budget_exceeded is (halt == "write_hold_spent")
 
 
 @pytest.mark.parametrize("provider", ["codex", "claude-code"])
@@ -10225,7 +10232,19 @@ def test_live_append_overrun_settles_cursor_before_ending_batch(
     assert metrics.succeeded_file_count == 1
     assert metrics.failed_file_count == 0
     assert metrics.time_budget_exceeded
+    assert metrics.excluded_paths == {
+        str(second): "unattempted_time_budget",
+        str(full): "unattempted_time_budget",
+    }
+    assert metrics.excluded_file_count == 2
     assert metrics.refused_bytes_by_reason["unattempted_time_budget"] == second.stat().st_size + full.stat().st_size
     spent = [fields for event, fields in events if event == "live.ingest.write_hold_spent_after_commit"]
     assert len(spent) == 1
     assert spent[0]["reason"] == "cursors_recorded_before_unit_end"
+    chunk = [fields for event, fields in events if event == "live.ingest.chunk"]
+    assert len(chunk) == 1 and chunk[0]["outcome"] == "degraded"
+    assert chunk[0]["refused"] == 2
+    with processor._cursor._connect_ops_read() as conn:
+        assert conn.execute(
+            "SELECT outcome_code, retryable, evidence_ref FROM ingest_attempts ORDER BY rowid DESC LIMIT 1"
+        ).fetchone() == ("transient_error", 1, "batch:unattempted_sources")

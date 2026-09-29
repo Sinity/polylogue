@@ -1844,6 +1844,7 @@ class LiveBatchProcessor:
                     duration_ms=parse_elapsed * 1000,
                 )
                 if full_result.write_hold_exhausted:
+                    full_ingest_time_budget_exceeded = True
                     # The cursors above are durable now, so ending the unit
                     # here costs this pass its remaining groups and nothing
                     # else -- the alternative, raising before the cursor
@@ -1871,6 +1872,23 @@ class LiveBatchProcessor:
                     path,
                     source_name=source_name,
                 )
+
+        # Every offered path needs a disposition, including paths a spent
+        # hold or stop left untouched. No cursor or failure backoff is written
+        # for these: intake reoffers the exact unattempted frontier.
+        accounted_paths = (
+            succeeded_paths
+            | {Path(path) for path in failed_paths}
+            | set(deferred_paths)
+            | set(excluded_by_path)
+            | set(settled_exclusions)
+        )
+        unattempted_reason = (
+            REFUSED_UNATTEMPTED_TIME_BUDGET if full_ingest_time_budget_exceeded else REFUSED_UNATTEMPTED
+        )
+        for path in paths:
+            if path not in accounted_paths:
+                excluded_by_path[path] = unattempted_reason
 
         summary_stage_payload = _single_route_stage_payload(
             append_file_count=append_file_count,
@@ -1961,6 +1979,11 @@ class LiveBatchProcessor:
         reported_excluded = {
             **excluded_by_path,
             **settled_exclusions,
+        }
+        unattempted_paths = {
+            path
+            for path, reason in reported_excluded.items()
+            if reason in {REFUSED_UNATTEMPTED, REFUSED_UNATTEMPTED_TIME_BUDGET}
         }
         excluded_reasons: dict[str, int] = {}
         for reason in reported_excluded.values():
@@ -2084,6 +2107,11 @@ class LiveBatchProcessor:
                     evidence_ref="batch:no_session_sources",
                     diagnostic=f"{len(settled_exclusions)} source item(s) parsed to no session",
                 )
+        elif not retry_paths and unattempted_paths:
+            final_disposition = transient_error_disposition(
+                evidence_ref="batch:unattempted_sources",
+                diagnostic=f"{len(unattempted_paths)} source item(s) remain unattempted",
+            )
         elif not retry_paths:
             final_disposition = success_disposition()
         else:
