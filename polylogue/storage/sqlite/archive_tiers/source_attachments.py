@@ -137,56 +137,71 @@ def record_source_attachments(
                 raise ValueError(f"source generation is already sealed: {source_generation_id}")
         return
 
-    for attachment, origin, disposition in normalized:
-        # Reachability is deliberately storage-local and derived from the
-        # disposition, so there is no second independently extendable list:
-        # acquired is current; every other owned disposition is unavailable.
-        offered = _offered_attachment(attachment, origin, disposition)
-        # Select positionally and zip: the caller's ``row_factory`` is not
-        # this module's to assume, and a plain tuple row has no name lookup.
-        stored_row = conn.execute(
-            f"SELECT {', '.join(_COMPARED_FIELDS)} FROM source_attachments "
-            "WHERE source_generation_id = ? AND reference_id = ?",
-            (source_generation_id, attachment.reference_id),
-        ).fetchone()
-        if stored_row is not None:
-            stored = {
-                field: bytes(value) if isinstance(value, memoryview) else value
-                for field, value in zip(_COMPARED_FIELDS, tuple(stored_row), strict=True)
-            }
-            _apply_replay(
-                conn,
-                source_generation_id=source_generation_id,
-                reference_id=attachment.reference_id,
-                stored=stored,
-                offered=offered,
-                observed_at_ms=observed_at_ms,
+    # A failed offer must leave none of its inserts or terminal advances behind,
+    # even when the caller catches the conflict and commits unrelated work.
+    owns_transaction = not conn.in_transaction
+    if owns_transaction:
+        conn.execute("BEGIN")
+    conn.execute("SAVEPOINT source_attachment_batch")
+    try:
+        for attachment, origin, disposition in normalized:
+            # Reachability is deliberately storage-local and derived from the
+            # disposition, so there is no second independently extendable list:
+            # acquired is current; every other owned disposition is unavailable.
+            offered = _offered_attachment(attachment, origin, disposition)
+            # Select positionally and zip: the caller's ``row_factory`` is not
+            # this module's to assume, and a plain tuple row has no name lookup.
+            stored_row = conn.execute(
+                f"SELECT {', '.join(_COMPARED_FIELDS)} FROM source_attachments "
+                "WHERE source_generation_id = ? AND reference_id = ?",
+                (source_generation_id, attachment.reference_id),
+            ).fetchone()
+            if stored_row is not None:
+                stored = {
+                    field: bytes(value) if isinstance(value, memoryview) else value
+                    for field, value in zip(_COMPARED_FIELDS, tuple(stored_row), strict=True)
+                }
+                _apply_replay(
+                    conn,
+                    source_generation_id=source_generation_id,
+                    reference_id=attachment.reference_id,
+                    stored=stored,
+                    offered=offered,
+                    observed_at_ms=observed_at_ms,
+                )
+                continue
+            conn.execute(
+                """INSERT INTO source_attachments(
+                    source_generation_id, reference_id, origin, source_class,
+                    reachability, reference_count, payload_identity, blob_hash,
+                    byte_count, disposition, reason, evidence_ref,
+                    observed_at_ms, updated_at_ms)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    source_generation_id,
+                    attachment.reference_id,
+                    offered["origin"],
+                    offered["source_class"],
+                    offered["reachability"],
+                    offered["reference_count"],
+                    offered["payload_identity"],
+                    offered["blob_hash"],
+                    offered["byte_count"],
+                    offered["disposition"],
+                    offered["reason"],
+                    offered["evidence_ref"],
+                    observed_at_ms,
+                    observed_at_ms,
+                ),
             )
-            continue
-        conn.execute(
-            """INSERT INTO source_attachments(
-                source_generation_id, reference_id, origin, source_class,
-                reachability, reference_count, payload_identity, blob_hash,
-                byte_count, disposition, reason, evidence_ref,
-                observed_at_ms, updated_at_ms)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                source_generation_id,
-                attachment.reference_id,
-                offered["origin"],
-                offered["source_class"],
-                offered["reachability"],
-                offered["reference_count"],
-                offered["payload_identity"],
-                offered["blob_hash"],
-                offered["byte_count"],
-                offered["disposition"],
-                offered["reason"],
-                offered["evidence_ref"],
-                observed_at_ms,
-                observed_at_ms,
-            ),
-        )
+    except BaseException:
+        conn.execute("ROLLBACK TO SAVEPOINT source_attachment_batch")
+        conn.execute("RELEASE SAVEPOINT source_attachment_batch")
+        if owns_transaction:
+            conn.rollback()
+        raise
+    else:
+        conn.execute("RELEASE SAVEPOINT source_attachment_batch")
     if commit:
         conn.commit()
 
@@ -296,7 +311,7 @@ def _apply_replay(
 
 def source_attachment_census(conn: sqlite3.Connection, source_generation_id: str) -> dict[str, object]:
     """Return exact grouped counts and distinct acquired payload bytes."""
-    rows = conn.execute(
+    cursor = conn.execute(
         """SELECT origin, source_class, reachability, disposition,
                    COUNT(*) AS reference_rows, SUM(reference_count) AS reference_count,
                    COUNT(DISTINCT payload_identity) AS distinct_payloads,
@@ -306,8 +321,9 @@ def source_attachment_census(conn: sqlite3.Connection, source_generation_id: str
             GROUP BY origin, source_class, reachability, disposition
             ORDER BY origin, source_class, reachability, disposition""",
         (source_generation_id,),
-    ).fetchall()
-    groups = [dict(row) for row in rows]
+    )
+    names = tuple(column[0] for column in cursor.description or ())
+    groups = [dict(zip(names, row, strict=True)) for row in cursor]
     distinct_bytes = conn.execute(
         """SELECT COALESCE(SUM(byte_count), 0) FROM (
              SELECT blob_hash, MAX(byte_count) AS byte_count

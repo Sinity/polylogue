@@ -1264,3 +1264,31 @@ def test_coordination_envelope_cache_resumes_slow_archive_evidence_across_ticks(
     session_trees, activity_episodes, _subagents, _proofs, _context_refs, degraded_reason = third.value
     assert degraded_reason is None  # the real (non-fallback) result was reused
     assert session_trees or activity_episodes
+
+
+@pytest.mark.parametrize("faulting_name", ["index.db", "index.db-wal", "HEAD"])
+def test_coordination_fingerprint_does_not_cache_unreadable_sources(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    faulting_name: str,
+) -> None:
+    """A stable fallback or an exists-based WAL choice would hide the failed measurement."""
+    from polylogue.coordination import envelope
+
+    index = tmp_path / "index.db"
+    monkeypatch.setattr(envelope, "archive_root", lambda: tmp_path)
+    monkeypatch.setattr(envelope, "resolve_active_index_path", lambda root: index)
+    original_stat = Path.stat
+    original_exists = Path.exists
+
+    def stat(path: Path, *args, **kwargs):
+        if path.name == faulting_name:
+            raise PermissionError("synthetic stat failure")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    monkeypatch.setattr(Path, "exists", lambda path: False if path.name == faulting_name else original_exists(path))
+    first = envelope._coordination_fingerprint(tmp_path)
+    second = envelope._coordination_fingerprint(tmp_path)
+    assert f"{faulting_name}:unreadable-" in first
+    assert first != second

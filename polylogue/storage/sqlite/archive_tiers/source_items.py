@@ -12,7 +12,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 
-from polylogue.core.enums import IngestOutcome, Origin
+from polylogue.core.enums import INGEST_OUTCOME_RETRYABLE, IngestOutcome, Origin
 from polylogue.pipeline.ingest_outcomes import bounded_diagnostic
 from polylogue.security.excision_policy import ExcisionPolicySnapshot
 
@@ -55,7 +55,6 @@ class SourceItemMemberDisposition(StrEnum):
     UNSELECTED = "unselected"
 
 
-_MAX_MEMBER_IDENTITY_CHARS = 4096
 _MAX_MEMBER_DIAGNOSTIC_CHARS = 4080
 
 
@@ -804,6 +803,8 @@ def transition_source_item(
     # and reject at this public write boundary before even the idempotent path.
     disposition_value = require_vocabulary(disposition, AcquisitionDisposition, field="disposition")
     outcome_value = require_vocabulary(outcome_code, IngestOutcome, field="outcome_code")
+    if retryable is None:
+        retryable = INGEST_OUTCOME_RETRYABLE[IngestOutcome(outcome_value)]
     row = conn.execute(
         "SELECT revision, request_id, blob_hash, enumeration_fingerprint FROM source_items "
         "WHERE source_generation_id=? AND source_item_id=?",
@@ -1022,7 +1023,7 @@ def record_source_item_member_disposition(
     value = require_vocabulary(disposition, SourceItemMemberDisposition, field="member disposition")
     if entry_ordinal < 0:
         raise ValueError("source member ordinal must be non-negative")
-    if not member_name.strip():
+    if not member_name:
         raise ValueError("source member name must be non-empty")
     item = conn.execute(
         "SELECT enumerated_at_ms FROM source_items WHERE source_generation_id=? AND source_item_id=?",
@@ -1040,12 +1041,7 @@ def record_source_item_member_disposition(
     ).fetchone()
     if admitted is not None:
         raise ValueError("source member already has an admitted raw record")
-    # Central-directory names and admission explanations are attacker
-    # controlled. Keep both bounded before they reach the durable source
-    # tier; the diagnostic budget leaves room for the truncation marker used
-    # by bounded_diagnostic while the identity keeps its ordinal as the
-    # collision-free coordinate.
-    bounded_name = member_name[:_MAX_MEMBER_IDENTITY_CHARS]
+    # The ordinal identifies the entry; retain its exact source name as evidence.
     bounded = bounded_diagnostic(diagnostic, max_len=_MAX_MEMBER_DIAGNOSTIC_CHARS) or ""
     row = conn.execute(
         "SELECT member_name, disposition, diagnostic, observed_at_ms FROM source_item_member_dispositions "
@@ -1053,14 +1049,14 @@ def record_source_item_member_disposition(
         (source_generation_id, source_item_id, entry_ordinal),
     ).fetchone()
     if row is not None:
-        if tuple(row[:3]) != (bounded_name, value, bounded):
+        if tuple(row[:3]) != (member_name, value, bounded):
             raise ValueError("source member disposition changed")
         return
     conn.execute(
         "INSERT INTO source_item_member_dispositions "
         "(source_generation_id, source_item_id, entry_ordinal, member_name, disposition, diagnostic, observed_at_ms) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (source_generation_id, source_item_id, entry_ordinal, bounded_name, value, bounded, observed_at_ms),
+        (source_generation_id, source_item_id, entry_ordinal, member_name, value, bounded, observed_at_ms),
     )
 
 

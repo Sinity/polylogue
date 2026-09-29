@@ -332,7 +332,7 @@ def test_zip_member_disposition_completes_full_denominator_and_retry_is_idempote
     assert census["sealable"] is False
 
 
-def test_member_disposition_bounds_attacker_controlled_identity_and_reason() -> None:
+def test_member_disposition_preserves_identity_and_bounds_diagnostic() -> None:
     conn = _source()
     item = _frozen_item(conn)
     conn.execute("BEGIN")
@@ -347,7 +347,7 @@ def test_member_disposition_bounds_attacker_controlled_identity_and_reason() -> 
         observed_at_ms=2,
     )
     name, diagnostic = conn.execute("SELECT member_name, diagnostic FROM source_item_member_dispositions").fetchone()
-    assert len(name) <= 4096
+    assert name == "n" * 20_000
     assert len(diagnostic) <= 4096
 
 
@@ -598,3 +598,75 @@ def test_stale_item_transition_cannot_overwrite_a_newer_observation() -> None:
     with pytest.raises(ValueError, match="revision changed"):
         transition_source_item(conn, request_id="older", expected_revision=0, **args)
     assert conn.execute("SELECT revision, request_id FROM source_items").fetchone() == (1, "newer")
+
+
+@pytest.mark.parametrize(
+    ("outcome", "expected"),
+    [
+        (IngestOutcome.SUCCESS, 0),
+        (IngestOutcome.CORRUPT_INPUT, 0),
+        (IngestOutcome.VALIDATION_REJECTED, 0),
+        (IngestOutcome.UNSUPPORTED_SHAPE, 0),
+        (IngestOutcome.PARSER_DEFECT, 0),
+        (IngestOutcome.TRANSIENT_ERROR, 1),
+        (IngestOutcome.DOWNSTREAM_FAILURE, 1),
+        (IngestOutcome.CANCELED, 1),
+        (IngestOutcome.INTERRUPTED, 1),
+        (IngestOutcome.LEGACY_UNKNOWN, None),
+    ],
+)
+def test_transition_derives_omitted_retryability(outcome: IngestOutcome, expected: int | None) -> None:
+    """Persisting the omitted argument instead of the typed outcome loses retry policy."""
+    conn = _source()
+    try:
+        item = _frozen_item(conn)
+        transition_source_item(
+            conn,
+            source_generation_id="frozen",
+            source_item_id=item,
+            request_id="classified",
+            disposition=AcquisitionDisposition.CORRUPT,
+            outcome_code=outcome,
+            stage="decode",
+            observed_at_ms=2,
+        )
+        assert conn.execute("SELECT outcome_code, retryable FROM source_items").fetchone() == (outcome.value, expected)
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("member_name", [" ", " " * 4096 + "member.jsonl", "n" * 20_000])
+def test_zip_member_disposition_preserves_complete_name_and_finishes_enumeration(member_name: str) -> None:
+    """Stripping or slicing the name either refuses the member or loses retained identity."""
+    conn = _source()
+    try:
+        item = _frozen_item(conn)
+        conn.execute("BEGIN")
+        for observed_at in (2, 3):
+            record_source_item_member_disposition(
+                conn,
+                source_generation_id="frozen",
+                source_item_id=item,
+                entry_ordinal=0,
+                member_name=member_name,
+                disposition=SourceItemMemberDisposition.UNSELECTED,
+                diagnostic="not selected",
+                observed_at_ms=observed_at,
+            )
+        complete_source_item_enumeration(
+            conn,
+            source_generation_id="frozen",
+            source_item_id=item,
+            enumeration_fingerprint="b" * 64,
+            record_coordinates=(),
+            enumerated_at_ms=4,
+            member_ordinals=(0,),
+            member_count=1,
+        )
+        conn.commit()
+        assert conn.execute("SELECT entry_ordinal, member_name FROM source_item_member_dispositions").fetchall() == [
+            (0, member_name)
+        ]
+        assert conn.execute("SELECT enumerated_member_count, enumerated_at_ms FROM source_items").fetchone() == (1, 4)
+    finally:
+        conn.close()

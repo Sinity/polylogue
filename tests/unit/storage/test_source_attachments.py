@@ -240,3 +240,105 @@ def test_acquired_source_attachment_bytes_have_a_durable_owner() -> None:
 
     owners = {(owner.tier, owner.table, owner.blob_column) for owner in BLOB_OWNERS}
     assert ("source", "source_attachments", "blob_hash") in owners
+
+
+@pytest.mark.parametrize("row_factory", [None, sqlite3.Row])
+def test_attachment_census_and_seal_do_not_require_a_row_factory(row_factory: Any) -> None:
+    """dict(tuple_row) would prevent sealing a generation with an acquired attachment."""
+    from polylogue.storage.sqlite.archive_tiers.source_items import seal_source_generation
+
+    conn = _conn()
+    try:
+        conn.row_factory = row_factory
+        record_source_attachments(
+            conn,
+            source_generation_id="g",
+            attachments=(
+                SourceAttachment(
+                    reference_id="image",
+                    origin="chatgpt-export",
+                    source_class="image",
+                    payload_identity="payload",
+                    payload_bytes=b"payload",
+                    blob_hash=hashlib.sha256(b"payload").digest(),
+                    byte_count=7,
+                    disposition="acquired",
+                ),
+            ),
+            observed_at_ms=2,
+        )
+        census = source_attachment_census(conn, "g")
+        assert census["pending"] == 0
+        groups = census["groups"]
+        assert isinstance(groups, list)
+        assert groups[0]["reference_count"] == 1
+        seal_source_generation(conn, source_generation_id="g", sealed_at_ms=3)
+        assert conn.execute("SELECT sealed_at_ms FROM source_generations").fetchone()[0] == 3
+        assert conn.row_factory is row_factory
+    finally:
+        conn.close()
+
+
+@pytest.mark.parametrize("existing_a", [False, True])
+@pytest.mark.parametrize("commit", [False, True])
+def test_attachment_batch_conflict_rolls_back_only_the_offer(existing_a: bool, commit: bool) -> None:
+    """A conflict after a new row or pending advance must not survive the caller's commit."""
+    conn = _conn()
+    try:
+        a = SourceAttachment("a", "chatgpt-export", "image", reason="pending-source-observation")
+        b = SourceAttachment("b", "chatgpt-export", "image", disposition="expired", reason="expired-source-observation")
+        record_source_attachments(
+            conn, source_generation_id="g", attachments=((a, b) if existing_a else (b,)), observed_at_ms=2
+        )
+        conn.execute("CREATE TABLE caller_work(value INTEGER)")
+        conn.commit()
+        conn.execute("BEGIN")
+        conn.execute("INSERT INTO caller_work VALUES (1)")
+        with pytest.raises(SourceAttachmentConflictError):
+            record_source_attachments(
+                conn,
+                source_generation_id="g",
+                attachments=(
+                    SourceAttachment(
+                        "a", "chatgpt-export", "image", disposition="expired", reason="expired-source-observation"
+                    ),
+                    SourceAttachment(
+                        "b",
+                        "chatgpt-export",
+                        "image",
+                        disposition="source_missing",
+                        reason="missing-source-observation",
+                    ),
+                ),
+                observed_at_ms=3,
+                commit=commit,
+            )
+        assert conn.in_transaction
+        conn.commit()
+        rows = [
+            tuple(row)
+            for row in conn.execute("SELECT reference_id, disposition FROM source_attachments ORDER BY reference_id")
+        ]
+        assert rows == ([("a", "pending"), ("b", "expired")] if existing_a else [("b", "expired")])
+        assert conn.execute("SELECT value FROM caller_work").fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_attachment_offer_without_commit_leaves_transaction_owned_by_caller() -> None:
+    """Releasing an outermost savepoint must not accidentally commit commit=False writes."""
+    conn = _conn()
+    try:
+        conn.commit()
+        record_source_attachments(
+            conn,
+            source_generation_id="g",
+            attachments=(SourceAttachment("a", "chatgpt-export", "image", reason="pending-source-observation"),),
+            observed_at_ms=2,
+            commit=False,
+        )
+        assert conn.in_transaction
+        conn.rollback()
+        assert conn.execute("SELECT count(*) FROM source_attachments").fetchone()[0] == 0
+    finally:
+        conn.close()

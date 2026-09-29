@@ -287,7 +287,7 @@ CREATE TABLE IF NOT EXISTS source_item_member_dispositions (
     source_generation_id TEXT NOT NULL,
     source_item_id TEXT NOT NULL,
     entry_ordinal INTEGER NOT NULL CHECK(entry_ordinal >= 0),
-    member_name TEXT NOT NULL CHECK(length(trim(member_name)) > 0),
+    member_name TEXT NOT NULL CHECK(length(member_name) > 0),
     disposition TEXT NOT NULL CHECK(disposition IN ('refused', 'unselected')),
     diagnostic TEXT NOT NULL DEFAULT '' CHECK(length(diagnostic) <= 4096),
     observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms >= 0),

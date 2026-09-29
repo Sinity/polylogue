@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import itertools
 import json
 import os
 import re
@@ -76,7 +75,12 @@ from polylogue.operations.quick_check import (
     observe_quick_check,
     unmeasured_quick_check,
 )
-from polylogue.operations.status_protocol import ComponentSnapshot, StatusComponentRegistry, StatusComponentSpec
+from polylogue.operations.status_protocol import (
+    ComponentSnapshot,
+    StatusComponentRegistry,
+    StatusComponentSpec,
+    file_mtime_fingerprint,
+)
 from polylogue.paths import archive_root, index_db_path
 from polylogue.readiness.capability import CapabilityReadinessState, ComponentReadiness
 from polylogue.readiness.claim_guard import (
@@ -297,29 +301,7 @@ def _daemon_status_fingerprint(active_db: Path, *, include_user_tier: bool = Fal
         # observe a user.db commit rather than wait out a TTL.
         user_db = root / "user.db"
         candidates.extend((user_db, user_db.with_suffix(".db-wal")))
-    parts: list[str] = []
-    for candidate in candidates:
-        try:
-            parts.append(f"{candidate.name}:{candidate.stat().st_mtime_ns}")
-        except OSError:
-            # polylogue-xvwpi: a constant "?" made the fingerprint *stable*
-            # across every stat failure, so fingerprint-keyed caches kept
-            # serving a value collected before the file became unreadable.
-            # Absence is a real, stable observation and keeps a stable token;
-            # a file that exists but cannot be stat'd is an unknown input, and
-            # an unknown input invalidates -- the cache may not claim a
-            # currency it cannot establish.
-            if not candidate.exists():
-                parts.append(f"{candidate.name}:absent")
-            else:
-                parts.append(f"{candidate.name}:unreadable-{next(_UNREADABLE_FINGERPRINT_COUNTER)}")
-    return "|".join(parts)
-
-
-#: Monotonic discriminator for a fingerprint input that could not be read.
-#: Each unreadable stat yields a distinct token so no cache keyed on the
-#: fingerprint can treat a pre-failure value as current (polylogue-xvwpi).
-_UNREADABLE_FINGERPRINT_COUNTER = itertools.count()
+    return "|".join(file_mtime_fingerprint(candidate) for candidate in candidates)
 
 
 # ---------------------------------------------------------------------------

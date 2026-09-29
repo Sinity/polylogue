@@ -22,16 +22,36 @@ components no matter how many ``collect()`` calls happen while it hangs.
 
 from __future__ import annotations
 
+import itertools
 import threading
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from time import monotonic
 from typing import Any, Literal
 
 ComponentState = Literal["fresh", "stale", "refreshing", "timed_out", "unavailable", "degraded"]
 
 _POLL_STEP_S = 0.02
+
+
+_UNREADABLE_FINGERPRINTS = itertools.count()
+
+
+def unreadable_fingerprint(label: str) -> str:
+    """An unmeasured source cannot justify reusing a previous cached value."""
+    return f"{label}:unreadable-{next(_UNREADABLE_FINGERPRINTS)}"
+
+
+def file_mtime_fingerprint(path: Path) -> str:
+    """Distinguish measured absence from a stat failure without a second probe."""
+    try:
+        return f"{path.name}:{path.stat().st_mtime_ns}"
+    except FileNotFoundError:
+        return f"{path.name}:absent"
+    except OSError:
+        return unreadable_fingerprint(path.name)
 
 
 class ComponentUnavailableError(Exception):

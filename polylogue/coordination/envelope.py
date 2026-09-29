@@ -45,7 +45,12 @@ from polylogue.coordination.payloads import (
     CoordinationWorkItemPayload,
 )
 from polylogue.logging import get_logger
-from polylogue.operations.status_protocol import StatusComponentRegistry, StatusComponentSpec
+from polylogue.operations.status_protocol import (
+    StatusComponentRegistry,
+    StatusComponentSpec,
+    file_mtime_fingerprint,
+    unreadable_fingerprint,
+)
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.derived.topology import TopologyNodeInput, compose_session_topology
@@ -379,17 +384,16 @@ def _coordination_fingerprint(root_cwd: Path) -> str:
         root_cwd / ".git" / "logs" / "HEAD",
         root_cwd / ".beads" / "issues.jsonl",
     ):
-        try:
-            parts.append(f"{candidate.name}:{candidate.stat().st_mtime_ns}")
-        except OSError:
-            parts.append(f"{candidate.name}:?")
+        parts.append(file_mtime_fingerprint(candidate))
     try:
         db = resolve_active_index_path(archive_root())
-        wal = db.with_suffix(".db-wal")
-        target = wal if wal.exists() else db
-        parts.append(f"archive:{target.stat().st_mtime_ns}")
+    except FileNotFoundError:
+        parts.append("archive:absent")
     except OSError:
-        parts.append("archive:?")
+        parts.append(unreadable_fingerprint("archive"))
+    else:
+        # A failed WAL probe cannot justify reusing an older main-file measurement.
+        parts.extend(file_mtime_fingerprint(path) for path in (db, db.with_suffix(".db-wal")))
     return "|".join(parts)
 
 

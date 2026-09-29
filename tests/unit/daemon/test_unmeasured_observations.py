@@ -262,9 +262,11 @@ def test_unreadable_status_fingerprint_invalidates_cached_frame(
 
     def _stat(path: Path, *args: Any, **kwargs: Any) -> Any:
         if path == active:
-            raise OSError("stat refused")
+            raise PermissionError("stat refused")
         return original_stat(path, *args, **kwargs)
 
+    original_exists = type(active).exists
+    monkeypatch.setattr(type(active), "exists", lambda path: False if path == active else original_exists(path))
     monkeypatch.setattr(type(active), "stat", _stat)
     first = status_module._daemon_status_fingerprint(active)
     second = status_module._daemon_status_fingerprint(active)
@@ -289,3 +291,13 @@ def test_missing_progress_classification_is_rendered_as_unknown() -> None:
 
     assert "  latest: running progress-unknown parse 0/0 files" in lines
     assert all("healthy" not in line for line in lines)
+
+
+def test_missing_status_inputs_keep_a_stable_fingerprint(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from polylogue.daemon import status as status_module
+
+    monkeypatch.setattr(status_module, "archive_root", lambda: tmp_path)
+    active = tmp_path / "index.db"
+    first = status_module._daemon_status_fingerprint(active)
+    assert "index.db:absent" in first
+    assert status_module._daemon_status_fingerprint(active) == first
