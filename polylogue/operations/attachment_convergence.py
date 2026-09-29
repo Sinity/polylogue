@@ -18,7 +18,7 @@ from typing import IO
 from polylogue.core.stage_admission import admit_stage_write
 from polylogue.daemon.convergence import ConvergenceStage, StageExecuteReturn
 from polylogue.logging import WARNING, emit, get_logger
-from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_publication import ArchiveBlobPublisher, publication_refused
 from polylogue.storage.blob_store import PreparedBlob
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveSourceBlobRef,
@@ -574,6 +574,20 @@ def converge_drive_attachments(
                     publisher.discard_pending_receipt(receipt_id)
             acquired[:] = kept
             publisher.flush()
+            # Preserve the publication-boundary excision check after filtering
+            # by supplying acquisition. Never publish a source reference for
+            # bytes refused during flush or excised since their download.
+            from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+            refused_hashes = {
+                item.blob_hash
+                for item in acquired
+                if publication_refused(publisher, item.blob_hash.hex())
+                or is_blob_hash_excised(source_conn, item.blob_hash)
+            }
+            if refused_hashes:
+                excised_ids.extend(item.attachment_id for item in acquired if item.blob_hash in refused_hashes)
+                acquired[:] = [item for item in acquired if item.blob_hash not in refused_hashes]
             if acquired:
                 by_raw_id: dict[str, list[ArchiveSourceBlobRef]] = {}
                 for item in acquired:

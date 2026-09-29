@@ -3209,6 +3209,8 @@ class LiveBatchProcessor:
         captured_content_hashes: dict[Path, str] = {}
         captured_file_observations: dict[Path, tuple[int, int, int, int, int]] = {}
         failed: list[Path] = []
+        #: Antigravity ``.pb`` paths whose snapshot was refused as excised.
+        antigravity_excised_paths: set[Path] = set()
         preparation_deferred_paths: list[Path] = []
         ingested: list[Path] = []
         source_payload_read_bytes = 0
@@ -3296,6 +3298,7 @@ class LiveBatchProcessor:
                     blob_root=blob_root,
                     blob_store=blob_store,
                     only_cascade_ids=frozenset(path.stem for path in antigravity_pb_paths),
+                    excised=antigravity_excised_paths,
                 ):
                     if raw_data is not None:
                         antigravity_pairs[Path(raw_data.source_path)] = (raw_data, session)
@@ -3307,6 +3310,9 @@ class LiveBatchProcessor:
             for path in antigravity_pb_paths:
                 pair = antigravity_pairs.get(path)
                 if pair is None:
+                    # An excised snapshot is a terminal skip (the result
+                    # carries it in ``excised_paths``), not a retryable
+                    # conversion failure.
                     failed.append(path)
                     continue
                 raw_data, session = pair
@@ -4147,7 +4153,10 @@ class LiveBatchProcessor:
             captured_file_observations=captured_file_observations,
             summary=summary,
             excised_skips=archive_write.excised_skips if archive_write is not None else 0,
-            excised_paths=tuple(archive_write.excised_paths) if archive_write is not None else (),
+            excised_paths=(
+                *(archive_write.excised_paths if archive_write is not None else ()),
+                *sorted(antigravity_excised_paths),
+            ),
             time_budget_exceeded=time_budget_exceeded,
             write_hold_exhausted=write_hold_exhausted,
         )

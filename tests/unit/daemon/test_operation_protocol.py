@@ -8,6 +8,7 @@ for -- and the equivalence of the three routes that write sessions.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import sys
@@ -133,15 +134,18 @@ def test_cli_import_daemon_ingest_and_from_empty_build_write_identical_material(
     assert cli_material == expected, (cli_material, expected)
 
 
-def test_reimporting_an_excised_file_is_a_skip_not_an_unsettled_operation(tmp_path: Path) -> None:
-    """Re-offering excised bytes through ``ingest`` completes and resurrects nothing.
+def test_reimporting_an_excised_file_is_a_typed_permanent_refusal(tmp_path: Path) -> None:
+    """Re-offering excised bytes through ``ingest`` is refused, settled and effect-free.
 
-    The live batch path counts an excised record as a skip; the declared ingest
-    operation shares the same source-tier writer, so it must too.
+    Every input of the request is excised, so the publication flush refuses
+    its bytes and the request accepts nothing: it settles ``failed`` with the
+    non-retryable ``ContentExcisedError``, never ``indeterminate``, and the
+    excised bytes gain no reservation and no retained source item that would
+    keep them from blob GC (polylogue-u6jyu).
 
-    Anti-vacuity: let ``ContentExcisedError`` escape the admission in
-    ``IngestExecution._publish_record`` and the second ingest never settles:
-    it reports ``indeterminate``.
+    Anti-vacuity: let the ingest input route reserve excised bytes again (drop
+    the excision read in ``BlobPublicationReservationStore.reserve_many``) and
+    the request completes with a new source item retaining the excised file.
     """
     first, _second = _two_sessions(tmp_path / "capture-files")
     with running_daemon_operations(tmp_path / "archive", session_derivation=True) as stack:
@@ -155,13 +159,29 @@ def test_reimporting_an_excised_file_is_a_skip_not_an_unsettled_operation(tmp_pa
             archive_root=root,
         )
         assert excised is not None and excised["outcome"] == "completed", excised
+        file_hash = bytes.fromhex(hashlib.sha256(first.read_bytes()).hexdigest())
+        retained_before = _blob_retention(stack.archive_root, file_hash)
 
         again = stack.client.operation_to_completion(
             "ingest", {"path": str(first)}, archive_root=root, request_id="reimport-excised"
         )
 
-        assert again is not None and again["outcome"] == "completed", again
+        assert again is not None and again["outcome"] == "failed", again
+        assert again["error"]["code"] == "ContentExcisedError", again
+        assert again["error"]["retryable"] is False, again
+        assert again["accepted_reference"] is None, again
         assert _session_ids(stack.archive_root) == []
+        assert _blob_retention(stack.archive_root, file_hash) == retained_before
+
+
+def _blob_retention(archive_root: Path, blob_hash: bytes) -> tuple[int, int]:
+    """Source items and publication reservations that keep ``blob_hash`` from GC."""
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+        items = conn.execute("SELECT COUNT(*) FROM source_items WHERE blob_hash = ?", (blob_hash,)).fetchone()[0]
+        reservations = conn.execute(
+            "SELECT COUNT(*) FROM blob_publication_reservations WHERE blob_hash = ?", (blob_hash,)
+        ).fetchone()[0]
+    return int(items), int(reservations)
 
 
 def test_confirmation_bound_mutation_refuses_an_unconfirmed_request(tmp_path: Path) -> None:

@@ -791,6 +791,10 @@ def _writer_preacquired_attachments(
     accepted_raw_id = prepared.classification.accepted_raw_ids[-1]
     accepted_session = prepared.parsed_by_raw_id[accepted_raw_id]
     binding = next(binding for binding in prepared.member_bindings if binding.raw_id == accepted_raw_id)
+    from polylogue.storage.blob_publication import refuse_excised_attachment_blobs
+    from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
+
+    source_conn = writer_archive._ensure_source_conn()
     attachments: dict[Any, tuple[bytes | None, int, str]] = {}
     refs: list[ArchiveSourceBlobRef] = []
     for item in prepared.prepared_attachment_blobs:
@@ -804,6 +808,10 @@ def _writer_preacquired_attachments(
         else:
             raise RuntimeError("prepared attachment has neither staged nor precomputed bytes")
         attachments[attachment.acquisition_key] = (bytes.fromhex(hash_hex), size, "acquired")
+        if is_blob_hash_excised(source_conn, bytes.fromhex(hash_hex)):
+            # The flush refuses these bytes and discards the staged file; the
+            # attachment is recorded unavailable below, with no blob reference.
+            continue
         refs.append(
             ArchiveSourceBlobRef(
                 blob_hash=bytes.fromhex(hash_hex),
@@ -814,7 +822,7 @@ def _writer_preacquired_attachments(
                 publication_receipt_id=publisher.receipt_id(hash_hex),
             )
         )
-    return attachments, tuple(refs)
+    return refuse_excised_attachment_blobs(attachments, source_conn=source_conn), tuple(refs)
 
 
 def publish_ingest_cohort(

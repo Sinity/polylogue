@@ -486,10 +486,16 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "devtools.verify_slos",
         json_flag=True,
         use_when=(
-            "Confirm read-surface and interactive (daemon query / completion / cold CLI / ingest-to-searchable) "
-            "latencies stay within their declared SLOs. Exits non-zero when any measured surface exceeds its budget."
+            "Confirm read-surface latencies stay within their declared SLOs. The default run measures only the "
+            "cheap-local tier; add --include-lab to also measure the lab-tier interactive surfaces (daemon query / "
+            "completion / cold CLI / ingest-to-searchable). Exits non-zero when any measured surface exceeds its budget."
         ),
-        examples=("devtools bench slo", "devtools bench slo --json", "devtools bench slo --skip-benchmarks --json"),
+        examples=(
+            "devtools bench slo",
+            "devtools bench slo --include-lab",
+            "devtools bench slo --json",
+            "devtools bench slo --skip-benchmarks --json",
+        ),
     ),
     CommandSpec(
         "bench collection",

@@ -160,7 +160,7 @@ from polylogue.pipeline.ids import (
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.security.excision_policy import ExcisionPolicySnapshot, build_excision_policy_snapshot
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
-from polylogue.storage.blob_publication import ArchiveBlobPublisher
+from polylogue.storage.blob_publication import ArchiveBlobPublisher, reconcile_refused_attachments
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.fts.derivation import converge_fts_partition_sync
 from polylogue.storage.fts.fts_lifecycle import repair_message_fts_index_sync
@@ -1114,6 +1114,12 @@ def write_parsed_for_retained_raw_result(
     )
     if store._blob_publisher is not None:
         store._blob_publisher.flush()
+    preacquired_attachments, attachment_blob_refs = reconcile_refused_attachments(
+        preacquired_attachments,
+        attachment_blob_refs,
+        store._blob_publisher,
+        source_conn=store._ensure_source_conn(),
+    )
     write_source_blob_refs(store._ensure_source_conn(), raw_id, attachment_blob_refs)
     index_started = time.perf_counter()
     result = _index_parsed_for_retained_raw(
@@ -3477,6 +3483,13 @@ def apply_raw_revision_replay(
             # semantics are identical to a smaller batch.
             store.commit()
         store._blob_publisher.flush()
+        for raw_id in tuple(attachments_by_raw_id):
+            attachments_by_raw_id[raw_id], attachment_refs_by_raw_id[raw_id] = reconcile_refused_attachments(
+                attachments_by_raw_id[raw_id],
+                attachment_refs_by_raw_id[raw_id],
+                store._blob_publisher,
+                source_conn=store._ensure_source_conn(),
+            )
     if not _is_frozen_candidate(store):
         for raw_id, refs in attachment_refs_by_raw_id.items():
             write_source_blob_refs(store._ensure_source_conn(), raw_id, refs)
@@ -3936,6 +3949,9 @@ def apply_raw_membership_classification(
                 if not manage_transaction:
                     store.commit()
                 store._blob_publisher.flush()
+        attachments, refs = reconcile_refused_attachments(
+            attachments, tuple(refs), store._blob_publisher, source_conn=store._ensure_source_conn()
+        )
         if not _is_frozen_candidate(store):
             write_source_blob_refs(conn, accepted_raw_id, refs)
         with store._conn if manage_transaction else nullcontext():
@@ -4699,6 +4715,12 @@ def write_raw_and_parsed_result(
         acquired_at_ms=acquired_at_ms,
     )
     store._blob_publisher.flush()
+    preacquired_attachments, attachment_blob_refs = reconcile_refused_attachments(
+        preacquired_attachments,
+        attachment_blob_refs,
+        store._blob_publisher,
+        source_conn=store._ensure_source_conn(),
+    )
     t0 = time.perf_counter()
     source_conn = store._ensure_source_conn()
     add_timing("source_connect", t0)
@@ -4875,6 +4897,12 @@ def admit_raw_and_parsed_result(
         acquired_at_ms=acquired_at_ms,
     )
     store._blob_publisher.flush()
+    preacquired_attachments, attachment_blob_refs = reconcile_refused_attachments(
+        preacquired_attachments,
+        attachment_blob_refs,
+        store._blob_publisher,
+        source_conn=store._ensure_source_conn(),
+    )
     t0 = time.perf_counter()
     source_conn = store._ensure_source_conn()
     add_timing("source_connect", t0)

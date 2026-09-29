@@ -72,7 +72,11 @@ from polylogue.sources.origin_specs import retained_enumeration_fingerprint
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.revision_backfill import enrich_sessions_from_archive, parse_retained_raw_sessions
 from polylogue.storage.archive_identity import ArchiveIdentity, ArchiveLocation
-from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_blob_publication_receipt
+from polylogue.storage.blob_publication import (
+    ArchiveBlobPublisher,
+    consume_blob_publication_receipt,
+    publication_refused,
+)
 from polylogue.storage.ingest_governance import (
     CensusPublication,
     CohortMembershipRefusalError,
@@ -339,6 +343,10 @@ class IngestExecution:
         self.started_mutation: StartedBoundMutation | None = None
         self.resumed = False
         self.terminalized = False
+        #: Set once this execution may have durably accepted its request (the
+        #: acceptance write began, or a resent request found its record).
+        #: Before that there is no accepted attempt to fence or settle.
+        self.acceptance_attempted = False
         fd, name = tempfile.mkstemp(prefix="polylogue-ingest-state-", suffix=".sqlite", dir=os.environ.get("TMPDIR"))
         os.close(fd)
         self.state_path = Path(name)
@@ -572,6 +580,9 @@ class IngestExecution:
                     )
                 )
                 ordinal = 0
+                # Refusals are reported page by page; only the first is kept,
+                # so a source of many excised files stays page-bounded.
+                first_refused: FrozenSourceInput | None = None
                 after_coordinate: str | None = None
                 while True:
 
@@ -587,16 +598,52 @@ class IngestExecution:
                     if not page:
                         break
 
+                    page_refused: list[FrozenSourceInput] = []
+
                     def stage_page(
                         conn: sqlite3.Connection,
                         start: int = ordinal,
                         batch: tuple[FrozenSourceInput, ...] = page,
-                    ) -> None:
-                        append_prepared_source_inputs(conn, generation_id, start, batch)
+                        refused: list[FrozenSourceInput] = page_refused,
+                    ) -> int:
+                        # ``source_write`` flushed the page's publications first.
+                        # An input whose bytes are excised -- refused by that
+                        # flush, or excised after it succeeded, as the ledger
+                        # read in this source transaction shows -- has no
+                        # reservation: it is a permanent skip, not a manifest
+                        # member.
+                        from polylogue.storage.sqlite.archive_tiers.source_write import is_blob_hash_excised
 
-                    await self.source_write(stage_page)
-                    ordinal += len(page)
+                        admitted = tuple(
+                            item
+                            for item in batch
+                            if not publication_refused(self.publisher, item.blob_hash)
+                            and not is_blob_hash_excised(conn, bytes.fromhex(item.blob_hash))
+                        )
+                        refused[:] = [item for item in batch if item not in admitted]
+                        if admitted:
+                            append_prepared_source_inputs(conn, generation_id, start, admitted)
+                        return len(admitted)
+
+                    ordinal += await self.source_write(stage_page)
                     after_coordinate = page[-1].coordinate
+                    for refused_input in page_refused:
+                        emit(
+                            "ingest.accepted_input.content_excised",
+                            outcome="skipped",
+                            reason="content_excised",
+                            blob_hash=refused_input.blob_hash,
+                        )
+                    if first_refused is None and page_refused:
+                        first_refused = page_refused[0]
+                    # This page's refusals are reconciled; the publisher need
+                    # not keep them for the rest of the walk.
+                    self.publisher.forget_refusals()
+                if ordinal == 0 and first_refused is not None:
+                    raise ContentExcisedError(
+                        blob_hash=bytes.fromhex(first_refused.blob_hash),
+                        source_path=first_refused.source_path,
+                    )
                 manifest = await self.source_write(
                     lambda conn: seal_prepared_source_manifest(conn, generation_id, sealed_at_ms=int(time() * 1000))
                 )
@@ -637,6 +684,7 @@ class IngestExecution:
                 assert record is not None
                 return record
 
+            self.acceptance_attempted = True
             try:
                 self.record = await self.runtime.write_phase("ingest.accept", accept_prepared)
             except BaseException:
@@ -650,6 +698,7 @@ class IngestExecution:
                 raise
         else:
             self.resumed = True
+            self.acceptance_attempted = True
         if self.resumed:
             # A resent request reads its durable state only. The daemon's
             # ingest owner re-drives an interrupted accepted generation
@@ -1799,8 +1848,9 @@ async def execute_ingest_operation(
     except IngestStoppedError as exc:
         # Fence first: once the request carries its stop reason, a process
         # death before the attempt settles cannot hand it to the re-driver.
-        await execution.fence(exc.reason)
-        await execution.mark_unknown(exc.reason)
+        if execution.acceptance_attempted:
+            await execution.fence(exc.reason)
+            await execution.mark_unknown(exc.reason)
         return operation_envelope(
             request,
             context,
@@ -1812,11 +1862,18 @@ async def execute_ingest_operation(
     except (IngestReprepareRequiredError, ArchiveIdentityStaleError, DaemonBackpressureError):
         # Transient after acceptance: left unstopped, the accepted generation
         # stays eligible for its ingest owner's re-drive.
-        await execution.mark_unknown("accepted ingest met a transient refusal before its terminal checkpoint")
+        if execution.acceptance_attempted:
+            await execution.mark_unknown("accepted ingest met a transient refusal before its terminal checkpoint")
         raise
     except Exception:
-        await execution.fence("refused")
-        await execution.mark_unknown("accepted ingest lacks a terminal checkpoint")
+        # A failure before acceptance (such as every input refused as
+        # excised) has no accepted attempt to fence or settle. Settling anyway
+        # takes a settled audit read, which a concurrent reader (the caller
+        # polling this request) makes fail, and that error would replace the
+        # typed refusal.
+        if execution.acceptance_attempted:
+            await execution.fence("refused")
+            await execution.mark_unknown("accepted ingest lacks a terminal checkpoint")
         raise
     finally:
         await asyncio.to_thread(execution.publisher.discard_pending)

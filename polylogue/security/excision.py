@@ -1606,41 +1606,51 @@ def apply_session_excision(
     none, or when ``session_id`` itself was already excised/not found).
     """
 
-    dependent_ids = find_lineage_dependents(archive_root, session_id)
-    if dependent_ids and not cascade_lineage:
-        raise LineageDependentsError(session_id=session_id, dependent_session_ids=dependent_ids)
+    # A publisher checks the excision ledger when it reserves and then moves
+    # staged bytes into place, and a batch holds it across its index commit.
+    # Excision takes the archive-wide publisher exclusion (the one blob GC
+    # also uses) before it resolves anything: targets resolved first could be
+    # replaced by a batch that commits before the exclusion is granted, and
+    # the apply would then remove the new session but ledger the old bytes.
+    from polylogue.storage.blob_publication import exclude_archive_blob_publishers
 
-    # Resolve every cascade member before touching any tier.  A sealed marker
-    # carrier may mention a later dependent; discovering that it mixes a
-    # retained session after an earlier member was already deleted would make
-    # a refusal mutate the archive.  The complete cascade set makes a shared
-    # parent/child carrier wholly targeted while still refusing any outsider.
-    session_ids = (*dependent_ids, session_id)
-    target_session_ids = frozenset(session_ids)
-    targets = tuple(
-        _resolve_session_excision_target(archive_root, candidate, target_session_ids=target_session_ids)
-        for candidate in session_ids
-    )
-    targets = _bind_cascade_container_disposition(archive_root, targets)
-    target = targets[-1]
-    if not target.found:
-        return ExcisionReceipt(session_id=session_id, found=False)
+    with exclude_archive_blob_publishers(archive_root / "source.db"):
+        dependent_ids = find_lineage_dependents(archive_root, session_id)
+        if dependent_ids and not cascade_lineage:
+            raise LineageDependentsError(session_id=session_id, dependent_session_ids=dependent_ids)
 
-    timestamp = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
-    cascaded_receipts = tuple(
-        _apply_single_session_excision(
-            archive_root,
-            dependent_id,
-            reason=reason,
-            actor=actor,
-            now_ms=timestamp,
-            resolved_target=resolved_target,
+        # Resolve every cascade member before touching any tier.  A sealed
+        # marker carrier may mention a later dependent; discovering that it
+        # mixes a retained session after an earlier member was already deleted
+        # would make a refusal mutate the archive.  The complete cascade set
+        # makes a shared parent/child carrier wholly targeted while still
+        # refusing any outsider.
+        session_ids = (*dependent_ids, session_id)
+        target_session_ids = frozenset(session_ids)
+        targets = tuple(
+            _resolve_session_excision_target(archive_root, candidate, target_session_ids=target_session_ids)
+            for candidate in session_ids
         )
-        for dependent_id, resolved_target in zip(dependent_ids, targets[:-1], strict=True)
-    )
-    primary = _apply_single_session_excision(
-        archive_root, session_id, reason=reason, actor=actor, now_ms=timestamp, resolved_target=target
-    )
+        targets = _bind_cascade_container_disposition(archive_root, targets)
+        target = targets[-1]
+        if not target.found:
+            return ExcisionReceipt(session_id=session_id, found=False)
+
+        timestamp = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
+        cascaded_receipts = tuple(
+            _apply_single_session_excision(
+                archive_root,
+                dependent_id,
+                reason=reason,
+                actor=actor,
+                now_ms=timestamp,
+                resolved_target=resolved_target,
+            )
+            for dependent_id, resolved_target in zip(dependent_ids, targets[:-1], strict=True)
+        )
+        primary = _apply_single_session_excision(
+            archive_root, session_id, reason=reason, actor=actor, now_ms=timestamp, resolved_target=target
+        )
 
     actually_cascaded = tuple(receipt.session_id for receipt in cascaded_receipts if receipt.found)
     if not actually_cascaded:

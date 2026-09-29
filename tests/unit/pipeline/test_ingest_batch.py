@@ -11,7 +11,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import NoReturn, TypeAlias, cast
+from typing import Any, NoReturn, TypeAlias, cast
 from unittest.mock import AsyncMock
 
 import aiosqlite
@@ -1709,6 +1709,110 @@ def test_write_session_precomputed_blob_attachment_recorded_as_acquired(tmp_path
         assert store.read_all(blob_hash) == payload
 
 
+def _excise_in_fresh_source_tier(root: Path, payload: bytes) -> Path:
+    """Initialize an archive at *root* and record *payload*'s blob hash as excised."""
+    from polylogue.storage.sqlite.archive_tiers.source_write import record_excised_blob_hash
+
+    with ArchiveStore(root, initialize=True, read_only=False):
+        pass
+    with sqlite3.connect(root / "source.db") as source:
+        record_excised_blob_hash(
+            source, blob_hash=sha256(payload).digest(), reason="synthetic excision", actor="test", excised_at_ms=1
+        )
+    return root / "source.db"
+
+
+def _excised_attachment_row(conn: sqlite3.Connection, session_id: str) -> sqlite3.Row:
+    row: sqlite3.Row = conn.execute(
+        """
+        SELECT a.acquisition_status, a.blob_hash, a.byte_count
+        FROM attachment_refs r JOIN attachments a ON a.attachment_id = r.attachment_id
+        WHERE r.session_id = ?
+        """,
+        (session_id,),
+    ).fetchone()
+    return row
+
+
+def test_write_session_records_an_excised_inline_attachment_unavailable(tmp_path: Path) -> None:
+    """An inline attachment whose bytes the flush refused as excised is not acquired.
+
+    Anti-vacuity: drop ``refuse_excised_attachment_blobs`` from ``_write_session``
+    and the attachment row is committed ``acquired`` with the excised hash,
+    whose staged bytes the flush discarded, so the reference dangles.
+    """
+    payload = b"attachment bytes the operator excised"
+    source_db = _excise_in_fresh_source_tier(tmp_path / "archive", payload)
+    publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
+    with open_connection(tmp_path / "index.db") as conn:
+        session = _session_data(
+            "chatgpt-export:conv-excised",
+            content_hash="hash-excised-inline",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "chatgpt-export:conv-excised",
+                    role="user",
+                    text="see attached",
+                    content_hash="msg-hash-excised-inline",
+                    sort_key=1777636800.0,
+                )
+            ],
+            attachment_tuples=[_attachment_tuple("att-1", inline_bytes=payload)],
+            attachment_ref_tuples=[_attachment_ref_tuple("att-1", "chatgpt-export:conv-excised", "msg-1")],
+            raw_id="raw-excised-inline",
+            provider=Provider.CHATGPT,
+        )
+        changed, _counts = _write_session(conn, session, blob_publisher=publisher)
+        conn.commit()
+
+        assert changed is True
+        row = _excised_attachment_row(conn, "chatgpt-export:conv-excised")
+        assert row["acquisition_status"] == "unavailable"
+        assert row["blob_hash"] is None
+        assert row["byte_count"] == len(payload)
+    assert not publisher.exists(sha256(payload).hexdigest())
+
+
+def test_write_session_records_an_excised_precomputed_attachment_unavailable(tmp_path: Path) -> None:
+    """Bytes published earlier and excised since are not recorded as acquired.
+
+    Anti-vacuity: drop the ledger check (``source_conn``) from
+    ``refuse_excised_attachment_blobs`` and the precomputed blob is recorded
+    ``acquired`` under the excised hash.
+    """
+    payload = b"chatgpt asset bytes excised after acquisition"
+    source_db = _excise_in_fresh_source_tier(tmp_path / "archive", payload)
+    with open_connection(tmp_path / "index.db") as conn, sqlite3.connect(source_db) as source_conn:
+        session = _session_data(
+            "chatgpt-export:conv-precomputed",
+            content_hash="hash-excised-precomputed",
+            message_tuples=[
+                _message_tuple(
+                    "msg-1",
+                    "chatgpt-export:conv-precomputed",
+                    role="user",
+                    text="here is a photo",
+                    content_hash="msg-hash-excised-precomputed",
+                    sort_key=1777636800.0,
+                )
+            ],
+            attachment_tuples=[
+                _attachment_tuple("file-xyz", precomputed_blob=(sha256(payload).hexdigest(), len(payload)))
+            ],
+            attachment_ref_tuples=[_attachment_ref_tuple("file-xyz", "chatgpt-export:conv-precomputed", "msg-1")],
+            raw_id="raw-excised-precomputed",
+            provider=Provider.CHATGPT,
+        )
+        changed, _counts = _write_session(conn, session, source_conn=source_conn)
+        conn.commit()
+
+        assert changed is True
+        row = _excised_attachment_row(conn, "chatgpt-export:conv-precomputed")
+        assert row["acquisition_status"] == "unavailable"
+        assert row["blob_hash"] is None
+
+
 def _precomputed_blob_session(blob_hash: str, size: int) -> SessionWritePayload:
     return _session_data(
         "chatgpt-export:conv-adopt",
@@ -1877,6 +1981,51 @@ def test_write_session_publishes_sidecar_blob_content_addressed(tmp_path: Path) 
             ("claude-code-session:sidecar-1",),
         ).fetchone()
         assert block_row["text"] == full_text, "blob publication must not disturb the FTS-indexed block text (AC2)"
+
+
+def test_write_session_counts_no_refused_sidecar_blob(tmp_path: Path) -> None:
+    """Sidecar bytes the flush refuses as excised are not counted as written.
+
+    Anti-vacuity: count sidecar blobs before the flush again and the batch
+    reports a published blob the flush discarded.
+    """
+    full_text = "excised sidecar output " * 200
+    source_db = _excise_in_fresh_source_tier(tmp_path / "archive", full_text.encode("utf-8"))
+    publisher = ArchiveBlobPublisher(source_db, tmp_path / "archive" / "blob")
+    with open_connection(tmp_path / "index.db") as conn:
+        _changed, counts = _write_session(
+            conn, _excised_sidecar_session("claude-code-session:sidecar-excised", full_text), blob_publisher=publisher
+        )
+        conn.commit()
+    assert counts["sidecar_blobs_written"] == 0
+    assert counts["sidecar_blob_bytes_new"] == 0
+
+
+def _excised_sidecar_session(session_id: str, full_text: str) -> Any:
+    return _session_data(
+        session_id,
+        content_hash=f"{session_id}-hash",
+        provider=Provider.CLAUDE_CODE,
+        message_tuples=[
+            _message_tuple(
+                "msg-1",
+                session_id,
+                role="assistant",
+                text="ran a command",
+                content_hash=f"{session_id}-msg-hash",
+                sort_key=1777636900.0,
+            )
+        ],
+        block_tuples=[
+            (
+                "msg-1",
+                ParsedContentBlock(
+                    type=BlockType.TOOL_RESULT, outcome_unknown_reason="not_reported", tool_id="toolu_1", text=full_text
+                ),
+            )
+        ],
+        action_tuples=[_sidecar_matched_event("toolu_1")],
+    )
 
 
 def test_write_session_dedups_identical_sidecar_blob_across_sessions(tmp_path: Path) -> None:
@@ -4741,3 +4890,214 @@ async def test_persist_batch_raw_state_updates_rolls_back_typed_evidence_with_ra
             "SELECT parse_error, validation_status FROM raw_sessions WHERE raw_id = ?", (raw_id,)
         ).fetchone() == (None, None)
         assert conn.execute("SELECT COUNT(*) FROM raw_artifacts WHERE raw_id = ?", (raw_id,)).fetchone() == (0,)
+
+
+def test_the_batch_index_transaction_holds_the_publisher_slot(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An excision cannot take the publisher slot while a batch's index transaction is open.
+
+    Anti-vacuity (Codex P1, #5696): release the shared slot when a flush ends
+    and an excision can commit between the batch's excision checks and its
+    index commit -- and, taking the slot before index.db while the batch
+    takes index.db before the slot, deadlock against it.
+    """
+    import fcntl
+
+    from polylogue.storage.blob_publication import _writer_lock_path
+
+    archive_root = tmp_path / "archive"
+    bootstrap_archive_root(archive_root)
+    raw_record = RawSessionRecord(
+        raw_id="raw-slot",
+        source_name="codex",
+        source_path="/sources/slot.jsonl",
+        blob_size=16,
+        acquired_at="2026-04-02T00:00:00Z",
+    )
+    session = _session_data(
+        "codex-session:slot",
+        content_hash="slot",
+        raw_id=raw_record.raw_id,
+        message_tuples=[
+            _message_tuple(
+                "msg-slot", "codex-session:slot", role="assistant", text="held", content_hash="msg-slot", sort_key=1.0
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        ingest_batch_core,
+        "ingest_record",
+        lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[session]),
+    )
+    observed: list[bool] = []
+    original_flush = ingest_batch_core._flush_ingest_results
+
+    def probe_then_flush(conn: sqlite3.Connection, **kwargs: Any) -> Any:
+        with _writer_lock_path(archive_root / "source.db").open("a+b") as lock:
+            try:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                observed.append(True)
+            else:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+                observed.append(False)
+        return original_flush(conn, **kwargs)
+
+    monkeypatch.setattr(ingest_batch_core, "_flush_ingest_results", probe_then_flush)
+    _process_ingest_batch_sync(
+        [raw_record],
+        db_path=archive_root / "index.db",
+        archive_root_str=str(archive_root),
+        blob_root_str=str(archive_root / "blob"),
+        validation_mode="advisory",
+        ingest_workers=1,
+        measure_ingest_result_size=False,
+    )
+
+    assert observed == [True]
+
+
+def test_a_prepared_excision_refusal_is_a_typed_permanent_outcome(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A session refused for excised content is not counted as a parse failure.
+
+    Anti-vacuity (Codex P2, #5696): let the generic handler catch
+    ``ContentExcisedError`` and it becomes a retryable parse failure instead
+    of a non-retryable ``validation_rejected`` outcome with a
+    ``content_excised`` diagnostic; count it only in the internal summary and
+    the public ``ParseResult`` reports no excision skips.
+    """
+    from polylogue.core.enums import INGEST_OUTCOME_RETRYABLE, IngestOutcome
+    from polylogue.pipeline.services.ingest_batch._summary import apply_ingest_batch_summary
+    from polylogue.pipeline.services.parsing_models import ParseResult
+    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+    archive_root = tmp_path / "archive"
+    bootstrap_archive_root(archive_root)
+    raw_record = RawSessionRecord(
+        raw_id="raw-excised",
+        source_name="codex",
+        source_path="/sources/excised.jsonl",
+        blob_size=16,
+        acquired_at="2026-04-02T00:00:00Z",
+    )
+    session = _session_data(
+        "codex-session:excised",
+        content_hash="excised",
+        raw_id=raw_record.raw_id,
+        message_tuples=[
+            _message_tuple(
+                "msg-x", "codex-session:excised", role="assistant", text="x", content_hash="msg-x", sort_key=1.0
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        ingest_batch_core,
+        "ingest_record",
+        lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[session]),
+    )
+
+    def refuse(*_args: object, **_kwargs: object) -> NoReturn:
+        raise ContentExcisedError(blob_hash=bytes(32), source_path="sidecar:excised")
+
+    monkeypatch.setattr(ingest_batch_core, "_write_session", refuse)
+    summary = _process_ingest_batch_sync(
+        [raw_record],
+        db_path=archive_root / "index.db",
+        archive_root_str=str(archive_root),
+        blob_root_str=str(archive_root / "blob"),
+        validation_mode="advisory",
+        ingest_workers=1,
+        measure_ingest_result_size=False,
+    )
+
+    assert summary.parse_failures == 0
+    assert summary.excised_skips == 1
+    # Settled as a skip, not a failure: no ``parse_error`` reaches raw state.
+    assert raw_record.raw_id not in summary.failed_raw_ids
+    assert raw_record.raw_id in summary.skipped_raw_ids
+    outcome = summary.outcomes[raw_record.raw_id]
+    assert outcome.parse_error is None
+    assert outcome.outcome_code == IngestOutcome.VALIDATION_REJECTED.value
+    assert str(outcome.diagnostic).startswith("content_excised")
+    assert outcome.retryable is False
+    assert INGEST_OUTCOME_RETRYABLE[IngestOutcome.VALIDATION_REJECTED] is False
+    result = ParseResult()
+    apply_ingest_batch_summary(result, summary)
+    assert result.excised_skips == 1
+
+
+def test_a_skipped_excised_raw_keeps_its_refusal_reason() -> None:
+    """The durable raw state names the excision, not a generic empty parse.
+
+    Anti-vacuity (Codex P2, #5696): write the generic skip reason for every
+    skipped raw and nothing durable records the typed refusal after restart.
+    """
+    from polylogue.pipeline.services.ingest_batch._core import _skipped_raw_state_update
+
+    outcome = SimpleNamespace(payload_provider=None, diagnostic="content_excised: sidecar hash excised")
+    update = _skipped_raw_state_update(outcome=outcome, parsed_at="2026-01-01T00:00:00Z", validation_mode="advisory")  # type: ignore[arg-type]
+
+    assert str(update.validation_error).startswith("content_excised")
+
+
+def test_a_grouped_raw_with_one_excised_session_still_records_its_written_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raw whose other session wrote is not settled as skipped.
+
+    Anti-vacuity (Codex P2, #5696): mark the raw skipped at the first
+    excision refusal and its written sibling's raw is durably recorded as a
+    ``content_excised`` skip.
+    """
+    from polylogue.core.enums import IngestOutcome
+    from polylogue.storage.sqlite.archive_tiers.source_write import ContentExcisedError
+
+    archive_root = tmp_path / "archive"
+    bootstrap_archive_root(archive_root)
+    raw_record = RawSessionRecord(
+        raw_id="raw-grouped",
+        source_name="codex",
+        source_path="/sources/grouped.jsonl",
+        blob_size=16,
+        acquired_at="2026-04-02T00:00:00Z",
+    )
+
+    def session(name: str) -> Any:
+        session_id = f"codex-session:{name}"
+        return _session_data(
+            session_id,
+            content_hash=name,
+            raw_id=raw_record.raw_id,
+            message_tuples=[
+                _message_tuple(f"msg-{name}", session_id, role="assistant", text=name, content_hash=name, sort_key=1.0)
+            ],
+        )
+
+    refused, written = session("refused"), session("written")
+    monkeypatch.setattr(
+        ingest_batch_core,
+        "ingest_record",
+        lambda *_args, **_kwargs: IngestRecordResult(raw_id=raw_record.raw_id, sessions=[refused, written]),
+    )
+    real_write = ingest_batch_core._write_session
+
+    def refuse_one(conn: sqlite3.Connection, payload: Any, **kwargs: Any) -> Any:
+        if payload.session_id == refused.session_id:
+            raise ContentExcisedError(blob_hash=bytes(32), source_path="sidecar:excised")
+        return real_write(conn, payload, **kwargs)
+
+    monkeypatch.setattr(ingest_batch_core, "_write_session", refuse_one)
+    summary = _process_ingest_batch_sync(
+        [raw_record],
+        db_path=archive_root / "index.db",
+        archive_root_str=str(archive_root),
+        blob_root_str=str(archive_root / "blob"),
+        validation_mode="advisory",
+        ingest_workers=1,
+        measure_ingest_result_size=False,
+    )
+
+    assert summary.excised_skips == 1
+    assert raw_record.raw_id not in summary.skipped_raw_ids
+    assert summary.outcomes[raw_record.raw_id].outcome_code != IngestOutcome.VALIDATION_REJECTED.value
