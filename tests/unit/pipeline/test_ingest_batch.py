@@ -1708,6 +1708,94 @@ def test_write_session_precomputed_blob_attachment_recorded_as_acquired(tmp_path
         assert store.read_all(blob_hash) == payload
 
 
+def _precomputed_blob_session(blob_hash: str, size: int) -> SessionWritePayload:
+    return _session_data(
+        "chatgpt-export:conv-adopt",
+        content_hash="hash-adopt",
+        message_tuples=[
+            _message_tuple(
+                "msg-1",
+                "chatgpt-export:conv-adopt",
+                role="user",
+                text="here is a file",
+                content_hash="msg-hash-adopt",
+                sort_key=1777636800.0,
+            )
+        ],
+        attachment_tuples=[_attachment_tuple("file-adopt", precomputed_blob=(blob_hash, size))],
+        attachment_ref_tuples=[_attachment_ref_tuple("file-adopt", "chatgpt-export:conv-adopt", "msg-1")],
+        raw_id="raw-adopt",
+        provider=Provider.CHATGPT,
+    )
+
+
+def _reservations(source_db: Path, blob_hash: str) -> list[str]:
+    with sqlite3.connect(source_db) as conn:
+        return [
+            str(row[0])
+            for row in conn.execute(
+                "SELECT publication_id FROM blob_publication_reservations WHERE blob_hash = ?",
+                (bytes.fromhex(blob_hash),),
+            )
+        ]
+
+
+def test_write_session_reserves_a_worker_published_blob_until_its_reference_commits(tmp_path: Path) -> None:
+    """A parse worker's already-published attachment bytes get a publication receipt.
+
+    The worker holds no write lease, so the bytes are GC-eligible until the
+    attachment row exists. Anti-vacuity: trusting ``precomputed_blob`` without
+    adopting it leaves no reservation row and no receipt for the batch to
+    consume with the attachment reference.
+    """
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    blob_hash, size = BlobStore(archive_root / "blob").write_from_bytes(b"spilled carrier bytes")
+    publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
+    receipts: list[tuple[str, bytes]] = []
+    with open_connection(tmp_path / "index.db") as conn:
+        changed, _counts = _write_session(
+            conn,
+            _precomputed_blob_session(blob_hash, size),
+            blob_publisher=publisher,
+            pending_attachment_receipts=receipts,
+        )
+        conn.commit()
+        acquired = conn.execute("SELECT acquisition_status, lower(hex(blob_hash)) FROM attachments").fetchall()
+
+    assert changed is True
+    assert [tuple(row) for row in acquired] == [("acquired", blob_hash)]
+    assert receipts == [(publisher.receipt_id(blob_hash), bytes.fromhex(blob_hash))]
+    assert _reservations(archive_root / "source.db", blob_hash) == [receipts[0][0]]
+
+
+def test_write_session_refuses_a_worker_published_blob_gc_reclaimed(tmp_path: Path) -> None:
+    """Bytes reclaimed between the worker's publish and the writer are a retryable storage fault.
+
+    Anti-vacuity: without the flush's presence check the attachment is
+    recorded ``acquired`` against a blob that no longer exists, and a check
+    made after reserving would leave an orphaned reservation behind.
+    """
+    from polylogue.core.storage_faults import StorageFaultKind, storage_fault_kind
+    from polylogue.storage.blob_publication import AdoptedBlobEvictedError
+
+    archive_root = tmp_path / "archive"
+    initialize_active_archive_root(archive_root)
+    store = BlobStore(archive_root / "blob")
+    blob_hash, size = store.write_from_bytes(b"reclaimed carrier bytes")
+    store.blob_path(blob_hash).unlink()
+    publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
+    with open_connection(tmp_path / "index.db") as conn:
+        with pytest.raises(AdoptedBlobEvictedError) as refused:
+            _write_session(conn, _precomputed_blob_session(blob_hash, size), blob_publisher=publisher)
+        assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
+
+    assert storage_fault_kind(refused.value) is StorageFaultKind.EVICTED
+    assert refused.value.blob_hashes == (blob_hash,)
+    assert _reservations(archive_root / "source.db", blob_hash) == []
+    assert not publisher.has_pending
+
+
 def _sidecar_matched_event(tool_use_id: str) -> ParsedSessionEvent:
     return ParsedSessionEvent(
         event_type="claude_tool_result_sidecar",

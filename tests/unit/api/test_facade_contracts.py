@@ -2473,8 +2473,26 @@ async def test_get_messages_paginated_raises_for_unknown_id(tmp_path: Path) -> N
         await archive.close()
 
 
+async def test_read_transcript_window_preserves_missing_session_error(tmp_path: Path) -> None:
+    """The bound transcript route preserves the facade's typed 404 exception.
+
+    Anti-vacuity: red if the new route converts the missing session into a
+    plain ValueError before the API caller can catch SessionNotFoundError.
+    """
+    archive = _archive(tmp_path)
+    try:
+        with pytest.raises(SessionNotFoundError):
+            await archive.read_transcript_window("nonexistent")
+    finally:
+        await archive.close()
+
+
 async def test_get_messages_paginated_applies_content_projection(tmp_path: Path) -> None:
-    """Message reads honor the same content projection as session reads."""
+    """Content projection runs before material-origin page slicing and totals.
+
+    Anti-vacuity: the code-only first row is filtered out by ``prose_only``;
+    it must not consume the sole page slot or remain in the total.
+    """
     from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 
     archive = _archive(tmp_path)
@@ -2490,21 +2508,39 @@ async def test_get_messages_paginated_applies_content_projection(tmp_path: Path)
                     ParsedMessage(
                         provider_message_id="projected-m1",
                         role=Role.ASSISTANT,
-                        text=body,
+                        text="```python\nprint('x')\n```",
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
                         blocks=[],
-                    )
+                    ),
+                    ParsedMessage(
+                        provider_message_id="projected-m2",
+                        role=Role.ASSISTANT,
+                        text=body,
+                        material_origin=MaterialOrigin.HUMAN_AUTHORED,
+                        blocks=[],
+                    ),
                 ],
             ),
         )
+
+    async def _no_hydration(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("a bounded window must not hydrate the whole session")
+
+    # Anti-vacuity: the material-origin filter previously hydrated the whole
+    # composed session through get_session before slicing the window.
+    archive.get_session = _no_hydration  # type: ignore[method-assign,assignment]
     try:
         messages, total, _completeness = await archive.get_messages_paginated(
             session_id,
+            limit=1,
+            material_origin=(MaterialOrigin.HUMAN_AUTHORED,),
             content_projection=ContentProjectionSpec.prose_only(),
         )
     finally:
         await archive.close()
 
     assert total == 1
+    assert len(messages) == 1
     assert messages[0].text == "Alpha\n\nOmega"
 
 

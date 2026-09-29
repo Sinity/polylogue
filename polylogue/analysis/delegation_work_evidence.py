@@ -78,7 +78,7 @@ _MAPPING_STATE_TO_ASSOCIATION: dict[str, WorkEvidenceAssociationState] = {
 # adapter. A repeated logical identity can accumulate evidence from independent
 # producers, but a weaker later observation must never erase a stronger
 # provenance verdict.
-_ASSOCIATION_STATE_RANK: dict[WorkEvidenceAssociationState, int] = {
+ASSOCIATION_STATE_RANK: dict[WorkEvidenceAssociationState, int] = {
     "resolved": 0,
     "superseded": 1,
     "unresolved": 2,
@@ -105,7 +105,7 @@ def _merge_attempt_node(
 ) -> WorkEvidenceNode:
     merged_state = (
         existing.association_state
-        if _ASSOCIATION_STATE_RANK[existing.association_state] >= _ASSOCIATION_STATE_RANK[association_state]
+        if ASSOCIATION_STATE_RANK[existing.association_state] >= ASSOCIATION_STATE_RANK[association_state]
         else association_state
     )
     return existing.model_copy(
@@ -231,4 +231,4 @@ def materialize_delegation_work_evidence_graph(
     )
 
 
-__all__ = ["materialize_delegation_work_evidence_graph"]
+__all__ = ["ASSOCIATION_STATE_RANK", "materialize_delegation_work_evidence_graph"]

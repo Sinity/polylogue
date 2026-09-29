@@ -445,7 +445,7 @@ def run_excluded_cursor_live_proof(root: Path, receipt_path: Path) -> dict[str, 
             "transition": "LiveBatchProcessor._record_full_cursor -> CursorStore.set",
             "intake": (
                 "FairIntakeDispatcher.run_once -> FileIntakeAdapter.admit_page -> "
-                "LiveWatcher.select_ingest_candidates -> page ingest"
+                "LiveWatcher.classify_ingest_candidates -> page ingest"
             ),
             "ingest": "LiveWatcher._ingest_files -> LiveBatchProcessor.ingest_files",
             "failure_evidence": "source.raw_artifacts",

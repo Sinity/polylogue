@@ -111,8 +111,9 @@ def _read_valid_cache(path: Path, revision: str | None) -> bytes | None:
         if not raw.strip():
             return None
         if path.suffix.lower() in {".jsonl", ".ndjson"}:
-            if not all(line.strip() and json.loads(line) is not None for line in raw.splitlines() if line.strip()):
-                return None
+            for line in raw.splitlines():
+                if line.strip():
+                    json.loads(line)
         else:
             json.loads(raw)
         return raw
@@ -140,15 +141,14 @@ def _cache_document_is_readable(path: Path) -> bool:
                     if not line.strip():
                         continue
                     saw_record = True
-                    if json.loads(line) is None:
-                        return False
+                    json.loads(line)
             return saw_record
         with path.open("rb") as handle:
             # Consume every event: short-circuiting on the first one would
             # accept a truncated document, which is exactly the cache
             # ``_read_valid_cache`` refuses to hand back.
             events = 0
-            for _event in ijson.parse(handle, use_float=True):
+            for _event in ijson.parse(handle):
                 events += 1
             return events > 0
     except (OSError, UnicodeDecodeError, ValueError, ijson.JSONError):
@@ -157,14 +157,16 @@ def _cache_document_is_readable(path: Path) -> bool:
 
 def _replace_atomically(path: Path, raw: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
-        temporary = Path(handle.name)
-        handle.write(raw)
+    temporary: Path | None = None
     try:
+        with tempfile.NamedTemporaryFile("wb", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(raw)
         temporary.replace(path)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
+        temporary = None
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _cache_holds_readable_revision(path: Path, revision: str) -> bool:

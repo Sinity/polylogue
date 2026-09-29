@@ -148,10 +148,20 @@ def execute_context_preamble_read(payload: dict[str, object], *, archive: Archiv
     recent_raw = payload.get("recent_files", ())
     if not isinstance(recent_raw, (list, tuple)):
         raise ValueError("recent_files must be a list")
+    raw_session_id = str(payload["session_id"]) if payload.get("session_id") is not None else None
+    if raw_session_id is None:
+        session_id = None
+    else:
+        try:
+            session_id = archive.resolve_session_id(raw_session_id)
+        except KeyError:
+            # Optional context targets can be non-session assertion targets;
+            # preserve their spelling when no session resolves.
+            session_id = raw_session_id
     result = asyncio.run(
         execute_context_preamble(
             archive,
-            session_id=str(payload["session_id"]) if payload.get("session_id") is not None else None,
+            session_id=session_id,
             observed_at=observed_at,
             observed_project_state=(
                 project,

@@ -57,6 +57,62 @@ def test_streaming_split_marker_is_parsed_after_newline() -> None:
     assert stream.finish() == ()
 
 
+def test_fence_closes_only_with_compatible_delimiter_and_length() -> None:
+    """Anti-vacuity: toggling on every fence-looking line parses example text as a finding."""
+    found = parse_markers(
+        "````md\n~~~\n::note: hidden short fence\n```\n::note: hidden mixed fence\n````\n::note: visible\n"
+    )
+    assert [item.body for item in found] == ["visible"]
+
+
+def test_unregistered_inline_marker_is_malformed_evidence() -> None:
+    """Anti-vacuity: dropping future inline kinds makes an audit marker disappear."""
+    found = parse_markers("[[future-kind: preserve me]]")
+    assert len(found) == 1
+    assert found[0].kind == "malformed" and found[0].malformed
+    assert found[0].arguments == {"unregistered_kind": "future-kind"}
+
+
+def test_trailing_unterminated_inline_marker_survives_after_valid_marker() -> None:
+    """Anti-vacuity: the earlier close must not hide the final broken declaration."""
+    found = parse_markers("[[note: good]] then [[note: broken")
+    assert [(item.kind, item.body, item.malformed) for item in found] == [
+        ("note", "good", False),
+        ("malformed", "broken", True),
+    ]
+
+
+def test_nested_inline_opener_inside_accepted_span_is_not_also_malformed() -> None:
+    """Anti-vacuity: flagging the outer opener as unterminated emits overlapping valid and malformed markers."""
+    found = parse_markers("[[note: first [[note: second]]")
+    spans = [(item.start, item.end) for item in found]
+    assert all(
+        not (a_start < b_end and b_start < a_end)
+        for index, (a_start, a_end) in enumerate(spans)
+        for b_start, b_end in spans[index + 1 :]
+    )
+    assert [item.malformed for item in found] == [False]
+
+
+def test_stream_offsets_include_previously_consumed_chunks() -> None:
+    """Anti-vacuity: resetting offsets for each feed points at the wrong source text."""
+    stream = MarkerStreamParser()
+    assert stream.feed("prefix\n") == ()
+    found = stream.feed("::note: body\n")
+    assert (found[0].start, found[0].end) == (7, 19)
+
+
+def test_stream_finish_offsets_include_completed_chunks() -> None:
+    """Anti-vacuity: finish must keep source coordinates after prior feed calls."""
+    stream = MarkerStreamParser()
+    assert stream.feed("prefix\n") == ()
+    assert stream.feed("suffix\n") == ()
+    found = stream.feed("::note: tail")
+    assert found == ()
+    finished = stream.finish()
+    assert (finished[0].start, finished[0].end) == (14, 26)
+
+
 def test_new_kind_is_registry_data_not_parser_control_flow() -> None:
     registry = MarkerRegistry((MarkerKindSpec("lesson", "text", AssertionKind.LESSON, "lesson"),))
     match = parse_markers("::lesson: remember\n", registry=registry)[0]

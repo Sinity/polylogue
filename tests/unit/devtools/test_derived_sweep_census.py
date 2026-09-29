@@ -495,3 +495,25 @@ def test_render_declaration_round_trips() -> None:
     observation = census_package(root / "polylogue", repo_root=root)
     rendered = render_declaration(observation, existing=declared.entries)
     assert rendered == (root / DECLARATION_PATH).read_text(encoding="utf-8")
+
+
+def test_repeated_rewrite_key_keeps_the_broadest_scope_and_its_location(tmp_path: Path) -> None:
+    """Two rewrites of one table in one function share a census key.
+
+    Anti-vacuity: first-wins retention keeps the earlier ``state_predicate``
+    site, so the later archive-wide ``no_where`` rewrite and its line vanish.
+    """
+    state_selected = '    conn.execute("UPDATE session_profiles SET parent_id = NULL WHERE parent_id IS NOT NULL")\n'
+    unscoped = '    conn.execute("UPDATE session_profiles SET parent_id = NULL")\n'
+    for broad_first in (False, True):
+        root = tmp_path / str(broad_first)
+        statements = (unscoped, state_selected) if broad_first else (state_selected, unscoped)
+        _package(root, "sweep.py", "def sweep(conn):\n" + "".join(statements))
+        sites = [
+            site
+            for site in census_package(root / "polylogue", repo_root=root).sites
+            if site.function == "sweep" and site.kind == "unbound_rewrite"
+        ]
+        assert len(sites) == 1
+        assert sites[0].scope == "no_where"
+        assert sites[0].line == (2 if broad_first else 3)

@@ -470,6 +470,31 @@ class TestResetParseStatus:
         assert rec1.parsed_at is None
         assert rec2.parsed_at is None
 
+    async def test_reset_by_beads_origin_uses_detected_provider_projection(self, backend: SQLiteBackend) -> None:
+        """A Beads classification scopes rows even when acquisition was unknown."""
+        await backend.save_raw_session(
+            RawSessionRecord(
+                raw_id="historical-beads",
+                source_name="historical",
+                payload_provider=Provider.UNKNOWN,
+                source_path="/captures/historical.json",
+                blob_size=2,
+                acquired_at="2026-01-01T00:00:00Z",
+            )
+        )
+        await backend.mark_raw_parsed("historical-beads")
+        with sqlite3.connect(backend.db_path.with_name("source.db")) as conn:
+            conn.execute(
+                "UPDATE raw_sessions SET detected_provider = 'beads' WHERE raw_id = ?",
+                ("historical-beads",),
+            )
+            conn.commit()
+
+        assert await backend.reset_parse_status(origin="beads-issue") == 1
+        record = await backend.get_raw_session("historical-beads")
+        assert record is not None
+        assert record.parsed_at is None
+
     async def test_reset_returns_zero_when_nothing_to_reset(self, backend: SQLiteBackend) -> None:
         """Reset returns 0 when no records have parsed_at set."""
         await backend.save_raw_session(

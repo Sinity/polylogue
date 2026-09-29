@@ -29,7 +29,7 @@ from polylogue.readiness.capability import (
     normalize_raw_frontier_status_payload,
     unknown_raw_frontier_integrity_projection,
 )
-from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.archive_identity import ArchiveLocation, resolve_active_index_path
 
 _SNAPSHOT_LOCK = threading.Lock()
 _REFRESH_LOCK = threading.Lock()
@@ -76,6 +76,9 @@ class StatusSnapshot:
             base_payload,
             snapshot_state=state,
         )
+        quick_check_age = payload.get("quick_check_age_s")
+        if isinstance(quick_check_age, (int, float)):
+            payload["quick_check_age_s"] = round(float(quick_check_age) + age_s, 3)
         evaluated_at = (
             datetime.fromisoformat(self.captured_at.replace("Z", "+00:00")) + timedelta(seconds=age_s)
         ).isoformat()
@@ -127,6 +130,10 @@ def _snapshot_freshness(
     return "fresh", frame_changed, frame_error, None
 
 
+#: Frame identity of an archive root that has no active index generation yet.
+NO_ACTIVE_GENERATION_FRAME = "no-active-generation"
+
+
 def _status_frame() -> str | None:
     """Return a cheap identity for the active index generation.
 
@@ -138,6 +145,18 @@ def _status_frame() -> str | None:
     try:
         path = resolve_active_index_path(archive_root())
         stat = path.stat()
+    except FileNotFoundError:
+        # A first cold build has no active generation until promotion, and
+        # that absence is a definite frame, not an unreadable one: without
+        # it the snapshot read "unavailable" for the entire first build.
+        # But a *present* pointer naming a generation that no longer exists
+        # (deleted or otherwise missing) is a broken archive, not a fresh
+        # one, and must not collapse into the same first-build sentinel.
+        try:
+            has_pointer = ArchiveLocation.resolve(archive_root()).active_pointer is not None
+        except Exception:
+            return None
+        return None if has_pointer else NO_ACTIVE_GENERATION_FRAME
     except Exception:
         return None
     return f"{stat.st_dev}:{stat.st_ino}:{stat.st_size}:{stat.st_mtime_ns}"
@@ -264,8 +283,8 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
     wal = dbf.with_suffix(".db-wal")
     fts_payload: dict[str, object] = {}
     quick_check = unmeasured_quick_check("minimal status path did not open the index database")
+    quick_check = observe_quick_check(dbf)
     if dbf.exists():
-        quick_check = observe_quick_check(dbf)
         try:
             fts_payload = fts_readiness_info(dbf)
         except Exception as exc:
@@ -501,6 +520,7 @@ def refresh_status_snapshot(*, payload: JSONDocument | None = None, rich: bool =
                         include_raw_replay_backlog=False,
                         include_exact_raw_materialization_readiness=False,
                         include_archive_debt=False,
+                        include_assertion_candidate_queue=True,
                         registry=periodic_status_component_registry(),
                         collecting_status_snapshot=True,
                     )

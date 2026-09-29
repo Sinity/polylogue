@@ -139,6 +139,12 @@ def test_repo_identity_normalization_honours_git_ceiling_directories(
     assert normalize_repo_name(str(inner_file)) == "outer"
 
 
+def test_repo_identity_checks_starting_root_before_its_ceiling(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _make_repo(tmp_path, "repo")
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str(repo))
+    assert normalize_repo_path(str(repo)) == str(repo)
+
+
 def test_repo_identity_normalization_ignores_unreadable_git_admin_paths(monkeypatch: pytest.MonkeyPatch) -> None:
     unreadable_git_dir = Path("/boot/.git")
     original_exists = Path.exists

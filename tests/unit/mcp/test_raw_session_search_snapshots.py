@@ -27,7 +27,7 @@ from polylogue.operations.raw_sessions.sessions import (
     SessionSource,
     StaleContinuationError,
 )
-from polylogue.operations.session_contracts import RawMemorySearch, RawSearch, RawTimeline
+from polylogue.operations.session_contracts import RawList, RawMemorySearch, RawSearch, RawTimeline
 from polylogue.operations.session_reads import raw_operation, session_operation_response
 from polylogue.paths import state_home
 
@@ -50,6 +50,24 @@ def _search(sources: tuple[SessionSource, ...], **fields: Any) -> Any:
 def _snapshot_files() -> list[Path]:
     directory = state_home() / "raw-session-search"
     return sorted(directory.glob("*.snapshot")) if directory.is_dir() else []
+
+
+def test_single_origin_list_with_explicitly_empty_sources_is_degraded(tmp_path: Path) -> None:
+    from polylogue.operations.session_contracts import RawPage
+
+    page = raw_operation(RawList(origin="codex-session"), sources=())
+    assert isinstance(page, RawPage)
+    assert page.items == []
+    assert page.outcome == "degraded"
+    assert page.sources[0].availability == "unavailable"
+
+
+def test_timeline_rejects_boolean_limit_as_malformed_input(tmp_path: Path) -> None:
+    from polylogue.operations.raw_sessions.sessions import SessionError
+
+    service = SessionLogService(sources=_sources(tmp_path))
+    with pytest.raises(SessionError, match="positive integer"):
+        service.timeline("codex", None, None, None, True)
 
 
 def test_default_scale_population_keeps_the_token_small_and_roster_free(tmp_path: Path) -> None:

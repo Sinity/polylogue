@@ -1,4 +1,4 @@
-"""Stranded-lineage debt must reach the archive root's ``ops.db``.
+"""Lineage-prefix debt must reach the archive root's ``ops.db``.
 
 ``_record_lineage_prefix_debt`` derived ``ops.db`` from the index connection's
 own directory. SQLite reports the *physical* file behind ``main``, and a
@@ -21,7 +21,7 @@ import sqlite3
 from pathlib import Path
 
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-from polylogue.storage.sqlite.archive_tiers.write import _record_stranded_branch_point_debt
+from polylogue.storage.sqlite.archive_tiers.write import _record_identity_invalidation_debt
 
 _GENERATION = ".index-generations/gen-0001"
 
@@ -59,7 +59,7 @@ class TestLineageDebtResolvesTheArchiveRoot:
         # Open on the generation member exactly as a promoted archive does.
         conn = sqlite3.connect(promoted)
         try:
-            _record_stranded_branch_point_debt(conn, {"claude-code-session:ext-child"})
+            _record_identity_invalidation_debt(conn, {"claude-code-session:ext-child"})
         finally:
             conn.close()
 
@@ -73,7 +73,7 @@ class TestLineageDebtResolvesTheArchiveRoot:
             pass
         conn = sqlite3.connect(tmp_path / "index.db")
         try:
-            _record_stranded_branch_point_debt(conn, {"claude-code-session:ext-plain"})
+            _record_identity_invalidation_debt(conn, {"claude-code-session:ext-plain"})
         finally:
             conn.close()
         assert [target for _stage, target in _debt_rows(tmp_path / "ops.db")] == ["claude-code-session:ext-plain"]
@@ -83,7 +83,7 @@ class TestLineageDebtResolvesTheArchiveRoot:
         index_db = tmp_path / "index.db"
         conn = sqlite3.connect(index_db)
         try:
-            _record_stranded_branch_point_debt(conn, {"claude-code-session:ext-orphan"})
+            _record_identity_invalidation_debt(conn, {"claude-code-session:ext-orphan"})
         finally:
             conn.close()
         assert not (tmp_path / "ops.db").exists()

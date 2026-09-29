@@ -29,6 +29,12 @@ class _PagedArchive:
     async def get_session(self, *_args: object, **_kwargs: object) -> object:
         raise AssertionError("attachment library must not hydrate sessions")
 
+    async def get_session_summaries(self, session_ids: list[str]) -> dict[str, object]:
+        return {
+            session_id: SimpleNamespace(display_label="Synthesized session", title="Opening prompt")
+            for session_id in session_ids
+        }
+
 
 def _attachment(index: int) -> object:
     return SimpleNamespace(
@@ -100,3 +106,22 @@ async def test_attachment_library_pages_concatenate_exactly_once() -> None:
     assert second["total"] == 3
     assert second["total_is_exact"] is True
     assert [call["limit"] for call in archive.calls] == [3, 3]
+
+
+@pytest.mark.asyncio
+async def test_attachment_library_uses_canonical_summary_label() -> None:
+    """Heuristic prompt titles never become attachment-library headings.
+
+    ANTI-VACUITY: rendering the SQL row's raw title instead of the canonical
+    summary label changes the emitted session title to "Opening prompt".
+    """
+    archive = _PagedArchive([(_attachment(0), "Opening prompt", "codex")])
+    payload = cast(
+        dict[str, object],
+        await _handler()._do_attachment_library(
+            archive, limit=1, offset=0, mime_filter="", state_filter="", session_filter=""
+        ),
+    )
+
+    item = cast(list[dict[str, object]], payload["items"])[0]
+    assert item["session_title"] == "Synthesized session"

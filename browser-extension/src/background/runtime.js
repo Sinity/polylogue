@@ -200,7 +200,13 @@ async function commitCaptureJobsToReceiver(instanceId, checkpoint) {
       await client.checkpoint(adopted, payload);
       return null;
     } catch (error) {
-      return { job_id: job.id, error: String(error?.message || error) };
+      return {
+        job_id: job.id,
+        error: String(error?.message || error),
+        outcome: error?.outcome || null,
+        retry_after_ms: Number.isFinite(error?.retryAfterMs) ? error.retryAfterMs : null,
+        retry_until_ms: Number.isFinite(error?.retryUntilMs) ? error.retryUntilMs : null,
+      };
     }
   }));
   return { failures: results.filter(Boolean) };
@@ -827,7 +833,9 @@ async function clearRetryAlarm() {
 
 function isRetryableCaptureError(error) {
   if (!error) return false;
-  if (typeof error.status === "number") return error.status >= 500 || error.status === 429;
+  // 408: the receiver cancelled an upload that stopped sending, releasing the
+  // disk space it had reserved; the capture itself was never refused.
+  if (typeof error.status === "number") return error.status >= 500 || error.status === 429 || error.status === 408;
   // No HTTP status means fetch itself rejected (offline, DNS failure, refused
   // connection, CORS) rather than the receiver answering with an error body.
   return true;
@@ -1623,6 +1631,7 @@ async function missionIntelligenceProjection(state, configuredUrl) {
   });
   if (state?.error === "unauthorized") return unavailable("unauthorized", "receiver_authorization_required");
   if (state?.online === false) return unavailable("offline", "receiver_unavailable");
+  if (state?.archive_state?.state === "failed") return unavailable("failed", state.archive_state.reason || state.archive_state.error || "archive_ingest_failed");
   if (!indexedSessionId) return unavailable("uncaptured", "canonical_session_not_indexed");
 
   const encodedProvider = encodeURIComponent(state.provider || "");
@@ -1634,7 +1643,8 @@ async function missionIntelligenceProjection(state, configuredUrl) {
       MISSION_INTELLIGENCE_TIMEOUT_MS,
     );
   } catch (error) {
-    return unavailable(error?.status === 401 ? "unauthorized" : "offline", error?.message || "projection_unavailable");
+    const status = error?.status === 401 ? "unauthorized" : error?.status === 404 ? "incompatible" : error?.status ? "receiver_error" : "offline";
+    return unavailable(status, error?.message || "projection_unavailable");
   }
   const archiveUrl = new URL(base);
   // The receiver (8765) does not serve archive pages. The daemon's canonical
@@ -1914,6 +1924,7 @@ function withProviderTransportOperation(provider, operation, { checkThrottle = t
 function providerThrottleError(deadline, nowMs) {
   const error = new Error("provider_rate_limited");
   error.outcome = "rate_limited";
+  error.retryUntilMs = deadline;
   error.retryAfterMs = Math.max(0, deadline - nowMs);
   error.retryAfterSeconds = Math.ceil(error.retryAfterMs / 1000);
   error.providerThrottleApplied = true;
@@ -2079,7 +2090,7 @@ async function providerAccountHandle(provider) {
       }
       throw error;
     }
-  }, { checkThrottle: false });
+  });
 }
 
 async function cleanupBackfillTransportTab(alarmName) {
@@ -2900,6 +2911,12 @@ function conversationIdForUrl(url) {
     if (provider === "claude-ai") {
       return parts[0] === "chat" && parts[1] ? parts[1] : null;
     }
+    if (provider === "gemini") {
+      // Mirror src/content/gemini.js:conversationIdFromUrl exactly, so a
+      // Gemini freshness hint routed through captureTab reaches the content script.
+      return parsed.searchParams.get("conversation") || parsed.searchParams.get("id") ||
+        parsed.pathname.match(/\/app\/([A-Za-z0-9_-]+)/)?.[1] || null;
+    }
     if (provider === "grok") {
       // grok.com's own conversation URLs are /c/<uuid> (verified live,
       // 2026-07-31, same convention as ChatGPT/Claude above). The /chat/
@@ -3157,7 +3174,7 @@ function stateSnapshotForTab(tab, globalState, ledger, pairing, health) {
   };
 }
 
-async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
+async function missionControlSnapshot(tab = null, { refresh = true, includeIntelligence = false } = {}) {
   const resolvedTab = tab || (runtimeChrome.tabs?.query
     ? (await runtimeChrome.tabs.query({ active: true, currentWindow: true }))[0]
     : null);
@@ -3209,7 +3226,16 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
     ? stored[CONVERSATION_TIMELINE_KEY]?.[timelineKey] || []
     : [];
   const settings = await receiverSettings();
-  const intelligence = await missionIntelligenceProjection(state, settings.baseUrl);
+  const intelligence = includeIntelligence ? await missionIntelligenceProjection(state, settings.baseUrl) : null;
+  let assertionCapability = false;
+  if (includeIntelligence && receiverOnline) {
+    try {
+      const capabilities = await getJson("/v1/browser-captures/capabilities", PROVIDER_REQUEST_TIMEOUT_MS);
+      // Only the declared top-level field is authoritative; any other shape
+      // fails closed and leaves Save unavailable.
+      assertionCapability = capabilities?.assertion_candidates === true;
+    } catch { /* An unreachable capability probe fails closed. */ }
+  }
   // Queued behind the startup migration and any capture's identity write.
   const acceptedIdentityMap = await serializeStorageMutation(
     () => runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} }),
@@ -3247,11 +3273,11 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
     ambient,
     assertions: {
       selection_candidate_supported: true,
-      persistence_supported: true,
+      persistence_supported: assertionCapability,
       accepted_identities: acceptedIdentities,
-      reason: "candidate_assertion_route",
+      reason: assertionCapability ? "candidate_assertion_route" : "receiver_capability_unavailable",
     },
-    intelligence,
+    ...(includeIntelligence ? { intelligence } : {}),
   };
 }
 
@@ -3311,7 +3337,7 @@ void ensureCaptureFreshnessAlarms();
 runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === "polylogue.missionControl.status") {
-      sendResponse(await missionControlSnapshot(sender.tab || null, { refresh: message.refresh !== false }));
+      sendResponse(await missionControlSnapshot(sender.tab || null, { refresh: message.refresh !== false, includeIntelligence: message.include_intelligence === true }));
       return;
     }
     if (message.type === "polylogue.providerThrottle") {
@@ -3578,6 +3604,16 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           || (senderSessionId && senderSessionId !== TEMPORARY_CHAT_SENTINEL && nativeId !== senderSessionId))
       ) {
         throw new Error("freshness_hint_sender_identity_mismatch");
+      }
+      if (provider !== "chatgpt" && sender.tab) {
+        // The freshness queue only knows how to refetch ChatGPT. Other
+        // providers recapture their own tab through captureTab, which applies
+        // the same automatic-capture policy and receiver pairing checks.
+        const capture = await captureTab(sender.tab, message.reason || "provider_page_hint");
+        // captureTab returns null when it never reached the content script
+        // (no session identity, paused policy, unpaired receiver); say so.
+        sendResponse(capture ? { ok: true, scheduled: false, capture } : { ok: false, scheduled: false, error: "capture_not_started" });
+        return;
       }
       sendResponse({
         ok: true,

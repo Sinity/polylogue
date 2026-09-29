@@ -59,7 +59,7 @@ def diagnose_first_run(daemon_alive: bool) -> StatusDiagnostic:
     3. db schema version outside ``{0, SCHEMA_VERSION}`` → ``schema_mismatch``
     4. db open fails for any other reason → ``unknown_db_error``
     5. stale pidfile present → ``stale_pidfile``
-    6. daemon down + config has empty ``roots`` → ``no_sources``
+    6. daemon down + no canonical chat source directory → ``no_sources``
     7. daemon down + sources configured → ``no_daemon``
     8. sqlite_vec import unavailable → ``missing_optional_dep``
     9. otherwise → ``healthy``
@@ -250,58 +250,38 @@ def _probe_stale_pidfile(daemon_alive: bool) -> StatusDiagnostic | None:
 
 
 def _probe_no_sources() -> StatusDiagnostic | None:
-    """Return a ``no_sources`` diagnostic when the config has empty roots.
+    """Return a ``no_sources`` diagnostic when the daemon would acquire nothing.
 
-    The check is best-effort: we only flag the user when we can prove
-    there is no source configured. If reading the config raises we
-    decline to comment so we don't shadow a genuine daemon-down issue.
+    Sources are read from their canonical locations, so the probe asks the
+    daemon's own watch set, not a separate list of directories.
     """
-    from polylogue.cli.commands.init import starter_config_path
+    from polylogue.config import resolve_runtime_config
+    from polylogue.operations.source_presence import watched_source_presence
 
-    config_path = starter_config_path()
-    if not config_path.exists():
-        return StatusDiagnostic(
-            kind="no_sources",
-            headline="No configured chat sources.",
-            detail=(
-                f"No `{config_path}` found. Run `polylogue init` to detect chat sources and write a starter config."
-            ),
-            next_action="polylogue init",
-        )
-    try:
-        body = config_path.read_text(encoding="utf-8")
-    except OSError:
+    runtime_config = resolve_runtime_config()
+    # Drive is configured through credential/token files, not a watched
+    # directory, so a Drive-only setup is a source resolve_runtime_config()
+    # already recognizes (it appends "aistudio" to .sources).
+    if any(source.name == "aistudio" for source in runtime_config.sources):
         return None
-    if _config_has_empty_roots(body):
-        return StatusDiagnostic(
-            kind="no_sources",
-            headline="No configured chat sources.",
-            detail=(
-                f"`{config_path}` has `roots = []`. Edit the file to add "
-                "source paths, or re-run `polylogue init --force` after "
-                "installing a chat tool."
-            ),
-            next_action="polylogue init --force",
-        )
-    return None
-
-
-def _config_has_empty_roots(toml_body: str) -> bool:
-    """Lightweight check for ``roots = []`` in the [sources] section.
-
-    Avoids importing a TOML parser at status-probe time. We accept some
-    false negatives (commented-out or alternate quoting) in exchange for
-    zero exception surface — the worst case is we fail to surface
-    ``no_sources`` and the operator gets ``no_daemon`` instead.
-    """
-    for raw_line in toml_body.splitlines():
-        stripped = raw_line.strip()
-        if stripped.startswith("#"):
-            continue
-        normalized = stripped.replace(" ", "")
-        if normalized.startswith("roots=[]"):
-            return True
-    return False
+    # ``polylogued run`` watches a configured capture spool in place of the default.
+    spool = runtime_config.settings.browser_capture_spool_path
+    presence = watched_source_presence(
+        hermes_root=runtime_config.source_paths.hermes,
+        browser_capture_spool_path=Path(spool).expanduser() if spool else None,
+    )
+    if presence.present:
+        return None
+    return StatusDiagnostic(
+        kind="no_sources",
+        headline="No chat tool directories found.",
+        detail=(
+            "None of the canonical chat source locations exists ("
+            + ", ".join(str(root) for root in presence.tool_roots)
+            + "). Install a supported tool, or import an export with `polylogue import <path>`."
+        ),
+        next_action="polylogue import <path>",
+    )
 
 
 def _probe_missing_optional_dep() -> StatusDiagnostic | None:

@@ -157,7 +157,9 @@ def _item_dict(item: ContextItem) -> dict[str, object]:
     }
 
 
-def _policy_is_authorized(item: ContextItem, *, target_session: str | None, now_ms: int) -> tuple[bool, str]:
+def _policy_is_authorized(
+    item: ContextItem, *, target_session: str | None, now_ms: int, adopted_policy_refs: frozenset[str]
+) -> tuple[bool, str]:
     """Only an explicitly adopted, scoped policy may enter instructions."""
     if item.material_class != "policy" or item.kind != "policy" or item.trust_class != "operator":
         return False, "only operator-adopted policy may instruct"
@@ -171,8 +173,8 @@ def _policy_is_authorized(item: ContextItem, *, target_session: str | None, now_
         return False, "policy target scope mismatch"
     if item.expires_at_ms is not None and item.expires_at_ms <= now_ms:
         return False, "policy expired"
-    if not item.authority_reason.startswith("adopted:"):
-        return False, "policy is not explicitly adopted"
+    if item.ref not in adopted_policy_refs:
+        return False, "policy is not adopted by scheduler authority"
     return True, "adopted policy scope and expiry valid"
 
 
@@ -183,6 +185,7 @@ def _validate_degraded_item(
     source_name: str,
     target_session: str | None,
     now_ms: int,
+    adopted_policy_refs: frozenset[str],
 ) -> tuple[ContextItem | None, str, str, str]:
     """Re-admit a degradation without allowing it to change authority.
 
@@ -232,7 +235,11 @@ def _validate_degraded_item(
     )
     if any(getattr(replacement, name) != getattr(original, name) for name in authority_fields):
         return None, "invalid", "rejected", "degraded candidate authority or scope changed"
-    authority_ok, authority_reason = _policy_is_authorized(replacement, target_session=target_session, now_ms=now_ms)
+    if replacement.target_session is not None and replacement.target_session != target_session:
+        return None, "scope", "rejected", "evidence target scope mismatch"
+    authority_ok, authority_reason = _policy_is_authorized(
+        replacement, target_session=target_session, now_ms=now_ms, adopted_policy_refs=adopted_policy_refs
+    )
     if replacement.material_class == "policy" and not authority_ok:
         return None, "policy", "rejected", authority_reason
     return replacement, "accepted", "accepted" if authority_ok else "quoted", authority_reason or "quoted evidence"
@@ -247,11 +254,13 @@ def schedule_context(
     token_budget: int,
     now_ms: int | None = None,
     source_quota: int | None = None,
+    adopted_policy_refs: frozenset[str] = frozenset(),
 ) -> ContextAssembly:
     """Collect, gate, and allocate every source through one deterministic route."""
     if token_budget < 0:
         raise ValueError("token_budget must be non-negative")
     now = now_ms if now_ms is not None else int(datetime.now(UTC).timestamp() * 1000)
+    adopted_policy_refs = frozenset(adopted_policy_refs)
     rows: list[ContextLedgerRow] = []
     included_evidence: list[ContextItem] = []
     included_policy: list[ContextItem] = []
@@ -313,6 +322,22 @@ def schedule_context(
                     )
                 )
                 continue
+            if item.target_session is not None and item.target_session != target_session:
+                rows.append(
+                    _row(
+                        "dropped",
+                        item,
+                        rank,
+                        before,
+                        before,
+                        "scope",
+                        "rejected",
+                        "evidence target scope mismatch",
+                        execution_context,
+                        target_session,
+                    )
+                )
+                continue
             if item.trust_class not in {"operator", "system", "quoted"}:
                 rows.append(
                     _row(
@@ -329,7 +354,9 @@ def schedule_context(
                     )
                 )
                 continue
-            authority_ok, authority_reason = _policy_is_authorized(item, target_session=target_session, now_ms=now)
+            authority_ok, authority_reason = _policy_is_authorized(
+                item, target_session=target_session, now_ms=now, adopted_policy_refs=adopted_policy_refs
+            )
             if item.material_class == "policy" and not authority_ok:
                 rows.append(
                     _row(
@@ -381,6 +408,7 @@ def schedule_context(
                     source_name=source.name,
                     target_session=target_session,
                     now_ms=now,
+                    adopted_policy_refs=adopted_policy_refs,
                 )
                 if validated is not None and validated.token_cost <= remaining:
                     chosen = validated
@@ -470,7 +498,7 @@ def _row(
         authority,
         reason,
         item.policy_refs,
-        target,
+        item.target_session if item.target_session is not None and item.target_session != target else target,
         execution.context_id,
     )
 

@@ -82,6 +82,28 @@ def _reset_semantic_generator(
     self._semantic_gen = SemanticValueGenerator(rng, theme=theme, base_ts=base_ts, role_cycle=list(roles))
 
 
+def _declared_numeric(schema: SchemaValue | object) -> str | None:
+    """``"number"`` or ``"integer"`` when the schema admits that type, else None.
+
+    A schema admitting any non-integral number reports ``"number"``; one
+    admitting integers only reports ``"integer"``.
+    """
+    node = _coerce_schema(schema)
+    declared: list[object] = []
+    raw_type = node.get("type")
+    declared.extend(raw_type if isinstance(raw_type, list) else [raw_type])
+    for key in ("anyOf", "oneOf"):
+        variants = node.get(key)
+        if isinstance(variants, list):
+            for variant in variants:
+                variant_type = _coerce_schema(variant).get("type")
+                declared.extend(variant_type if isinstance(variant_type, list) else [variant_type])
+    kinds = {kind for kind in declared if isinstance(kind, str)}
+    if "number" in kinds:
+        return "number"
+    return "integer" if "integer" in kinds else None
+
+
 def _has_messages_path(parts: Sequence[str], schema: SchemaRecord) -> tuple[bool, SchemaRecord]:
     cursor = schema
     for part in parts:
@@ -159,8 +181,15 @@ def _generate_tree_json(
         top_record["current_node"] = nodes[-1][tree_cfg.key_field]
     if self.provider == "chatgpt":
         top_record["id"] = str(uuid.UUID(int=rng.getrandbits(128), version=4))
-        top_record.setdefault("create_time", base_ts)
-        top_record.setdefault("update_time", base_ts + max(0, n_messages - 1) * 60)
+        # Conversation timestamps are epoch floats, but only where the selected
+        # element declares a numeric field; other ChatGPT elements (the export
+        # asset index) type these fields differently, and a default must not
+        # contradict the element's own schema.
+        defaults = {"create_time": base_ts, "update_time": base_ts + max(0, n_messages - 1) * 60}
+        for field_name, value in defaults.items():
+            numeric = None if field_name in top_record else _declared_numeric(properties.get(field_name))
+            if numeric is not None:
+                top_record[field_name] = int(value) if numeric == "integer" else value
     if theme is not None and "title" in _coerce_schema(self.schema.get("properties")):
         top_record["title"] = theme.title
     return top_record

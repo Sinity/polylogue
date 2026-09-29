@@ -177,7 +177,19 @@ class SQLiteQueryStoreArchiveMixin:
 
     async def get_effective_context(self, session_id: str, at_position: int | None = None) -> list[MessageRecord]:
         async with self._connection_factory() as conn:
-            return await messages_q.get_effective_context(conn, session_id, at_position)
+            owns_snapshot = not conn.in_transaction
+            if owns_snapshot:
+                await conn.execute("BEGIN DEFERRED")
+            try:
+                messages = await messages_q.get_effective_context(conn, session_id, at_position)
+                blocks_by_message = await attachments_q.get_blocks(conn, [message.message_id for message in messages])
+                for message in messages:
+                    message.blocks = blocks_by_message.get(message.message_id, [])
+                    _hydrate_message_text_from_blocks(message)
+                return messages
+            finally:
+                if owns_snapshot:
+                    await conn.execute("ROLLBACK")
 
     async def get_messages_paginated(
         self,

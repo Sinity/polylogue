@@ -45,7 +45,7 @@ def test_candidate_fixture_proves_all_cursor_outcomes_and_is_immutable(tmp_path:
     }
     assert receipt["production_route"]["intake"] == (
         "FairIntakeDispatcher.run_once -> FileIntakeAdapter.admit_page -> "
-        "LiveWatcher.select_ingest_candidates -> page ingest"
+        "LiveWatcher.classify_ingest_candidates -> page ingest"
     )
     assert receipt["anti_vacuity"] == {
         "indexed_authority": "byte_proven_source_raw_and_revision_head",

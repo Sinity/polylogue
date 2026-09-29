@@ -62,7 +62,7 @@ def read_counter() -> Iterator[ReadCounter]:
     - ``last_complete_newline_from_tail``
     - ``_append_plan.read``  (``path.open("rb").read()`` from cursor offset)
     - ``_ingest_full_paths_sync.read_bytes``  (``path.read_bytes()``)
-    - ``blob_store.write_from_path``  (streamed full reads)
+    - ``capture_bound_path``  (the live batch's streamed full capture)
 
     Each wrapper calls the real implementation and records ``bytes_read``.
     """
@@ -72,7 +72,6 @@ def read_counter() -> Iterator[ReadCounter]:
     from polylogue.sources.live import batch as live_batch
     from polylogue.sources.live import batch_support
     from polylogue.sources.live import watcher as live_watcher
-    from polylogue.storage import blob_store as blob_store_mod
 
     real_fingerprint = batch_support.fingerprint_file
 
@@ -93,19 +92,21 @@ def read_counter() -> Iterator[ReadCounter]:
         counter.record("last_complete_newline_from_tail", bytes_read)
         return last_nl, bytes_read
 
-    # ----- Wrap BlobStore.write_from_path ---------------------------
-    real_write_from_path = blob_store_mod.BlobStore.write_from_path
+    # ----- Wrap the live batch's full capture -----------------------
+    # Every full-file retention in the live batch goes through the
+    # acquisition boundary's ``capture_bound_path``.
+    from polylogue.sources.acquisition_boundary import capture_bound_path as real_capture
 
-    def counted_write_from_path(self, source, *, heartbeat=None):  # type: ignore[no-untyped-def]
-        hash_hex, size = real_write_from_path(self, source, heartbeat=heartbeat)
-        counter.record("blob_store.write_from_path", size)
+    def counted_capture(blob_store, path, location, *, heartbeat=None):  # type: ignore[no-untyped-def]
+        hash_hex, size = real_capture(blob_store, path, location, heartbeat=heartbeat)
+        counter.record("capture_bound_path", size)
         return hash_hex, size
 
     # ----- Wrap Path.read_bytes globally (only when used by batch.py) ----
     # We don't monkeypatch Path.read_bytes itself (way too broad). Instead,
     # the test's expectation is: in normal append-only steady state,
     # `_ingest_full_paths_sync` shouldn't be called at all. If the suite
-    # observes a `fingerprint_file` or `write_from_path` call after the
+    # observes a `fingerprint_file` or `capture_bound_path` call after the
     # first ingest, the suite has its evidence.
 
     with (
@@ -114,7 +115,7 @@ def read_counter() -> Iterator[ReadCounter]:
         patch.object(live_watcher, "fingerprint_file", counted_fingerprint),
         patch.object(batch_support, "last_complete_newline_from_tail", counted_tail),
         patch.object(live_batch, "last_complete_newline_from_tail", counted_tail),
-        patch.object(blob_store_mod.BlobStore, "write_from_path", counted_write_from_path),
+        patch.object(live_batch, "capture_bound_path", counted_capture),
     ):
         yield counter
 
