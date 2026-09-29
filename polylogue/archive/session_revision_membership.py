@@ -657,10 +657,10 @@ def classify_membership_revisions(
         )
     browser_authority = _browser_authority_with_unordered_native(representatives)
     if browser_authority is not None:
-        accepted, ambiguous = browser_authority
+        browser_chain, ambiguous = browser_authority
         ambiguous_ids = {item.raw_id for item in ambiguous}
-        accepted_ids = tuple(item.raw_id for item in accepted)
-        if existing_accepted_raw_id == accepted[-1].raw_id:
+        accepted_ids = tuple(item.raw_id for item in browser_chain)
+        if existing_accepted_raw_id == browser_chain[-1].raw_id:
             # Re-affirming an unchanged head through membership can downgrade
             # its byte-governed frontier. Preserve that authority as before.
             ambiguous_ids.update(accepted_ids)

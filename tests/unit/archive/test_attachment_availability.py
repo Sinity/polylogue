@@ -1,3 +1,5 @@
+import pytest
+
 from polylogue.archive.attachment.availability import (
     AttachmentAvailabilityState,
     resolve_attachment_availability,
@@ -69,6 +71,36 @@ def test_terminal_unavailable_is_distinct_from_unfetched() -> None:
         verify=lambda _hash: True,
     )
     assert result.state is AttachmentAvailabilityState.UNAVAILABLE
-    assert result.reason == "provider-bytes-unavailable"
+    assert result.reason == "source-bytes-unavailable"
     assert not result.can_fetch
     assert classify_attachment_state(size_bytes=0, mime_type="text/plain", availability=result) == "missing-blob"
+
+
+@pytest.mark.parametrize("failing_read", ["verify", "exists"])
+@pytest.mark.parametrize("failure", [OSError, ValueError])
+def test_blob_read_faults_remain_unknown_on_the_read_surface(failing_read: str, failure: type[Exception]) -> None:
+    """A transient read failure must not be reported as a missing or mismatched blob."""
+    calls: list[str] = []
+
+    def verify(_digest: str) -> bool:
+        calls.append("verify")
+        if failing_read == "verify":
+            raise failure("synthetic read fault")
+        return False
+
+    def exists(_digest: str) -> bool:
+        calls.append("exists")
+        raise failure("synthetic read fault")
+
+    result = resolve_attachment_availability(
+        blob_hash="ab" * 32,
+        acquisition_status="acquired",
+        verify=verify,
+        exists=exists,
+    )
+    assert calls == (["verify"] if failing_read == "verify" else ["verify", "exists"])
+    assert result.state is AttachmentAvailabilityState.UNKNOWN
+    assert not result.available
+    assert not result.can_fetch
+    assert result.reason == ("blob-verification-failed" if failing_read == "verify" else "blob-existence-check-failed")
+    assert classify_attachment_state(size_bytes=0, mime_type="text/plain", availability=result) != "available"

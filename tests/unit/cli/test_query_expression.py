@@ -6514,3 +6514,23 @@ def test_unit_row_projection_remains_executable() -> None:
     parsed = parse_unit_source_expression("messages where role:assistant | fields role")
     assert parsed is not None
     assert parsed.selected_fields == ("role",)
+
+
+def test_single_action_flat_sequence_is_an_executable_query() -> None:
+    """The compact flat sequence accepts one action; the seq() multi-edge form is separate."""
+    spec = compile_expression("action_sequence:shell")
+    assert spec.action_sequence == ("shell",)
+    assert spec.to_plan().action_sequence == ("shell",)
+
+
+def test_action_text_alternation_cannot_silently_become_conjunction() -> None:
+    with pytest.raises(ExpressionCompileError) as error:
+        compile_expression("action_text:(alpha|beta)")
+    assert error.value.field == "action_text"
+
+
+def test_explicit_action_sequence_overrides_a_prepopulated_sequence() -> None:
+    base = SessionQuerySpec(action_sequence=("file_edit", "shell"))
+    merged = compile_expression_into("action_sequence:search", base)
+    assert merged.action_sequence == ("search",)
+    assert compile_expression_into("", base).action_sequence == base.action_sequence

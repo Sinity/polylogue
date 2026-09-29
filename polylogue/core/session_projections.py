@@ -9,7 +9,6 @@ from __future__ import annotations
 
 from collections.abc import Collection
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias, cast
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,25 +73,7 @@ def validate_session_list_projection_cli_contract(cli_handler_ids: Collection[st
         raise RuntimeError(f"session projections without CLI read handlers: {', '.join(missing)}")
 
 
-# Compatibility aliases hold the import-time snapshot. Production dispatchers
-# call the functions above so the table remains the live vocabulary source.
-SESSION_LIST_PROJECTION_NAMES = session_list_projection_names()
-MCP_READ_VIEW_NAMES = mcp_read_view_names()
-MCP_GET_SESSION_PROJECTION_NAMES = mcp_get_session_projection_names()
-
-# These aliases are evaluated when the module loads, after the table above is
-# declared.  A table addition therefore reaches MCP's public Literal schema
-# without a duplicate hand-maintained type list. Mypy cannot evaluate a
-# runtime tuple expansion as a type expression, but Python and Pydantic can.
-MCPReadView: TypeAlias = cast(Any, Literal.__getitem__(mcp_read_view_names())) | None  # type: ignore[valid-type]
-MCPGetSessionProjection: TypeAlias = cast(Any, Literal.__getitem__(mcp_get_session_projection_names())) | None  # type: ignore[valid-type]
-
 __all__ = [
-    "MCP_GET_SESSION_PROJECTION_NAMES",
-    "MCP_READ_VIEW_NAMES",
-    "MCPGetSessionProjection",
-    "MCPReadView",
-    "SESSION_LIST_PROJECTION_NAMES",
     "SESSION_LIST_PROJECTIONS",
     "SessionListProjection",
     "is_mcp_get_session_projection",

@@ -1539,3 +1539,49 @@ def test_two_available_debt_ledgers_still_diff() -> None:
         "delta": 3,
         "measured": True,
     }
+
+
+@pytest.mark.parametrize("profile_present", [False, True])
+def test_thread_and_latency_readiness_follow_pending_profile_rows(tmp_path: Path, profile_present: bool) -> None:
+    """A missing or invalidated profile cannot certify either dependent read surface."""
+    db = tmp_path / "index.db"
+    _seed_minimal_archive(db, tmp_path / "synthetic-input.json")
+    with sqlite3.connect(db) as conn:
+        if profile_present:
+            conn.execute(
+                "INSERT INTO session_profiles(session_id, source_sort_key, source_updated_at) VALUES (?, ?, ?)",
+                ("codex-session:provider-1", 0.0, "2026-02-02T00:00:00Z"),
+            )
+        assert conn.execute("SELECT COUNT(*) FROM session_profile_demand").fetchone()[0] > 0
+    report = probe(db, exact_derived_counts=True)
+    derived = report["archive_tiers"]["derived_readiness"]
+    assert derived["checked"] is True
+    assert derived["ready"]["profile_rows_ready"] is False
+    for name in ("session_profiles", "threads", "latency_profiles", "session_costs"):
+        surface = derived["surface_readiness"][name]
+        assert surface["ready"] is False
+        assert "pending_profile_rows" in surface["blockers"]
+        assert surface["evidence"]["pending_profile_row_count"] > 0
+        assert surface["evidence"]["missing_profile_row_count"] == (0 if profile_present else 1)
+
+
+def test_profile_dependent_surfaces_become_ready_after_canonical_publication(tmp_path: Path) -> None:
+    """Always refusing nonempty archives is not row-backed readiness either."""
+    from polylogue.storage.derived.session.rebuild import rebuild_archive_session_insights
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+    db = tmp_path / "index.db"
+    _seed_minimal_archive(db, tmp_path / "synthetic-input.json")
+    with ArchiveStore(tmp_path) as archive:
+        rebuild_archive_session_insights(archive)
+    report = probe(db, exact_derived_counts=True)
+    derived = report["archive_tiers"]["derived_readiness"]
+    assert derived["checked"] is True
+    assert derived["counts"]["session_count"] == 1
+    assert derived["ready"]["profile_rows_ready"] is True
+    for name in ("session_profiles", "threads", "latency_profiles", "session_costs"):
+        surface = derived["surface_readiness"][name]
+        assert surface["ready"] is True
+        assert surface["blockers"] == []
+        assert surface["evidence"]["profile_row_count"] == 1
+        assert surface["evidence"]["pending_profile_row_count"] == 0

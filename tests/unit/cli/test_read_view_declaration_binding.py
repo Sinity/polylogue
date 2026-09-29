@@ -138,32 +138,6 @@ def test_an_executable_binding_without_a_declaration_is_refused() -> None:
         build_read_view_handler("view-that-was-never-declared", ReadViewExecution(_never_runs))
 
 
-def test_a_borrowed_declaration_carries_the_lenders_contract_under_the_borrowers_id() -> None:
-    """A session-list projection dispatches under its own name, on a declared contract.
-
-    ``SESSION_LIST_PROJECTIONS`` names the declared CLI handler that serves a
-    projection, so the projection's own name is not required to be a declared
-    read view -- but the contract it runs under still has to come from one.
-
-    Anti-vacuity: EXECUTED -- reading the declaration for the borrower's id
-    instead of the lender's makes this raise ``RuntimeError: ... has an
-    executable handler but no declaration`` for a projection whose name is not
-    itself a declared view, which is how the MCP projection-table contract
-    (``tests/unit/mcp/test_session_projection_table.py``) breaks.
-    """
-
-    lender = READ_VIEW_HANDLER_METADATA["events"]
-    handler = build_read_view_handler(
-        "borrowed-projection",
-        ReadViewExecution(_never_runs),
-        declared_as="events",
-    )
-
-    assert handler.view_id == "borrowed-projection"
-    assert handler.session_policy == lender.session_policy
-    assert handler.accepted_options == lender.accepted_options | {option.name for option in lender.declared_options}
-
-
 def test_every_executable_binding_names_a_declared_view() -> None:
     """The two tables cover the same views, by id.
 

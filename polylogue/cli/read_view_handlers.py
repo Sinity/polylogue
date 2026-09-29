@@ -73,7 +73,7 @@ from polylogue.cli.read_views.session_evidence import (
 )
 from polylogue.cli.read_views.standard import run_read_dialogue, run_read_summary_or_transcript, run_read_temporal
 from polylogue.cli.shared.types import AppEnv
-from polylogue.operations.session_projections import (
+from polylogue.core.session_projections import (
     SESSION_LIST_PROJECTIONS,
     validate_session_list_projection_cli_contract,
 )
@@ -93,8 +93,6 @@ class ReadViewExecution:
 def build_read_view_handler(
     view_id: str,
     execution: ReadViewExecution,
-    *,
-    declared_as: str | None = None,
 ) -> ReadViewHandler:
     """Bind one declared read view to the callable that executes it.
 
@@ -102,17 +100,12 @@ def build_read_view_handler(
     handler cannot claim a session policy or an option set the declaration does
     not carry.
 
-    ``declared_as`` names the declaration a view *borrows*.  A session-list
-    projection states which declared CLI handler serves it, so it is dispatched
-    under its own name while carrying that handler's contract; the contract is
-    still read from a declaration, never invented for the borrowing name.
     """
 
-    declaration_id = declared_as or view_id
     try:
-        metadata = READ_VIEW_HANDLER_METADATA[declaration_id]
+        metadata = READ_VIEW_HANDLER_METADATA[view_id]
     except KeyError as exc:
-        raise RuntimeError(f"read view {declaration_id!r} has an executable handler but no declaration") from exc
+        raise RuntimeError(f"read view {view_id!r} has an executable handler but no declaration") from exc
     return ReadViewHandler(
         view_id=view_id,
         session_policy=metadata.session_policy,
@@ -168,9 +161,7 @@ def session_list_read_view_handlers() -> dict[str, ReadViewHandler]:
             raise RuntimeError(
                 f"session projection {projection.name!r} names unknown CLI handler {projection.cli_handler!r}"
             ) from exc
-        handlers[projection.name] = build_read_view_handler(
-            projection.name, execution, declared_as=projection.cli_handler
-        )
+        handlers[projection.name] = build_read_view_handler(projection.name, execution)
     return handlers
 
 

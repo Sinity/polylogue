@@ -7,10 +7,11 @@ handlers, the archive API bridge, or storage/query stacks.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from polylogue.archive.viewport import read_view_choices
+from polylogue.core.session_projections import SESSION_LIST_PROJECTIONS
 
 ReadViewSessionPolicy = Literal["optional", "required", "query_or_session", "none"]
 ReadViewOptionName = str
@@ -214,6 +215,47 @@ IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset()
 # continuation family.
 #
 # Distinct read operations serve the query-set, graph, and evidence views.
+_SESSION_LIST_METADATA_TEMPLATES: dict[str, ReadViewHandlerMetadata] = {
+    "events": ReadViewHandlerMetadata(
+        "events",
+        "required",
+        frozenset({"limit"}),
+        declared_options=(CONTINUATION_OPTION,),
+        execution_kind="session-read-projection",
+        operations=("session.read",),
+    ),
+    "file-edits": ReadViewHandlerMetadata(
+        "file-edits",
+        "required",
+        frozenset({"limit"}),
+        declared_options=(CONTINUATION_OPTION,),
+        execution_kind="session-read-projection",
+        operations=("session.read",),
+    ),
+    "agent-policies": ReadViewHandlerMetadata(
+        "agent-policies",
+        "required",
+        execution_kind="session-read-projection",
+        operations=("session.read",),
+    ),
+    "web-content": ReadViewHandlerMetadata(
+        "web-content",
+        "required",
+        frozenset({"limit"}),
+        declared_options=(CONTINUATION_OPTION,),
+        execution_kind="session-read-projection",
+        operations=("session.read",),
+    ),
+    "materials": ReadViewHandlerMetadata(
+        "materials",
+        "required",
+        frozenset({"limit"}),
+        declared_options=(CONTINUATION_OPTION,),
+        execution_kind="session-read-projection",
+        operations=("session.read",),
+    ),
+}
+
 READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
     "summary": ReadViewHandlerMetadata(
         "summary",
@@ -269,14 +311,6 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         execution_kind="session-read-projection",
         operations=("session.read",),
     ),
-    "events": ReadViewHandlerMetadata(
-        "events",
-        "required",
-        frozenset({"limit"}),
-        declared_options=(CONTINUATION_OPTION,),
-        execution_kind="session-read-projection",
-        operations=("session.read",),
-    ),
     "effective_context": ReadViewHandlerMetadata(
         "effective_context",
         "required",
@@ -303,36 +337,6 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         declared_options=(NODE_OFFSET_OPTION, NODE_LIMIT_OPTION, EDGE_LIMIT_OPTION),
         execution_kind="distinct-operation",
         operations=("read.topology",),
-    ),
-    "file-edits": ReadViewHandlerMetadata(
-        "file-edits",
-        "required",
-        frozenset({"limit"}),
-        declared_options=(CONTINUATION_OPTION,),
-        execution_kind="session-read-projection",
-        operations=("session.read",),
-    ),
-    "agent-policies": ReadViewHandlerMetadata(
-        "agent-policies",
-        "required",
-        execution_kind="session-read-projection",
-        operations=("session.read",),
-    ),
-    "web-content": ReadViewHandlerMetadata(
-        "web-content",
-        "required",
-        frozenset({"limit"}),
-        declared_options=(CONTINUATION_OPTION,),
-        execution_kind="session-read-projection",
-        operations=("session.read",),
-    ),
-    "materials": ReadViewHandlerMetadata(
-        "materials",
-        "required",
-        frozenset({"limit"}),
-        declared_options=(CONTINUATION_OPTION,),
-        execution_kind="session-read-projection",
-        operations=("session.read",),
     ),
     "context": ReadViewHandlerMetadata(
         "context",
@@ -386,6 +390,10 @@ READ_VIEW_HANDLER_METADATA: dict[str, ReadViewHandlerMetadata] = {
         operations=("read.compact",),
         example="polylogue find repo:polylogue then read --view compact --max-tokens 4000",
     ),
+    **{
+        row.name: replace(_SESSION_LIST_METADATA_TEMPLATES[row.cli_handler], view_id=row.name)
+        for row in SESSION_LIST_PROJECTIONS.values()
+    },
 }
 
 

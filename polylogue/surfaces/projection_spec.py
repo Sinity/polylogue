@@ -13,6 +13,8 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import Self
 
+from polylogue.core.session_projections import SESSION_LIST_PROJECTIONS
+
 
 class ProjectionContractModel(BaseModel):
     """Immutable projection contract base without response-payload imports."""
@@ -173,6 +175,14 @@ class QueryProjectionSpec(ProjectionContractModel):
     render: RenderSpec = Field(default_factory=RenderSpec)
 
 
+_SESSION_LIST_FAMILY_TEMPLATES: dict[str, tuple[EvidenceFamily, ...]] = {
+    "events": (EvidenceFamily.EVENTS,),
+    "file-edits": (EvidenceFamily.FILE_EDITS,),
+    "agent-policies": (EvidenceFamily.AGENT_POLICIES,),
+    "web-content": (EvidenceFamily.WEB_CONTENT,),
+    "materials": (EvidenceFamily.RAW,),
+}
+
 READ_VIEW_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
     "summary": (EvidenceFamily.SESSIONS,),
     "transcript": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
@@ -180,15 +190,10 @@ READ_VIEW_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
     "messages": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
     "raw": (EvidenceFamily.RAW,),
     "hooks": (EvidenceFamily.HOOKS,),
-    "events": (EvidenceFamily.EVENTS,),
     "effective_context": (EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS),
     "orchestration": (EvidenceFamily.SESSIONS, EvidenceFamily.ACTIONS, EvidenceFamily.EVENTS),
     "lineage": (EvidenceFamily.SESSIONS,),
     "topology": (EvidenceFamily.SESSIONS,),
-    "file-edits": (EvidenceFamily.FILE_EDITS,),
-    "agent-policies": (EvidenceFamily.AGENT_POLICIES,),
-    "web-content": (EvidenceFamily.WEB_CONTENT,),
-    "materials": (EvidenceFamily.RAW,),
     "context": (EvidenceFamily.CONTEXT, EvidenceFamily.MESSAGES),
     "context-image": (EvidenceFamily.CONTEXT, EvidenceFamily.MESSAGES),
     "chronicle": (EvidenceFamily.CHRONICLE, EvidenceFamily.SESSIONS, EvidenceFamily.MESSAGES),
@@ -196,6 +201,7 @@ READ_VIEW_PROJECTION_FAMILIES: dict[str, tuple[EvidenceFamily, ...]] = {
     "correlation": (EvidenceFamily.CORRELATION, EvidenceFamily.ACTIONS),
     "temporal": (EvidenceFamily.TEMPORAL, EvidenceFamily.SESSIONS),
     "compact": (EvidenceFamily.CHRONICLE, EvidenceFamily.MESSAGES, EvidenceFamily.BLOCKS, EvidenceFamily.ACTIONS),
+    **{row.name: _SESSION_LIST_FAMILY_TEMPLATES[row.cli_handler] for row in SESSION_LIST_PROJECTIONS.values()},
 }
 """Projection mapping for executable read views.
 

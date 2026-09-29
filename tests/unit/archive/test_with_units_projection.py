@@ -829,3 +829,30 @@ async def test_truncated_attachment_projection_emits_only_registered_event_field
     assert events[0]["outcome"] == "degraded"
     assert events[0]["sessions"] == 1
     assert not any(record["event"] == "log.field_rejected" for record in records)
+
+
+def test_real_attached_message_fetch_includes_probe_rows_inside_page_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Removing probe reservation fetches nine rows under a six-row declared page budget."""
+    from typing import Any
+
+    from polylogue.archive.query import attached_units
+
+    monkeypatch.setattr(attached_units, "_MAX_ROWS_PER_PAGE", 6)
+    ids = [TestAttachedRowCeilingIsReported._seed_messages(tmp_path, 4, f"probe-{i}") for i in range(3)]
+    fetched_counts: list[int] = []
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        original = archive.query_session_messages
+
+        def observe(*args: Any, **kwargs: Any) -> Any:
+            rows = original(*args, **kwargs)
+            fetched_counts.append(len(rows))
+            return rows
+
+        monkeypatch.setattr(archive, "query_session_messages", observe)
+        attached = fetch_attached_units(archive, ids, ["message"])
+    assert fetched_counts == [6]
+    assert set(attached.rows["message"]) == set(ids)
+    assert all(len(rows) == 1 for rows in attached.rows["message"].values())
+    assert attached.gaps

@@ -12,6 +12,7 @@ without updating the table makes the method-existence assertion red.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Literal, get_args, get_origin, get_type_hints
 from unittest.mock import AsyncMock, patch
@@ -21,15 +22,14 @@ import pytest
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID
 from polylogue.cli.read_view_handlers import READ_VIEW_HANDLERS
 from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA
-from polylogue.mcp.server_cutover import mcp_get_projection_names, mcp_query_projection_names
-from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES
-from polylogue.operations.session_projections import (
-    SESSION_LIST_PROJECTION_NAMES,
+from polylogue.core.session_projections import (
     SESSION_LIST_PROJECTIONS,
-    SessionListProjection,
     mcp_get_session_projection_names,
     mcp_read_view_names,
+    session_list_projection_names,
 )
+from polylogue.mcp.server_cutover import mcp_get_projection_names, mcp_query_projection_names
+from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES
 from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async, make_polylogue_mock
 
 
@@ -60,7 +60,7 @@ def test_cli_and_mcp_projection_vocabulary_has_one_source() -> None:
     """
     from polylogue.cli.read_view_handlers import session_list_read_view_handlers
 
-    assert tuple(session_list_read_view_handlers()) == SESSION_LIST_PROJECTION_NAMES
+    assert tuple(session_list_read_view_handlers()) == session_list_projection_names()
     assert set(mcp_read_view_names()) - {"summary", "topology", "messages"} == set(SESSION_LIST_PROJECTIONS)
     assert set(mcp_get_session_projection_names()) - {"orchestration"} == set(SESSION_LIST_PROJECTIONS)
 
@@ -78,53 +78,20 @@ def test_payload_keys_are_distinct_and_named_after_their_rows() -> None:
     assert SESSION_LIST_PROJECTIONS["file-edits"].payload_key == "file_edits"
 
 
-@pytest.mark.asyncio
-async def test_projection_table_drives_cli_and_mcp_name_vocabulary(
-    monkeypatch: pytest.MonkeyPatch, mcp_server: MCPServerUnderTest
-) -> None:
-    """One added row reaches every dispatch vocabulary without a name branch.
+def test_one_projection_registration_reaches_cold_cli_and_live_mcp(tmp_path: Path) -> None:
+    """A factory-only monkeypatch misses import validation and the published tool schema."""
+    import subprocess
+    import sys
 
-    Anti-vacuity: restoring a hand-written MCP name tuple, or retaining the
-    CLI's separate list-projection rows, leaves ``projection-fixture`` out of
-    one of these production dispatch inputs.
-    """
-    from polylogue.cli.read_view_handlers import session_list_read_view_handlers
-    from polylogue.cli.read_views.session_evidence import run_read_events
-
-    fixture = SessionListProjection(
-        "projection-fixture",
-        "get_session_events",
-        "events",
-        cli_handler="events",
+    result = subprocess.run(
+        [sys.executable, "-m", "tests.infra.projection_cold_import", str(tmp_path)],
+        check=False,
+        capture_output=True,
+        text=True,
     )
-    monkeypatch.setitem(SESSION_LIST_PROJECTIONS, fixture.name, fixture)
-
-    handlers = session_list_read_view_handlers()
-    assert handlers[fixture.name].handler is run_read_events
-    assert fixture.name in mcp_read_view_names()
-    assert fixture.name in mcp_get_session_projection_names()
-
-    poly = make_polylogue_mock()
-    method = AsyncMock(return_value=[{"kind": "fixture-event"}])
-    setattr(poly, fixture.method, method)
-    with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
-        read = json.loads(
-            await invoke_surface_async(
-                mcp_server._tool_manager._tools["read"].fn,
-                ref="session:codex:projection-registry",
-                view=fixture.name,
-            )
-        )
-        get = json.loads(
-            await invoke_surface_async(
-                mcp_server._tool_manager._tools["get"].fn,
-                ref="session:codex:projection-registry",
-                projection=fixture.name,
-            )
-        )
-
-    assert read[fixture.payload_key] == get[fixture.payload_key] == [{"kind": "fixture-event"}]
-    assert method.await_count == 2
+    assert result.returncode == 0, result.stdout + result.stderr
+    evidence = json.loads(result.stdout)
+    assert evidence == {"cli_rows": 1, "mcp_read_rows": 1, "mcp_get_rows": 1, "window_calls": 2}
 
 
 @pytest.mark.asyncio

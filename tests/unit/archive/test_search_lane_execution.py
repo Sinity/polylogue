@@ -343,3 +343,78 @@ def test_archive_read_failure_is_not_relabelled_as_a_degraded_vector_lane(
                 archive=pinned.archive,
             )
     assert backend.calls == 1
+
+
+def test_production_hybrid_projection_explains_each_fused_lane(lane_archive: LaneArchive) -> None:
+    """Returning a placeholder zero score or omitting components loses the native RRF evidence."""
+    root, _config, ids = lane_archive
+    plan = SessionQueryPlan(query_terms=("needle",), retrieval_lane="hybrid", limit=10)
+    with open_operation_read(root) as pinned:
+        native = archive_search_hits(plan, archive_root=root, config=None, archive=pinned.archive)
+        projected = project_search_hits(plan, native)
+    assert len(projected) == len(native.hits) == 3
+    assert {row.session_id for row in projected} == set(ids.values())
+    assert projected.execution == native.execution
+    dual_lane = 0
+    for raw, rendered in zip(native.hits, projected, strict=True):
+        hit, _summary = raw
+        assert hit.lane_ranks is not None
+        ranks = {lane: rank for lane, rank in hit.lane_ranks.items() if rank is not None}
+        assert ranks
+        expected = {f"{lane}_rrf": 1 / (60 + rank) for lane, rank in ranks.items()}
+        assert rendered.score_kind == "rrf"
+        assert rendered.score == pytest.approx(sum(expected.values()))
+        assert rendered.raw_score == pytest.approx(sum(expected.values()))
+        assert rendered.lane_rank == min(ranks.values())
+        assert rendered.lane_contribution == pytest.approx(max(expected.values()))
+        assert rendered.score_components == {
+            **{f"{lane}_rank": float(rank) for lane, rank in ranks.items()},
+            **expected,
+        }
+        dual_lane += len(ranks) > 1
+    assert dual_lane == 2
+
+
+@pytest.mark.parametrize("full_session", [False, True])
+@pytest.mark.asyncio
+async def test_hybrid_fallback_applies_offset_once_after_postfilters(
+    lane_archive: LaneArchive, full_session: bool
+) -> None:
+    """Passing the offset into fallback SQL skips candidates a second time after filtering."""
+    from polylogue.archive.query.archive_execution import list_archive, list_summaries_archive
+
+    root, _config, ids = lane_archive
+    plan = SessionQueryPlan(query_terms=("needle",), retrieval_lane="hybrid", root=True, limit=10)
+    assert plan.has_post_filters()
+    reader = list_archive if full_session else list_summaries_archive
+    whole_ids = [str(item.id) for item in await reader(plan, archive_root=root, config=None)]
+    page_ids = [str(item.id) for item in await reader(replace(plan, offset=1, limit=1), archive_root=root, config=None)]
+    assert len(whole_ids) == 3
+    assert set(whole_ids) == set(ids.values())
+    assert len(page_ids) == 1
+    assert page_ids == whole_ids[1:2]
+
+
+def test_hybrid_lane_rank_uses_the_first_distinct_session_evidence(lane_archive: LaneArchive) -> None:
+    """Four action hits in one session must not advance its rank four times."""
+    root, _config, ids = lane_archive
+    with open_operation_read(root) as pinned:
+        action_result = archive_search_hits(
+            SessionQueryPlan(query_terms=("needle",), retrieval_lane="actions", limit=10),
+            archive_root=root,
+            config=None,
+            archive=pinned.archive,
+        )
+        hybrid = archive_search_hits(
+            SessionQueryPlan(query_terms=("needle",), retrieval_lane="hybrid", limit=10),
+            archive_root=root,
+            config=None,
+            archive=pinned.archive,
+        )
+    expected = {hit.session_id: index for index, (hit, _) in enumerate(action_result.hits, start=1)}
+    assert len(expected) == 2
+    assert set(expected) == {ids["action-one"], ids["action-two"]}
+    assert len(hybrid.hits) == 3
+    for hit, _summary in hybrid.hits:
+        assert hit.lane_ranks is not None
+        assert hit.lane_ranks["action"] == expected.get(hit.session_id)

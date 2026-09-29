@@ -1431,6 +1431,9 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
             # answers False, and every raw-artifact surface below then reports
             # ``source_tier_unavailable`` for a perfectly readable source.db.
             source_check_available = table_exists(conn, "raw_sessions", schema="source_tier")
+        # Coverage, pending input demand and exposed rows must describe one
+        # index snapshot, not several commits sampled during publication.
+        conn.execute("BEGIN")
         measured_counts = _archive_derived_counts(
             conn, source_check_available=source_check_available, exact_counts=exact_counts
         )
@@ -1466,12 +1469,15 @@ def _archive_derived_readiness(root: Path, *, exact_counts: bool = False) -> dic
                 None if raw_materialization_debt_count is None else raw_materialization_debt_count == 0
             ),
             "messages_fts_ready": messages_fts_ready,
-            "profile_rows_ready": counts["missing_profile_row_count"] == 0 and counts["orphan_profile_row_count"] == 0,
+            "profile_rows_ready": counts["missing_profile_row_count"] == 0
+            and counts["orphan_profile_row_count"] == 0
+            and counts["pending_profile_row_count"] == 0,
             "profile_counts_ready": True,
         }
         surface_readiness = _archive_surface_readiness(
             counts,
             source_check_available=source_check_available,
+            messages_fts_ready=messages_fts_ready,
         )
         return {
             "checked": True,
@@ -1599,6 +1605,7 @@ def _archive_derived_counts(
             """,
             )
         ),
+        "pending_profile_row_count": count(_scalar_int(conn, "SELECT COUNT(*) FROM session_profile_demand")),
         "orphan_profile_row_count": count(
             _scalar_int(
                 conn,
@@ -1682,6 +1689,7 @@ def _archive_surface_readiness(
     counts: dict[str, Any],
     *,
     source_check_available: bool,
+    messages_fts_ready: bool | None,
 ) -> dict[str, Any]:
     """Project low-level archive counters into operator-facing surface verdicts."""
 
@@ -1716,17 +1724,38 @@ def _archive_surface_readiness(
     search_blockers: list[str] = []
     if counts["messages_fts_exact_counts"] and counts["text_block_count"] != counts["messages_fts_count"]:
         search_blockers.append("messages_fts_row_mismatch")
+    elif messages_fts_ready is None:
+        search_blockers.append("messages_fts_unmeasured")
+    elif not messages_fts_ready:
+        search_blockers.append("messages_fts_not_ready")
 
-    profile_ready = counts["missing_profile_row_count"] == 0 and counts["orphan_profile_row_count"] == 0
+    profile_ready = all(
+        counts[name] == 0
+        for name in (
+            "missing_profile_row_count",
+            "orphan_profile_row_count",
+            "pending_profile_row_count",
+        )
+    )
     profile_blockers: list[str] = []
     if counts["missing_profile_row_count"]:
         profile_blockers.append("missing_profile_rows")
     if counts["orphan_profile_row_count"]:
         profile_blockers.append("orphan_profile_rows")
-    thread_blockers: list[str] = []
-    latency_blockers: list[str] = []
-    thread_ready = True
-    latency_ready = True
+    if counts["pending_profile_row_count"]:
+        profile_blockers.append("pending_profile_rows")
+    # Threads are live views over sessions and profiles; latency is another
+    # profile projection. Neither is ready while its profile input is absent
+    # or the canonical demand ledger says publication is pending.
+    profile_evidence = {
+        name: counts[name]
+        for name in (
+            "profile_row_count",
+            "missing_profile_row_count",
+            "orphan_profile_row_count",
+            "pending_profile_row_count",
+        )
+    }
 
     return {
         "archive_sessions": surface(
@@ -1753,7 +1782,7 @@ def _archive_surface_readiness(
             },
         ),
         "search": surface(
-            ready=not search_blockers,
+            ready=messages_fts_ready,
             blockers=search_blockers,
             evidence={
                 "text_block_count": counts["text_block_count"],
@@ -1764,16 +1793,13 @@ def _archive_surface_readiness(
         "session_profiles": surface(
             ready=profile_ready,
             blockers=profile_blockers,
-            evidence={
-                "profile_row_count": counts["profile_row_count"],
-                "missing_profile_row_count": counts["missing_profile_row_count"],
-                "orphan_profile_row_count": counts["orphan_profile_row_count"],
-            },
+            evidence=dict(profile_evidence),
         ),
         "threads": surface(
-            ready=thread_ready,
-            blockers=thread_blockers,
+            ready=profile_ready,
+            blockers=list(profile_blockers),
             evidence={
+                **profile_evidence,
                 "thread_count": counts["thread_count"],
                 "thread_session_count": counts["thread_session_count"],
             },
@@ -1792,14 +1818,14 @@ def _archive_surface_readiness(
             ready=profile_ready,
             blockers=list(profile_blockers),
             evidence={
+                **profile_evidence,
                 "cost_profile_count": counts["cost_profile_count"],
-                "missing_profile_row_count": counts["missing_profile_row_count"],
             },
         ),
         "latency_profiles": surface(
-            ready=latency_ready,
-            blockers=latency_blockers,
-            evidence={},
+            ready=profile_ready,
+            blockers=list(profile_blockers),
+            evidence=dict(profile_evidence),
         ),
     }
 

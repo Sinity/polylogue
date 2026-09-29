@@ -7,10 +7,11 @@ future web/API surfaces can inspect the same vocabulary.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from polylogue.core.json import JSONDocument
+from polylogue.core.session_projections import SESSION_LIST_PROJECTIONS
 
 ViewEvidencePolicy = Literal["required", "optional", "unavailable", "omitted"]
 ViewLossiness = Literal["raw", "normalized", "filtered", "summarized", "derived", "browse-only"]
@@ -82,6 +83,116 @@ class SessionViewProfile:
                 "timestamp_policy": projection.render.timestamps.value,
             },
         }
+
+
+_SESSION_LIST_PROFILE_TEMPLATES: dict[str, SessionViewProfile] = {
+    "events": SessionViewProfile(
+        view_id="events",
+        label="Events",
+        owner="polylogue.cli.read_views.session_evidence.run_read_events",
+        purpose=(
+            "Raw session-timeline evidence (session_events): provider evidence that rides the "
+            "timeline instead of a dialogue message, e.g. Codex world_state/agent_policy/turn_context "
+            "policy facts, Claude Code sidecar events, Hermes tool-availability spans."
+        ),
+        input_scope="single session id",
+        included_kinds=("event type", "timestamp", "structured payload"),
+        lossiness="raw",
+        evidence_policy="required",
+        privacy_policy="renders the substrate's own structured event payload verbatim, bounded by the source parser",
+        formats=("json",),
+        machine_payload="session event list payload",
+        degraded_states=("missing session", "session with no session_events"),
+    ),
+    "file-edits": SessionViewProfile(
+        view_id="file-edits",
+        label="File Edits",
+        owner="polylogue.cli.read_views.session_evidence.run_read_file_edits",
+        purpose=(
+            "Captured Claude Code Edit/Write/MultiEdit tool-call evidence: structured unified diffs "
+            "(structured_patch), pre-edit file content (original_file), and old/new string pairs -- "
+            "the typed 'what did this session change' data (polylogue-nua7/polylogue-cgfy)."
+        ),
+        input_scope="single session id",
+        included_kinds=("file path", "structured patch", "original file", "old/new string pair"),
+        lossiness="raw",
+        evidence_policy="required",
+        privacy_policy="renders the substrate's own structured file-edit payload verbatim, bounded by the source parser",
+        formats=("json",),
+        machine_payload="file edit list payload",
+        degraded_states=("missing session", "session with no captured file edits"),
+    ),
+    "agent-policies": SessionViewProfile(
+        view_id="agent-policies",
+        label="Agent Policies",
+        owner="polylogue.cli.read_views.session_evidence.run_read_agent_policies",
+        purpose=(
+            "Sandbox/approval/network policy facts (e.g. Codex agent_policy events), diverted out of "
+            "session_events into a dedicated table for zero-loss re-derivation (polylogue-nua7)."
+        ),
+        input_scope="single session id",
+        included_kinds=("approval policy", "sandbox policy", "network policy"),
+        lossiness="raw",
+        evidence_policy="required",
+        privacy_policy="renders the substrate's own structured policy payload verbatim, bounded by the source parser",
+        formats=("json",),
+        machine_payload="agent policy list payload",
+        degraded_states=("missing session", "session with no recorded agent-policy facts"),
+    ),
+    "web-content": SessionViewProfile(
+        view_id="web-content",
+        label="Web Content",
+        owner="polylogue.cli.read_views.session_evidence.run_read_web_content",
+        purpose=(
+            "Typed web-export constructs projected from ChatGPT/Claude web payloads: search queries/results, "
+            "canvas documents, content references, image results, async tasks, selected sources, token budgets, "
+            "voice notes -- 155k+ rows written every ingest with no prior reader (polylogue-kktg)."
+        ),
+        input_scope="single session id",
+        included_kinds=(
+            "search query",
+            "search result",
+            "canvas",
+            "content reference",
+            "image result",
+            "async task",
+            "selected source",
+            "token budget",
+            "voice note",
+        ),
+        lossiness="raw",
+        evidence_policy="required",
+        privacy_policy="renders the substrate's own structured web-construct payload verbatim, bounded by the source parser",
+        formats=("json",),
+        machine_payload="web content construct list payload",
+        degraded_states=("missing session", "session with no captured web content constructs"),
+    ),
+    "materials": SessionViewProfile(
+        view_id="materials",
+        label="Materials",
+        owner="polylogue.cli.read_views.session_evidence.run_read_materials",
+        purpose=(
+            "Source-tier materials retained for the session: Codex goals (objective, status, budget) and "
+            "memories (raw memory and rollout summary, split into text parts), with their acquisition state."
+        ),
+        input_scope="single session id",
+        included_kinds=("codex goal", "codex memory", "text part", "acquisition state"),
+        lossiness="raw",
+        evidence_policy="required",
+        privacy_policy="renders retained material content verbatim with its privacy classification",
+        formats=("json",),
+        machine_payload="session material list payload",
+        degraded_states=("missing session", "session with no retained materials"),
+    ),
+}
+
+
+def _session_list_profiles(family: str) -> tuple[SessionViewProfile, ...]:
+    return tuple(
+        replace(_SESSION_LIST_PROFILE_TEMPLATES[family], view_id=row.name)
+        for row in SESSION_LIST_PROJECTIONS.values()
+        if row.cli_handler == family
+    )
 
 
 READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
@@ -170,24 +281,7 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         machine_payload="hook event summary payload",
         degraded_states=("missing session", "session with no hook events"),
     ),
-    SessionViewProfile(
-        view_id="events",
-        label="Events",
-        owner="polylogue.cli.read_views.session_evidence.run_read_events",
-        purpose=(
-            "Raw session-timeline evidence (session_events): provider evidence that rides the "
-            "timeline instead of a dialogue message, e.g. Codex world_state/agent_policy/turn_context "
-            "policy facts, Claude Code sidecar events, Hermes tool-availability spans."
-        ),
-        input_scope="single session id",
-        included_kinds=("event type", "timestamp", "structured payload"),
-        lossiness="raw",
-        evidence_policy="required",
-        privacy_policy="renders the substrate's own structured event payload verbatim, bounded by the source parser",
-        formats=("json",),
-        machine_payload="session event list payload",
-        degraded_states=("missing session", "session with no session_events"),
-    ),
+    *_session_list_profiles("events"),
     SessionViewProfile(
         view_id="effective_context",
         label="Effective Context",
@@ -251,86 +345,10 @@ READ_VIEW_PROFILES: tuple[SessionViewProfile, ...] = (
         machine_payload="SessionTopology public envelope",
         degraded_states=("missing session", "unresolved parent", "excluded edge", "cycle", "conflicting parent"),
     ),
-    SessionViewProfile(
-        view_id="file-edits",
-        label="File Edits",
-        owner="polylogue.cli.read_views.session_evidence.run_read_file_edits",
-        purpose=(
-            "Captured Claude Code Edit/Write/MultiEdit tool-call evidence: structured unified diffs "
-            "(structured_patch), pre-edit file content (original_file), and old/new string pairs -- "
-            "the typed 'what did this session change' data (polylogue-nua7/polylogue-cgfy)."
-        ),
-        input_scope="single session id",
-        included_kinds=("file path", "structured patch", "original file", "old/new string pair"),
-        lossiness="raw",
-        evidence_policy="required",
-        privacy_policy="renders the substrate's own structured file-edit payload verbatim, bounded by the source parser",
-        formats=("json",),
-        machine_payload="file edit list payload",
-        degraded_states=("missing session", "session with no captured file edits"),
-    ),
-    SessionViewProfile(
-        view_id="agent-policies",
-        label="Agent Policies",
-        owner="polylogue.cli.read_views.session_evidence.run_read_agent_policies",
-        purpose=(
-            "Sandbox/approval/network policy facts (e.g. Codex agent_policy events), diverted out of "
-            "session_events into a dedicated table for zero-loss re-derivation (polylogue-nua7)."
-        ),
-        input_scope="single session id",
-        included_kinds=("approval policy", "sandbox policy", "network policy"),
-        lossiness="raw",
-        evidence_policy="required",
-        privacy_policy="renders the substrate's own structured policy payload verbatim, bounded by the source parser",
-        formats=("json",),
-        machine_payload="agent policy list payload",
-        degraded_states=("missing session", "session with no recorded agent-policy facts"),
-    ),
-    SessionViewProfile(
-        view_id="web-content",
-        label="Web Content",
-        owner="polylogue.cli.read_views.session_evidence.run_read_web_content",
-        purpose=(
-            "Typed web-export constructs projected from ChatGPT/Claude web payloads: search queries/results, "
-            "canvas documents, content references, image results, async tasks, selected sources, token budgets, "
-            "voice notes -- 155k+ rows written every ingest with no prior reader (polylogue-kktg)."
-        ),
-        input_scope="single session id",
-        included_kinds=(
-            "search query",
-            "search result",
-            "canvas",
-            "content reference",
-            "image result",
-            "async task",
-            "selected source",
-            "token budget",
-            "voice note",
-        ),
-        lossiness="raw",
-        evidence_policy="required",
-        privacy_policy="renders the substrate's own structured web-construct payload verbatim, bounded by the source parser",
-        formats=("json",),
-        machine_payload="web content construct list payload",
-        degraded_states=("missing session", "session with no captured web content constructs"),
-    ),
-    SessionViewProfile(
-        view_id="materials",
-        label="Materials",
-        owner="polylogue.cli.read_views.session_evidence.run_read_materials",
-        purpose=(
-            "Source-tier materials retained for the session: Codex goals (objective, status, budget) and "
-            "memories (raw memory and rollout summary, split into text parts), with their acquisition state."
-        ),
-        input_scope="single session id",
-        included_kinds=("codex goal", "codex memory", "text part", "acquisition state"),
-        lossiness="raw",
-        evidence_policy="required",
-        privacy_policy="renders retained material content verbatim with its privacy classification",
-        formats=("json",),
-        machine_payload="session material list payload",
-        degraded_states=("missing session", "session with no retained materials"),
-    ),
+    *_session_list_profiles("file-edits"),
+    *_session_list_profiles("agent-policies"),
+    *_session_list_profiles("web-content"),
+    *_session_list_profiles("materials"),
     SessionViewProfile(
         view_id="context",
         label="Context",

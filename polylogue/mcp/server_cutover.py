@@ -17,6 +17,14 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
+from polylogue.core.session_projections import (
+    SESSION_LIST_PROJECTIONS,
+    SessionListProjection,
+    is_mcp_get_session_projection,
+    is_mcp_read_view,
+    mcp_get_session_projection_names,
+    mcp_read_view_names,
+)
 from polylogue.mcp.declarations.adapter import register_declared_handler
 from polylogue.mcp.payloads import (
     MCPArchiveStatsPayload,
@@ -28,15 +36,6 @@ from polylogue.mcp.payloads import (
 )
 from polylogue.mcp.query_contracts import PERSONAL_STATE_PROJECTIONS
 from polylogue.operations.session_contracts import SessionOperation
-from polylogue.operations.session_projections import (
-    SESSION_LIST_PROJECTIONS,
-    MCPReadView,
-    SessionListProjection,
-    is_mcp_get_session_projection,
-    is_mcp_read_view,
-    mcp_get_session_projection_names,
-    mcp_read_view_names,
-)
 from polylogue.surfaces.outcome import decide_outcome
 
 if TYPE_CHECKING:
@@ -44,6 +43,11 @@ if TYPE_CHECKING:
     from polylogue.coordination import CoordinationEnvelopeCache
     from polylogue.mcp.declarations.adapter import ToolRegistrar
     from polylogue.mcp.server_support import ServerCallbacks
+
+
+# Build the wire vocabulary when the surface imports, from the declaration
+# table that also creates CLI profiles and dispatch metadata.
+MCPReadView: TypeAlias = cast(Any, Literal.__getitem__(mcp_read_view_names())) | None  # type: ignore[valid-type]
 
 
 # The MCP judge tool has no authenticated caller identity (37t.11): every
@@ -159,7 +163,7 @@ def _windowed_list_projection_names() -> tuple[str, ...]:
     """Session list projections paged through an evidence window, not answered whole."""
     from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES
 
-    return tuple(name for name in SESSION_LIST_PROJECTIONS if name in EVIDENCE_WINDOW_FAMILIES)
+    return tuple(row.name for row in SESSION_LIST_PROJECTIONS.values() if row.cli_handler in EVIDENCE_WINDOW_FAMILIES)
 
 
 def _object_ref(ref: str) -> str:
@@ -1132,7 +1136,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         from polylogue.mcp.server_support import MCP_RESPONSE_BUDGET_BYTES, MCP_RESPONSE_ENVELOPE_HEADROOM_BYTES
         from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES
 
-        if projection.name in EVIDENCE_WINDOW_FAMILIES:
+        if projection.cli_handler in EVIDENCE_WINDOW_FAMILIES:
             from polylogue.archive.query.transaction import (
                 QueryContinuationInvalidError,
                 QueryContinuationStaleError,
@@ -1141,7 +1145,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
             try:
                 window = await hooks.get_polylogue().read_session_evidence_window(
                     session_id,
-                    projection.name,
+                    projection.cli_handler,
                     limit=hooks.clamp_limit(limit),
                     offset=offset,
                     continuation=continuation,

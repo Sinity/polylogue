@@ -763,3 +763,24 @@ class TestStreamingOutput:
         assert emitted == 2
         for token in expected_tokens:
             assert token in rendered
+
+
+@pytest.mark.parametrize("output_format", ["json", "yaml", "csv"])
+def test_query_summary_projection_retains_non_null_cost_provenance(output_format: str) -> None:
+    """A discovery column alone does not prove the summary payload populated its value."""
+    summary = SessionSummary(
+        id=SessionId("cost-projection"),
+        origin=Origin.CLAUDE_AI_EXPORT,
+        cost_provenance="mixed",
+        total_cost_usd=1.25,
+    )
+    rendered = format_summary_list([summary], output_format, "id,cost_provenance,total_cost_usd")
+    if output_format == "csv":
+        rows = list(csv.DictReader(io.StringIO(rendered)))
+    else:
+        body = json.loads(rendered) if output_format == "json" else yaml.safe_load(rendered)
+        rows = body["items"]
+    assert len(rows) == 1
+    assert rows[0]["id"] == "cost-projection"
+    assert rows[0]["cost_provenance"] == "mixed"
+    assert float(rows[0]["total_cost_usd"]) == 1.25
