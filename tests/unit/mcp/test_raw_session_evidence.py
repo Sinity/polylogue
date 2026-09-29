@@ -25,8 +25,9 @@ from tests.infra.raw_session_evidence import drain_raw_search, write_raw
 @pytest.mark.parametrize("padding", [65_523, 65_524, 65_525, 65_526, 65_527])
 @pytest.mark.parametrize(("query", "text"), [("aa", "aaaaa"), ("aba", "abababa"), ("xy", "xyxyxy")])
 @pytest.mark.parametrize("limit", [1, 100])
+@pytest.mark.parametrize("memory", [False, True])
 def test_nonoverlap_positions_are_invariant_at_real_block_boundaries(
-    tmp_path: Path, padding: int, query: str, text: str, limit: int
+    tmp_path: Path, padding: int, query: str, text: str, limit: int, memory: bool
 ) -> None:
     """Removing the carried match end admits overlapping hits at 64 KiB boundaries."""
     payload = (json.dumps({"text": "x" * padding + text}, separators=(",", ":")) + "\n").encode()
@@ -35,7 +36,7 @@ def test_nonoverlap_positions_are_invariant_at_real_block_boundaries(
     assert len(expected) >= 2
     previous = None
     for budgets in ((65_535,), (65_536,), (8_388_608,), (65_535, 1, 3, 65_536)):
-        rows = drain_raw_search(sources, query, budgets, limit, max_pages=40)
+        rows = drain_raw_search(sources, query, budgets, limit, max_pages=40, memory=memory)
         assert len(rows) == len(expected)
         assert [(row.match_offset, row.match_end) for row in rows] == expected
         observed = [(row.line, row.offset, row.text) for row in rows]
@@ -47,8 +48,9 @@ def test_nonoverlap_positions_are_invariant_at_real_block_boundaries(
 @pytest.mark.parametrize(("first", "second"), [("hello", "world"), ("héllø", "世界")])
 @pytest.mark.parametrize("budget", [1, 2, 3, 7, 64])
 @pytest.mark.parametrize("limit", [1, 100])
+@pytest.mark.parametrize("memory", [False, True])
 def test_multiline_evidence_contains_the_exact_utf8_match(
-    tmp_path: Path, first: str, second: str, budget: int, limit: int
+    tmp_path: Path, first: str, second: str, budget: int, limit: int, memory: bool
 ) -> None:
     """Using the later frontier's line start moves the snippet past its own match."""
     prefix = json.dumps({"text": "prefix"}, separators=(",", ":")) + "\n"
@@ -56,7 +58,7 @@ def test_multiline_evidence_contains_the_exact_utf8_match(
     payload = (prefix + "\n".join(lines) + "\n").encode()
     query = first + '"}\n{"text":"' + second
     sources, _ = write_raw(tmp_path / "raw", payload)
-    rows = drain_raw_search(sources, query, (budget,), limit, max_pages=len(payload) + 3)
+    rows = drain_raw_search(sources, query, (budget,), limit, max_pages=len(payload) + 3, memory=memory)
     assert len(rows) == 1
     row = rows[0]
     start = payload.index(query.encode())

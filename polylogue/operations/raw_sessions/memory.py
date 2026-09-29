@@ -155,6 +155,7 @@ class MemoryService:
                     "authority": LOCAL_AUTHORITY,
                     "object_reference": row["reference"],
                     "line": row["line"],
+                    "offset": row["offset"],
                     "text": row["text"],
                     "source_observation": row["source_observation"],
                     "match_offset": row["match_offset"],
