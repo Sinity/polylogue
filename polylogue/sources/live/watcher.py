@@ -1549,25 +1549,17 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
 POLYLOGUE_OWNED_SOURCE_NAMES = frozenset({"browser-capture", "inbox"})
 
 
-def daemon_watch_sources(
-    *,
-    browser_capture_spool_path: Path | None = None,
-    hermes_root: Path | None = None,
-) -> tuple[WatchSource, ...]:
+def daemon_watch_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ...]:
     """The daemon's watch set: every origin at its canonical location.
 
     There are no custom source roots. Each origin is acquired from the place
     its tool writes it, account exports arrive through ``polylogue import``
     into the archive inbox, and a relocated tool directory is followed by a
-    symlink at the canonical path rather than by configuration. The one
-    substitution is the browser-capture spool, which Polylogue itself owns.
+    symlink at the canonical path rather than by configuration. Hermes's root
+    is its own ``HERMES_HOME``, and the Polylogue-owned browser-capture spool
+    lives under the archive root.
     """
-    sources = list(default_sources(hermes_root=hermes_root))
-    if browser_capture_spool_path is not None:
-        spool = browser_capture_spool_path.expanduser()
-        sources = [source for source in sources if source.name != "browser-capture"]
-        sources.append(WatchSource(name="browser-capture", root=spool, suffixes=(".json",)))
-    return tuple(sources)
+    return default_sources(hermes_root=hermes_root)
 
 
 def _cursor_db_path(polylogue: ArchiveRootOwner) -> Path:

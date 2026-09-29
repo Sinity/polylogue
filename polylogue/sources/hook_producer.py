@@ -16,11 +16,10 @@ It is also the single implementation of the carrier line:
 write rather than keeping a second copy that could drift from what the drain
 reads back.
 
-Package-backed resolution (the configured hook provider, the configured
-archive root) is consulted only through :func:`_import_optional`, which
-returns ``None`` when the polylogue package is not importable. The installed
-command bakes ``--provider`` and ``--sidecar-dir``, so the fast path never
-reaches for it.
+Package-backed resolution (the configured archive root) is consulted only
+through :func:`_import_optional`, which returns ``None`` when the polylogue
+package is not importable. The installed command bakes ``--provider`` and
+``--sidecar-dir``, so the fast path never reaches for it.
 """
 
 from __future__ import annotations
@@ -627,25 +626,13 @@ def _option_value(args: list[str], name: str) -> str | None:
     return args[index + 1] if index + 1 < len(args) else None
 
 
-def _configured_provider() -> str | None:
-    """The operator-forced harness, from the environment or the config file."""
-
-    forced = os.environ.get("POLYLOGUE_HOOK_PROVIDER", "").strip()
-    if forced:
-        return forced
-    config = _import_optional("polylogue.config")
-    if config is None:
-        return None
-    provider = config.load_polylogue_config().hook_provider
-    return str(provider) if provider else None
-
-
 def detect_provider(payload: dict[str, object]) -> str | None:
-    """Resolve the harness from the operator's setting, else the payload shape."""
+    """Resolve the harness from the payload shape when the carrier names none.
 
-    forced = _configured_provider()
-    if forced in EVENTS_BY_HARNESS:
-        return forced
+    Installed hook commands carry ``--provider``; this is the manual-invocation
+    fallback.
+    """
+
     if "turn_id" in payload or "turnId" in payload:
         return "codex"
     if "permission_mode" in payload or "permissionMode" in payload or "model" in payload:

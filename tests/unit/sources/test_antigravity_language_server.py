@@ -274,26 +274,11 @@ def test_post_returns_decoded_object(
     assert result == {"ok": True, "n": 1}
 
 
-def test_discover_language_server_prefers_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    target = tmp_path / "language_server_linux_x64"
-    target.write_text("#!/bin/sh\nexit 0\n")
-    target.chmod(0o755)
-
-    monkeypatch.setenv("POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER", str(target))
-    # Even if PATH would shadow it, the env var wins.
-    monkeypatch.setattr(
-        "polylogue.sources.parsers.antigravity.shutil.which",
-        lambda _name: "/should/not/be/used",
-    )
-
-    found = discover_language_server()
-    assert found == target
-
-
-def test_discover_language_server_falls_back_to_path(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER", raising=False)
+def test_discover_language_server_prefers_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    system = tmp_path / "system" / "language_server_linux_x64"
+    system.parent.mkdir()
+    system.write_text("#!/bin/sh\nexit 0\n")
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity._SYSTEM_LANGUAGE_SERVER", system)
     monkeypatch.setattr(
         "polylogue.sources.parsers.antigravity.shutil.which",
         lambda name: "/usr/local/bin/language_server_linux_x64" if name == "language_server_linux_x64" else None,
@@ -303,10 +288,19 @@ def test_discover_language_server_falls_back_to_path(
     assert found == Path("/usr/local/bin/language_server_linux_x64")
 
 
-def test_discover_language_server_returns_none_when_absent(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER", raising=False)
+def test_discover_language_server_finds_the_system_install(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: dropping the system-install probe returns ``None`` here."""
+    system = tmp_path / "system" / "language_server_linux_x64"
+    system.parent.mkdir()
+    system.write_text("#!/bin/sh\nexit 0\n")
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity._SYSTEM_LANGUAGE_SERVER", system)
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity.shutil.which", lambda _name: None)
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity._NIX_STORE", Path("/nonexistent-nix-store"))
+    assert discover_language_server() == system
+
+
+def test_discover_language_server_returns_none_when_absent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("polylogue.sources.parsers.antigravity._SYSTEM_LANGUAGE_SERVER", tmp_path / "absent")
     monkeypatch.setattr("polylogue.sources.parsers.antigravity.shutil.which", lambda _name: None)
     monkeypatch.setattr("polylogue.sources.parsers.antigravity._NIX_STORE", Path("/nonexistent-nix-store"))
     assert discover_language_server() is None

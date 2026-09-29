@@ -28,31 +28,17 @@ command output is quoted, it was run against this fixture set.
 - Everything is local: no Hermes bytes leave the machine, and the acquisition
   path for every class below is a local file read, never a network call.
 
-## Configured runtime roots
+## Hermes runtime root
 
-Polylogue resolves one Hermes root through the same five-layer config chain
-every other runtime path uses (`polylogue/config.py`):
+Polylogue watches the Hermes root Hermes itself uses: `$HERMES_HOME` when it is
+set, otherwise `~/.hermes`. Polylogue has no setting of its own for it; to move
+the root, set `HERMES_HOME` for Hermes and for `polylogued`, or symlink
+`~/.hermes`.
 
-| Layer (highest wins) | Value |
-| --- | --- |
-| Environment variable | `POLYLOGUE_HERMES_ROOT` |
-| Config file | `sources.hermes.root` in `polylogue.toml` |
-| Default | `~/.hermes` |
-
-There is no `polylogued run` flag for the Hermes root; use the environment
-variable or config file.
-
-Source: `ConfigInventoryEntry("hermes_root", toml_path="sources.hermes.root",
-env_var="POLYLOGUE_HERMES_ROOT", ...)` in `polylogue/config.py:780-786`, resolved
-into `ResolvedRuntimeConfig.source_paths.hermes` at `polylogue/config.py:1718-1721`
-(fallback `bootstrap.home / ".hermes"`). The same default appears in
-`polylogue/paths/_roots.py:hermes_sessions_path()` and in `polylogue init`'s
-source-detection table (`polylogue/cli/commands/init.py:62`: *"Hermes agent
-state.db and fallback session exports"*).
-
-Run `polylogue init` once to detect whether `~/.hermes` (or your configured
-override) exists and record it in `polylogue.toml`; both the daemon and the
-CLI read that file.
+The root resolves into `ResolvedRuntimeConfig.source_paths.hermes`
+(`resolve_runtime_config` in `polylogue/config.py`); `hermes_sessions_path()` in
+`polylogue/paths/_roots.py` and `polylogue init`'s source-detection table read
+the same variable.
 
 ## Watched source classes
 
@@ -85,7 +71,7 @@ lifecycle events from any configured origin, including Hermes, through
 `$XDG_DATA_HOME/polylogue/hooks/carriers` by default. It only carries events if you additionally install a Hermes-side
 hook emitter (the versioned export contract in
 [`docs/design/hermes-archival-export-contract.md`](design/hermes-archival-export-contract.md)
-describes the wire format); pointing `sources.hermes.root` at your install
+describes the wire format); relocating the Hermes root
 does not by itself enable it.
 
 ## Fidelity model
@@ -481,8 +467,7 @@ because none of them branch on origin — see
   `--insecure-allow-remote` plus a token; refused by default.
 - **No network calls for Hermes ingestion.** Every acquisition method above
   (`sqlite_backup`, `json_fallback`, `jsonl_stream`) is a local file read.
-  Nothing about pointing `sources.hermes.root` at your install causes an
-  outbound request.
+  Nothing about the Hermes root's location causes an outbound request.
 - **Payload hygiene is enforced per artifact class, not assumed.** ATIF/ATOF
   never copy prompt or tool-argument text — only ids, presence, and
   structural outcome. The verification ledger is the one deliberate
@@ -490,7 +475,7 @@ because none of them branch on origin — see
   that text *is* the evidence, not conversational content) — see the
   per-artifact sections above for exactly which fields round-trip.
 - **You control the root.** Nothing is watched outside the resolved
-  `sources.hermes.root` (or the general, separately-configured hook carriers,
+  Hermes root (or the general hook carriers,
   which requires its own opt-in Hermes-side hook install).
 
 ## Try it yourself
@@ -508,8 +493,7 @@ polylogue import tests/fixtures/hermes/atof/nemo_relay_atof_v0.1_real_redacted.j
 # 2. Full ingest + query. A disposable HOME leaves every typed default source
 #    empty while the explicit inbox remains available to the daemon:
 smoke_home=$(mktemp -d)
-env -u POLYLOGUE_HERMES_ROOT -u POLYLOGUE_CONFIG -u POLYLOGUE_SITE_CONFIG \
-    -u POLYLOGUE_BROWSER_CAPTURE_SPOOL_PATH -u POLYLOGUE_HOOK_SIDECAR_DIR \
+env -u HERMES_HOME -u POLYLOGUE_CONFIG -u POLYLOGUE_SITE_CONFIG \
     HOME="$smoke_home" XDG_CONFIG_HOME="$smoke_home/config" XDG_DATA_HOME="$smoke_home/data" \
   polylogued run --no-browser-capture --no-source-catchup &
 polylogue import tests/fixtures/hermes/atif/nemo_relay_atif_v1.7_real_redacted.json

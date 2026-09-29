@@ -73,58 +73,28 @@ def test_render_starter_toml_lists_present_and_comments_absent(isolated_home: Pa
     load_polylogue_config(config_path=config)
 
 
-def test_render_starter_toml_persists_a_hermes_root_override(
-    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A detected ``POLYLOGUE_HERMES_ROOT`` override survives past init.
+def test_detect_chat_sources_reads_hermes_home(isolated_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hermes is detected at its own ``HERMES_HOME``, and init writes no root for it.
 
-    ``detect_chat_sources`` reports the override's path as present, but the
-    renderer only listed it in a comment: once the one-shot environment
-    variable that produced the starter file is gone, ``polylogued run`` fell
-    back to ``~/.hermes`` and never watched the source ``init`` claimed to
-    detect and record.
-
-    Anti-vacuity: rendering only the comment line (the old behavior) makes
-    the ``sources.hermes.root`` assertions below fail.
+    Anti-vacuity: resolving the Hermes root from ``~/.hermes`` alone reports
+    the relocated Hermes as absent.
     """
     from polylogue.config import load_polylogue_config
 
-    hermes_root = isolated_home / "srv-hermes"
-    hermes_root.mkdir()
-    monkeypatch.setenv("POLYLOGUE_HERMES_ROOT", str(hermes_root))
+    hermes_home = isolated_home / "srv-hermes"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     detected = detect_chat_sources()
+    hermes = next(source for source in detected if source.family == "hermes")
+    assert hermes.path == hermes_home
+    assert hermes.present is True
+
     body = render_starter_toml(detected)
-    assert "[sources.hermes]" in body
-    assert f'root = "{hermes_root}"' in body
-
+    assert "[sources" not in body
     config = isolated_home / "polylogue.toml"
     config.write_text(body, encoding="utf-8")
-    monkeypatch.delenv("POLYLOGUE_HERMES_ROOT", raising=False)
-    settings = load_polylogue_config(config_path=config)
-    assert settings.hermes_root == str(hermes_root)
-
-
-def test_render_starter_toml_persists_a_configured_hermes_root(
-    isolated_home: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A Hermes root set by an existing config survives ``init --force``.
-
-    Anti-vacuity: persisting only the environment override drops this root,
-    which came from the config file, and the daemon reverts to ``~/.hermes``.
-    """
-    from polylogue.config import load_polylogue_config
-
-    hermes_root = isolated_home / "srv-hermes"
-    hermes_root.mkdir()
-    config = isolated_home / "polylogue.toml"
-    config.write_text(f'[sources.hermes]\nroot = "{hermes_root}"\n', encoding="utf-8")
-    monkeypatch.setenv("POLYLOGUE_CONFIG", str(config))
-    monkeypatch.delenv("POLYLOGUE_HERMES_ROOT", raising=False)
-
-    body = render_starter_toml(detect_chat_sources())
-    config.write_text(body, encoding="utf-8")
-    assert load_polylogue_config(config_path=config).hermes_root == str(hermes_root)
+    load_polylogue_config(config_path=config)
 
 
 def test_init_command_writes_starter_config(isolated_home: Path) -> None:

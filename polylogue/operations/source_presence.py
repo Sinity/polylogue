@@ -18,9 +18,7 @@ class WatchedSourcePresence:
     tool_roots: tuple[Path, ...]
 
 
-def watched_source_presence(
-    *, hermes_root: Path | None, browser_capture_spool_path: Path | None = None
-) -> WatchedSourcePresence:
+def watched_source_presence(*, hermes_root: Path | None) -> WatchedSourcePresence:
     """Probe the daemon's own watch set (``daemon_watch_sources``), as ``polylogued run`` builds it.
 
     That set includes secondary canonical roots, such as Codex's state
@@ -31,13 +29,7 @@ def watched_source_presence(
     (the sources with a topology identity) are evidence about sessions, not
     a chat source.
     """
-    sources = tuple(
-        source
-        for source in daemon_watch_sources(
-            browser_capture_spool_path=browser_capture_spool_path, hermes_root=hermes_root
-        )
-        if source.source_id is None
-    )
+    sources = tuple(source for source in daemon_watch_sources(hermes_root=hermes_root) if source.source_id is None)
     return WatchedSourcePresence(
         present=any(_would_acquire(source, sources) for source in sources),
         tool_roots=tuple(source.root for source in sources if source.name not in POLYLOGUE_OWNED_SOURCE_NAMES),

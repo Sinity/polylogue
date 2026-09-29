@@ -1647,21 +1647,19 @@ def _iso_mtime(path: Path) -> str | None:
 
 
 def discover_language_server() -> Path | None:
-    from polylogue.config import load_polylogue_config
-
-    configured_path = load_polylogue_config().antigravity_language_server
-    if configured_path:
-        path = Path(configured_path).expanduser()
-        if path.is_file():
-            return path
-
+    """Find the vendor binary on ``PATH``, in the system install, or in the Nix store."""
     if binary_path := shutil.which("language_server_linux_x64"):
         return Path(binary_path)
-
+    if _SYSTEM_LANGUAGE_SERVER.is_file():
+        return _SYSTEM_LANGUAGE_SERVER
     return _nix_store_language_server()
 
 
 _NIX_STORE = Path("/nix/store")
+#: Where the vendor's Linux package installs the bundled binary.
+_SYSTEM_LANGUAGE_SERVER = Path(
+    "/usr/share/antigravity/resources/app/extensions/antigravity/bin/language_server_linux_x64"
+)
 _PACKAGED_LANGUAGE_SERVER_PATHS = (
     "lib/antigravity/resources/app/extensions/antigravity/bin/language_server_linux_x64",
     "lib/antigravity-ide/resources/app/extensions/antigravity/bin/language_server_linux_x64",

@@ -251,9 +251,9 @@ The adapter lives in `polylogue/sources/parsers/antigravity.py`:
   `-standalone -persistent_mode -http_server_port=<port>` against the user's
   Antigravity data root, waits until the search endpoint answers, and tears the
   process down on close.
-- `discover_language_server()` resolves the binary in this order:
-  `POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER` env var, `$PATH`, then the highest
-  matching `/nix/store/*-antigravity-*` extension bundle.
+- `discover_language_server()` resolves the binary in this order: `$PATH`,
+  the vendor package's install under `/usr/share/antigravity`, then the
+  highest matching `/nix/store/*-antigravity-*` extension bundle.
 - `iter_language_server_exports(root)` drives `SearchConversations` and
   `ConvertTrajectoryToMarkdown` and yields `ParsedSession` objects through
   `parse_markdown_export()`.

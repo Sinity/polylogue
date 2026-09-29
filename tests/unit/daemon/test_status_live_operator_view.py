@@ -139,20 +139,3 @@ def test_text_status_lists_failed_services_and_currently_failing_loops() -> None
     assert "Failing loops: 1" in text
     assert "wal_checkpoint: OperationalError: disk I/O error" in text
     assert "fts_sweep" not in text
-
-
-def test_explicit_spool_is_answered_locally_even_with_a_live_daemon() -> None:
-    """``--spool`` names a path the daemon's cached status does not describe.
-    Anti-vacuity: probing first returns the daemon payload and drops the
-    requested spool."""
-    from click.testing import CliRunner
-
-    local = {"ok": True, "daemon": "polylogued", "probe": "local"}
-    with (
-        patch.object(daemon_cli, "_live_daemon_status_payload", return_value={"ok": True, "probe": "live"}) as probe,
-        patch.object(daemon_cli, "daemon_status_payload", return_value=local) as local_payload,
-    ):
-        result = CliRunner().invoke(daemon_cli.main, ["status", "--spool", "/nonexistent/spool", "--format", "json"])
-    assert result.exit_code == 0, result.output
-    probe.assert_not_called()
-    assert local_payload.call_args.kwargs["include_browser_capture_spool_path"] is True

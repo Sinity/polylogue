@@ -139,7 +139,7 @@ def test_json_effective_config_includes_inventory_and_layer_metadata(
     assert _AUTH_TOKEN not in json.dumps(payload)
 
     inventory_keys = {entry["key"] for entry in payload["inventory"]}
-    assert {"api_port", "api_auth_token", "browser_capture_spool_path"}.issubset(inventory_keys)
+    assert {"api_port", "api_auth_token", "browser_capture_auth_token"}.issubset(inventory_keys)
     assert "diagnostics" in payload
 
 

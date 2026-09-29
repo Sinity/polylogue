@@ -147,13 +147,7 @@ def test_polylogued_status_json_reports_daemon_components(
     with patch("polylogue.daemon.status.default_sources", return_value=sources):
         result = CliRunner().invoke(
             main,
-            [
-                "status",
-                "--spool",
-                str(tmp_path / "captures"),
-                "--format",
-                "json",
-            ],
+            ["status", "--format", "json"],
         )
 
     assert result.exit_code == 1
@@ -165,7 +159,7 @@ def test_polylogued_status_json_reports_daemon_components(
     assert live["source_count"] == 2
     assert live["existing_source_count"] == 1
     assert browser_capture["spool_ready"] is True
-    assert browser_capture["spool_path"] == str(tmp_path / "captures")
+    assert "spool_path" not in browser_capture
 
 
 def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> None:
@@ -748,7 +742,6 @@ class TestBrowserCaptureReceiverTokenAutoMint:
                     enable_browser_capture=True,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                     service_profile=ServiceProfile.SURFACES,
                     **run_kwargs,
                 )
@@ -801,25 +794,6 @@ def test_polylogued_run_rejects_retired_debounce_option() -> None:
 
     assert result.exit_code != 0
     assert "No such option '--debounce-s'" in result.output
-
-
-def test_spool_override_replaces_default_browser_capture_source() -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    default_spool = Path("/tmp/default-browser-capture")
-    override_spool = Path("/tmp/override-browser-capture")
-    sources = (
-        WatchSource(name="codex", root=Path("/tmp/codex")),
-        WatchSource(name="browser-capture", root=default_spool, suffixes=(".json",)),
-    )
-
-    with patch("polylogue.sources.live.watcher.default_sources", return_value=sources):
-        resolved = daemon_cli._watch_sources(browser_capture_spool_path=override_spool)
-
-    assert resolved == (
-        WatchSource(name="codex", root=Path("/tmp/codex")),
-        WatchSource(name="browser-capture", root=override_spool, suffixes=(".json",)),
-    )
 
 
 def test_polylogued_run_can_skip_configured_source_catchup() -> None:
@@ -1410,7 +1384,6 @@ def test_daemon_rebuild_lease_refusal_precedes_startup_blob_reconciliation(
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                 )
             )
         assert archive_digest() == before
@@ -1458,7 +1431,6 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -1525,7 +1497,6 @@ def test_run_daemon_services_parks_operation_recovery_on_audit_schema_mismatch(
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                 ),
                 timeout=5.0,
             )
@@ -1569,7 +1540,6 @@ def test_forward_versioned_durable_tier_is_a_typed_startup_refusal(
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                 ),
                 timeout=5.0,
             )
@@ -1647,7 +1617,6 @@ def test_daemon_cleanup_failure_retains_rebuild_exclusion_until_process_exit(
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -1725,7 +1694,6 @@ def test_lifecycle_start_failure_releases_pidfile(tmp_path: Path, monkeypatch: p
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -1786,7 +1754,6 @@ def test_daemon_startup_reconciles_trains_before_schema_probe(tmp_path: Path, mo
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -1824,7 +1791,6 @@ def test_daemon_startup_creates_missing_archive_root_before_ownership(
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                 )
             )
     finally:
@@ -1855,7 +1821,6 @@ def test_run_daemon_services_checks_archive_identity_before_component_startup(tm
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -2176,7 +2141,6 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=True,
             )
         )
@@ -2340,7 +2304,6 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=False,
                 service_profile=ServiceProfile.REPLAY,
             )
@@ -2584,7 +2547,6 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                     enable_api=False,
                     enable_source_catchup=False,
                     service_profile=ServiceProfile.INTAKE,
@@ -2752,7 +2714,6 @@ def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 service_profile=ServiceProfile.SURFACES,
             )
         )
@@ -2817,7 +2778,6 @@ def test_run_daemon_services_shutdowns_running_server_on_watcher_failure() -> No
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -2971,7 +2931,6 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=True,
                 api_host="127.0.0.1",
                 api_port=8766,
@@ -3110,7 +3069,6 @@ def test_run_daemon_services_schema_block_skips_write_but_starts_health_check() 
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -3644,7 +3602,6 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                     enable_api=False,
                     enable_source_catchup=False,
                     service_profile=ServiceProfile.INTAKE,
@@ -3792,7 +3749,6 @@ async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_pa
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                     enable_api=False,
                     enable_source_catchup=False,
                     service_profile=ServiceProfile.INTAKE,
@@ -3941,7 +3897,6 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                     enable_api=False,
                     enable_source_catchup=False,
                     service_profile=ServiceProfile.INTAKE,
@@ -4214,7 +4169,6 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             ),
             into=created,
             orphans=orphans,
@@ -4350,7 +4304,6 @@ def test_a_watcher_with_no_roots_is_unavailable_on_the_production_route(tmp_path
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             ),
             into=created,
         )
@@ -4468,7 +4421,6 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             ),
             into=created,
         )
@@ -4568,7 +4520,6 @@ def _run_focused_profile_iteration(tmp_path: Path) -> dict[str, float | int]:
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=False,
                 service_profile=ServiceProfile.RESIDENT_CORE,
             )
@@ -4700,7 +4651,6 @@ async def test_full_profile_names_missing_source_tier_without_starting_raw_servi
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=False,
                 service_profile=ServiceProfile.PRODUCTION,
             )
@@ -4880,7 +4830,6 @@ async def test_an_orphaned_service_retains_archive_ownership_on_the_production_r
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=False,
                 service_profile=ServiceProfile.RESIDENT_CORE,
             )

@@ -264,12 +264,7 @@ def _probe_no_sources() -> StatusDiagnostic | None:
     # already recognizes (it appends "aistudio" to .sources).
     if any(source.name == "aistudio" for source in runtime_config.sources):
         return None
-    # ``polylogued run`` watches a configured capture spool in place of the default.
-    spool = runtime_config.settings.browser_capture_spool_path
-    presence = watched_source_presence(
-        hermes_root=runtime_config.source_paths.hermes,
-        browser_capture_spool_path=Path(spool).expanduser() if spool else None,
-    )
+    presence = watched_source_presence(hermes_root=runtime_config.source_paths.hermes)
     if presence.present:
         return None
     return StatusDiagnostic(

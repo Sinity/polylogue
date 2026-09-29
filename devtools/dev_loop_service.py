@@ -205,8 +205,6 @@ def _start_daemon(
     The dedicated child process group is terminated locally on every proof
     exit. The runtime retains lifecycle authority and is the outer cleanup net.
     """
-    spool = artifact_root / "browser-capture"
-    spool.mkdir(parents=True, exist_ok=True)
     log_path = artifact_root / "polylogued.log"
     command = [
         sys.executable,
@@ -217,8 +215,6 @@ def _start_daemon(
         str(api_port),
         "--port",
         str(capture_port),
-        "--spool",
-        str(spool),
         "--browser-capture-auth-token",
         _RECEIVER_TOKEN,
         "--api-auth-token",
