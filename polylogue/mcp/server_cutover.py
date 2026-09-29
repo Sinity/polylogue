@@ -533,7 +533,6 @@ async def _query_advanced_sessions(
                         query=request.query or "",
                         limit=clamped_limit,
                         offset=effective_offset,
-                        retrieval_lane=request.retrieval_lane or "dialogue",
                         sort=request.sort,
                         config=config,
                         archive_root=archive_root,

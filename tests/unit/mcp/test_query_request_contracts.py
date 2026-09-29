@@ -26,6 +26,7 @@ import pytest
 
 from polylogue.archive.query.fields import mcp_query_field_names
 from polylogue.archive.query.plan import SessionQueryPlan
+from polylogue.archive.query.search_contract import ArchiveSearchResult, SearchExecution
 from polylogue.archive.query.spec import QuerySpecError, SessionQuerySpec
 from polylogue.mcp.archive_support import archive_query_filters, archive_search_payload, archive_session_list_payload
 from polylogue.mcp.query_contracts import MCPSessionQueryRequest, build_query_spec, build_session_query_request
@@ -74,10 +75,10 @@ def test_list_sessions_routes_near_session_to_query_executor(monkeypatch: pytest
     def fake_archive_search_hits(
         plan: SessionQueryPlan,
         **kwargs: object,
-    ) -> tuple[list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]], str]:
+    ) -> ArchiveSearchResult:
         observed["similar_session_id"] = plan.similar_session_id
         observed["archive_root"] = kwargs["archive_root"]
-        return [], "semantic"
+        return ArchiveSearchResult([], "semantic", SearchExecution(("vector",), ("vector",)))
 
     monkeypatch.setattr("polylogue.archive.query.archive_execution.archive_search_hits", fake_archive_search_hits)
     archive = MagicMock()
@@ -169,10 +170,10 @@ def test_archive_search_routes_near_session_to_query_executor(monkeypatch: pytes
     def fake_archive_search_hits(
         plan: SessionQueryPlan,
         **kwargs: object,
-    ) -> tuple[list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]], str]:
+    ) -> ArchiveSearchResult:
         assert plan.similar_session_id == "seed-session"
         assert kwargs["archive_root"] == Path("/archive")
-        return [(hit, summary)], "semantic"
+        return ArchiveSearchResult([(hit, summary)], "semantic", SearchExecution(("vector",), ("vector",)))
 
     monkeypatch.setattr("polylogue.archive.query.archive_execution.archive_search_hits", fake_archive_search_hits)
     archive = MagicMock()
@@ -194,7 +195,6 @@ def test_archive_search_routes_near_session_to_query_executor(monkeypatch: pytes
         query="",
         limit=5,
         offset=0,
-        retrieval_lane="semantic",
         sort=None,
         archive_root=Path("/archive"),
     )

@@ -633,22 +633,24 @@ def _search_payload(
             ),
         )
     plan = fetch_spec.to_plan(vector_provider=vector_provider)
-    pairs, resolved_lane = archive_search_hits(
+    result = archive_search_hits(
         plan,
         archive_root=archive.archive_root,
         config=None,
         archive=archive,
+        vector_failure=vector_failure,
     )
+    resolved_lane = result.retrieval_lane
     query_text = (
         " ".join((*fetch_spec.query_terms, *fetch_spec.contains_terms)).strip() or fetch_spec.similar_text or ""
     )
-    hits = project_search_hits(plan, pairs, resolved_lane, vector_failure=vector_failure)
+    hits = project_search_hits(plan, result)
     hit_payloads = tuple(
         SessionSearchHitPayload.from_search_hit(hit, message_count=hit.summary.message_count) for hit in hits
     )
     # Vector backends deliberately expose a bounded nearest-neighbour page, not
     # an archive-wide cardinality.  ``None`` is the canonical honest total.
-    if needs_vector:
+    if needs_vector or fetch_spec.retrieval_lane == "actions":
         total: int | None = None
     else:
         from polylogue.api.archive import _archive_count_sessions_for_spec
@@ -675,7 +677,7 @@ def _search_payload(
             resolve_default_root_filter(fetch_spec.root, boolean_predicate=fetch_spec.boolean_predicate)
         ),
         limit=display_limit,
-        offset=spec.offset,
+        offset=cursor.r if cursor is not None else spec.offset,
         query=query_text,
         retrieval_lane=resolved_lane,
         sort=spec.sort,

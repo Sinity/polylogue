@@ -22,8 +22,6 @@ from polylogue.surfaces.outcome import decide_outcome, lineage_page_outcome
 from polylogue.surfaces.payloads import (
     QueryMissDiagnosticsPayload,
     QueryMissReasonPayload,
-    TargetRefPayload,
-    reader_anchor,
 )
 
 if TYPE_CHECKING:
@@ -43,7 +41,6 @@ if TYPE_CHECKING:
         MCPSessionSummaryPayload,
     )
     from polylogue.storage.sqlite.archive_tiers.archive import (
-        ArchiveSessionSearchHit,
         ArchiveSessionSummary,
         ArchiveStore,
     )
@@ -52,7 +49,6 @@ if TYPE_CHECKING:
         QueryUnitResultEnvelope,
         SearchCursor,
         SearchEnvelope,
-        SessionSearchHitPayload,
     )
 
 
@@ -305,7 +301,7 @@ def archive_session_list_payload(
 
         resolved_archive_root = archive_root or archive.archive_root
         plan = query_spec_to_plan(replace(spec, limit=limit, offset=offset))
-        pairs, _resolved_lane = archive_search_hits(
+        result = archive_search_hits(
             plan,
             archive_root=resolved_archive_root,
             config=config,
@@ -314,14 +310,14 @@ def archive_session_list_payload(
         )
         match_counts: dict[str, int] = {}
         summaries_by_id: dict[str, ArchiveSessionSummary] = {}
-        for _hit, summary in pairs:
+        for _hit, summary in result.hits:
             summaries_by_id.setdefault(summary.session_id, summary)
             match_counts[summary.session_id] = match_counts.get(summary.session_id, 0) + 1
         summaries = tuple(summaries_by_id.values())
         # ``archive_search_hits`` already received this page's offset.  Do not
         # apply it a second time after coalescing its raw block hits.
         page = summaries
-        next_offset = offset + len(page) if len(pairs) == limit else None
+        next_offset = offset + len(page) if len(result.hits) == limit else None
         return MCPPaginatedQueryResultPayload(
             items=tuple(
                 archive_matched_summary_payload(
@@ -425,7 +421,6 @@ def archive_search_payload(
     query: str,
     limit: int,
     offset: int,
-    retrieval_lane: str,
     sort: str | None,
     config: Config | None = None,
     archive_root: Path | None = None,
@@ -433,67 +428,46 @@ def archive_search_payload(
     cursor: SearchCursor | None = None,
     request_identity: str | None = None,
 ) -> SearchEnvelope:
-    """Build the generic MCP search envelope from archive block search."""
-    from polylogue.surfaces.payloads import build_search_envelope
+    """Build MCP search from the same ranked read and lane evidence as the API."""
+    from polylogue.archive.query.archive_execution import archive_search_hits
+    from polylogue.archive.query.search_hits import project_search_hits
+    from polylogue.archive.query.spec import query_spec_to_plan
+    from polylogue.surfaces.payloads import SessionSearchHitPayload, build_search_envelope
 
     started_at = monotonic()
-    if spec.similar_session_id is not None:
-        from polylogue.archive.query.archive_execution import archive_search_hits
-        from polylogue.archive.query.spec import query_spec_to_plan
-
-        resolved_archive_root = archive_root or archive.archive_root
-        plan = query_spec_to_plan(replace(spec, limit=limit, offset=offset))
-        pairs, resolved_lane = archive_search_hits(
-            plan,
-            archive_root=resolved_archive_root,
-            config=config,
-            default_limit=limit,
-            archive=archive,
-        )
-        authority = authority_for_reader(archive, server_identity="direct", started_at=started_at)
-        return build_search_envelope(
-            tuple(archive_search_hit_payload(hit, archive=archive) for hit, _summary in pairs),
-            total=None,
-            limit=limit,
-            offset=offset,
-            query=query,
-            retrieval_lane=resolved_lane,
-            sort=sort,
-            action_affordances=_search_affordances(include_affordances),
-            cursor=cursor,
-            request_identity=request_identity,
-            authority=authority,
-        )
-
-    filters = archive_query_filters(spec)
-    hits = archive.search_summaries(
-        query,
-        limit=limit,
-        offset=offset,
-        sort=_sort_value(spec.sort),
-        reverse=spec.reverse,
-        **filters,
+    plan = query_spec_to_plan(replace(spec, limit=limit, offset=offset))
+    result = archive_search_hits(
+        plan,
+        archive_root=archive_root or archive.archive_root,
+        config=config,
+        default_limit=limit,
+        archive=archive,
     )
-    total = archive.count_search_sessions(query, **filters)
+    hits = project_search_hits(plan, result)
+    filters = archive_query_filters(spec)
+    ranked_only = bool(spec.similar_text or spec.similar_session_id or spec.retrieval_lane in {"hybrid", "actions"})
+    text_query = _archive_text_query(spec) or query
+    total = None if ranked_only else archive.count_search_sessions(text_query, **filters)
     diagnostics = (
-        _search_term_diagnostics(archive, query=query, filters=filters, spec=spec, config=config)
+        _search_term_diagnostics(archive, query=text_query, filters=filters, spec=spec, config=config)
         if total == 0
         else None
     )
     authority = authority_for_reader(archive, server_identity="direct", started_at=started_at)
     return build_search_envelope(
-        tuple(archive_search_hit_payload(hit, archive=archive) for hit in hits),
+        tuple(SessionSearchHitPayload.from_search_hit(hit, message_count=hit.summary.message_count) for hit in hits),
         total=total,
         limit=limit,
         offset=offset,
         query=query,
-        retrieval_lane=retrieval_lane,
+        retrieval_lane=result.retrieval_lane,
         sort=sort,
         action_affordances=_search_affordances(include_affordances),
         diagnostics=diagnostics,
         cursor=cursor,
         request_identity=request_identity,
         authority=authority,
+        execution=result.execution,
     )
 
 
@@ -850,32 +824,6 @@ def _excerpt_text(text: str, max_chars: int, *, match_query: str | None = None) 
     return text[:head] + marker + text[-(retained - head) :]
 
 
-def archive_search_hit_payload(hit: ArchiveSessionSearchHit, *, archive: ArchiveStore) -> SessionSearchHitPayload:
-    """Project an archive FTS hit into the generic search-hit payload."""
-    from polylogue.surfaces.payloads import (
-        SessionSearchHitPayload,
-        SessionSearchMatchPayload,
-        reader_message_actions,
-    )
-
-    summary = archive.read_summary(hit.session_id)
-    return SessionSearchHitPayload(
-        session=archive_summary_payload(summary),
-        match=SessionSearchMatchPayload(
-            rank=hit.rank,
-            retrieval_lane="dialogue",
-            match_surface="message",
-            target_ref=TargetRefPayload.message(session_id=hit.session_id, message_id=hit.message_id),
-            anchor=reader_anchor("message", hit.message_id),
-            actions=reader_message_actions(),
-            message_id=hit.message_id,
-            snippet=hit.snippet,
-            score=None,
-            score_kind=None,
-        ),
-    )
-
-
 def _date_ms(value: str | None) -> int | None:
     parsed = parse_query_date("date", value)
     return int(parsed.timestamp() * 1000) if parsed is not None else None
@@ -898,7 +846,6 @@ __all__ = [
     "archive_messages_payload",
     "archive_query_filters",
     "archive_query_unit_payload",
-    "archive_search_hit_payload",
     "archive_search_payload",
     "archive_summary_payload",
     "blackboard_note_payload",
