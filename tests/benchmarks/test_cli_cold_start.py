@@ -3,7 +3,7 @@
 Covers: the ``polylogue status`` cold-subprocess path with no daemon reachable
 -- one whole Python process invocation, import tax included -- against a
 minimal (empty, ops-tier-only) archive. Status is daemon-served, so this path
-ends in the typed ``daemon_absent`` snapshot (exit 1); this is the
+ends in the typed unavailable status snapshot (exit 1); this is the
 "interactive" SLO tier's ``cli_status_cold`` surface and the cost
 polylogue-8s70's cProfile/importtime investigation targets.
 
@@ -66,12 +66,14 @@ def test_bench_cli_status_cold(
             timeout=30,
         )
         elapsed_ms = (perf_counter() - started) * 1000
-        # No daemon is reachable by construction, so status answers with its
-        # typed daemon-absent snapshot and exits 1. Anything else (a crash, a
-        # non-JSON answer) is not the path this lane measures.
+        # No daemon serves this empty root, so status answers with its typed
+        # unavailable snapshot and exits 1; its reason (``daemon_absent`` or
+        # ``status_read_failed``) depends on what the environment's daemon
+        # probe finds. A crash or a non-JSON answer is not this lane's path.
         assert result.returncode == 1, result.stderr.decode(errors="replace")
         payload = json.loads(result.stdout)
-        assert payload["status_snapshot"]["reason"] == "daemon_absent", payload
+        assert payload["ok"] is False, payload
+        assert payload["status_snapshot"]["state"] == "unavailable", payload
         imported_modules = result.stderr.count(b"import time:")
         record_metrics(
             benchmark,
