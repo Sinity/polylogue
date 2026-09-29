@@ -490,7 +490,7 @@ def test_claude_agent_progress_names_its_open_dispatch() -> None:
     skeleton = {"parentToolUseID": "str", "data": {"agentId": "str", "type": "=agent_progress"}}
     profile = dataclasses.replace(measured, templates={kind: ((skeleton, 1.0),)})
     base = {"uuid": "u", "sessionId": "s", "timestamp": "t", "isSidechain": False, "cwd": "/w"}
-    open_call = ("toolu_agent", "u0", "Agent", {})
+    open_call: tuple[str, str, str, dict[str, object]] = ("toolu_agent", "u0", "Agent", {})
     bound = _claude_code_template(profile, random.Random(12), kind, base, [open_call], None, ("p", "q"), ["child-1"])
     assert bound["parentToolUseID"] == "toolu_agent"
     assert bound["data"] == {"agentId": "child-1", "type": "agent_progress"}

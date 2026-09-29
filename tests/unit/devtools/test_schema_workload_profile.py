@@ -126,7 +126,7 @@ def test_a_rare_fifth_template_skeleton_is_retained() -> None:
     templates = _Templates(frozenset({"type", "a", "b", "c", "d", "e"}), frozenset())
     for index, key in enumerate("abcde"):
         templates.add("record:probe", {"type": "x", key: "v"}, 10.0 - index)
-    skeletons, _strings, _lists, _ints = templates.payload()
+    skeletons, _per_path = templates.payload()
     assert len(skeletons["record:probe"]) == 5  # type: ignore[arg-type]
 
 
