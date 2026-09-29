@@ -649,6 +649,21 @@ def test_the_reader_computes_percentiles_over_every_row_in_the_window(tmp_path: 
     assert [bucket.route for bucket in cli_only.buckets] == ["cli.status"]
     # A reader cannot see the emitters' in-process ledgers: unknown, not zero.
     assert report.drops.accounting_complete is False
+    assert report.outcome.state == "degraded"
+
+
+def test_a_fully_accounted_report_is_ok_and_an_empty_one_is_empty() -> None:
+    """Anti-vacuity: an outcome that ignored the drop disposition would call
+    the degraded reader answer above ``ok``; one that ignored rows would call
+    this ``ok`` report ``empty``."""
+    full = compute_latency_percentiles(
+        [_observation(surface="cli", route="cli.status", duration_ms=5)], drops=RouteObservationDrops.none_observed()
+    )
+    empty = compute_latency_percentiles([], drops=RouteObservationDrops.none_observed())
+
+    assert full.outcome.state == "ok"
+    assert full.to_payload()["outcome"] == full.outcome.to_dict()
+    assert empty.outcome.state == "empty"
 
 
 def test_latency_report_is_frozen() -> None:

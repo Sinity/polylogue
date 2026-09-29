@@ -40,6 +40,7 @@ from polylogue.logging import get_logger
 
 if TYPE_CHECKING:
     from polylogue.scenarios.workload import WorkloadEnvelopeSpec, WorkloadReceipt, WorkloadRunStatus
+    from polylogue.surfaces.outcome import OutcomeEnvelope
 
 logger = get_logger(__name__)
 
@@ -81,6 +82,10 @@ RECEIPT_ATTRIBUTE_KEY = "route_receipt"
 # ---------------------------------------------------------------------------
 # Drop accounting (polylogue-jtwu.2)
 # ---------------------------------------------------------------------------
+
+
+DROP_ACCOUNTING_INCOMPLETE = "drop_accounting_incomplete"
+"""Outcome gap: the sample's lost observations are not countable from the reader."""
 
 
 class RouteObservationDropReason(str, Enum):
@@ -764,10 +769,27 @@ class RouteLatencyReport:
     def is_complete(self) -> bool:
         return self.drops.accounting_complete and self.drops.total == 0
 
+    @property
+    def outcome(self) -> OutcomeEnvelope:
+        """The report's terminal outcome: incomplete drop accounting is a named gap.
+
+        A percentile over a sample that lost an unknown number of members is
+        not a measurement of the route, so such an answer is ``degraded`` even
+        when it holds buckets, and an empty window stays ``degraded`` too: the
+        gap, not the absence of traffic, may be why it is empty.
+        """
+        from polylogue.surfaces.outcome import decide_outcome
+
+        return decide_outcome(
+            matched=len(self.buckets),
+            degraded=() if self.drops.accounting_complete else (DROP_ACCOUNTING_INCOMPLETE,),
+        )
+
     def to_payload(self) -> dict[str, object]:
         drops = self.drops.to_payload()
         drops["unattributed"] = self.unattributed_drops
         return {
+            "outcome": self.outcome.to_dict(),
             "buckets": [
                 {
                     "surface": bucket.surface,
@@ -929,6 +951,7 @@ def read_latency_report(
 
 __all__ = [
     "DEFAULT_ROUTE_PHASE",
+    "DROP_ACCOUNTING_INCOMPLETE",
     "LOW_CONFIDENCE_SAMPLE_FLOOR",
     "RECEIPT_ATTRIBUTE_KEY",
     "ROUTE_OBSERVATION_WORKLOAD_FAMILY",

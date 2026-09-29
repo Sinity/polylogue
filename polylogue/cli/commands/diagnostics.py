@@ -17,6 +17,7 @@ from polylogue.core.enums import TelemetrySurface
 from polylogue.rendering.identity import identity_frame
 
 if TYPE_CHECKING:
+    from polylogue.operations.route_observation import RouteLatencyReport
     from polylogue.storage.sqlite.archive_tiers.ops_write import (
         ArchiveFtsDriftSample,
         ArchiveSchemaDriftSample,
@@ -955,7 +956,8 @@ def latency_command(
     presented as a reliable percentile, and every answer carries the drop
     disposition of the sample it was computed over: a percentile whose
     denominator lost an uncounted number of observations is not a measurement
-    of the route.
+    of the route. The answer's terminal outcome is ``degraded`` whenever that
+    disposition is not fully countable here, and the exit code follows it.
     """
     import json as _json
     import time as _time
@@ -963,6 +965,7 @@ def latency_command(
     from polylogue.cli.shared.helpers import load_effective_config
     from polylogue.operations.diagnostic_reads import one_shot_diagnostic_read
     from polylogue.operations.route_observation import read_latency_report
+    from polylogue.surfaces.outcome import decide_outcome, outcome_exit_code, render_outcome_line
 
     env: AppEnv = ctx.obj
     config = load_effective_config(env)
@@ -970,22 +973,37 @@ def latency_command(
     since_ms = int((_time.time() - since_hours * 3600) * 1000)
 
     if not ops_db.exists():
+        missing = decide_outcome(matched=0, degraded=("ops_db_missing",))
         if output_format == "json":
-            click.echo(_json.dumps({"buckets": [], "unavailable_reason": "ops.db does not exist"}))
+            click.echo(
+                _json.dumps(
+                    {"buckets": [], "unavailable_reason": "ops.db does not exist", "outcome": missing.to_dict()}
+                )
+            )
         else:
             env.ui.console.print("[yellow]No ops.db found -- no latency telemetry has been recorded yet.[/yellow]")
-        return
+            click.echo(render_outcome_line(missing))
+        ctx.exit(outcome_exit_code(missing))
 
     with one_shot_diagnostic_read(ops_db) as conn:
         report = read_latency_report(conn, since_ms=since_ms, surface=surface)
-    buckets = report.buckets
+    outcome = report.outcome
 
     if output_format == "json":
         payload = report.to_payload()
         payload["since_hours"] = since_hours
         click.echo(_json.dumps(payload, indent=2))
-        return
+        ctx.exit(outcome_exit_code(outcome))
 
+    _render_latency_text(env, report, since_hours=since_hours)
+    line = render_outcome_line(outcome)
+    if line is not None:
+        click.echo(line)
+    ctx.exit(outcome_exit_code(outcome))
+
+
+def _render_latency_text(env: AppEnv, report: RouteLatencyReport, *, since_hours: float) -> None:
+    buckets = report.buckets
     if not buckets:
         env.ui.console.print(f"[yellow]No route observations in the last {since_hours:g}h.[/yellow]")
         if not report.drops.accounting_complete:
