@@ -81,6 +81,7 @@ def test_the_decided_classification_partitions_every_view() -> None:
     assert read_views_by_execution_kind("query-units-projection") == ()
     assert read_views_by_execution_kind("distinct-operation") == (
         "chronicle",
+        "compact",
         "context",
         "context-image",
         "correlation",

@@ -256,7 +256,9 @@ def compact_sessions(
                 reason = "filtered_material_origin"
             if origin == "tool_result":
                 is_error, exit_code = _tool_outcome(message)
-                if is_error is False and (exit_code is None or int(cast(int | str, exit_code)) == 0):
+                # Archive block rows carry the flag as an integer, so 0 is success.
+                succeeded = is_error is not None and not is_error
+                if succeeded and (exit_code is None or int(cast(int | str, exit_code)) == 0):
                     reason = "successful_tool_spam"
             message_id = str(_get(message, "id", _get(message, "message_id", "")))
             if branch and message_id == branch:
