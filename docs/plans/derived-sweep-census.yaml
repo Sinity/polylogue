@@ -674,6 +674,20 @@ sites:
     scope: "state_predicate"
     classification: producer_scoped_transaction
     reason: "derived_refresh_guard is the writer's own trigger-suppression flag: the same function inserts the named guard row before its session writes and deletes that exact guard_name afterwards (in delete_sessions, from a finally block). The subject is the one row this call created, not archive state"
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_materialize_inherited_prefix"
+    subject: "attachment_refs"
+    kind: "state_selected_subject"
+    scope: "no_where"
+    classification: producer_scoped_transaction
+    reason: "the attachment_refs read joins the refs this same call just copied into the child through the per-child TEMP plan (plan.new_id = message_id), to refresh the counts of exactly those attachments inside the parent write (polylogue-gy2yu). It selects no stale derived row for repair"
+  - file: "polylogue/storage/sqlite/archive_tiers/write.py"
+    function: "_materialize_inherited_prefix"
+    subject: "messages"
+    kind: "state_selected_subject"
+    scope: "no_where"
+    classification: producer_scoped_transaction
+    reason: "the message reads without a WHERE on the subject are the INSERT ... SELECT copies driven by the per-child TEMP plan table (JOIN on plan.old_id), inside the parent write that is changing the child's inherited rows (polylogue-gy2yu). The subject is exactly the one child the write captured before its replace; no stale derived row is selected for repair"
   - file: "polylogue/storage/sqlite/archive_tiers/write_shard.py"
     function: "copy_shard_session_rows"
     subject: "blocks"

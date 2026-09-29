@@ -1935,6 +1935,25 @@ DERIVED_REFRESH_GUARD_SPEC = _make_table_spec(
 )
 
 
+# The identity scope a lineage child's stored message IDs follow once its
+# inherited prefix was materialized (``write.py::_IdentityScope``). It belongs
+# to the child, not to any edge: a later revision may stop declaring the
+# parent, deleting the edge, and the stored IDs must still not move.
+SESSION_IDENTITY_SCOPES_SPEC = _make_table_spec(
+    "session_identity_scopes",
+    (
+        _raw_column(
+            "session_id",
+            """session_id     TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE""",
+        ),
+        _raw_column(
+            "scope_json",
+            """scope_json     TEXT NOT NULL CHECK (CASE WHEN json_valid(scope_json) THEN json_type(scope_json) = 'object' ELSE 0 END)""",
+        ),
+    ),
+)
+
+
 # The canonical ``session_model_usage`` rollup is a derived projection of
 # ``messages``, ``session_provider_usage_events`` and ``sessions``, but its
 # rows cannot say which values of those relations produced them: the rollup
@@ -2253,6 +2272,7 @@ INDEX_TABLE_SPECS = {
     "delegation_facts": DELEGATION_FACTS_SPEC,
     "delegation_refresh_scope": DELEGATION_REFRESH_SCOPE_SPEC,
     "derived_refresh_guard": DERIVED_REFRESH_GUARD_SPEC,
+    "session_identity_scopes": SESSION_IDENTITY_SCOPES_SPEC,
     "session_usage_rollup_bindings": SESSION_USAGE_ROLLUP_BINDINGS_SPEC,
     "session_summary_bindings": SESSION_SUMMARY_BINDINGS_SPEC,
     "session_enrichment_bindings": SESSION_ENRICHMENT_BINDINGS_SPEC,
