@@ -160,6 +160,7 @@ def classify_message_type(
     message_type: MessageType,
     text: str | None,
     block_types: tuple[BlockType, ...] = (),
+    material_origin: MaterialOrigin = MaterialOrigin.UNKNOWN,
 ) -> MessageType:
     """Normalize a message type from provider envelope and content evidence.
 
@@ -175,6 +176,10 @@ def classify_message_type(
     block_message_type = classify_block_message_type(block_types)
     if block_message_type is not None:
         return block_message_type
+    # Positive producer evidence outranks a resemblance to runtime framing.
+    # An unclassified user-shaped runtime row still has no such guarantee.
+    if role is Role.USER and material_origin is MaterialOrigin.HUMAN_AUTHORED:
+        return MessageType.MESSAGE
     text_message_type = classify_text_message_type(text)
     if text_message_type is not None:
         return text_message_type

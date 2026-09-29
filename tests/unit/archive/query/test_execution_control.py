@@ -1121,9 +1121,12 @@ async def test_detached_failure_is_observed_after_disconnect_drain(
     previous_handler = loop.get_exception_handler()
     create_task = asyncio.create_task
 
-    def track_task(coro, **kwargs):
+    from collections.abc import Coroutine
+    from typing import Any
+
+    def track_task(coro: Coroutine[Any, Any, Any], **kwargs: Any) -> asyncio.Task[Any]:
         task = create_task(coro, **kwargs)
-        if coro.cr_code.co_name == "_admitted_submission":
+        if getattr(getattr(coro, "cr_code", None), "co_name", None) == "_admitted_submission":
             task.add_done_callback(lambda _task: finished.set())
         return task
 

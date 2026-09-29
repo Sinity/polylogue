@@ -7233,3 +7233,66 @@ async def test_apply_time_keyerror_is_not_reported_as_a_missing_session(
             await archive.add_tag("codex-session:never-existed", "review")
     finally:
         await archive.close()
+
+
+@pytest.mark.parametrize("marker_block", [BlockType.THINKING, BlockType.TOOL_RESULT])
+async def test_message_read_classifies_only_text_blocks(tmp_path: Path, marker_block: BlockType) -> None:
+    """Joining all block types for classification contradicts the SQL-selected stored row."""
+    from polylogue.archive.message.types import MessageType
+
+    archive = _archive(tmp_path)
+    message = ParsedMessage(
+        provider_message_id="text-classification",
+        role=Role.ASSISTANT,
+        blocks=[
+            ParsedContentBlock(type=marker_block, text="<system>runtime-shaped diagnostic</system>"),
+            ParsedContentBlock(type=BlockType.TEXT, text="An ordinary answer."),
+        ],
+    )
+    assert message.message_type is MessageType.MESSAGE
+    assert message.material_origin is MaterialOrigin.ASSISTANT_AUTHORED
+    with ArchiveStore(tmp_path) as store:
+        session_id = write_index_session(
+            store,
+            ParsedSession(
+                source_name=Provider.CODEX, provider_session_id="text-block-classification", messages=[message]
+            ),
+        )
+    try:
+        messages, total, _ = await archive.get_messages_paginated(session_id, message_type="message")
+    finally:
+        await archive.close()
+    assert total == 1
+    assert len(messages) == 1
+    assert messages[0].message_type is MessageType.MESSAGE
+    assert messages[0].material_origin is MaterialOrigin.ASSISTANT_AUTHORED
+    assert len(messages[0].blocks) == 2
+
+
+async def test_human_export_marker_survives_stored_authorship_filter(tmp_path: Path) -> None:
+    """A parser-only override is insufficient if read hydration reclassifies the human turn."""
+    from polylogue.archive.message.types import MessageType
+    from polylogue.sources.parsers import grok
+
+    parsed = grok.parse_conversation(
+        {
+            "conversation": {"title": "Authorship regression"},
+            "responses": [{"sender": "human", "message": "Contents of sample.py:\nExplain this program."}],
+        },
+        "stored-human-marker",
+    )
+    assert len(parsed.messages) == 1
+    assert parsed.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
+    archive = _archive(tmp_path)
+    with ArchiveStore(tmp_path) as store:
+        session_id = write_index_session(store, parsed)
+    try:
+        messages, total, _ = await archive.get_messages_paginated(
+            session_id, material_origin=(MaterialOrigin.HUMAN_AUTHORED,)
+        )
+    finally:
+        await archive.close()
+    assert total == 1
+    assert len(messages) == 1
+    assert messages[0].message_type is MessageType.MESSAGE
+    assert messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED

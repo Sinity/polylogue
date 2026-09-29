@@ -497,6 +497,7 @@ class ParsedMessage(BaseModel):
                 message_type=self.message_type,
                 text=classification_text,
                 block_types=tuple(block.type for block in self.blocks),
+                material_origin=self.material_origin,
             )
         if self.material_origin is MaterialOrigin.UNKNOWN:
             from polylogue.archive.message.artifacts import classify_material_origin

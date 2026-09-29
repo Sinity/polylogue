@@ -4000,3 +4000,16 @@ def test_tether_quote_construct_keeps_its_url_and_own_title() -> None:
     }
     fallback_messages, _ = extract_messages_from_mapping(fallback_mapping)
     assert fallback_messages[0].blocks[0].web_constructs[0].title == "example.test"
+
+
+@pytest.mark.parametrize(
+    "text", ["# AGENTS.md instructions for sample", "Contents of sample.py:\nExplain this program."]
+)
+def test_chatgpt_plain_user_marker_is_human_evidence(text: str) -> None:
+    """Preclassifying the user text before its structural origin loses genuine prompts."""
+    messages, attachments = extract_messages_from_mapping({"node1": make_chatgpt_node("human-marker", "user", [text])})
+    assert len(messages) == 1
+    assert messages[0].message_type is MessageType.MESSAGE
+    assert messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
+    assert messages[0].text == text
+    assert attachments == []

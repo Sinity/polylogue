@@ -10,6 +10,7 @@ registered only for capabilities the server was configured to enable
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from contextlib import suppress
@@ -1781,8 +1782,10 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
 
             if subject == "capability":
                 from polylogue.archive.query.capability_catalog import capability_detail_page
+                from polylogue.readiness import get_readiness
 
                 stats = await hooks.get_polylogue().stats()
+                readiness = await asyncio.to_thread(get_readiness, hooks.get_config())
                 page = capability_detail_page(
                     search=search,
                     offset=offset,
@@ -1791,6 +1794,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         "total_sessions": stats.session_count,
                         "total_messages": stats.message_count,
                     },
+                    readiness=readiness,
                 )
                 return hooks.json_payload(
                     MCPRootPayload(

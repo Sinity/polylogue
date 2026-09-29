@@ -1906,7 +1906,16 @@ def test_gemini_cli_single_document_shape_is_unaffected_by_the_stream_fold() -> 
     assert session.updated_at == "2026-04-08T20:47:00.000Z"
 
 
-def test_gemini_cli_subagent_user_turn_is_not_stamped_human_authored() -> None:
+@pytest.mark.parametrize(
+    ("text", "expected_subagent_origin"),
+    [
+        ("hello", MaterialOrigin.UNKNOWN),
+        ("# AGENTS.md instructions for sample", MaterialOrigin.RUNTIME_CONTEXT),
+    ],
+)
+def test_gemini_cli_subagent_user_turn_is_not_stamped_human_authored(
+    text: str, expected_subagent_origin: MaterialOrigin
+) -> None:
     """polylogue-670mf: ``human_authored_override`` is declared for parsers
     whose genuine user-turn shape has no agent/subagent complexity to
     exclude. A Gemini CLI session with ``kind == "subagent"`` is exactly that
@@ -1919,7 +1928,7 @@ def test_gemini_cli_subagent_user_turn_is_not_stamped_human_authored() -> None:
     override entirely makes the ordinary-session assertion go red.
     """
     messages: list[JSONValue] = [
-        {"id": "u1", "timestamp": "2026-04-08T20:45:01.000Z", "type": "user", "content": ["hello"]}
+        {"id": "u1", "timestamp": "2026-04-08T20:45:01.000Z", "type": "user", "content": [text]}
     ]
     subagent: JSONDocument = {
         "sessionId": "gemini-subagent-1",
@@ -1938,7 +1947,8 @@ def test_gemini_cli_subagent_user_turn_is_not_stamped_human_authored() -> None:
     [subagent_session] = parse_payload("gemini-cli", subagent, "fallback")
     [ordinary_session] = parse_payload("gemini-cli", ordinary, "fallback")
 
-    assert subagent_session.messages[0].material_origin is MaterialOrigin.UNKNOWN
+    assert len(subagent_session.messages) == len(ordinary_session.messages) == 1
+    assert subagent_session.messages[0].material_origin is expected_subagent_origin
     assert ordinary_session.messages[0].material_origin is MaterialOrigin.HUMAN_AUTHORED
 
 

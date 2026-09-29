@@ -113,19 +113,26 @@ class Message(MessageRuntimeMixin, BaseModel):
         from polylogue.archive.message.artifacts import classify_message_type
 
         block_types: list[BlockType] = []
+        prose: list[str] = []
         for block in self.blocks:
             raw_type = block.get("type")
             if raw_type is None:
                 continue
             try:
-                block_types.append(BlockType.from_string(str(raw_type)))
+                block_type = BlockType.from_string(str(raw_type))
             except ValueError:
                 continue
+            block_types.append(block_type)
+            text = block.get("text")
+            if block_type is BlockType.TEXT and isinstance(text, str) and text:
+                prose.append(text)
+        classification_text = ("\n".join(prose) or None) if self.blocks else self.text
         self.message_type = classify_message_type(
             role=self.role,
             message_type=self.message_type,
-            text=self.text,
+            text=classification_text,
             block_types=tuple(block_types),
+            material_origin=self.material_origin,
         )
         if self.material_origin is MaterialOrigin.UNKNOWN:
             from polylogue.archive.message.artifacts import classify_material_origin
@@ -133,7 +140,7 @@ class Message(MessageRuntimeMixin, BaseModel):
             self.material_origin = classify_material_origin(
                 role=self.role,
                 message_type=self.message_type,
-                text=self.text,
+                text=classification_text,
                 block_types=tuple(block_types),
             )
         return self

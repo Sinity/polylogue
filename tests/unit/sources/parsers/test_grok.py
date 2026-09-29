@@ -351,3 +351,19 @@ def test_parse_payload_skips_malformed_entries_in_mixed_validity_export() -> Non
         grok.parse_conversation(_nested_conversation(), "x").provider_session_id,
         grok.parse_conversation(_flat_conversation(), "y").provider_session_id,
     }
+
+
+def test_grok_human_marker_text_stays_authored_through_dispatch() -> None:
+    """A non-UNKNOWN heuristic result must not erase the clean export's human sender."""
+    from polylogue.archive.message.types import MessageType
+    from polylogue.core.enums import MaterialOrigin
+
+    payload = _nested_conversation()
+    payload["responses"][0]["response"]["message"] = "# AGENTS.md instructions for sample\nPlease explain this file."
+    sessions = parse_payload(Provider.GROK, payload, "positive-human-marker")
+    assert len(sessions) == 1
+    assert len(sessions[0].messages) == 2
+    human = sessions[0].messages[0]
+    assert human.role is Role.USER
+    assert human.message_type is MessageType.MESSAGE
+    assert human.material_origin is MaterialOrigin.HUMAN_AUTHORED

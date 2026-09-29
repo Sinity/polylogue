@@ -272,3 +272,31 @@ def test_assistant_role_with_tool_use_type_is_assistant_authored() -> None:
         )
         is MaterialOrigin.ASSISTANT_AUTHORED
     )
+
+
+@pytest.mark.parametrize("text", ["# AGENTS.md instructions for sample", "Contents of sample.py:\nprint(1)"])
+def test_positive_human_evidence_precedes_textual_artifact_inference(text: str) -> None:
+    """Only an explicit producer guarantee, not role=user alone, wins over the heuristic."""
+    assert (
+        classify_message_type(
+            role=Role.USER, message_type=MessageType.MESSAGE, text=text, material_origin=MaterialOrigin.HUMAN_AUTHORED
+        )
+        is MessageType.MESSAGE
+    )
+    assert classify_message_type(role=Role.USER, message_type=MessageType.MESSAGE, text=text) is MessageType.CONTEXT
+    assert (
+        classify_message_type(
+            role=Role.USER, message_type=MessageType.CONTEXT, text=text, material_origin=MaterialOrigin.HUMAN_AUTHORED
+        )
+        is MessageType.CONTEXT
+    )
+    assert (
+        classify_message_type(
+            role=Role.USER,
+            message_type=MessageType.MESSAGE,
+            text=text,
+            material_origin=MaterialOrigin.HUMAN_AUTHORED,
+            block_types=(BlockType.TOOL_RESULT,),
+        )
+        is MessageType.TOOL_RESULT
+    )

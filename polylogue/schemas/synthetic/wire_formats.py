@@ -1461,11 +1461,15 @@ def _parser_artifact_node_message_type(
     if provider == "chatgpt":
         if _parser_artifact_node_role(provider, node) is Role.TOOL:
             return MessageType.TOOL_RESULT
+        if _parser_artifact_node_role(provider, node) is Role.USER:
+            return MessageType.MESSAGE
         text = "\n".join(_parser_artifact_node_content_texts(provider, node))
         return classify_text_message_type(text) or MessageType.MESSAGE
     block_types = tuple(witness[0] for witness in _parser_artifact_node_tool_witnesses(provider, node))
     if block_message_type := classify_block_message_type(block_types):
         return block_message_type
+    if _parser_artifact_node_role(provider, node) is Role.USER:
+        return MessageType.MESSAGE
     text = "\n".join(_parser_artifact_node_content_texts(provider, node))
     return classify_text_message_type(text) or MessageType.MESSAGE
 

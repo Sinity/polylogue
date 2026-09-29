@@ -286,3 +286,30 @@ async def test_capability_discovery_includes_messages(mcp_server: MCPServerUnder
     page = body.get("page") or body
     assert set(page["read_views"]) == set(mcp_read_view_names())
     assert "messages" in page["read_views"]
+
+
+@pytest.mark.asyncio
+async def test_live_capability_page_reads_canonical_readiness_without_repeating_origin_evidence(
+    mcp_server: MCPServerUnderTest, tmp_path: Path
+) -> None:
+    """A stats-only adapter or per-row origin copies make this route regress."""
+    from polylogue import Polylogue
+    from polylogue.readiness import ReadinessCheck, ReadinessReport, VerifyStatus
+
+    archive_root = _seeded_archive(tmp_path)
+    config = SimpleNamespace(archive_root=archive_root)
+    report = ReadinessReport(timestamp=100, checks=[ReadinessCheck("fts_sync", VerifyStatus.ERROR)])
+    explain = mcp_server._tool_manager._tools["explain"].fn
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=config),
+        patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=archive_root)),
+        patch("polylogue.readiness.get_readiness", return_value=report) as read_readiness,
+    ):
+        body = json.loads(await invoke_surface_async(explain, subject="capability", limit=25))
+    read_readiness.assert_called_once_with(config)
+    assert body.get("budget_exceeded") is not True
+    assert len(body["items"]) == 25
+    assert all(row["status"] == "stale_or_degraded" and "evidence" not in row for row in body["items"])
+    assert body["snapshot"]["freshness"] == "stale_or_degraded"
+    assert body["evidence"]["readiness"]["source"] == "live"
+    assert body["evidence"]["origins"]

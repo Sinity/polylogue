@@ -10,15 +10,21 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from hashlib import sha256
+from typing import TYPE_CHECKING
 
 from polylogue.archive.query.declarations import QUERY_CAPABILITY_DECLARATIONS
 from polylogue.sources.origin_specs import origin_specs
 
+if TYPE_CHECKING:
+    from polylogue.readiness import ReadinessReport
+
 MAX_CAPABILITY_PAGE = 25
 
 
-def _snapshot_id(stats: Mapping[str, object] | None) -> str:
-    payload = json.dumps(dict(stats or {}), sort_keys=True, default=str).encode()
+def _snapshot_id(stats: Mapping[str, object] | None, readiness: Mapping[str, object]) -> str:
+    payload = json.dumps(
+        {"stats": dict(stats or {}), "readiness": dict(readiness)}, sort_keys=True, default=str
+    ).encode()
     return "archive:" + sha256(payload).hexdigest()[:16]
 
 
@@ -36,21 +42,39 @@ def _declaration_rows() -> tuple[dict[str, object], ...]:
 
 def _stat_int(stats: Mapping[str, object], key: str) -> int | None:
     value = stats.get(key)
-    return value if isinstance(value, int) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
 
 
 def _observed_count(name: str, kind: str, stats: Mapping[str, object] | None) -> int | None:
-    if not stats:
+    if stats is None or kind != "unit":
         return None
-    if kind == "unit":
-        return {
-            "message": _stat_int(stats, "total_messages"),
-            "action": None,
-            "block": _stat_int(stats, "total_messages"),
-        }.get(name)
-    if name in {"query_terms", "contains_terms", "exclude_text_terms"}:
-        return _stat_int(stats, "total_messages") if name == "query_terms" else None
-    return _stat_int(stats, "total_sessions")
+    stat_key = {"message": "total_messages", "action": "total_actions", "block": "total_blocks"}.get(name)
+    return _stat_int(stats, stat_key) if stat_key is not None else None
+
+
+def _readiness_evidence(readiness: ReadinessReport | None) -> tuple[str, dict[str, object]]:
+    if readiness is None:
+        return "unknown", {"source": "unmeasured"}
+    convergence = readiness.archive_convergence
+    degraded = bool(convergence["converging"]) or any(
+        check.status.value in {"warning", "error"} for check in readiness.checks
+    )
+    freshness = (
+        "stale_or_degraded"
+        if degraded
+        else "request-current"
+        if convergence["checked"] and convergence["materialization_ready"]
+        else "unknown"
+    )
+    return freshness, {
+        "source": readiness.provenance.source,
+        "timestamp": readiness.timestamp,
+        "summary": readiness.summary,
+        "checks": [
+            {"name": check.name, "status": check.status.value, "count": check.count} for check in readiness.checks
+        ],
+        "archive_convergence": {name: convergence[name] for name in ("checked", "converging", "materialization_ready")},
+    }
 
 
 def _status(*, supported: bool, observed: int | None, stale: bool = False) -> str:
@@ -71,7 +95,7 @@ def capability_detail_page(
     offset: int = 0,
     limit: int = MAX_CAPABILITY_PAGE,
     stats: Mapping[str, object] | None = None,
-    readiness: Mapping[str, object] | None = None,
+    readiness: ReadinessReport | None = None,
 ) -> dict[str, object]:
     """Return one stable, bounded page of executable query declarations."""
     offset = max(0, int(offset))
@@ -85,7 +109,10 @@ def capability_detail_page(
             if needle
             in " ".join(str(row.get(key, "")) for key in ("declaration_id", "name", "meaning", "examples")).lower()
         )
-    snapshot = _snapshot_id(stats)
+    freshness, readiness_evidence = _readiness_evidence(readiness)
+    if stats is None and freshness == "request-current":
+        freshness = "unknown"
+    snapshot = _snapshot_id(stats, readiness_evidence)
     origins = [
         {
             "origin": spec.origin.value,
@@ -94,22 +121,17 @@ def capability_detail_page(
             "authority": "OriginSpec",
         }
         for spec in origin_specs()
+        if spec.public_filter
     ]
     page: list[dict[str, object]] = []
     for row in rows[offset : offset + limit]:
         item = dict(row)
         observed = _observed_count(str(item["name"]), str(item["kind"]), stats)
         item["observed_count"] = observed
-        item["status"] = _status(supported=True, observed=observed)
-        item["evidence"] = {
-            "authority": ["query declaration", "OriginSpec", "archive stats"],
-            "archive_snapshot": snapshot,
-            "freshness": "request-current" if stats is not None else "unknown",
-            "readiness": dict(readiness or {}),
-            "origins": origins,
-        }
-        item["next_narrowing"] = (
-            "Search by declaration name or page with offset; use explain(subject='query') for a concrete plan."
+        item["status"] = _status(
+            supported=True,
+            observed=observed if freshness != "unknown" else None,
+            stale=freshness == "stale_or_degraded",
         )
         page.append(item)
     next_offset = offset + len(page)
@@ -122,9 +144,17 @@ def capability_detail_page(
         "next_offset": next_offset if next_offset < len(rows) else None,
         "snapshot": {
             "id": snapshot,
-            "authority": "archive stats",
-            "freshness": "request-current" if stats is not None else "unknown",
+            "authority": "archive stats and canonical readiness",
+            "freshness": freshness,
         },
+        "evidence": {
+            "authority": ["query declaration", "OriginSpec", "archive stats", "canonical readiness"],
+            "readiness": readiness_evidence,
+            "origins": origins,
+        },
+        "next_narrowing": (
+            "Search by declaration name or page with offset; use explain(subject='query') for a concrete plan."
+        ),
         "paging": "Repeat explain(subject='capability', search=..., offset=next_offset) until next_offset is null.",
     }
 

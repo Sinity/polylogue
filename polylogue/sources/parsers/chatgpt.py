@@ -2261,7 +2261,9 @@ def _collect_message_entries(
         status_val = msg.get("status")
         end_turn_val = msg.get("end_turn")
         user_context_val = msg_metadata.get("user_context_message_data")
-        message_type = forced_message_type or classify_text_message_type(text) or MessageType.MESSAGE
+        message_type = forced_message_type or (
+            MessageType.MESSAGE if role is Role.USER else classify_text_message_type(text) or MessageType.MESSAGE
+        )
         real_author = _real_author(author)
         material_origin = human_authored_override(
             role,
