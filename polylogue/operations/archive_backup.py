@@ -36,8 +36,6 @@ from polylogue.core.errors import SchemaSkew
 from polylogue.core.raw_coordinates import split_zip_member_text
 from polylogue.core.sources import provider_from_origin
 from polylogue.core.write_lease import require_write_lease, write_lease
-from polylogue.daemon.cli import checkpoint_connection, open_isolated_write_connection
-from polylogue.daemon.status import open_readonly_connection
 from polylogue.operations.zip_acquisition_replay import MemberCandidateCache, zip_reacquisition_payload
 from polylogue.paths import archive_root
 from polylogue.storage.backup_attestation import (
@@ -61,6 +59,11 @@ from polylogue.storage.blob_integrity import (
 )
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.source_blob_restoration import stage_exact_blob
+from polylogue.storage.sqlite.connection_profile import (
+    open_isolated_write_connection,
+    open_readonly_connection,
+)
+from polylogue.storage.sqlite.wal_checkpoint import checkpoint_connection
 
 if TYPE_CHECKING:
     from polylogue.operations.daemon_protocol import DaemonOperationEnvelope, DaemonOperationRequest

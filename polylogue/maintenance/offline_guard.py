@@ -35,7 +35,7 @@ class ArchiveWriterOwnershipError(RuntimeError):
 
     Raised by the CLI writer-ownership boundary
     (:mod:`polylogue.cli.write_authority`) and by the backup snapshot route
-    (:func:`polylogue.daemon.backup.backup_archive`), which is a writer in its
+    (:func:`polylogue.operations.archive_backup.backup_archive`), which is a writer in its
     own right. It is defined here, beside the residency probe that decides it,
     so a non-CLI entry point can raise the same refusal without a
     ``daemon -> cli`` import edge (polylogue-8qm4k AC1).

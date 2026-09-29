@@ -93,7 +93,7 @@ def unresolvable_raw_source_count(archive_root: Path) -> int:
             continue
         member_rows[str(blob_hash)] = member_rows.get(str(blob_hash), 0) + int(count)
     if member_rows:
-        from polylogue.daemon.backup import _source_recoverability_proofs
+        from polylogue.operations.archive_backup import _source_recoverability_proofs
 
         proven = {
             proof["blob_hash"]

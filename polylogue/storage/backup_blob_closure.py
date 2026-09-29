@@ -1,7 +1,7 @@
 """The blob set a closed backup package must hold by itself.
 
 A backup package restores ``source.db`` rows together with the blob bytes they
-reference. Backup verification (``daemon/backup.py``) and the migration backup
+reference. Backup verification (``operations/archive_backup.py``) and the migration backup
 gate (``storage/sqlite/migration_runner.py``) both decide completeness here,
 from the package alone: its own source tier, its index tier when the package
 carries one, its pending publication reservations, and its authenticated
@@ -141,6 +141,15 @@ def package_blob_closure(backup_root: Path) -> PackageBlobClosure:
     source_db = backup_root / "source.db"
     if not source_db.exists() and not source_db.is_symlink():
         return PackageBlobClosure(frozenset(), frozenset(), frozenset(), frozenset(), False)
+    assertion_path = backup_root / SOURCE_DECLARED_ABSENT_FILE
+    asserted = assertion_path.exists() or assertion_path.is_symlink()
+    declared_absent: set[str] = set()
+    if asserted:
+        with closing(_open_source_tier(source_db, immutable=True)) as source_conn:
+            generations = source_generation_tables_exist(source_conn)
+        if generations:
+            raise RuntimeError("source declared-absent assertion is only valid before source generations exist")
+        declared_absent = load_source_declared_absent(source_db, assertion_path)
     index_db = backup_root / "index.db"
     projection = project_source_blob_liveness(
         source_db,
@@ -151,15 +160,6 @@ def package_blob_closure(backup_root: Path) -> PackageBlobClosure:
     index_hashes: set[str] = set()
     for owner, hashes in projection.owner_hashes:
         (source_hashes if owner.startswith("source.db.") else index_hashes).update(hashes)
-    assertion_path = backup_root / SOURCE_DECLARED_ABSENT_FILE
-    asserted = assertion_path.exists() or assertion_path.is_symlink()
-    declared_absent: set[str] = set()
-    if asserted:
-        with closing(_open_source_tier(source_db, immutable=True)) as source_conn:
-            generations = source_generation_tables_exist(source_conn)
-        if generations:
-            raise RuntimeError("source declared-absent assertion is only valid before source generations exist")
-        declared_absent = load_source_declared_absent(source_db, assertion_path)
     return PackageBlobClosure(
         source_hashes=frozenset(source_hashes),
         index_hashes=frozenset(index_hashes),

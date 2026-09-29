@@ -17,8 +17,8 @@ from polylogue.core.content_identity import structural_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
 from polylogue.core.raw_coordinates import zip_member_raw_id
-from polylogue.daemon import backup as backup_mod
-from polylogue.daemon.backup import backup_archive
+from polylogue.operations import archive_backup as backup_mod
+from polylogue.operations.archive_backup import backup_archive
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession
 from polylogue.storage.backup_attestation import attestation_key_path
 from polylogue.storage.backup_blob_closure import (
@@ -1550,7 +1550,7 @@ def test_backup_verification_scratch_stays_near_backup_output(
 
 
 def test_backup_result_formats_non_default_omissions_neutrally() -> None:
-    from polylogue.daemon.backup import BackupResult, format_backup_result
+    from polylogue.operations.archive_backup import BackupResult, format_backup_result
 
     lines = format_backup_result(
         BackupResult(ok=True, output_path="/tmp/backup", backup_profile="user_overlays", omitted_tiers=["source.db"])
@@ -2073,7 +2073,8 @@ def test_backup_archive_verify_marks_failed_artifact_unhealthy(
             conn.execute("CREATE TABLE IF NOT EXISTS marker (value TEXT NOT NULL)")
 
     monkeypatch.setattr(
-        "polylogue.daemon.backup._verify_archive_file_set_backup", lambda _path: {"ok": False, "error": "bad"}
+        "polylogue.operations.archive_backup._verify_archive_file_set_backup",
+        lambda _path: {"ok": False, "error": "bad"},
     )
 
     result = backup_archive(output_dir=tmp_path / "backups", verify=True)
@@ -2349,7 +2350,7 @@ def test_embedded_backup_refused_beside_resident_daemon(
     ``BEGIN IMMEDIATE`` across the copy.
 
     The refusal used to live in ``polylogue/cli/commands/backup.py``, covering
-    exactly one caller; ``from polylogue.daemon.backup import backup_archive``
+    exactly one caller; ``from polylogue.operations.archive_backup import backup_archive``
     reached the whole truncating snapshot beside a live daemon with no
     ownership check at all. That is the standalone Python entry point
     polylogue-8qm4k AC1's coverage receipt names.

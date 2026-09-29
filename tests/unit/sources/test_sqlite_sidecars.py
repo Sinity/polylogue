@@ -5,7 +5,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from polylogue.daemon.backup import _SQLITE_SIDECAR_SUFFIXES as BACKUP_SUFFIXES
+from polylogue.operations.archive_backup import _SQLITE_SIDECAR_SUFFIXES as BACKUP_SUFFIXES
 from polylogue.sources.sqlite_snapshot import (
     _SQLITE_SIDECAR_SUFFIXES,
     sqlite_database_for_sidecar,

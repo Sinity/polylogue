@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config
-from polylogue.daemon.backup import _source_recoverability_proofs
 from polylogue.maintenance.offline_guard import offline_writer_block_reason
+from polylogue.operations.archive_backup import _source_recoverability_proofs
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.backup_blob_closure import source_blob_reservations
 from polylogue.storage.blob_integrity import project_source_blob_liveness

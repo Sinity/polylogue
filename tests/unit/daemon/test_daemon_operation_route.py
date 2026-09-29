@@ -50,7 +50,7 @@ def test_failed_embedding_receipt_decodes_without_fabricated_counters() -> None:
 def test_failed_backup_operation_retains_rejected_result_details(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from polylogue.daemon.backup import BackupResult
+    from polylogue.operations.archive_backup import BackupResult
 
     partial = BackupResult(
         ok=False,
@@ -58,7 +58,7 @@ def test_failed_backup_operation_retains_rejected_result_details(
         error="verification failed",
         warnings=["source.db could not be verified"],
     )
-    monkeypatch.setattr("polylogue.daemon.backup.backup_archive", lambda **_kwargs: partial)
+    monkeypatch.setattr("polylogue.operations.archive_backup.backup_archive", lambda **_kwargs: partial)
 
     with running_daemon_operations(tmp_path / "archive") as stack:
         envelope = stack.client.operation(

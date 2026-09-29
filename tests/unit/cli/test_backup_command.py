@@ -10,7 +10,7 @@ from click.testing import CliRunner
 
 from polylogue.cli.commands.backup import backup_command
 from polylogue.cli.operation_kernel import OperationFailedError
-from polylogue.daemon.backup import BackupResult
+from polylogue.operations.archive_backup import BackupResult
 
 
 def test_backup_command_passes_profile_to_archive_backup(
