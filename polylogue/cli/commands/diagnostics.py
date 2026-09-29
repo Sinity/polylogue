@@ -17,10 +17,12 @@ from polylogue.core.enums import TelemetrySurface
 from polylogue.rendering.identity import identity_frame
 
 if TYPE_CHECKING:
+    from polylogue.operations.route_observation import RouteLatencyReport
     from polylogue.storage.sqlite.archive_tiers.ops_write import (
         ArchiveFtsDriftSample,
         ArchiveSchemaDriftSample,
     )
+    from polylogue.surfaces.outcome import OutcomeEnvelope
 
 
 @click.group("diagnostics", help="Run archive and daemon diagnostics.")
@@ -932,7 +934,6 @@ async def _tools(
     help="Only rows for this surface (" + ", ".join(get_args(TelemetrySurface)) + ").",
 )
 @click.option("--since-hours", type=float, default=24.0, show_default=True, help="Lookback window in hours.")
-@click.option("--limit", "-l", "-n", type=int, default=1000, help="Max rows read per source table.")
 @click.option(
     "--format",
     "-f",
@@ -946,7 +947,6 @@ def latency_command(
     ctx: click.Context,
     surface: str | None,
     since_hours: float,
-    limit: int,
     output_format: str,
 ) -> None:
     """Report p50/p95 route latency from ops-tier telemetry (polylogue-jtwu).
@@ -957,15 +957,16 @@ def latency_command(
     presented as a reliable percentile, and every answer carries the drop
     disposition of the sample it was computed over: a percentile whose
     denominator lost an uncounted number of observations is not a measurement
-    of the route.
+    of the route. The answer's terminal outcome is ``degraded`` whenever that
+    disposition is not fully countable here, and the exit code follows it.
     """
     import json as _json
     import time as _time
 
     from polylogue.cli.shared.helpers import load_effective_config
     from polylogue.operations.diagnostic_reads import one_shot_diagnostic_read
-    from polylogue.operations.route_observation import compute_latency_percentiles, read_side_drops
-    from polylogue.storage.sqlite.archive_tiers.ops_write import list_mcp_calls, list_route_observations
+    from polylogue.operations.route_observation import read_latency_report
+    from polylogue.surfaces.outcome import decide_outcome, render_outcome_line
 
     env: AppEnv = ctx.obj
     config = load_effective_config(env)
@@ -973,34 +974,48 @@ def latency_command(
     since_ms = int((_time.time() - since_hours * 3600) * 1000)
 
     if not ops_db.exists():
+        missing = decide_outcome(matched=0, degraded=("ops_db_missing",))
         if output_format == "json":
-            click.echo(_json.dumps({"buckets": [], "unavailable_reason": "ops.db does not exist"}))
+            click.echo(
+                _json.dumps(
+                    {"buckets": [], "unavailable_reason": "ops.db does not exist", "outcome": missing.to_dict()}
+                )
+            )
         else:
             env.ui.console.print("[yellow]No ops.db found -- no latency telemetry has been recorded yet.[/yellow]")
+            click.echo(render_outcome_line(missing))
+        _exit_with_outcome(missing)
         return
 
     with one_shot_diagnostic_read(ops_db) as conn:
-        observations = list_route_observations(conn, surface=surface, since_ms=since_ms, limit=limit)
-        calls = list_mcp_calls(conn, limit=limit) if surface in (None, "mcp") else ()
-        calls = tuple(call for call in calls if call.started_at_ms >= since_ms)
-
-    report = compute_latency_percentiles(
-        observations,
-        calls,
-        drops=read_side_drops(
-            observation_count=len(observations),
-            mcp_call_count=len(calls),
-            row_limit=limit,
-        ),
-    )
-    buckets = report.buckets
+        report = read_latency_report(conn, since_ms=since_ms, surface=surface)
+    outcome = report.outcome
 
     if output_format == "json":
         payload = report.to_payload()
         payload["since_hours"] = since_hours
         click.echo(_json.dumps(payload, indent=2))
+        _exit_with_outcome(outcome)
         return
 
+    _render_latency_text(env, report, since_hours=since_hours)
+    line = render_outcome_line(outcome)
+    if line is not None:
+        click.echo(line)
+    _exit_with_outcome(outcome)
+
+
+def _exit_with_outcome(outcome: OutcomeEnvelope) -> None:
+    """End the command with the exit code its terminal outcome decides."""
+    from polylogue.surfaces.outcome import outcome_exit_code
+
+    code = outcome_exit_code(outcome)
+    if code:
+        raise SystemExit(code)
+
+
+def _render_latency_text(env: AppEnv, report: RouteLatencyReport, *, since_hours: float) -> None:
+    buckets = report.buckets
     if not buckets:
         env.ui.console.print(f"[yellow]No route observations in the last {since_hours:g}h.[/yellow]")
         if not report.drops.accounting_complete:

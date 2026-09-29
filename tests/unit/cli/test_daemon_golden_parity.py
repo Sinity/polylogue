@@ -199,18 +199,6 @@ def test_read_messages_json_is_served_by_the_daemon(
     ]
 
 
-def _strip_read_provenance(payload: dict[str, object]) -> dict[str, object]:
-    """Drop the per-call authority envelope, which is provenance, not content.
-
-    It carries the serving executor and that call's own wall-clock elapsed
-    time; both necessarily differ between two independent invocations, and the
-    executor identity is asserted explicitly on each leg above rather than
-    merely stripped here.
-    """
-
-    return {key: value for key, value in payload.items() if key != "authority"}
-
-
 def _seed_evidence_archive(root: Path) -> None:
     """Seed one session that actually carries per-session evidence rows.
 

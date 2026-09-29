@@ -126,14 +126,19 @@ class DaemonEventRetention:
     ``message.appended`` per live append grew the table without limit
     (polylogue-20d.13.6).
 
-    Both bounds default to ``None``: **no retention value is declared here on
-    purpose.** The parent bead supplies none, no measurement of the real
-    emission rate exists, and a number invented to make the enforcement point
-    look satisfied would be a fake bound. :func:`prune_daemon_events` is the
-    named enforcement point and runs on every emit; until an operator or a
-    live-daemon measurement supplies a bound it prunes nothing and
-    :attr:`is_bounded` reports the ledger as unbounded rather than pretending
-    otherwise.
+    The ledger is a *resume buffer* for SSE subscribers, not archive history:
+    a subscriber whose ``Last-Event-ID`` falls below the retained range gets a
+    typed ``aged_out`` resync (:func:`query_events_since`) and re-reads current
+    state, so a bound changes how far back a resume can reach, never whether a
+    subscriber learns that it missed events. :data:`DEFAULT_DAEMON_EVENT_RETENTION`
+    is the production bound; :func:`prune_daemon_events` enforces it on every
+    emit.
+
+    ``max_rows`` bounds the retained *id span*: after a prune the ledger holds
+    no id at or below ``MAX(id) - max_rows``. Ids are ``AUTOINCREMENT`` and
+    pruning only ever deletes a prefix, so the span is an upper bound on the row
+    count, and enforcing it costs two index probes instead of a ``COUNT(*)``
+    scan on every emit.
     """
 
     max_rows: int | None = None
@@ -151,8 +156,21 @@ class DaemonEventRetention:
         return self.max_rows is not None or self.max_age_ms is not None
 
 
-_UNBOUNDED_RETENTION = DaemonEventRetention()
-_RETENTION: DaemonEventRetention = _UNBOUNDED_RETENTION
+DAEMON_EVENT_RETENTION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
+"""A week: the ops tier's telemetry horizon (``ROUTE_OBSERVATION_RETENTION_MS``).
+A subscriber disconnected for longer resyncs from current state."""
+
+DAEMON_EVENT_RETENTION_MAX_ROWS = 250_000
+"""Id span retained regardless of age, so a cold build that emits one event per
+session cannot grow the disposable tier without limit inside the age window.
+Frames are refs and counters (a few hundred bytes), so this caps the ledger at
+tens of megabytes."""
+
+DEFAULT_DAEMON_EVENT_RETENTION = DaemonEventRetention(
+    max_rows=DAEMON_EVENT_RETENTION_MAX_ROWS,
+    max_age_ms=DAEMON_EVENT_RETENTION_MAX_AGE_MS,
+)
+_RETENTION: DaemonEventRetention = DEFAULT_DAEMON_EVENT_RETENTION
 
 
 def daemon_event_retention() -> DaemonEventRetention:
@@ -199,19 +217,26 @@ def prune_daemon_events(
     removed = 0
     if resolved.max_age_ms is not None:
         horizon = (current_epoch_ms() if now_ms is None else now_ms) - resolved.max_age_ms
-        boundary_row = conn.execute("SELECT MIN(id) FROM daemon_events WHERE ts_ms >= ?", (horizon,)).fetchone()
+        # The first retained row in id order. ``NOT INDEXED`` walks the rowid
+        # b-tree from the oldest id and stops at the first in-window row, so
+        # each emit pays for the rows that expired since the previous one;
+        # ``MIN(id)`` over the ``ts_ms`` index would visit every in-window row.
+        boundary_row = conn.execute(
+            "SELECT id FROM daemon_events NOT INDEXED WHERE ts_ms >= ? ORDER BY id ASC LIMIT 1",
+            (horizon,),
+        ).fetchone()
         boundary = None if boundary_row is None else boundary_row[0]
         if boundary is None:
             removed += conn.execute("DELETE FROM daemon_events").rowcount
         else:
             removed += conn.execute("DELETE FROM daemon_events WHERE id < ?", (int(boundary),)).rowcount
     if resolved.max_rows is not None:
-        row_count = int(conn.execute("SELECT COUNT(*) FROM daemon_events").fetchone()[0])
-        excess = row_count - resolved.max_rows
-        if excess > 0:
+        latest_row = conn.execute("SELECT MAX(id) FROM daemon_events").fetchone()
+        latest = None if latest_row is None or latest_row[0] is None else int(latest_row[0])
+        if latest is not None and latest > resolved.max_rows:
             removed += conn.execute(
-                "DELETE FROM daemon_events WHERE id IN (SELECT id FROM daemon_events ORDER BY id ASC LIMIT ?)",
-                (excess,),
+                "DELETE FROM daemon_events WHERE id <= ?",
+                (latest - resolved.max_rows,),
             ).rowcount
     return removed
 
@@ -1004,6 +1029,9 @@ __all__ = [
     "RESYNC_CURSOR_AGED_OUT",
     "RESYNC_LEDGER_RESET",
     "DaemonEventPage",
+    "DAEMON_EVENT_RETENTION_MAX_AGE_MS",
+    "DAEMON_EVENT_RETENTION_MAX_ROWS",
+    "DEFAULT_DAEMON_EVENT_RETENTION",
     "DaemonEventRetention",
     "EventAudience",
     "EventCursorStatus",

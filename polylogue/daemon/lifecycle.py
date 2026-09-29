@@ -13,7 +13,6 @@ import faulthandler
 import os
 import signal
 import time
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +72,7 @@ class DaemonLifecycle:
     def start(
         cls,
         *,
+        run_id: str,
         archive_root_path: Path,
         details: dict[str, object] | None = None,
     ) -> DaemonLifecycle:
@@ -80,10 +80,14 @@ class DaemonLifecycle:
 
         ``polylogued`` names the archive its writer lease is bound to, so the
         row lands in that archive's ``ops.db`` rather than one re-resolved here.
+        ``run_id`` is the daemon run's own id (``daemon.cli.daemon_run_id``),
+        the one its events already carry, so the row joins to its logs.
         """
         global _active_lifecycle
+        if not run_id:
+            raise ValueError("a daemon lifecycle requires the run's id")
         ops_db_path = archive_root_path / "ops.db"
-        lifecycle = cls(run_id=str(uuid.uuid4()), ops_db_path=ops_db_path)
+        lifecycle = cls(run_id=run_id, ops_db_path=ops_db_path)
         _write_lifecycle(
             lifecycle.ops_db_path,
             record_daemon_lifecycle_start,

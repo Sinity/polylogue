@@ -711,9 +711,11 @@ def test_latency_command_reports_no_ops_db(tmp_path: Path) -> None:
         ["--format", "json"],
         obj=_env_with_archive_root(tmp_path),
     )
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     payload = json.loads(result.output)
-    assert payload == {"buckets": [], "unavailable_reason": "ops.db does not exist"}
+    assert payload["buckets"] == []
+    assert payload["outcome"]["state"] == "degraded"
+    assert payload["outcome"]["reason"] == "ops_db_missing"
 
 
 def test_latency_command_reports_measured_percentiles(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -755,8 +757,12 @@ def test_latency_command_reports_measured_percentiles(tmp_path: Path, monkeypatc
         obj=_env_with_archive_root(tmp_path),
     )
 
-    assert result.exit_code == 0, result.output
+    # Rows written by other processes: their drop ledgers are not countable
+    # here, so the answer is degraded (exit 1) even though it holds buckets.
+    assert result.exit_code == 1, result.output
     payload = json.loads(result.output)
+    assert payload["outcome"]["state"] == "degraded"
+    assert payload["outcome"]["reason"] == "drop_accounting_incomplete"
     assert len(payload["buckets"]) == 1
     bucket = payload["buckets"][0]
     assert bucket["surface"] == "cli"
@@ -794,29 +800,24 @@ def test_latency_command_excludes_observations_outside_lookback_window(tmp_path:
         obj=_env_with_archive_root(tmp_path),
     )
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code == 1, result.output
     assert json.loads(result.output)["buckets"] == []
 
 
-def test_latency_plain_zero_rows_reports_unknown_drop_accounting(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from polylogue.operations.route_observation import RouteObservationDrops
+def test_latency_json_zero_rows_reports_unknown_drop_accounting(tmp_path: Path) -> None:
+    """An empty window read from another process is "drops unknown", never "zero drops"."""
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
     from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 
     initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
-    monkeypatch.setattr(
-        "polylogue.operations.route_observation.read_side_drops",
-        lambda **_kwargs: RouteObservationDrops(False, {"process_local": 2}),
-    )
-    env = _env_with_archive_root(tmp_path)
-    result = CliRunner().invoke(diagnostics.latency_command, ["--format", "plain"], obj=env)
+    result = CliRunner().invoke(diagnostics.latency_command, ["--format", "json"], obj=_env_with_archive_root(tmp_path))
 
-    assert result.exit_code == 0, result.output
-    assert "No route observations" in result.output
-    assert "dropped observations: not fully countable" in result.output
-    assert "process_local=2" in result.output
+    assert result.exit_code == 1, result.output
+    payload = json.loads(result.output)
+    assert payload["buckets"] == []
+    assert payload["drops"]["accounting_complete"] is False
+    # Degraded, not empty: the gap may be why the window holds nothing.
+    assert payload["outcome"]["state"] == "degraded"
 
 
 @pytest.mark.asyncio

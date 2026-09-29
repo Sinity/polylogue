@@ -601,17 +601,69 @@ def test_drops_charged_to_no_rendered_bucket_survive_as_unattributed() -> None:
     assert report.is_complete is False
 
 
-def test_a_reader_that_hit_its_row_limit_declares_the_truncation() -> None:
-    from polylogue.operations.route_observation import read_side_drops
+def test_the_reader_computes_percentiles_over_every_row_in_the_window(tmp_path: Path) -> None:
+    """The percentile denominator is the whole lookback window, not the newest N.
 
-    drops = read_side_drops(observation_count=1000, mcp_call_count=3, row_limit=1000)
-    assert drops.accounting_complete is False
-    assert drops.by_reason == {"read_limit_truncated": 0}
-    assert drops.total == 0
+    Anti-vacuity: restore a 1,000-row read limit and the ``sample_count`` below
+    stops at 1,000 while the slow tail (the oldest rows) disappears from p95.
+    """
+    from polylogue.operations.route_observation import read_latency_report
+    from polylogue.storage.sqlite.archive_tiers.ops_write import record_mcp_call, record_route_observation
 
-    untruncated = read_side_drops(observation_count=12, mcp_call_count=3, row_limit=1000)
-    assert untruncated.by_reason == {}
-    assert untruncated.accounting_complete is False
+    ops_db = _init_ops(tmp_path)
+    base_ms = 1_700_000_000_000
+    conn = sqlite3.connect(ops_db)
+    try:
+        for index in range(1_200):
+            record_route_observation(
+                conn,
+                trace_id=f"t-{index}",
+                surface="cli",
+                route="cli.status",
+                started_at_ms=base_ms + index,
+                # The oldest 200 rows are the slow ones a newest-first limit dropped.
+                duration_ms=5_000 if index < 200 else 10,
+                status="ok",
+            )
+        record_route_observation(
+            conn,
+            trace_id="outside",
+            surface="cli",
+            route="cli.status",
+            started_at_ms=base_ms - 1,
+            duration_ms=99_999,
+            status="ok",
+        )
+        record_mcp_call(conn, tool_name="search", started_at_ms=base_ms, finished_at_ms=base_ms + 7, success=True)
+        conn.commit()
+
+        report = read_latency_report(conn, since_ms=base_ms)
+        cli_only = read_latency_report(conn, since_ms=base_ms, surface="cli")
+    finally:
+        conn.close()
+
+    by_route = {bucket.route: bucket for bucket in report.buckets}
+    assert by_route["cli.status"].sample_count == 1_200
+    assert by_route["cli.status"].p95_ms == 5_000
+    assert by_route["mcp.search"].sample_count == 1
+    assert [bucket.route for bucket in cli_only.buckets] == ["cli.status"]
+    # A reader cannot see the emitters' in-process ledgers: unknown, not zero.
+    assert report.drops.accounting_complete is False
+    assert report.outcome.state == "degraded"
+
+
+def test_a_fully_accounted_report_is_ok_and_an_empty_one_is_empty() -> None:
+    """Anti-vacuity: an outcome that ignored the drop disposition would call
+    the degraded reader answer above ``ok``; one that ignored rows would call
+    this ``ok`` report ``empty``."""
+    full = compute_latency_percentiles(
+        [_observation(surface="cli", route="cli.status", duration_ms=5)], drops=RouteObservationDrops.none_observed()
+    )
+    empty = compute_latency_percentiles([], drops=RouteObservationDrops.none_observed())
+
+    assert full.outcome.state == "ok"
+    assert full.to_payload()["outcome"] == full.outcome.to_dict()
+    assert empty.outcome.state == "empty"
 
 
 def test_latency_report_is_frozen() -> None:

@@ -44,7 +44,7 @@ def test_lifecycle_row_records_start_heartbeat_signal_and_clean_stop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ops_db = _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path, details={"component": "test"})
+    lifecycle = DaemonLifecycle.start(run_id="test-run", archive_root_path=tmp_path, details={"component": "test"})
     lifecycle.heartbeat()
     lifecycle.record_signal_best_effort(signal.SIGTERM)
     lifecycle.stop(exit_kind="signal")
@@ -79,7 +79,7 @@ def test_lifecycle_writes_under_an_archive_bound_daemon_lease(
 
     ops_db = _bind_ops_db(monkeypatch, tmp_path)
     with arm_write_lease_enforcement(), write_lease("daemon.lifecycle.start", archive_root=tmp_path):
-        lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path, details={"component": "test"})
+        lifecycle = DaemonLifecycle.start(run_id="test-run", archive_root_path=tmp_path, details={"component": "test"})
         lifecycle.stop(exit_kind="clean")
 
     with sqlite3.connect(ops_db) as conn:
@@ -92,7 +92,7 @@ def test_lifecycle_status_rejects_stale_unstopped_heartbeat(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
+    lifecycle = DaemonLifecycle.start(run_id="test-run", archive_root_path=tmp_path)
     current_ms = 2_000_000_000_000
     stale_ms = current_ms - int((DAEMON_HEARTBEAT_STALE_AFTER_SECONDS + 1) * 1000)
     with sqlite3.connect(tmp_path / "ops.db") as conn:
@@ -119,7 +119,7 @@ def test_lifecycle_status_reports_stale_between_warn_and_vanished_floors(
     1369.8s against a 900s interval. It must now read "stale", not "fresh".
     """
     _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
+    lifecycle = DaemonLifecycle.start(run_id="test-run", archive_root_path=tmp_path)
     current_ms = 2_000_000_000_000
     stale_ms = current_ms - int((DAEMON_HEARTBEAT_STALE_WARN_SECONDS + 1) * 1000)
     with sqlite3.connect(tmp_path / "ops.db") as conn:
@@ -167,7 +167,7 @@ def test_sigterm_dumps_threads_and_persists_signal_before_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
+    lifecycle = DaemonLifecycle.start(run_id="test-run", archive_root_path=tmp_path)
     previous = install_signal_handlers(lifecycle)
     try:
         with patch("polylogue.daemon.lifecycle.faulthandler.dump_traceback") as dump:
@@ -189,7 +189,7 @@ def test_sigterm_reports_forensic_dump_failure_to_raw_stderr(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
+    lifecycle = DaemonLifecycle.start(run_id="test-run", archive_root_path=tmp_path)
     previous = install_signal_handlers(lifecycle)
     try:
         with (
@@ -216,7 +216,7 @@ def test_signal_write_does_not_wait_for_the_normal_writer_timeout(
 ) -> None:
     """A held OPS write lock cannot make SIGTERM wait for the normal 30s timeout."""
     ops_db = _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
+    lifecycle = DaemonLifecycle.start(run_id="test-run", archive_root_path=tmp_path)
     lock = sqlite3.connect(ops_db)
     try:
         lock.execute("BEGIN EXCLUSIVE")
@@ -238,7 +238,7 @@ def test_sigint_is_recorded_as_signal_not_clean_stop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
+    lifecycle = DaemonLifecycle.start(run_id="test-run", archive_root_path=tmp_path)
     previous = install_signal_handlers(lifecycle)
     try:
         with patch("polylogue.daemon.lifecycle.faulthandler.dump_traceback"):
@@ -259,7 +259,7 @@ def test_atexit_sentinel_marks_python_exit_without_claiming_a_clean_stop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _bind_ops_db(monkeypatch, tmp_path)
-    DaemonLifecycle.start(archive_root_path=tmp_path)
+    DaemonLifecycle.start(run_id="test-run", archive_root_path=tmp_path)
     lifecycle_module._atexit_sentinel()
 
     status = lifecycle_status()
@@ -282,7 +282,7 @@ def test_lifecycle_writes_name_the_archive_their_root_bound_lease_owns(tmp_path:
 
     with arm_write_lease_enforcement():
         with write_lease("daemon.lifecycle.start", archive_root=tmp_path):
-            lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
+            lifecycle = DaemonLifecycle.start(run_id="test-run", archive_root_path=tmp_path)
         lifecycle.record_signal_best_effort(signal.SIGTERM)
         with write_lease("daemon.lifecycle.stop", archive_root=tmp_path):
             lifecycle.stop(exit_kind="signal")
@@ -293,3 +293,47 @@ def test_lifecycle_writes_name_the_archive_their_root_bound_lease_owns(tmp_path:
             (lifecycle.run_id,),
         ).fetchone()
     assert row == ("SIGTERM", "signal")
+
+
+def test_one_daemon_run_id_joins_its_events_lifecycle_row_and_status(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """polylogue-peo AC1: the run's events, lifecycle row and status share one id.
+
+    Anti-vacuity: let ``DaemonLifecycle.start`` mint its own id (the
+    predecessor) or ``daemon_run_id`` re-mint on each call, and the row, the
+    status projection and the event stop naming the same run.
+    """
+    from polylogue import logging as plog
+    from polylogue.daemon.cli import daemon_run_id
+
+    _bind_ops_db(monkeypatch, tmp_path)
+    previous = plog.current_context()
+    plog.set_run_context()
+    try:
+        with plog.capture() as records:
+            run_id = daemon_run_id()
+            plog.emit("daemon.run.start")
+            lifecycle = DaemonLifecycle.start(run_id=daemon_run_id(), archive_root_path=tmp_path)
+        status = lifecycle_status()
+        lifecycle.stop(exit_kind="clean")
+    finally:
+        plog.set_run_context(**previous)
+
+    started = [record for record in records if record["event"] == "daemon.run.start"]
+    assert started and started[0]["run_id"] == run_id
+    assert lifecycle.run_id == run_id
+    assert status["run_id"] == run_id
+
+
+def test_an_entry_point_that_bound_a_run_id_keeps_it() -> None:
+    from polylogue import logging as plog
+    from polylogue.daemon.cli import daemon_run_id
+
+    previous = plog.current_context()
+    plog.set_run_context(run_id="bound-by-entry-point", component="daemon")
+    try:
+        assert daemon_run_id() == "bound-by-entry-point"
+    finally:
+        plog.set_run_context(**previous)

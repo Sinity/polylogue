@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -750,6 +751,27 @@ def test_recovery_replays_receipt_markers_oldest_first(tmp_path: Path) -> None:
     ]
 
 
+@pytest.fixture
+def unbounded_event_ledger() -> Iterator[None]:
+    """Hold the event ledger unbounded for a sweep that mixes synthetic and real time.
+
+    The receipt outbox replays its entry at the synthetic observation time it
+    was queued with (``now_ms=10_000``), and the periodic sweep's own receipt
+    is emitted at the real wall clock. Under the production week bound the
+    next real-time emit expires the replayed 1970 row -- ledger retention, not
+    the outbox recovery these tests pin. The typed receipt table, not the
+    ledger, is the recovery authority either way.
+    """
+    from polylogue.daemon.events import DaemonEventRetention, set_daemon_event_retention
+
+    previous = set_daemon_event_retention(DaemonEventRetention())
+    try:
+        yield
+    finally:
+        set_daemon_event_retention(previous)
+
+
+@pytest.mark.usefixtures("unbounded_event_ledger")
 def test_periodic_recovers_receipt_outbox_before_invalid_config_reload(tmp_path: Path) -> None:
     """Fresh-process recovery is not gated by a malformed reload."""
 
@@ -1064,6 +1086,7 @@ def test_periodic_reloads_config_after_sleep_and_serializes_parked_receipts(tmp_
     ]
 
 
+@pytest.mark.usefixtures("unbounded_event_ledger")
 def test_periodic_survives_invalid_post_sleep_config_reload(tmp_path: Path) -> None:
     _init_ops_db(tmp_path / "ops.db")
     _init_user_db(tmp_path / "user.db")

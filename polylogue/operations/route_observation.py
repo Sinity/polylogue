@@ -28,7 +28,7 @@ import subprocess
 import time
 import uuid
 from collections import defaultdict
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
@@ -40,6 +40,7 @@ from polylogue.logging import get_logger
 
 if TYPE_CHECKING:
     from polylogue.scenarios.workload import WorkloadEnvelopeSpec, WorkloadReceipt, WorkloadRunStatus
+    from polylogue.surfaces.outcome import OutcomeEnvelope
 
 logger = get_logger(__name__)
 
@@ -83,6 +84,10 @@ RECEIPT_ATTRIBUTE_KEY = "route_receipt"
 # ---------------------------------------------------------------------------
 
 
+DROP_ACCOUNTING_INCOMPLETE = "drop_accounting_incomplete"
+"""Outcome gap: the sample's lost observations are not countable from the reader."""
+
+
 class RouteObservationDropReason(str, Enum):
     """Why an observation never reached the sample a percentile is computed over."""
 
@@ -102,11 +107,6 @@ class RouteObservationDropReason(str, Enum):
 
     NOT_SAMPLED = "not_sampled"
     """The spec's sampling disposition excluded this invocation."""
-
-    READ_LIMIT_TRUNCATED = "read_limit_truncated"
-    """The reader's own row limit cut the sample short. Declared by the reader,
-    not the emitter: a p95 over "the newest N of an unknown total" hides its
-    denominator exactly as an emit-time drop does."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -769,10 +769,27 @@ class RouteLatencyReport:
     def is_complete(self) -> bool:
         return self.drops.accounting_complete and self.drops.total == 0
 
+    @property
+    def outcome(self) -> OutcomeEnvelope:
+        """The report's terminal outcome: incomplete drop accounting is a named gap.
+
+        A percentile over a sample that lost an unknown number of members is
+        not a measurement of the route, so such an answer is ``degraded`` even
+        when it holds buckets, and an empty window stays ``degraded`` too: the
+        gap, not the absence of traffic, may be why it is empty.
+        """
+        from polylogue.surfaces.outcome import decide_outcome
+
+        return decide_outcome(
+            matched=len(self.buckets),
+            degraded=() if self.drops.accounting_complete else (DROP_ACCOUNTING_INCOMPLETE,),
+        )
+
     def to_payload(self) -> dict[str, object]:
         drops = self.drops.to_payload()
         drops["unattributed"] = self.unattributed_drops
         return {
+            "outcome": self.outcome.to_dict(),
             "buckets": [
                 {
                     "surface": bucket.surface,
@@ -806,8 +823,8 @@ def _percentile(sorted_values: Sequence[int], quantile: float) -> float | None:
 
 
 def compute_latency_percentiles(
-    route_observations: Sequence[object],
-    mcp_calls: Sequence[object] = (),
+    route_observations: Iterable[object],
+    mcp_calls: Iterable[object] = (),
     *,
     drops: RouteObservationDrops,
 ) -> RouteLatencyReport:
@@ -859,30 +876,82 @@ def compute_latency_percentiles(
     return RouteLatencyReport(buckets=tuple(buckets), drops=drops)
 
 
-def read_side_drops(*, observation_count: int, mcp_call_count: int, row_limit: int) -> RouteObservationDrops:
-    """Declare the drop disposition of a reader that paged the ops tier.
+@dataclass(frozen=True, slots=True)
+class _ObservationSample:
+    surface: str
+    route: str
+    duration_ms: int
+    status: str
+    started_at_ms: int
 
-    A reader cannot see the emitters' in-process ledgers, so its accounting is
-    never complete. What it *can* measure is its own truncation: a table that
-    returned exactly ``row_limit`` rows was cut short by the reader, and every
-    row beyond the limit is missing from the percentile's denominator for the
-    same reason an emit-time drop is.
+
+@dataclass(frozen=True, slots=True)
+class _McpCallSample:
+    tool_name: str
+    duration_ms: int
+    success: bool
+    started_at_ms: int
+
+
+def read_latency_report(
+    conn: sqlite3.Connection,
+    *,
+    since_ms: int,
+    surface: str | None = None,
+) -> RouteLatencyReport:
+    """Compute the latency report over every sample in the lookback window.
+
+    The sample is the whole window, streamed from the cursor: a reader that
+    kept only the newest N rows reported a p95 over "the newest N of an
+    unknown total", which is not a measurement of the route. The window is
+    bounded by the writers' own retention (``ROUTE_OBSERVATION_RETENTION_MS``
+    and its row cap for observations, ``MCP_CALL_LOG_RETENTION_MS`` for MCP
+    calls), not by this reader.
+
+    A reader in another process cannot see the emitters' in-process drop
+    ledgers, so the answer's drop accounting is declared incomplete rather
+    than zero.
     """
-    drops = RouteObservationDrops.unaccounted()
-    if observation_count >= row_limit or mcp_call_count >= row_limit:
-        # We know a table was truncated, not how many rows were omitted.
-        # Keep accounting incomplete without inventing a dropped-row count.
-        drops = drops.merged_with(
-            RouteObservationDrops(
-                accounting_complete=False,
-                by_reason={RouteObservationDropReason.READ_LIMIT_TRUNCATED.value: 0},
+    observation_sql = (
+        "SELECT surface, route, duration_ms, status, started_at_ms FROM route_observations WHERE started_at_ms >= ?"
+    )
+    observation_params: tuple[object, ...] = (since_ms,)
+    if surface is not None:
+        observation_sql += " AND surface = ?"
+        observation_params = (since_ms, surface)
+    observations = (
+        _ObservationSample(
+            surface=str(row[0]),
+            route=str(row[1]),
+            duration_ms=int(row[2]),
+            status=str(row[3]),
+            started_at_ms=int(row[4]),
+        )
+        for row in conn.execute(observation_sql, observation_params)
+    )
+    report_without_calls = surface not in (None, "mcp")
+    calls = (
+        ()
+        if report_without_calls
+        else (
+            _McpCallSample(
+                tool_name=str(row[0]),
+                duration_ms=int(row[1]),
+                success=bool(row[2]),
+                started_at_ms=int(row[3]),
+            )
+            for row in conn.execute(
+                "SELECT tool_name, duration_ms, success, started_at_ms FROM mcp_call_log WHERE started_at_ms >= ?",
+                (since_ms,),
             )
         )
-    return drops
+    )
+    return compute_latency_percentiles(observations, calls, drops=RouteObservationDrops.unaccounted())
 
 
 __all__ = [
     "DEFAULT_ROUTE_PHASE",
+    "DROP_ACCOUNTING_INCOMPLETE",
     "LOW_CONFIDENCE_SAMPLE_FLOOR",
     "RECEIPT_ATTRIBUTE_KEY",
     "ROUTE_OBSERVATION_WORKLOAD_FAMILY",
@@ -898,7 +967,7 @@ __all__ = [
     "compute_latency_percentiles",
     "observe_route",
     "open_observation_connection",
-    "read_side_drops",
+    "read_latency_report",
     "reset_route_observation_drops",
     "route_key",
     "route_observation_drops",

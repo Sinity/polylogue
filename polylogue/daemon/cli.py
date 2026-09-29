@@ -75,6 +75,7 @@ from polylogue.logging import (
     WARNING,
     configure_events,
     configure_logging,
+    current_context,
     emit,
     propagate,
     set_run_context,
@@ -1883,6 +1884,25 @@ def compose_ingest_owner(
     return runtime, profiles
 
 
+def daemon_run_id() -> str:
+    """Return the one run id of this daemon run, binding it on first use.
+
+    Every record of a run -- each event (the logging run context crosses every
+    task, thread and writer-lease hop), the ``daemon_lifecycle`` row, its
+    heartbeats and the status projection of that row -- carries this id, so
+    evidence about a run that died joins to everything else it left behind
+    (polylogue-peo AC1). ``polylogued run`` binds it at process start;
+    ``polylogued watch`` and embedded callers of :func:`run_daemon_services`
+    are bound here on entry.
+    """
+    bound = current_context().get("run_id")
+    if isinstance(bound, str) and bound:
+        return bound
+    run_id = uuid.uuid4().hex
+    set_run_context(**{**current_context(), "run_id": run_id, "component": "daemon"})
+    return run_id
+
+
 async def run_daemon_services(
     *,
     sources: tuple[WatchSource, ...],
@@ -1919,6 +1939,7 @@ async def run_daemon_services(
     from polylogue.paths import archive_root
     from polylogue.storage.sqlite.connection_profile import arm_recurring_checkpoint_owner
 
+    daemon_run_id()
     archive_root_path = Path(archive_root())
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)
     with (
@@ -2316,6 +2337,7 @@ async def _run_daemon_services_under_active_writer_lease(
         _daemon_lifecycle = await write_coordinator.run_sync(
             "daemon.lifecycle.start",
             DaemonLifecycle.start,
+            run_id=daemon_run_id(),
             archive_root_path=archive_root_path,
             details={"archive_root": str(archive_root_path)},
         )
@@ -3994,10 +4016,9 @@ def run_command(
     configure_logging()
     configure_events()
 
-    # One run_id binds every event this process emits, across every task,
-    # thread and writer-lease hop, so a completed rebuild log can be filtered
-    # to exactly one daemon run.
-    set_run_context(run_id=uuid.uuid4().hex[:16], component="daemon")
+    # Bound before anything else emits, so the earliest events of this run
+    # carry the id its lifecycle row, heartbeats and status report.
+    daemon_run_id()
     emit("daemon.run.start", pid=os.getpid())
 
     from polylogue.config import resolve_runtime_config
