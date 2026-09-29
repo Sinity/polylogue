@@ -85,6 +85,11 @@ def query_session_rows(
     and the walk follows ``next_offset`` until ``limit`` distinct sessions are
     found or the selection is exhausted. ``limit=None`` walks it all.
     ``offset`` is the operation's own page offset.
+
+    The first page asks for ``limit`` rows, which a session-grain page always
+    satisfies. Only a page of repeated sessions needs another, and repeats can
+    run to thousands of hits, so later pages use the full walk window rather
+    than ``limit``-sized round trips.
     """
 
     rows: list[SelectSessionRow] = []
@@ -105,6 +110,7 @@ def query_session_rows(
         if not page or isinstance(next_offset, bool) or not isinstance(next_offset, int) or next_offset <= offset:
             return rows
         offset = next_offset
+        page_size = COMPLETE_SELECTION_PAGE
     return rows
 
 
