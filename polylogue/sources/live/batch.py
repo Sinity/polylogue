@@ -701,8 +701,8 @@ class _ArchiveFullWriteResult:
     # The archive can forget on purpose (polylogue-27m): a record whose blob
     # hash is durably excised is a deliberate skip, not a failure -- tracked
     # separately from ordinary parse/write failures so operators can tell
-    # the two apart (mirrors ParseResult.excised_skips on the CLI import
-    # path in pipeline/services/archive_ingest.py).
+    # the two apart (summed into ParseResult.excised_skips by the one-shot
+    # route in operations/canonical_archive_ingest.py).
     excised_skips: int = 0
     excised_paths: set[Path] = field(default_factory=set)
     # polylogue-11cg9: raw ids never attempted this pass because the declared

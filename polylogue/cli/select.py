@@ -179,7 +179,7 @@ def choose_select_row(env: AppEnv, rows: list[SelectSessionRow]) -> SelectSessio
 
 
 def resolve_ambiguous_selection(
-    env: AppEnv,
+    env: AppEnv | None,
     candidates: Sequence[str],
     *,
     operation: str,
@@ -194,7 +194,8 @@ def resolve_ambiguous_selection(
 
     ``rows_loader`` supplies the richer labels the chooser displays and is
     called only once a chooser will actually run, so the refusal path costs the
-    same read it did before.
+    same read it did before.  A caller with no ``env`` has no terminal to ask,
+    so it always gets the refusal.
     """
     from polylogue.cli.contextual_errors import (
         AMBIGUITY_CANDIDATE_LIMIT,
@@ -205,7 +206,7 @@ def resolve_ambiguous_selection(
     refs = tuple(str(candidate) for candidate in candidates)
     if len(refs) == 1:
         return refs[0]
-    if refs and interactive_selection_available(env):
+    if refs and env is not None and interactive_selection_available(env):
         rows = list(rows_loader() if rows_loader is not None else ()) or [
             SelectSessionRow(session_id=ref, origin="unknown", title=ref, date=None) for ref in refs
         ]

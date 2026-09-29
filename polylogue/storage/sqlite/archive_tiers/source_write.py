@@ -40,7 +40,7 @@ class ContentExcisedError(ExcisionPolicyError):
     are two acquire-time raw-session write functions that gate on this --
     ``write_source_raw_session`` (payload held in memory; used by the CLI
     import path via ``ArchiveStore.write_raw_and_parsed_result`` /
-    ``pipeline.services.archive_ingest.parse_sources_archive``) and
+    ``operations.canonical_archive_ingest.ingest_one_shot_archive``) and
     ``write_source_raw_session_blob_ref`` (payload already published as a
     blob, not held in memory; used by the daemon's memory-bounded streaming
     path for multi-GiB files -- ``ArchiveStore.write_raw_blob_ref`` /

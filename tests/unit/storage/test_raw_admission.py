@@ -659,8 +659,7 @@ def test_admit_raw_observation_baseline_honors_caller_supplied_raw_id(tmp_path: 
 
     Every other arm forwards ``raw_id`` to ``write_source_raw_session``. The
     BASELINE arm dropped it, so a caller with a route-specific identity scheme
-    (``hermes_profile_raw_id`` in ``pipeline/services/archive_ingest.py``, and
-    the grouped-capture ``deterministic_raw_session_id(..., native_id=None)``
+    (a Hermes profile raw id, and the grouped-capture ``deterministic_raw_session_id(..., native_id=None)``
     key) silently got a *different* raw row than the one it addressed -- and
     then recorded memberships/coordinates against the id it thought it wrote.
     """

@@ -18,10 +18,11 @@ from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
 from polylogue.cli import query_verbs, read_view_handlers
 from polylogue.cli.click_app import cli as click_cli
-from polylogue.cli.contextual_errors import AmbiguousSelectionError
+from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT, AmbiguousSelectionError
 from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, ReadViewOptionDeclaration
 from polylogue.cli.root_request import RootModeRequest
+from polylogue.cli.select import SelectSessionRow
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
@@ -1363,14 +1364,20 @@ def test_resolve_target_session_id_uses_query_terms(
     )
     captured: list[tuple[object, int]] = []
 
-    def fake_query_session_ids(config: object, selected: RootModeRequest, *, limit: int) -> list[str]:
+    def fake_query_session_rows(config: object, selected: RootModeRequest, *, limit: int) -> list[SelectSessionRow]:
         captured.append((selected.query_params()["query"], limit))
-        return ["codex-session:resolve-query-target"]
+        return [
+            SelectSessionRow(
+                session_id="codex-session:resolve-query-target", origin="codex-session", title="t", date=None
+            )
+        ]
 
-    monkeypatch.setattr("polylogue.cli.session_rows.query_session_ids", fake_query_session_ids)
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_rows", fake_query_session_rows)
 
     assert query_verbs._resolve_target_session_id(request) == "codex-session:resolve-query-target"
-    assert captured == [(("title:query",), 1)]
+    # A filter is probed past one row so several matches are refused, not
+    # silently narrowed to the top-ranked session.
+    assert captured == [(("title:query",), AMBIGUITY_CANDIDATE_LIMIT + 1)]
 
 
 def test_read_view_rejects_format_outside_selected_profile() -> None:

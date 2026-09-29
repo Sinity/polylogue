@@ -14,7 +14,6 @@ from polylogue.pipeline.services.process_pool import (
     parallel_threads_effective,
     process_pool_context,
     process_pool_executor,
-    resolve_archive_ingest_dispatch,
     resolve_ingest_batch_dispatch,
     resolve_revision_backfill_census_dispatch,
     resolve_validation_dispatch,
@@ -236,57 +235,11 @@ def test_parallel_threads_effective_treats_missing_probe_as_gil_enabled(monkeypa
 # polylogue-xecca: unified parse-dispatch decision matrix
 # ---------------------------------------------------------------------------
 #
-# Each of the four sites' formulas moved here verbatim from
-# archive_ingest.py / validation_flow.py / ingest_batch/_core.py /
-# revision_backfill.py -- these matrices pin the exact numbers those sites
+# Each site's formula moved here verbatim from validation_flow.py /
+# ingest_batch/_core.py / revision_backfill.py -- these matrices pin the exact numbers those sites
 # relied on before the extraction so a future edit to the shared function
 # cannot silently drift any one site's effective behavior without this file
 # failing first.
-
-
-@pytest.mark.parametrize(
-    ("path_count", "total_bytes", "cpu_count", "expected_kind", "expected_workers"),
-    [
-        # A single path never justifies a spawn, whatever it weighs.
-        (1, 512 * 1024 * 1024, 24, PoolKind.SEQUENTIAL, 1),
-        # Small-byte tier: in-process, matching resolve_ingest_batch_dispatch.
-        (400, 8 * 1024 * 1024, 24, PoolKind.SEQUENTIAL, 1),
-        # Mid tier: capped at 4 workers.
-        (400, 8 * 1024 * 1024 + 1, 24, PoolKind.PROCESS, 4),
-        (400, 64 * 1024 * 1024, 24, PoolKind.PROCESS, 4),
-        # Above the mid tier: min(path_count, cpus, ceiling).
-        (400, 64 * 1024 * 1024 + 1, 24, PoolKind.PROCESS, 16),
-        (3, 512 * 1024 * 1024, 24, PoolKind.PROCESS, 3),
-        (400, 512 * 1024 * 1024, 6, PoolKind.PROCESS, 6),
-    ],
-)
-def test_resolve_archive_ingest_dispatch_tiers_on_measured_walk_size(
-    monkeypatch: pytest.MonkeyPatch,
-    path_count: int,
-    total_bytes: int,
-    cpu_count: int,
-    expected_kind: PoolKind,
-    expected_workers: int,
-) -> None:
-    """The plan is sized from the work the walk found, not from CPU count alone.
-
-    Anti-vacuity: dropping either byte tier, or the ``path_count`` term in the
-    ``min``, changes at least one row here. Before the tiers existed every row
-    resolved to PROCESS with the ambient ceiling, so a one-file walk spawned 16
-    interpreters to parse one file.
-    """
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: cpu_count)
-    plan = resolve_archive_ingest_dispatch(path_count=path_count, total_bytes=total_bytes, worker_ceiling=16)
-    assert plan.pool_kind is expected_kind
-    assert plan.worker_count == expected_workers
-
-
-def test_resolve_archive_ingest_dispatch_honors_worker_ceiling(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The caller's resolved ``POLYLOGUE_INGEST_PARSE_WORKERS`` ceiling still binds."""
-    monkeypatch.setattr("polylogue.pipeline.services.process_pool.available_cpus", lambda **_: 24)
-    plan = resolve_archive_ingest_dispatch(path_count=400, total_bytes=512 * 1024 * 1024, worker_ceiling=2)
-    assert plan.pool_kind is PoolKind.PROCESS
-    assert plan.worker_count == 2
 
 
 @pytest.mark.parametrize(

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.config import Source
-from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.scenarios import (
     DEMO_CLAUDE_CODE_SESSION_ID,
     build_demo_corpus_specs,
@@ -147,7 +147,7 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
     sources = [Source(name=path.parent.name, path=path.relative_to(source_root)) for path in source_paths]
 
     monkeypatch.chdir(source_root)
-    result = await parse_sources_archive(archive_root, sources)
+    result = await ingest_one_shot_archive(archive_root, sources)
 
     assert sorted(result.processed_ids) == [row[0] for row in EXPECTED_DEMO_SESSIONS]
     assert result.counts["sessions"] == 4
@@ -216,7 +216,7 @@ async def test_demo_fixture_world_converges_into_deterministic_archive(
         "assertions": _row_count(archive_root / "user.db", "assertions"),
     }
 
-    repeat = await parse_sources_archive(archive_root, sources)
+    repeat = await ingest_one_shot_archive(archive_root, sources)
 
     assert repeat.processed_ids == set()
     assert repeat.changed_session_ids == ()
