@@ -4054,6 +4054,106 @@ def test_decided_unresolved_membership_reconciles_the_cursor_instead_of_re_readi
     watcher.stop()
 
 
+@pytest.mark.parametrize(
+    ("materialized_at_ms", "decided_at_ms"),
+    [(1, 2), (2, 1), (3, 3)],
+    ids=["newer-decided", "newer-materialized", "same-acquisition"],
+)
+def test_cursor_reconciliation_restores_the_newest_archived_outcome(
+    tmp_path: Path, materialized_at_ms: int, decided_at_ms: int
+) -> None:
+    """A missing cursor restores to the newest settled raw across both outcome classes.
+
+    polylogue-ez5b9 (11.F065): reconciliation took any materialized raw and
+    consulted a decided-unresolved raw only when none existed. With an older
+    materialized A and a newer decided-ambiguous B that extends it, the
+    cursor was restored to A's shorter prefix and every restart re-ingested
+    B to reach the same verdict. The newest acquisition wins whichever class
+    it is in; equal acquisition times fall back to ``raw_id``, as each class
+    orders itself.
+
+    Anti-vacuity: restore the materialized-first ``or`` and the
+    newer-decided case restores ``len(short)`` and still needs work.
+    """
+    from polylogue.archive.revision_authority import decided_unresolved_membership_sql
+    from polylogue.archive.session_revision_membership import MembershipClassification
+    from polylogue.pipeline.ids import session_revision_projection
+
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    source_path = source_root / "newest-outcome.jsonl"
+    short = b'{"native_id":"newest-outcome"}\n'
+    long = short + b'{"native_id":"newest-outcome","turn":2}\n'
+    source_path.write_bytes(long)
+    materialized_payload, decided_payload = (long, short) if materialized_at_ms > decided_at_ms else (short, long)
+
+    def session(*message_ids: str) -> ParsedSession:
+        return ParsedSession(
+            source_name=Provider.CODEX,
+            provider_session_id="newest-outcome",
+            messages=[
+                ParsedMessage(provider_message_id=message_id, role=Role.USER, text=message_id)
+                for message_id in message_ids
+            ],
+        )
+
+    initialize_active_archive_root(tmp_path)
+    with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
+        materialized = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=materialized_payload,
+            source_path=str(source_path),
+            acquired_at_ms=materialized_at_ms,
+        )
+        decided = archive.write_raw_payload(
+            provider=Provider.CODEX,
+            payload=decided_payload,
+            source_path=str(source_path),
+            acquired_at_ms=decided_at_ms,
+        )
+        parsed = {materialized: session("m0"), decided: session("m0", "m1")}
+        for raw_id, parsed_session in parsed.items():
+            archive.replace_raw_membership_census(
+                raw_id, [parsed_session], parser_fingerprint="test-parser", censused_at_ms=1
+            )
+        archive.apply_raw_membership_classification(
+            "codex-session:newest-outcome",
+            MembershipClassification((materialized,), (), (decided,)),
+            parsed,
+            {raw_id: session_revision_projection(parsed_session) for raw_id, parsed_session in parsed.items()},
+            acquired_at_ms=4,
+        )
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        assert [
+            row[0]
+            for row in conn.execute(
+                f"SELECT r.raw_id FROM raw_sessions AS r WHERE {decided_unresolved_membership_sql('r')}"
+            )
+        ] == [decided], "sanity: the second raw is a decided-unresolved outcome"
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert [row[0] for row in conn.execute("SELECT raw_id FROM sessions")] == [materialized], (
+            "sanity: the first raw is the materialized outcome"
+        )
+
+    watcher, _full_ingest = _make_watcher(
+        tmp_path,
+        source_root,
+        sources=(WatchSource(name="codex", root=source_root),),
+    )
+    newest_payload = max(
+        (materialized_at_ms, materialized, materialized_payload),
+        (decided_at_ms, decided, decided_payload),
+    )[2]
+    try:
+        needs_work = watcher._needs_work(source_path)
+        record = watcher._cursor.get_record(source_path)
+        assert record is not None
+        assert record.byte_offset == len(newest_payload)
+        assert needs_work is (newest_payload != long)
+    finally:
+        watcher.stop()
+
+
 def test_discovery_claims_nested_sessions_and_declared_suffixes_only(tmp_path: Path) -> None:
     """The one production walk: which files the dispatcher's discovery claims.
 
