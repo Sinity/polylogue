@@ -737,17 +737,11 @@ def _execute_batch(
     binding = _binding(request, context, snapshot)
     accepted = _accepted_pages(audit, binding, "execution-batch")
     if accepted is not None:
-        deadline_unix_ms = context.runtime.request_deadline_unix_ms(request)
         with _fenced_on_failure(audit, binding):
             for offset, end, final in _page_bounds(
                 len(refs), accepted, request=request, context=context, audit=audit, binding=binding
             ):
-                with audit.bind_machine_request(
-                    binding,
-                    transition="accept_execution_batch",
-                    deadline_unix_ms=deadline_unix_ms,
-                    page=(offset, final),
-                ):
+                with audit.bind_machine_request(binding, transition="accept_execution_batch", page=(offset, final)):
                     audit.accept_execution_batch(refs[offset:end], context.principal)
     record = audit.machine_request(binding)
     assert record is not None
@@ -769,12 +763,11 @@ def _execute_batch(
                 # Startup's shared recovery classifier owns interrupted domain
                 # receipts. A consumed part is never replayed or reauthorized.
                 break
-            stop = context.runtime.stop_reason(request)
-            deadline = record.get("accepted_deadline_unix_ms")
-            if stop is None and deadline is not None and int(time() * 1000) >= _audit_int(deadline, field="deadline"):
-                stop = "deadline"
-            if stop is not None:
-                audit.stop_machine_batch(binding, stop)
+            # Only an explicit cancellation stops a progressing execution: a
+            # request deadline would fence the untouched suffix of a deletion
+            # that is still advancing, leaving it partial for no reason.
+            if context.runtime.stop_reason(request) == "cancelled":
+                audit.stop_machine_batch(binding, "cancelled")
                 break
             try:
                 preview, authorization = audit.authorization_for_principal(

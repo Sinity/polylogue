@@ -1443,3 +1443,34 @@ def test_cli_delete_cancels_a_preview_of_many_pages(monkeypatch: pytest.MonkeyPa
     with sqlite3.connect(archive_root / "audit.db") as conn:
         states = {str(row[0]) for row in conn.execute("SELECT state FROM operation_previews")}
     assert states == {"cancelled"}
+
+
+def test_cli_delete_keeps_progressing_past_its_request_deadline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A durably accepted paged delete finishes every phase past its deadline.
+
+    The runtime reports every request past its deadline throughout. Anti-vacuity:
+    fence staging pages or execution parts on ``deadline`` and the selection is
+    left partly deleted, with a request stopped as ``deadline``.
+    """
+    from polylogue.daemon import operation_runtime
+    from polylogue.operations import daemon_mutations
+
+    monkeypatch.setattr(daemon_mutations, "MAX_MUTATION_PLAN_TARGETS", 2)
+    monkeypatch.setattr(daemon_mutations, "MACHINE_PAGE_PARTS", 1)
+    monkeypatch.setattr(operation_runtime.DaemonOperationRuntime, "stop_reason", lambda _self, _request: "deadline")
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    session_ids = _seed_delete_authority_archive(archive_root, 7)
+
+    with _delete_authority_daemon(monkeypatch, archive_root) as client:
+        preview = _delete_operation(client, "preview", {"session_ids": list(session_ids)})
+        authorization = _delete_operation(client, "authorize", {"preview_refs": preview["preview_refs"]})
+        result = _delete_operation(client, "execute", {"authorization_refs": authorization["authorization_refs"]})
+
+    _assert_completed_delete(result, affected=7, chunks=4)
+    with sqlite3.connect(archive_root / "audit.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM machine_requests WHERE stop_reason IS NOT NULL").fetchone() == (0,)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
