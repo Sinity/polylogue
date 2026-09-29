@@ -236,7 +236,7 @@ def _free_text(rng: random.Random, length: int, newlines: int) -> str:
     if length <= 0:
         return ""
     words: list[str] = []
-    size = 0
+    size = -1  # the joined text is one separator shorter than the words plus separators
     while size < length:
         word = _WORDS[rng.randrange(len(_WORDS))]
         words.append(word)
