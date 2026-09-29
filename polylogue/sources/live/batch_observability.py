@@ -18,6 +18,7 @@ from polylogue.core.metrics import (
     read_peak_rss_self_mb,
 )
 from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 
 
 def record_attempt_progress(
@@ -142,9 +143,12 @@ def _schema_archive_session_ids_for_source_path(archive_root: Path, path: Path) 
     if not index_db.exists() or not source_db.exists():
         return ()
     try:
-        conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+        # Identity is not validated: during an owned cold rebuild the active
+        # index is the previous generation, and a skew here would fail a
+        # write that already committed to the candidate.
+        conn = open_readonly_connection(index_db, validate_schema=False)
         try:
-            conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+            attach_readonly_database(conn, source_db, alias="source_tier")
             rows = conn.execute(
                 """
                 SELECT s.session_id
@@ -155,7 +159,6 @@ def _schema_archive_session_ids_for_source_path(archive_root: Path, path: Path) 
                 """,
                 (str(path),),
             ).fetchall()
-            conn.execute("DETACH DATABASE source_tier")
         finally:
             conn.close()
     except sqlite3.Error:

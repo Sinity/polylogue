@@ -55,17 +55,26 @@ def request(host: str, port: int, method: str, path: str, body: dict[str, object
     return response.status, json.loads(response.read())
 
 
-def housekeeping(host: str, port: int, *, now: datetime | None = None) -> list[str]:
-    """Drive the receiver's spool housekeeping route, which owns retention collection."""
+def _stored_job_ids(spool_path: Path) -> set[str]:
+    with sqlite3.connect(capture_job_database_path(spool_path)) as connection:
+        return {row[0] for row in connection.execute("SELECT job_id FROM capture_jobs")}
+
+
+def housekeeping(host: str, port: int, spool_path: Path, *, now: datetime | None = None) -> list[str]:
+    """Drive discovery, the route every extension capture cycle opens with, and
+    return the job IDs the receiver collected on that pass."""
+    before = _stored_job_ids(spool_path)
     original = capture_jobs_module._now
     if now is not None:
         capture_jobs_module._now = lambda: now
     try:
-        status, payload = request(host, port, "GET", "/v1/capture-jobs/orphans?client_protocol=1", {})
+        status, _payload = request(
+            host, port, "POST", "/v1/capture-jobs/discover", {"provider": "chatgpt", "account_scope": SCOPE}
+        )
     finally:
         capture_jobs_module._now = original
     assert status == 200
-    return cast(list[str], payload["collected"])
+    return sorted(before - _stored_job_ids(spool_path))
 
 
 def create(host: str, port: int) -> dict[str, Any]:
@@ -502,8 +511,8 @@ def test_events_are_receiver_ordered_scoped_and_idempotent(tmp_path: Path) -> No
 def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_path: Path) -> None:
     """Anti-vacuity: timestamp order or retention/terminal/lease bypass makes this fail.
 
-    Collection is driven only through the receiver's housekeeping route, so
-    unwiring it from that route makes this fail too.
+    Collection is driven through discovery, the route the extension opens every
+    capture cycle with, so unwiring it from that route makes this fail too.
     """
     with receiver(tmp_path) as (host, port):
         job = create(host, port)
@@ -584,7 +593,7 @@ def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_pat
         )
         assert status == 200
         future = datetime(2050, 1, 1, tzinfo=UTC)
-        assert housekeeping(host, port, now=future) == []
+        assert housekeeping(host, port, tmp_path, now=future) == []
 
         status, completed = request(
             host,
@@ -599,7 +608,7 @@ def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_pat
             },
         )
         assert status == 200
-        assert housekeeping(host, port) == []
+        assert housekeeping(host, port, tmp_path) == []
         status, page = request(
             host,
             port,
@@ -609,7 +618,7 @@ def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_pat
         )
         assert status == 200
         assert page["timelines"]["conversation:1"] == [second["event"], first["event"]]
-        assert housekeeping(host, port, now=future) == [job["job_id"]]
+        assert housekeeping(host, port, tmp_path, now=future) == [job["job_id"]]
         assert (
             request(
                 host,
@@ -923,7 +932,7 @@ def test_terminal_retry_transitions_retention_without_a_client_declaration(tmp_p
         # The checkpoint left an intent-keyed timeline, so this job is the
         # record of it and housekeeping must not collect it.
         assert completed["receipt"]["retention"]["timeline_authoritative"] is True
-        assert housekeeping(host, port, now=datetime(2050, 1, 1, tzinfo=UTC)) == []
+        assert housekeeping(host, port, tmp_path, now=datetime(2050, 1, 1, tzinfo=UTC)) == []
 
 
 def test_checkpoint_persists_a_timeline_the_projection_surfaces(tmp_path: Path) -> None:
@@ -1192,7 +1201,7 @@ def test_checkpoint_after_terminal_update_is_kept(tmp_path: Path) -> None:
         )
         assert checkpointed["job"]["retention"]["state"] == "eligible"
         assert checkpointed["job"]["retention"]["timeline_authoritative"] is True
-        assert housekeeping(host, port, now=datetime(2050, 1, 1, tzinfo=UTC)) == []
+        assert housekeeping(host, port, tmp_path, now=datetime(2050, 1, 1, tzinfo=UTC)) == []
         status, page = request(
             host,
             port,
@@ -1295,3 +1304,114 @@ def test_upgrade_marks_only_non_default_retention_as_declared(tmp_path: Path) ->
     assert _declared_after_upgrade(tmp_path, job["job_id"], default) == 0
     held = {"state": "held", "hold_reason": "operator", "timeline_authoritative": True}
     assert _declared_after_upgrade(tmp_path, job["job_id"], held) == 1
+
+
+def _retired_job(host: str, port: int) -> str:
+    """Drive one job to completed, eligible, non-authoritative and checkpointed."""
+    job = create(host, port)
+    adopted = adopt(host, port, job)
+    lease = adopted["lease"]
+    base = {
+        "provider": "chatgpt",
+        "account_scope": SCOPE,
+        "lease_id": lease["lease_id"],
+        "generation": lease["generation"],
+        "proof": lease["proof"],
+    }
+    checkpointed = _checkpoint(host, port, job["job_id"], lease, adopted["job"]["revision"], 0, {"cursor": 1}, "cp")
+    status, retained = request(
+        host,
+        port,
+        "POST",
+        f"/v1/capture-jobs/{job['job_id']}/update",
+        {
+            **base,
+            "request_id": "declare-eligible",
+            "expected_revision": checkpointed["job"]["revision"],
+            "retention": {"state": "eligible", "hold_reason": None, "timeline_authoritative": False},
+        },
+    )
+    assert status == 200
+    status, _completed = request(
+        host,
+        port,
+        "POST",
+        f"/v1/capture-jobs/{job['job_id']}/update",
+        {
+            **base,
+            "request_id": "complete",
+            "expected_revision": retained["job"]["revision"],
+            "retry": {"state": "completed", "attempt": 1, "reason": None, "next_eligible_at": None},
+        },
+    )
+    assert status == 200
+    return cast(str, job["job_id"])
+
+
+def _job_row_counts(spool_path: Path, job_id: str) -> dict[str, int]:
+    with sqlite3.connect(capture_job_database_path(spool_path)) as connection:
+        return {
+            table: connection.execute(f"SELECT COUNT(*) FROM {table} WHERE job_id=?", (job_id,)).fetchone()[0]
+            for table in (
+                "capture_jobs",
+                "capture_job_events",
+                "capture_job_receipts",
+                "capture_job_update_receipts",
+            )
+        }
+
+
+@pytest.mark.parametrize("route", ["discover", "create"])
+def test_client_capture_routes_collect_a_retired_job(tmp_path: Path, route: str) -> None:
+    """A retired job is collected by the routes the extension actually calls.
+
+    ``browser-extension/src/backfill/capture_jobs.js`` opens every capture
+    cycle with ``POST /v1/capture-jobs/discover`` and creates a job only for an
+    unknown intent; nothing in the extension or the daemon issues the orphan
+    census route. Anti-vacuity: removing the ``gc()`` call from ``discover()``
+    or ``create()`` leaves the job and every row it owns in place, and the
+    orphan census asserted first is no longer where collection happens.
+    """
+    with receiver(tmp_path) as (host, port):
+        job_id = _retired_job(host, port)
+        stored = _job_row_counts(tmp_path, job_id)
+        assert all(count > 0 for count in stored.values()), stored
+
+        future = datetime(2050, 1, 1, tzinfo=UTC)
+        original = capture_jobs_module._now
+        capture_jobs_module._now = lambda: future
+        try:
+            status, census = request(host, port, "GET", "/v1/capture-jobs/orphans?client_protocol=1", {})
+            assert status == 200 and "collected" not in census
+            assert _job_row_counts(tmp_path, job_id) == stored
+
+            if route == "discover":
+                status, found = request(
+                    host, port, "POST", "/v1/capture-jobs/discover", {"provider": "chatgpt", "account_scope": SCOPE}
+                )
+                assert status == 200
+                assert found["jobs"] == []
+            else:
+                payload = {"cutoff": "2027-01-01T00:00:00Z"}
+                status, created = request(
+                    host,
+                    port,
+                    "POST",
+                    "/v1/capture-jobs",
+                    {
+                        "provider": "chatgpt",
+                        "account_scope": SCOPE,
+                        "request_id": "next-intent",
+                        "intent": {
+                            "schema_version": 1,
+                            "version": 1,
+                            "intent_key": "i1:" + "C" * 43,
+                            "payload": payload,
+                            "digest": canonical_digest(payload),
+                        },
+                    },
+                )
+                assert status == 201 and created["job"]["job_id"] != job_id
+        finally:
+            capture_jobs_module._now = original
+        assert _job_row_counts(tmp_path, job_id) == dict.fromkeys(stored, 0)
