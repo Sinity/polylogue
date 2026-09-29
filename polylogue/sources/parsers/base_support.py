@@ -269,15 +269,34 @@ class AdmissionObserver:
     disposition. A record that is not a JSON object is a typed refusal, never
     counted as materialized: every origin's outer records are objects, and a
     parser that skips a scalar produced no material from it (fail closed).
+
+    Only the parsing owner can say a record was lowered. The observer never
+    infers it from a record's shape: an ordinary-looking record the parser
+    discarded is not material. A record observed before the parser ran is
+    *pending*. When the input was one whole document the parser consumed, its
+    returned session settles that one record. When the input was a sequence
+    or a stream of records, the parser settles them: either the caller passes
+    each record's disposition (``lowered``/``malformed``), or the session
+    carries the parser's own ledger, whose outer-record denominator must equal
+    the complete count observed here. A stream is drained to its end after
+    the parser returns, so a parser that stops early cannot shrink the
+    denominator (polylogue-mg7jx).
     """
 
-    def __init__(self, scan: Callable[[object], str | None] | None = None) -> None:
+    def __init__(self, scan: Callable[[object], str | None] | None = None, *, record_stream: bool = False) -> None:
+        """``record_stream`` declares up front that the caller observes a sequence of records."""
         #: How one record's unknown wire type is found. The default scans the
         #: whole record; an origin with declared discriminators passes a scan
         #: that reads only those, so nested user data is never a wire type.
         self._scan = scan if scan is not None else _unknown_wire_type
         self._ledger = AdmissionLedger()
         self._count = 0
+        #: Records observed with no parser disposition yet, as half-open
+        #: ordinal runs (compact: a stream of records costs one run).
+        self._pending: list[list[int]] = []
+        #: Whether the observed input was a sequence or stream of records
+        #: rather than one whole document.
+        self._record_stream = record_stream
         #: The first source index of each unknown wire type: one event per
         #: type is emitted, so later occurrences are not retained.
         self._unknowns: dict[str, int] = {}
@@ -286,7 +305,12 @@ class AdmissionObserver:
         self._proof: ParseAccounting | None = None
 
     def observe(
-        self, item: object, source_index: int | None = None, *, recognized: bool = True, malformed: bool = False
+        self,
+        item: object,
+        source_index: int | None = None,
+        *,
+        lowered: bool | None = None,
+        malformed: bool = False,
     ) -> None:
         """Classify one record at dense ledger ordinal ``self._count``.
 
@@ -294,39 +318,77 @@ class AdmissionObserver:
         when that differs from its position in this session (an interleaved
         multi-session stream); the typed unknown event names that position.
 
-        ``recognized=False`` is the caller's own admission signal: it already
-        folded (or tried to fold) this record through its parser and knows
-        the parser refused to classify it -- e.g. a Claude Code record with a
-        missing or non-string ``type`` that ``_fold_code_record`` silently
-        drops. The generic nested-sentinel scan below cannot see that: it
-        only recognizes a specially-prefixed unknown marker, so an
-        unrecognized record with no such marker would otherwise be counted
-        MATERIALIZED despite producing no evidence at all.
+        ``lowered`` is the parsing owner's disposition when the caller has it:
+        ``True`` when the parser lowered the record into the session,
+        ``False`` when it folded (or tried to fold) the record and produced
+        nothing from it -- e.g. a Claude Code record with a missing or
+        non-string ``type`` that ``_fold_code_record`` drops. ``None`` leaves
+        the record pending for the parser's result to settle (see the class
+        docstring). ``malformed`` is the parser's refusal of a known kind it
+        skips for a missing required field.
         """
         ordinal = self._count
         self._count += 1
         if not isinstance(item, Mapping) or malformed:
-            # ``malformed`` is the caller's parser decision: a record of a
-            # known kind its parser skips for a missing required field left
-            # no material, so it is a typed refusal, never materialized.
             self._ledger.refusal(
                 AdmissionUnit.OUTER_RECORD, ordinal, type(item).__name__, AdmissionRefusalReason.MALFORMED
             )
             return
         wire_type = self._scan(item)
-        if wire_type is None and not recognized:
+        if wire_type is None and lowered is False:
             wire_type = "unrecognized_record_type"
-        if wire_type is None:
-            self._ledger.materialized(AdmissionUnit.OUTER_RECORD, ordinal, "parsed")
-        else:
+        if wire_type is not None:
             self._ledger.unknown(AdmissionUnit.OUTER_RECORD, ordinal, wire_type)
             self._unknowns.setdefault(wire_type, source_index if source_index is not None else ordinal + 1)
+        elif lowered:
+            self._ledger.materialized(AdmissionUnit.OUTER_RECORD, ordinal, "parsed")
+        elif self._pending and self._pending[-1][1] == ordinal:
+            self._pending[-1][1] = ordinal + 1
+        else:
+            self._pending.append([ordinal, ordinal + 1])
+
+    def observe_input(
+        self, payload: object, *, recognizes: Callable[[Mapping[str, object]], bool] | None = None
+    ) -> None:
+        """Observe a payload that is fully in memory: one document or a record sequence.
+
+        ``recognizes`` is the parser's own per-record recognition for a
+        record sequence: a record it recognizes is lowered, one it does not
+        is refused as malformed. Without it, sequence records stay pending.
+        """
+        if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)):
+            self._record_stream = True
+            for item in payload:
+                if recognizes is None:
+                    self.observe(item)
+                    continue
+                recognized = isinstance(item, Mapping) and recognizes(item)
+                # A future wire type stays a typed unknown, as the scan
+                # classifies it; only a known-shaped record the parser does
+                # not recognize is refused.
+                self.observe(
+                    item,
+                    lowered=recognized,
+                    malformed=isinstance(item, Mapping) and not recognized and self._scan(item) is None,
+                )
+        else:
+            self.observe(payload)
 
     def observing(self, payload: Iterable[Any]) -> Iterator[Any]:
-        """Yield a one-pass payload through, observing each record as it is pulled."""
+        """Yield a one-pass record stream through, observing each record as it is pulled.
+
+        The caller drains the rest with :meth:`drain` once the parser returns.
+        """
+        self._record_stream = True
         for item in payload:
             self.observe(item)
             yield item
+
+    @staticmethod
+    def drain(stream: Iterator[Any]) -> None:
+        """Pull whatever the parser left of an :meth:`observing` stream, so every record is counted."""
+        for _ in stream:
+            pass
 
     def apply(self, session: ParsedSession, provider: str) -> ParsedSession:
         """Attach the typed unknown events and, absent a parser ledger, the proof.
@@ -349,7 +411,15 @@ class AdmissionObserver:
                 from polylogue.sources.parsers.claude.code_parser import order_session_events
 
                 events = cast(list[ParsedSessionEvent], order_session_events(events))
-        accounting = session.unit_accounting or self._closed_proof()
+        accounting = session.unit_accounting
+        if accounting is None:
+            accounting = self._closed_proof(provider)
+        elif self._record_stream:
+            # The parser accounted for the records it consumed; the complete
+            # input is what was observed here, drained to its end.
+            accounted = accounting.expected.get(AdmissionUnit.OUTER_RECORD, 0)
+            if accounted != self._count:
+                raise ValueError(f"{provider} parser accounted for {accounted} of {self._count} outer records")
         accounting.assert_conserved()
         return session.model_copy(update={"session_events": events, "unit_accounting": accounting})
 
@@ -361,8 +431,22 @@ class AdmissionObserver:
         """
         return [self.apply(session, provider) for session in sessions]
 
-    def _closed_proof(self) -> ParseAccounting:
+    def _closed_proof(self, provider: str) -> ParseAccounting:
         if self._proof is None:
+            if self._pending:
+                if self._record_stream or self._count > 1:
+                    # Records of a sequence or stream that no parser
+                    # disposition settled: the observer cannot certify them.
+                    pending = sum(end - start for start, end in self._pending)
+                    raise ValueError(
+                        f"{provider} parser gave no disposition for {pending} of {self._count} outer records"
+                    )
+                # One whole document, consumed by the parser that returned a
+                # session from it.
+                for start, end in self._pending:
+                    for ordinal in range(start, end):
+                        self._ledger.materialized(AdmissionUnit.OUTER_RECORD, ordinal, "parsed")
+                self._pending = []
             self._ledger.expect(AdmissionUnit.OUTER_RECORD, self._count)
             self._proof = self._ledger.close()
         return self._proof
@@ -382,7 +466,13 @@ class AdmissionObserver:
             existing_types.add(wire_type)
 
 
-def admit_parsed_sessions(provider: str, payload: object, sessions: list[ParsedSession]) -> list[ParsedSession]:
+def admit_parsed_sessions(
+    provider: str,
+    payload: object,
+    sessions: list[ParsedSession],
+    *,
+    recognizes: Callable[[Mapping[str, object]], bool] | None = None,
+) -> list[ParsedSession]:
     """Apply the admission boundary to a dispatch route's result.
 
     For routes that reach an undecorated entry point. A session that already
@@ -393,13 +483,17 @@ def admit_parsed_sessions(provider: str, payload: object, sessions: list[ParsedS
     document it was drawn from -- observed once and the closed proof shared,
     so an N-session document costs one scan -- and no emitted session
     reaches the writer without a conservation proof.
+
+    A record-sequence payload needs the parser's own recognition for each
+    record: ``recognizes`` returns whether the parser lowers that record, and
+    a record it does not lower is refused as malformed. Without it, a
+    sequence the sessions carry no ledger for is refused (see
+    :class:`AdmissionObserver`).
     """
     if all(session.unit_accounting is not None for session in sessions):
         return sessions
-    items = payload if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)) else [payload]
     observer = AdmissionObserver(_ADMISSION_SCANS.get(provider))
-    for item in items:
-        observer.observe(item)
+    observer.observe_input(payload, recognizes=recognizes)
     return [
         session if session.unit_accounting is not None else observer.apply(session, provider) for session in sessions
     ]
@@ -461,19 +555,18 @@ def parser_admission(
             if isinstance(payload, Iterator):
                 # A one-pass payload can only be classified while the parser
                 # pulls it; re-reading it afterwards would see an exhausted
-                # iterator and undercount every record.
+                # iterator and undercount every record. Whatever the parser
+                # leaves is drained after it returns, so the denominator is
+                # the whole stream.
                 instrumented = observer.observing(payload)
                 if len(args) > payload_index:
                     args = (*args[:payload_index], instrumented, *args[payload_index + 1 :])
                 else:
                     kwargs = {**kwargs, payload_name: instrumented}
                 session = parser(*args, **kwargs)
+                observer.drain(instrumented)
             else:
-                raw_items = (
-                    payload if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)) else [payload]
-                )
-                for item in raw_items:
-                    observer.observe(item)
+                observer.observe_input(payload)
                 session = parser(*args, **kwargs)
             return observer.apply(session, provider)
 
