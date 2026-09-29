@@ -8,6 +8,7 @@ import os
 import sqlite3
 import subprocess
 import zipfile
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -1114,7 +1115,9 @@ def test_full_evidence_backup_verifies_a_full_prefix_append_proof(
     source_path.write_bytes(snapshot)
     blob_hash = hashlib.sha256(snapshot).digest()
     raw_id = "append-full-prefix"
-    with sqlite3.connect(archive_root / "source.db") as conn:
+    # Closed, not only committed: the proof reader opens the tier immutable,
+    # which refuses a live WAL.
+    with closing(sqlite3.connect(archive_root / "source.db")) as conn, conn:
         conn.execute(
             """
             INSERT INTO raw_sessions (
