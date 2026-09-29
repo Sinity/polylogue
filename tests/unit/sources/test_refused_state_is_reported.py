@@ -30,26 +30,19 @@ def test_recent_attempts_report_the_file_count_not_the_session_count(tmp_path: P
     CLI renders it as ``9/2 files``, which reads as ingestion that never
     happened.
     """
+    # A real ops tier: since #5727 the read-only open refuses a tier without
+    # its derived schema identity, so a hand-built table reads as unavailable.
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
     ops_db = tmp_path / "ops.db"
+    initialize_archive_database(ops_db, ArchiveTier.OPS)
     conn = sqlite3.connect(ops_db)
-    conn.execute("PRAGMA user_version = 1")
     conn.execute(
-        """
-        CREATE TABLE ingest_attempts (
-            attempt_id TEXT PRIMARY KEY,
-            started_at_ms INTEGER,
-            heartbeat_at_ms INTEGER,
-            finished_at_ms INTEGER,
-            status TEXT,
-            phase TEXT,
-            parsed_raw_count INTEGER,
-            materialized_count INTEGER,
-            error_message TEXT,
-            source_paths_json TEXT
-        )
-        """
+        "INSERT INTO ingest_attempts (attempt_id, started_at_ms, heartbeat_at_ms, finished_at_ms, status, phase, "
+        "parsed_raw_count, materialized_count, error_message, source_paths_json) "
+        "VALUES ('a1', 1000, 2000, 2000, 'completed', 'done', 2, 9, NULL, '[]')"
     )
-    conn.execute("INSERT INTO ingest_attempts VALUES ('a1', 1000, 2000, 2000, 'succeeded', 'done', 2, 9, NULL, '[]')")
     conn.commit()
     conn.close()
 
