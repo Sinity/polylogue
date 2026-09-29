@@ -1031,11 +1031,20 @@ def test_bounded_action_relation_plans_session_index_not_archive_wide_tool_scan(
         plan_rows = facade._conn.execute(f"EXPLAIN QUERY PLAN {aggregate_sql}").fetchall()
         plan_details = [str(row["detail"]) for row in plan_rows]
 
-    session_scoped_block_scans = [detail for detail in plan_details if ("SEARCH u " in detail or "SEARCH r " in detail)]
-    assert session_scoped_block_scans, plan_details
-    for detail in session_scoped_block_scans:
-        assert "idx_blocks_session_position" in detail, plan_details
-        assert "idx_blocks_type_tool" not in detail, plan_details
+    session_scoped_block_scans = [
+        detail
+        for detail in plan_details
+        if detail.startswith(
+            ("SEARCH u USING INDEX idx_blocks_session_position", "SEARCH r USING INDEX idx_blocks_session_position")
+        )
+    ]
+    assert any(
+        detail.startswith("SEARCH u USING INDEX idx_blocks_session_position") for detail in session_scoped_block_scans
+    ), plan_details
+    assert any(
+        detail.startswith("SEARCH r USING INDEX idx_blocks_session_position") for detail in session_scoped_block_scans
+    ), plan_details
+    assert not any("idx_blocks_type_tool" in detail for detail in plan_details), plan_details
 
 
 def test_c03_exact_session_actions_uses_real_provider_pipeline_and_planted_facts(tmp_path: Path) -> None:
