@@ -2,18 +2,20 @@
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import pickle
 import re
 import shlex
 import sqlite3
+import tempfile
 import unicodedata
-from collections.abc import Container, Iterable, Iterator, Mapping, MutableSequence, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Mapping, MutableSequence, Sequence
 from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import cast
+from typing import IO, cast
 
 from pydantic import ValidationError
 
@@ -338,34 +340,115 @@ def _sql_key(value: object) -> bytes:
 _DIGEST_WINDOW_CHARS = 1 << 20
 
 
-#: Characters a starter-free run may hold before its NFC key is given up.
+#: Characters an unsettled tail may hold in memory before its marks spill.
 _NFC_UNSETTLED_LIMIT_CHARS = 4 * _DIGEST_WINDOW_CHARS
 
 
-def _nfc_text_digest(text: str) -> bytes | None:
+def _is_nfd_starter(char: str) -> bool:
+    """Whether ``char`` decomposes to a starter first (canonical combining class 0)."""
+    return unicodedata.combining(char) == 0 and unicodedata.combining(unicodedata.normalize("NFD", char)[0]) == 0
+
+
+class _SpilledMarkRun:
+    """A starter and its run of combining marks, too long to hold, normalized on disk.
+
+    NFC of such a run is its canonical decomposition, stably sorted by
+    combining class, then composed with the starter. A stable sort by class is
+    a bucketing, so the marks go to one scratch file per class in arrival
+    order; composition only ever consumes a prefix of each bucket, so it reads
+    one character at a time until the first that stays.
+    """
+
+    def __init__(self, unsettled: str) -> None:
+        decomposed = unicodedata.normalize("NFD", unsettled)
+        self._starter: str | None = None
+        if decomposed and unicodedata.combining(decomposed[0]) == 0:
+            self._starter, decomposed = decomposed[0], decomposed[1:]
+        self._buckets: dict[int, IO[bytes]] = {}
+        self.add(decomposed)
+
+    def add(self, marks: str) -> None:
+        grouped: dict[int, list[str]] = {}
+        for char in unicodedata.normalize("NFD", marks):
+            grouped.setdefault(unicodedata.combining(char), []).append(char)
+        for combining_class, chars in grouped.items():
+            bucket = self._buckets.get(combining_class)
+            if bucket is None:
+                bucket = self._buckets[combining_class] = tempfile.TemporaryFile()  # noqa: SIM115 -- closed in finish
+            bucket.write("".join(chars).encode("utf-8", "surrogatepass"))
+
+    def finish(self, update: Callable[[bytes], object]) -> str:
+        """Hash the run's NFC form; return the starter instead when nothing follows it.
+
+        A composed starter with no mark left after it can still compose with
+        the next character, so it goes back to the caller's unsettled text.
+        """
+        try:
+            starter = self._starter
+            remainders: list[tuple[IO[bytes], int]] = []
+            for combining_class in sorted(self._buckets):
+                bucket = self._buckets[combining_class]
+                bucket.seek(0)
+                consumed = 0
+                if starter is not None:
+                    reader = codecs.getreader("utf-8")(bucket, "surrogatepass")
+                    while char := reader.read(1):
+                        composed = unicodedata.normalize("NFC", starter + char)
+                        if len(composed) != 1:
+                            break
+                        starter = composed
+                        consumed += len(char.encode("utf-8", "surrogatepass"))
+                bucket.seek(0, 2)
+                if bucket.tell() > consumed:
+                    remainders.append((bucket, consumed))
+            if not remainders:
+                return starter or ""
+            if starter is not None:
+                update(starter.encode("utf-8", "surrogatepass"))
+            for bucket, offset in remainders:
+                bucket.seek(offset)
+                while chunk := bucket.read(4 * _DIGEST_WINDOW_CHARS):
+                    update(chunk)
+            return ""
+        finally:
+            for bucket in self._buckets.values():
+                bucket.close()
+            self._buckets.clear()
+
+
+def _nfc_text_digest(text: str) -> bytes:
     """``_text_digest`` of the NFC form of ``text``, without building that form.
 
     Normalization streams: output before the last starter of what is produced
     is final (later input can only compose with that starter), so each window
-    is hashed as it settles and only its unsettled tail is held.
+    is hashed as it settles and only its unsettled tail is held. A run of
+    combining marks too long to hold is normalized on disk
+    (:class:`_SpilledMarkRun`), so every value keeps its NFC key.
     """
     if text.isascii():
         return _text_digest(text)
     digest = hashlib.sha256()
     pending = ""
+    run: _SpilledMarkRun | None = None
     for start in range(0, len(text), _DIGEST_WINDOW_CHARS):
-        piece = pending + text[start : start + _DIGEST_WINDOW_CHARS]
-        normalized = unicodedata.normalize("NFC", piece)
+        window = text[start : start + _DIGEST_WINDOW_CHARS]
+        if run is not None:
+            boundary = next((index for index, char in enumerate(window) if _is_nfd_starter(char)), len(window))
+            run.add(window[:boundary])
+            if boundary == len(window):
+                continue
+            pending, run = run.finish(digest.update), None
+            window = window[boundary:]
+        normalized = unicodedata.normalize("NFC", pending + window)
         index = len(normalized) - 1
         while index > 0 and unicodedata.combining(normalized[index]) != 0:
             index -= 1
         digest.update(normalized[:index].encode("utf-8", "surrogatepass"))
         pending = normalized[index:]
         if len(pending) > _NFC_UNSETTLED_LIMIT_CHARS:
-            # A run of combining marks with no starter reorders as a whole, so
-            # it cannot be normalized in windows. Such a value has no NFC key:
-            # it is matched as written, at worst stored once more.
-            return None
+            run, pending = _SpilledMarkRun(pending), ""
+    if run is not None:
+        pending = run.finish(digest.update)
     digest.update(unicodedata.normalize("NFC", pending).encode("utf-8", "surrogatepass"))
     return digest.digest()
 
@@ -1539,9 +1622,7 @@ class _CodexTextConservation:
         row = connection.execute(query, (_text_digest(text),)).fetchone()
         # The NFC copy is built only when the exact probe misses.
         if row is None and normalize and not text.isascii():
-            nfc_key = _nfc_text_digest(text)
-            if nfc_key is not None:
-                row = connection.execute(query, (nfc_key,)).fetchone()
+            row = connection.execute(query, (_nfc_text_digest(text),)).fetchone()
         return bytes(row[0]) if row is not None else None
 
     def _candidate(self, text: str, *, normalize: bool = True) -> bytes | None:
@@ -1558,7 +1639,7 @@ class _CodexTextConservation:
             connection.execute("INSERT INTO codex_task_texts(key, text) VALUES (?, ?)", (key, _sql_key(text)))
             connection.execute("INSERT INTO codex_task_keys VALUES (?, ?)", (key, key))
             normalized_key = _nfc_text_digest(text)
-            if normalized_key is not None and normalized_key != key:
+            if normalized_key != key:
                 connection.execute("INSERT OR IGNORE INTO codex_task_keys VALUES (?, ?)", (normalized_key, key))
             self._task_unresolved += 1
         connection.execute("INSERT INTO codex_task_events VALUES (?, ?, ?)", (event_index, key, len(text)))
@@ -1621,7 +1702,7 @@ class _CodexTextConservation:
         # normalized; retained text is looked up as written, then normalized
         # only when it is not pure ASCII.
         normalized_key = _nfc_text_digest(text)
-        if normalized_key is not None and normalized_key != key:
+        if normalized_key != key:
             connection.execute("INSERT OR IGNORE INTO codex_replacement_keys VALUES (?, ?)", (normalized_key, key))
         self._unresolved += 1
         return key, True

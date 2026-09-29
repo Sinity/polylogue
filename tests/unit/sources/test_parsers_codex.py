@@ -3546,9 +3546,9 @@ def test_sink_restores_surrogates_inside_the_owner_coordinate() -> None:
 def test_a_cesu8_pair_in_provider_bytes_decodes_to_one_character() -> None:
     """Anti-vacuity: keep the two surrogatepass code units and the stored
     escaped JSON re-reads as a different value."""
-    from polylogue.archive.raw_payload.decode import _decode_provider_utf8
+    from polylogue.core.json import decode_provider_utf8
 
-    assert _decode_provider_utf8(b"a\xed\xa0\xbd\xed\xb8\x80 \xed\xa0\x80") == "a\U0001f600 \ud800"
+    assert decode_provider_utf8(b"a\xed\xa0\xbd\xed\xb8\x80 \xed\xa0\x80") == "a\U0001f600 \ud800"
 
 
 def test_nfc_candidate_digest_streams_without_a_full_normalized_copy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3595,15 +3595,37 @@ def test_core_loads_still_reads_a_utf8_bom_document() -> None:
     assert loads(b'{"a": "x\xed\xa0\xbd\xed\xb8\x80"}') == {"a": "x\U0001f600"}
 
 
-def test_a_starter_free_run_gives_up_its_nfc_key_instead_of_growing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Anti-vacuity: carry a starter-free tail without bound and this run is
-    normalized whole, window after window."""
+def test_a_starter_free_run_keeps_its_nfc_key_in_bounded_memory(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run of combining marks longer than the unsettled limit spills to disk.
+
+    Anti-vacuity: give up the key past the limit and repeated U+0344 no longer
+    matches its canonically equivalent U+0308 U+0301 spelling; carry the run
+    unbounded and one normalization call sees all of it.
+    """
+    import unicodedata
+    from types import SimpleNamespace
+
     from polylogue.sources.parsers import codex as codex_module
 
     monkeypatch.setattr(codex_module, "_DIGEST_WINDOW_CHARS", 7)
     monkeypatch.setattr(codex_module, "_NFC_UNSETTLED_LIMIT_CHARS", 28)
-    assert codex_module._nfc_text_digest("́" * 200) is None
-    assert codex_module._nfc_text_digest("é" * 200) is not None
+    real = unicodedata.normalize
+
+    def bounded(form: Any, value: str) -> str:
+        # A canonical decomposition is at most four characters per character.
+        assert len(value) <= 4 * (28 + 7), "normalized an unsettled run whole"
+        return real(form, value)
+
+    proxy = SimpleNamespace(normalize=bounded, combining=unicodedata.combining)
+    for text, equivalent in [
+        ("\u0344" * 200, "\u0308\u0301" * 200),
+        ("e" + "\u0301" + "\u0327" * 90 + "x", "\u0229" + "\u0327" * 89 + "\u0301x"),
+    ]:
+        expected = codex_module._text_digest(real("NFC", text))
+        with monkeypatch.context() as scoped:
+            scoped.setattr("polylogue.sources.parsers.codex.unicodedata", proxy)
+            assert codex_module._nfc_text_digest(text) == expected
+            assert codex_module._nfc_text_digest(equivalent) == expected
 
 
 def test_core_loads_still_reads_bomless_utf16_and_utf32() -> None:
