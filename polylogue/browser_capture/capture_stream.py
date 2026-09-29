@@ -661,6 +661,11 @@ def _require_well_formed(events: Iterator[_Event]) -> None:
         raise CaptureEnvelopeError("invalid_json", str(exc)) from exc
 
 
+#: Stands in for the turns a session already validated one by one, so the
+#: session-level rule (at least one turn) is checked without holding any.
+_PLACEHOLDER_TURN = BrowserCaptureTurn.model_validate({"provider_turn_id": "placeholder", "role": "user", "text": "-"})
+
+
 def _summary(
     root: dict[str, object],
     session: _SessionFold | None,
@@ -672,11 +677,11 @@ def _summary(
     head_input: dict[str, object] = dict(root)
     if session is not None:
         # Each turn was validated as it streamed past; the session's own
-        # rule is only that it has one, so an empty placeholder stands in
-        # for them and is dropped once the session validates.
+        # rule is only that it has one, so a placeholder stands in for them
+        # and is dropped once the session validates.
         head_input["session"] = {
             **session.head,
-            "turns": [BrowserCaptureTurn.model_construct()] * min(session.turns.count, 1),
+            "turns": [_PLACEHOLDER_TURN] * min(session.turns.count, 1),
             "attachments": [],
         }
     try:
