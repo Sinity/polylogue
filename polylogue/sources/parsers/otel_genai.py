@@ -19,10 +19,8 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider, ToolOutcom
 from polylogue.core.json import JSONDocument
 from polylogue.core.payload_coercion import optional_string
 from polylogue.core.timestamps import iso_from_epoch_ms, to_epoch_ms
+from polylogue.sources.origin_specs import OTLP_JSON_DIALECT, SEMCONV_SCHEMA_URL
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
-
-SEMCONV_SCHEMA_URL = "https://opentelemetry.io/schemas/gen-ai-dev/1.42.0-dev"
-OTLP_JSON_DIALECT = "OTLP-JSON ExportTraceServiceRequest (protobuf JSON mapping)"
 
 
 def _mapping(value: object) -> dict[str, object]:

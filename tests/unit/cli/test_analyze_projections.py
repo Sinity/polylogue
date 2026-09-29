@@ -117,10 +117,13 @@ def test_named_postmortem_uses_inherited_json_renderer() -> None:
     """
     import json
 
+    from polylogue.surfaces.outcome import decide_outcome
+
     runner = CliRunner()
     with (
         patch("polylogue.cli.query_verbs.run_coroutine_sync", return_value={}),
         patch("polylogue.surfaces.payloads.model_json_document", return_value={"fixture": True}),
+        patch("polylogue.analysis.postmortem.postmortem_outcome", return_value=decide_outcome(matched=1)),
     ):
         result = runner.invoke(cli, ["--format", "json", "find", "repo:polylogue", "then", "analyze", "postmortem"])
     assert result.exit_code == 0, result.output

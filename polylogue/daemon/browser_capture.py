@@ -181,9 +181,9 @@ def capture_health_command(limit: int, output_format: str | None) -> None:
     so capture gaps/errors/spool backlog reported by the extension are
     queryable even when the daemon's HTTP surface is not running.
     """
-    from polylogue.daemon.events import query_daemon_events
+    from polylogue.daemon.events import CAPTURE_HEALTH_EVENT_KIND, query_daemon_events
 
-    events = query_daemon_events(kind="browser_capture_health", limit=limit)
+    events = query_daemon_events(kind=CAPTURE_HEALTH_EVENT_KIND, limit=limit)
     if output_format == "json":
         click.echo(dumps({"events": events}))
         return

@@ -216,11 +216,14 @@ def prune_daemon_events(
       subscriber that missed it loses nothing a resync does not return; or
     - a record superseded by a newer row of the same kind: the in-process
       readers of record kinds (status's last ingestion batch, the judgment
-      scheduler's latest receipt, capture health) read the newest row of the
-      kind, and the judgment receipts also have their typed table.
+      scheduler's latest receipt) read the newest row of the kind, and the
+      judgment receipts also have their typed table. A history kind
+      (:data:`HISTORY_EVENT_KINDS`) is never superseded: its readers list
+      the rows themselves.
 
-    So the ledger holds what live subscribers have not read plus the newest
-    row of each record kind, and nothing grows with time or event volume. The
+    So the ledger holds what live subscribers have not read, the newest row
+    of each record kind and the history kinds' rows; nothing else grows with
+    time or event volume. The
     highest removed id is kept as the ledger's watermark: removal is not a
     prefix any more, and :func:`query_events_since` refuses a cursor below the
     watermark rather than trusting ``MIN(id)``.
@@ -233,7 +236,9 @@ def prune_daemon_events(
     if through is None or through <= 0:
         return 0
     granular = sorted(GRANULAR_EVENT_KINDS)
-    placeholders = ",".join("?" for _ in granular)
+    history = sorted(HISTORY_EVENT_KINDS)
+    granular_placeholders = ",".join("?" for _ in granular)
+    history_placeholders = ",".join("?" for _ in history)
     removed = [
         int(row[0])
         for row in conn.execute(
@@ -241,12 +246,15 @@ def prune_daemon_events(
             DELETE FROM daemon_events
             WHERE id <= ?
               AND (
-                kind IN ({placeholders})
-                OR id < (SELECT MAX(newer.id) FROM daemon_events AS newer WHERE newer.kind = daemon_events.kind)
+                kind IN ({granular_placeholders})
+                OR (
+                  kind NOT IN ({history_placeholders})
+                  AND id < (SELECT MAX(newer.id) FROM daemon_events AS newer WHERE newer.kind = daemon_events.kind)
+                )
               )
             RETURNING id
             """,
-            (through, *granular),
+            (through, *granular, *history),
         ).fetchall()
     ]
     if removed:
@@ -898,6 +906,15 @@ if len(EVENT_SPECS) != len(_EVENT_SPECS):  # pragma: no cover - construction-tim
 #: The advertised granular SSE topics. Derived from :data:`EVENT_SPECS` so a
 #: topic cannot be advertised without declaring its contract first.
 GRANULAR_EVENT_KINDS: frozenset[str] = frozenset(EVENT_SPECS)
+
+#: Extension-reported browser capture health (polylogue-3v1).
+CAPTURE_HEALTH_EVENT_KIND = "browser_capture_health"
+
+#: Record kinds whose readers list history rather than read the newest row:
+#: ``polylogued browser capture-health`` and ``GET /v1/capture-health`` show
+#: recent capture-health events, so a newer row does not supersede an older
+#: one (polylogue-ntvf6).
+HISTORY_EVENT_KINDS: frozenset[str] = frozenset({CAPTURE_HEALTH_EVENT_KIND})
 
 
 def event_spec(kind: str) -> EventSpec:

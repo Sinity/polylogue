@@ -92,12 +92,11 @@ from polylogue.core.loopback import is_loopback_host
 from polylogue.logging import INFO, WARNING, emit, get_logger
 from polylogue.paths import archive_root as default_archive_root
 
-# polylogue.daemon.events is imported lazily inside the capture-health route
-# handlers below, not at module scope: polylogue.daemon's package __init__
-# imports polylogue.daemon.cli, which imports this module for
-# BrowserCaptureHTTPServer/make_server -- a module-level import here would
-# be a circular import at package-init time.
-CAPTURE_HEALTH_EVENT_KIND = "browser_capture_health"
+# polylogue.daemon.events (which owns CAPTURE_HEALTH_EVENT_KIND) is imported
+# lazily inside the capture-health route handlers below, not at module scope:
+# polylogue.daemon's package __init__ imports polylogue.daemon.cli, which
+# imports this module for BrowserCaptureHTTPServer/make_server -- a
+# module-level import here would be a circular import at package-init time.
 
 logger = get_logger(__name__)
 
@@ -1227,7 +1226,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
         except ValidationError:
             self._safe_error(HTTPStatus.BAD_REQUEST, "invalid_capture_health_event")
             return
-        from polylogue.daemon.events import emit_daemon_event, get_latest_event_id
+        from polylogue.daemon.events import CAPTURE_HEALTH_EVENT_KIND, emit_daemon_event, get_latest_event_id
 
         emit_daemon_event(
             CAPTURE_HEALTH_EVENT_KIND,
@@ -1260,7 +1259,7 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             limit = max(1, min(500, int(params.get("limit", ["100"])[0])))
         except ValueError:
             limit = 100
-        from polylogue.daemon.events import query_daemon_events
+        from polylogue.daemon.events import CAPTURE_HEALTH_EVENT_KIND, query_daemon_events
 
         events = query_daemon_events(kind=CAPTURE_HEALTH_EVENT_KIND, limit=limit)
         self._send_json(HTTPStatus.OK, {"ok": True, "events": events})

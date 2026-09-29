@@ -190,3 +190,39 @@ def test_prune_between_range_and_page_unseen(ledger: Path, monkeypatch: pytest.M
     assert [event["kind"] for event in page.events] == ["a", "b", "c"]
     # The prune really did commit; the reader simply did not observe it.
     assert _ids(ledger) == [3]
+
+
+def test_capture_health_history_survives_supersession(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """``capture-health`` lists history, so a newer report does not supersede an older one.
+
+    polylogue-ntvf6: record-kind supersession kept only the newest
+    ``browser_capture_health`` row, and ``polylogued browser capture-health``
+    showed one event after several captures. Anti-vacuity: drop the kind from
+    ``HISTORY_EVENT_KINDS`` and the command lists one event.
+    """
+    import json
+
+    from click.testing import CliRunner
+
+    from polylogue.daemon.browser_capture import capture_health_command
+
+    registry = EventSubscriberRegistry()
+    monkeypatch.setattr(events_mod, "EVENT_SUBSCRIBERS", registry)
+    with registry.owning():
+        for index in range(3):
+            events_mod.emit_daemon_event(
+                events_mod.CAPTURE_HEALTH_EVENT_KIND,
+                operation_id="extension-1",
+                payload={"event": "gap", "provider": "chatgpt", "provider_session_id": f"session-{index}"},
+            )
+        events_mod.emit_daemon_event("ingestion_batch", payload={})
+        events_mod.emit_daemon_event("ingestion_batch", payload={})
+
+    result = CliRunner().invoke(capture_health_command, ["--format", "json"], catch_exceptions=False)
+    assert result.exit_code == 0, result.output
+    listed = json.loads(result.output)["events"]
+    assert len(listed) == 3
+    assert {event["payload"]["provider_session_id"] for event in listed} == {"session-0", "session-1", "session-2"}
+    # An ordinary record kind is still superseded down to its newest row.
+    with sqlite3.connect(f"file:{ledger}?mode=ro", uri=True) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM daemon_events WHERE kind = 'ingestion_batch'").fetchone()[0] == 1
