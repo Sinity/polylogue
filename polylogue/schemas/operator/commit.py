@@ -60,7 +60,7 @@ from polylogue.schemas.runtime_registry import canonical_schema_provider
 from polylogue.schemas.type_narrowing import added_paths, narrowed_paths
 
 
-class SchemaCommitPrivacyError(Exception):
+class SchemaCommitPrivacyError(ValueError):
     """Raised when a generated bundle still carries private retained values.
 
     This runs *before* ``persist_generated_provider_bundle``, and it has to:

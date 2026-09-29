@@ -89,3 +89,11 @@ def test_full_audit_has_no_missing_package_error() -> None:
     existence = _existence_checks(report)
     assert [c.provider for c in existence if c.status is OutcomeStatus.ERROR] == []
     assert [c.provider for c in existence if c.status is OutcomeStatus.SKIP] == ["grok"]
+
+
+@pytest.mark.parametrize("provider", ["XAI", "GROK", "xai"])
+def test_audit_aliases_preserve_declared_package_exemptions(provider: str) -> None:
+    """A raw-token exemption lookup returns ERROR for an alias whose canonical token skips."""
+    report = workflow.audit_provider(provider)
+    assert _schema_exists(report).status is OutcomeStatus.SKIP
+    assert report.all_passed

@@ -956,3 +956,77 @@ def test_a_cross_resource_root_is_kept_with_its_trace() -> None:
         if event.event_type == "otel_span_evidence" and event.payload.get("span_id") == "0" * 16
     ]
     assert root_evidence and root_evidence[0]["resource_id"] == "frontend"
+
+
+def test_dispatch_preserves_structured_tool_results() -> None:
+    """A kvlist, array, numeric or boolean tool result reaches the result block.
+
+    Anti-vacuity: keep only string results and every case here has text=None.
+    """
+    # OTLP JSON carries int64 as a string or a number; the decoded value is
+    # what the result block must serialize.
+    cases: list[tuple[object, dict[str, object]]] = [
+        (
+            {"found": ["1", False]},
+            {
+                "kvlistValue": {
+                    "values": [
+                        {
+                            "key": "found",
+                            "value": {"arrayValue": {"values": [{"intValue": "1"}, {"boolValue": False}]}},
+                        }
+                    ]
+                }
+            },
+        ),
+        (["item", 2], {"arrayValue": {"values": [{"stringValue": "item"}, {"intValue": 2}]}}),
+        (0, {"intValue": 0}),
+        (1.5, {"doubleValue": 1.5}),
+        (False, {"boolValue": False}),
+    ]
+    for expected, value in cases:
+        payload = _payload()
+        span = next(span for span in _spans(payload) if span["name"].startswith("execute_tool"))
+        span["attributes"] = [
+            attribute for attribute in span["attributes"] if attribute["key"] != "gen_ai.tool.call.result"
+        ]
+        span["attributes"].append({"key": "gen_ai.tool.call.result", "value": value})
+        session = parse_payload(Provider.OTEL_GENAI, payload, "ignored")[0]
+        message = next(
+            message
+            for message in session.messages
+            if message.provider_message_id.endswith(f":{span['spanId']}:tool-result")
+        )
+        assert message.blocks[0].text is not None
+        assert json.loads(message.blocks[0].text) == expected
+
+
+def test_dispatch_retains_unprojected_span_fields_in_evidence() -> None:
+    """End time, links, trace state, flags, dropped counts and unknown keys survive.
+
+    Anti-vacuity: build the evidence payload from the projected keys alone and
+    none of these fields is recoverable from ``otel_span_evidence``.
+    """
+    payload = _payload()
+    span = _spans(payload)[0]
+    extra = {
+        "endTimeUnixNano": "1700000001000000000",
+        "traceState": "neutral=fixture",
+        "flags": 1,
+        "droppedAttributesCount": 2,
+        "droppedEventsCount": 3,
+        "droppedLinksCount": 4,
+        "links": [{"traceId": "1" * 32, "spanId": "2" * 16, "flags": 1}],
+        "vendorEnvelopeField": {"neutral": True},
+    }
+    span.update(extra)
+
+    session = parse_payload(Provider.OTEL_GENAI, payload, "ignored")[0]
+    event = next(
+        event
+        for event in session.session_events
+        if event.event_type == "otel_span_evidence" and event.payload["span_id"] == span["spanId"]
+    )
+    unprojected = cast(dict[str, object], event.payload["unprojected_span_fields"])
+    assert {key: unprojected[key] for key in extra} == extra
+    assert "attributes" not in unprojected

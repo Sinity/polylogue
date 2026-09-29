@@ -49,7 +49,7 @@ logger = get_logger(__name__)
 SchemaSample: TypeAlias = JSONDocument
 
 
-class SchemaArchiveEvidenceError(RuntimeError):
+class SchemaArchiveEvidenceError(ValueError):
     """The selected archive does not identify usable raw evidence."""
 
 

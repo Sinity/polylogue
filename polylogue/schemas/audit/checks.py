@@ -135,6 +135,10 @@ def check_annotation_coverage(schema: Mapping[str, object] | SchemaNode) -> Chec
             if any(key in child for key in annotation_keys):
                 annotated_fields += 1
             if child.get("x-polylogue-high-cardinality-keys") is True:
+                # The collapsed value schema is an opaque boundary, but the
+                # named fields a collapsed object retained beside it are real
+                # structure and stay subject to coverage.
+                _count({"properties": child.get("properties", {})})
                 continue
             _count(child)
         items = json_document(node.get("items"))

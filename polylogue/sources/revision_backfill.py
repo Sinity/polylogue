@@ -55,6 +55,7 @@ from polylogue.archive.session_revision_membership import (
 )
 from polylogue.core.binary_signatures import looks_like_sqlite_bytes
 from polylogue.core.enums import Origin, PolylogueStrEnum, Provider
+from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider, provider_from_origin
 from polylogue.core.timestamp_authority import normalize_session_timestamps
@@ -3491,7 +3492,7 @@ def _required_shard_prepared_rows(
     bindings: Mapping[str, PreparedRows],
 ) -> dict[str, PreparedRows]:
     """Bind exactly the session the frozen replay is about to full-replace."""
-    session_id = f"{origin_from_provider(session.source_name).value}:{session.provider_session_id}"
+    session_id = archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
     try:
         return {raw_id: bindings[session_id]}
     except KeyError as exc:
@@ -3652,6 +3653,7 @@ def _owned_generation_is_empty(archive_root: Path, *, generation: tuple[str, str
         initialize=False,
         read_only=True,
         owned_inactive_generation=generation,
+        validate_index_layout=False,
     ) as probe:
         return probe._conn.execute("SELECT 1 FROM sessions LIMIT 1").fetchone() is None
 
