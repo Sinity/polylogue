@@ -11,6 +11,7 @@ import uuid
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import closing
 from dataclasses import dataclass
+from functools import partial
 from itertools import islice
 from pathlib import Path
 from typing import BinaryIO, cast, overload
@@ -38,6 +39,8 @@ from polylogue.sources.decoder_json import (
     iter_json_container_records,
     json_record_container,
     normalize_ijson_stdlib_numbers,
+    spill_member_arrays,
+    spill_otlp_spans,
 )
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
@@ -58,9 +61,15 @@ from polylogue.sources.parsers import (
     hermes_state,
     hermes_verification,
     local_agent,
+    otel_genai,
 )
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.parsers.base_support import _unknown_wire_type, admit_parsed_sessions, hermes_unknown_wire_type
+from polylogue.sources.parsers.base_support import (
+    _unknown_wire_type,
+    admit_parsed_sessions,
+    hermes_unknown_wire_type,
+    otel_genai_unknown_wire_type,
+)
 from polylogue.sources.parsers.claude.ai_parser import parse_ai_stream, parse_design_stream
 from polylogue.sources.prepared_message_sink import (
     ChatGPTNodeMapping,
@@ -225,6 +234,168 @@ def _hermes_atif_envelope(handle: BinaryIO) -> tuple[dict[str, JSONValue], bool]
     ):
         return None
     return envelope, arrays["subagent_trajectories"] == 1
+
+
+def _spill_atif_subagents(handle: BinaryIO, conn: sqlite3.Connection) -> bool:
+    """Spill each ATIF subagent entry and its steps into scratch, one step at a time.
+
+    Returns ``False`` for an entry that repeats ``steps``; the scratch tables
+    are then dropped and the document stays on the object parser.
+    """
+    conn.execute(
+        "CREATE TABLE atif_subagent (ordinal INTEGER PRIMARY KEY, fields_json TEXT NOT NULL, step_count INTEGER)"
+    )
+    conn.execute(
+        "CREATE TABLE atif_subagent_step (subagent INTEGER NOT NULL, ordinal INTEGER NOT NULL, "
+        "step_json TEXT NOT NULL, PRIMARY KEY (subagent, ordinal)) WITHOUT ROWID"
+    )
+
+    def on_member(index: int, fields: JSONValue, count: int | None) -> None:
+        conn.execute("INSERT INTO atif_subagent VALUES (?, ?, ?)", (index, json.dumps(fields), count))
+
+    def on_step(index: int, ordinal: int, step: JSONValue) -> None:
+        conn.execute("INSERT INTO atif_subagent_step VALUES (?, ?, ?)", (index, ordinal, json.dumps(step)))
+
+    if spill_member_arrays(handle, "subagent_trajectories", "steps", on_member=on_member, on_nested_item=on_step):
+        return True
+    _drop_atif_subagents(conn)
+    return False
+
+
+def _drop_atif_subagents(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE atif_subagent")
+    conn.execute("DROP TABLE atif_subagent_step")
+
+
+def _atif_subagent_steps(conn: sqlite3.Connection, subagent: int) -> Iterator[JSONValue]:
+    for (step_json,) in conn.execute(
+        "SELECT step_json FROM atif_subagent_step WHERE subagent = ? ORDER BY ordinal", (subagent,)
+    ):
+        yield cast(JSONValue, json.loads(step_json))
+
+
+def _atif_subagents(conn: sqlite3.Connection) -> Iterator[hermes_spans.AtifSubagent]:
+    """Rebuild spilled subagent entries one at a time; steps stay in scratch."""
+    for ordinal, fields_json, step_count in conn.execute(
+        "SELECT ordinal, fields_json, step_count FROM atif_subagent ORDER BY ordinal"
+    ):
+        fields = json.loads(fields_json)
+        yield hermes_spans.AtifSubagent(
+            fields if isinstance(fields, dict) else {},
+            step_count,
+            partial(_atif_subagent_steps, conn, ordinal),
+        )
+
+
+def _atif_subagent_witness(conn: sqlite3.Connection) -> list[JSONValue]:
+    """The first 64 subagent entries, each with at most its first 64 steps."""
+    witness: list[JSONValue] = []
+    for ordinal, fields_json, step_count in conn.execute(
+        "SELECT ordinal, fields_json, step_count FROM atif_subagent ORDER BY ordinal LIMIT 64"
+    ):
+        fields = json.loads(fields_json)
+        if step_count is not None:
+            fields["steps"] = list(islice(_atif_subagent_steps(conn, ordinal), 64))
+        witness.append(fields)
+    return witness
+
+
+def _otlp_envelope(handle: BinaryIO) -> tuple[dict[str, JSONValue], str] | None:
+    """Prove one OTLP-JSON export and name the root span array the parser reads.
+
+    Returns every root field but the span arrays. Session wrappers and
+    browser captures, which the lowering routes elsewhere, stay there.
+    """
+    result = _root_envelope_without(handle, frozenset({"resourceSpans", "resource_spans"}), frozenset({"sessions"}))
+    if result is None:
+        return None
+    envelope, arrays = result
+    envelope.pop("__admission_future_type", None)
+    if browser_capture.looks_like(envelope):
+        return None
+    if arrays["resourceSpans"]:
+        return envelope, "resourceSpans"
+    if arrays["resource_spans"]:
+        return envelope, "resource_spans"
+    return None
+
+
+def _index_otlp_spans(
+    handle: BinaryIO, root_key: str, conn: sqlite3.Connection
+) -> tuple[otel_genai.OtelSpanIndex, str | None] | None:
+    """Spill an OTLP export's spans to scratch, then index them in document order.
+
+    A span's resource identity and scope schema URL may follow it in the
+    document, so spans are joined to both only after the walk. Returns the
+    index and the first unknown span ``kind`` the admission scan of the
+    whole document would report, or ``None``, with no tables left behind,
+    when the walk refuses the document.
+    """
+    conn.execute(
+        "CREATE TABLE otlp_resource (resource INTEGER PRIMARY KEY, resource_id TEXT NOT NULL, scope_field TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE otlp_scope (resource INTEGER NOT NULL, scope_field TEXT NOT NULL, scope INTEGER NOT NULL, "
+        "schema_url TEXT NOT NULL, PRIMARY KEY (resource, scope_field, scope)) WITHOUT ROWID"
+    )
+    conn.execute(
+        "CREATE TABLE otlp_span (resource INTEGER NOT NULL, scope_field TEXT NOT NULL, scope INTEGER NOT NULL, "
+        "span INTEGER NOT NULL, span_json TEXT NOT NULL, PRIMARY KEY (resource, scope_field, scope, span)) WITHOUT ROWID"
+    )
+    # The admission scan reads every object span's ``kind``, identified or
+    # not, in the scope array the parser reads.
+    conn.execute(
+        "CREATE TABLE otlp_unknown_kind (resource INTEGER NOT NULL, scope_field TEXT NOT NULL, "
+        "scope INTEGER NOT NULL, span INTEGER NOT NULL, kind TEXT NOT NULL, "
+        "PRIMARY KEY (resource, scope_field, scope, span)) WITHOUT ROWID"
+    )
+
+    def on_resource(resource: int, fields: dict[str, object], scope_field: str | None) -> None:
+        conn.execute(
+            "INSERT INTO otlp_resource VALUES (?, ?, ?)",
+            (resource, json.dumps(otel_genai.resource_id_for(fields)), scope_field),
+        )
+
+    def on_scope(resource: int, scope_field: str, scope: int, fields: dict[str, object]) -> None:
+        conn.execute(
+            "INSERT INTO otlp_scope VALUES (?, ?, ?, ?)",
+            (resource, scope_field, scope, json.dumps(otel_genai.scope_schema_url(fields))),
+        )
+
+    def on_span(resource: int, scope_field: str, scope: int, span_ordinal: int, span: dict[str, object]) -> None:
+        unknown_kind = otel_genai_unknown_wire_type(
+            {"resourceSpans": [{"scopeSpans": [{"spans": [{"kind": span.get("kind")}]}]}]}
+        )
+        if unknown_kind is not None:
+            conn.execute(
+                "INSERT INTO otlp_unknown_kind VALUES (?, ?, ?, ?, ?)",
+                (resource, scope_field, scope, span_ordinal, json.dumps(unknown_kind)),
+            )
+        if otel_genai.has_span_identity(span):
+            conn.execute(
+                "INSERT INTO otlp_span VALUES (?, ?, ?, ?, ?)",
+                (resource, scope_field, scope, span_ordinal, json.dumps(span)),
+            )
+
+    result: tuple[otel_genai.OtelSpanIndex, str | None] | None = None
+    if spill_otlp_spans(handle, root_key, on_resource=on_resource, on_scope=on_scope, on_span=on_span):
+        unknown_row = conn.execute(
+            "SELECT u.kind FROM otlp_unknown_kind u "
+            "JOIN otlp_resource r ON r.resource = u.resource AND r.scope_field = u.scope_field "
+            "ORDER BY u.resource, u.scope, u.span LIMIT 1"
+        ).fetchone()
+        index = otel_genai.OtelSpanIndex(conn)
+        result = (index, json.loads(unknown_row[0]) if unknown_row is not None else None)
+        for resource_id_json, schema_url_json, span_json in conn.execute(
+            "SELECT r.resource_id, c.schema_url, s.span_json FROM otlp_span s "
+            "JOIN otlp_resource r ON r.resource = s.resource AND r.scope_field = s.scope_field "
+            "JOIN otlp_scope c ON c.resource = s.resource AND c.scope_field = s.scope_field AND c.scope = s.scope "
+            "ORDER BY s.resource, s.scope, s.span"
+        ):
+            index.add(json.loads(resource_id_json), json.loads(span_json), json.loads(schema_url_json))
+    for table in ("otlp_resource", "otlp_scope", "otlp_span", "otlp_unknown_kind"):
+        conn.execute(f"DROP TABLE {table}")
+    return result
 
 
 def _file_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -664,6 +835,7 @@ def prepare_jsonl_blob(
     classify_drive_chunked_object: Callable[[dict[str, JSONValue]], bool] | None = None,
     classify_hermes_atif_object: Callable[[dict[str, JSONValue]], bool] | None = None,
     classify_gemini_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
+    classify_otel_object: Callable[[dict[str, JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC."""
@@ -692,6 +864,7 @@ def prepare_jsonl_blob(
         claude_ai_envelope: dict[str, JSONValue] | None = None
         drive_chunked: tuple[dict[str, JSONValue], str] | None = None
         atif: tuple[dict[str, JSONValue], bool] | None = None
+        otel: tuple[dict[str, JSONValue], str, tuple[otel_genai.OtelSpanIndex, str | None]] | None = None
         chatgpt_envelope: dict[str, object] | None = None
         chatgpt_mapping: ChatGPTNodeMapping | None = None
         gemini_envelope: dict[str, JSONValue] | None = None
@@ -849,6 +1022,24 @@ def prepare_jsonl_blob(
         ):
             with source.open("rb") as handle:
                 atif = _hermes_atif_envelope(handle)
+            if atif is not None and atif[1]:
+                with source.open("rb") as handle:
+                    if not _spill_atif_subagents(handle, store.conn):
+                        atif = None
+        if (
+            not is_stream
+            and provider is Provider.OTEL_GENAI
+            and (prepare_sessions is None or classify_otel_object is not None)
+            and (prepare_records is None or classify_otel_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+        ):
+            with source.open("rb") as handle:
+                otlp = _otlp_envelope(handle)
+            if otlp is not None:
+                with source.open("rb") as handle:
+                    otel_spilled = _index_otlp_spans(handle, otlp[1], store.conn)
+                if otel_spilled is not None:
+                    otel = (*otlp, otel_spilled)
         if gemini_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
@@ -1288,6 +1479,7 @@ def prepare_jsonl_blob(
                     messages=store.new_sink(),
                     session_events=store.new_event_sink(),
                     attachments=store.new_attachment_sink(),
+                    scratch=store.conn,
                 )
             session_count = 0
             if session is not None and require_positive_conversational_evidence(
@@ -1330,16 +1522,16 @@ def prepare_jsonl_blob(
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
 
-            def atif_items(prefix: str) -> Iterator[JSONValue]:
+            def atif_steps() -> Iterator[JSONValue]:
                 with source.open("rb") as handle:
-                    for item in ijson.items(handle, f"{prefix}.item"):
+                    for item in ijson.items(handle, "steps.item"):
                         yield cast(JSONValue, normalize_ijson_stdlib_numbers(item))
 
             atif_admitted = True
             if classify_hermes_atif_object is not None:
-                atif_witness: dict[str, JSONValue] = {**atif_envelope, "steps": list(islice(atif_items("steps"), 64))}
+                atif_witness: dict[str, JSONValue] = {**atif_envelope, "steps": list(islice(atif_steps(), 64))}
                 if atif_has_subagents:
-                    atif_witness["subagent_trajectories"] = list(islice(atif_items("subagent_trajectories"), 64))
+                    atif_witness["subagent_trajectories"] = _atif_subagent_witness(store.conn)
                 atif_admitted = classify_hermes_atif_object(atif_witness)
             atif_sessions: list[ParsedSession] = []
             if atif_admitted:
@@ -1351,7 +1543,7 @@ def prepare_jsonl_blob(
                 unknown_steps: list[JSONValue] = []
 
                 def observed_steps() -> Iterator[JSONValue]:
-                    for step in atif_items("steps"):
+                    for step in atif_steps():
                         if not unknown_steps and isinstance(step, dict):
                             discriminators: dict[str, JSONValue] = {
                                 key: step[key] for key in ("type", "kind") if key in step
@@ -1364,7 +1556,7 @@ def prepare_jsonl_blob(
                 atif_sessions = hermes_spans.parse_atif_stream(
                     atif_envelope,
                     steps,
-                    atif_items("subagent_trajectories") if atif_has_subagents else (),
+                    _atif_subagents(store.conn) if atif_has_subagents else (),
                     fallback_id,
                     profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
                     new_events=store.new_event_sink,
@@ -1375,6 +1567,8 @@ def prepare_jsonl_blob(
                     atif_sessions = admit_parsed_sessions(
                         "hermes", {**atif_envelope, "steps": unknown_steps}, atif_sessions
                     )
+            if atif_has_subagents:
+                _drop_atif_subagents(store.conn)
             atif_sessions = require_positive_conversational_evidence(
                 atif_sessions, provider=provider, source_path=source_path
             )
@@ -1388,6 +1582,65 @@ def prepare_jsonl_blob(
                 append_session_to_shard(shard_builder, session)
                 _append_artifact_session(store, session_count, session)
                 session_count += 1
+            for table, column in (
+                ("prepared_message", "message_ordinal"),
+                ("prepared_event", "event_ordinal"),
+                ("prepared_attachment", "attachment_ordinal"),
+            ):
+                store.conn.execute(
+                    f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
+                )
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
+        elif otel is not None:
+            otel_envelope, otel_root_key, (otel_index, otel_unknown_kind) = otel
+            # The dispatch route proves the whole document against the OTLP
+            # discriminator scan, which reads only each span's ``kind``; the
+            # spill recorded the first unknown one, so this one-record
+            # document carries the same conservation proof.
+            otel_admission_payload: dict[str, JSONValue] = (
+                {otel_root_key: [{"scopeSpans": [{"spans": [{"kind": otel_unknown_kind}]}]}]}
+                if otel_unknown_kind is not None
+                else {}
+            )
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+            # Taxonomy decides a declared OTLP path by its rule and root
+            # markers, so the witness carries the root fields, not the spans.
+            otel_admitted = otel_index.normalizable and (
+                classify_otel_object is None or classify_otel_object({**otel_envelope, otel_root_key: []})
+            )
+            session_count = 0
+            for session in (
+                otel_index.sessions(new_messages=store.new_sink, new_events=store.new_event_sink)
+                if otel_admitted
+                else ()
+            ):
+                session = admit_parsed_sessions(provider.value.replace("-", "_"), otel_admission_payload, [session])[0]
+                if not require_positive_conversational_evidence([session], provider=provider, source_path=source_path):
+                    continue
+                if prepare_sessions is not None:
+                    selected = prepare_sessions([session])
+                    if len(selected) > 1:
+                        raise ValueError("OTLP per-session finalizer expanded one session")
+                    if not selected:
+                        continue
+                    session = selected[0]
+                elif prepare_session is not None:
+                    session = prepare_session(session)
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            otel_index.close()
             for table, column in (
                 ("prepared_message", "message_ordinal"),
                 ("prepared_event", "event_ordinal"),
@@ -1614,6 +1867,7 @@ def prepare_jsonl_blob(
             or claude_ai_envelope is not None
             or drive_chunked is not None
             or atif is not None
+            or otel is not None
             or (grok_count is not None and classify_grok_export is not None)
             or (prepare_sessions is None and prepare_session is not None),
             attempt_directory=attempt_directory,
