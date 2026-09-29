@@ -291,13 +291,23 @@ Every mutation family declares a recovery route
 (`polylogue/operations/mutation_replay.py`). Most re-apply the recorded plan:
 their `apply` converges from any state an interrupted apply of the same plan
 can leave. The annotation batch import commits in one transaction, so its
-batch row shows whether it landed. An interrupted ingest is terminalized as
-not replayable; its accepted source generation stays retained but is not yet
-re-driven. The outcome is terminal and never `unknown`:
+batch row shows whether it landed. The outcome is terminal and never `unknown`:
 `recovered_complete`, `recovered_absent`, `recovery_not_replayable` (a family
-or version this runtime no longer declares), or `recovery_replay_failed` with
-the error. None of them blocks a later mutation of the same targets, and there
-is no operator adjudication route.
+or version this runtime no longer declares, or an ingest whose request was
+stopped), or `recovery_replay_failed` with the error. None of them blocks a
+later mutation of the same targets, and there is no operator adjudication
+route.
+
+An interrupted ingest whose request was never stopped is not terminalized by
+generic recovery. The daemon's ingest owner (the operation runtime behind the
+API) claims each such run under a new attempt when it starts and drives the
+accepted generation from its retained manifest through enumeration,
+materialization, profile convergence and finalization, the same phases a
+fresh request runs. The original input path is not read again. The original
+request id then reads `running` and, once the owner finalizes, the terminal
+`completed` or `degraded` receipt. A generation the owner cannot drive (its
+enumeration decoder is gone, its retained rows are damaged) ends `failed`; an
+owner shutdown leaves the run for the next start.
 
 ### Measuring Codex UUID-title coverage
 

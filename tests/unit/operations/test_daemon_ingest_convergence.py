@@ -40,9 +40,7 @@ class _Receipt:
 
 
 def _execution(dispositions: dict[str, str], attempted: list[tuple[str, ...]]) -> Any:
-    async def converge_ingest_sessions(
-        request: object, session_ids: tuple[str, ...], **_kwargs: object
-    ) -> SessionInsightPartReceipt:
+    async def converge_ingest_sessions(session_ids: tuple[str, ...], **_kwargs: object) -> SessionInsightPartReceipt:
         attempted.append(session_ids)
         return SessionInsightPartReceipt(targets=tuple(_target(sid, dispositions[sid]) for sid in session_ids))
 
@@ -50,7 +48,6 @@ def _execution(dispositions: dict[str, str], attempted: list[tuple[str, ...]]) -
         profile_convergence_complete=None,
         started_mutation=SimpleNamespace(plan=SimpleNamespace(context={"recipe_version": "r1"})),
         runtime=SimpleNamespace(converge_ingest_sessions=converge_ingest_sessions),
-        request=object(),
         stop_reason=lambda: None,
         check_stop=lambda: None,
     )
