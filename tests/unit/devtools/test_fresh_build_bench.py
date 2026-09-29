@@ -2089,3 +2089,33 @@ def test_free_threaded_profile_refuses_frame_traversal_but_keeps_cpu_accounting(
     assert document["ticks"] == 1
     assert document["stacks"] == []
     assert document["process_cpu_ticks"] is not None
+
+    from devtools.fresh_build_bench import report
+
+    receipt = report.build_receipt(
+        config=RunConfig(
+            corpus=tmp_path,
+            work=tmp_path,
+            candidate=tmp_path,
+            python="python",
+            label="l",
+            profile=True,
+            fingerprint=False,
+        ),
+        manifest={"total_bytes": 0, "kind": "sample", "digest": "d", "file_count": 0, "by_origin": {}},
+        paths={"events": tmp_path / "events.jsonl", "archive": tmp_path, "stacks": sampler.out_path, "work": tmp_path},
+        identity={"unchanged_during_run": True},
+        environment={},
+        command=[],
+        started_wall=0.0,
+        wall_s=1.0,
+        outcome="interrupted",
+        terminal_at=None,
+        exit_code=None,
+        shutdown_s=0.0,
+        observations=[],
+        final=Observation(1.0),
+        tree_samples=[],
+    )
+    assert receipt["profile"]["outcome"] == "refused"
+    assert receipt["profile"]["reason"] == "free_threaded_frame_snapshot_unavailable"

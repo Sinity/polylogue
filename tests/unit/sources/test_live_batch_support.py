@@ -10171,6 +10171,7 @@ def test_live_append_overrun_settles_cursor_before_ending_batch(
 
     from polylogue.core.write_hold import enter_write_hold, exit_write_hold
     from polylogue.sources.live import append_ingest, batch
+    from polylogue.sources.live.archive_open import _open_archive_for_live_write
 
     first, first_plan, _owner, processor = _seed_live_append_plan(tmp_path, native_id="first-budget")
     second = first.with_name("second-budget.jsonl")
@@ -10203,7 +10204,7 @@ def test_live_append_overrun_settles_cursor_before_ending_batch(
 
         monkeypatch.setattr(append_ingest, "_write_append_raw_payload", delayed_capture)
     else:
-        original_open = append_ingest._open_archive_for_live_write
+        original_open = _open_archive_for_live_write
 
         @contextmanager
         def delayed_open(*args: Any, **kwargs: Any) -> Any:

@@ -1,8 +1,9 @@
 """In-process wall/CPU stack sampler for the fresh-build benchmark.
 
-``py-spy`` cannot attach to the free-threaded 3.14t interpreter the daemon
-runs on, and ``cProfile`` follows one thread at a time. This sampler runs as a
-thread inside the measured daemon: every tick it reads ``sys._current_frames``
+Stack profiles require a conventional GIL build. Free-threaded builds record
+a typed profile refusal and retain only CPU accounting, because live frame
+chains cannot safely be walked from another thread. On supported builds this
+sampler runs inside the measured daemon: every tick it reads ``sys._current_frames``
 and each thread's cumulative CPU ticks from ``/proc/self/task/<tid>/stat``. A
 sample always counts as wall time for its stack; the CPU ticks the thread
 consumed since its previous sample are attributed to the same stack, so an
