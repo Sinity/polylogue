@@ -5355,3 +5355,74 @@ def test_streaming_resolver_shuts_its_executor_down_when_the_body_raises(
             outcomes["raw-0"]
             raise RuntimeError("census apply failed")
     assert not escaped[0].executor_running
+
+
+def test_cold_build_rebuilds_a_session_that_retains_an_agent_work_event(tmp_path: Path) -> None:
+    """A retained work event survives the production cold build with its transcript.
+
+    Anti-vacuity: admit the event raw under the transcript's logical key and
+    the frozen classification re-derives different byte authority for the
+    transcript (``FrozenSourceRemediationRequiredError``); replay the event
+    before its transcript and the transcript's fresh write asserts an absent
+    session; let the transcript's accepted head refuse the event and the live
+    append records nothing; let the event write re-point ``sessions.raw_id``
+    or ``content_hash`` and the transcript's accepted head disagrees with its
+    materialized session.
+    """
+    root = tmp_path / "archive"
+    build_independent_raw_corpus(root, raw_count=1, avg_payload_bytes=1_000, authoritative_source=True)
+    census_historical_revision_evidence(root)
+    backfill_historical_revision_evidence(root)
+    session_id = "codex-session:amg1-session-000000"
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        appended = archive.append_work_event(
+            session_id=session_id,
+            event_type="decision",
+            payload={"decision": "continue"},
+            event_id="evt-cold-build",
+            summary="kept going",
+        )
+    assert appended["content_changed"] is True
+
+    def session_state(
+        index_path: Path,
+    ) -> tuple[list[Any], list[Any], list[tuple[str, str]], list[Any]]:
+        with sqlite3.connect(index_path) as conn:
+            header = conn.execute(
+                "SELECT session_id, title, created_at_ms, updated_at_ms FROM sessions ORDER BY session_id"
+            ).fetchall()
+            messages = conn.execute(
+                "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position", (session_id,)
+            ).fetchall()
+            events = conn.execute(
+                "SELECT event_type, payload_json FROM session_events WHERE session_id = ? ORDER BY position",
+                (session_id,),
+            ).fetchall()
+            head_agreement = conn.execute(
+                """
+                SELECT h.logical_source_key, s.raw_id = h.accepted_raw_id AND s.content_hash = h.accepted_content_hash
+                FROM raw_revision_heads AS h JOIN sessions AS s ON s.session_id = h.session_id
+                ORDER BY h.logical_source_key
+                """
+            ).fetchall()
+        return (
+            header,
+            messages,
+            [(event_type, json.loads(payload)["event_id"]) for event_type, payload in events],
+            head_agreement,
+        )
+
+    active = session_state(root / "index.db")
+    assert active[0][0][0] == session_id
+    assert len(active[1]) == 1
+    assert active[2] == [("decision", "evt-cold-build")]
+    assert active[3] == [(session_id, 1)]
+
+    generation = IndexGenerationStore.for_archive_root(root).create(source_snapshot="work-event-cold-build")
+    result = backfill_historical_revision_evidence(
+        Path(generation.index_path).parent,
+        owned_inactive_generation=(generation.generation_id, generation.owner_id),
+    )
+
+    assert result.replayed_logical_sources == 2
+    assert session_state(Path(generation.index_path)) == active

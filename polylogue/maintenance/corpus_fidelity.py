@@ -21,7 +21,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 
 from polylogue.archive.topology.edge import topology_status_composes_sql
-from polylogue.sources.dispatch import lower_chatgpt_documents
+from polylogue.sources.dispatch import chatgpt_rejected_mapping_candidates, lower_chatgpt_documents
 from polylogue.storage.sqlite.archive_tiers.write import read_archive_session_envelope
 
 DEFAULT_SAMPLE_LIMIT = 10
@@ -293,7 +293,9 @@ def audit_revision_fidelity(
     worst: list[dict[str, Any]] = []
     for (origin, provider_session_id), best_count in best.items():
         session_id = f"{origin}:{provider_session_id}"
-        have_messages = messages.get(session_id)
+        # An indexed session with no message rows has zero messages; it is
+        # compared like any other rather than left unresolved.
+        have_messages = messages.get(session_id, 0 if session_id in indexed_sessions else None)
         have_events = events.get(session_id, 0)
         state = "unresolved_shortfall"
         reasons: list[str] = []
@@ -328,7 +330,7 @@ def audit_revision_fidelity(
                     composed_count = len(envelope.messages)
                     if not envelope.lineage_complete:
                         reasons.append(str(envelope.lineage_truncation_reason or "incomplete_lineage"))
-                    elif composed_count != best_count:
+                    elif composed_count < best_count and composed_count + have_events < best_count:
                         reasons.append("composed_count_mismatch")
                     else:
                         state = "prefix_composed"
@@ -341,7 +343,10 @@ def audit_revision_fidelity(
         elif have_messages < best_count and have_messages + have_events >= best_count:
             state = "event_reclassified"
         elif have_messages > best_count:
-            reasons.append("indexed_count_exceeds_source")
+            # Multiple retained revisions may contribute complementary
+            # messages; an indexed superset conserves at least the recorded
+            # revision and is not a shortfall.
+            state = "indexed_superset"
         else:
             reasons.append("direct_count_shortfall")
 
@@ -362,9 +367,17 @@ def audit_revision_fidelity(
             "inheritance": inheritance,
             "best_recorded_messages": best_count,
         }
-        states.append(record)
+        if len(states) < sample_limit:
+            states.append(record)
         if state == "unresolved_shortfall":
             worst.append(record)
+            worst.sort(
+                key=lambda item: (
+                    item["indexed_messages"] is not None,
+                    (item["indexed_messages"] or 0) - item["best_recorded_messages"],
+                )
+            )
+            del worst[sample_limit:]
     worst.sort(
         key=lambda item: (
             item["indexed_messages"] is not None,
@@ -488,6 +501,10 @@ def audit_chatgpt_content_conservation(
 
     # Newest revision wins: ascending acquisition order, later raws overwrite.
     newest_documents: dict[str, tuple[dict[str, str], str]] = {}
+    # Conversation records the bundle lowering rejected. They are in the
+    # denominator even though no document was lowered for them, and a later
+    # revision that lowers the same conversation supersedes the rejection.
+    rejected_documents: dict[str, str] = {}
     source_rows_selected = 0
     blobs_readable = 0
     blobs_missing = 0
@@ -508,20 +525,33 @@ def audit_chatgpt_content_conservation(
         artifact_classes["raw_session"] += 1
         try:
             blob = read_blob(bytes(blob_hash).hex())
-            payload = json.loads(blob)
-        except (OSError, ValueError, TypeError):
+        except OSError:
             blobs_missing += 1
             if len(unreadable_raws) < sample_limit:
                 unreadable_raws.append(str(raw_id))
             continue
+        # The blob was read: count it as readable before classifying its
+        # contents, so malformed JSON is reported as such, not as unreadable.
         blobs_readable += 1
         bytes_scanned += len(blob)
+        try:
+            payload = json.loads(blob)
+        except (ValueError, TypeError):
+            unsupported_envelope_classes["malformed_json"] += 1
+            if len(unreadable_raws) < sample_limit:
+                unreadable_raws.append(str(raw_id))
+            continue
         documents = lower_chatgpt_documents(payload, str(raw_id))
         if not documents:
             unsupported_envelope_classes["unsupported_or_malformed"] += 1
         for document in documents:
             artifact_classes[document.artifact_class] += 1
             newest_documents[document.document_id] = (_content_bearing_nodes(document.mapping), document.artifact_class)
+            rejected_documents.pop(document.document_id, None)
+        for ordinal, conversation_id in enumerate(chatgpt_rejected_mapping_candidates(payload)):
+            key = conversation_id if conversation_id is not None else f"{raw_id}#{ordinal}"
+            newest_documents.pop(key, None)
+            rejected_documents[key] = str(raw_id)
 
     dropped_by_content_type: collections.Counter[str] = collections.Counter()
     conserved_by_content_type: collections.Counter[str] = collections.Counter()
@@ -564,6 +594,11 @@ def audit_chatgpt_content_conservation(
         "blobs_missing": blobs_missing,
         "artifact_classes": dict(sorted(artifact_classes.items())),
         "unsupported_envelope_classes": dict(sorted(unsupported_envelope_classes.items())),
+        "rejected_mapping_candidates": len(rejected_documents),
+        "rejected_mapping_candidate_sample": [
+            {"conversation_key": key, "raw_id": raw_id}
+            for key, raw_id in sorted(rejected_documents.items())[:sample_limit]
+        ],
         "documents_lowered": len(newest_documents),
         "candidate_documents_matched": candidate_documents_matched,
         "candidate_documents_absent": candidate_documents_absent,

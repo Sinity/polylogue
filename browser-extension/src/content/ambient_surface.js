@@ -471,7 +471,13 @@
     async function refresh() {
       if (stopped) return null;
       try {
-        const response = await runtime.sendMessage({ type: "polylogue.missionControl.status", refresh: true });
+        // While the panel is open every refresh (periodic or manual) asks for
+        // intelligence too, so an open panel keeps its claims and Save state.
+        const response = await runtime.sendMessage({
+          type: "polylogue.missionControl.status",
+          refresh: true,
+          ...(panel.hidden ? {} : { include_intelligence: true }),
+        });
         if (response?.ok) render(response);
         return response;
       } catch (error) {
@@ -492,6 +498,9 @@
       panel.hidden = false;
       chip.setAttribute("aria-expanded", "true");
       close.focus();
+      runtime.sendMessage({ type: "polylogue.missionControl.status", refresh: false, include_intelligence: true })
+        .then((nextSnapshot) => { if (nextSnapshot?.ok && !stopped) render(nextSnapshot); })
+        .catch(() => undefined);
     }
 
     function closePanel() {
@@ -515,6 +524,8 @@
         }) || null),
       });
       if (!selectionCandidate) {
+        editor.hidden = true;
+        assertionButton.disabled = true;
         selectionText.textContent = "Select text inside a conversation message to prepare an assertion candidate.";
         return;
       }
@@ -523,9 +534,9 @@
       bodyInput.value = selectionCandidate.text;
       editor.hidden = false;
       const observation = selectionCandidate.identity_observation;
-      const accepted = snapshot?.assertions?.accepted_identity;
       const expectedMessageRef = observation?.origin && observation?.provider_conversation_id && observation?.provider_message_id
         ? `${observation.origin}:${observation.provider_conversation_id}:n:${observation.provider_message_id}` : null;
+      const accepted = expectedMessageRef ? snapshot?.assertions?.accepted_identities?.[expectedMessageRef] : null;
       selectionCandidate.message_ref = expectedMessageRef;
       selectionCandidate.evidence_ref = accepted?.message_ref === expectedMessageRef ? accepted.evidence_ref : null;
       assertionButton.disabled = !snapshot?.assertions?.persistence_supported || !selectionCandidate.evidence_ref;

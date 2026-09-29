@@ -292,6 +292,41 @@ class TestResetCommandDeletion:
             assert result.exit_code == 0, result.output
             assert not target_path.exists()
 
+    def test_confirmed_reset_without_a_preview_is_not_an_empty_preview(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An omitted ``expected_targets`` asserts nothing; ``[]`` asserts no targets.
+
+        Anti-vacuity: default the protocol field to ``[]`` and the omitted
+        request is compared against an empty preview and refused, leaving the
+        cache in place.
+        """
+        from polylogue.daemon_client import DaemonOperationRejectedError
+
+        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            from polylogue.paths import cache_home
+
+            cache = cache_home()
+            cache.mkdir(parents=True, exist_ok=True)
+            (cache / "index").write_text("index data", encoding="utf-8")
+
+            try:
+                refused = stack.client.operation_to_completion(
+                    "maintenance.reset",
+                    {"cache": True, "confirm": True, "expected_targets": []},
+                    archive_root=str(stack.archive_root),
+                )
+            except DaemonOperationRejectedError:
+                refused = None
+            assert refused is None or refused["outcome"] != "completed"
+            assert cache.exists()
+
+            applied = stack.client.operation_to_completion(
+                "maintenance.reset", {"cache": True, "confirm": True}, archive_root=str(stack.archive_root)
+            )
+            assert applied is not None and applied["outcome"] == "completed", applied
+            assert not cache.exists()
+
     def test_multiple_flags(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """(b) daemon route: several flags in one request are all applied."""
         with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):

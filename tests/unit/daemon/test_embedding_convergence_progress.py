@@ -6,11 +6,20 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 import pytest
 
 from polylogue.daemon import embedding_backlog, embedding_owner
+from polylogue.daemon.derivation import (
+    BaseDerivation,
+    Budget,
+    DerivationFrame,
+    DerivationRegistry,
+    KeyPage,
+    KeyStatus,
+    converge,
+)
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.status import format_daemon_status_lines
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
@@ -21,6 +30,7 @@ class _EmbeddingConfig:
     voyage_api_key = "pa-test"
     embedding_model = "voyage-4"
     embedding_dimension = 1024
+    sinex_mode = "off"
 
     def get(self, key: str, default: object = None) -> object:
         return {"voyage_api_key": self.voyage_api_key, "embedding_max_cost_usd": 5.0}.get(key, default)
@@ -213,6 +223,52 @@ def test_scoped_foreground_convergence_honors_the_monthly_cap(tmp_path: Path, mo
     assert result.report is None
 
 
+def test_unmeasured_monthly_spend_refuses_the_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scoped (ingest-foreground) call obeys the same cap as the periodic pass.
+
+    Foreground ingest embedding runs through the very composition the periodic
+    backlog uses (``compose_embedding_convergence``; see
+    ``converge_ingest_embeddings`` in ``polylogue/daemon/cli.py`` and
+    ``periodic_embedding_backlog_check``), so a scope argument cannot buy work
+    the monthly cap has already spent (polylogue-liwst).
+
+    Anti-vacuity: a foreground path that skips the cap check goes on to build a
+    frame from the stub adapter below and raises instead of returning the
+    ``monthly_cost_cap`` deferral.
+    """
+
+    class _StubAdapter:
+        domain = "embedding"
+
+    async def exercise() -> embedding_owner.EmbeddingConvergenceResult:
+        coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+        bridge = DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop())
+        monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: _EmbeddingConfig())
+        monkeypatch.setattr(
+            "polylogue.operations.embedding_derivation.make_embedding_derivation",
+            lambda *_args, **_kwargs: _StubAdapter(),
+        )
+        # The spend probe could not read ops.db (polylogue-oulj2).
+        monkeypatch.setattr(
+            embedding_backlog,
+            "_archive_embedding_catchup_estimated_cost_this_month",
+            lambda _ops_db: None,
+        )
+        composed = embedding_owner.compose_embedding_convergence(
+            tmp_path / "index.db",
+            compute_adapter=BoundedComputeAdapter(max_workers=1),
+            write_bridge=bridge,
+        )
+        # A scoped call is exactly what ingest foreground convergence makes.
+        return await composed(["claude-code-session:s1"])
+
+    # Anti-vacuity: treating an unreadable spend as 0.0 grants the whole
+    # monthly budget, so the pass reaches the owner and ``report`` is set.
+    result = asyncio.run(exercise())
+    assert result.deferred_reason == "spend_unmeasured"
+    assert result.report is None
+
+
 def test_embedding_startup_marks_running_catchup_receipts_interrupted(tmp_path: Path) -> None:
     from polylogue.core.enums import OperationStatus
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
@@ -381,6 +437,75 @@ def test_partial_embedding_pass_keeps_catchup_receipt_retryable() -> None:
     assert embedding_owner._catchup_receipt_status(failures=0, pending=0, stopped=False) == "completed"
 
 
+@pytest.mark.parametrize("signal", ["quiet", "scope_limited"])
+def test_per_pass_stop_signal_keeps_the_catchup_receipt_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signal: str
+) -> None:
+    """A stop signal passed to one pass classifies that pass's receipt.
+
+    The daemon composes the owner once, with no ``quiet`` or ``scope_limited``,
+    and hands each operator pass its own signals as call arguments.
+
+    Anti-vacuity: classifying the receipt from the composition-time signals
+    ignores a cancelled or session-limited pass and stamps its receipt
+    ``completed`` although the pass stopped early.
+    """
+    from polylogue.core.enums import OperationStatus
+    from polylogue.daemon import convergence
+
+    captured: dict[str, Any] = {}
+    statuses: list[object] = []
+
+    class _Adapter:
+        domain = "embedding"
+
+    def fake_derivation(*_args: object, **kwargs: object) -> _Adapter:
+        captured.update(kwargs)
+        return _Adapter()
+
+    class _Report:
+        pending = 0
+        work = type("Work", (), {"computed": 1})()
+
+        def count(self, _outcome: object) -> int:
+            return 0
+
+    class _Owner:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def converge(self, _frame: object, **_kwargs: object) -> _Report:
+            # The first provider reservation mints the RUNNING catch-up receipt.
+            await asyncio.to_thread(captured["reserve"], "embedding.reserve", lambda: None)
+            return _Report()
+
+    def upsert(_ops_db: Path, *, status: object, run_id: str | None = None, **_fields: object) -> str:
+        statuses.append(status)
+        return run_id or "run-1"
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: _EmbeddingConfig())
+    monkeypatch.setattr("polylogue.operations.embedding_derivation.make_embedding_derivation", fake_derivation)
+    monkeypatch.setattr("polylogue.operations.embedding_derivation.make_embedding_frame", lambda *_a, **_k: None)
+    monkeypatch.setattr(convergence, "DaemonConverger", lambda **_kwargs: None)
+    monkeypatch.setattr(convergence, "DerivationConvergenceOwner", _Owner)
+    monkeypatch.setattr(embedding_backlog, "_archive_embedding_catchup_estimated_cost_this_month", lambda _db: 0.0)
+    monkeypatch.setattr(embedding_backlog, "_upsert_archive_embedding_catchup_run", upsert)
+
+    async def exercise() -> None:
+        coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+        bridge = DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop())
+        composed = embedding_owner.compose_embedding_convergence(
+            tmp_path / "index.db",
+            compute_adapter=BoundedComputeAdapter(max_workers=1),
+            write_bridge=bridge,
+        )
+        limits: dict[str, object] = {"quiet": lambda: True} if signal == "quiet" else {"scope_limited": True}
+        await composed(["codex:synthetic"], **limits)
+
+    asyncio.run(exercise())
+    assert statuses == [OperationStatus.RUNNING, OperationStatus.INTERRUPTED]
+
+
 def test_embedding_session_window_reports_max_session_truncation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -410,10 +535,46 @@ def test_embedding_session_window_reports_max_session_truncation(
         "polylogue.operations.embedding_derivation.open_readonly_connection",
         lambda *_args, **_kwargs: nullcontext(object()),
     )
-    monkeypatch.setattr("polylogue.storage.embeddings.materialization.select_pending_session_window", select)
+    monkeypatch.setattr("polylogue.storage.embeddings.materialization.select_pending_archive_session_window", select)
 
     selected, limited = select_embedding_session_window(tmp_path / "index.db", archive_root=tmp_path, max_sessions=2)
 
     assert received["max_sessions"] == 3
     assert selected == ("s1", "s2")
     assert limited is True
+
+
+def test_max_errors_stops_derivation_before_more_provider_calls() -> None:
+    """Anti-vacuity: removing the failure budget computes every failing key in the page."""
+
+    class FailingEmbedding(BaseDerivation):
+        domain = "embedding"
+        prerequisites: tuple[str, ...] = ()
+
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def required_page(self, _frame: object, *, cursor: str | None, limit: int) -> KeyPage:
+            start = int(cursor or 0)
+            stop = min(start + limit, 3)
+            return KeyPage(tuple(str(index) for index in range(start, stop)), str(stop) if stop < 3 else None)
+
+        def inspect(self, _frame: object, keys: Sequence[str]) -> Mapping[str, KeyStatus]:
+            return dict.fromkeys(keys, KeyStatus.MISSING)
+
+        def compute(self, _frame: object, key: str) -> NoReturn:
+            self.calls.append(key)
+            raise RuntimeError("provider 429")
+
+        def publish(self, _frame: object, _replacement: object) -> bool:
+            raise AssertionError("compute always fails before publish is reached")
+
+    adapter = FailingEmbedding()
+    report = converge(
+        DerivationRegistry((adapter,)),
+        DerivationFrame(archive_root="/archive", source_revision="index-generation:test"),
+        budget=Budget(page=10, max_errors=1),
+    )
+    assert adapter.calls == ["0"]
+    assert report.failed == 1
+    assert report.pending == 2

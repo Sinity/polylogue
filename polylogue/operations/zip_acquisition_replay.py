@@ -10,16 +10,15 @@ recorded; the hint only decides which candidate is tried first.
 from __future__ import annotations
 
 import hashlib
-import io
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Source
-from polylogue.core.content_identity import STRUCTURAL_IDENTITY_MAX_BYTES, bounded_payload_content_identity
+from polylogue.core.content_identity import ContentIdentityRefusal, payload_content_identity
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_coordinate
 from polylogue.core.sources import origin_provider_fiber
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
@@ -35,10 +34,8 @@ class MemberCandidate:
     addressing_mode: MemberAddressingMode
     element_index: int | None
     payload_bytes: bytes
-    #: The ceiling acquisition applied when it recorded this member's
-    #: identity. Production always uses the declared one; it is a field so a
-    #: test can exercise the over-ceiling branch without a 256 MiB fixture.
-    identity_ceiling_bytes: int = STRUCTURAL_IDENTITY_MAX_BYTES
+    #: The identity acquisition replay already computed, when it did.
+    precomputed_identity: str | None = None
 
     @property
     def coordinate(self) -> tuple[str, int | None]:
@@ -49,23 +46,17 @@ class MemberCandidate:
         """Identify this unit by decoded content, not by serialization.
 
         A unit that does not decode as JSON has no structure to compare, so
-        its bytes are its identity. So are the bytes of a unit above
-        ``STRUCTURAL_IDENTITY_MAX_BYTES``: acquisition records the byte
-        digest for those (``bounded_payload_content_identity``, the declared
-        exception in ``core/content_identity.py``), so deriving a structural
-        identity here would disagree with the value that was recorded -- the
-        recorded reference would resolve ``unmatched`` and the member would
-        be unrecoverable -- and would re-introduce at replay exactly the
-        unbounded decode the ceiling exists to prevent. Routing through the
-        ceiling's own owner keeps one rule for both sides.
+        its bytes are its identity. Acquisition records identity through the
+        same function, so the two sides agree for every member size.
         """
-        identity, _skipped = bounded_payload_content_identity(
-            io.BytesIO(self.payload_bytes),
-            size=len(self.payload_bytes),
-            byte_digest=self.byte_identity,
-            ceiling=self.identity_ceiling_bytes,
-        )
-        return identity
+        if self.precomputed_identity is not None:
+            return self.precomputed_identity
+        try:
+            return payload_content_identity(self.payload_bytes)
+        except ContentIdentityRefusal as refusal:
+            # Acquisition refuses such a unit, so no recorded identity names
+            # it; this never equals a 64-hex digest.
+            return f"refused:{refusal.token}"
 
     @property
     def byte_identity(self) -> str:
@@ -195,7 +186,8 @@ def zip_reacquisition_payload(
     zip_path_text, _separator, member = source_path.partition(":")
     if not zip_path_text or not member:
         return None, "container_coordinate_missing"
-    zip_path = Path(zip_path_text)
+    # A container path may itself hold a colon; prefer the prefix that is a real ZIP.
+    zip_path, member = zip_member_coordinate(source_path) or (Path(zip_path_text), member)
     if not zip_path.exists():
         return None, "source_missing"
     try:
@@ -241,6 +233,7 @@ def zip_reacquisition_payload(
                         addressing_mode=acquired.addressing_mode,
                         element_index=acquired.source_index,
                         payload_bytes=acquired.payload_bytes,
+                        precomputed_identity=acquired.content_identity,
                     )
                     for acquired in replay_zip_entry_acquisition_payloads(archive, context)
                 )
@@ -335,6 +328,8 @@ def _zip_coordinate(row: Mapping[str, object]) -> tuple[int, int] | None:
 
 def _legacy_split_index(row: Mapping[str, object]) -> int | None:
     source_index = row.get("source_index")
+    if source_index is None:
+        return 0
     if not isinstance(source_index, (int, str)):
         return None
     try:

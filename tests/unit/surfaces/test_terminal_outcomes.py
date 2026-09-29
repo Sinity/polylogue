@@ -111,6 +111,15 @@ class TestOutcomeDecision:
         assert combined.state == "degraded"
         assert combined.reason == "insight_unavailable:timeline"
 
+    def test_composite_of_only_failed_parts_remains_error(self) -> None:
+        """A composite without any successful child has no answer.
+
+        Anti-vacuity: converting all named gaps to ``degraded`` makes this
+        case report partial data even though every requested panel failed.
+        """
+        combined = combine_outcomes([OutcomeEnvelope(state="error", reason="insight_unavailable:timeline")])
+        assert combined.state == "error"
+
     def test_combine_of_all_empty_stays_empty(self) -> None:
         assert combine_outcomes([decide_outcome(matched=0), decide_outcome(matched=0)]).state == "empty"
 
@@ -261,6 +270,17 @@ class TestEnvelopesRequireAnOutcome:
             build_search_envelope([], total=0, limit=10, offset=0, query="", retrieval_lane="auto").outcome.state
             == "empty"
         )
+
+    def test_search_page_past_the_last_hit_is_empty_not_ok(self) -> None:
+        """A page's outcome describes the rows it returns, not the query's total.
+
+        Red if the builder decides ``matched`` from ``total``: an offset past
+        the last hit would then report ``ok`` over zero rows.
+        """
+        from polylogue.surfaces.payloads import build_search_envelope
+
+        envelope = build_search_envelope([], total=5, limit=10, offset=10, query="x", retrieval_lane="auto")
+        assert envelope.outcome.state == "empty"
 
 
 # ---------------------------------------------------------------------------

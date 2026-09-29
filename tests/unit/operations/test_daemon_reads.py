@@ -12,6 +12,7 @@ import pytest
 from polylogue.config import Config
 from polylogue.operations.daemon_reads import (
     DaemonReadDependencies,
+    _cacheable_read,
     execute_read_operation,
     requires_vector_snapshot,
     vector_binding_from_config,
@@ -19,6 +20,30 @@ from polylogue.operations.daemon_reads import (
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.archive_templates import bootstrap_archive_root
+
+
+def test_sampled_and_moving_date_queries_are_not_cached() -> None:
+    """Random and relative bounds change results while the index stays fixed.
+
+    Anti-vacuity: treating sample or a natural-language cutoff as an ordinary
+    stable query makes this predicate cacheable under the unchanged payload.
+    """
+    assert not _cacheable_read("cli.query", {"sample": 5})
+    assert not _cacheable_read("cli.query", {"sort": "random"})
+    assert not _cacheable_read("cli.query", {"since": "1 hour ago"})
+    assert not _cacheable_read("cli.query", {"until": "yesterday"})
+    assert _cacheable_read("cli.query", {"since": "2026-09-01"})
+
+
+def test_session_read_preserves_the_declared_2000_row_window() -> None:
+    """Generic session reads accept the full public request bound.
+
+    Anti-vacuity: routing through a narrower internal ``Bound`` rejects a
+    request accepted by ``SessionReadRequest`` before transcript paging.
+    """
+    from polylogue.operations.session_contracts import SessionRead
+
+    assert SessionRead.model_validate({"ref": "session:sample", "limit": 1500}).limit == 1500
 
 
 @dataclass
@@ -213,8 +238,8 @@ def test_hybrid_query_names_an_absent_vector_provider_as_a_degraded_lane(tmp_pat
         )
 
     assert result["outcome"]["state"] == "degraded"
-    assert result["requested_lanes"] == ["text", "vector"]
-    assert result["executed_lanes"] == ["text"]
+    assert result["requested_lanes"] == ["text", "action", "vector"]
+    assert result["executed_lanes"] == ["text", "action"]
     assert result["unavailable_lanes"] == ["vector"]
     assert result["failed_lanes"] == []
 
@@ -222,6 +247,7 @@ def test_hybrid_query_names_an_absent_vector_provider_as_a_degraded_lane(tmp_pat
 def test_search_projection_hydrates_storage_rows_and_describes_real_lanes() -> None:
     """Mutation: duplicate surface projection with rank-as-score or phantom lanes."""
     from polylogue.archive.query.plan import SessionQueryPlan
+    from polylogue.archive.query.search_contract import ArchiveSearchResult, SearchExecution
     from polylogue.archive.query.search_hits import project_search_hits
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 
@@ -247,15 +273,61 @@ def test_search_projection_hydrates_storage_rows_and_describes_real_lanes() -> N
         lane_ranks={"text": 2, "vector": 3},
     )
     hits = project_search_hits(
-        SessionQueryPlan(query_terms=("needle",), retrieval_lane="hybrid"), [(native, summary)], "hybrid"
+        SessionQueryPlan(query_terms=("needle",), retrieval_lane="hybrid"),
+        ArchiveSearchResult(
+            [(native, summary)],
+            "hybrid",
+            SearchExecution(("text", "action", "vector"), ("text", "action", "vector")),
+        ),
     )
 
     assert hits[0].session_id == summary.session_id
     assert hits[0].matched_terms == ("needle",)
-    assert hits[0].score_components == {"text_rank": 2.0, "vector_rank": 3.0}
-    assert hits[0].raw_score is None
-    assert hits.execution.requested_lanes == ("text", "vector")
-    assert hits.execution.executed_lanes == ("text", "vector")
+    # Hybrid hits carry each lane's recorded rank and its RRF contribution;
+    # the fused score is the sum of those contributions, not a rank.
+    components = hits[0].score_components
+    assert {key: components[key] for key in ("text_rank", "vector_rank")} == {"text_rank": 2.0, "vector_rank": 3.0}
+    assert set(components) == {"text_rank", "vector_rank", "text_rrf", "vector_rrf"}
+    assert hits[0].raw_score == hits[0].score
+    assert hits[0].score is not None
+    assert abs(hits[0].score - (components["text_rrf"] + components["vector_rrf"])) < 1e-9
+    assert hits.execution.requested_lanes == ("text", "action", "vector")
+    assert hits.execution.executed_lanes == ("text", "action", "vector")
+
+
+def test_single_lane_search_hit_keeps_its_native_rank() -> None:
+    """Anti-vacuity: deriving lane_rank only from lane_ranks leaves every dialogue hit with lane_rank=None."""
+    from polylogue.archive.query.plan import SessionQueryPlan
+    from polylogue.archive.query.search_contract import ArchiveSearchResult, SearchExecution
+    from polylogue.archive.query.search_hits import project_search_hits
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
+
+    summary = ArchiveSessionSummary(
+        session_id="codex-session:fixture",
+        native_id="fixture",
+        origin="codex-session",
+        title="Fixture",
+        created_at=None,
+        updated_at=None,
+        message_count=1,
+        word_count=2,
+        tags=(),
+    )
+    native = ArchiveSessionSearchHit(
+        rank=4,
+        session_id=summary.session_id,
+        block_id="block",
+        message_id="message",
+        origin=summary.origin,
+        title=summary.title,
+        snippet="needle",
+    )
+    hits = project_search_hits(
+        SessionQueryPlan(query_terms=("needle",)),
+        ArchiveSearchResult([(native, summary)], "dialogue", SearchExecution(("text",), ("text",))),
+    )
+
+    assert hits[0].lane_rank == 4
 
 
 def test_archive_backed_completion_answers_from_the_pinned_reader(tmp_path: Path) -> None:
@@ -348,20 +420,14 @@ class TestBoundedReadsDegradeByName:
             session_ids.append(f"claude-code-session:ext-{name}")
         return session_ids
 
-    def test_facets_route_reports_a_capped_scope(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """The daemon facets route names ``facet_scope_truncated`` like the API route.
+    def test_facets_route_counts_a_scope_larger_than_one_page(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The facets scope is paged, never truncated.
 
-        The cap is read through ``polylogue.api.archive``; both routes call the
-        same ``_archive_facet_buckets``, but this one dropped the ``scope_gaps``
-        collector, so only the API route reported it. The daemon route is the
-        one the CLI reads through, so the unreported answer was the one
-        operators saw.
-
-        Anti-vacuity: stop passing ``scope_gaps`` to either
-        ``_archive_facet_buckets`` call or to ``build_facets_response`` and the
-        capped read returns ``outcome.state == "ok"`` with every family still
-        in ``complete_families`` -- a one-session denominator for a two-session
-        archive, rendered as measured and complete.
+        Anti-vacuity: read only the first family chunk, or overwrite a
+        family's counts per chunk instead of summing them, and a one-session
+        chunk reports one session's families for a two-session archive.
         """
         self._seed_sessions(tmp_path, 2)
         params = {"query": "origin:claude-code-session"}
@@ -370,18 +436,25 @@ class TestBoundedReadsDegradeByName:
             assert cast(dict[str, Any], uncapped["outcome"])["state"] == "ok"
             assert uncapped["total_sessions"] == 2
 
-            monkeypatch.setattr("polylogue.api.archive.FACET_SCOPE_SESSION_CAP", 1)
-            capped = execute_read_operation(
+            monkeypatch.setattr("polylogue.api.archive._FACET_FAMILY_CHUNK", 1)
+            paged = execute_read_operation(
                 "facets", {"params": {**params, "no_idf": True}}, archive=archive, serving_identity="test"
             )
 
-        outcome = cast(dict[str, Any], capped["outcome"])
-        family_errors = cast(dict[str, str], capped["family_errors"])
-        assert outcome["state"] == "degraded"
-        assert outcome["reason"] == "facet_scope_truncated:1"
-        assert capped["complete_families"] == []
-        assert family_errors
-        assert all(reason == "facet_scope_truncated:1" for reason in family_errors.values())
+        assert cast(dict[str, Any], paged["outcome"])["state"] == "ok"
+        assert paged["total_sessions"] == 2
+
+        # The scoped SQL families, aggregated one session per chunk, sum to
+        # the single-chunk aggregation.
+        from polylogue.api import archive as archive_api
+        from polylogue.archive.query.spec import SessionQuerySpec
+
+        with ArchiveStore.open_existing(tmp_path) as archive:
+            chunked = archive_api._archive_facet_buckets(archive, SessionQuerySpec())
+            monkeypatch.setattr("polylogue.api.archive._FACET_FAMILY_CHUNK", 900)
+            whole = archive_api._archive_facet_buckets(archive, SessionQuerySpec())
+        assert chunked == whole
+        assert sum(whole.role_counts.values()) > 0 and whole.total_sessions == 2
 
     def test_query_envelope_degrades_when_the_attached_projection_is_cut(self, tmp_path: Path) -> None:
         """``with messages`` over a 250-message session degrades, it does not lie.
@@ -481,11 +554,40 @@ def test_transcript_total_is_the_composed_length(tmp_path: Path) -> None:
             archive=archive,
             serving_identity="test",
         )
+        filtered_page = execute_read_operation(
+            "session.read",
+            {
+                "ref": f"session:{child_id}",
+                "kind": "messages",
+                "limit": 2,
+                "projection": {"exclude_block_kinds": ["thinking"]},
+            },
+            archive=archive,
+            serving_identity="test",
+        )
+        empty_page = execute_read_operation(
+            "session.read",
+            {"ref": f"session:{child_id}", "kind": "messages", "limit": 2, "offset": 4},
+            archive=archive,
+            serving_identity="test",
+        )
 
     assert stored == 2, "fixture must be a real prefix-sharing child storing only its tail"
     assert first["total"] == 4
     assert first["next_offset"] == 2, "pagination must reach the divergent tail"
     assert messages_kind["total"] == first["total"], "two vocabularies, one window"
+    assert cast(dict[str, Any], empty_page["outcome"])["state"] == "empty"
+    continuation = cast(str, filtered_page["continuation"])
+    from polylogue.archive.query.transaction import QueryContinuationInvalidError
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        with pytest.raises(QueryContinuationInvalidError):
+            execute_read_operation(
+                "session.read",
+                {"ref": f"session:{child_id}", "kind": "messages", "continuation": continuation},
+                archive=archive,
+                serving_identity="test",
+            )
 
 
 def test_search_continuation_survives_a_session_grain_total(tmp_path: Path) -> None:
@@ -533,6 +635,74 @@ def test_search_continuation_survives_a_session_grain_total(tmp_path: Path) -> N
             serving_identity="test",
         )
     assert cast(list[dict[str, Any]], second["hits"]), "the second page must still carry the remaining hit"
+
+
+def test_a_cursor_page_emits_the_builder_page_its_outcome_describes(tmp_path: Path) -> None:
+    """The daemon route emits the hits the envelope builder decided on.
+
+    A cursor page fetches twice the display limit so the builder can trim
+    stragglers at or before the anchor and truncate to the limit.
+
+    Anti-vacuity: replace ``envelope["hits"]`` with the raw fetch again and
+    this page carries two hits under a limit of one, rows the outcome and
+    ``authority.matched`` never counted.
+    """
+    from tests.infra.storage_records import SessionBuilder
+
+    for name in ("alpha", "beta", "gamma", "delta"):
+        SessionBuilder(tmp_path / "index.db", name).provider("claude-code").title(name).add_message(
+            "m-0000", role="user", text=f"needle body {name}"
+        ).save()
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        first = execute_read_operation(
+            "cli.query",
+            {"params": {"query": "needle", "limit": 1}},
+            archive=archive,
+            serving_identity="daemon",
+        )
+        cursor = first["next_cursor"]
+        assert isinstance(cursor, str)
+        second = execute_read_operation(
+            "cli.query",
+            {"params": {"query": "needle", "limit": 1, "cursor": cursor}},
+            archive=archive,
+            serving_identity="daemon",
+        )
+
+    hits = cast(list[dict[str, Any]], second["hits"])
+    assert len(hits) == 1
+    assert cast(_Outcome, second["outcome"])["state"] != "empty"
+    # ``matched`` names the query's full match count (#5727), not the page.
+    assert cast(dict[str, Any], second["authority"])["matched"] >= len(hits)
+    first_hits = cast(list[dict[str, Any]], first["hits"])
+    assert hits[0]["session"]["id"] != first_hits[0]["session"]["id"]
+
+
+def test_search_authority_counts_the_match_total_and_the_returned_window(tmp_path: Path) -> None:
+    """The operation route reports ``matched``/``analyzed`` as the API builder does.
+
+    Anti-vacuity: swap the two counters back and a one-hit page over four
+    matching sessions reports ``matched=1, analyzed=4``.
+    """
+    from tests.infra.storage_records import SessionBuilder
+
+    for name in ("alpha", "beta", "gamma", "delta"):
+        SessionBuilder(tmp_path / "index.db", name).provider("claude-code").title(name).add_message(
+            "m-0000", role="user", text=f"needle body {name}"
+        ).save()
+
+    with ArchiveStore.open_existing(tmp_path) as archive:
+        page = execute_read_operation(
+            "cli.query",
+            {"params": {"query": "needle", "limit": 1}},
+            archive=archive,
+            serving_identity="daemon",
+        )
+
+    authority = cast(dict[str, Any], page["authority"])
+    assert page["total"] == 4
+    assert (authority["matched"], authority["analyzed"]) == (4, len(cast(list[object], page["hits"]))) == (4, 1)
 
 
 def test_a_short_ranked_page_still_terminates(tmp_path: Path) -> None:

@@ -18,10 +18,11 @@ from polylogue.archive.session.domain_models import SessionSummary
 from polylogue.archive.viewport import READ_VIEW_PROFILE_BY_ID, READ_VIEW_PROFILES, read_view_choices
 from polylogue.cli import query_verbs, read_view_handlers
 from polylogue.cli.click_app import cli as click_cli
-from polylogue.cli.contextual_errors import AmbiguousSelectionError
+from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT, AmbiguousSelectionError
 from polylogue.cli.read_view_handlers import ReadViewInvocation
 from polylogue.cli.read_view_registry import READ_VIEW_HANDLER_METADATA, ReadViewOptionDeclaration
 from polylogue.cli.root_request import RootModeRequest
+from polylogue.cli.select import SelectSessionRow
 from polylogue.cli.shared.types import AppEnv
 from polylogue.config import Config
 from polylogue.context.compiler import ContextImage, ContextSegment, ContextSpec
@@ -1270,6 +1271,40 @@ def test_continue_verb_rejects_ambiguous_ranked_results() -> None:
             wrapped(child, **_continue_verb_kwargs())
 
 
+def test_continue_verb_json_on_a_terminal_refuses_instead_of_prompting() -> None:
+    """``continue --format json`` is a program's call even on a TTY.
+
+    The verb's own format reaches the resolver as machine-output intent, so an
+    ambiguous ranked selection is the typed refusal, never the chooser.
+
+    Anti-vacuity: stop passing ``machine_output`` from ``continue_verb`` and the
+    exploding chooser runs.
+    """
+    from polylogue.cli import select as select_module
+    from polylogue.cli.contextual_errors import AmbiguousSelectionError
+    from polylogue.cli.select import SelectSessionRow
+
+    _, child = _context_pair(query_terms=("needle",))
+    child.obj = SimpleNamespace(config=SimpleNamespace(), ui=SimpleNamespace(plain=False))
+    wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+    rows = [
+        SelectSessionRow(session_id=session_id, origin="claude-code-session", title=session_id, date=None)
+        for session_id in ("session-1", "session-2")
+    ]
+
+    def _explode(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("the chooser ran for machine output")
+
+    with (
+        patch("polylogue.cli.session_rows.query_session_rows", return_value=rows),
+        patch.object(select_module, "interactive_selection_available", lambda _env: True),
+        patch.object(select_module, "choose_select_row", _explode),
+        pytest.raises(AmbiguousSelectionError),
+    ):
+        wrapped(child, **_continue_verb_kwargs(output_format="json"))
+
+
 def test_continue_verb_emits_successor_context_json() -> None:
     """JSON mode preserves the successor-context contract beside resume routing."""
     _, child = _context_pair(query_terms=("id:codex-session:abc123",))
@@ -1363,14 +1398,20 @@ def test_resolve_target_session_id_uses_query_terms(
     )
     captured: list[tuple[object, int]] = []
 
-    def fake_query_session_ids(config: object, selected: RootModeRequest, *, limit: int) -> list[str]:
+    def fake_query_session_rows(config: object, selected: RootModeRequest, *, limit: int) -> list[SelectSessionRow]:
         captured.append((selected.query_params()["query"], limit))
-        return ["codex-session:resolve-query-target"]
+        return [
+            SelectSessionRow(
+                session_id="codex-session:resolve-query-target", origin="codex-session", title="t", date=None
+            )
+        ]
 
-    monkeypatch.setattr("polylogue.cli.session_rows.query_session_ids", fake_query_session_ids)
+    monkeypatch.setattr("polylogue.cli.session_rows.query_session_rows", fake_query_session_rows)
 
     assert query_verbs._resolve_target_session_id(request) == "codex-session:resolve-query-target"
-    assert captured == [(("title:query",), 1)]
+    # A filter is probed past one row so several matches are refused, not
+    # silently narrowed to the top-ranked session.
+    assert captured == [(("title:query",), AMBIGUITY_CANDIDATE_LIMIT + 1)]
 
 
 def test_read_view_rejects_format_outside_selected_profile() -> None:
@@ -1998,3 +2039,51 @@ def test_terminal_idf_helper_bounds_rows(capsys: pytest.CaptureFixture[str]) -> 
     assert "tag-11: 19.000" in output
     assert "tag-12: 18.000" not in output
     assert "… 1 more value omitted from terminal view; use --format json for full IDF." in output
+
+
+def test_multi_session_resolution_separates_a_query_miss_from_no_seed() -> None:
+    """A seed query that ran and missed is not the same as no seed at all.
+
+    ``_emit_context_image`` routes an empty list to ``context_image_payload``,
+    which re-selects under its own looser context-image filters. Returning
+    ``[]`` for a zero-match selection therefore turned
+    ``polylogue find <miss> then read --view context-image`` into a context
+    image built from unrelated sessions and handed to a resume/handoff as
+    though it answered the query. The singleton counterpart
+    ``_resolve_query_action_session_id`` already raises on this state through
+    ``check_cardinality``; the multi-session route now does the same.
+
+    Anti-vacuity: delete the ``check_cardinality`` call and the first case
+    returns ``[]`` instead of raising, so ``pytest.raises`` goes red. The
+    second and third cases pin the opposite direction -- a blanket raise would
+    break both the ordinary match and the genuine no-seed path that
+    ``test_read_verb_context_image_invokes_pack_view`` depends on.
+    """
+    from polylogue.cli.verb_cardinality import EmptyCardinalityError
+
+    _, child = _context_pair(query_terms=("repo:polylogue",))
+    child.obj.config = SimpleNamespace()
+    request = query_verbs._parent_request(child)
+    env = cast(AppEnv, child.obj)
+
+    # 1. The selection query ran and matched nothing: a refusal, not a seed.
+    with patch("polylogue.cli.session_rows.query_session_ids", return_value=[]):
+        with pytest.raises(EmptyCardinalityError):
+            query_verbs._resolve_query_action_session_ids(env, request, limit=5)
+
+    # 2. Ordinary multi-match still resolves; several matches are normal here.
+    with patch(
+        "polylogue.cli.session_rows.query_session_ids",
+        return_value=["codex-session:a", "codex-session:b"],
+    ):
+        assert query_verbs._resolve_query_action_session_ids(env, request, limit=5) == [
+            "codex-session:a",
+            "codex-session:b",
+        ]
+
+    # 3. No seed at all: no query terms, so no selection query ever ran and the
+    #    context-image filter route stays reachable.
+    _, bare_child = _context_pair()
+    bare_child.obj.config = SimpleNamespace()
+    bare_request = query_verbs._parent_request(bare_child)
+    assert query_verbs._resolve_query_action_session_ids(cast(AppEnv, bare_child.obj), bare_request, limit=5) == []

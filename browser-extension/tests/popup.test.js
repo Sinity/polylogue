@@ -22,6 +22,7 @@ const GROK_QUERY_TAB = {
   title: "Grok query conversation",
   url: "https://grok.com/?conversation=query-77",
 };
+const GEMINI_TAB = { id: 78, title: "Gemini conversation", url: "https://gemini.google.com/app/gemini-session" };
 const ORDINARY_TAB = {
   id: 88,
   title: "Example",
@@ -45,6 +46,7 @@ function installDom() {
       <span id="open-tab-count"></span>
       <span id="state"></span>
       <span id="receiver-request"></span>
+      <span id="cooldown"></span>
       <span id="extension-build"></span>
       <span id="updated"></span>
       <span id="receiver"></span>
@@ -78,6 +80,7 @@ function installDom() {
       <button id="reset-pairing"><span class="button-status"></span></button>
       <span id="work-count"></span>
       <div id="work-queue"></div>
+      <div id="backfill-controls"></div>
       <span id="queue-count"></span>
       <div id="queue-log"></div>
       <span id="log-count"></span>
@@ -96,7 +99,7 @@ function installDom() {
   globalThis.document = dom.window.document;
   globalThis.Blob = dom.window.Blob;
   globalThis.URL = dom.window.URL;
-  globalThis.URL.createObjectURL = vi.fn(() => "blob:debug");
+  globalThis.URL.createObjectURL = vi.fn((blob) => { globalThis.__lastExportBlob = blob; return "blob:debug"; });
   globalThis.URL.revokeObjectURL = vi.fn();
   dom.window.HTMLAnchorElement.prototype.click = vi.fn();
 }
@@ -154,6 +157,12 @@ async function loadPopup(storagePatch = {}, tabs = [CHATGPT_TAB], sendMessage = 
 }
 
 describe("popup capture", () => {
+  it("anti-vacuity: lists active Gemini app conversations as supported", async () => {
+    await loadPopup({}, [GEMINI_TAB]);
+    expect(document.getElementById("page").textContent).toContain("Gemini");
+    expect(document.getElementById("open-tabs").textContent).toContain("Gemini conversation");
+    expect(document.getElementById("operator-state").textContent).not.toContain("Unsupported");
+  });
   beforeEach(() => {
     vi.restoreAllMocks();
   });
@@ -559,6 +568,90 @@ describe("popup capture", () => {
     expect(document.getElementById("timeline").textContent).toContain("active pending");
     expect(document.getElementById("timeline").textContent).not.toContain("old capture");
     expect(document.getElementById("open-tabs").textContent).toContain("Catching up");
+  });
+
+  it("reports queue cooldowns and scopes recent browser actions to the active conversation", async () => {
+    const requests = [];
+    await loadPopup({ polylogueCaptureQueue: { entries: [{ next_attempt_at: "2030-01-01T00:00:00.000Z" }] } }, [CHATGPT_TAB], async (message) => {
+      requests.push(message);
+      if (message.type === "polylogue.browserActions.status") return { ok: true, actions: [
+        { action_id: "active", operation: "conversation.reply", status: "submitted", target: { conversation_id: "test-conversation" } },
+        { action_id: "other-1", operation: "conversation.reply", status: "failed", target: { conversation_id: "other" } },
+        ...Array.from({ length: 9 }, (_, index) => ({ action_id: `other-${index + 2}`, operation: "conversation.reply", status: "failed", target: { conversation_id: "other" } })),
+        { action_id: "new-chatgpt", operation: "conversation.create", status: "submitted", provider: "chatgpt", target: { conversation_id: "new" } },
+      ] };
+      if (message.type === "polylogue.missionControl.status") return {
+        ok: true,
+        state: { online: true, provider: "chatgpt", provider_session_id: "test-conversation", archive_state: { state: "archived" } },
+        receiver: { health: { status: "ok" }, configured_url: "http://127.0.0.1:8765" },
+        work: { capture_queue: { entries: [{ next_attempt_at: "2030-01-01T00:00:00.000Z" }] }, freshness_queue: { entries: {}, sweep_not_before_ms: 1893456000000 } },
+        timeline: [], ambient: { enabled: true, site_enabled: true },
+      };
+      return { ok: true };
+    });
+    expect(document.getElementById("cooldown").textContent).toBe("2030-01-01T00:00:00.000Z");
+    const timeline = document.getElementById("timeline").textContent;
+    expect(timeline).toContain("Browser action submitted");
+    expect(timeline.match(/Browser action failed/g)).toBeNull();
+    expect(requests.some((message) => message.type === "polylogue.browserActions.status")).toBe(true);
+  });
+
+  it("keeps persisted paused backfills controllable and exportable", async () => {
+    const messages = [];
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      messages.push(message);
+      if (message.type === "polylogue.missionControl.status") return {
+        ok: true, state: { online: true, archive_state: { state: "archived" } },
+        receiver: { health: { status: "ok" } },
+        work: { capture_queue: { entries: [] }, freshness_queue: { entries: {} }, backfill_jobs: [
+          { id: "persisted-paused", provider: "chatgpt", status: "paused", cooldown_reason: "operator_hold" },
+        ] },
+        ambient: { enabled: true, site_enabled: true }, timeline: [],
+      };
+      if (message.type === "polylogue.backfill.export") return { ok: true, ledger: { job: { id: message.job_id } } };
+      return { ok: true };
+    });
+    const controls = document.getElementById("backfill-controls");
+    expect(controls.querySelector('[data-backfill-action="resume"]').dataset.backfillId).toBe("persisted-paused");
+    expect(controls.querySelector('[data-backfill-action="cancel"]')).not.toBeNull();
+    expect(controls.querySelector('[data-backfill-action="export"]')).not.toBeNull();
+    controls.querySelector('[data-backfill-action="resume"]').click();
+    await vi.waitFor(() => expect(messages).toContainEqual({
+      type: "polylogue.backfill.control", job_id: "persisted-paused", action: "resume",
+    }));
+    controls.querySelector('[data-backfill-action="export"]').click();
+    await vi.waitFor(() => expect(messages).toContainEqual({
+      type: "polylogue.backfill.export", job_id: "persisted-paused",
+    }));
+  });
+
+  it("redacts caller supplied idempotency keys from exported support packets", async () => {
+    globalThis.__lastExportBlob = null;
+    await loadPopup({}, [CHATGPT_TAB], async (message) => {
+      if (message.type === "polylogue.browserActions.status") return { ok: true, actions: [{
+        action_id: "action-private-key", operation: "conversation.reply", status: "completed",
+        idempotency_key: "ticket-123 person@example.test secret prompt fragment",
+        target: { conversation_id: "test-conversation" },
+      }] };
+      if (message.type === "polylogue.missionControl.status") return {
+        ok: true, state: { online: true, archive_state: { state: "archived" } },
+        receiver: { health: { status: "ok" } }, work: { capture_queue: { entries: [] }, freshness_queue: { entries: {} } },
+        ambient: { enabled: true, site_enabled: true }, timeline: [],
+      };
+      return { ok: true };
+    });
+    document.getElementById("debug-export").click();
+    await vi.waitFor(() => expect(globalThis.__lastExportBlob).not.toBeNull());
+    const text = await new Promise((resolve, reject) => {
+      const reader = new window.FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(globalThis.__lastExportBlob);
+    });
+    expect(text).not.toContain("ticket-123");
+    expect(text).not.toContain("person@example.test");
+    expect(text).toContain('"idempotency_key_present": true');
+    expect(text).toContain('"idempotency_key_length": 53');
   });
 
   it("prefers a fresher ledger entry over a stale global snapshot for the same conversation", async () => {

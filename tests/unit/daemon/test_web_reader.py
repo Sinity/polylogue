@@ -122,7 +122,7 @@ def test_query_spec_param_builder_collects_repeated_csv_fields() -> None:
 def test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field() -> None:
     """polylogue-4p1.1: the split-archive fast path must not drop a filter.
 
-    ``ArchiveStore.list_summaries``/``search_summaries``/``count_sessions``/
+    ``ArchiveStore.iter_summaries``/``iter_search_summaries``/``count_sessions``/
     ``count_search_sessions`` accept an identical filter-kwarg surface (proven
     below). ``_archive_filter_kwargs_from_spec`` is what
     ``_do_archive_session_list`` calls to build that kwarg dict from the
@@ -141,7 +141,9 @@ def test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field() -> Non
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     non_filter_params = {"self", "limit", "offset", "session_id", "sample", "sort", "reverse", "query"}
-    storage_methods = ("list_summaries", "search_summaries", "count_sessions", "count_search_sessions")
+    # ``list_summaries``/``search_summaries`` forward ``**filters`` to the
+    # ``iter_*`` generators, which declare the surface.
+    storage_methods = ("iter_summaries", "iter_search_summaries", "count_sessions", "count_search_sessions")
     storage_filter_params = {
         frozenset(inspect.signature(getattr(ArchiveStore, name)).parameters) - non_filter_params
         for name in storage_methods
@@ -1362,6 +1364,17 @@ class TestReaderSearchState:
         hit = payload["hits"][0]
         assert hit["session"]["id"] == session_id
         assert hit["match"]["target_ref"]["identity_key"].startswith(f"message:{session_id}:")
+
+    def test_archive_search_cursor_reaches_canonical_cursor_validation(
+        self,
+        workspace_env: dict[str, Path],
+    ) -> None:
+        """Anti-vacuity: ignoring cursor returns ranked hits instead of invalid_cursor."""
+        _seed_archive_test_archive(workspace_env)
+        with _running_server_without_seed() as (_, base_url):
+            payload = cast(dict[str, Any], _get_json(base_url, "/api/sessions?query=archive&cursor=invalid-cursor"))
+
+        assert payload.get("error") == "invalid_cursor"
 
     def test_archive_file_set_facets_from_archive_tiers(
         self,
@@ -3090,6 +3103,18 @@ class TestReaderViewProfiles:
         assert view_payload["error"] == "unsupported_read_view"
         assert format_status == 400
         assert format_payload["error"] == "invalid_format"
+
+    def test_topology_read_view_requires_its_dedicated_route(self, workspace_env: dict[str, Path]) -> None:
+        """The generic read route cannot label raw metadata as topology.
+
+        Anti-vacuity: removing the capability-route guard makes this accepted
+        request return a successful envelope whose payload is a raw session.
+        """
+        with _running_server(workspace_env) as (_, base_url):
+            status, payload = _get_json_ex(base_url, f"/api/sessions/{C1}/read?view=topology")
+
+        assert status == 400
+        assert payload["error"] == "read_view_requires_dedicated_route"
 
 
 class TestReaderAssertionEndpoint:

@@ -136,7 +136,12 @@ def put_query(
         """,
         (query_hash, _json(canonical_plan), grain, lane, rank_policy, definition_protocol_version, created_at_ms),
     )
-    return QueryObject(query_hash, canonical_plan, grain, lane, rank_policy, definition_protocol_version)
+    # An existing definition may have been promoted since its first insert.
+    # Return its durable forgetting contract, not constructor defaults.
+    stored = get_query(conn, query_hash)
+    if stored is None:
+        raise RuntimeError(f"query definition {query_hash} is absent after its idempotent insert")
+    return stored
 
 
 def _promotion_values(
@@ -433,6 +438,15 @@ def watched_query_baseline_updated_at_ms(conn: sqlite3.Connection, query_hash: s
     return None if row is None else int(row[0])
 
 
+def watched_query_activated_at_ms(conn: sqlite3.Connection, query_hash: str) -> int | None:
+    """Latest activation time among currently watched names for this query."""
+    row = conn.execute(
+        "SELECT MAX(updated_at_ms) FROM query_names WHERE query_hash = ? AND watch = 1",
+        (query_hash,),
+    ).fetchone()
+    return None if row is None or row[0] is None else int(row[0])
+
+
 def put_watched_query_baseline(
     conn: sqlite3.Connection,
     *,
@@ -585,35 +599,6 @@ def put_query_edge(
     )
 
 
-def migrate_saved_query_assertions(conn: sqlite3.Connection) -> int:
-    """Repoint legacy saved-query assertions at immutable ``query:<hash>`` refs.
-
-    Legacy saved view payloads are already parsed JSON request specifications.
-    They have no macro reference, so their dynamic request shape is the typed
-    plan supplied to the shared canonicalization boundary.
-    """
-    rows = tuple(
-        conn.execute("SELECT assertion_id, value_json, created_at_ms FROM assertions WHERE kind = 'saved_query'")
-    )
-    for assertion_id, value_json, created_at_ms in rows:
-        try:
-            value = json.loads(str(value_json or "{}"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"saved query assertion {assertion_id} has invalid JSON") from exc
-        if not isinstance(value, dict):
-            raise ValueError(f"saved query assertion {assertion_id} must contain an object query")
-        query = put_query(
-            conn,
-            value,
-            grain="session",
-            lane="dialogue",
-            rank_policy="mixed-bm25-rrf-vector",
-            created_at_ms=int(created_at_ms),
-        )
-        conn.execute("UPDATE assertions SET target_ref = ? WHERE assertion_id = ?", (query.ref, assertion_id))
-    return len(rows)
-
-
 def membership_merkle_root(member_refs: tuple[str, ...]) -> str:
     if not member_refs:
         return hash_payload([])
@@ -671,7 +656,6 @@ __all__ = [
     "get_watched_query_baseline",
     "list_watched_queries",
     "membership_merkle_root",
-    "migrate_saved_query_assertions",
     "put_evaluation_receipt",
     "put_query",
     "promote_query",
@@ -682,4 +666,5 @@ __all__ = [
     "promote_result_set",
     "put_watched_query_baseline",
     "watched_query_baseline_updated_at_ms",
+    "watched_query_activated_at_ms",
 ]

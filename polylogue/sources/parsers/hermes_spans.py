@@ -162,7 +162,8 @@ read from the per-session evidence rows rather than adjudicated for you.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, MutableSequence, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, TypeAlias
 
@@ -304,6 +305,13 @@ def marker_payload(
         "steps": list(steps),
         "subagent_trajectories": list(subagent_trajectories),
     }
+
+
+#: Root fields :func:`looks_like_atif_payload` reads.
+ATIF_SIGNATURE_FIELDS = frozenset({"schema_version", "session_id", "steps"})
+
+#: Root fields :func:`looks_like_atof_payload` reads.
+ATOF_SIGNATURE_FIELDS = frozenset({"atof_version", "kind", "uuid", "timestamp", "name"})
 
 
 def looks_like_atif_payload(payload: JSONDocument) -> bool:
@@ -849,15 +857,97 @@ def parse_atif_document(
     fidelity capability stays ``inferred``, never ``exact``, until real bytes
     prove it (see :func:`import_fidelity_declaration`).
     """
-    session_id = str(payload.get("session_id") or fallback_id)
-    agent = json_document(payload.get("agent")) or {}
-    model_name = _optional_str(agent.get("model_name"))
     steps_value = payload.get("steps")
     raw_steps: list[JSONValue] = steps_value if isinstance(steps_value, list) else []
     subagents_value = payload.get("subagent_trajectories")
     raw_subagents: list[JSONValue] = subagents_value if isinstance(subagents_value, list) else []
+    return _atif_sessions(
+        payload,
+        raw_steps,
+        (AtifSubagent.from_entry(entry) for entry in raw_subagents),
+        fallback_id,
+        profile_root=profile_root,
+    )
 
-    events: list[ParsedSessionEvent] = []
+
+@dataclass(frozen=True, slots=True)
+class AtifSubagent:
+    """One ``subagent_trajectories`` entry with its step list held apart.
+
+    ``fields`` is the entry without a list-valued ``steps`` (``{}`` for a
+    non-object entry); ``step_count`` is that list's length, or ``None`` when
+    the entry has no step list. ``steps`` re-reads the list, so a streamed
+    entry can keep its steps in scratch rather than in memory.
+    """
+
+    fields: JSONDocument
+    step_count: int | None
+    steps: Callable[[], Iterable[JSONValue]]
+
+    @classmethod
+    def from_entry(cls, entry: JSONValue) -> AtifSubagent:
+        document = json_document(entry)
+        steps = document.get("steps")
+        if isinstance(steps, list):
+            fields = {key: value for key, value in document.items() if key != "steps"}
+            return cls(fields, len(steps), lambda: steps)
+        return cls(document, None, tuple)
+
+
+def parse_atif_stream(
+    envelope: JSONDocument,
+    steps: Iterable[JSONValue],
+    subagents: Iterable[AtifSubagent],
+    fallback_id: str,
+    *,
+    profile_root: Path | None,
+    new_events: Callable[[], MutableSequence[ParsedSessionEvent]],
+) -> list[ParsedSession]:
+    """Lower a proved ATIF document without retaining its step arrays.
+
+    ``envelope`` holds every document field except ``steps`` and
+    ``subagent_trajectories``; each session's events go to its own sequence
+    from ``new_events``. Subagent entries arrive one at a time, each with its
+    steps held apart from its fields.
+    """
+    return _atif_sessions(envelope, steps, subagents, fallback_id, profile_root=profile_root, new_events=new_events)
+
+
+def _atif_sessions(
+    payload: JSONDocument,
+    raw_steps: Iterable[JSONValue],
+    raw_subagents: Iterable[AtifSubagent],
+    fallback_id: str,
+    *,
+    profile_root: Path | None,
+    new_events: Callable[[], MutableSequence[ParsedSessionEvent]] = list,
+) -> list[ParsedSession]:
+    session_id = str(payload.get("session_id") or fallback_id)
+    agent = json_document(payload.get("agent")) or {}
+    model_name = _optional_str(agent.get("model_name"))
+    profile_key_value = _profile_key(profile_root) if profile_root is not None else None
+    provider_session_id = atif_session_provider_id(session_id, profile_key_value)
+    parent_session_provider_id = _qualified_session_id(session_id, profile_key_value) if profile_key_value else None
+
+    events = new_events()
+    events.append(
+        ParsedSessionEvent(
+            event_type="hermes_observer_trace_correlation",
+            payload={
+                "hermes_conversation_session_id_prefix": session_id,
+                "join_key": "sessions.native_id",
+                "profile_qualified": profile_key_value is not None,
+                "asserted_parent_session_provider_id": parent_session_provider_id,
+                "note": (
+                    "This session carries ATIF trajectory evidence only (observer:atif:<id>"
+                    "[@profile-<key>]); correlate with the state-db-ingested conversational session "
+                    "and any ATOF observer session (observer:atof:<id>[@profile-<key>]) sharing this "
+                    "raw Hermes session id."
+                ),
+                **_atif_document_evidence(payload, agent),
+            },
+        )
+    )
     skipped = 0
     for index, raw_step in enumerate(raw_steps):
         step = json_document(raw_step)
@@ -880,17 +970,13 @@ def parse_atif_document(
     # growth. Counts remain fully queryable from session_events /
     # import_fidelity_declaration.
     summary_text = f"Hermes ATIF trajectory: {session_id}"
-    profile_key_value = _profile_key(profile_root) if profile_root is not None else None
-    provider_session_id = atif_session_provider_id(session_id, profile_key_value)
-    parent_session_provider_id = _qualified_session_id(session_id, profile_key_value) if profile_key_value else None
 
     child_sessions: list[ParsedSession] = []
-    for index, raw_subagent in enumerate(raw_subagents):
-        subagent = json_document(raw_subagent)
-        if not subagent:
+    for index, subagent in enumerate(raw_subagents):
+        if not subagent.fields and subagent.step_count is None:
             skipped += 1
             continue
-        subagent_session_id = _optional_str(subagent.get("session_id"))
+        subagent_session_id = _optional_str(subagent.fields.get("session_id"))
         delegation_edge_asserted = bool(profile_key_value and subagent_session_id and subagent_session_id != session_id)
         events.append(_subagent_span_event(subagent, index, delegation_edge_asserted=delegation_edge_asserted))
         if delegation_edge_asserted and subagent_session_id is not None:
@@ -901,6 +987,7 @@ def parse_atif_document(
                     parent_provider_session_id=provider_session_id,
                     profile_key=profile_key_value,
                     schema_version=_optional_str(payload.get("schema_version")),
+                    events=new_events(),
                 )
             )
 
@@ -920,28 +1007,12 @@ def parse_atif_document(
                 material_origin=MaterialOrigin.RUNTIME_CONTEXT,
             )
         ],
-        session_events=[
-            ParsedSessionEvent(
-                event_type="hermes_observer_trace_correlation",
-                payload={
-                    "hermes_conversation_session_id_prefix": session_id,
-                    "join_key": "sessions.native_id",
-                    "profile_qualified": profile_key_value is not None,
-                    "asserted_parent_session_provider_id": parent_session_provider_id,
-                    "note": (
-                        "This session carries ATIF trajectory evidence only (observer:atif:<id>"
-                        "[@profile-<key>]); correlate with the state-db-ingested conversational session "
-                        "and any ATOF observer session (observer:atof:<id>[@profile-<key>]) sharing this "
-                        "raw Hermes session id."
-                    ),
-                    **_atif_document_evidence(payload, agent),
-                },
-            ),
-            *events,
-        ],
+        session_events=events if isinstance(events, list) else [],
         parent_session_provider_id=parent_session_provider_id,
         ingest_flags=_atif_ingest_flags(payload, "hermes:atif-trajectory"),
     )
+    if not isinstance(events, list):
+        parent_session = parent_session.model_copy(update={"session_events": events})
     return [parent_session, *child_sessions]
 
 
@@ -951,12 +1022,13 @@ def _atif_ingest_flags(payload: JSONDocument, *flags: str) -> list[str]:
 
 
 def _atif_subagent_child_session(
-    subagent: JSONDocument,
+    subagent: AtifSubagent,
     subagent_session_id: str,
     *,
     parent_provider_session_id: str,
     profile_key: str | None,
     schema_version: str | None = None,
+    events: MutableSequence[ParsedSessionEvent] | None = None,
 ) -> ParsedSession:
     """Materialize one ``subagent_trajectories`` entry as its own ATIF child session.
 
@@ -966,22 +1038,37 @@ def _atif_subagent_child_session(
     so a real subagent trajectory's evidence is retained with the same
     fidelity as its parent's, never a bare summary stub.
     """
-    agent = json_document(subagent.get("agent")) or {}
+    agent = json_document(subagent.fields.get("agent")) or {}
     model_name = _optional_str(agent.get("model_name"))
-    steps_value = subagent.get("steps")
-    raw_steps: list[JSONValue] = steps_value if isinstance(steps_value, list) else []
 
-    events: list[ParsedSessionEvent] = []
-    for index, raw_step in enumerate(raw_steps):
+    provider_session_id = atif_session_provider_id(subagent_session_id, profile_key)
+    event_rows: MutableSequence[ParsedSessionEvent] = events if events is not None else []
+    event_rows.append(
+        ParsedSessionEvent(
+            event_type="hermes_observer_trace_correlation",
+            payload={
+                "hermes_conversation_session_id_prefix": subagent_session_id,
+                "join_key": "sessions.native_id",
+                "profile_qualified": profile_key is not None,
+                "asserted_parent_session_provider_id": parent_provider_session_id,
+                "note": (
+                    "This session carries ATIF subagent-trajectory evidence delegated from the "
+                    "parent observer session referenced above (a subagent_trajectories entry); "
+                    "correlate with that parent's own conversational/ATOF evidence and this "
+                    "session's own state-db conversational counterpart separately."
+                ),
+            },
+        )
+    )
+    for index, raw_step in enumerate(subagent.steps()):
         step = json_document(raw_step)
         if not step:
             continue
         step_events, _skipped = _events_for_step(step, index, model_name)
-        events.extend(step_events)
+        event_rows.extend(step_events)
 
     summary_text = f"Hermes ATIF subagent trajectory: {subagent_session_id}"
-    provider_session_id = atif_session_provider_id(subagent_session_id, profile_key)
-    return ParsedSession(
+    session = ParsedSession(
         source_name=Provider.HERMES,
         provider_session_id=provider_session_id,
         title=summary_text,
@@ -997,24 +1084,7 @@ def _atif_subagent_child_session(
                 material_origin=MaterialOrigin.RUNTIME_CONTEXT,
             )
         ],
-        session_events=[
-            ParsedSessionEvent(
-                event_type="hermes_observer_trace_correlation",
-                payload={
-                    "hermes_conversation_session_id_prefix": subagent_session_id,
-                    "join_key": "sessions.native_id",
-                    "profile_qualified": profile_key is not None,
-                    "asserted_parent_session_provider_id": parent_provider_session_id,
-                    "note": (
-                        "This session carries ATIF subagent-trajectory evidence delegated from the "
-                        "parent observer session referenced above (a subagent_trajectories entry); "
-                        "correlate with that parent's own conversational/ATOF evidence and this "
-                        "session's own state-db conversational counterpart separately."
-                    ),
-                },
-            ),
-            *events,
-        ],
+        session_events=event_rows if isinstance(event_rows, list) else [],
         parent_session_provider_id=parent_provider_session_id,
         branch_type=BranchType.SUBAGENT,
         ingest_flags=[
@@ -1023,6 +1093,7 @@ def _atif_subagent_child_session(
             *([atif_schema_version_flag(schema_version)] if schema_version else []),
         ],
     )
+    return session if isinstance(event_rows, list) else session.model_copy(update={"session_events": event_rows})
 
 
 def _observation_results(observation: object) -> list[JSONDocument]:
@@ -1265,17 +1336,16 @@ def _events_for_step(step: JSONDocument, index: int, model_name: str | None) -> 
 
 
 def _subagent_span_event(
-    subagent: JSONDocument, index: int, *, delegation_edge_asserted: bool = False
+    subagent: AtifSubagent, index: int, *, delegation_edge_asserted: bool = False
 ) -> ParsedSessionEvent:
-    agent = json_document(subagent.get("agent")) or {}
-    steps = subagent.get("steps")
+    agent = json_document(subagent.fields.get("agent")) or {}
     return ParsedSessionEvent(
         event_type="hermes_subagent_span",
         payload={
             "subagent_index": index,
-            "subagent_session_id": _optional_str(subagent.get("session_id")),
+            "subagent_session_id": _optional_str(subagent.fields.get("session_id")),
             "subagent_agent_name": _optional_str(agent.get("name")),
-            "subagent_step_count": len(steps) if isinstance(steps, list) else None,
+            "subagent_step_count": subagent.step_count,
             # Whether this subagent_trajectories entry's own session_id was
             # producer-positive, distinct from this document's own id, and
             # backed by a known profile root -- the exact conditions under
@@ -1631,6 +1701,7 @@ def _optional_str(value: object) -> str | None:
 
 __all__ = [
     "ATIF_SCHEMA_VERSION_PREFIX",
+    "AtifSubagent",
     "HermesSpanEventType",
     "atif_session_provider_id",
     "atof_session_provider_id",
@@ -1641,5 +1712,6 @@ __all__ = [
     "looks_like_atif_payload",
     "marker_payload",
     "parse_atif_document",
+    "parse_atif_stream",
     "parse_atof_stream",
 ]

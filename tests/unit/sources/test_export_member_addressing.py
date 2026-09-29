@@ -19,7 +19,7 @@ from polylogue.config import Source
 from polylogue.core.content_identity import structural_content_identity, structurally_equal
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_container, zip_member_coordinate
 from polylogue.operations.zip_acquisition_replay import (
     MemberCandidate,
     resolve_member_candidate,
@@ -51,7 +51,7 @@ def _row(
     source_path: str,
     *,
     payload: bytes,
-    source_index: int,
+    source_index: int | None,
     addressing_mode: str = "",
 ) -> dict[str, object]:
     return {
@@ -304,36 +304,11 @@ def test_split_elements_persist_structural_identity_for_replay(tmp_path: Path) -
     ]
 
 
-def test_split_elements_preserve_identity_ceiling_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A byte-fallback identity remains typed through split acquisition.
-
-    Anti-vacuity: dropping this reason makes a byte digest look like a
-    structural identity and replay can incorrectly apply representation-
-    independent matching to an oversized member.
-    """
-    import polylogue.sources.source_acquisition_components as acquisition
-
-    monkeypatch.setattr(
-        acquisition,
-        "bounded_payload_content_identity",
-        lambda handle, *, size, byte_digest: (byte_digest, "payload_exceeds_structural_identity_ceiling"),
-    )
-
-    payload = b'{"id":"oversized"}'
-    buffer = acquisition.SplitPayloadBuffer()
-    assert buffer.add(Provider.CHATGPT, payload) == ()
-    records = buffer.add(Provider.CHATGPT, b'{"id":"other"}')
-    assert [record.content_identity_skipped_reason for record in records] == [
-        "payload_exceeds_structural_identity_ceiling",
-        "payload_exceeds_structural_identity_ceiling",
-    ]
-
-
 def test_whole_member_hint_resolves_the_member_document(tmp_path: Path) -> None:
-    """A row recorded as whole-member reads the member, not an element.
+    """A legacy NULL index resolves the preserved whole member at index zero.
 
-    Anti-vacuity: element resolution would look for index 0 in a member that
-    yields no elements and report the blob unrecoverable.
+    Anti-vacuity: returning ``None`` for the legacy split index would refuse
+    the valid member before reopening the ZIP.
     """
     zip_path = tmp_path / "single.zip"
     document = _session("only")
@@ -345,8 +320,8 @@ def test_whole_member_hint_resolves_the_member_document(tmp_path: Path) -> None:
         _row(
             recorded_path,
             payload=member_bytes,
-            source_index=0,
-            addressing_mode=MemberAddressingMode.WHOLE_MEMBER.value,
+            source_index=None,
+            addressing_mode="",
         ),
         source_path=recorded_path,
         zip_payload_cache={},
@@ -567,73 +542,37 @@ def test_recorded_addressing_mode_survives_a_round_trip(tmp_path: Path) -> None:
             )
 
 
-def test_over_ceiling_member_resolves_against_the_identity_acquisition_recorded() -> None:
-    """polylogue-wzgpf: the structural-identity ceiling is a declared exception.
+def test_replay_reuses_the_identity_acquisition_already_computed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale hint does not re-hash candidates the replay already identified.
 
-    ``bounded_payload_content_identity`` refuses to derive a structural
-    identity above ``STRUCTURAL_IDENTITY_MAX_BYTES`` and records the byte
-    digest instead, with
-    ``CONTENT_IDENTITY_SKIPPED_OVERSIZE`` as the reason
-    (``polylogue/core/content_identity.py``). Replay must apply the same
-    ceiling, or the identity it derives disagrees with the one acquisition
-    wrote and the member is permanently unrecoverable.
-
-    Concrete input: a JSON member whose recorded ``content_identity`` is the
-    byte digest the ceiling forced, replayed as a structural reference.
-
-    Wrong observable outcome prevented: ``resolve_member_candidate``
-    returning ``unmatched``/``content_identity:unmatched`` for a member that
-    is byte-identical to the one recorded -- measured before this fix.
-
-    Anti-vacuity: the second arm keeps the ceiling out of the way, and the
-    same candidate then resolves only through its structural identity; a
-    change that simply made the byte digest an accepted alternative for
-    every member would make
-    ``test_structural_identity_does_not_fall_back_to_a_colliding_byte_hash``
-    red.
+    Anti-vacuity: drop the precomputed identity from ``MemberCandidate`` and
+    resolving the reordered member calls the patched hash, failing the test.
     """
-    payload = dumps_bytes(_session("kept"))
-    byte_digest = hashlib.sha256(payload).hexdigest()
-    assert structural_content_identity(json.loads(payload)) != byte_digest
+    from polylogue.operations import zip_acquisition_replay
 
-    over_ceiling = MemberCandidate(
-        MemberAddressingMode.WHOLE_MEMBER,
-        None,
-        payload,
-        identity_ceiling_bytes=len(payload) - 1,
-    )
-    resolution = resolve_member_candidate(
-        (over_ceiling,),
-        expected_digest=byte_digest,
-        hint_mode=MemberAddressingMode.WHOLE_MEMBER,
-        hint_index=None,
-        expected_is_structural=True,
-    )
-    assert resolution.error is None
-    assert resolution.outcome == "hint_verified"
-    assert resolution.payload_bytes == payload
+    zip_path = tmp_path / "export.zip"
+    recorded_path = f"{zip_path}:conversations.json"
+    expected = dumps_bytes(_session("first"))
+    _write_member(zip_path, [_META, _session("second"), _session("first")])
 
-    under_ceiling = MemberCandidate(MemberAddressingMode.WHOLE_MEMBER, None, payload)
-    assert (
-        resolve_member_candidate(
-            (under_ceiling,),
-            expected_digest=byte_digest,
-            hint_mode=MemberAddressingMode.WHOLE_MEMBER,
-            hint_index=None,
-            expected_is_structural=True,
-        ).error
-        == "content_identity:unmatched"
+    def _no_rehash(payload: bytes) -> str:
+        raise AssertionError("candidate identity recomputed during replay")
+
+    monkeypatch.setattr(zip_acquisition_replay, "payload_content_identity", _no_rehash)
+    payload, error = zip_reacquisition_payload(
+        {
+            **_row(recorded_path, payload=b"old", source_index=0),
+            "content_identity": structural_content_identity(_session("first")),
+            "addressing_mode": MemberAddressingMode.ELEMENT_OF_CONTAINER.value,
+        },
+        source_path=recorded_path,
+        zip_payload_cache={},
     )
-    assert (
-        resolve_member_candidate(
-            (under_ceiling,),
-            expected_digest=structural_content_identity(json.loads(payload)),
-            hint_mode=MemberAddressingMode.WHOLE_MEMBER,
-            hint_index=None,
-            expected_is_structural=True,
-        ).outcome
-        == "hint_verified"
-    )
+
+    assert error is None
+    assert payload == expected
 
 
 def test_replay_refuses_to_guess_a_provider_from_the_public_origin(tmp_path: Path) -> None:
@@ -658,3 +597,33 @@ def test_replay_refuses_to_guess_a_provider_from_the_public_origin(tmp_path: Pat
 
     assert payload is None
     assert error == "replay_provider_unrecorded"
+
+
+def test_zip_member_coordinate_splits_after_a_colon_in_the_container_path(tmp_path: Path) -> None:
+    """Anti-vacuity: splitting at the first colon names ``<tmp>/odd`` as the
+    container, which is not a file, so both lookups return ``None``.
+    """
+    container = tmp_path / "odd:name.zip"
+    with zipfile.ZipFile(container, "w") as archive:
+        archive.writestr("conversations.json", "[]")
+    coordinate = f"{container}:conversations.json"
+    assert zip_member_coordinate(coordinate) == (container, "conversations.json")
+    assert zip_member_container(coordinate) == container
+    # A loose file whose literal name holds a colon is never a member coordinate.
+    loose = tmp_path / "plain:file.json"
+    loose.write_text("{}")
+    assert zip_member_coordinate(str(loose)) is None
+
+
+def test_split_zip_member_text_separates_after_the_zip_suffix_when_the_container_is_gone() -> None:
+    """Anti-vacuity: a first-colon split names ``C`` as the container of a
+    Windows-style coordinate, and relocation and heartbeat labels lose the ZIP.
+    """
+    from polylogue.core.raw_coordinates import split_zip_member_text
+
+    assert split_zip_member_text(r"C:\imports\chat.zip:conversations.json") == (
+        r"C:\imports\chat.zip",
+        "conversations.json",
+    )
+    assert split_zip_member_text("/gone/odd:name.ZIP:a:b.json") == ("/gone/odd:name.ZIP", "a:b.json")
+    assert split_zip_member_text("/gone/plain:file.json") is None

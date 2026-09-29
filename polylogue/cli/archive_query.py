@@ -271,9 +271,9 @@ def _read_session_windows(
     bounded read at ``_SESSION_READ_WINDOW``: ``--stream --limit 500`` read one
     200-message window and rendered it as the 500 the caller asked for, with
     nothing in the output to say the rest had been dropped (polylogue-vbsc0).
-    The remaining-count guard at the top of the loop is what ends a bounded
-    read, so a continuation window may overshoot the request by less than one
-    window; the final slice trims it.
+    Every continuation carries the remaining bound as well: fetching past
+    it can exceed the result-byte budget before a final slice can trim it.
+    A resumed window may narrow, but never widen, its predecessor's bound.
 
     A window that adds no messages also ends the loop.  It cannot advance the
     composition — the next request would repeat it — so continuing on one is
@@ -285,40 +285,30 @@ def _read_session_windows(
     messages: list[dict[str, object]] = []
     session: dict[str, object] = {}
     continuation: str | None = None
+    window_ceiling = _SESSION_READ_WINDOW
     while True:
-        window_limit: int | None = None
+        window_limit = window_ceiling
         if message_limit is not None:
             remaining = message_limit - len(messages)
             if remaining <= 0:
                 break
-            window_limit = min(remaining, _SESSION_READ_WINDOW)
+            window_limit = min(remaining, window_ceiling)
         payload: Mapping[str, object]
         while True:
             try:
                 payload, _ = dispatch_read(
                     config,
-                    (
-                        lower_session_read(ref, continuation=continuation)
-                        if continuation is not None
-                        else lower_session_read(
-                            ref, limit=window_limit if window_limit is not None else _SESSION_READ_WINDOW
-                        )
-                    ),
+                    lower_session_read(ref, limit=window_limit, continuation=continuation),
                     daemon_disabled=daemon_disabled,
                 )
                 break
             except Exception as exc:
                 from polylogue.cli.operation_kernel import OperationFailedError
 
-                if (
-                    continuation is not None
-                    or not isinstance(exc, OperationFailedError)
-                    or exc.code != "result_too_large"
-                    or (window_limit if window_limit is not None else _SESSION_READ_WINDOW) <= 1
-                ):
+                if not isinstance(exc, OperationFailedError) or exc.code != "result_too_large" or window_limit <= 1:
                     raise
-                current = window_limit if window_limit is not None else _SESSION_READ_WINDOW
-                window_limit = max(1, current // 2)
+                window_limit = max(1, window_limit // 2)
+        window_ceiling = window_limit
         window = payload.get("session")
         if not isinstance(window, Mapping):
             raise click.ClickException("session.read returned no session body")
@@ -611,7 +601,7 @@ def _execute_archive_query_stdout(env: AppEnv, request: RootModeRequest) -> None
     :mod:`polylogue.cli.lowering`), and renders the result.
     """
     params = dict(request.params)
-    cursor_request_identity = search_cursor_request_identity(params)
+    cursor_request_identity = search_cursor_request_identity({**params, "query": request.query_terms})
     _reject_unsupported_params(params)
     _validate_retrieval_params(params)
     config_started_at = perf_counter()
@@ -1329,11 +1319,18 @@ def _emit_stats(
     from polylogue.cli.render.outcome import convergence_warning_line
 
     convergence_warning = convergence_warning_line()
+    # Totals over a partially materialized archive are an undercount, not
+    # a complete census: the warning is a named gap on the outcome.
+    outcome = decide_outcome(
+        matched=stats.total_sessions,
+        degraded=("archive_not_converged",) if convergence_warning is not None else (),
+    )
+    exit_code = outcome_exit_code(outcome)
     payload = {
         "mode": "stats",
         "origin": origin,
         "query": query or None,
-        "outcome": decide_outcome(matched=stats.total_sessions).to_dict(),
+        "outcome": outcome.to_dict(),
         **stats.to_dict(),
     }
     if convergence_warning is not None:
@@ -1341,15 +1338,19 @@ def _emit_stats(
         payload["convergence_warning"] = convergence_warning
     if output_format == "json":
         click.echo(json.dumps(project_payload(payload, fields), indent=2, sort_keys=True))
+        if exit_code:
+            raise SystemExit(exit_code)
         return
     if output_format == "yaml":
         import yaml
 
         click.echo(yaml.safe_dump(project_payload(payload, fields), sort_keys=False, allow_unicode=True), nl=False)
+        if exit_code:
+            raise SystemExit(exit_code)
         return
     if output_format not in {"markdown", "plaintext"}:
         raise click.UsageError(f"Stats do not support --format {output_format}.")
-    outcome_line = render_outcome_line(OutcomeEnvelope.model_validate(payload["outcome"]))
+    outcome_line = render_outcome_line(outcome)
     lines = [
         f"Sessions: {stats.total_sessions}",
         f"Messages: {stats.total_messages}",
@@ -1362,6 +1363,8 @@ def _emit_stats(
     if outcome_line is not None:
         lines.insert(0, outcome_line)
     click.echo("\n".join(lines))
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
 def _emit_stats_by(
@@ -1515,16 +1518,16 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
     except OperationKernelError as exc:
         raise _delete_refusal(exc, "prepare") from exc
 
-    prepared_session_ids = _prepared_delete_session_ids(daemon_preview)
+    prepared_count, prepared_sample = _prepared_delete_selection(daemon_preview)
     daemon_preview_refs = _daemon_preview_refs(daemon_preview)
     if daemon_preview_refs is None:
         raise click.ClickException("daemon returned an invalid delete preview")
     if not force:
-        click.echo(f"About to delete {len(prepared_session_ids)} session(s):", err=True)
-        for session_id in prepared_session_ids[:5]:
+        click.echo(f"About to delete {prepared_count} session(s):", err=True)
+        for session_id in prepared_sample[:5]:
             click.echo(f"  - {session_id}", err=True)
-        if len(prepared_session_ids) > 5:
-            click.echo(f"  ... and {len(prepared_session_ids) - 5} more", err=True)
+        if prepared_count > 5:
+            click.echo(f"  ... and {prepared_count - 5} more", err=True)
         try:
             proceed = env.ui.confirm("Proceed?", default=False)
         except (KeyboardInterrupt, click.Abort):
@@ -1685,20 +1688,29 @@ def _cancel_delete_preview(
         raise click.exceptions.Exit(_CANCELLED_EXIT_CODE)
 
 
-def _prepared_delete_session_ids(
+def _prepared_delete_selection(
     daemon_preview: dict[str, object],
-) -> tuple[str, ...]:
-    """Use the daemon's canonical preview, never a client-side substitution."""
+) -> tuple[int, tuple[str, ...]]:
+    """Use the daemon's canonical preview, never a client-side substitution.
 
-    raw_session_ids = daemon_preview.get("session_ids")
-    if not isinstance(raw_session_ids, list) or any(
-        not isinstance(value, str) or not value for value in raw_session_ids
+    The daemon reports the canonical selection's size and its leading IDs; the
+    whole selection lives in the durable preview chunks, so a selection of any
+    size stays within the operation result bound. The protocol validates that
+    the sample is the canonical leading slice; this checks what it can see.
+    """
+    count = daemon_preview.get("session_count")
+    raw_sample = daemon_preview.get("session_ids_sample")
+    if (
+        not isinstance(count, int)
+        or isinstance(count, bool)
+        or not isinstance(raw_sample, list)
+        or any(not isinstance(value, str) or not value for value in raw_sample)
     ):
         raise click.ClickException("daemon returned an invalid delete preview")
-    session_ids = tuple(raw_session_ids)
-    if not session_ids or len(set(session_ids)) != len(session_ids):
+    sample = tuple(raw_sample)
+    if count < 1 or not sample or len(set(sample)) != len(sample) or len(sample) > count:
         raise click.ClickException("daemon returned a non-canonical delete preview")
-    return session_ids
+    return count, sample
 
 
 def _search_miss_diagnostics(

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal, TypeAlias, cast
 
@@ -62,6 +63,19 @@ class _EmbeddingStatusEnv:
     config: Config
 
 
+#: Pause between same-id cancel attempts while a submission is not yet
+#: registered with the daemon.
+_CANCEL_RETRY_INTERVAL_S = 0.05
+
+
+def _cancel_reference_unknown(envelope: object) -> bool:
+    """Whether a cancel was refused because the request id is not registered yet."""
+    if not isinstance(envelope, dict):
+        return False
+    error = envelope.get("error")
+    return isinstance(error, dict) and error.get("code") == "operation_reference_unknown"
+
+
 async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dict[str, object]) -> str:
     """Submit a privileged request to the resident daemon only."""
     from polylogue.daemon.api_auth import resolve_api_auth_token
@@ -86,10 +100,39 @@ async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dic
             getattr(config, "api_auth_token", None), allow_no_auth=getattr(config, "api_allow_no_auth", False)
         ),
     )
-    try:
-        import asyncio
+    import asyncio
+    import uuid
 
-        response = await asyncio.to_thread(client.operation, operation, payload, archive_root=str(config.archive_root))
+    archive_root = str(config.archive_root)
+    # The request id exists before the first byte is sent, so a cancelled call
+    # can still name -- and cancel -- the exact request it may have submitted.
+    request_id = uuid.uuid4().hex
+    submission = asyncio.ensure_future(
+        asyncio.to_thread(client.operation, operation, payload, archive_root=archive_root, request_id=request_id)
+    )
+    try:
+        response = await asyncio.shield(submission)
+    except asyncio.CancelledError:
+        # Cancelling the await cannot stop the transport thread, which may
+        # still be submitting. Cancel the same request id, as the CLI does on
+        # interrupt. The daemon keeps no cancellation for an id it has not
+        # registered yet, so retry while the submission is outstanding, then
+        # join the thread and cancel once more in case it was accepted last.
+        # The daemon, not a blind client retry, decides the outcome; the
+        # caller still sees the cancellation.
+        while not submission.done():
+            try:
+                cancelled = await asyncio.to_thread(client.cancel, request_id, archive_root=archive_root)
+            except Exception:
+                cancelled = None
+            if not _cancel_reference_unknown(cancelled) and cancelled is not None:
+                break
+            await asyncio.wait({submission}, timeout=_CANCEL_RETRY_INTERVAL_S)
+        with suppress(Exception):
+            await asyncio.shield(submission)
+        with suppress(Exception):
+            await asyncio.to_thread(client.cancel, request_id, archive_root=archive_root)
+        raise
     except Exception:
         return hooks.error_json("daemon operation unavailable", code="daemon_required")
     if response is None:
@@ -490,7 +533,6 @@ async def _query_advanced_sessions(
                         query=request.query or "",
                         limit=clamped_limit,
                         offset=effective_offset,
-                        retrieval_lane=request.retrieval_lane or "dialogue",
                         sort=request.sort,
                         config=config,
                         archive_root=archive_root,
@@ -690,6 +732,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
         MCPUserMarkListPayload,
         MCPUserMarkPayload,
     )
+    from polylogue.surfaces.outcome import decide_outcome
 
     poly = hooks.get_polylogue()
     clamped_limit = hooks.clamp_limit(limit)
@@ -718,6 +761,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=mark_offset,
                     next_offset=mark_next_offset,
+                    outcome=decide_outcome(matched=len(mark_page)),
                 )
             )
 
@@ -746,6 +790,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=annotation_offset,
                     next_offset=annotation_next_offset,
+                    outcome=decide_outcome(matched=len(annotation_page)),
                 )
             )
 
@@ -762,6 +807,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=view_offset,
                     next_offset=view_next_offset,
+                    outcome=decide_outcome(matched=len(view_page)),
                 )
             )
 
@@ -778,6 +824,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=pack_offset,
                     next_offset=pack_next_offset,
+                    outcome=decide_outcome(matched=len(pack_page)),
                 )
             )
 
@@ -794,6 +841,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=workspace_offset,
                     next_offset=workspace_next_offset,
+                    outcome=decide_outcome(matched=len(workspace_page)),
                 )
             )
 
@@ -820,6 +868,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                         "limit": clamped_limit,
                         "offset": correction_offset,
                         "next_offset": correction_next_offset,
+                        "outcome": decide_outcome(matched=len(correction_page)).to_dict(),
                     }
                 )
             )
@@ -831,7 +880,12 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
         )
         return hooks.json_payload(
             MCPBlackboardNoteListPayload(
-                items=note_page, total=note_total, limit=clamped_limit, offset=note_offset, next_offset=note_next_offset
+                items=note_page,
+                total=note_total,
+                limit=clamped_limit,
+                offset=note_offset,
+                next_offset=note_next_offset,
+                outcome=decide_outcome(matched=len(note_page)),
             )
         )
 
@@ -1598,6 +1652,12 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                             "subject": subject,
                             **page,
                             "read_views": list(session_list_projection_names()),
+                            # Identities only: the full profile metadata has
+                            # its own facade route and would not fit a
+                            # capability page's response budget.
+                            "read_view_profile_ids": [
+                                profile["view_id"] for profile in await hooks.get_polylogue().list_read_view_profiles()
+                            ],
                         }
                     )
                 )
@@ -1645,6 +1705,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         offset: int | None = None,
         recipient_ref: str | None = None,
         assertion_ref: str | None = None,
+        segment_profile: Literal["default", "prose_with_refs"] = "default",
     ) -> str:
         """Compile a policy-gated bounded context image with receipts.
 
@@ -1716,7 +1777,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         limit=clamped_limit,
                         offset=page_offset,
                         next_offset=next_offset,
-                        outcome=decide_outcome(matched=matched),
+                        outcome=decide_outcome(matched=len(page)),
                     )
                 )
             payload = await hooks.get_polylogue().context_image_payload(
@@ -1726,6 +1787,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 include_messages=True,
                 include_assertions=True,
                 redact_paths=True,
+                segment_profile=segment_profile,
             )
             return hooks.json_payload(payload, exclude_none=True)
 
@@ -2687,19 +2749,22 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
             """Record one typed event through the facade's archive ingest seam."""
             from polylogue.coordination.work_events import validate_work_event_type
 
-            try:
-                validate_work_event_type(event_type)
-                result = await hooks.get_polylogue().record_work_event(
-                    session_id,
-                    event_id=event_id,
-                    event_type=event_type,
-                    summary=summary,
-                    payload=payload,
-                    timestamp=timestamp,
-                )
-            except (KeyError, ValueError) as exc:
-                return hooks.error_json(str(exc), code="invalid_argument", tool="record_work_event")
-            return hooks.json_payload(MCPRootPayload(root=result))
+            async def run() -> str:
+                try:
+                    validate_work_event_type(event_type)
+                    result = await hooks.get_polylogue().record_work_event(
+                        session_id,
+                        event_id=event_id,
+                        event_type=event_type,
+                        summary=summary,
+                        payload=payload,
+                        timestamp=timestamp,
+                    )
+                except (KeyError, ValueError) as exc:
+                    return hooks.error_json(str(exc), code="invalid_argument", tool="record_work_event")
+                return hooks.json_payload(MCPRootPayload(root=result))
+
+            return await hooks.async_safe_call("record_work_event", run, session_id=session_id)
 
         async def emit_decision(
             session_id: str,
@@ -2710,18 +2775,22 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
             timestamp: str | None = None,
         ) -> str:
             """Record a decision using the shared work-event vocabulary."""
-            try:
-                result = await hooks.get_polylogue().emit_decision(
-                    session_id,
-                    event_id=event_id,
-                    decision=decision,
-                    summary=summary,
-                    evidence_refs=tuple(evidence_refs or ()),
-                    timestamp=timestamp,
-                )
-            except (KeyError, ValueError) as exc:
-                return hooks.error_json(str(exc), code="invalid_argument", tool="emit_decision")
-            return hooks.json_payload(MCPRootPayload(root=result))
+
+            async def run() -> str:
+                try:
+                    result = await hooks.get_polylogue().emit_decision(
+                        session_id,
+                        event_id=event_id,
+                        decision=decision,
+                        summary=summary,
+                        evidence_refs=tuple(evidence_refs or ()),
+                        timestamp=timestamp,
+                    )
+                except (KeyError, ValueError) as exc:
+                    return hooks.error_json(str(exc), code="invalid_argument", tool="emit_decision")
+                return hooks.json_payload(MCPRootPayload(root=result))
+
+            return await hooks.async_safe_call("emit_decision", run, session_id=session_id)
 
         register_declared_handler(mcp, record_work_event, name="record_work_event")
         register_declared_handler(mcp, emit_decision, name="emit_decision")

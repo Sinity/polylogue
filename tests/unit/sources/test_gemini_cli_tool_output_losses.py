@@ -24,6 +24,8 @@ import json
 from collections.abc import Sequence
 from pathlib import Path
 
+import pytest
+
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.json import JSONDocument, JSONValue
 from polylogue.sources.dispatch import parse_payload
@@ -250,7 +252,8 @@ def _sidecar_corpus(
     chats.mkdir(parents=True)
     outputs = project / "tool-outputs" / "session-sess-1"
     outputs.mkdir(parents=True)
-    (outputs / filename).write_text("FULL-SIDECAR-TEXT\n" * 500, encoding="utf-8")
+    # Longer than the 8,000 + 32,000 characters the envelope says it excerpts.
+    (outputs / filename).write_text("FULL-SIDECAR-TEXT\n" * 2300, encoding="utf-8")
 
     snapshot = chats / "session-2026-03-14T21-41-sess1.json"
     snapshot.write_text(
@@ -407,3 +410,115 @@ def test_display_content_equal_to_content_adds_no_block() -> None:
 
     [message] = session.messages
     assert [block.text for block in message.blocks if block.type is BlockType.TEXT] == ["same text"]
+
+
+def test_sidecar_shorter_than_the_inline_envelope_does_not_replace_it(tmp_path: Path) -> None:
+    """A partially written sidecar never replaces the masked envelope.
+
+    Anti-vacuity: drop the completeness check in
+    ``GeminiToolOutputIndex.join`` and the empty sidecar is recorded as a
+    match that replaces the envelope with nothing.
+    """
+    filename = "run_shell_command_run_shell_command_1773524726450_0_keyt3f.txt"
+    snapshot = _sidecar_corpus(tmp_path, filename=filename)
+    outputs = resolve_tool_outputs_dir(snapshot, "sess-1")
+    assert outputs is not None
+    (outputs / filename).write_text("", encoding="utf-8")
+
+    result = join_gemini_tool_output_sidecars(json.loads(snapshot.read_text(encoding="utf-8")), _dir_scope(outputs))
+
+    assert not result.matched
+    [debt] = result.debt
+    assert debt.reason == "sidecar_less_complete_than_inline"
+
+
+def test_sidecar_that_changes_during_the_read_is_read_error_debt(tmp_path: Path) -> None:
+    """A sidecar whose bytes moved after enumeration is not joined.
+
+    Anti-vacuity: drop the size check in ``_read_text_from_path`` and the
+    grown file's text is joined as if it were the enumerated file.
+    """
+    filename = "run_shell_command_run_shell_command_1773524726450_0_keyt3f.txt"
+    snapshot = _sidecar_corpus(tmp_path, filename=filename)
+    outputs = resolve_tool_outputs_dir(snapshot, "sess-1")
+    assert outputs is not None
+    scope = _dir_scope(outputs)
+    with (outputs / filename).open("a", encoding="utf-8") as handle:
+        handle.write("still being written\n")
+
+    result = join_gemini_tool_output_sidecars(json.loads(snapshot.read_text(encoding="utf-8")), scope)
+
+    assert not result.matched
+    [debt] = result.debt
+    assert debt.reason == "read_error:SidecarChangedDuringReadError"
+
+
+def test_complete_sidecar_replaces_an_envelope_longer_than_itself(tmp_path: Path) -> None:
+    """Completeness is judged against the advertised excerpt, not envelope length.
+
+    A 40,001-character output excerpted as its first 8,000 and last 32,000
+    characters yields an envelope (tags, notice, pointer, excerpts) longer
+    than the output. Anti-vacuity: compare against the inline length instead
+    of ``_advertised_output_length`` and this sidecar becomes debt.
+    """
+    filename = "run_shell_command_run_shell_command_1773524726450_0_keyt3f.txt"
+    snapshot = _sidecar_corpus(tmp_path, filename=filename)
+    outputs = resolve_tool_outputs_dir(snapshot, "sess-1")
+    assert outputs is not None
+    (outputs / filename).write_text("x" * 40_001, encoding="utf-8")
+    payload = json.loads(snapshot.read_text(encoding="utf-8"))
+    call = payload["messages"][0]["toolCalls"][0]
+    response = call["result"][0]["functionResponse"]["response"]
+    response["output"] = response["output"] + ("y" * 45_000)
+
+    result = join_gemini_tool_output_sidecars(payload, _dir_scope(outputs))
+
+    [match] = result.matched
+    assert match.was_truncated and len(match.full_text) == 40_001
+
+
+def test_a_same_length_replacement_after_enumeration_is_read_error_debt(tmp_path: Path) -> None:
+    """The read is bound to the enumerated file, not only to the opened handle.
+
+    Anti-vacuity (Codex P2, #5643): compare the opened handle only with
+    itself and an atomic replacement of equal length is joined with the
+    enumerated mtime.
+    """
+    import os
+
+    filename = "run_shell_command_run_shell_command_1773524726450_0_keyt3f.txt"
+    snapshot = _sidecar_corpus(tmp_path, filename=filename)
+    outputs = resolve_tool_outputs_dir(snapshot, "sess-1")
+    assert outputs is not None
+    scope = _dir_scope(outputs)
+    original = outputs / filename
+    replacement = outputs / "replacement.tmp"
+    replacement.write_text("REPLACED-SIDECAR!\n" * 2300, encoding="utf-8")
+    assert replacement.stat().st_size == original.stat().st_size
+    os.replace(replacement, original)
+
+    result = join_gemini_tool_output_sidecars(json.loads(snapshot.read_text(encoding="utf-8")), scope)
+
+    assert not result.matched
+    [debt] = result.debt
+    assert debt.reason == "read_error:SidecarChangedDuringReadError"
+
+
+def test_a_storable_sidecar_is_joined_whatever_the_host_memory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sidecar SQLite can store is joined on a small host as on a large one.
+
+    Anti-vacuity (Codex P1, #5643): cap sidecars at a share of detected
+    memory and on an 8 KiB host this ordinary sidecar becomes
+    ``value_bound_refused`` debt, keeping the masked output.
+    """
+
+    filename = "run_shell_command_run_shell_command_1773524726450_0_keyt3f.txt"
+    snapshot = _sidecar_corpus(tmp_path, filename=filename)
+    outputs = resolve_tool_outputs_dir(snapshot, "sess-1")
+    assert outputs is not None
+    monkeypatch.setattr("polylogue.pipeline.parsed_tree_size.effective_physical_memory_bytes", lambda: 8 * 1024)
+
+    result = join_gemini_tool_output_sidecars(json.loads(snapshot.read_text(encoding="utf-8")), _dir_scope(outputs))
+
+    assert result.matched
+    assert not result.debt

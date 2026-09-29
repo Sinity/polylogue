@@ -42,6 +42,7 @@ from polylogue.daemon.topology_http import (
     READINESS_PARTIAL,
     build_topology_envelope,
     coerce_node_limit,
+    coerce_node_offset,
 )
 from tests.infra.storage_records import SessionBuilder, db_setup
 
@@ -188,6 +189,10 @@ class TestCoerceNodeLimit:
     def test_non_numeric_rejected(self) -> None:
         assert coerce_node_limit("abc") is None
 
+    def test_offset_rejects_sqlite_integer_overflow(self) -> None:
+        """Anti-vacuity: oversized client offsets never reach SQLite LIMIT bindings."""
+        assert coerce_node_offset("node-offset:9223372036854775808") is None
+
 
 class TestEnvelopeProjection:
     """``build_topology_envelope`` projects ``SessionTopology`` into JSON."""
@@ -234,6 +239,18 @@ class TestEnvelopeProjection:
         env = build_topology_envelope(topo)
         assert env["readiness"] == READINESS_PARTIAL
         assert env["cycle_detected"] is True
+
+    def test_conflicting_parent_marks_singleton_partial(self) -> None:
+        """A conflicting parent cannot be presented as an empty lineage.
+
+        Anti-vacuity: removing conflicting_parent_detected from the readiness
+        calculation makes this singleton report ``empty`` and fails here.
+        """
+        topo = _topology(target="child", root="child", nodes=[("child", 0, True)], edges=[]).model_copy(
+            update={"conflicting_parent_detected": True}
+        )
+        env = build_topology_envelope(topo)
+        assert env["readiness"] == READINESS_PARTIAL
 
     def test_node_limit_is_bounded_and_signals_truncation(self) -> None:
         """#1121 AC: lineage rendering is bounded — does not unbound expand."""

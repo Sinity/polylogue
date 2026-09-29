@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 
 from polylogue.sources.parsers.base import AdmissionDisposition, AdmissionUnit, ParsedSession
 from tests.infra.whale_fixtures import WHALE_FIXTURE_DIMENSIONS, multi_million_codex_stream
@@ -166,8 +167,6 @@ _CODE_MODE_ITEM_PEAK_BYTES_MAX = 600 * 1024 * 1024
 _REPLACEMENT_CONTEXT_COUNT = 200_000
 # Head with no aggregate ceiling: 461.7 MB traced peak and 200_002 session
 # events. With the ceiling: 219.3 MB and 515 events.
-_REPLACEMENT_CONTEXT_PEAK_BYTES_MAX = 330 * 1024 * 1024
-_REPLACEMENT_CONTEXT_EVENT_MAX = 1_000
 
 
 def _code_mode_item_stream() -> Iterator[dict[str, object]]:
@@ -258,49 +257,59 @@ def _replacement_history_stream() -> Iterator[dict[str, object]]:
     }
 
 
-def test_replacement_context_ceiling_degrades_excess_into_the_digest_only_event() -> None:
-    """Anti-vacuity: raising the session ceiling constants blows the traced-peak and event-count bounds.
+def test_every_distinct_replacement_only_value_is_stored_once_in_bounded_memory(tmp_path: Path) -> None:
+    """Replacement-only text is content the session holds nowhere else.
 
-    The per-value cap bounds one context, not their number; without the
-    aggregate ceiling every distinct small replacement text becomes its own
-    durable session event. The excess must reuse the existing omission
-    channel, never disappear.
+    Every distinct value is stored exactly once, and the candidates wait in the
+    parse's scratch index, not in memory.
+
+    The bound is twice the traced size of the input records themselves: the
+    parser may hold the compacted record it is reading, but not a second copy
+    of every candidate beside it.
+
+    Anti-vacuity: reinstate a count ceiling and fewer than
+    ``_REPLACEMENT_CONTEXT_COUNT`` values survive; hold the candidates in a
+    Python dict again and the traced peak exceeds the bound (measured
+    461.7 MB against a 98 MB input before the scratch index held them).
     """
     import tracemalloc
 
-    from polylogue.sources.dispatch import parse_stream_payload
-    from polylogue.sources.parsers import codex
-
     tracemalloc.start()
     try:
-        sessions = parse_stream_payload(
-            "codex",
-            _replacement_history_stream(),
-            "replacement-flood",
-            source_path="replacement-flood.jsonl",
-        )
-        peak = tracemalloc.get_traced_memory()[1]
+        input_bytes = tracemalloc.get_traced_memory()[0]
+        records = list(_replacement_history_stream())
+        input_bytes = tracemalloc.get_traced_memory()[0] - input_bytes
+        del records
     finally:
         tracemalloc.stop()
 
-    assert len(sessions) == 1
-    events = sessions[0].session_events
-    assert peak < _REPLACEMENT_CONTEXT_PEAK_BYTES_MAX, (
-        f"replacement-context traced peak {peak} exceeds {_REPLACEMENT_CONTEXT_PEAK_BYTES_MAX}"
-    )
-    assert len(events) < _REPLACEMENT_CONTEXT_EVENT_MAX
+    from polylogue.sources.parsers import codex
+    from polylogue.sources.prepared_message_sink import SqliteMessageStore
 
-    contexts = [event for event in events if event.event_type == codex._CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE]
-    omissions = [event for event in events if event.event_type == codex._CODEX_REPLACEMENT_CONTEXT_OMITTED_EVENT_TYPE]
-    assert len(contexts) == codex._CODEX_REPLACEMENT_CONTEXT_MAX_DISTINCT
-    # One digest-only aggregate on the existing channel, not a second channel
-    # and not a silent drop: every excess value is counted and hashed.
-    assert len(omissions) == 1
-    payload = omissions[0].payload
-    assert payload["content_policy"] == codex._CODEX_REPLACEMENT_CEILING_POLICY
-    assert payload["occurrences"] == _REPLACEMENT_CONTEXT_COUNT - codex._CODEX_REPLACEMENT_CONTEXT_MAX_DISTINCT
-    assert payload["reconstruction"] == "source_blob"
-    assert "content" not in payload
-    assert len(str(payload["content_sha256"])) == 64
-    compaction = next(event for event in events if event.event_type == "compaction")
-    assert compaction.payload["replacement_history_text_count"] == _REPLACEMENT_CONTEXT_COUNT
+    store = SqliteMessageStore(tmp_path / "replacement-flood.db")
+    try:
+        events = store.new_event_sink()
+        tracemalloc.start()
+        try:
+            codex.parse_stream(
+                _replacement_history_stream(), "replacement-flood", message_sink=store.new_sink(), event_sink=events
+            )
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        stored = 0
+        seen: set[str] = set()
+        compaction_text_count = None
+        for event in events:
+            if event.event_type == codex._CODEX_REPLACEMENT_CONTEXT_EVENT_TYPE:
+                stored += 1
+                seen.add(str(event.payload["content"]))
+            elif event.event_type == "compaction":
+                compaction_text_count = event.payload["replacement_history_text_count"]
+    finally:
+        store.close()
+
+    assert peak < 2 * input_bytes, f"traced peak {peak} against input {input_bytes}"
+    assert stored == len(seen) == _REPLACEMENT_CONTEXT_COUNT
+    assert "retained" not in seen
+    assert compaction_text_count == _REPLACEMENT_CONTEXT_COUNT

@@ -30,6 +30,7 @@ from polylogue.paths import db_path as index_db_path
 from polylogue.schemas.observation import (
     ProviderConfig,
     SchemaUnit,
+    declared_structured_observation_config,
     extract_schema_units_from_payload,
     resolve_provider_config,
 )
@@ -322,7 +323,7 @@ def _iter_schema_units_from_db(
     origins = _sample_origins_for_provider(Provider.from_string(query_provider), config)
     placeholders = ",".join("?" for _ in origins)
     effective_origin = raw_provider_origin_sql(table_alias="raw_sessions")
-    with connection_context(source_db_path) as conn:
+    with connection_context(source_db_path, archive_root=location.configured_root) as conn:
         conn.row_factory = sqlite3.Row
         if logical_heads_only:
             logical_cohort_expr = logical_head_cohort_sql(
@@ -390,15 +391,26 @@ def _iter_schema_units_from_db(
                     row.source_path,
                     provider=row.provider_token or source_name,
                 )
+                observation_config = config
                 if path_classification is not None and not path_classification.schema_eligible:
-                    _record_terminal(
-                        terminal_recorder,
-                        row,
-                        status="intentionally_excluded",
-                        reason=f"artifact_taxonomy:{path_classification.reason}",
-                        artifact_kind=path_classification.kind.value,
+                    # Non-session does not mean opaque: the artifact's
+                    # declared observation strategy decides, as it does for
+                    # source-backed inference.
+                    structured_config = declared_structured_observation_config(
+                        Provider.from_string(row.provider_token or source_name),
+                        row.source_path or "",
+                        config,
                     )
-                    continue
+                    if structured_config is None:
+                        _record_terminal(
+                            terminal_recorder,
+                            row,
+                            status="intentionally_excluded",
+                            reason=f"artifact_taxonomy:{path_classification.reason}",
+                            artifact_kind=path_classification.kind.value,
+                        )
+                        continue
+                    observation_config = structured_config
 
                 validation_authority = raw_state_authority(row.parsed_at_ms, row.validated_at_ms)
                 if row.validation_status == "failed" and validation_authority != "parse":
@@ -414,14 +426,14 @@ def _iter_schema_units_from_db(
                     )
                     continue
 
-                if config.sample_granularity == "record":
+                if observation_config.sample_granularity == "record":
                     try:
                         record_units = list(
                             _iter_record_stream_units(
                                 row=row,
                                 source_name=source_name,
                                 raw_content=raw_content,
-                                config=config,
+                                config=observation_config,
                                 max_samples=max_samples,
                                 full_corpus=full_corpus,
                             )
@@ -446,7 +458,7 @@ def _iter_schema_units_from_db(
                         row,
                         source_name=source_name,
                         raw_content=raw_content,
-                        config=config,
+                        config=observation_config,
                     )
                 except Exception:
                     logger.exception("Failed to build raw payload envelope for %s", raw_content)
@@ -479,7 +491,7 @@ def _iter_schema_units_from_db(
                     source_path=row.source_path,
                     raw_id=row.raw_id,
                     observed_at=row.observed_at,
-                    config=config,
+                    config=observation_config,
                     max_samples=max_samples,
                     values_compacted=values_compacted,
                 )
@@ -572,7 +584,7 @@ def get_sample_count_from_db(
     origins = _sample_origins_for_provider(source_name, config)
     placeholders = ",".join("?" for _ in origins)
 
-    with connection_context(db_path) as conn:
+    with connection_context(db_path, archive_root=db_path.parent) as conn:
         row = conn.execute(
             f"""
             SELECT COUNT(*)

@@ -16,16 +16,19 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.storage.sqlite import wal_checkpoint
 from polylogue.storage.sqlite.connection_profile import (
     READ_PROFILES,
     SEALED_READ_CONNECTION_PROFILE,
     TIMEOUT_CLASSES,
     WRITE_PROFILES,
+    LiveGenerationImmutableError,
     ReadContinuation,
     ReadFrame,
     ReadFrameCancelledError,
     ReadFrameExpiredError,
     StaleContinuationError,
+    attach_readonly_database,
     one_shot_diagnostic_read,
     open_profiled_connection,
     open_readonly_connection,
@@ -102,6 +105,78 @@ def test_asking_for_immutability_selects_the_sealed_profile(index_db: Path) -> N
         assert conn.execute("PRAGMA busy_timeout").fetchone() == (SEALED_READ_CONNECTION_PROFILE.busy_timeout_ms,)
     finally:
         conn.close()
+
+
+# -- live versus sealed generation -------------------------------------------
+
+
+@pytest.fixture
+def live_writer(index_db: Path) -> Iterator[sqlite3.Connection]:
+    """A writer that stays open with a committed row living only in the WAL."""
+    writer = sqlite3.connect(index_db)
+    writer.execute("PRAGMA wal_autocheckpoint = 0")
+    writer.execute("INSERT INTO rows_ VALUES (11, 'wal-only')")
+    writer.commit()
+    assert index_db.with_name("index.db-wal").stat().st_size > 0, "the row must live only in the WAL"
+    try:
+        yield writer
+    finally:
+        writer.close()
+
+
+def test_a_live_read_sees_a_committed_wal_only_row(index_db: Path, live_writer: sqlite3.Connection) -> None:
+    conn = open_readonly_connection(index_db, validate_schema=False)
+    try:
+        assert conn.execute("SELECT body FROM rows_ WHERE position = 11").fetchone() == ("wal-only",)
+    finally:
+        conn.close()
+
+
+def test_marking_a_changing_database_immutable_is_refused(
+    index_db: Path, tmp_path: Path, live_writer: sqlite3.Connection
+) -> None:
+    """``immutable=1`` would read the main file alone and skip the WAL-only row.
+
+    Anti-vacuity: without the owner's sidecar refusal each of these opens
+    succeeds and reports ten rows while the database holds eleven.
+    """
+    with pytest.raises(LiveGenerationImmutableError, match="-wal"):
+        open_readonly_connection(index_db, immutable=True, validate_schema=False)
+    with pytest.raises(LiveGenerationImmutableError):
+        ReadFrame(index_db, profile=SEALED_READ_CONNECTION_PROFILE)
+
+    host = tmp_path / "host.db"
+    sqlite3.connect(host).close()
+    reader = open_readonly_connection(host, validate_schema=False)
+    try:
+        with pytest.raises(LiveGenerationImmutableError):
+            attach_readonly_database(reader, index_db, alias="changing", immutable=True)
+        assert reader.execute("PRAGMA database_list").fetchall()[-1][1] != "changing"
+    finally:
+        reader.close()
+
+
+def test_a_frozen_snapshot_carries_the_wal_state_and_its_generation(
+    index_db: Path, live_writer: sqlite3.Connection
+) -> None:
+    """Freezing is an exclusive checkpoint into the main file, then a sealed read.
+
+    The writer stays open but idle, so its last-connection close cannot be what
+    folds the WAL back: the exclusive checkpoint has to.
+    """
+    observation = wal_checkpoint.checkpoint_wal(
+        index_db, reason="seal", escalation="exclusive", warn_bytes=1, escalation_bytes=1
+    )
+    assert observation.mode == "truncate"
+    assert observation.wal_bytes_after == 0
+
+    stat = index_db.stat()
+    frame = ReadFrame(index_db, profile=SEALED_READ_CONNECTION_PROFILE)
+    try:
+        assert (frame.generation.device, frame.generation.inode) == (stat.st_dev, stat.st_ino)
+        assert frame.connection.execute("SELECT body FROM rows_ WHERE position = 11").fetchone()[0] == "wal-only"
+    finally:
+        frame.close()
 
 
 # -- frame lifetime ----------------------------------------------------------
@@ -367,3 +442,49 @@ def test_a_reader_does_not_block_writer_progress(index_db: Path) -> None:
         _commit(index_db, "INSERT INTO rows_ VALUES (13, 'row-13')")
         frame.rebind()
         assert frame.connection.execute("SELECT count(*) FROM rows_").fetchone()[0] == 11
+
+
+def test_resume_releases_a_held_snapshot_before_proving_the_anchor(index_db: Path) -> None:
+    """Old snapshot proof finds row 5 even after a concurrent delete."""
+    with read_frame(index_db) as frame:
+        frame.connection.execute("BEGIN DEFERRED")
+        assert frame.connection.execute(_ANCHOR, (5,)).fetchone()[0] == 5
+        continuation = frame.bind(ReadContinuation(position=5, anchor_sql=_ANCHOR, anchor_params=(5,)))
+        _commit(index_db, "DELETE FROM rows_ WHERE position = 5")
+        with pytest.raises(StaleContinuationError):
+            frame.resume(continuation)
+
+
+def test_resume_refuses_while_a_stream_pins_the_snapshot(index_db: Path) -> None:
+    """Anti-vacuity: proving the anchor beside an in-flight stream reads the
+    stream's snapshot, so a concurrently deleted anchor row was accepted."""
+    with read_frame(index_db) as frame:
+        continuation = frame.bind(ReadContinuation(position=5, anchor_sql=_ANCHOR, anchor_params=(5,)))
+        rows = frame.stream("SELECT * FROM rows_ ORDER BY position")
+        try:
+            assert next(rows)[0] == 1
+            _commit(index_db, "DELETE FROM rows_ WHERE position = 5")
+            with pytest.raises(ReadFrameExpiredError, match="stream is in flight"):
+                frame.resume(continuation)
+        finally:
+            rows.close()
+
+
+def test_stream_can_be_closed_after_its_frame(index_db: Path) -> None:
+    """Pre-fix generator finalization closes a cursor on an already closed DB."""
+    with read_frame(index_db) as frame:
+        rows = frame.stream("SELECT * FROM rows_ ORDER BY position")
+        assert next(rows)[0] == 1
+    rows.close()
+    assert not frame.streaming
+
+
+@pytest.mark.parametrize("bound", [float("nan"), float("inf"), -float("inf")])
+def test_read_frame_rejects_nonfinite_snapshot_bounds(index_db: Path, bound: float) -> None:
+    """NaN/inf bypass a <= 0 comparison and disable the declared lifetime."""
+    with pytest.raises(ValueError):
+        with read_frame(index_db, max_snapshot_age_s=bound, reason="nonfinite regression"):
+            pass
+    with pytest.raises(ValueError):
+        with ReadFrame(index_db, profile=replace(READ_PROFILES["interactive-read"], max_snapshot_age_s=bound)):
+            pass

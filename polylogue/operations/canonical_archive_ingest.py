@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import os
+import sqlite3
 import threading
 from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 from typing import Any, Protocol
 
 from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.pipeline.services.parsing_models import ParseResult
+
+_ONE_SHOT_MARKER = ".one-shot-ingest-owner"
 
 _OWNED_ROOT: contextvars.ContextVar[tuple[Path, int, int] | None] = contextvars.ContextVar(
     "canonical_one_shot_archive_owner", default=None
@@ -39,7 +43,7 @@ async def _ingest_selected_paths(
     ingest_pass: Callable[[list[Path]], Awaitable[Any]],
 ) -> tuple[Any, ...]:
     """Drain bounded unattempted paths, refusing any other incomplete result."""
-    from polylogue.sources.live.metrics import REFUSED_UNATTEMPTED_TIME_BUDGET
+    from polylogue.sources.live.metrics import REFUSED_NO_SESSIONS, REFUSED_UNATTEMPTED_TIME_BUDGET
 
     pending = list(dict.fromkeys(paths))
     receipts: list[Any] = []
@@ -81,10 +85,14 @@ async def _ingest_selected_paths(
                 f"unaccounted={len(offered_set - accounted)}"
             )
 
+        # A source that parsed to no session is settled: its raw carries the
+        # terminal outcome and its cursor advanced.
+        excluded = {path: reason for path, reason in excluded.items() if reason != REFUSED_NO_SESSIONS}
         if not excluded:
             return tuple(receipts)
 
-        non_retryable = {path: reason for path, reason in excluded.items() if reason != REFUSED_UNATTEMPTED_TIME_BUDGET}
+        settled_exclusions = {REFUSED_UNATTEMPTED_TIME_BUDGET, "durably_excised"}
+        non_retryable = {path: reason for path, reason in excluded.items() if reason not in settled_exclusions}
         if non_retryable:
             reasons = ", ".join(sorted(set(non_retryable.values())))
             raise RuntimeError(
@@ -93,6 +101,8 @@ async def _ingest_selected_paths(
             )
 
         if not succeeded:
+            if all(reason == "durably_excised" for reason in excluded.values()):
+                return tuple(receipts)
             raise RuntimeError(
                 f"canonical ingestion made no progress on selected source files: unattempted={len(excluded)}"
             )
@@ -258,9 +268,18 @@ async def ingest_sources_archive(
             lambda offered: processor.ingest_files(offered, emit_event=False),
         )
     finally:
-        parse_stage.shutdown()
-        await _wait_for_coordinator_idle(coordinator)
-        await archive.close()
+        # An admitted writer may still be consuming its parse-stage carrier
+        # (``pop_path``) after the caller was cancelled. Let it settle before
+        # the stage terminates workers and discards prepared results.
+        # Each step runs even when the one before it raises or is cancelled
+        # again: a skipped shutdown would leak the worker pool and its scratch.
+        try:
+            await _wait_for_coordinator_idle(coordinator)
+        finally:
+            try:
+                parse_stage.shutdown()
+            finally:
+                await archive.close()
 
     for metrics in metrics_by_pass:
         result.counts["sessions"] = result.counts.get("sessions", 0) + metrics.ingested_session_count
@@ -273,4 +292,96 @@ async def ingest_sources_archive(
     return result
 
 
-__all__ = ["ingest_sources_archive", "scoped_one_shot_archive_owner"]
+def admit_one_shot_root(root: Path) -> None:
+    """Claim an empty root once; subsequent calls may only reuse that claim."""
+    from polylogue.maintenance.offline_guard import ArchiveWriterOwnershipError, resident_daemon_pid
+    from polylogue.storage.archive_identity import resolve_active_index_path
+
+    pid = resident_daemon_pid(root)
+    if pid is not None:
+        raise ArchiveWriterOwnershipError(
+            f"polylogued PID {pid} owns {root}; submit ingestion to that daemon",
+            archive_root=root,
+            resident_writer=f"polylogued PID {pid}",
+        )
+    marker = root / _ONE_SHOT_MARKER
+    root_stat = root.stat()
+    claim = f"canonical-one-shot-v1 {root_stat.st_dev}:{root_stat.st_ino}\n"
+    if marker.exists():
+        try:
+            if marker.read_text(encoding="utf-8") != claim:
+                raise ArchiveWriterOwnershipError(
+                    f"{root} has an invalid one-shot owner claim; refusing an offline write",
+                    archive_root=root,
+                )
+        except OSError as exc:
+            raise ArchiveWriterOwnershipError(
+                f"cannot verify the one-shot owner claim for {root}", archive_root=root
+            ) from exc
+        return
+    prior_tiers = tuple(
+        name
+        for name in (
+            "source.db",
+            "index.db",
+            "user.db",
+            "embeddings.db",
+            "audit.db",
+            "ops.db",
+            ".index-active-pointer",
+        )
+        if (root / name).exists()
+    )
+    for db_path, table in (
+        (root / "source.db", "raw_sessions"),
+        (root / "user.db", "assertions"),
+        (resolve_active_index_path(root), "sessions"),
+    ):
+        if not db_path.exists():
+            continue
+        try:
+            with closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as conn:
+                present = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
+                if present and conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone():
+                    raise ArchiveWriterOwnershipError(
+                        f"{root} already contains archive content; submit ingestion to the resident daemon",
+                        archive_root=root,
+                    )
+        except sqlite3.Error as exc:
+            raise ArchiveWriterOwnershipError(
+                f"cannot prove {root} is an empty one-shot archive",
+                archive_root=root,
+            ) from exc
+    if prior_tiers:
+        raise ArchiveWriterOwnershipError(
+            f"{root} is an existing archive ({', '.join(prior_tiers)}); "
+            "one-shot ingestion requires a newly isolated root",
+            archive_root=root,
+        )
+    with marker.open("x", encoding="utf-8") as handle:
+        handle.write(claim)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+async def ingest_one_shot_archive(
+    archive_root: Path,
+    sources: list[Source],
+    *,
+    parse_workers: int | None = None,
+) -> ParseResult:
+    """Claim an isolated root and ingest ``sources`` through :func:`ingest_sources_archive`."""
+    if not any(source.path is not None for source in sources):
+        return ParseResult()
+    root = archive_root.expanduser().resolve()
+    with scoped_one_shot_archive_owner(root):
+        admit_one_shot_root(root)
+        return await ingest_sources_archive(root, sources, parse_workers=parse_workers)
+
+
+__all__ = [
+    "admit_one_shot_root",
+    "ingest_one_shot_archive",
+    "ingest_sources_archive",
+    "scoped_one_shot_archive_owner",
+]

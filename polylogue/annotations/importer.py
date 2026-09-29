@@ -86,7 +86,7 @@ class AnnotationImportRow(BaseModel):
 class AnnotationBatchImportRequest(BaseModel):
     """Complete product-layer request for one bounded JSONL batch."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, protected_namespaces=())
 
     jsonl: str
     batch_id: str = Field(min_length=1, max_length=256)
@@ -181,7 +181,7 @@ def _persist_annotation_batch(
 ) -> tuple[AnnotationImportRowOutcome, ...]:
     """Apply the complete user-tier batch write under one SQLite transaction."""
 
-    conn = open_connection(args.user_db_path)
+    conn = open_connection(args.user_db_path, archive_root=args.user_db_path.parent)
     conn.row_factory = sqlite3.Row
     imported_outcomes: list[AnnotationImportRowOutcome] = []
     try:
@@ -432,8 +432,15 @@ async def import_annotation_batch(
     *,
     resolve_ref: RefResolver | None = None,
     registry: AnnotationSchemaRegistry = ANNOTATION_SCHEMA_REGISTRY,
+    before_durable_execution: Callable[[], None] | None = None,
 ) -> AnnotationBatchImportResult:
-    """Validate live refs, persist provenance, and write candidates atomically."""
+    """Validate live refs, persist provenance, and write candidates atomically.
+
+    ``before_durable_execution`` runs after validation and before the first
+    audit or ``user.db`` write. A daemon caller fences its acceptance boundary
+    there, so a request that was cancelled or timed out while validating
+    refuses instead of committing after its caller was told it did not.
+    """
 
     _validate_request_bounds(request)
     user_db_path = Path(poly.archive_root) / "user.db"
@@ -525,6 +532,8 @@ async def import_annotation_batch(
         "internal",
         "write",
     )
+    if before_durable_execution is not None:
+        before_durable_execution()
     preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=user_db_path.parent)
     authorization = executor.authorize_bound(binding, preview, principal)
     receipt = executor.execute_bound(binding, preview, authorization, args)

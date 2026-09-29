@@ -553,7 +553,7 @@ def test_rollback_preallocation_refusal_keeps_candidate_inactive(
             cold_build.promote()
     assert failure.value.errno == errno.ENOSPC
     assert cold_build._store.load(cold_build.generation_id).state == "inactive"
-    assert (cold_build.generation_root / "generation.rollback-pointer.json").exists()
+    assert not (cold_build.generation_root / "generation.rollback-pointer.json").exists()
     assert cold_build.promote().generation_id == cold_build.generation_id
 
 
@@ -716,6 +716,38 @@ def test_the_live_pass_writes_into_the_owned_generation_not_the_active_one(
     assert _active_session_count(tmp_path) == 1
     with ArchiveStore.open_existing(tmp_path, read_only=True) as reader:
         assert reader._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+
+
+def test_the_ops_checkpoint_holder_spans_the_page_cursor_writes(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page's cursor publication still runs under the checkpoint holder.
+
+    The archive pass closes inside the page, before its cursor, convergence
+    and attempt writes; each of those publications closes its own ``ops.db``
+    connection, which checkpoints unless the holder is still open.
+
+    Anti-vacuity: release the holder on the archive pass's close again (drop
+    the ``_ops_page_depth`` guard in ``open_writer``'s ``close_page`` or the
+    ``begin_ops_page`` call in ``ingest_files``) and the holder is gone when
+    the cursors are written.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    held_at_cursor_write: list[bool] = []
+    record_full_cursors = LiveBatchProcessor._record_full_cursors
+
+    def observed(self: LiveBatchProcessor, *args: Any, **kwargs: Any) -> Any:
+        held_at_cursor_write.append(cold_build._ops_checkpoint_holder is not None)
+        return record_full_cursors(self, *args, **kwargs)
+
+    monkeypatch.setattr(LiveBatchProcessor, "_record_full_cursors", observed)
+    _ingest(tmp_path, root, "one.jsonl", "page-holder")
+
+    assert held_at_cursor_write == [True]
+    # The page end still releases it: the window never spans pages.
+    assert cold_build._ops_checkpoint_holder is None
+    assert cold_build._ops_page_depth == 0
 
 
 def test_a_file_intake_excludes_does_not_block_promotion(tmp_path: Path) -> None:
@@ -954,10 +986,10 @@ def test_fresh_capacity_uses_sealed_material_without_a_second_source_read(
     real_revision = production_baseline._revision
     reads = 0
 
-    def measured_revision(path: Path, *, cancelled: Any = None) -> tuple[str, int]:
+    def measured_revision(path: Path, *, cancelled: Any = None, location: Any = None) -> tuple[str, int]:
         nonlocal reads
         reads += 1
-        digest, _size = real_revision(path, cancelled=cancelled)
+        digest, _size = real_revision(path, cancelled=cancelled, location=location)
         return digest, 2 * 1024**3
 
     monkeypatch.setattr(production_baseline, "_revision", measured_revision)
@@ -1013,17 +1045,16 @@ def test_a_failed_capacity_observation_does_not_block_promotion(
 
 
 def _declare_sources(monkeypatch: pytest.MonkeyPatch, *roots: Path) -> tuple[SourceDeclaration, ...]:
-    """Pin what ``config.source_declarations`` returns for one test.
+    """Build the historical wanted-source declarations for one test.
 
-    The declarations are the shape ``config.source_declarations`` builds from
-    ``source_paths.explicit`` -- the only thing the campaign policy admits into
-    the denominator.
+    Manual wanted-source receipts are historical evidence the cold build still
+    validates when one is published; these tests write one directly.
     """
     declarations = tuple(
         SourceDeclaration(f"configured-{position}", SourceRole.DIRECTORY, root, True)
         for position, root in enumerate(roots)
     )
-    monkeypatch.setattr("polylogue.config.configured_source_declarations", lambda _runtime: declarations)
+    del monkeypatch
     return declarations
 
 

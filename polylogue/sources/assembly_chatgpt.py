@@ -26,14 +26,16 @@ that is a real identity strengthening, not a guess.
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import re
+import stat
 import zipfile
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
 from polylogue.core.enums import Provider
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.storage.blob_store import BlobStore
 
 from .assembly import SidecarData
@@ -93,6 +95,8 @@ def _read_chatgpt_zip_sidecars(
     seen_targets: set[str] = set()
     payloads: dict[str, object] = {}
     acquired: dict[str, tuple[str, int]] = {}
+    member_by_asset: dict[str, str] = {}
+    seen_asset_members: set[str] = set()
     try:
         with zipfile.ZipFile(zip_path) as zf:
             validator = ZipEntryValidator("chatgpt", cursor_state=None, zip_path=zip_path)
@@ -107,8 +111,10 @@ def _read_chatgpt_zip_sidecars(
                 # (and some under none), including a handful named `.json`.
                 asset_id = _member_asset_id(Path(info.filename).name)
                 if asset_id is not None:
-                    if store is None or asset_id in acquired:
+                    asset_key = _asset_rendition_key(asset_id, info.filename)
+                    if store is None or asset_key in seen_asset_members:
                         continue
+                    seen_asset_members.add(asset_key)
                     try:
                         with open_bounded_zip_entry(zf, info) as handle:
                             blob_hash, size = store.write_from_fileobj(handle)
@@ -123,7 +129,7 @@ def _read_chatgpt_zip_sidecars(
                             error=str(exc),
                         )
                         continue
-                    acquired[asset_id] = (blob_hash, size)
+                    _record_asset_blob(acquired, member_by_asset, asset_id, info.filename, (blob_hash, size))
                     continue
                 if info.filename not in targets or info.filename in seen_targets:
                     continue
@@ -161,6 +167,29 @@ def _member_asset_id(basename: str) -> str | None:
     return _normalize_file_id(match.group(1))
 
 
+def _asset_rendition_key(asset_id: str, member_name: str) -> str:
+    """Keep each physical rendition addressable under its provider file id."""
+    return f"{asset_id}#{member_name}"
+
+
+def _record_asset_blob(
+    acquired: dict[str, tuple[str, int]],
+    member_by_asset: dict[str, str],
+    asset_id: str,
+    member_name: str,
+    blob: tuple[str, int],
+) -> None:
+    """Use the compact provider key until a second rendition proves it ambiguous."""
+    previous_member = member_by_asset.get(asset_id)
+    if previous_member is None:
+        member_by_asset[asset_id] = member_name
+        acquired[asset_id] = blob
+        return
+    if asset_id in acquired:
+        acquired[_asset_rendition_key(asset_id, previous_member)] = acquired.pop(asset_id)
+    acquired[_asset_rendition_key(asset_id, member_name)] = blob
+
+
 def _is_asset_member(name: str) -> bool:
     return _member_asset_id(Path(name).name) is not None
 
@@ -173,31 +202,60 @@ def _acquire_asset_blobs_from_directory(directory: Path, store: BlobStore) -> di
     Assets sit beside ``conversations-*.json`` and, in the extension-carrying
     export shape, under per-conversation ``image/``/``audio/`` subdirectories,
     so the walk is recursive; each file is streamed via
-    ``BlobStore.write_from_path`` (no full-file memory load).
+    ``BlobStore.write_from_fileobj`` over a no-follow regular-file handle.
     """
     from polylogue.storage.blob_publication import flush_blob_publications
 
     from .decoder_zip import MAX_UNCOMPRESSED_SIZE
 
     acquired: dict[str, tuple[str, int]] = {}
+    member_by_asset: dict[str, str] = {}
+    seen_asset_members: set[str] = set()
     for asset_path in _walk_asset_files(directory):
         asset_id = _member_asset_id(asset_path.name)
-        if asset_id is None or asset_id in acquired:
+        if asset_id is None:
             continue
+        asset_key = _asset_rendition_key(asset_id, asset_path.relative_to(directory).as_posix())
+        if asset_key in seen_asset_members:
+            continue
+        seen_asset_members.add(asset_key)
         try:
-            size_on_disk = asset_path.stat().st_size
+            # Inspect the opened object, not a followed path. NOFOLLOW closes
+            # the leaf-symlink race; NONBLOCK prevents a substituted FIFO from
+            # hanging acquisition before its regular-file check.
+            descriptor = os.open(asset_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(descriptor, "rb") as handle:
+                observed = os.fstat(handle.fileno())
+                if not stat.S_ISREG(observed.st_mode):
+                    continue
+                if observed.st_size > MAX_UNCOMPRESSED_SIZE:
+                    emit(
+                        "sources.chatgpt.asset_refused",
+                        level=WARNING,
+                        outcome="refused",
+                        reason="oversized",
+                        path=str(asset_path),
+                        size=observed.st_size,
+                    )
+                    continue
+                blob_hash, size = store.write_from_fileobj(handle)
         except OSError as exc:
-            logger.warning("chatgpt_asset_stat_failed", path=str(asset_path), error=str(exc))
+            emit(
+                "sources.chatgpt.asset_refused",
+                level=WARNING,
+                outcome="error",
+                reason="read_failed",
+                path=str(asset_path),
+                error_type=type(exc).__name__,
+            )
             continue
-        if size_on_disk > MAX_UNCOMPRESSED_SIZE:
-            logger.warning("chatgpt_asset_oversized", path=str(asset_path), size=size_on_disk)
-            continue
-        try:
-            blob_hash, size = store.write_from_path(asset_path)
-        except OSError as exc:
-            logger.warning("chatgpt_asset_read_failed", path=str(asset_path), error=str(exc))
-            continue
-        acquired[asset_id] = (blob_hash, size)
+        _record_asset_blob(
+            acquired,
+            member_by_asset,
+            asset_id,
+            asset_path.relative_to(directory).as_posix(),
+            (blob_hash, size),
+        )
     if acquired:
         flush_blob_publications(store)
     return acquired
@@ -209,8 +267,21 @@ def _walk_asset_files(directory: Path) -> list[Path]:
         dirnames.sort()
         root_path = Path(root)
         for filename in sorted(filenames):
-            if _member_asset_id(filename) is not None:
-                found.append(root_path / filename)
+            if _member_asset_id(filename) is None:
+                continue
+            candidate = root_path / filename
+            try:
+                if stat.S_ISREG(candidate.lstat().st_mode):
+                    found.append(candidate)
+            except OSError as exc:
+                emit(
+                    "sources.chatgpt.asset_refused",
+                    level=WARNING,
+                    outcome="error",
+                    reason="stat_failed",
+                    path=str(candidate),
+                    error_type=type(exc).__name__,
+                )
     return found
 
 
@@ -242,7 +313,8 @@ class ChatGPTAssemblySpec:
         ``BlobStore.write_from_fileobj`` (bounded decompression, no full-file
         memory load — mirrors ``decoder_zip.py``'s ``capture_raw`` branch); an
         extracted-directory source streams the same members from disk through
-        ``BlobStore.write_from_path``. ``blob_store`` is ``None`` for callers
+        ``BlobStore.write_from_fileobj`` after opening without symlink following.
+        ``blob_store`` is ``None`` for callers
         that only need sidecar metadata (e.g. non-session artifact admission),
         so this stays a no-op there.
         """
@@ -299,6 +371,7 @@ class ChatGPTAssemblySpec:
             return conv
         if index is None:
             index = ChatGPTAssetIndex.empty()
+        member_keys_by_asset = _member_keys_by_asset(asset_blobs)
 
         if isinstance(conv.attachments, SqliteAttachmentSink):
             attachments = conv.attachments
@@ -312,20 +385,42 @@ class ChatGPTAssemblySpec:
             conn = attachments._writer
             savepoint = "chatgpt_sidecar_enrichment"
             event_count = len(events)
+            attachment_count = len(attachments)
             conn.execute(f"SAVEPOINT {savepoint}")
             try:
-                for position, attachment in enumerate(attachments):
-                    resolved, event = _resolve_attachment(
-                        attachment, index, thread_id=conv.provider_session_id, asset_blobs=asset_blobs
+                # Write the expanded sequence in place, in the same order the
+                # in-memory route produces: each pointer's renditions sit
+                # together. A rendition can overwrite a slot not yet read;
+                # that input is kept aside until its turn, so only displaced
+                # rows are held, never the whole attachment list.
+                displaced: dict[int, ParsedAttachment] = {}
+                write_position = 0
+                for position in range(attachment_count):
+                    attachment = displaced.pop(position) if position in displaced else attachments[position]
+                    resolved_items, resolved_events = _resolve_attachment_renditions(
+                        attachment,
+                        index,
+                        thread_id=conv.provider_session_id,
+                        asset_blobs=asset_blobs,
+                        member_keys_by_asset=member_keys_by_asset,
                     )
-                    if resolved is not attachment:
-                        attachments[position] = resolved
-                    if event is not None:
-                        events.append(event)
+                    for item in resolved_items:
+                        if write_position >= attachment_count:
+                            attachments.append(item)
+                        elif write_position == position:
+                            if item is not attachment:
+                                attachments[write_position] = item
+                        else:
+                            if write_position not in displaced:
+                                displaced[write_position] = attachments[write_position]
+                            attachments[write_position] = item
+                        write_position += 1
+                    events.extend(resolved_events)
             except BaseException:
                 conn.execute(f"ROLLBACK TO {savepoint}")
                 conn.execute(f"RELEASE {savepoint}")
                 events._count = event_count
+                attachments._count = attachment_count
                 raise
             conn.execute(f"RELEASE {savepoint}")
             return conv
@@ -334,14 +429,17 @@ class ChatGPTAssemblySpec:
         new_events: list[ParsedSessionEvent] = []
         changed = False
         for attachment in conv.attachments:
-            resolved, event = _resolve_attachment(
-                attachment, index, thread_id=conv.provider_session_id, asset_blobs=asset_blobs
+            resolved_items, resolved_events = _resolve_attachment_renditions(
+                attachment,
+                index,
+                thread_id=conv.provider_session_id,
+                asset_blobs=asset_blobs,
+                member_keys_by_asset=member_keys_by_asset,
             )
-            new_attachments.append(resolved)
-            if resolved is not attachment:
+            new_attachments.extend(resolved_items)
+            if resolved_items != [attachment] or resolved_items[0] is not attachment:
                 changed = True
-            if event is not None:
-                new_events.append(event)
+            new_events.extend(resolved_events)
         if not changed and not new_events:
             return conv
         return conv.model_copy(
@@ -350,6 +448,91 @@ class ChatGPTAssemblySpec:
                 "session_events": [*conv.session_events, *new_events],
             }
         )
+
+
+def _member_keys_by_asset(asset_blobs: Mapping[str, tuple[str, int]]) -> dict[str, list[str]]:
+    """Index ambiguous ``asset_id#member`` blob keys once per sidecar set."""
+    index: dict[str, list[str]] = {}
+    for key in sorted(asset_blobs):
+        asset_id, separator, _member = key.partition("#")
+        if separator:
+            index.setdefault(asset_id, []).append(key)
+    return index
+
+
+def _resolve_attachment_renditions(
+    attachment: ParsedAttachment,
+    index: ChatGPTAssetIndex,
+    *,
+    thread_id: str,
+    asset_blobs: Mapping[str, tuple[str, int]],
+    member_keys_by_asset: Mapping[str, Sequence[str]],
+) -> tuple[list[ParsedAttachment], list[ParsedSessionEvent]]:
+    """Resolve one attachment into every physical member it names.
+
+    Discovery keys a single member by its bare asset id and, once a second
+    member normalizes to the same id, every member by ``asset_id#member``.
+    No member of an ambiguous set is authoritatively the attachment's primary
+    bytes, so each becomes its own attachment carrying its own blob; the
+    pointer's own bytes, when it carries any, are kept as well.
+    """
+    asset_id = _normalize_file_id(attachment.provider_attachment_id)
+    prefix = f"{asset_id}#"
+    member_keys = (
+        member_keys_by_asset.get(asset_id, ())
+        if attachment.attachment_kind != "sandbox_file" and asset_id not in asset_blobs
+        else ()
+    )
+    if not member_keys:
+        resolved, event = _resolve_attachment(attachment, index, thread_id=thread_id, asset_blobs=asset_blobs)
+        return [resolved], [] if event is None else [event]
+    base, base_event = _resolve_asset_attachment(attachment, index, {})
+    items: list[ParsedAttachment] = []
+    events: list[ParsedSessionEvent] = [] if base_event is None else [base_event]
+    if attachment.inline_bytes is not None or attachment.precomputed_blob is not None:
+        items.append(base)
+    for key in member_keys:
+        member = key[len(prefix) :]
+        blob_hash, blob_size = asset_blobs[key]
+        name = ParsedAttachment.sanitize_name(Path(member).name)
+        rendition_id = _asset_rendition_key(attachment.provider_attachment_id, member)
+        rendition = base.model_copy(
+            update={
+                "provider_attachment_id": rendition_id,
+                # A provider file id the pointer or library already carried
+                # is the provider's identity; the member's id is the fallback.
+                "provider_file_id": base.provider_file_id or asset_id,
+                "name": name,
+                # A member name without a known extension keeps the media
+                # type the pointer or library already declared.
+                "mime_type": mimetypes.guess_type(name or "")[0] or base.mime_type,
+                "size_bytes": blob_size,
+                "path": None,
+                "inline_bytes": None,
+                "precomputed_blob": (blob_hash, blob_size),
+                "prepared_carrier_key": None,
+            }
+        )
+        items.append(rendition)
+        events.append(
+            ParsedSessionEvent(
+                event_type="chatgpt_asset_resolution",
+                source_message_provider_id=attachment.message_provider_id,
+                payload={
+                    "attachment_id": rendition_id,
+                    # A provider file id the pointer or library already carried
+                    # is the provider's identity; the member's id is the fallback.
+                    "provider_file_id": base.provider_file_id or asset_id,
+                    "member_name": member,
+                    "resolved_name": name,
+                    "resolved_mime_type": rendition.mime_type,
+                    "resolved_size_bytes": blob_size,
+                    "resolution_source": "asset_member",
+                    "blob_acquired": True,
+                },
+            )
+        )
+    return items, events
 
 
 def _resolve_attachment(
@@ -373,7 +556,10 @@ def _resolve_asset_attachment(
     asset_blobs: Mapping[str, tuple[str, int]],
 ) -> tuple[ParsedAttachment, ParsedSessionEvent | None]:
     resolved = index.resolve_dat(attachment.provider_attachment_id)
-    blob = asset_blobs.get(_normalize_file_id(attachment.provider_attachment_id))
+    asset_id = _normalize_file_id(attachment.provider_attachment_id)
+    # Only the bare key is this attachment's own blob; an ambiguous member set
+    # is expanded by ``_resolve_attachment_renditions``.
+    blob = asset_blobs.get(asset_id)
     if resolved is None and blob is None:
         return attachment, None
     update: dict[str, object] = {}

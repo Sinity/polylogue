@@ -386,7 +386,7 @@ def test_a_killed_run_becomes_terminal_on_the_next_receipt_read(tmp_path: Path) 
     # Terminal for every downstream reader, not merely on disk.
     assert verify_runs._terminal_status(payload) == "failed"
     assert verify_runs.canonical_verification_receipt(payload)["status"] != "running"
-    history = verify_runs._read_history_pinned(tmp_path / verify_runs.VERIFY_HISTORY_PATH)
+    history = list(verify_runs._iter_history_pinned(tmp_path / verify_runs.VERIFY_HISTORY_PATH))
     assert [row["run_id"] for row in history] == [path.parent.name]
 
 
@@ -482,13 +482,13 @@ def test_abandoned_agentctl_run_waits_for_late_outcome_then_reconciles_mirror_an
         runs_root=runs_root, state_root=state_root, evidence_path=override_evidence
     )
     assert first and cast(dict[str, object], verify_runs._read_json(current))["status"] == "failed"
-    assert verify_runs._read_history_pinned(history)[0]["run_id"] == run_path.parent.name
+    assert list(verify_runs._iter_history_pinned(history))[0]["run_id"] == run_path.parent.name
     assert len(verify_runs.read_verification_evidence(override_evidence)) == 1
     assert not configured_evidence.exists()
     second = verify_runs.reconcile_and_record_abandoned_verify_runs(
         runs_root=runs_root, state_root=state_root, evidence_path=override_evidence
     )
-    assert second and len(verify_runs._read_history_pinned(history)) == 1
+    assert second and len(list(verify_runs._iter_history_pinned(history))) == 1
 
 
 def test_a_run_id_without_an_owning_pid_is_not_reconciled(tmp_path: Path) -> None:

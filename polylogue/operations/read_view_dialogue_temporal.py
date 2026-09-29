@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
 from polylogue.archive.hydration import archive_envelope_to_session, archive_summary_to_domain
-from polylogue.archive.query.archive_execution import _archive_summaries
+from polylogue.archive.query.archive_execution import _archive_summaries, order_query_summaries
 from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.operations.query_lowering import cli_query_spec
 from polylogue.operations.session_contracts import SessionRead
@@ -156,16 +156,7 @@ def execute_temporal_read(
         plan = spec.to_plan(vector_provider=vector_provider)
         rows = _archive_summaries(plan, archive, config=None, archive_root=archive.archive_root, default_limit=50)
         candidates = plan._apply_common_filters([archive_summary_to_domain(row) for row in rows], sql_pushed=True)
-        rank_first = bool(
-            plan.sort is None
-            and (
-                plan.fts_terms
-                or plan.similar_text
-                or plan.similar_session_id
-                or plan.retrieval_lane in {"semantic", "hybrid"}
-            )
-        )
-        ordered = candidates if rank_first else plan._sort_summaries(candidates)
+        ordered = order_query_summaries(plan, candidates)
         ranked = bool(plan.similar_text or plan.similar_session_id or plan.retrieval_lane in {"semantic", "hybrid"})
         if (plan.has_post_filters() or ranked) and plan.offset:
             ordered = ordered[plan.offset :]

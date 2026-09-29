@@ -44,6 +44,8 @@ from polylogue.operations.mutation_actuators import (
     AnnotationSaveArgs,
     BlackboardPostActuator,
     BlackboardPostArgs,
+    BlobPublicationAbandonActuator,
+    BlobPublicationAbandonArgs,
     BlockerResolveActuator,
     BlockerResolveArgs,
     BulkMetadataSetActuator,
@@ -101,6 +103,8 @@ from polylogue.operations.mutation_transaction import (
     MutationTransactionError,
     OperationExecutor,
     PlanStaleError,
+    RecoveryDeferredError,
+    build_plan,
 )
 from polylogue.storage.accepted_marker_inputs import persist_pending_marker_input_sync, prepare_accepted_marker_input
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
@@ -109,6 +113,54 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     assertion_id_for_saved_view,
     assertion_id_for_workspace,
 )
+
+
+def test_blob_abandon_refuses_blocked_liveness_before_deleting_any_receipt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: BLOCKED cannot be folded into the deletable unreferenced set."""
+    actuator = BlobPublicationAbandonActuator()
+    plan = build_plan(
+        operation=actuator.operation,
+        destructive_class=actuator.destructive_class,
+        target_refs=("source:blob-publication:blocked",),
+        affected_tiers=("source", "audit"),
+        reversible=False,
+        context={"requested": ["blocked"], "blocked": ["blocked"]},
+    )
+    monkeypatch.setattr(
+        "polylogue.storage.blob_publication.abandon_blob_publication_receipts",
+        lambda *args, **kwargs: pytest.fail("blocked evidence must stop before deletion"),
+    )
+    with pytest.raises(RecoveryDeferredError, match="blocked"):
+        actuator.apply(plan, BlobPublicationAbandonArgs(tmp_path, ("blocked",)))
+
+
+def test_delete_batch_reports_non_value_error_after_a_committed_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A later storage failure preserves the known durable deletion count.
+
+    Anti-vacuity: catching only ``ValueError`` lets an SQLite failure escape
+    as an ordinary refusal after the first chunk has already committed.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.operations import delete_authorization
+    from polylogue.operations.delete_authorization import DeleteBatchPartialError
+
+    calls = 0
+
+    def consume(*_args: object) -> object:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return SimpleNamespace(affected_count=3)
+        raise sqlite3.OperationalError("later chunk failed")
+
+    monkeypatch.setattr(delete_authorization, "consume_cli_delete", consume)
+    with pytest.raises(DeleteBatchPartialError) as caught:
+        delete_authorization.consume_cli_delete_many(Path("/archive"), ("one", "two"), cast(Any, object()))
+    assert caught.value.completed_chunks == 1
+    assert caught.value.affected_count == 3
 
 
 def _seed_archive_session(archive_root: Path, *, native_id: str) -> str:
@@ -249,7 +301,9 @@ class TestSessionDeleteActuator:
 
         assert receipt.affected_count == 1
         assert invalidated == [True]
-        assert deferred == [("invalidate_session_insights", False)]
+        # F614: the invalidation is part of the admitted writer transaction, so
+        # there is no independent deferred writer left to race the coordinator.
+        assert deferred == []
 
     def test_prepare_only_plans_currently_existing_sessions(self, tmp_path: Path) -> None:
         archive_root = tmp_path / "archive"

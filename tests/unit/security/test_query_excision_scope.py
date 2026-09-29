@@ -122,7 +122,7 @@ def test_excision_scrubs_every_content_bearing_assertion_field() -> None:
 
     Anti-vacuity: clearing only `value_json` and `body_text` leaves the secret
     in `key`, the path in `scope_ref`, and operator JSON in `staleness_json`,
-    `supersedes_json` and `evidence_refs_json`.
+    `supersedes_json`, `evidence_refs_json`, and caller-controlled authorship.
     """
     conn = _conn()
     query, _relation = _query_with_relation(conn)
@@ -134,18 +134,32 @@ def test_excision_scrubs_every_content_bearing_assertion_field() -> None:
     row = conn.execute(
         """
         SELECT status, key, value_json, body_text, scope_ref, staleness_json,
-               supersedes_json, evidence_refs_json, context_policy_json, visibility, author_ref
+               supersedes_json, evidence_refs_json, context_policy_json, visibility, author_ref, author_kind
         FROM assertions WHERE assertion_id = 'note-on-query'
         """
     ).fetchone()
-    status, key, value_json, body_text, scope_ref, staleness, supersedes, evidence, policy, visibility, author = row
+    (
+        status,
+        key,
+        value_json,
+        body_text,
+        scope_ref,
+        staleness,
+        supersedes,
+        evidence,
+        policy,
+        visibility,
+        author,
+        author_kind,
+    ) = row
     assert status == "deleted"
     assert (key, value_json, body_text, scope_ref, staleness) == (None, None, None, None, None)
     assert (supersedes, evidence) == ("[]", "[]")
     assert policy == '{"inject":false}'
     assert visibility == "private"
-    # Accountability for the excised note is deliberately retained.
-    assert author == "user:local"
+    # The operation ledger retains accountability; caller-controlled author
+    # identity must not survive in the scrubbed assertion itself.
+    assert (author, author_kind) == ("actor:query-excision", "system")
 
 
 def test_accessed_holdout_is_held_instead_of_failing_mid_transaction() -> None:

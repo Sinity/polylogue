@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import fcntl
 import sqlite3
+import stat
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ from typing import IO, BinaryIO
 from uuid import uuid4
 
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
+from polylogue.core.storage_faults import ArchiveStorageFaultError, StorageFaultKind
 from polylogue.storage.blob_liveness import BlobLiveness, LivenessState, inspect_blob_liveness
 from polylogue.storage.blob_store import BlobStore, Heartbeat, PreparedBlob
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection, open_source_tier_write_connection
@@ -152,6 +154,22 @@ class BlobPublicationReservationStore:
             conn.close()
 
 
+class AdoptedBlobEvictedError(ArchiveStorageFaultError):
+    """A blob published outside the archive protocol was reclaimed before its reservation.
+
+    The bytes still live in the retained source, so the input is not at fault:
+    it is a storage fault, retried with the input's cursor untouched, and the
+    retry publishes the bytes again.
+    """
+
+    def __init__(self, blob_hashes: Sequence[str]) -> None:
+        self.blob_hashes = tuple(blob_hashes)
+        super().__init__(
+            StorageFaultKind.EVICTED,
+            FileNotFoundError(f"adopted blob(s) missing before reservation: {', '.join(self.blob_hashes)}"),
+        )
+
+
 class ArchiveBlobPublisher(BlobStore):
     """Batch prepare, reserve, then publish blobs for one archive."""
 
@@ -163,6 +181,7 @@ class ArchiveBlobPublisher(BlobStore):
         if self._store.root != blob_root:
             raise ValueError("publisher store root must match blob_root")
         self._pending: list[tuple[BlobPublicationReceipt, PreparedBlob]] = []
+        self._adoptions: list[BlobPublicationReceipt] = []
         self._latest_receipt_by_hash: dict[str, str] = {}
         self._pending_by_hash: dict[str, PreparedBlob] = {}
 
@@ -198,8 +217,43 @@ class ArchiveBlobPublisher(BlobStore):
     def write_from_fileobj(self, source: IO[bytes], *, heartbeat: Heartbeat | None = None) -> tuple[str, int]:
         return self._queue(self._store.prepare_from_fileobj(source, heartbeat=heartbeat))
 
+    def write_from_writer(
+        self, write: Callable[[IO[bytes]], None], *, heartbeat: Heartbeat | None = None
+    ) -> tuple[str, int]:
+        return self._queue(self._store.prepare_from_writer(write, heartbeat=heartbeat))
+
     def write_from_bytes(self, data: bytes) -> tuple[str, int]:
         return self._queue(self._store.prepare_from_bytes(data))
+
+    def adopt_published(self, blob_hash: str, size_bytes: int) -> tuple[str, int]:
+        """Queue a reservation for bytes another process already published.
+
+        The streamed browser-capture decode runs in a compute worker that has
+        no archive write lease, so it publishes attachment bytes straight into
+        the store. Until a durable row references them those bytes are
+        GC-eligible. ``flush()`` reserves the hash like any publication and,
+        under the same exclusion GC unlinks under, proves the file is still
+        present with the declared size; a reclaimed file raises
+        :class:`AdoptedBlobEvictedError` instead of letting a missing blob be
+        recorded as acquired.
+        """
+        self._store.blob_path(blob_hash)  # validates the hash before it is queued
+        receipt = BlobPublicationReceipt(
+            publication_id=str(uuid4()),
+            blob_hash=blob_hash,
+            size_bytes=size_bytes,
+            publisher_id=self.publisher_id,
+        )
+        self._adoptions.append(receipt)
+        self._latest_receipt_by_hash[blob_hash] = receipt.publication_id
+        return blob_hash, size_bytes
+
+    def _adopted_present(self, receipt: BlobPublicationReceipt) -> bool:
+        try:
+            status = self._store.blob_path(receipt.blob_hash).stat()
+        except FileNotFoundError:
+            return False
+        return stat.S_ISREG(status.st_mode) and status.st_size == receipt.size_bytes
 
     def receipt_id(self, blob_hash: str) -> str | None:
         """Return the receipt for the most recent write of *blob_hash*."""
@@ -214,25 +268,76 @@ class ArchiveBlobPublisher(BlobStore):
         connection never waits behind the batch's held source.db write lock
         (the deadlock that previously forced per-cohort replay commits).
         """
-        return bool(self._pending)
+        return bool(self._pending or self._adoptions)
 
     def flush(self) -> tuple[BlobPublicationReceipt, ...]:
-        """Commit all receipts once, then expose all corresponding final paths."""
-        if not self._pending:
+        """Commit all receipts once, then expose all corresponding final paths.
+
+        Adopted blobs are checked before anything is reserved, under the
+        publisher slot GC's unlink excludes, so a blob present at the check
+        stays present once its reservation commits. When one is missing
+        nothing of this batch is reserved or published: every queued write is
+        discarded and :class:`AdoptedBlobEvictedError` is raised.
+        """
+        if not self._pending and not self._adoptions:
             return ()
         pending = tuple(self._pending)
-        receipts = tuple(receipt for receipt, _prepared in pending)
+        adoptions = tuple(self._adoptions)
+        receipts = (*(receipt for receipt, _prepared in pending), *adoptions)
         with _archive_blob_publisher_slot(self.source_db_path):
+            missing = [receipt.blob_hash for receipt in adoptions if not self._adopted_present(receipt)]
+            if missing:
+                self.discard_pending()
+                raise AdoptedBlobEvictedError(missing)
             BlobPublicationReservationStore(self.source_db_path).reserve_many(receipts)
             self._store.publish_many(prepared for _receipt, prepared in pending)
         self._pending.clear()
+        self._adoptions.clear()
         self._pending_by_hash.clear()
         return receipts
+
+    def discard_pending_receipt(self, publication_id: str) -> bool:
+        """Drop one queued publication or adoption by its receipt, before any flush.
+
+        Receipts, not hashes, identify a capture: two identical captures share
+        a hash, and dropping one must not strand or drop the other. Returns
+        whether the receipt was still queued.
+        """
+        blob_hash: str | None = None
+        for index, (receipt, prepared) in enumerate(self._pending):
+            if receipt.publication_id == publication_id:
+                del self._pending[index]
+                self._store.discard_prepared(prepared)
+                blob_hash = receipt.blob_hash
+                break
+        else:
+            for index, receipt in enumerate(self._adoptions):
+                if receipt.publication_id == publication_id:
+                    # An adopted blob was published by its worker; dropping the
+                    # adoption only leaves those bytes to ordinary GC.
+                    del self._adoptions[index]
+                    blob_hash = receipt.blob_hash
+                    break
+        if blob_hash is None:
+            return False
+        earlier = [(receipt, prepared) for receipt, prepared in self._pending if receipt.blob_hash == blob_hash]
+        earlier_adoptions = [receipt for receipt in self._adoptions if receipt.blob_hash == blob_hash]
+        if earlier:
+            self._latest_receipt_by_hash[blob_hash] = earlier[-1][0].publication_id
+            self._pending_by_hash[blob_hash] = earlier[-1][1]
+        else:
+            self._pending_by_hash.pop(blob_hash, None)
+            if earlier_adoptions:
+                self._latest_receipt_by_hash[blob_hash] = earlier_adoptions[-1].publication_id
+            else:
+                self._latest_receipt_by_hash.pop(blob_hash, None)
+        return True
 
     def discard_pending(self) -> None:
         for _receipt, prepared in self._pending:
             self._store.discard_prepared(prepared)
         self._pending.clear()
+        self._adoptions.clear()
         self._pending_by_hash.clear()
 
     def blob_path(self, hash_hex: str) -> Path:
@@ -357,6 +462,7 @@ def inspect_blob_publication_receipts(
     index_db_path: Path | None = None,
     max_count: int | None = None,
     after_publication_id: str | None = None,
+    publication_ids: tuple[str, ...] | None = None,
 ) -> tuple[BlobPublicationInspection, ...]:
     """Return receipt evidence, optionally bounded by a stable ID cursor."""
     from polylogue.storage.archive_identity import ArchiveLocation
@@ -379,7 +485,19 @@ def inspect_blob_publication_receipts(
         store = BlobStore(blob_root)
         if not _table_exists(source_conn, "blob_publication_reservations"):
             return ()
-        if max_count is None and after_publication_id is None:
+        if publication_ids is not None:
+            if not publication_ids:
+                return ()
+            rows = source_conn.execute(
+                f"""
+                SELECT publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
+                FROM blob_publication_reservations
+                WHERE publication_id IN ({",".join("?" for _ in publication_ids)})
+                ORDER BY publication_id
+                """,
+                publication_ids,
+            ).fetchall()
+        elif max_count is None and after_publication_id is None:
             rows = source_conn.execute(
                 """
                 SELECT publication_id, blob_hash, size_bytes, publisher_id, reserved_at_ms
@@ -595,6 +713,7 @@ def abandon_blob_publication_receipts(
 
 
 __all__ = [
+    "AdoptedBlobEvictedError",
     "ArchiveBlobPublisher",
     "ArchiveWriterExclusion",
     "BlobPublicationAbandonment",

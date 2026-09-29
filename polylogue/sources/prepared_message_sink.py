@@ -4,19 +4,44 @@ from __future__ import annotations
 
 import base64
 import json
+import os
+import re
 import sqlite3
+import threading
 import uuid
-from collections.abc import Iterable, Iterator, Mapping, MutableSequence, Set
+from collections import OrderedDict
+from collections.abc import (
+    Callable,
+    Container,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+    MutableSet,
+    Set,
+)
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import BinaryIO, overload
+from typing import BinaryIO, TypeVar, overload
 from urllib.parse import quote
 
 import ijson
 
+from polylogue.core.hashing import hash_text
+from polylogue.core.json import JSONDocument, json_document
+from polylogue.sources import value_bounds
 from polylogue.sources.decoder_json import _json_subtree, normalize_ijson_stdlib_numbers
-from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.live.tool_result_sidecars import (
+    SidecarDebt,
+    SidecarMatch,
+)
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSessionEvent
+from polylogue.sources.parsers.base_models import SINK_JSON_CONTEXT
+from polylogue.sources.parsers.claude.common import _ClaudeMessageEvidence
+from polylogue.sources.sidecar_evidence import RetainedSidecarScope
+from polylogue.sources.value_bounds import require_storable_string
 
 _ACTIVE_PARENT_LOOKUP_SQL = (
     "SELECT parent_id FROM prepared_message INDEXED BY prepared_message_provider "
@@ -24,21 +49,157 @@ _ACTIVE_PARENT_LOOKUP_SQL = (
 )
 
 
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+# A \\u escape of a surrogate, preceded by an even run of backslashes (a real
+# escape, not the literal text of one).
+_ESCAPED_SURROGATE = re.compile(r"(?<!\\)(?:\\\\)*\\u[dD][89a-fA-F][0-9a-fA-F]{2}")
+
+
+def _text_json(value: object) -> str:
+    """JSON text SQLite can store: a lone surrogate stays a ``\\uXXXX`` escape.
+
+    Provider JSON admits lone surrogate escapes and decoding keeps them as
+    code points, which are not valid UTF-8. Escaping them keeps the value
+    exact through a round trip instead of failing the insert.
+    """
+    encoded = json.dumps(value, ensure_ascii=False)
+    if encoded.isascii() or _LONE_SURROGATE.search(encoded) is None:
+        # No substitution, so no second full-size copy of a large row.
+        return encoded
+    return _LONE_SURROGATE.sub(lambda match: f"\\u{ord(match.group()):04x}", encoded)
+
+
+_ModelT = TypeVar("_ModelT", ParsedMessage, ParsedSessionEvent)
+
+
+def _from_text_json(model: type[_ModelT], encoded: str) -> _ModelT:
+    """Decode sink JSON; an escaped lone surrogate needs the stdlib decoder.
+
+    pydantic's JSON parser rejects a surrogate escape, and the stdlib parser
+    reads it exactly, so such a row is parsed once by the stdlib and validated
+    in Python mode: no marked copy, dump or restore pass. The fields rendered
+    differently in JSON mode (a paste digest's hex) read the
+    :data:`SINK_JSON_CONTEXT` flag and parse as JSON mode would.
+    """
+    if _ESCAPED_SURROGATE.search(encoded) is None:
+        return model.model_validate_json(encoded)
+    return model.model_validate(json.loads(encoded), context=SINK_JSON_CONTEXT)
+
+
 def _read_uri(path: Path) -> str:
     return f"file:{quote(str(path))}?mode=ro"
+
+
+def _write_row(conn: sqlite3.Connection, sql: str, parameters: tuple[object, ...], *, kind: str) -> None:
+    """Write one scratch row, typing SQLite's refusal of an oversized row.
+
+    Each serialized value is bounded on its own, but SQLite applies the same
+    length limit to the complete encoded row, so values just under the bound
+    can still combine past it with the row's other columns.
+    """
+    try:
+        conn.execute(sql, parameters)
+    except sqlite3.DataError as exc:
+        if "too big" not in str(exc):
+            raise
+        observed = sum(
+            len(value.encode("utf-8", "surrogatepass")) if isinstance(value, str) else len(value)
+            for value in parameters
+            if isinstance(value, (str, bytes))
+        )
+        raise value_bounds.ValueBoundRefusedError(kind, observed, value_bounds.MAX_STORABLE_VALUE_BYTES) from exc
+
+
+#: Byte budget, counted in sealed ``message_json`` bytes, for decoded sessions
+#: kept across passes. A session larger than half of it is never retained and
+#: keeps streaming from disk, so whale memory stays bounded as before.
+DECODED_SESSION_BUDGET_BYTES = 64 * 1024 * 1024
+
+_DecodedKey = tuple[str, int, int, int, int, int, int]
+
+
+class _DecodedSessions:
+    """A small process-wide LRU of fully decoded sealed sessions.
+
+    Publishing one session walks its messages about twenty times (content
+    identities, timestamps, messages, blocks, file edits, events, links,
+    paste spans, ...). Each walk re-read the sealed carrier and re-ran pydantic
+    validation of every message: on the fresh-build benchmark that was 45% of
+    the ingest writer's CPU. A sealed carrier is immutable, so its first
+    complete walk is retained for the following ones.
+
+    Retained messages are shared between walks. The writer treats parsed
+    messages as values -- it derives rows and ``model_copy`` for changes --
+    and never assigns to one in place.
+    """
+
+    def __init__(self, budget_bytes: int) -> None:
+        self.budget_bytes = budget_bytes
+        self._entries: OrderedDict[_DecodedKey, tuple[tuple[ParsedMessage, ...], int]] = OrderedDict()
+        self._bytes = 0
+        self._lock = threading.Lock()
+
+    def get(self, key: _DecodedKey) -> tuple[ParsedMessage, ...] | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            self._entries.move_to_end(key)
+            return entry[0]
+
+    def put(self, key: _DecodedKey, messages: tuple[ParsedMessage, ...], size: int) -> None:
+        with self._lock:
+            if key in self._entries or size > self.budget_bytes // 2:
+                return
+            self._entries[key] = (messages, size)
+            self._bytes += size
+            while self._bytes > self.budget_bytes and self._entries:
+                _key, (_messages, evicted) = self._entries.popitem(last=False)
+                self._bytes -= evicted
+
+    def discard_path(self, path: str) -> None:
+        with self._lock:
+            for key in [key for key in self._entries if key[0] == path]:
+                self._bytes -= self._entries.pop(key)[1]
+
+    def discard_under(self, directory: str) -> None:
+        prefix = directory.rstrip(os.sep) + os.sep
+        with self._lock:
+            for key in [key for key in self._entries if key[0].startswith(prefix)]:
+                self._bytes -= self._entries.pop(key)[1]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._bytes = 0
+
+
+_DECODED_SESSIONS = _DecodedSessions(DECODED_SESSION_BUDGET_BYTES)
+
+
+def discard_decoded_sessions(path: Path) -> None:
+    """Release retained decodes of one sealed carrier before it is removed."""
+    _DECODED_SESSIONS.discard_path(str(path))
+
+
+def discard_decoded_sessions_under(directory: Path) -> None:
+    """Release retained decodes of every carrier in a scratch tree being removed."""
+    _DECODED_SESSIONS.discard_under(str(directory))
 
 
 def _message_json(value: ParsedMessage) -> str:
     payload = value.model_dump(mode="json")
     payload["parent_message_position"] = value.parent_message_position
     payload["owner_coordinate"] = asdict(value.owner_coordinate) if value.owner_coordinate is not None else None
-    return json.dumps(payload, ensure_ascii=False)
+    # Each serialized record is one SQLite cell: individually storable
+    # values can still combine into an unstorable row.
+    return require_storable_string(_text_json(payload), kind="serialized message")
 
 
 def _event_json(value: ParsedSessionEvent) -> str:
     payload = value.model_dump(mode="json")
     payload["boundary_message_position"] = value.boundary_message_position
-    return json.dumps(payload, ensure_ascii=False)
+    return require_storable_string(_text_json(payload), kind="serialized event")
 
 
 def _attachment_json(value: ParsedAttachment) -> str:
@@ -50,17 +211,244 @@ def _attachment_json(value: ParsedAttachment) -> str:
     payload["_prepared_inline_bytes"] = (
         base64.b64encode(value.inline_bytes).decode("ascii") if value.inline_bytes is not None else None
     )
-    return json.dumps(payload, ensure_ascii=False)
+    return require_storable_string(_text_json(payload), kind="serialized attachment")
 
 
-def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachment_ordinal: int) -> ParsedAttachment:
+def _attachment_from_json(encoded: str) -> ParsedAttachment:
     payload = json.loads(encoded)
     inline = payload.pop("_prepared_inline_bytes", None)
     if inline is not None:
         payload["inline_bytes"] = base64.b64decode(inline, validate=True)
-    return ParsedAttachment.model_validate(payload).model_copy(
+    return ParsedAttachment.model_validate(payload)
+
+
+def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachment_ordinal: int) -> ParsedAttachment:
+    return _attachment_from_json(encoded).model_copy(
         update={"prepared_carrier_key": (str(path), session_ordinal, attachment_ordinal)}
     )
+
+
+# The envelope's pointer line, and the bare path as it also appears inside the
+# retained head/tail excerpt. Both spellings resolve to the same basename.
+_POINTER_RE = re.compile(r"tool-outputs/[^\s\"'\\,)]+")
+
+# Gemini CLI's masking envelope. Either marker alone identifies a truncated
+# inline rendering: the wrapper tag is absent on some tools that emit only the
+# "Output too large" preamble.
+_MASK_RE = re.compile(
+    r"<tool_output_masked>|Output too large\. Showing first [\d,]+ and last [\d,]+ characters",
+)
+
+
+_ADVERTISED_EXCERPT_RE = re.compile(r"Showing first ([\d,]+) and last ([\d,]+) characters")
+
+
+def _advertised_output_length(text: str) -> int:
+    """The minimum length of the full output a masking envelope describes.
+
+    The envelope excerpts the first N and last M characters of a longer
+    output, so the full output holds at least N + M. Without the counts only
+    a non-empty file is evidence.
+    """
+    match = _ADVERTISED_EXCERPT_RE.search(text)
+    if match is None:
+        return 1
+    first, last = (group.replace(",", "") for group in match.groups())
+    # A comma-only or absurdly long count quantifies nothing; the envelope
+    # still marks the output as masked.
+    if not (first.isdigit() and last.isdigit()) or len(first) > 18 or len(last) > 18:
+        return 1
+    return int(first) + int(last)
+
+
+def is_masked_tool_output(text: str | None) -> bool:
+    """True when ``text`` is Gemini CLI's truncated rendering of a larger output."""
+    return bool(text) and _MASK_RE.search(text or "") is not None
+
+
+def _tool_call_texts(tool_record: JSONDocument) -> list[str]:
+    """Every string a tool call could carry a sidecar pointer in."""
+    texts: list[str] = []
+    results = tool_record.get("result")
+    for result_item in results if isinstance(results, list) else []:
+        response = json_document(json_document(result_item).get("functionResponse")).get("response")
+        texts.extend(value for value in json_document(response).values() if isinstance(value, str))
+    display = tool_record.get("resultDisplay")
+    if isinstance(display, str):
+        texts.append(display)
+    elif display is not None:
+        texts.append(json.dumps(display))
+    return texts
+
+
+class GeminiToolOutputIndex:
+    """Disk-backed owner, pointer, and replacement state for one checkpoint."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        conn.executescript("""
+            CREATE TABLE gemini_tool_owner (
+                tool_id TEXT PRIMARY KEY, first_ordinal INTEGER NOT NULL,
+                inline_len INTEGER NOT NULL, masked INTEGER NOT NULL, complete_len INTEGER NOT NULL
+            );
+            CREATE TABLE gemini_tool_pointer (filename TEXT PRIMARY KEY, tool_id TEXT NOT NULL);
+            CREATE TABLE gemini_tool_present (filename TEXT PRIMARY KEY);
+            CREATE TABLE gemini_tool_matched (tool_id TEXT PRIMARY KEY);
+            CREATE TABLE gemini_tool_debt (
+                ordinal INTEGER PRIMARY KEY, filename TEXT NOT NULL, byte_size INTEGER NOT NULL,
+                reason TEXT NOT NULL, file_mtime_ms INTEGER
+            );
+            CREATE TABLE gemini_tool_replacement (tool_id TEXT PRIMARY KEY, full_text TEXT NOT NULL);
+        """)
+        self._tool_ordinal = 0
+
+    def observe(self, message: object) -> None:
+        raw_calls = json_document(message).get("toolCalls")
+        for item in raw_calls if isinstance(raw_calls, list) else []:
+            tool_record = json_document(item)
+            tool_id = tool_record.get("id")
+            if not isinstance(tool_id, str) or not tool_id:
+                continue
+            inline = ""
+            masked = False
+            complete_len = 0
+            results = tool_record.get("result")
+            for result_item in results if isinstance(results, list) else []:
+                response = json_document(json_document(result_item).get("functionResponse")).get("response")
+                output = json_document(response).get("output")
+                if isinstance(output, str):
+                    inline = output if len(output) > len(inline) else inline
+                    if is_masked_tool_output(output):
+                        masked = True
+                        complete_len = max(complete_len, _advertised_output_length(output))
+            self.conn.execute(
+                "INSERT INTO gemini_tool_owner VALUES (?, ?, ?, ?, ?) ON CONFLICT(tool_id) "
+                "DO UPDATE SET inline_len = excluded.inline_len, masked = excluded.masked, "
+                "complete_len = excluded.complete_len",
+                (tool_id, self._tool_ordinal, len(inline), int(masked), complete_len),
+            )
+            self._tool_ordinal += 1
+            for text in _tool_call_texts(tool_record):
+                for pointer in _POINTER_RE.findall(text):
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO gemini_tool_pointer VALUES (?, ?)",
+                        (os.path.basename(pointer), tool_id),
+                    )
+
+    def _owner_for_stem(self, stem: str) -> str | None:
+        exact = self.conn.execute("SELECT tool_id FROM gemini_tool_owner WHERE tool_id = ?", (stem,)).fetchone()
+        if exact is not None:
+            return str(exact[0])
+        row = self.conn.execute(
+            "SELECT tool_id FROM gemini_tool_owner WHERE instr(?, '_' || tool_id || '_') > 0 "
+            "OR substr(?, -length(tool_id) - 1) = '_' || tool_id "
+            "OR substr(?, 1, length(tool_id) + 1) = tool_id || '_' "
+            "ORDER BY length(tool_id) DESC, first_ordinal LIMIT 1",
+            (stem, stem, stem),
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def _pointer_owner(self, filename: str, stem: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT tool_id FROM gemini_tool_pointer WHERE filename IN (?, ?) "
+            "ORDER BY CASE filename WHEN ? THEN 0 ELSE 1 END LIMIT 1",
+            (filename, stem, filename),
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def join(self, scope: RetainedSidecarScope) -> Iterator[SidecarMatch | SidecarDebt]:
+        """Yield ordered matches, then ordered debt, keeping only one file in memory."""
+        if not scope.available:
+            return
+        debt_ordinal = 0
+        for entry in sorted(scope.files, key=lambda candidate: candidate.filename):
+            self.conn.execute("INSERT OR IGNORE INTO gemini_tool_present VALUES (?)", (entry.filename,))
+            stem = entry.filename.rsplit(".", 1)[0]
+            tool_id = self._owner_for_stem(stem) or self._pointer_owner(entry.filename, stem)
+            owner = (
+                self.conn.execute(
+                    "SELECT inline_len, masked, complete_len FROM gemini_tool_owner WHERE tool_id = ?", (tool_id,)
+                ).fetchone()
+                if tool_id is not None
+                else None
+            )
+            reason = None
+            full_text = ""
+            if owner is None:
+                reason = "no_owning_tool_call"
+            elif entry.byte_size > value_bounds.MAX_STORABLE_VALUE_BYTES:
+                # The one physical limit: a value SQLite cannot store in a
+                # cell is refused typed, never truncated. Files are joined one
+                # at a time, and the replaced block carries the full text
+                # anyway, so no machine-dependent memory share applies.
+                reason = value_bounds.VALUE_BOUND_REFUSED
+            else:
+                try:
+                    full_text = value_bounds.require_storable_string(entry.read_text(), kind="gemini tool sidecar")
+                except OSError as exc:
+                    reason = f"read_error:{type(exc).__name__}"
+                except value_bounds.ValueBoundRefusedError:
+                    # Replacement characters for invalid UTF-8 can expand a
+                    # file under the byte limit past it once decoded.
+                    reason = value_bounds.VALUE_BOUND_REFUSED
+                else:
+                    if bool(owner[1]) and len(full_text) < int(owner[2]):
+                        # A file still being written can read as an empty or
+                        # partial prefix. The envelope advertises how much it
+                        # excerpts ("first N and last M characters"); a
+                        # sidecar shorter than that is not the full output.
+                        reason = "sidecar_less_complete_than_inline"
+                        full_text = ""
+            if reason is not None:
+                self.conn.execute(
+                    "INSERT INTO gemini_tool_debt VALUES (?, ?, ?, ?, ?)",
+                    (debt_ordinal, entry.filename, entry.byte_size, reason, entry.file_mtime_ms),
+                )
+                debt_ordinal += 1
+                continue
+            assert tool_id is not None and owner is not None
+            was_truncated = bool(owner[1]) or len(full_text) > int(owner[0])
+            self.conn.execute("INSERT OR IGNORE INTO gemini_tool_matched VALUES (?)", (tool_id,))
+            if was_truncated:
+                self.conn.execute(
+                    "INSERT INTO gemini_tool_replacement VALUES (?, ?) "
+                    "ON CONFLICT(tool_id) DO UPDATE SET full_text = excluded.full_text",
+                    (tool_id, full_text),
+                )
+            yield SidecarMatch(
+                tool_use_id=tool_id,
+                filename=entry.filename,
+                byte_size=entry.byte_size,
+                content_hash=hash_text(full_text),
+                was_truncated=was_truncated,
+                full_text=full_text,
+                file_mtime_ms=entry.file_mtime_ms,
+            )
+        for filename, tool_id in self.conn.execute(
+            "SELECT filename, tool_id FROM gemini_tool_pointer ORDER BY filename"
+        ):
+            present = self.conn.execute("SELECT 1 FROM gemini_tool_present WHERE filename = ?", (filename,)).fetchone()
+            matched = self.conn.execute("SELECT 1 FROM gemini_tool_matched WHERE tool_id = ?", (tool_id,)).fetchone()
+            if present is None and matched is None:
+                self.conn.execute(
+                    "INSERT INTO gemini_tool_debt VALUES (?, ?, 0, 'expected_sidecar_not_retained', NULL)",
+                    (debt_ordinal, filename),
+                )
+                debt_ordinal += 1
+        for filename, byte_size, reason, file_mtime_ms in self.conn.execute(
+            "SELECT filename, byte_size, reason, file_mtime_ms FROM gemini_tool_debt ORDER BY ordinal"
+        ):
+            yield SidecarDebt(filename, byte_size, reason, file_mtime_ms)
+
+    def replacement_for(self, tool_id: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT full_text FROM gemini_tool_replacement WHERE tool_id = ?", (tool_id,)
+        ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def close(self) -> None:
+        for name in ("owner", "pointer", "present", "matched", "debt", "replacement"):
+            self.conn.execute(f"DROP TABLE gemini_tool_{name}")
 
 
 class SqliteMessageSink(MutableSequence[ParsedMessage]):
@@ -104,6 +492,10 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 (self.session_ordinal, ordinal),
             ).fetchone()
         else:
+            key = self._decoded_key()
+            decoded = _DECODED_SESSIONS.get(key) if key is not None else None
+            if decoded is not None:
+                return decoded[ordinal]
             with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
                 row = conn.execute(
                     "SELECT message_json FROM prepared_message WHERE session_ordinal = ? AND message_ordinal = ?",
@@ -111,7 +503,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 ).fetchone()
         if row is None:
             raise ValueError("prepared message row disappeared")
-        return ParsedMessage.model_validate_json(row[0])
+        return _from_text_json(ParsedMessage, row[0])
 
     @overload
     def __setitem__(self, index: int, value: ParsedMessage) -> None: ...
@@ -148,7 +540,8 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             raise TypeError("sealed prepared messages are immutable")
         if index != self._count:
             raise TypeError("prepared messages can only be appended")
-        self._writer.execute(
+        _write_row(
+            self._writer,
             "INSERT INTO prepared_message VALUES (?, ?, ?, ?, ?, ?)",
             (
                 self.session_ordinal,
@@ -158,6 +551,7 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 value.parent_message_provider_id,
                 int(bool(value.is_active_leaf)),
             ),
+            kind="prepared message row",
         )
         self._count += 1
 
@@ -179,16 +573,53 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 (self.session_ordinal, start),
             )
             for row in cursor:
-                yield ParsedMessage.model_validate_json(row[0])
+                yield _from_text_json(ParsedMessage, row[0])
             return
+        key = self._decoded_key()
+        decoded = _DECODED_SESSIONS.get(key) if key is not None else None
+        if decoded is not None:
+            yield from decoded[start:]
+            return
+        retained: list[ParsedMessage] | None = [] if key is not None and start == 0 else None
+        retained_bytes = 0
         with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
+            # The budget is in stored bytes: ``len`` of the decoded text
+            # counts code points and undercounts non-ASCII transcripts.
             cursor = conn.execute(
-                "SELECT message_json FROM prepared_message WHERE session_ordinal = ? "
-                "AND message_ordinal >= ? ORDER BY message_ordinal",
+                "SELECT message_json, length(CAST(message_json AS BLOB)) FROM prepared_message "
+                "WHERE session_ordinal = ? AND message_ordinal >= ? ORDER BY message_ordinal",
                 (self.session_ordinal, start),
             )
             for row in cursor:
-                yield ParsedMessage.model_validate_json(row[0])
+                message = _from_text_json(ParsedMessage, row[0])
+                if retained is not None:
+                    retained_bytes += int(row[1])
+                    if retained_bytes > _DECODED_SESSIONS.budget_bytes // 2:
+                        retained = None
+                    else:
+                        retained.append(message)
+                yield message
+        # Only a walk that reached the end holds the whole session.
+        # An empty session costs nothing to decode and would occupy an LRU
+        # entry the byte budget never charges for.
+        if key is not None and retained and len(retained) == self._count:
+            _DECODED_SESSIONS.put(key, tuple(retained), retained_bytes)
+
+    def _decoded_key(self) -> _DecodedKey | None:
+        """Identify this sealed session's bytes, or ``None`` when unreadable."""
+        try:
+            stat = os.stat(self.path)
+        except OSError:
+            return None
+        return (
+            str(self.path),
+            self.session_ordinal,
+            stat.st_dev,
+            stat.st_ino,
+            stat.st_mtime_ns,
+            stat.st_ctime_ns,
+            stat.st_size,
+        )
 
     def normalize_active_path(self) -> SqliteMessageSink:
         """Apply the writer's leaf/path normalization without a message list."""
@@ -212,15 +643,18 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                     message = self[ordinal]
                     self[ordinal] = message.model_copy(update={"is_active_leaf": expected})
             return self
-        leaf = self._writer.execute(
-            "SELECT provider_id FROM prepared_message WHERE session_ordinal = ? AND active_leaf = 1",
+        leaf, leaf_parent = self._writer.execute(
+            "SELECT provider_id, parent_id FROM prepared_message WHERE session_ordinal = ? AND active_leaf = 1",
             (self.session_ordinal,),
-        ).fetchone()[0]
+        ).fetchone()
         if not leaf:
             return self
         self._writer.execute("DROP TABLE IF EXISTS temp.prepared_active_path")
         self._writer.execute("CREATE TEMP TABLE prepared_active_path (provider_id TEXT PRIMARY KEY)")
-        cursor: str | None = leaf
+        # The walk starts at the leaf row itself: a later message repeating
+        # the leaf's provider id may name a different parent.
+        self._writer.execute("INSERT INTO prepared_active_path VALUES (?)", (leaf,))
+        cursor: str | None = leaf_parent
         while cursor:
             result = self._writer.execute("INSERT OR IGNORE INTO prepared_active_path VALUES (?)", (cursor,))
             if result.rowcount == 0:
@@ -396,9 +830,11 @@ class SqliteAttachmentSink(MutableSequence[ParsedAttachment]):
             raise TypeError("sealed prepared attachments are immutable")
         if isinstance(index, slice) or not isinstance(value, ParsedAttachment):
             raise TypeError("prepared attachment replacement needs one attachment")
-        self._writer.execute(
+        _write_row(
+            self._writer,
             "UPDATE prepared_attachment SET attachment_json = ? WHERE session_ordinal = ? AND attachment_ordinal = ?",
             (_attachment_json(value), self.session_ordinal, self._ordinal(index)),
+            kind="prepared attachment row",
         )
 
     def __delitem__(self, index: int | slice) -> None:
@@ -409,9 +845,11 @@ class SqliteAttachmentSink(MutableSequence[ParsedAttachment]):
             raise TypeError("sealed prepared attachments are immutable")
         if index != self._count:
             raise TypeError("prepared attachments can only be appended")
-        self._writer.execute(
+        _write_row(
+            self._writer,
             "INSERT INTO prepared_attachment VALUES (?, ?, ?)",
             (self.session_ordinal, self._count, _attachment_json(value)),
+            kind="prepared attachment row",
         )
         self._count += 1
 
@@ -482,7 +920,7 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
             ).fetchone()
         if row is None:
             raise ValueError("prepared event row disappeared")
-        return ParsedSessionEvent.model_validate_json(row[0])
+        return _from_text_json(ParsedSessionEvent, row[0])
 
     @overload
     def __setitem__(self, index: int, value: ParsedSessionEvent) -> None: ...
@@ -524,11 +962,74 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
                 "WHERE session_ordinal = ? AND event_ordinal < 0",
                 (self.session_ordinal,),
             )
-        self._writer.execute(
+        _write_row(
+            self._writer,
             "INSERT INTO prepared_event (session_ordinal, event_ordinal, timestamp, event_type, event_json) VALUES (?, ?, ?, ?, ?)",
             (self.session_ordinal, index, value.timestamp, value.event_type, _event_json(value)),
+            kind="prepared event row",
         )
         self._count += 1
+
+    def insert_sorted(self, insertions: Iterable[tuple[int, ParsedSessionEvent]]) -> None:
+        """Insert many events at original indices with one renumbering pass.
+
+        ``insertions`` are ordered by index; each index refers to the sequence
+        before any of them is inserted, and events sharing an index keep their
+        order. Equivalent to calling :meth:`insert` for each at
+        ``index + <events already inserted>``, without shifting the tail once
+        per event.
+        """
+        if self._writer is None:
+            raise TypeError("sealed prepared events are immutable")
+        writer = self._writer
+        writer.execute("DROP TABLE IF EXISTS temp.prepared_event_insert")
+        writer.execute(
+            "CREATE TEMP TABLE prepared_event_insert (seq INTEGER PRIMARY KEY, idx INTEGER NOT NULL, "
+            "timestamp TEXT, event_type TEXT NOT NULL, event_json TEXT NOT NULL)"
+        )
+        added = 0
+        previous = -1
+        for index, value in insertions:
+            index = min(max(index, 0), self._count)
+            if index < previous:
+                raise ValueError("insertions must be ordered by index")
+            previous = index
+            writer.execute(
+                "INSERT INTO temp.prepared_event_insert VALUES (?, ?, ?, ?, ?)",
+                (added, index, value.timestamp, value.event_type, _event_json(value)),
+            )
+            added += 1
+        if added:
+            # Cumulative insertions per distinct index: an existing event at
+            # ordinal ``o`` moves by the count at the largest index <= ``o``,
+            # found by one primary-key seek rather than a scan of every
+            # insertion before it.
+            writer.execute("DROP TABLE IF EXISTS temp.prepared_event_shift")
+            writer.execute("CREATE TEMP TABLE prepared_event_shift (idx INTEGER PRIMARY KEY, cum INTEGER NOT NULL)")
+            writer.execute(
+                "INSERT INTO temp.prepared_event_shift "
+                "SELECT idx, SUM(COUNT(*)) OVER (ORDER BY idx) FROM temp.prepared_event_insert GROUP BY idx"
+            )
+            writer.execute(
+                "UPDATE prepared_event SET event_ordinal = -1 - (event_ordinal + "
+                "(SELECT s.cum FROM temp.prepared_event_shift AS s WHERE s.idx <= prepared_event.event_ordinal "
+                "ORDER BY s.idx DESC LIMIT 1)) "
+                "WHERE session_ordinal = ? AND event_ordinal >= (SELECT MIN(idx) FROM temp.prepared_event_shift)",
+                (self.session_ordinal,),
+            )
+            writer.execute("DROP TABLE temp.prepared_event_shift")
+            writer.execute(
+                "UPDATE prepared_event SET event_ordinal = -1 - event_ordinal "
+                "WHERE session_ordinal = ? AND event_ordinal < 0",
+                (self.session_ordinal,),
+            )
+            writer.execute(
+                "INSERT INTO prepared_event (session_ordinal, event_ordinal, timestamp, event_type, event_json) "
+                "SELECT ?, idx + seq, timestamp, event_type, event_json FROM temp.prepared_event_insert ORDER BY seq",
+                (self.session_ordinal,),
+            )
+            self._count += added
+        writer.execute("DROP TABLE temp.prepared_event_insert")
 
     def __iter__(self) -> Iterator[ParsedSessionEvent]:
         yield from self._iter_query("ORDER BY event_ordinal")
@@ -538,11 +1039,11 @@ class SqliteSessionEventSink(MutableSequence[ParsedSessionEvent]):
         if self._writer is not None:
             cursor = self._writer.execute(sql, (self.session_ordinal, *parameters))
             for row in cursor:
-                yield ParsedSessionEvent.model_validate_json(row[0])
+                yield _from_text_json(ParsedSessionEvent, row[0])
             return
         with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
             for row in conn.execute(sql, (self.session_ordinal, *parameters)):
-                yield ParsedSessionEvent.model_validate_json(row[0])
+                yield _from_text_json(ParsedSessionEvent, row[0])
 
     def iter_ordered(self, type_order_tier: Mapping[str, int]) -> Iterator[ParsedSessionEvent]:
         clauses = " ".join("WHEN ? THEN ?" for _ in type_order_tier)
@@ -634,6 +1135,91 @@ class SqliteMessageStore:
         self.conn.close()
 
 
+class ClaudeChatEvidence:
+    """Claude chat records in scratch, rebuilt into evidence when emitted.
+
+    Only the raw record is stored: its evidence is a pure function of the
+    record, its array index and its evidence key.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        conn.execute("CREATE TABLE claude_evidence (original_index INTEGER PRIMARY KEY, raw_json TEXT NOT NULL)")
+
+    def put(self, evidence: _ClaudeMessageEvidence) -> None:
+        self._conn.execute(
+            "INSERT INTO claude_evidence VALUES (?, ?)", (evidence.original_index, json.dumps(dict(evidence.raw)))
+        )
+
+    def raw(self, original_index: int) -> dict[str, object]:
+        row = self._conn.execute(
+            "SELECT raw_json FROM claude_evidence WHERE original_index = ?", (original_index,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(original_index)
+        raw = json.loads(row[0])
+        assert isinstance(raw, dict)
+        return raw
+
+    def get(
+        self,
+        original_index: int,
+        rebuild: Callable[[dict[str, object]], _ClaudeMessageEvidence],
+    ) -> _ClaudeMessageEvidence:
+        return rebuild(self.raw(original_index))
+
+    def close(self) -> None:
+        self._conn.execute("DROP TABLE claude_evidence")
+
+
+class ClaudeAttachmentScratch:
+    """Merged Claude attachment rows in scratch, in first-seen order."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        conn.execute(
+            "CREATE TABLE claude_attachment (ordinal INTEGER PRIMARY KEY, attachment_id TEXT NOT NULL UNIQUE, "
+            "name TEXT, mime_type TEXT, attachment_json TEXT NOT NULL)"
+        )
+        conn.execute("CREATE INDEX claude_attachment_descriptor ON claude_attachment(name, mime_type)")
+
+    def get(self, provider_attachment_id: str) -> ParsedAttachment | None:
+        row = self._conn.execute(
+            "SELECT attachment_json FROM claude_attachment WHERE attachment_id = ?", (provider_attachment_id,)
+        ).fetchone()
+        return _attachment_from_json(row[0]) if row is not None else None
+
+    def put(self, attachment: ParsedAttachment) -> None:
+        self._conn.execute(
+            "INSERT INTO claude_attachment (attachment_id, name, mime_type, attachment_json) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(attachment_id) DO UPDATE SET name = excluded.name, mime_type = excluded.mime_type, "
+            "attachment_json = excluded.attachment_json",
+            (attachment.provider_attachment_id, attachment.name, attachment.mime_type, _attachment_json(attachment)),
+        )
+
+    def unique_by_descriptor(self, name: str, mime_type: str | None) -> ParsedAttachment | None:
+        rows = self._conn.execute(
+            "SELECT attachment_json FROM claude_attachment WHERE name = ? AND mime_type IS ? LIMIT 2",
+            (name, mime_type),
+        ).fetchall()
+        return _attachment_from_json(rows[0][0]) if len(rows) == 1 else None
+
+    def __iter__(self) -> Iterator[ParsedAttachment]:
+        last = -1
+        while True:
+            row = self._conn.execute(
+                "SELECT ordinal, attachment_json FROM claude_attachment WHERE ordinal > ? ORDER BY ordinal LIMIT 1",
+                (last,),
+            ).fetchone()
+            if row is None:
+                return
+            last = row[0]
+            yield _attachment_from_json(row[1])
+
+    def close(self) -> None:
+        self._conn.execute("DROP TABLE claude_attachment")
+
+
 class ChatGPTNodeMapping(Mapping[str, object]):
     """Keep node bytes, insertion order, and duplicate-key resolution in scratch."""
 
@@ -641,22 +1227,36 @@ class ChatGPTNodeMapping(Mapping[str, object]):
         self.conn = conn
         conn.execute(
             "CREATE TABLE chatgpt_node (node_key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL UNIQUE, "
-            "node_json TEXT NOT NULL, child_ordinal INTEGER)"
+            "node_json TEXT NOT NULL, child_ordinal INTEGER, parent_key TEXT)"
         )
+        conn.execute("CREATE INDEX chatgpt_node_parent ON chatgpt_node(parent_key, ordinal)")
         conn.execute(
             "CREATE TABLE chatgpt_child (node_ordinal INTEGER NOT NULL, item_ordinal INTEGER NOT NULL, "
             "child_json TEXT NOT NULL, child_key TEXT, PRIMARY KEY (node_ordinal, item_ordinal)) WITHOUT ROWID"
         )
+        conn.execute("CREATE INDEX chatgpt_child_key ON chatgpt_child(node_ordinal, child_key, item_ordinal)")
+        conn.execute(
+            "CREATE TABLE chatgpt_sibling (node_key TEXT PRIMARY KEY, sibling_ordinal INTEGER NOT NULL) WITHOUT ROWID"
+        )
+        # Sibling ordinals depend on every node's final parent, so they are
+        # numbered in one pass after the last ``put`` rather than per node.
+        self._siblings_current = False
 
     def put(self, key: str, node: object, ordinal: int) -> None:
-        encoded = json.dumps(node, ensure_ascii=False)
+        encoded = require_storable_string(_text_json(node), kind="serialized mapping node")
+        # ``_sibling_ordinals``' grouping: only mapping nodes count, and a
+        # missing or empty parent groups under the root key "".
+        parent = node.get("parent") if isinstance(node, dict) else None
+        parent_key = (parent if isinstance(parent, str) and parent else "") if isinstance(node, dict) else None
+        self._siblings_current = False
         previous = self.conn.execute("SELECT child_ordinal FROM chatgpt_node WHERE node_key = ?", (key,)).fetchone()
         if previous is not None and previous[0] is not None:
             self.conn.execute("DELETE FROM chatgpt_child WHERE node_ordinal = ?", (previous[0],))
         self.conn.execute(
-            "INSERT INTO chatgpt_node VALUES (?, ?, ?, NULL) "
-            "ON CONFLICT(node_key) DO UPDATE SET node_json = excluded.node_json, child_ordinal = NULL",
-            (key, ordinal, encoded),
+            "INSERT INTO chatgpt_node VALUES (?, ?, ?, NULL, ?) "
+            "ON CONFLICT(node_key) DO UPDATE SET node_json = excluded.node_json, child_ordinal = NULL, "
+            "parent_key = excluded.parent_key",
+            (key, ordinal, encoded, parent_key),
         )
 
     def put_child(self, node_ordinal: int, item_ordinal: int, child: object) -> None:
@@ -665,7 +1265,7 @@ class ChatGPTNodeMapping(Mapping[str, object]):
             (
                 node_ordinal,
                 item_ordinal,
-                json.dumps(child, ensure_ascii=False),
+                _text_json(child),
                 child if isinstance(child, str) else None,
             ),
         )
@@ -690,9 +1290,47 @@ class ChatGPTNodeMapping(Mapping[str, object]):
     def children_are_all_strings(self) -> bool:
         return self.conn.execute("SELECT 1 FROM chatgpt_child WHERE child_key IS NULL LIMIT 1").fetchone() is None
 
-    def shallow_view(self) -> Mapping[str, object]:
-        """Expose node shapes to the canonical validator without rebuilding child arrays."""
+    def shallow_view(self) -> _ShallowChatGPTMapping:
+        """Expose node shapes to the canonical parser without rebuilding child arrays."""
         return _ShallowChatGPTMapping(self)
+
+    def sibling_ordinal(self, key: str) -> int:
+        """Arrival ordinal of ``key`` among nodes naming the same parent.
+
+        The scratch form of ``chatgpt._sibling_ordinals``: mapping order is
+        the export's record order, answered by index instead of a dict over
+        every node. All ordinals are numbered by one windowed scan the first
+        time one is asked for after a ``put``.
+        """
+        if not self._siblings_current:
+            self.conn.execute("DELETE FROM chatgpt_sibling")
+            self.conn.execute(
+                "INSERT INTO chatgpt_sibling SELECT node_key, "
+                "ROW_NUMBER() OVER (PARTITION BY parent_key ORDER BY ordinal) - 1 "
+                "FROM chatgpt_node WHERE parent_key IS NOT NULL"
+            )
+            self._siblings_current = True
+        row = self.conn.execute("SELECT sibling_ordinal FROM chatgpt_sibling WHERE node_key = ?", (key,)).fetchone()
+        return 0 if row is None else int(row[0])
+
+    def declared_child_position(self, parent_key: str, child_id: object) -> int | None:
+        """First index of ``child_id`` in the parent's spilled ``children`` array.
+
+        Only a dict node spills its array; any other parent, or a parent
+        whose ``children`` member is absent or not an array, lists nothing.
+        """
+        if not isinstance(child_id, str):
+            return None
+        row = self.conn.execute(
+            "SELECT node_json, child_ordinal FROM chatgpt_node WHERE node_key = ?", (parent_key,)
+        ).fetchone()
+        if row is None or row[1] is None or not str(row[0]).startswith("{"):
+            return None
+        found = self.conn.execute(
+            "SELECT MIN(item_ordinal) FROM chatgpt_child WHERE node_ordinal = ? AND child_key = ?",
+            (row[1], child_id),
+        ).fetchone()
+        return int(found[0]) if found is not None and found[0] is not None else None
 
     def iter_children(self, key: str) -> Iterator[str]:
         for (child,) in self.conn.execute(
@@ -734,6 +1372,12 @@ class ChatGPTNodeMapping(Mapping[str, object]):
 
 
 class _ShallowChatGPTMapping(Mapping[str, object]):
+    """Nodes without their spilled ``children`` arrays, which stay in scratch.
+
+    The parser reads an array only for declared sibling order, answered here
+    by :meth:`declared_child_position`.
+    """
+
     def __init__(self, mapping: ChatGPTNodeMapping) -> None:
         self.mapping = mapping
 
@@ -746,260 +1390,331 @@ class _ShallowChatGPTMapping(Mapping[str, object]):
     def __len__(self) -> int:
         return len(self.mapping)
 
+    def __contains__(self, key: object) -> bool:
+        return key in self.mapping
 
-class _SingleChatGPTNode(Mapping[str, object]):
-    """Expose one node to the canonical normalizer without collecting its peers."""
+    def declared_child_position(self, parent_key: str, child_id: object) -> int | None:
+        return self.mapping.declared_child_position(parent_key, child_id)
 
-    def __init__(self, key: str, node: dict[str, object]) -> None:
-        self.key = key
-        self.node = node
+    def sibling_ordinal(self, key: str) -> int:
+        return self.mapping.sibling_ordinal(key)
 
-    def __getitem__(self, key: str) -> object:
-        if key != self.key:
-            raise KeyError(key)
-        return self.node
+
+class _ScratchChatGPTEntries:
+    """Normalized ChatGPT messages held in scratch until final ordering.
+
+    Implements ``chatgpt.MessageEntries``: the ordering, parent and timing
+    rules are the parser's own, answered by index lookups instead of a list.
+    """
+
+    _ORDER = "(timestamp IS NULL), timestamp, idx"
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        conn.execute(
+            "CREATE TABLE chatgpt_entry (node_key TEXT PRIMARY KEY, idx INTEGER NOT NULL, timestamp REAL, "
+            "position INTEGER NOT NULL, provider_id TEXT NOT NULL, message_json TEXT NOT NULL)"
+        )
+        conn.execute("CREATE INDEX chatgpt_entry_provider ON chatgpt_entry(provider_id)")
+        conn.execute(f"CREATE INDEX chatgpt_entry_order ON chatgpt_entry({self._ORDER})")
+
+    def add(self, timestamp: float | None, idx: int, node_id: str, message: ParsedMessage) -> None:
+        _write_row(
+            self.conn,
+            "INSERT INTO chatgpt_entry VALUES (?, ?, ?, ?, ?, ?)",
+            (node_id, idx, timestamp, message.position, message.provider_message_id, _message_json(message)),
+            kind="normalized message row",
+        )
+
+    def ordered(self) -> Iterator[ParsedMessage]:
+        # A separate cursor: the consumer writes other scratch tables while
+        # this one is being stepped.
+        cursor = self.conn.execute(f"SELECT message_json FROM chatgpt_entry ORDER BY {self._ORDER}")
+        try:
+            for (encoded,) in cursor:
+                # Written by ``_message_json``: a lone surrogate is an escape
+                # pydantic's parser refuses, so decode through the sink's own.
+                yield _from_text_json(ParsedMessage, encoded)
+        finally:
+            cursor.close()
+
+    def provider_for_node(self, node_id: str) -> str | None:
+        row = self.conn.execute("SELECT provider_id FROM chatgpt_entry WHERE node_key = ?", (node_id,)).fetchone()
+        return str(row[0]) if row is not None else None
+
+    def position_for_node(self, node_id: str) -> int | None:
+        row = self.conn.execute("SELECT position FROM chatgpt_entry WHERE node_key = ?", (node_id,)).fetchone()
+        return int(row[0]) if row is not None else None
+
+    def emitted_provider_ids(self) -> Container[str]:
+        return _ScratchProviderIds(self.conn)
+
+    def last_emitted_among(self, provider_ids: frozenset[str]) -> str | None:
+        best: tuple[int, float, int, str] | None = None
+        ordered_ids = sorted(provider_ids)
+        for start in range(0, len(ordered_ids), 500):
+            chunk = ordered_ids[start : start + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            row = self.conn.execute(
+                f"SELECT timestamp IS NULL, COALESCE(timestamp, 0.0), idx, provider_id FROM chatgpt_entry "
+                f"WHERE provider_id IN ({placeholders}) "
+                "ORDER BY timestamp IS NULL DESC, timestamp DESC, idx DESC LIMIT 1",
+                chunk,
+            ).fetchone()
+            if row is not None:
+                candidate = (int(row[0]), float(row[1]), int(row[2]), str(row[3]))
+                if best is None or candidate[:3] > best[:3]:
+                    best = candidate
+        return best[3] if best is not None else None
+
+
+class _ScratchProviderIds(Container[str]):
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+
+    def __contains__(self, value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and self.conn.execute("SELECT 1 FROM chatgpt_entry WHERE provider_id = ? LIMIT 1", (value,)).fetchone()
+            is not None
+        )
+
+
+class ScratchSessionSpill:
+    """Scratch-backed collections for one session parsed with ``spill=``."""
+
+    def __init__(self, store: SqliteMessageStore) -> None:
+        self.store = store
+
+    def entries(self) -> _ScratchChatGPTEntries:
+        return _ScratchChatGPTEntries(self.store.conn)
+
+    def messages(self) -> SqliteMessageSink:
+        return self.store.new_sink()
+
+    def attachments(self) -> SqliteAttachmentSink:
+        return self.store.new_attachment_sink()
+
+    def events(self) -> SqliteSessionEventSink:
+        return self.store.new_event_sink()
+
+    def seen_set(self) -> _ScratchStringSet:
+        return _ScratchStringSet(self.store.conn)
+
+    def string_map(self) -> _ScratchStringMap:
+        return _ScratchStringMap(self.store.conn)
+
+    def connection(self) -> sqlite3.Connection:
+        return self.store.conn
+
+
+class _ScratchStringSet(MutableSet[str]):
+    """A string set kept in scratch: one table per preparation, one id per set."""
+
+    _next_id = 0
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS scratch_string_set (set_id INTEGER NOT NULL, value TEXT NOT NULL, "
+            "PRIMARY KEY (set_id, value)) WITHOUT ROWID"
+        )
+        type(self)._next_id += 1
+        self.set_id = type(self)._next_id
+
+    def __contains__(self, value: object) -> bool:
+        return (
+            isinstance(value, str)
+            and self.conn.execute(
+                "SELECT 1 FROM scratch_string_set WHERE set_id = ? AND value = ?", (self.set_id, value)
+            ).fetchone()
+            is not None
+        )
 
     def __iter__(self) -> Iterator[str]:
-        yield self.key
+        cursor = self.conn.execute(
+            "SELECT value FROM scratch_string_set WHERE set_id = ? ORDER BY value", (self.set_id,)
+        )
+        try:
+            for (value,) in cursor:
+                yield str(value)
+        finally:
+            cursor.close()
 
     def __len__(self) -> int:
-        return 1
+        return int(
+            self.conn.execute("SELECT COUNT(*) FROM scratch_string_set WHERE set_id = ?", (self.set_id,)).fetchone()[0]
+        )
+
+    def add(self, value: str) -> None:
+        self.conn.execute("INSERT OR IGNORE INTO scratch_string_set VALUES (?, ?)", (self.set_id, value))
+
+    def discard(self, value: str) -> None:
+        self.conn.execute("DELETE FROM scratch_string_set WHERE set_id = ? AND value = ?", (self.set_id, value))
 
 
-def _simple_chatgpt_node(key: str, node: object) -> bool:
-    """A deliberately small shape with no attachment, timing, or event carriers."""
-    if not isinstance(node, dict) or set(node) - {"id", "parent", "children", "message"}:
-        return False
-    if node.get("id") != key or not isinstance(node.get("parent"), (str, type(None))):
-        return False
-    children = node.get("children", [])
-    if not isinstance(children, list) or not all(isinstance(child, str) for child in children):
-        return False
-    message = node.get("message")
-    if not isinstance(message, dict) or set(message) - {
-        "id",
-        "author",
-        "create_time",
-        "update_time",
-        "content",
-        "metadata",
-        "status",
-        "end_turn",
-        "weight",
-        "recipient",
-    }:
-        return False
-    if not isinstance(message.get("id"), str) or not message["id"]:
-        return False
-    author = message.get("author")
-    if not isinstance(author, dict) or set(author) - {"role", "name", "metadata"}:
-        return False
-    if author.get("role") not in {"user", "assistant"} or author.get("metadata", {}) != {}:
-        return False
-    if not isinstance(author.get("name"), (str, type(None))):
-        return False
-    if message.get("metadata", {}) != {}:
-        return False
-    if not isinstance(message.get("create_time"), (int, float, type(None))):
-        return False
-    if not isinstance(message.get("update_time"), (int, float, type(None))):
-        return False
-    if not isinstance(message.get("status"), (str, type(None))):
-        return False
-    if not isinstance(message.get("end_turn"), (bool, type(None))):
-        return False
-    if message.get("recipient") not in (None, "all"):
-        return False
-    if message.get("weight", 1) != 1:
-        return False
-    content = message.get("content")
-    if not isinstance(content, dict) or set(content) != {"content_type", "parts"}:
-        return False
-    parts = content.get("parts")
-    if isinstance(parts, list) and any(isinstance(part, str) and "sandbox:" in part for part in parts):
-        # The canonical normalizer reports truncated sandbox-link evidence.
-        # These links also create attachments, so they must go directly to
-        # the collecting fallback without a speculative emitting pass.
-        return False
-    return (
-        content.get("content_type") == "text"
-        and isinstance(parts, list)
-        and bool(parts)
-        and all(isinstance(part, str) for part in parts)
-        and any(part for part in parts)
-    )
+class GenerationTimings:
+    """One authoritative timing per generation, selected in SQLite.
 
-
-def prepare_simple_chatgpt_mapping(
-    envelope: dict[str, object], mapping: ChatGPTNodeMapping, store: SqliteMessageStore, fallback_id: str
-) -> ParsedSession | None:
-    """Spill a conservative text-only ChatGPT mapping into the ordinary sink.
-
-    Return None for any shape that requires the full parser. The initial scan
-    changes only scratch tables; a fallback can ignore them safely.
+    Every per-node fact the selection reads (branch roots, the best
+    candidate per branch, related and legacy-duration message ids) and the
+    owner each timing resolves to live in tables on ``conn``: the scratch
+    database on the preparation route, an in-memory database otherwise. A
+    parse therefore holds none of them in process memory.
     """
-    from polylogue.sources.parsers import chatgpt
-    from polylogue.sources.parsers.base import AdmissionLedger, AdmissionUnit
 
-    if any(
-        key != "mapping" and not isinstance(value, (str, int, float, bool, type(None)))
-        for key, value in envelope.items()
-    ):
-        return None
-    current_node = envelope.get("current_node")
-    if not isinstance(current_node, str) or not current_node or current_node not in mapping:
-        return None
-    conn = store.conn
-    conn.execute(
-        "CREATE TABLE chatgpt_simple_node (node_key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, "
-        "parent_key TEXT, sibling INTEGER NOT NULL, timestamp REAL, message_id TEXT NOT NULL UNIQUE)"
-    )
-    conn.execute("CREATE TABLE chatgpt_simple_sibling (parent_key TEXT PRIMARY KEY, next_ordinal INTEGER NOT NULL)")
-    conn.execute(
-        "CREATE TABLE chatgpt_simple_child (parent_key TEXT NOT NULL, child_key TEXT NOT NULL, "
-        "sibling INTEGER NOT NULL, PRIMARY KEY (parent_key, child_key)) WITHOUT ROWID"
-    )
-    for ordinal, key in enumerate(mapping):
-        node = mapping.shallow_node(key)
-        if not _simple_chatgpt_node(key, node):
-            return None
-        assert isinstance(node, dict)
-        if not mapping.children_are_strings(key):
-            return None
-        parent = node.get("parent")
-        sibling_key = parent if isinstance(parent, str) and parent else ""
-        for child_ordinal, child in enumerate(mapping.iter_children(key)):
-            conn.execute(
-                "INSERT OR IGNORE INTO chatgpt_simple_child VALUES (?, ?, ?)",
-                (key, child, child_ordinal),
-            )
-        row = conn.execute(
-            "SELECT next_ordinal FROM chatgpt_simple_sibling WHERE parent_key = ?", (sibling_key,)
-        ).fetchone()
-        sibling = row[0] if row else 0
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        for table in ("gt_candidate", "gt_related", "gt_legacy", "gt_owner"):
+            conn.execute(f"DROP TABLE IF EXISTS temp.{table}")
         conn.execute(
-            "INSERT INTO chatgpt_simple_sibling VALUES (?, 1) "
-            "ON CONFLICT(parent_key) DO UPDATE SET next_ordinal = next_ordinal + 1",
-            (sibling_key,),
+            "CREATE TEMP TABLE gt_candidate (branch_key TEXT PRIMARY KEY, first_ordinal INTEGER NOT NULL, "
+            "s1 INTEGER NOT NULL, s2 INTEGER NOT NULL, s3 INTEGER NOT NULL, s4 INTEGER NOT NULL, s5 TEXT NOT NULL, "
+            "elapsed_ms INTEGER NOT NULL, timing_json TEXT NOT NULL)"
         )
-        message = node["message"]
-        assert isinstance(message, dict)
-        if conn.execute("SELECT 1 FROM chatgpt_simple_node WHERE message_id = ?", (message["id"],)).fetchone():
-            return None
+        conn.execute("CREATE INDEX temp.gt_candidate_order ON gt_candidate(first_ordinal)")
         conn.execute(
-            "INSERT INTO chatgpt_simple_node VALUES (?, ?, ?, ?, ?, ?)",
-            (key, ordinal, parent, sibling, chatgpt._coerce_float(message.get("create_time")), message["id"]),
-        )
-
-    # The full parser treats a missing current node as no active path. Keep
-    # cycle detection in SQLite rather than a set proportional to path depth.
-    conn.execute("CREATE TABLE chatgpt_simple_active (node_key TEXT PRIMARY KEY, depth INTEGER NOT NULL)")
-    current = envelope.get("current_node")
-    depth = 0
-    while isinstance(current, str):
-        row = conn.execute("SELECT parent_key FROM chatgpt_simple_node WHERE node_key = ?", (current,)).fetchone()
-        if row is None or conn.execute("SELECT 1 FROM chatgpt_simple_active WHERE node_key = ?", (current,)).fetchone():
-            break
-        conn.execute("INSERT INTO chatgpt_simple_active VALUES (?, ?)", (current, depth))
-        depth += 1
-        current = row[0]
-    leaf_row = conn.execute("SELECT node_key FROM chatgpt_simple_active ORDER BY depth LIMIT 1").fetchone()
-    active_leaf_node = leaf_row[0] if leaf_row else None
-    has_active_path = depth > 0
-    has_timestamp = (
-        conn.execute("SELECT 1 FROM chatgpt_simple_node WHERE timestamp IS NOT NULL LIMIT 1").fetchone() is not None
-    )
-    conn.execute(
-        "CREATE TABLE chatgpt_simple_message (node_key TEXT PRIMARY KEY, ordinal INTEGER NOT NULL, "
-        "timestamp REAL, message_json TEXT NOT NULL, provider_id TEXT NOT NULL, parent_key TEXT)"
-    )
-    conn.execute("CREATE INDEX chatgpt_simple_provider ON chatgpt_simple_message(provider_id)")
-    ledger = AdmissionLedger()
-    ledger.expect(AdmissionUnit.OUTER_RECORD, 1)
-    ledger.materialized(AdmissionUnit.OUTER_RECORD, 0, "conversation")
-    default_model = chatgpt._string_value(envelope, "default_model_slug")
-    for key in mapping:
-        node = mapping.shallow_node(key)
-        assert isinstance(node, dict)
-        normalized, attachments = chatgpt.extract_messages_from_mapping(
-            _SingleChatGPTNode(key, node),
-            default_model_slug=default_model,
-        )
-        if len(normalized) != 1 or attachments:
-            return None
-        message = normalized[0]
-        row = conn.execute(
-            "SELECT ordinal, parent_key, sibling, timestamp FROM chatgpt_simple_node WHERE node_key = ?", (key,)
-        ).fetchone()
-        assert row is not None
-        ordinal, parent_key, sibling, timestamp = row
-        if parent_key:
-            declared = conn.execute(
-                "SELECT sibling FROM chatgpt_simple_child WHERE parent_key = ? AND child_key = ?",
-                (parent_key, key),
-            ).fetchone()
-            if declared is not None:
-                sibling = declared[0]
-        message = message.model_copy(
-            update={
-                "position": ordinal,
-                "branch_index": sibling if parent_key else 0,
-                "variant_index": sibling if parent_key else 0,
-                "is_active_path": (
-                    conn.execute("SELECT 1 FROM chatgpt_simple_active WHERE node_key = ?", (key,)).fetchone()
-                    is not None
-                    if has_active_path
-                    else None
-                ),
-                "is_active_leaf": key == active_leaf_node if active_leaf_node is not None else None,
-                "parent_message_provider_id": parent_key or None,
-            }
+            "CREATE TEMP TABLE gt_related (branch_key TEXT NOT NULL, message_id TEXT NOT NULL, "
+            "PRIMARY KEY (branch_key, message_id)) WITHOUT ROWID"
         )
         conn.execute(
-            "INSERT INTO chatgpt_simple_message VALUES (?, ?, ?, ?, ?, ?)",
-            (key, ordinal, timestamp, _message_json(message), message.provider_message_id, parent_key),
+            "CREATE TEMP TABLE gt_legacy (branch_key TEXT NOT NULL, message_id TEXT NOT NULL, "
+            "duration_ms INTEGER NOT NULL, PRIMARY KEY (branch_key, message_id)) WITHOUT ROWID"
         )
-        content = node["message"]["content"]
-        parts = content["parts"]
-        ledger.expect(AdmissionUnit.MESSAGE, 1)
-        ledger.materialized(AdmissionUnit.MESSAGE, ordinal, key)
-        ledger.expect(AdmissionUnit.PART, len(parts))
-        for _ in parts:
-            ledger.materialized(AdmissionUnit.PART, ledger.next_ordinal(AdmissionUnit.PART), "text")
-        ledger.expect(AdmissionUnit.BLOCK, len(message.blocks))
-        for block in message.blocks:
-            ledger.materialized(AdmissionUnit.BLOCK, ledger.next_ordinal(AdmissionUnit.BLOCK), block.type.value)
+        conn.execute("CREATE INDEX temp.gt_legacy_message ON gt_legacy(message_id)")
+        conn.execute(
+            "CREATE TEMP TABLE gt_owner (ordinal INTEGER PRIMARY KEY, owner TEXT NOT NULL, elapsed_ms INTEGER)"
+        )
+        conn.execute("CREATE INDEX temp.gt_owner_owner ON gt_owner(owner, ordinal)")
+        self.branch_memo: MutableMapping[str, str] = _ScratchStringMap(conn)
+        self._ordinal = 0
 
-    sink = store.new_sink()
-    order = "ORDER BY timestamp IS NULL, timestamp, ordinal" if has_timestamp else "ORDER BY ordinal"
-    for _node_key, encoded, parent_key in conn.execute(
-        f"SELECT node_key, message_json, parent_key FROM chatgpt_simple_message {order}"
-    ):
-        message = ParsedMessage.model_validate_json(encoded)
-        if parent_key:
-            owner = conn.execute(
-                "SELECT provider_id FROM chatgpt_simple_message WHERE node_key = ?", (parent_key,)
-            ).fetchone()
-            if owner is None:
-                owner = conn.execute(
-                    "SELECT provider_id FROM chatgpt_simple_message WHERE provider_id = ? LIMIT 1", (parent_key,)
-                ).fetchone()
-            message = message.model_copy(update={"parent_message_provider_id": owner[0] if owner else None})
-        sink.append(message)
-    shell = chatgpt.parse({**envelope, "mapping": {}}, fallback_id)
-    return shell.model_copy(
-        update={
-            "messages": sink,
-            "active_leaf_message_provider_id": (
-                conn.execute(
-                    "SELECT provider_id FROM chatgpt_simple_message WHERE node_key = ?", (active_leaf_node,)
-                ).fetchone()[0]
-                if active_leaf_node is not None
-                else None
+    def add_related(self, branch_key: str, message_id: str) -> None:
+        self.conn.execute("INSERT OR IGNORE INTO gt_related VALUES (?, ?)", (branch_key, message_id))
+
+    def set_legacy_duration(self, branch_key: str, message_id: str, duration_ms: int) -> None:
+        self.conn.execute(
+            "INSERT INTO gt_legacy VALUES (?, ?, ?) ON CONFLICT(branch_key, message_id) "
+            "DO UPDATE SET duration_ms = excluded.duration_ms",
+            (branch_key, message_id, duration_ms),
+        )
+
+    def offer(
+        self, branch_key: str, score: tuple[int, int, int, int, str], elapsed_ms: int, timing: Mapping[str, object]
+    ) -> None:
+        """Keep ``timing`` for its branch when it outranks the kept one.
+
+        A tie keeps the earlier candidate, exactly as ``max`` over the
+        branch's candidates in arrival order did.
+        """
+        self.conn.execute(
+            "INSERT INTO gt_candidate VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(branch_key) DO UPDATE SET "
+            "s1 = excluded.s1, s2 = excluded.s2, s3 = excluded.s3, s4 = excluded.s4, s5 = excluded.s5, "
+            "elapsed_ms = excluded.elapsed_ms, timing_json = excluded.timing_json "
+            "WHERE (excluded.s1, excluded.s2, excluded.s3, excluded.s4, excluded.s5) "
+            "> (gt_candidate.s1, gt_candidate.s2, gt_candidate.s3, gt_candidate.s4, gt_candidate.s5)",
+            (
+                branch_key,
+                self._ordinal,
+                *score,
+                elapsed_ms,
+                json.dumps(dict(timing), sort_keys=True),
             ),
-            "unit_accounting": ledger.close(),
-        }
-    )
+        )
+        self._ordinal += 1
+
+    def selected(self) -> Iterator[tuple[str, dict[str, object]]]:
+        """Each branch's timing, in the order its first candidate arrived."""
+        cursor = self.conn.execute("SELECT branch_key, timing_json FROM gt_candidate ORDER BY first_ordinal")
+        try:
+            for branch_key, timing_json in cursor:
+                yield str(branch_key), json.loads(timing_json)
+        finally:
+            cursor.close()
+
+    def related(self, branch_key: str) -> frozenset[str]:
+        return frozenset(
+            str(row[0])
+            for row in self.conn.execute("SELECT message_id FROM gt_related WHERE branch_key = ?", (branch_key,))
+        )
+
+    def resolve(self, owner: str, elapsed_duration_ms: int) -> None:
+        """Record the message a selected timing is finally anchored to."""
+        self.conn.execute("INSERT INTO gt_owner (owner, elapsed_ms) VALUES (?, ?)", (owner, elapsed_duration_ms))
+
+    def resolved_duration_ms(self, message_id: str) -> int | None:
+        """The duration of the last timing anchored to ``message_id``."""
+        row = self.conn.execute(
+            "SELECT elapsed_ms FROM gt_owner WHERE owner = ? ORDER BY ordinal DESC LIMIT 1", (message_id,)
+        ).fetchone()
+        return int(row[0]) if row is not None else None
+
+    def repeats_selected_duration(self, message_id: str) -> bool:
+        """Whether ``message_id``'s legacy duration copies its branch's selected timing."""
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM gt_legacy l JOIN gt_candidate c ON c.branch_key = l.branch_key "
+                "WHERE l.message_id = ? AND l.duration_ms = c.elapsed_ms LIMIT 1",
+                (message_id,),
+            ).fetchone()
+            is not None
+        )
+
+
+class _ScratchStringMap(MutableMapping[str, str]):
+    """A string-to-string map kept in scratch, one id per map."""
+
+    _next_id = 0
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self.conn = conn
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS scratch_string_map (map_id INTEGER NOT NULL, key TEXT NOT NULL, "
+            "value TEXT NOT NULL, PRIMARY KEY (map_id, key)) WITHOUT ROWID"
+        )
+        type(self)._next_id += 1
+        self.map_id = type(self)._next_id
+
+    def __getitem__(self, key: str) -> str:
+        row = self.conn.execute(
+            "SELECT value FROM scratch_string_map WHERE map_id = ? AND key = ?", (self.map_id, key)
+        ).fetchone()
+        if row is None:
+            raise KeyError(key)
+        return str(row[0])
+
+    def __setitem__(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO scratch_string_map VALUES (?, ?, ?) ON CONFLICT(map_id, key) DO UPDATE SET value = excluded.value",
+            (self.map_id, key, value),
+        )
+
+    def __delitem__(self, key: str) -> None:
+        if key not in self:
+            raise KeyError(key)
+        self.conn.execute("DELETE FROM scratch_string_map WHERE map_id = ? AND key = ?", (self.map_id, key))
+
+    def __contains__(self, key: object) -> bool:
+        return (
+            isinstance(key, str)
+            and self.conn.execute(
+                "SELECT 1 FROM scratch_string_map WHERE map_id = ? AND key = ?", (self.map_id, key)
+            ).fetchone()
+            is not None
+        )
+
+    def __iter__(self) -> Iterator[str]:
+        cursor = self.conn.execute("SELECT key FROM scratch_string_map WHERE map_id = ? ORDER BY key", (self.map_id,))
+        try:
+            for (key,) in cursor:
+                yield str(key)
+        finally:
+            cursor.close()
+
+    def __len__(self) -> int:
+        return int(
+            self.conn.execute("SELECT COUNT(*) FROM scratch_string_map WHERE map_id = ?", (self.map_id,)).fetchone()[0]
+        )
 
 
 def read_chatgpt_mapping_object(
@@ -1015,7 +1730,7 @@ def read_chatgpt_mapping_object(
     for prefix, event, value in events:
         if prefix != "" or event != "map_key":
             continue
-        key = str(value)
+        key = require_storable_string(str(value), kind="object key")
         next_event = next(events, None)
         if next_event is None:
             raise ValueError("incomplete ChatGPT object")
@@ -1032,7 +1747,7 @@ def read_chatgpt_mapping_object(
                 break
             if node_prefix != "mapping" or node_event != "map_key":
                 raise ValueError("invalid ChatGPT mapping structure")
-            node_key = str(node_value)
+            node_key = require_storable_string(str(node_value), kind="mapping key")
             node_start = next(events, None)
             if node_start is None:
                 raise ValueError("incomplete ChatGPT mapping node")
@@ -1072,7 +1787,7 @@ def _read_chatgpt_node(
             return node, has_children
         if prefix != node_prefix or event != "map_key":
             raise ValueError("invalid ChatGPT mapping node")
-        key = str(value)
+        key = require_storable_string(str(value), kind="object key")
         start = next(events, None)
         if start is None:
             raise ValueError("incomplete ChatGPT mapping node")
@@ -1102,10 +1817,12 @@ def _read_chatgpt_node(
 
 
 __all__ = [
+    "GeminiToolOutputIndex",
     "SqliteMessageSink",
     "SqliteMessageStore",
     "SqliteAttachmentSink",
     "SqliteSessionEventSink",
     "ChatGPTNodeMapping",
+    "ScratchSessionSpill",
     "read_chatgpt_mapping_object",
 ]

@@ -270,7 +270,8 @@ def _ops_holder_is_attached(conn: sqlite3.Connection, ops_db: Path) -> bool:
     not that answer and is not caught here.
     """
     conn.execute("SELECT count(*) FROM sqlite_schema").fetchall()
-    return ops_db.with_name(f"{ops_db.name}-shm").exists()
+    physical_ops_db = ops_db.resolve()
+    return physical_ops_db.with_name(f"{physical_ops_db.name}-shm").exists()
 
 
 def active_index_generation_is_empty(archive_root: Path) -> bool:
@@ -307,6 +308,10 @@ class ColdBuildGeneration:
     #: Open for the build's lifetime so one-shot ``ops.db`` writers stop
     #: checkpointing on every close. See :func:`_hold_ops_checkpoints`.
     _ops_checkpoint_holder: sqlite3.Connection | None = None
+    #: Open intake pages (:meth:`begin_ops_page`). While one is open, closing
+    #: an archive pass keeps the holder, because the page's cursor,
+    #: convergence and attempt writes still follow it.
+    _ops_page_depth: int = 0
     # Disposable, generation-scoped projection over the candidate application
     # receipts. The candidate index and durable source rows remain authority.
     _accepted_progress_weights: dict[tuple[str, int, str], int] = field(init=False, repr=False)
@@ -349,8 +354,9 @@ class ColdBuildGeneration:
     def accepted_progress(self) -> tuple[int | None, int, float | None, float | None]:
         """Matching applied revisions, sealed denominator, lifetime rate, and ETA.
 
-        The rate is cumulative from build start. ETA is available only after
-        recent count advancement; an observation alone never renews its clock.
+        The rate is cumulative from build start. A sealed complete count has
+        zero ETA. Otherwise ETA requires recent count advancement; an
+        observation alone never renews its clock.
         A warm status call only reads this cached projection. An intake pass
         advances it from candidate receipts after its writer has closed.
         """
@@ -368,9 +374,13 @@ class ColdBuildGeneration:
                 last_advanced_at is not None and observed_at - last_advanced_at <= _ACCEPTED_PROGRESS_STALL_AFTER_S
             )
             eta = (
-                max(0, denominator - count) / rate
-                if self._accepted_progress_denominator_sealed and advancing and rate is not None
-                else None
+                0.0
+                if self._accepted_progress_denominator_sealed and count >= denominator
+                else (
+                    (denominator - count) / rate
+                    if self._accepted_progress_denominator_sealed and advancing and rate is not None
+                    else None
+                )
             )
             return count, denominator, rate, eta
 
@@ -549,6 +559,21 @@ class ColdBuildGeneration:
                 prospective_material_bytes=prospective_material_bytes,
                 prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
                 prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
+                prospective_generation_baseline_bytes=(
+                    (
+                        len(
+                            json.dumps(
+                                {"generation_id": "gen-placeholder", "baseline": baseline.as_dict()},
+                                indent=2,
+                                sort_keys=True,
+                            ).encode()
+                        )
+                        + max(blob_block_bytes, source_db_block_bytes)
+                        - 1
+                    )
+                    // max(blob_block_bytes, source_db_block_bytes)
+                    * max(blob_block_bytes, source_db_block_bytes)
+                ),
                 baseline_digest=baseline.digest,
                 material_byte_definition=MATERIAL_BYTE_DEFINITION,
             )
@@ -577,8 +602,6 @@ class ColdBuildGeneration:
         generation = store.create(owner_id=owner_id or _cold_build_owner_id(), source_snapshot=snapshot)
         baseline_path = Path(generation.index_path).parent / "source-baseline.json"
         with baseline_path.open("x", encoding="utf-8") as stream:
-            import json
-
             json.dump(
                 {"generation_id": generation.generation_id, "baseline": baseline.as_dict()},
                 stream,
@@ -857,6 +880,21 @@ class ColdBuildGeneration:
             prospective_material_bytes=prospective_material_bytes,
             prospective_retained_allocation_bytes=prospective_retained_allocation_bytes,
             prospective_source_db_allocation_bytes=prospective_source_db_allocation_bytes,
+            prospective_generation_baseline_bytes=(
+                (
+                    len(
+                        json.dumps(
+                            {"generation_id": self.generation_id, "baseline": merged.as_dict()},
+                            indent=2,
+                            sort_keys=True,
+                        ).encode()
+                    )
+                    + max(blob_block_bytes, source_db_block_bytes)
+                    - 1
+                )
+                // max(blob_block_bytes, source_db_block_bytes)
+                * max(blob_block_bytes, source_db_block_bytes)
+            ),
             baseline_digest=merged.digest,
             material_byte_definition=MATERIAL_BYTE_DEFINITION,
         )
@@ -904,24 +942,43 @@ class ColdBuildGeneration:
             self._release_ops_checkpoint_holder()
             raise
 
-        # The dispatcher owns one ArchiveStore for one intake page.  Tie the
-        # checkpoint holder to that same lifetime: retaining it across pages
-        # would silently widen the ops power-loss window to the whole build.
-        # ``ArchiveStore`` is intentionally not changed for this cold-build
-        # concern; binding the existing close method preserves its public
-        # type and all normal close/rollback behavior.
+        # Tie the checkpoint holder to the intake page: retaining it across
+        # pages would silently widen the ops power-loss window to the whole
+        # build. Inside an open page (:meth:`begin_ops_page`) the archive pass
+        # ends before the page's cursor, convergence and attempt writes, so
+        # the page end releases it; a pass outside any page releases it on
+        # close. ``ArchiveStore`` is intentionally not changed for this
+        # cold-build concern; binding the existing close method preserves its
+        # public type and all normal close/rollback behavior.
         close = archive.close
 
         def close_page(_archive: ArchiveStore) -> None:
             try:
                 close()
             finally:
-                self._release_ops_checkpoint_holder()
+                if self._ops_page_depth == 0:
+                    self._release_ops_checkpoint_holder()
 
         # Rebinding close on the instance (not the class) so the ops checkpoint
-        # holder is released on whichever path closes this page.
+        # holder is released on whichever path closes this pass.
         archive.close = types.MethodType(close_page, archive)  # type: ignore[method-assign]
         return archive
+
+    def begin_ops_page(self) -> None:
+        """Keep the ops checkpoint holder until :meth:`end_ops_page`.
+
+        The holder is still acquired by the page's first :meth:`open_writer`;
+        this only moves its release from that pass's close to the page end.
+        """
+        self._ops_page_depth += 1
+
+    def end_ops_page(self) -> None:
+        """Close one intake page; the outermost one releases the holder."""
+        if self._ops_page_depth <= 0:
+            raise RuntimeError("cold-build ops page ended without a matching begin")
+        self._ops_page_depth -= 1
+        if self._ops_page_depth == 0:
+            self._release_ops_checkpoint_holder()
 
     def session_count(self) -> int:
         """How many sessions the build has materialized so far."""

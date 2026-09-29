@@ -657,3 +657,186 @@ def test_progress_frames_are_delivered_before_terminal_and_renderer_failures_are
     assert len(seen) == 1
     assert result is not None and result["outcome"] == "completed"
     assert result["result"]["result"] == {"done": 1, "pending": 0, "failed": 0}
+
+
+_MUTATION: tuple[str, dict[str, object]] = ("mutation.session.delete.execute", {"authorization_refs": ["ref-1"]})
+
+
+def _captured_operation_envelope(tmp_path: Path, operation: str, request_id: str) -> tuple[dict[str, object], str]:
+    """Return a real daemon envelope rewritten into a typed ``failed`` answer for ``operation``.
+
+    The authority fields come from the production stack, so the rewritten
+    envelope passes every coherence check the client applies; only the
+    operation identity and the terminal outcome change.
+    """
+    from polylogue.operations.daemon_protocol import daemon_operation_spec
+
+    with running_daemon_operations(tmp_path / "archive") as stack:
+        captured = stack.client.operation("status", {}, archive_root=str(stack.archive_root))
+        archive_root = str(stack.archive_root)
+    assert captured is not None
+    spec = daemon_operation_spec(operation)
+    assert spec is not None
+    authority = cast(dict[str, object], captured["authority"])
+    envelope = {
+        **captured,
+        "operation": operation,
+        "request_id": request_id,
+        "outcome": "failed",
+        "result": None,
+        "accepted_reference": None,
+        "error": {"code": "internal_error", "detail": "handler raised after dispatch", "retryable": False},
+        "authority": {**authority, "class": spec.authority.value, "fallback": spec.fallback.value},
+    }
+    return envelope, archive_root
+
+
+@pytest.mark.parametrize(("operation", "payload"), [("status", {}), _MUTATION], ids=["read", "mutation"])
+def test_a_typed_5xx_operation_envelope_is_an_explicit_failure_not_absence(
+    tmp_path: Path, _short_uds_runtime_dir: Path, operation: str, payload: dict[str, object]
+) -> None:
+    """A daemon that answers 500 with a valid operation envelope reported a typed failure.
+
+    Anti-vacuity: drop the ``500 <= status <= 599`` admission for protocol
+    envelopes in ``DaemonClient._validate_operation_response`` and the read
+    raises ``DaemonOperationProtocolError`` while the mutation raises
+    ``DaemonMutationIndeterminateError``, sending the operator to recover a
+    write whose failure the daemon already stated.
+    """
+    from polylogue.daemon_client import DaemonClient
+
+    envelope, archive_root = _captured_operation_envelope(tmp_path, operation, "typed-5xx")
+    socket_path = _short_uds_runtime_dir / "typed-5xx.sock"
+    with _raw_unix_http_responder(socket_path, status=500, payload=envelope):
+        answered = DaemonClient(socket_path, timeout_s=5).operation(
+            operation, payload, archive_root=archive_root, request_id="typed-5xx"
+        )
+
+    assert answered is not None
+    assert answered["outcome"] == "failed"
+    assert cast(dict[str, object], answered["error"])["code"] == "internal_error"
+
+
+@pytest.mark.parametrize(("operation", "payload"), [("status", {}), _MUTATION], ids=["read", "mutation"])
+def test_an_untyped_5xx_is_never_treated_as_an_operation_answer(
+    _short_uds_runtime_dir: Path, operation: str, payload: dict[str, object]
+) -> None:
+    """Strictness is kept for bodies that do not claim the operation protocol.
+
+    Anti-vacuity: admit every 5xx body regardless of its protocol and neither
+    call raises.
+    """
+    from polylogue.daemon_client import (
+        DaemonClient,
+        DaemonMutationIndeterminateError,
+        DaemonOperationProtocolError,
+    )
+
+    socket_path = _short_uds_runtime_dir / "untyped-5xx.sock"
+    error = DaemonOperationProtocolError if operation == "status" else DaemonMutationIndeterminateError
+    with _raw_unix_http_responder(socket_path, status=500, payload={"error": "Internal Server Error"}):
+        with pytest.raises(error):
+            DaemonClient(socket_path, timeout_s=5).operation(operation, payload, archive_root="/archive")
+
+
+@pytest.mark.parametrize("body", [{"error": "Not Found"}, {}], ids=["legacy-envelope", "empty-object"])
+def test_an_older_daemon_without_the_operation_route_is_absence_for_reads(
+    _short_uds_runtime_dir: Path, body: dict[str, object]
+) -> None:
+    """A daemon that predates ``/api/operation`` answers an untyped 404.
+
+    A read falls back to the local reader (``None``); a write is never reported
+    absent, because nothing proves an older process did not act on it.
+
+    Anti-vacuity: remove the untyped-404 branch in ``DaemonClient.operation``
+    and the read raises ``DaemonOperationProtocolError``, so an ordinary query
+    crashes behind a stale daemon instead of falling back.
+    """
+    from polylogue.daemon_client import DaemonClient, DaemonMutationIndeterminateError
+
+    read_socket = _short_uds_runtime_dir / "legacy-404-read.sock"
+    with _raw_unix_http_responder(read_socket, status=404, payload=body):
+        assert DaemonClient(read_socket, timeout_s=5).operation("status", {}, archive_root="/archive") is None
+    write_socket = _short_uds_runtime_dir / "legacy-404-write.sock"
+    with _raw_unix_http_responder(write_socket, status=404, payload=body):
+        with pytest.raises(DaemonMutationIndeterminateError):
+            DaemonClient(write_socket, timeout_s=5).operation(*_MUTATION, archive_root="/archive")
+
+
+def test_a_404_claiming_the_operation_protocol_is_validated_strictly(_short_uds_runtime_dir: Path) -> None:
+    """Only an untyped 404 means an older daemon; a typed one must be coherent.
+
+    Anti-vacuity: treat every 404 as absence and this incoherent protocol
+    envelope returns ``None`` instead of raising.
+    """
+    from polylogue.daemon_client import DaemonClient, DaemonOperationProtocolError
+    from polylogue.operations.daemon_protocol import DAEMON_OPERATION_PROTOCOL
+
+    socket_path = _short_uds_runtime_dir / "typed-404.sock"
+    with _raw_unix_http_responder(socket_path, status=404, payload={"protocol": DAEMON_OPERATION_PROTOCOL}):
+        with pytest.raises(DaemonOperationProtocolError):
+            DaemonClient(socket_path, timeout_s=5).operation("status", {}, archive_root="/archive")
+
+
+def test_a_read_waits_on_the_socket_for_its_own_deadline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A default-timeout client reading a scan-shaped request waits out its deadline.
+
+    Anti-vacuity (Codex P2, #5695): pass the derived deadline to the transport
+    for writes only and the read socket keeps the client's 0.1-second default,
+    failing while a valid 120-second scan is still running.
+    """
+    import polylogue.daemon_client as daemon_client_module
+    from polylogue.daemon_client import DaemonClient
+
+    client = DaemonClient(tmp_path / "daemon.sock")
+    captured: list[object] = []
+
+    def request(*args: object, **kwargs: object) -> None:
+        captured.append(kwargs["timeout_s"])
+        return None
+
+    monkeypatch.setattr(daemon_client_module, "_request_deadline_s", lambda *_args: 120.0)
+    monkeypatch.setattr(client, "_request_json_response", request)
+
+    assert client.operation("read.chronicle", {}, archive_root=str(tmp_path)) is None
+    assert captured == [121.0]
+    assert client.timeout_s == 0.1
+
+
+def test_an_explicit_dispatch_deadline_reaches_the_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A caller's ``deadline_ms`` is the request's deadline, not the derived scan one.
+
+    Anti-vacuity (Codex P1, #5695): let ``_ask_daemon`` omit ``deadline_ms``
+    and a one-second scan-shaped read goes out with the 120-second deadline.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.cli import operation_kernel
+    from polylogue.daemon_client import DaemonClient
+
+    seen: list[object] = []
+
+    def operation(self: DaemonClient, name: str, payload: dict[str, object], **kwargs: object) -> None:
+        seen.append(kwargs.get("deadline_ms"))
+        return None
+
+    monkeypatch.setattr(DaemonClient, "operation", operation)
+    request = operation_kernel.OperationRequest("read.chronicle", {"params": {"sort": "messages", "limit": 1}})
+    with pytest.raises(operation_kernel.OperationUnavailableError):
+        operation_kernel.dispatch(SimpleNamespace(), request, archive_root=tmp_path, deadline_ms=1000)
+
+    assert seen == [1000]
+
+
+def test_invalid_chronicle_payloads_reach_execution_for_their_typed_refusal() -> None:
+    """The pre-dispatch classifiers never raise on a request execution will refuse.
+
+    Anti-vacuity (Codex P2, #5695): catch only ``ValueError`` and a bogus
+    sort's ``QuerySpecError`` escapes the classifier before execution.
+    """
+    from polylogue.operations.daemon_reads import operation_deadline_s, read_is_archive_scan, requires_vector_snapshot
+
+    payload = {"params": {"sort": "bogus"}}
+    assert read_is_archive_scan("read.chronicle", payload) is False
+    assert requires_vector_snapshot("read.chronicle", payload) is False
+    assert operation_deadline_s("read.chronicle", payload) > 0

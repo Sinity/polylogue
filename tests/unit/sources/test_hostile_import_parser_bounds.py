@@ -10,7 +10,9 @@ Anti-vacuity is named per test.
 
 from __future__ import annotations
 
+import sqlite3
 import time
+from contextlib import closing
 
 import pytest
 
@@ -18,6 +20,7 @@ from polylogue.sources.parsers import chatgpt
 from polylogue.sources.parsers.antigravity import _ACTIVITY_MARKER_RE
 from polylogue.sources.parsers.chatgpt import _generation_branch_key
 from polylogue.sources.parsers.codex import _codex_tool_output_text
+from polylogue.sources.prepared_message_sink import GenerationTimings
 
 
 def test_deeply_nested_codex_tool_output_is_kept_verbatim_not_raised() -> None:
@@ -80,7 +83,8 @@ def test_chatgpt_generation_branch_key_walk_is_memoized() -> None:
         previous = node_id
 
     started = time.monotonic()
-    chatgpt._extract_generation_timings(mapping)
+    with closing(sqlite3.connect(":memory:")) as conn:
+        chatgpt._extract_generation_timings(mapping, GenerationTimings(conn))
     assert time.monotonic() - started < 5.0
 
 
@@ -135,3 +139,45 @@ def test_malformed_chatgpt_parts_loses_one_node_not_the_bundle() -> None:
     session = chatgpt.parse(document, fallback_id="conv")
 
     assert [message.text for message in session.messages] == ["hi"]
+
+
+def test_chatgpt_tool_result_chain_owner_walk_is_memoized() -> None:
+    """A long chain of ``role: tool`` results is walked once, not once per result.
+
+    Anti-vacuity: call ``_owning_tool_call_id`` without its memo and the
+    node reads grow quadratically, far past the linear budget asserted here.
+    """
+    length = 3_000
+    nodes: dict[str, object] = {"call": {"parent": None, "message": {"author": {"role": "assistant"}}}}
+    previous = "call"
+    for index in range(length):
+        node_id = f"t{index}"
+        nodes[node_id] = {"parent": previous, "message": {"author": {"role": "tool"}}}
+        previous = node_id
+    reads = 0
+
+    class CountingMapping(dict[str, object]):
+        def get(self, key: str, default: object = None) -> object:
+            nonlocal reads
+            reads += 1
+            return super().get(key, default)
+
+    mapping = CountingMapping(nodes)
+    memo: dict[str, str] = {}
+    owners = {
+        chatgpt._owning_tool_call_id(mapping, f"t{index - 1}" if index else "call", memo) for index in range(length)
+    }
+    assert owners == {"call"}
+    assert reads <= 3 * length
+
+
+def test_chatgpt_tool_owner_memo_agrees_with_the_unmemoized_walk() -> None:
+    """The cache changes no verdict, including for a parent cycle."""
+    cyclic: dict[str, object] = {
+        "a": {"parent": "b", "message": {"author": {"role": "tool"}}},
+        "b": {"parent": "a", "message": {"author": {"role": "tool"}}},
+        "c": {"parent": "a", "message": {"author": {"role": "tool"}}},
+    }
+    memo: dict[str, str] = {}
+    for start in ("a", "b", "c", "a"):
+        assert chatgpt._owning_tool_call_id(cyclic, start, memo) == chatgpt._owning_tool_call_id(cyclic, start)

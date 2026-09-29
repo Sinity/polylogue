@@ -79,6 +79,7 @@ class _StoredPartition:
     materializer_version: int | None
     input_binding: str | None
     latency_rows: int = 0
+    latency_materializer_version: int | None = None
 
 
 _ABSENT_PARTITION = _StoredPartition(present=False, materializer_version=None, input_binding=None)
@@ -110,7 +111,8 @@ SELECT
     sp.session_id,
     sp.materializer_version,
     sp.input_content_hash,
-    (SELECT COUNT(*) FROM session_latency_profiles l WHERE l.session_id = sp.session_id)
+    (SELECT COUNT(*) FROM session_latency_profiles l WHERE l.session_id = sp.session_id),
+    (SELECT l.materializer_version FROM session_latency_profiles l WHERE l.session_id = sp.session_id LIMIT 1)
 FROM session_profiles sp
 WHERE sp.session_id IN ({placeholders})
 """
@@ -145,6 +147,7 @@ def _partition_row(row: Sequence[object]) -> _StoredPartition:
         materializer_version=None if row[1] is None else _count(row[1]),
         input_binding=None if row[2] is None else str(row[2]),
         latency_rows=_count(row[3]),
+        latency_materializer_version=None if row[4] is None else _count(row[4]),
     )
 
 
@@ -166,7 +169,7 @@ def _classify_partition(
         return _STALE
     if stored.input_binding is None or stored.input_binding != current_binding:
         return _STALE
-    if stored.latency_rows != 1:
+    if stored.latency_rows != 1 or stored.latency_materializer_version != materializer_version:
         return _STALE
     return _VALID
 
@@ -665,6 +668,27 @@ class SessionProfileDerivation:
         start = bisect.bisect(keys, cursor) if cursor is not None else 0
         page = keys[start : start + limit]
         return page, (page[-1] if start + len(page) < len(keys) and page else None)
+
+    def is_required_key(self, frame: object, session_id: str) -> bool:
+        """Recheck requiredness after lease-free work before classifying failure."""
+        scope = self._session_scope(frame)
+        if scope is not None and session_id not in scope:
+            return False
+        conn = self._read_connection()
+        try:
+            if getattr(frame, "profile_demand_only", False):
+                return (
+                    conn.execute(
+                        """SELECT 1 FROM sessions AS s
+                       JOIN session_profile_demand AS d ON d.session_id = s.session_id
+                       WHERE s.session_id = ?""",
+                        (session_id,),
+                    ).fetchone()
+                    is not None
+                )
+            return conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is not None
+        finally:
+            conn.close()
 
     def barrier_sessions(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         """Each key is a session id; only an archived session can be held."""

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from pathlib import Path
 
@@ -20,8 +21,8 @@ from polylogue.demo.seed import (
     demo_source_specs,
     materialize_demo_source,
 )
+from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.operations.canonical_archive_ingest import ingest_sources_archive as canonical_ingest
-from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.pipeline.services.parsing_models import ParseResult
 from polylogue.scenarios import (
     DEMO_CHATGPT_SESSION_ID,
@@ -213,7 +214,7 @@ async def test_seed_materializes_session_profiles_for_postmortem(tmp_path: Path)
 
     Without it ``analyze --postmortem`` (and the session-digest surfaces) render
     an empty bundle on the demo archive because the postmortem aggregator fetches
-    profiles that ``parse_sources_archive`` never wrote. Guards the #2196 fix.
+    profiles that ``ingest_one_shot_archive`` never wrote. Guards the #2196 fix.
     """
 
     archive_root = tmp_path / "archive"
@@ -236,6 +237,45 @@ async def test_demo_verify_reports_missing_overlays(tmp_path: Path) -> None:
     assert "expected demo overlays" in "\n".join(verify.problems)
     failed_constructs = [row.to_payload() for row in verify.construct_coverage if not row.ok]
     assert not failed_constructs, failed_constructs
+
+
+@pytest.mark.asyncio
+async def test_demo_verify_preserves_hermes_identity_after_archive_relocation(tmp_path: Path) -> None:
+    """Verification uses the retained Hermes ID after an inode-preserving move.
+
+    Anti-vacuity: recomputing the profile suffix from the destination path makes
+    this seeded archive fail despite its SQLite session row being unchanged.
+    """
+    original_root = tmp_path / "original" / "archive"
+    await seed_demo_archive(original_root, force=True, with_overlays=False)
+    before = verify_demo_archive(original_root)
+    assert before.ok is True
+
+    relocated_root = tmp_path / "relocated" / "archive"
+    relocated_root.parent.mkdir()
+    os.rename(original_root, relocated_root)
+
+    after = verify_demo_archive(relocated_root, check_source_path_leaks=False)
+    assert after.ok is True, after.problems
+
+
+@pytest.mark.asyncio
+async def test_demo_verify_reports_an_unreadable_source_tier_as_a_problem(tmp_path: Path) -> None:
+    """A source tier without ``raw_sessions`` fails verification, it does not crash it.
+
+    Anti-vacuity: running the retained Hermes path lookup outside the
+    archive-read error boundary raises ``sqlite3.OperationalError`` here even
+    though only index semantics were requested.
+    """
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=False)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("ALTER TABLE raw_sessions RENAME TO raw_sessions_moved")
+
+    result = verify_demo_archive(archive_root, check_source_path_leaks=False, check_constructs=False)
+
+    assert result.ok is False
+    assert any(problem.startswith("archive unreadable") for problem in result.problems)
 
 
 @pytest.mark.asyncio
@@ -299,7 +339,7 @@ async def test_apply_demo_post_ingest_augmentation_matches_direct_seed(
     ``apply_demo_post_ingest_augmentation`` runs standalone.
 
     Simulates the shape of a daemon-driven ingest: materialize the fixture
-    world and ingest it via ``parse_sources_archive`` directly, skipping
+    world and ingest it via ``ingest_one_shot_archive`` directly, skipping
     ``seed_demo_archive``'s inline augmentation calls, then apply the shared
     post-ingest augmentation function standalone -- exactly what
     ``polylogue import --demo --wait`` does after daemon convergence. The
@@ -309,7 +349,7 @@ async def test_apply_demo_post_ingest_augmentation_matches_direct_seed(
     archive_root = tmp_path / "archive"
     source_root = materialize_demo_source(archive_root, force=True)
     monkeypatch.chdir(source_root)
-    result = await parse_sources_archive(archive_root, demo_source_specs(source_root))
+    result = await ingest_one_shot_archive(archive_root, demo_source_specs(source_root))
     assert result.counts["sessions"] > 0
 
     # Base ingest alone (no augmentation yet) never materializes session

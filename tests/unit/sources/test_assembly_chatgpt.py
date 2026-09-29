@@ -403,6 +403,10 @@ class TestAcquireAssetBlobsFromZip:
                 b"page render",
                 "file_00000000cc4c7243aa6bdd0537ca804e",
             ),
+            "03adfe6a4b1e5a0#file_00000000cc4c7243aa6bdd0537ca804e#p_1.jpg-p_1.jpg": (
+                b"second page render",
+                "file_00000000cc4c7243aa6bdd0537ca804e",
+            ),
             "conv-1/audio/file_66f6b1408b20203c-e7b106a6.wav": (
                 b"voice note",
                 "file_66f6b1408b20203c",
@@ -423,9 +427,15 @@ class TestAcquireAssetBlobsFromZip:
 
         asset_blobs = sidecar_data.get("chatgpt_asset_blobs")
         assert asset_blobs is not None
-        assert set(asset_blobs) == {asset_id for _payload, asset_id in members.values()}
-        for payload, asset_id in members.values():
-            blob_hash, size = asset_blobs[asset_id]
+        duplicate_ids = {
+            asset_id
+            for asset_id in {value[1] for value in members.values()}
+            if sum(1 for _payload, candidate_id in members.values() if candidate_id == asset_id) > 1
+        }
+        assert len(asset_blobs) == len(members)
+        for member_name, (payload, asset_id) in members.items():
+            key = f"{asset_id}#{member_name}" if asset_id in duplicate_ids else asset_id
+            blob_hash, size = asset_blobs[key]
             assert size == len(payload)
             assert store.read_all(blob_hash) == payload
 

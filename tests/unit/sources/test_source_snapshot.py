@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import sqlite3
 from dataclasses import replace
 from pathlib import Path
@@ -89,6 +90,39 @@ def test_directory_cut_readmits_a_grown_live_file_once(tmp_path: Path, monkeypat
     assert result.counts.candidate_bytes == len("first\n")
     assert result.counts.carry_forward_bytes == 0
     assert result.carry_forward_manifest.items[0].readmission is True
+
+
+def test_member_hash_uses_one_descriptor_and_captured_append_length(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A growth after descriptor stat cannot pair the old size with a longer digest.
+
+    Anti-vacuity: a path-based read-to-EOF hashes the appended bytes while
+    retaining the pre-append size from the initial inventory.
+    """
+    root = tmp_path / "append-root"
+    root.mkdir()
+    member = root / "events.jsonl"
+    original = b"first\n"
+    member.write_bytes(original)
+    real_fstat = os.fstat
+    captured = False
+
+    def append_after_capture(fd: int) -> Any:
+        nonlocal captured
+        info = real_fstat(fd)
+        if not captured:
+            captured = True
+            with member.open("ab") as output:
+                output.write(b"later\n")
+        return info
+
+    monkeypatch.setattr(os, "fstat", append_after_capture)
+    observed = source_snapshot.observe_source_members(SourceDeclaration("append", SourceRole.APPEND_JSONL, root, True))
+
+    assert len(observed) == 1
+    assert observed[0].size_bytes == len(original)
+    assert observed[0].content_sha256 == hashlib.sha256(original).hexdigest()
 
 
 def test_candidate_bytes_are_checked_after_publication(tmp_path: Path) -> None:
@@ -532,6 +566,24 @@ def test_spool_handoff_recovers_retired_generation_after_marker_crash(
         "before.json",
     }
     assert not retired.exists()
+
+
+def test_spool_handoff_recovers_when_destination_was_never_created(tmp_path: Path) -> None:
+    """Anti-vacuity: a crash after rename but before staging must retain pre-cut events."""
+    spool = tmp_path / "spool"
+    spool.mkdir()
+    (spool / "before.json").write_text("before", encoding="utf-8")
+    preflight = preflight_source_cut(
+        [SourceDeclaration("spool", SourceRole.SPOOL, spool, True)], request_id="missing-destination"
+    )
+    retired = tmp_path / ".spool.spool.cut"
+    spool.rename(retired)
+
+    recovered = execute_source_cut(preflight, tmp_path / "cut")
+
+    assert recovered.counts.conserved
+    assert (recovered.candidate_root / "spool" / "before.json").read_text(encoding="utf-8") == "before"
+    assert spool.is_dir()
 
 
 def test_source_id_cannot_escape_candidate_staging(tmp_path: Path) -> None:

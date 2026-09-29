@@ -184,6 +184,9 @@ class _ParseContext:
     file_mtime: str | None
     capture_raw: bool
     sidecar_data: SidecarData
+    # The origin this file's location binds, or ``None`` where the location
+    # classifies (the import inbox, and export archives opened from it).
+    bound_provider: Provider | None = None
 
 
 __all__ = [

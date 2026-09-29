@@ -7,13 +7,14 @@ import contextvars
 import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 import zipfile
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
-from contextlib import ExitStack, closing, contextmanager
-from dataclasses import dataclass, field
+from contextlib import ExitStack, closing, contextmanager, suppress
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
@@ -41,6 +42,7 @@ from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandi
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, ZipAdmission
 from polylogue.config import Source
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
@@ -59,6 +61,7 @@ from polylogue.core.protocols import ArchiveRootOwner
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_coordinates import (
     MemberAddressingMode,
+    zip_member_container,
     zip_member_identity_coordinate,
     zip_member_raw_id,
     zip_member_source_index,
@@ -79,17 +82,19 @@ from polylogue.core.storage_faults import (
 )
 from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
-from polylogue.logging import ERROR, WARNING, bind, emit, get_logger
+from polylogue.logging import ERROR, INFO, WARNING, bind, emit, get_logger
 from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
     IngestAttemptDisposition,
     classify_archive_write_exception,
     downstream_failure_disposition,
+    non_session_artifact_disposition,
     success_disposition,
     transient_error_disposition,
 )
 from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
+from polylogue.sources.acquisition_boundary import admit_bound_bytes, capture_bound_path
 from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoder_json import PartialJsonStreamError
@@ -102,6 +107,8 @@ from polylogue.sources.decoder_zip import (
 from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
+    ForeignOriginContentError,
+    bound_location_provider,
     is_jsonl_source_path,
     is_stream_record_provider,
     parse_payload,
@@ -121,6 +128,7 @@ from polylogue.sources.live.batch_support import (
     _DEFER_APPEND,
     _MAX_APPEND_PLAN_PAYLOAD_BYTES,
     _STREAMING_FULL_INGEST_BYTES,
+    RetryableSourceReadError,
     _accumulate_stage_timings,
     _append_plan_group_ready,
     _AppendPlan,
@@ -149,10 +157,10 @@ from polylogue.sources.live.batch_support import (
     encode_cursor_hash_authority,
     file_prefix_sha256,
     fingerprint_file,
+    foreign_origin_exclusion,
     jsonl_complete_prefix,
     jsonl_complete_prefix_path,
     last_complete_newline_from_tail,
-    retryable_read_fault,
     sha256_range_from_path,
     tail_hash_from_path,
 )
@@ -179,6 +187,7 @@ from polylogue.sources.live.dedup import handle_schema_version_mismatch, handle_
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import (
     REFUSED_DAEMON_DEGRADED,
+    REFUSED_NO_SESSIONS,
     REFUSED_UNATTEMPTED,
     REFUSED_UNATTEMPTED_TIME_BUDGET,
     LiveBatchMetrics,
@@ -186,6 +195,7 @@ from polylogue.sources.live.metrics import (
     split_offered_bytes,
 )
 from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage, ReadSnapshot
+from polylogue.sources.live.retained_prefetch import PreparedLiveRetainedRaw
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.origin_specs import (
@@ -200,8 +210,10 @@ from polylogue.sources.prepared_jsonl import PreparedJsonl, PreparedSessionSeque
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.sources.revision_backfill import (
     _declared_non_session_artifact_classification,
+    enrich_sessions_from_archive,
     parse_retained_raw_sessions,
     prepare_retained_jsonl_artifact,
+    prepared_enrichment_dependency_state,
 )
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
@@ -239,11 +251,13 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepared_row_dispositions,
 )
 from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 
 if TYPE_CHECKING:
     from polylogue.storage.raw_retention import RawFrontierBlockedPaths
 
 logger = get_logger(__name__)
+
 
 #: Convergence-debt stage name for the recurring raw-retention owner. Raw
 #: retention is one of the four derived/durable-storage domains
@@ -571,6 +585,47 @@ def _shard_prepared_by_raw_id(
     return None if binding is None else {raw_id: binding}
 
 
+#: Artifact kinds whose retained bytes other sessions are enriched from
+#: (``retained_assembly``): session indexes, prompt history, export asset maps.
+_ENRICHMENT_EVIDENCE_KINDS = frozenset({"session_index", "prompt_history_log", "export_asset_index", "export_asset"})
+
+
+def _enrichment_evidence_first(paths: list[Path], provider: Provider) -> list[Path]:
+    """Admit enrichment evidence ahead of the sessions it describes.
+
+    A pass admits records in order, and each session is enriched (or its
+    prepared carrier revalidated) against the evidence admitted before it.
+    Discovery order puts ``sessions-index.json`` after the UUID-named
+    transcripts beside it, so without this a transcript in the same pass as
+    its index was published with the heuristic title while retained replay
+    of the same bytes used the index. The sort is stable otherwise.
+    """
+
+    def evidence_rank(path: Path) -> int:
+        rule = artifact_rule_for_path(provider, str(path))
+        return 0 if rule is not None and rule.kind in _ENRICHMENT_EVIDENCE_KINDS else 1
+
+    return sorted(paths, key=evidence_rank)
+
+
+def _retained_chain_prepared(
+    archive: Any,
+    accepted_raw_ids: Sequence[str],
+    *,
+    current_raw_id: str,
+    retained: Mapping[str, PreparedLiveRetainedRaw] | None,
+) -> bool:
+    """Whether every older chain member has a current off-writer carrier."""
+    members = retained or {}
+    for raw_id in accepted_raw_ids:
+        if raw_id == current_raw_id:
+            continue
+        member = members.get(raw_id)
+        if member is None or not member.current(archive):
+            return False
+    return True
+
+
 def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:
     """Build byte-backed JSONL candidates for legacy prefetch callers."""
     candidates: list[LiveParseCandidate] = []
@@ -683,6 +738,9 @@ class _ArchiveFullWriteResult:
     # observation. Keep them separate from accepted raw ids so deferred
     # authority failures remain retryable.
     terminal_raw_ids: dict[_FullRecordKey, str] = field(default_factory=dict)
+    # Accepted raws whose parse produced no session (a recorded terminal
+    # shape outcome). Their paths still advance the cursor as successes.
+    no_session_raw_ids: set[_FullRecordKey] = field(default_factory=set)
     # A raw whose membership census does not produce an accepted session is
     # still a durably acquired, successfully parsed source observation. The
     # decision can be pending for the materialization conveyor or already
@@ -699,9 +757,10 @@ class _ArchiveFullWriteResult:
     # The archive can forget on purpose (polylogue-27m): a record whose blob
     # hash is durably excised is a deliberate skip, not a failure -- tracked
     # separately from ordinary parse/write failures so operators can tell
-    # the two apart (mirrors ParseResult.excised_skips on the CLI import
-    # path in pipeline/services/archive_ingest.py).
+    # the two apart (summed into ParseResult.excised_skips by the one-shot
+    # route in operations/canonical_archive_ingest.py).
     excised_skips: int = 0
+    excised_paths: set[Path] = field(default_factory=set)
     # polylogue-11cg9: raw ids never attempted this pass because the declared
     # wall-clock budget (``max_pass_seconds``) was already exceeded before
     # their turn. Not a failure and not a conveyor hand-off -- the record was
@@ -789,6 +848,16 @@ class _OpenIngestAttempt:
         self.scope.enter_context(bind(attempt_id=attempt_id))
 
 
+def _zip_member_debt_prefix(path: Path) -> str:
+    """The prefix every member debt coordinate of ``path`` starts with, and only those."""
+    return f"{path}:#"
+
+
+def _zip_member_debt_subject(path: Path, ordinal: int, member: str) -> str:
+    """Debt coordinate for one ZIP member; the ordinal keeps duplicate names apart."""
+    return f"{_zip_member_debt_prefix(path)}{ordinal}:{member}"
+
+
 class LiveBatchProcessor:
     """Run the daemon live ingest batch path without filesystem watching."""
 
@@ -810,6 +879,9 @@ class LiveBatchProcessor:
         self._polylogue = polylogue
         self._sources = tuple(sources)
         self._cursor = cursor
+        # ZIP member coordinates refused during the current archive pass, so
+        # debt for members a later revision removed can be cleared.
+        self._zip_member_refusals_this_pass: dict[str, set[str]] = {}
         self._parser_fingerprint = parser_fingerprint
         self._converger = converger
         self._stop_requested = stop_requested or (lambda: False)
@@ -832,6 +904,7 @@ class LiveBatchProcessor:
         # The watcher supplies a parse stage for JSON/JSONL preparation before
         # the writer hold. Direct callers may pass None for baseline parity.
         self._parse_stage = parse_stage
+        self._parse_lookahead: tuple[tuple[Path, ...], str] | None = None
         self._read_snapshot = read_snapshot
 
     def cursor_authority_block_reason(self) -> str | None:
@@ -1029,48 +1102,63 @@ class LiveBatchProcessor:
         synchronous archive-publication worker, where its thread-local scope
         cannot leak over page planning, parsing, or convergence.
         """
+        # A cold build's ops checkpoint holder spans the whole page: the
+        # archive pass closes before this page's cursor, convergence and
+        # attempt writes, and releasing it there made each of those
+        # publications checkpoint ``ops.db`` on close again.
+        from polylogue.sources.live.cold_build import active_cold_build_generation
+
+        cold_build = active_cold_build_generation(
+            Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        )
+        if cold_build is not None:
+            cold_build.begin_ops_page()
         attempt = _OpenIngestAttempt()
-        with attempt.scope:
-            try:
-                return await self._ingest_files(
-                    paths,
-                    queued_file_count=queued_file_count,
-                    skipped_file_count=skipped_file_count,
-                    emit_event=emit_event,
-                    max_pass_seconds=max_pass_seconds,
-                    whole_archive_convergence=whole_archive_convergence,
-                    defer_convergence=defer_convergence,
-                    open_attempt=attempt,
-                )
-            except asyncio.CancelledError:
-                # Cancellation is shutdown: no further ops write is admitted
-                # here (it could hold the writer past the shutdown deadline).
-                # The row stays ``running`` and the next start records it as
-                # ``interrupted``, which is what happened; this event says so
-                # now, with the attempt it names.
-                if attempt.attempt_id is not None and not attempt.finished:
-                    emit(
-                        "live.ingest.attempt_cancelled",
-                        level=WARNING,
-                        outcome="refused",
-                        # Cancelled before the start write returned: the row
-                        # exists only if that write was already admitted (the
-                        # coordinator then finishes it detached); a queued
-                        # start never commits. Say which case was observed.
-                        reason=(
-                            "cancelled_during_finish"
-                            if attempt.finishing
-                            else "cancelled"
-                            if attempt.started
-                            else "cancelled_before_start_confirmed"
-                        ),
-                        attempt_id=attempt.attempt_id,
+        try:
+            with attempt.scope:
+                try:
+                    return await self._ingest_files(
+                        paths,
+                        queued_file_count=queued_file_count,
+                        skipped_file_count=skipped_file_count,
+                        emit_event=emit_event,
+                        max_pass_seconds=max_pass_seconds,
+                        whole_archive_convergence=whole_archive_convergence,
+                        defer_convergence=defer_convergence,
+                        open_attempt=attempt,
                     )
-                raise
-            except Exception as exc:
-                await self._finish_escaped_attempt(attempt, exc)
-                raise_if_storage_fault(exc)
-                raise
+                except asyncio.CancelledError:
+                    # Cancellation is shutdown: no further ops write is admitted
+                    # here (it could hold the writer past the shutdown deadline).
+                    # The row stays ``running`` and the next start records it as
+                    # ``interrupted``, which is what happened; this event says so
+                    # now, with the attempt it names.
+                    if attempt.attempt_id is not None and not attempt.finished:
+                        emit(
+                            "live.ingest.attempt_cancelled",
+                            level=WARNING,
+                            outcome="refused",
+                            # Cancelled before the start write returned: the row
+                            # exists only if that write was already admitted (the
+                            # coordinator then finishes it detached); a queued
+                            # start never commits. Say which case was observed.
+                            reason=(
+                                "cancelled_during_finish"
+                                if attempt.finishing
+                                else "cancelled"
+                                if attempt.started
+                                else "cancelled_before_start_confirmed"
+                            ),
+                            attempt_id=attempt.attempt_id,
+                        )
+                    raise
+                except Exception as exc:
+                    await self._finish_escaped_attempt(attempt, exc)
+                    raise_if_storage_fault(exc)
+                    raise
+        finally:
+            if cold_build is not None:
+                cold_build.end_ops_page()
 
     async def _finish_escaped_attempt(self, attempt: _OpenIngestAttempt, exc: Exception) -> None:
         """Close the attempt row an escaping exception left ``running``.
@@ -1227,6 +1315,7 @@ class LiveBatchProcessor:
         failed_paths: list[str] = []
         excluded_by_path: dict[Path, str] = {}
         detection_fallbacks_by_path: dict[Path, str] = {}
+        no_session_paths: set[Path] = set()
         succeeded_paths: set[Path] = set()
         # polylogue-cnu3: the most severe structural disposition this batch
         # hit, if any. Set at each terminal except-clause below by
@@ -1263,7 +1352,7 @@ class LiveBatchProcessor:
             await self._record_attempt_progress_admitted(
                 attempt_id,
                 phase="append_parse",
-                succeeded_file_count=len(succeeded_paths),
+                succeeded_file_count=len(succeeded_paths - no_session_paths),
                 failed_file_count=len(failed_paths),
                 source_payload_read_bytes=source_payload_read_bytes,
                 cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1303,7 +1392,7 @@ class LiveBatchProcessor:
             await self._record_attempt_progress_admitted(
                 attempt_id,
                 phase="convergence",
-                succeeded_file_count=len(succeeded_paths),
+                succeeded_file_count=len(succeeded_paths - no_session_paths),
                 failed_file_count=len(failed_paths),
                 source_payload_read_bytes=source_payload_read_bytes,
                 cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1457,7 +1546,17 @@ class LiveBatchProcessor:
                 # Remaining sources stay ordinary backlog for the next tick;
                 # nothing here was attempted, so nothing to mark failed.
                 break
-            for source_paths in _full_parse_progress_groups(grouped_paths):
+            # Evidence goes first across the whole source, before the list is
+            # split into progress groups; a later group cannot revisit an
+            # earlier one (see ``_enrichment_evidence_first``).
+            ordered_paths = _enrichment_evidence_first(
+                list(grouped_paths),
+                Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name)),
+            )
+            progress_groups = list(_full_parse_progress_groups(ordered_paths))
+            held_pending: list[Path] = []
+            while progress_groups:
+                source_paths = progress_groups.pop(0)
                 if self._stop_requested():
                     break
                 if is_fully_degraded():
@@ -1469,12 +1568,15 @@ class LiveBatchProcessor:
                 ):
                     full_ingest_time_budget_exceeded = True
                     break
+                if held_pending and source_paths is held_pending:
+                    # The held group is starting; its own result accounts for it.
+                    held_pending = []
                 t0 = time.perf_counter()
                 try:
                     await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse",
-                        succeeded_file_count=len(succeeded_paths),
+                        succeeded_file_count=len(succeeded_paths - no_session_paths),
                         failed_file_count=len(failed_paths),
                         source_payload_read_bytes=source_payload_read_bytes,
                         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1493,7 +1595,7 @@ class LiveBatchProcessor:
                             attempt_id,
                             source_name=source_name,
                             current_path=current_path,
-                            succeeded_file_count=len(succeeded_paths),
+                            succeeded_file_count=len(succeeded_paths - no_session_paths),
                             failed_file_count=len(failed_paths),
                             source_payload_read_bytes=source_payload_read_bytes,
                             cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1502,6 +1604,11 @@ class LiveBatchProcessor:
                         ),
                     )
                     processed_any_full_group = True
+                    if full_result.ordering_held:
+                        # Later revisions of a session this group published
+                        # go next, warmed against that publication.
+                        held_pending = list(full_result.ordering_held)
+                        progress_groups.insert(0, held_pending)
                     if full_result.time_budget_exceeded:
                         full_ingest_time_budget_exceeded = True
                     ingest_worker_count_max = max(ingest_worker_count_max, full_result.worker_count)
@@ -1519,7 +1626,7 @@ class LiveBatchProcessor:
                     await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse_failed",
-                        succeeded_file_count=len(succeeded_paths),
+                        succeeded_file_count=len(succeeded_paths - no_session_paths),
                         failed_file_count=len(failed_paths),
                         source_payload_read_bytes=source_payload_read_bytes,
                         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1539,7 +1646,7 @@ class LiveBatchProcessor:
                     await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse_failed",
-                        succeeded_file_count=len(succeeded_paths),
+                        succeeded_file_count=len(succeeded_paths - no_session_paths),
                         failed_file_count=len(failed_paths),
                         source_payload_read_bytes=source_payload_read_bytes,
                         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1574,7 +1681,7 @@ class LiveBatchProcessor:
                     await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse_failed",
-                        succeeded_file_count=len(succeeded_paths),
+                        succeeded_file_count=len(succeeded_paths - no_session_paths),
                         failed_file_count=len(failed_paths),
                         source_payload_read_bytes=source_payload_read_bytes,
                         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1592,7 +1699,7 @@ class LiveBatchProcessor:
                 await self._record_attempt_progress_admitted(
                     attempt_id,
                     phase="convergence",
-                    succeeded_file_count=len(succeeded_paths),
+                    succeeded_file_count=len(succeeded_paths - no_session_paths),
                     failed_file_count=len(failed_paths),
                     source_payload_read_bytes=source_payload_read_bytes,
                     cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1672,13 +1779,16 @@ class LiveBatchProcessor:
                         if stale:
                             stale_cursor_write_count += 1
                 for path in full_result.failed:
-                    failed_paths.append(str(path))
-                    cursor_fingerprint_read_bytes += await self._run_ops_write(
-                        "cursor_failed",
-                        self._record_failed_cursor,
-                        path,
-                        attempted_observation=full_result.captured_file_observations.get(path),
-                    )
+                    if path in full_result.excised_paths:
+                        excluded_by_path[path] = "durably_excised"
+                    else:
+                        failed_paths.append(str(path))
+                        cursor_fingerprint_read_bytes += await self._run_ops_write(
+                            "cursor_failed",
+                            self._record_failed_cursor,
+                            path,
+                            attempted_observation=full_result.captured_file_observations.get(path),
+                        )
                 for path in full_result.preparation_deferred:
                     deferred_paths.append(path)
                     preparation_deferred_paths.add(path)
@@ -1691,6 +1801,7 @@ class LiveBatchProcessor:
                     )
                 excluded_by_path.update(full_result.excluded)
                 detection_fallbacks_by_path.update(full_result.detection_fallbacks)
+                no_session_paths.update(full_result.no_session)
                 logger.info(
                     "live.watcher: batch ingested %s — %d in %.1fs (%.1f/s)",
                     source_name,
@@ -1712,6 +1823,20 @@ class LiveBatchProcessor:
                         reason="writer hold spent after the archive commit; the batch ends with its cursors recorded",
                     )
                     break
+            # A held revision the loop ended before reaching was never
+            # attempted: it stays retryable instead of reading as settled.
+            failed_now = set(failed_paths)
+            for path in held_pending:
+                if str(path) in failed_now:
+                    continue
+                deferred_paths.append(path)
+                preparation_deferred_paths.add(path)
+                await self._run_ops_write(
+                    "cursor_deferred_preparation",
+                    self._defer_full_cursor_retry,
+                    path,
+                    source_name=source_name,
+                )
 
         summary_stage_payload = _single_route_stage_payload(
             append_file_count=append_file_count,
@@ -1730,7 +1855,7 @@ class LiveBatchProcessor:
             }
         summary_stage_payload = {
             **(summary_stage_payload or {}),
-            "excluded_file_count": len(excluded_by_path),
+            "excluded_file_count": len(excluded_by_path) + len(no_session_paths),
         }
         # The ingest-attempt receipt has separate units for parsed raw files
         # and materialized sessions.  Count the actual session identities
@@ -1743,7 +1868,7 @@ class LiveBatchProcessor:
         await self._record_attempt_progress_admitted(
             attempt_id,
             phase="cursor_update",
-            succeeded_file_count=len(succeeded_paths),
+            succeeded_file_count=len(succeeded_paths - no_session_paths),
             failed_file_count=len(failed_paths),
             materialized_count=materialized_session_count,
             source_payload_read_bytes=source_payload_read_bytes,
@@ -1795,14 +1920,22 @@ class LiveBatchProcessor:
                 (ConvergenceDebtBatchEntry(writes=deferred_debt_writes),),
             )
         retry_paths = failed_paths + [str(path) for path in deferred_paths]
+        # ``succeeded_paths`` stays the cursor-completed set this method
+        # advances. Public accounting moves a path that produced no session
+        # to the exclusions, matching the intake outcome for the same path.
+        admitted_paths = succeeded_paths - no_session_paths
+        reported_excluded = {
+            **excluded_by_path,
+            **dict.fromkeys(no_session_paths, REFUSED_NO_SESSIONS),
+        }
         excluded_reasons: dict[str, int] = {}
-        for reason in excluded_by_path.values():
+        for reason in reported_excluded.values():
             excluded_reasons[reason] = excluded_reasons.get(reason, 0) + 1
         ingested_bytes, failed_bytes, refused_bytes_by_reason = split_offered_bytes(
             path_sizes,
-            succeeded=succeeded_paths,
+            succeeded=admitted_paths,
             failed=(Path(path) for path in failed_paths),
-            excluded=excluded_by_path,
+            excluded=reported_excluded,
             deferred=deferred_paths,
             unattempted_reason=(
                 REFUSED_UNATTEMPTED_TIME_BUDGET if full_ingest_time_budget_exceeded else REFUSED_UNATTEMPTED
@@ -1813,11 +1946,11 @@ class LiveBatchProcessor:
             queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
             needed_file_count=len(paths),
             skipped_file_count=skipped_file_count,
-            succeeded_file_count=len(succeeded_paths),
+            succeeded_file_count=len(succeeded_paths - no_session_paths),
             failed_file_count=len(failed_paths),
             excluded_file_count=sum(excluded_reasons.values()),
             excluded_reasons=dict(excluded_reasons),
-            excluded_paths={str(path): reason for path, reason in excluded_by_path.items()},
+            excluded_paths={str(path): reason for path, reason in reported_excluded.items()},
             detection_fallback_paths={str(path): reason for path, reason in detection_fallbacks_by_path.items()},
             deferred_paths=tuple(str(path) for path in deferred_paths),
             source_group_count=len({self._source_name_for(path) for path in paths}),
@@ -1848,7 +1981,8 @@ class LiveBatchProcessor:
             raw_compaction_runs=raw_compaction_runs,
             stage_timings_s={name: round(elapsed, 6) for name, elapsed in stage_timings.items()},
             failed_paths=retry_paths,
-            succeeded_paths=tuple(sorted(succeeded_paths)),
+            succeeded_paths=tuple(sorted(admitted_paths)),
+            no_session_paths=tuple(sorted(str(path) for path in no_session_paths)),
             new_sessions=tuple(new_session_touches),
             updated_sessions=tuple(updated_session_touches),
             time_budget_exceeded=full_ingest_time_budget_exceeded,
@@ -1874,8 +2008,9 @@ class LiveBatchProcessor:
             queued_file_count=metrics.queued_file_count,
             needed_file_count=metrics.needed_file_count,
             skipped_file_count=metrics.skipped_file_count,
-            succeeded_file_count=len(succeeded_paths),
+            succeeded_file_count=len(succeeded_paths - no_session_paths),
             failed_file_count=len(failed_paths),
+            materialized_count=materialized_session_count,
             input_bytes=input_bytes,
             ingested_bytes=metrics.ingested_bytes,
             failed_bytes=metrics.failed_bytes,
@@ -1893,6 +2028,19 @@ class LiveBatchProcessor:
         )
         if attempt_disposition is not None:
             final_disposition = attempt_disposition
+        elif (
+            not retry_paths
+            and not full_ingest_time_budget_exceeded
+            and no_session_paths
+            and set(reported_excluded) == set(paths)
+            and set(reported_excluded.values()) == {REFUSED_NO_SESSIONS}
+        ):
+            # Every settled source parsed to no session: the durable attempt
+            # agrees with the intake's EXCLUDED outcome instead of SUCCESS.
+            final_disposition = non_session_artifact_disposition(
+                evidence_ref="batch:no_session_sources",
+                diagnostic=f"{len(no_session_paths)} source item(s) parsed to no session",
+            )
         elif not retry_paths:
             final_disposition = success_disposition()
         else:
@@ -2650,7 +2798,7 @@ class LiveBatchProcessor:
         if not sidecars or not source_db.exists():
             yield
             return
-        with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        with closing(open_readonly_connection(source_db)) as conn:
             self._pinned_raw_fingerprints = self._pinned_latest_raw_fingerprints(
                 conn, sidecars, archive_root=source_db.parent
             )
@@ -2764,7 +2912,7 @@ class LiveBatchProcessor:
         pinned = self._pinned_history_sidecars
         if pinned is not None and str(path) in pinned:
             return pinned[str(path)]
-        conn = sqlite3.connect(f"file:{self._archive_source_db_path()}?mode=ro", uri=True)
+        conn = open_readonly_connection(self._archive_source_db_path())
         try:
             declared = conn.execute(
                 "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'history_sidecars'"
@@ -2787,7 +2935,7 @@ class LiveBatchProcessor:
         if not source_db.exists():
             return None
         try:
-            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(source_db)
             try:
                 row = conn.execute(
                     """
@@ -2823,6 +2971,63 @@ class LiveBatchProcessor:
         backend = getattr(self._polylogue, "backend", None)
         return isinstance(getattr(backend, "db_path", None), Path)
 
+    def offer_parse_lookahead(self, paths: Sequence[Path], *, source_name: str) -> None:
+        """Record the paths a later batch will ingest in full, touching nothing.
+
+        No source is read here or on any parent thread: the next full ingest
+        filters the offer by cursor and hands it to the parse stage, whose
+        workers do every source read where a stuck one can be reaped.
+        """
+        self._parse_lookahead = (tuple(paths), source_name) if paths else None
+
+    def drop_parse_lookahead(self) -> None:
+        """Forget an unconsumed lookahead offer."""
+        self._parse_lookahead = None
+
+    async def _submit_ready_lookahead(self) -> None:
+        """Submit the offered lookahead to the parse stage, never waiting on its parsing.
+
+        Called between a full ingest's warm and its publication, so the next
+        batch's parsing overlaps this one's writer-held publication. Only
+        the cursor lookup and a stat per path run here; the submission
+        mutates the stage's bookkeeping, so if the caller is cancelled it
+        settles before the ingest lock is released.
+        """
+        offer = self._parse_lookahead
+        self._parse_lookahead = None
+        if offer is None or self._parse_stage is None:
+            return
+        paths, source_name = offer
+        stage = self._parse_stage
+        fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+
+        def submit() -> int:
+            # Only a file with no cursor row is certain to be ingested in full.
+            records = self._cursor.get_records(paths)
+            cursorless = [str(path) for path in paths if records.get(path) is None]
+            if not cursorless:
+                return 0
+            archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+            return stage.prefetch_paths(cursorless, fallback_provider=fallback_provider, archive_root=archive_root)
+
+        submission = asyncio.ensure_future(asyncio.to_thread(submit))
+        try:
+            await asyncio.shield(submission)
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await submission
+            raise
+        except Exception as exc:
+            # Read-ahead costs only the overlap when it fails; the batch that
+            # needs these paths warms them itself.
+            emit(
+                "live.parse_prefetch.lookahead_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="lookahead_submission_failed",
+                error_type=type(exc).__name__,
+            )
+
     async def _ingest_full_paths(
         self,
         paths: list[Path],
@@ -2833,7 +3038,11 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
     ) -> _FullIngestResult:
+        paths = _enrichment_evidence_first(
+            paths, Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        )
         prepared_json_paths: frozenset[str] = frozenset()
+        held_paths: frozenset[str] = frozenset()
         if self._parse_stage is not None and not _source_tier_acquisition_required():
             # Prepare JSON/JSONL before asking the coordinator for a writer
             # hold. A failed prewarm leaves the regular recorded parse outcome.
@@ -2851,24 +3060,47 @@ class LiveBatchProcessor:
                         if Path(source_path).suffix.lower() == ".json"
                     )
                     archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-                    await asyncio.to_thread(
-                        self._parse_stage.warm_paths,
-                        path_candidates,
-                        archive_root=archive_root,
-                        read_snapshot=self._read_snapshot,
-                        capture_mode=fallback_provider,
-                        source_index=0,
+                    # The warm has no deadline and mutates the stage's
+                    # bookkeeping. If the caller is cancelled, stop it at its
+                    # next poll and settle the thread before the ingest lock
+                    # is released, so no retry, warm or shutdown runs beside it.
+                    cancelled = threading.Event()
+                    warm = asyncio.ensure_future(
+                        asyncio.to_thread(
+                            self._parse_stage.warm_paths,
+                            path_candidates,
+                            archive_root=archive_root,
+                            read_snapshot=self._read_snapshot,
+                            capture_mode=fallback_provider,
+                            source_index=0,
+                            cancelled=cancelled,
+                        )
                     )
+                    try:
+                        held_paths = await asyncio.shield(warm)
+                    except asyncio.CancelledError:
+                        cancelled.set()
+                        with suppress(Exception):
+                            await warm
+                        raise
             except Exception:
                 prepared_json_paths = frozenset()
+                held_paths = frozenset()
                 logger.warning(
                     "live.watcher: parse-stage prefetch failed; falling back to in-hold parse",
                     exc_info=True,
                 )
-        return await self._run_sync(
+            # This page's warm is settled; the next batch's parsing can now
+            # overlap this page's publication.
+            await self._submit_ready_lookahead()
+        # A held path shares a canonical session with an earlier path of this
+        # group. It publishes in the next group, after a warm that reconciles
+        # it against this group's publication.
+        held = [path for path in paths if str(path) in held_paths]
+        result = await self._run_sync(
             "watcher.live_ingest.full",
             self._ingest_full_paths_sync_in_ops_scope,
-            paths,
+            [path for path in paths if str(path) not in held_paths] if held else paths,
             source_name=source_name,
             heartbeat=heartbeat,
             attempt_id=attempt_id,
@@ -2876,6 +3108,7 @@ class LiveBatchProcessor:
             pass_started=pass_started,
             prepared_json_paths=prepared_json_paths,
         )
+        return replace(result, ordering_held=held) if held else result
 
     async def _run_sync(
         self,
@@ -2970,6 +3203,7 @@ class LiveBatchProcessor:
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] = {}
         shard_paths_by_raw_id: dict[str, Path] = {}
         path_preparations_by_source_path: dict[str, PreparedJsonl] = {}
+        retained_preparations_by_raw_id: dict[str, PreparedLiveRetainedRaw] = {}
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
         raw_source_fingerprints: dict[Path, str] = {}
@@ -3030,7 +3264,8 @@ class LiveBatchProcessor:
         antigravity_pb_paths = [
             path
             for path in paths
-            if fallback_provider is Provider.ANTIGRAVITY
+            if not source_only
+            and fallback_provider is Provider.ANTIGRAVITY
             and path.suffix.lower() == ".pb"
             and antigravity.classify_source_path(path).role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
         ]
@@ -3154,12 +3389,20 @@ class LiveBatchProcessor:
                 admission = classify_pre_acquisition(
                     path, fallback_provider=fallback_provider, source_only=source_only, size_bytes=stat.st_size
                 )
-            except (OSError, sqlite3.Error) as exc:
-                if not retryable_read_fault(exc):
-                    raise
+            except RetryableSourceReadError:
                 # A database that could not be read now is retried on a
                 # later pass, never excluded as not-ours.
                 failed.append(path)
+                continue
+            if admission.refused:
+                assert admission.excluded_reason is not None
+                self._mark_refused_cursor(
+                    path,
+                    stat,
+                    source_name=fallback_provider.value,
+                    reason=admission.excluded_reason,
+                    excluded=excluded_paths,
+                )
                 continue
             if admission.excluded_reason is not None:
                 if admission.detection_crash is not None:
@@ -3311,6 +3554,7 @@ class LiveBatchProcessor:
                     )
             elif (hermes_owned_sqlite_name) or (
                 not source_only
+                and fallback_provider in (Provider.HERMES, Provider.UNKNOWN)
                 and (
                     hermes_state.looks_like_state_db_path(path)
                     or hermes_verification.looks_like_verification_evidence_db_path(path)
@@ -3361,7 +3605,8 @@ class LiveBatchProcessor:
                         source_payload_read_bytes=source_payload_read_bytes,
                     )
             elif codex_owned_sqlite_name or (
-                codex_member is not None
+                fallback_provider in (Provider.CODEX, Provider.UNKNOWN)
+                and codex_member is not None
                 and codex_member.disposition != "out-of-scope"
                 and codex_state.is_in_scope_codex_sqlite_path(path)
             ):
@@ -3373,17 +3618,12 @@ class LiveBatchProcessor:
                 # traffic (JSONL rollouts); ``is_in_scope_codex_sqlite_path``
                 # then re-confirms the table shape before trusting the name.
                 #
-                # That structural re-confirmation, not the operator's watch
-                # source name, is what admits the file (polylogue-bzx7h's
-                # foreign ``state_5.sqlite`` classifies as ``unknown`` and is
-                # still refused here). Gating this arm on
-                # ``fallback_provider is Provider.CODEX`` made admission depend
-                # on the watch source being named exactly ``codex-state``, so
-                # two Codex installs watched as ``codex-state-a``/``-b`` had
-                # their state databases silently excluded. Only the
-                # source-only/degraded route -- ``codex_owned_sqlite_name``,
-                # where the schema is deliberately never inspected -- keeps the
-                # provider requirement, because there the name is all there is.
+                # Admission needs both the Codex location and the structural
+                # re-confirmation (polylogue-bzx7h's foreign ``state_5.sqlite``
+                # classifies as ``unknown`` and is still refused here): a
+                # Codex-shaped database under another origin's root is not
+                # Codex material. Sources are canonical locations, so the
+                # ``codex-state`` watch source always resolves to CODEX.
                 provider = Provider.CODEX
                 source_name = provider.value
                 try:
@@ -3448,8 +3688,10 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    raw_id, blob_size = blob_store.write_from_path(
+                    raw_id, blob_size = capture_bound_path(
+                        blob_store,
                         path,
+                        fallback_provider,
                         heartbeat=_blob_copy_heartbeat(
                             heartbeat,
                             path=path,
@@ -3457,6 +3699,15 @@ class LiveBatchProcessor:
                         ),
                     )
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
+                except ForeignOriginContentError as exc:
+                    self._mark_refused_cursor(
+                        path,
+                        stat,
+                        source_name=fallback_provider.value,
+                        reason=foreign_origin_exclusion(exc),
+                        excluded=excluded_paths,
+                    )
+                    continue
                 except OSError as exc:
                     # A full or read-only archive refuses the copy for every
                     # file alike; only a source-side read failure is this
@@ -3475,8 +3726,10 @@ class LiveBatchProcessor:
                 provider = fallback_provider
                 source_name = provider.value
                 try:
-                    raw_id, blob_size = blob_store.write_from_path(
+                    raw_id, blob_size = capture_bound_path(
+                        blob_store,
                         path,
+                        fallback_provider,
                         heartbeat=_blob_copy_heartbeat(
                             heartbeat,
                             path=path,
@@ -3484,6 +3737,15 @@ class LiveBatchProcessor:
                         ),
                     )
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
+                except ForeignOriginContentError as exc:
+                    self._mark_refused_cursor(
+                        path,
+                        stat,
+                        source_name=fallback_provider.value,
+                        reason=foreign_origin_exclusion(exc),
+                        excluded=excluded_paths,
+                    )
+                    continue
                 except OSError as exc:
                     # A full or read-only archive refuses the copy for every
                     # file alike; only a source-side read failure is this
@@ -3510,8 +3772,10 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    raw_id, blob_size = blob_store.write_from_path(
+                    raw_id, blob_size = capture_bound_path(
+                        blob_store,
                         path,
+                        fallback_provider,
                         heartbeat=_blob_copy_heartbeat(
                             heartbeat,
                             path=path,
@@ -3519,6 +3783,15 @@ class LiveBatchProcessor:
                         ),
                     )
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
+                except ForeignOriginContentError as exc:
+                    self._mark_refused_cursor(
+                        path,
+                        stat,
+                        source_name=fallback_provider.value,
+                        reason=foreign_origin_exclusion(exc),
+                        excluded=excluded_paths,
+                    )
+                    continue
                 except OSError as exc:
                     # A full or read-only archive refuses the copy for every
                     # file alike; only a source-side read failure is this
@@ -3531,6 +3804,11 @@ class LiveBatchProcessor:
                     preparation = self._parse_stage.pop_path(str(path), blob_hash=raw_id)
                     if preparation is not None:
                         path_preparations_by_source_path[str(path)] = preparation
+                        for retained_id, member in self._parse_stage.take_retained_path(str(path)).items():
+                            if retained_id in retained_preparations_by_raw_id:
+                                member.discard()
+                            else:
+                                retained_preparations_by_raw_id[retained_id] = member
                 if heartbeat is not None:
                     heartbeat(
                         "full_blob_copy",
@@ -3550,8 +3828,10 @@ class LiveBatchProcessor:
                             current_path=path,
                             source_payload_read_bytes=source_payload_read_bytes,
                         )
-                    raw_id, blob_size = blob_store.write_from_path(
+                    raw_id, blob_size = capture_bound_path(
+                        blob_store,
                         path,
+                        fallback_provider,
                         heartbeat=_blob_copy_heartbeat(
                             heartbeat,
                             path=path,
@@ -3559,6 +3839,15 @@ class LiveBatchProcessor:
                         ),
                     )
                     blob_publication_receipt_id = blob_store.receipt_id(raw_id)
+                except ForeignOriginContentError as exc:
+                    self._mark_refused_cursor(
+                        path,
+                        stat,
+                        source_name=fallback_provider.value,
+                        reason=foreign_origin_exclusion(exc),
+                        excluded=excluded_paths,
+                    )
+                    continue
                 except OSError as exc:
                     # A full or read-only archive refuses the copy for every
                     # file alike; only a source-side read failure is this
@@ -3572,15 +3861,25 @@ class LiveBatchProcessor:
                     preparation = self._parse_stage.pop_path(str(path), blob_hash=raw_id)
                     if preparation is not None:
                         path_preparations_by_source_path[str(path)] = preparation
+                        for retained_id, member in self._parse_stage.take_retained_path(str(path)).items():
+                            if retained_id in retained_preparations_by_raw_id:
+                                member.discard()
+                            else:
+                                retained_preparations_by_raw_id[retained_id] = member
                 if json_document:
                     # The captured blob, rather than the pre-copy path, owns
                     # provider identity when the source changes after prewarm.
+                    # A declared raw-only document (a prompt log, a sidecar)
+                    # is retained evidence by location; its shape is never
+                    # consulted.
                     prepared_provider = (
                         preparation.resolved_provider
                         if preparation is not None and not preparation.deferred and preparation.error is None
                         else None
                     )
-                    if prepared_provider is not None:
+                    if path_declaration_refuses_session(fallback_provider, path):
+                        provider = fallback_provider
+                    elif prepared_provider is not None:
                         provider = prepared_provider
                     else:
                         provider, detection_crash = detect_provider_from_path_sample_evidence(
@@ -3706,6 +4005,7 @@ class LiveBatchProcessor:
                     parsed_sessions_by_raw_id,
                     shard_paths_by_raw_id,
                     path_preparations_by_source_path,
+                    retained_preparations_by_raw_id,
                     max_pass_seconds=max_pass_seconds,
                     pass_started=pass_clock_started,
                 )
@@ -3726,6 +4026,9 @@ class LiveBatchProcessor:
                 for preparation in path_preparations_by_source_path.values():
                     preparation.discard()
                 path_preparations_by_source_path.clear()
+                for member in retained_preparations_by_raw_id.values():
+                    member.discard()
+                retained_preparations_by_raw_id.clear()
             # skipped_raw_ids (polylogue-11cg9) are records the time budget
             # never let the archive-write loop reach at all -- neither a
             # failure nor a conveyor hand-off, so they must be excluded from
@@ -3798,6 +4101,16 @@ class LiveBatchProcessor:
             for path in ingested
             if path not in failed_set and path not in skipped_paths and path not in preparation_deferred_paths
         ]
+        no_session_paths: list[Path] = []
+        if archive_write is not None and archive_write.no_session_raw_ids:
+            keys_by_path: dict[Path, list[_FullRecordKey]] = {}
+            for key, path in raw_by_record.items():
+                keys_by_path.setdefault(path, []).append(key)
+            no_session_paths = [
+                path
+                for path in succeeded_paths
+                if (keys := keys_by_path.get(path)) and all(key in archive_write.no_session_raw_ids for key in keys)
+            ]
         for path in skipped_paths:
             # The archive-write checkpoint did not reach these records. They
             # have no raw row or cursor and must stay eligible on the next
@@ -3824,6 +4137,7 @@ class LiveBatchProcessor:
             detection_fallbacks={
                 path: reason for path, reason in detection_fallbacks.items() if path in succeeded_paths
             },
+            no_session=no_session_paths,
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
             raw_frontier_sizes=raw_frontier_sizes,
@@ -3834,6 +4148,7 @@ class LiveBatchProcessor:
             captured_file_observations=captured_file_observations,
             summary=summary,
             excised_skips=archive_write.excised_skips if archive_write is not None else 0,
+            excised_paths=tuple(archive_write.excised_paths) if archive_write is not None else (),
             time_budget_exceeded=time_budget_exceeded,
             write_hold_exhausted=write_hold_exhausted,
         )
@@ -3884,7 +4199,8 @@ class LiveBatchProcessor:
                 user_versions[tier] = None
                 continue
             try:
-                conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+                # Reports the stamped version, so it must not refuse on skew.
+                conn = open_readonly_connection(path, validate_schema=False)
                 try:
                     user_versions[tier] = int(conn.execute("PRAGMA user_version").fetchone()[0])
                 finally:
@@ -3910,6 +4226,7 @@ class LiveBatchProcessor:
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] | None = None,
         shard_paths_by_raw_id: dict[str, Path] | None = None,
         path_preparations_by_source_path: dict[str, PreparedJsonl] | None = None,
+        retained_preparations_by_raw_id: Mapping[str, PreparedLiveRetainedRaw] | None = None,
         *,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
@@ -4316,9 +4633,32 @@ class LiveBatchProcessor:
                             raise RuntimeError(f"off-writer preparation failed: {path_preparation.error}")
                         if not path_preparation.positive_evidence_filtered:
                             raise RuntimeError("off-writer preparation did not filter conversational evidence")
-                        cached_sessions = path_preparation.session_sequence()
-                        if path_preparation.shard_path is not None and shard_paths_by_raw_id is not None:
-                            shard_paths_by_raw_id[source_raw_id] = path_preparation.shard_path
+                        prepared_sessions = path_preparation.session_sequence()
+                        stale_enrichment = prepared_enrichment_dependency_state(
+                            archive,
+                            path_preparation,
+                            provider=path_preparation.resolved_provider or provider,
+                            source_path=record.source_path,
+                            sessions=prepared_sessions,
+                            parser_sidecars=False,
+                        )
+                        if stale_enrichment is not None:
+                            # The worker enriched against evidence this pass
+                            # has since changed (a sidecar admitted ahead of
+                            # this record). Parse and enrich here instead.
+                            emit(
+                                "live.ingest.prepared_carrier_stale",
+                                level=INFO,
+                                outcome="degraded",
+                                source_path=record.source_path,
+                                reason=f"{stale_enrichment}; parsing in the writer",
+                            )
+                            path_preparation = None
+                            cached_sessions = None
+                        else:
+                            cached_sessions = prepared_sessions
+                            if path_preparation.shard_path is not None and shard_paths_by_raw_id is not None:
+                                shard_paths_by_raw_id[source_raw_id] = path_preparation.shard_path
                     prepared_writes = (
                         {prepared.session_id: prepared for prepared in path_preparation.prepared_writes}
                         if path_preparation is not None
@@ -4442,6 +4782,10 @@ class LiveBatchProcessor:
                             provider=provider,
                             source_path=record.source_path,
                         )
+                        # A sealed path preparation was enriched in its
+                        # worker; this writer-side parse must publish the
+                        # same interpretation retained replay would.
+                        sessions = enrich_sessions_from_archive(archive, provider, record.source_path, sessions)
                     record_timings["full.provider_parse"] = record_timings.get("full.provider_parse", 0.0) + (
                         time.perf_counter() - t0
                     )
@@ -4467,6 +4811,7 @@ class LiveBatchProcessor:
                             preserve_existing_failure_evidence=True,
                         )
                         result.raw_ids[_full_record_key(record)] = source_raw_id
+                        result.no_session_raw_ids.add(_full_record_key(record))
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     record_session_artifact_observation(
@@ -4531,6 +4876,7 @@ class LiveBatchProcessor:
                                 shard_paths_by_raw_id=shard_paths_by_raw_id,
                                 fresh_build_batch=fresh_build_batch,
                                 prepared_writes=prepared_writes,
+                                retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                             )
                         else:
                             archive.bind_raw_revision(
@@ -4545,12 +4891,24 @@ class LiveBatchProcessor:
                             )
                             plan = archive.classify_raw_revision_cohort_for_live_watch(logical_source_key)
                             if plan.accepted_raw_ids:
-                                if path_preparation is not None and len(plan.accepted_raw_ids) > 1:
+                                if (
+                                    path_preparation is not None
+                                    and len(plan.accepted_raw_ids) > 1
+                                    and not _retained_chain_prepared(
+                                        archive,
+                                        plan.accepted_raw_ids,
+                                        current_raw_id=source_raw_id,
+                                        retained=retained_preparations_by_raw_id,
+                                    )
+                                ):
                                     # This source-tier decision is durable. The
                                     # raw owner composes the exact accepted
                                     # chain from sealed worker artifacts on its
                                     # next pass; rebuilding old full sessions
                                     # here would defeat bounded preparation.
+                                    # When prewarm already sealed every older
+                                    # member, compose here so the current
+                                    # path's prepared write is consumed.
                                     result.deferred_raw_ids[_full_record_key(record)] = source_raw_id
                                     _accumulate_stage_timings(result.stage_timings_s, record_timings)
                                     continue
@@ -4559,6 +4917,7 @@ class LiveBatchProcessor:
                                     plan,
                                     current_raw_id=source_raw_id,
                                     current_session=session,
+                                    retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                                 )
                                 replay_fresh = _fresh_build_admits(parsed_by_raw_id.values(), fresh_build_batch)
                                 index_conn = archive.index_connection
@@ -4708,6 +5067,7 @@ class LiveBatchProcessor:
                                     shard_paths_by_raw_id=shard_paths_by_raw_id,
                                     fresh_build_batch=fresh_build_batch,
                                     prepared_writes=prepared_writes,
+                                    retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                                 )
                     else:
                         archive.replace_raw_membership_census(
@@ -4733,6 +5093,7 @@ class LiveBatchProcessor:
                             shard_paths_by_raw_id=shard_paths_by_raw_id,
                             fresh_build_batch=fresh_build_batch,
                             prepared_writes=prepared_writes,
+                            retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                         )
                     if raw_authority_complete:
                         result.raw_ids[_full_record_key(record)] = record_raw_id
@@ -4776,6 +5137,13 @@ class LiveBatchProcessor:
                     # caller's cursor bookkeeping treats it the same as any
                     # other unavailable content.
                     result.excised_skips += 1
+                    # A ZIP member record is offered by its container path;
+                    # normalize the durable ``container:member`` coordinate
+                    # back to that offered path for caller-side accounting.
+                    # A loose file may itself contain a colon: only a confirmed
+                    # ZIP member maps back to its container path.
+                    container = zip_member_container(record.source_path)
+                    result.excised_paths.add(container if container is not None else Path(record.source_path))
                     # The bytes were published (staged and reserved) before the
                     # write refused them. Nothing will ever reference them, so
                     # the success path's receipt consumption never runs and the
@@ -4932,14 +5300,20 @@ class LiveBatchProcessor:
         *,
         current_raw_id: str | None = None,
         current_session: ParsedSession | None = None,
+        retained_preparations_by_raw_id: Mapping[str, PreparedLiveRetainedRaw] | None = None,
     ) -> dict[str, Any]:
         parsed_by_raw_id: dict[str, Any] = {}
         for raw_id in plan.accepted_raw_ids:
-            sessions = (
-                [current_session]
-                if raw_id == current_raw_id and current_session is not None
-                else self._parse_retained_raw_sessions(archive, raw_id)
-            )
+            member = (retained_preparations_by_raw_id or {}).get(raw_id)
+            sessions: Sequence[ParsedSession]
+            if raw_id == current_raw_id and current_session is not None:
+                sessions = [current_session]
+            elif member is not None and member.current(archive):
+                sessions = member.artifact.session_sequence()
+            else:
+                # No carrier, or one this writer cannot publish (its evidence
+                # or index moved): the writer owns the member's replay.
+                sessions = self._parse_retained_raw_sessions(archive, raw_id)
             if len(sessions) != 1:
                 raise RuntimeError(f"raw revision {raw_id} did not replay to exactly one session")
             parsed_by_raw_id[raw_id] = sessions[0]
@@ -4987,6 +5361,7 @@ class LiveBatchProcessor:
         shard_paths_by_raw_id: Mapping[str, Path] | None = None,
         fresh_build_batch: set[str] | None = None,
         prepared_writes: Mapping[str, PreparedSessionWrite] | None = None,
+        retained_preparations_by_raw_id: Mapping[str, PreparedLiveRetainedRaw] | None = None,
     ) -> tuple[list[str], int, int, bool]:
         """Apply membership-governed classification for one logical identity.
 
@@ -5023,6 +5398,14 @@ class LiveBatchProcessor:
                 return sessions
             cached = retained_sessions_cache.get(raw_id)
             if cached is None:
+                member = (retained_preparations_by_raw_id or {}).get(raw_id)
+                # A carrier this writer cannot publish is a prewarm miss.
+                if member is not None and member.current(archive):
+                    if member.artifact.error is not None:
+                        raise RuntimeError(member.artifact.error)
+                    sequence = member.artifact.session_sequence()
+                    retained_sessions_cache[raw_id] = sequence
+                    return sequence
                 descriptor_reader = getattr(archive, "raw_revision_descriptor", None)
                 if descriptor_reader is None:
                     legacy = cast(Sequence[ParsedSession], self._parse_retained_raw_sessions(archive, raw_id))
@@ -5223,12 +5606,16 @@ class LiveBatchProcessor:
             )
         finally:
             for cached in retained_sessions_cache.values():
-                if isinstance(cached, PreparedSessionSequence):
+                if isinstance(cached, PreparedSessionSequence) and not any(
+                    member.artifact is cached.artifact for member in (retained_preparations_by_raw_id or {}).values()
+                ):
                     cached.artifact.discard()
 
     @staticmethod
     def _parse_retained_raw_sessions(archive: Any, raw_id: str) -> list[Any]:
-        return parse_retained_raw_sessions(archive, raw_id)
+        sessions = parse_retained_raw_sessions(archive, raw_id)
+        provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+        return enrich_sessions_from_archive(archive, provider, source_path, sessions)
 
     def _extract_zip_member_records(
         self,
@@ -5255,6 +5642,7 @@ class LiveBatchProcessor:
         source = Source(name=fallback_provider.value, path=path.parent)
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
+        refusals: list[str] = []
         total_bytes = 0
         try:
             with zipfile.ZipFile(path) as zf:
@@ -5308,6 +5696,7 @@ class LiveBatchProcessor:
                                 file_mtime=file_mtime,
                                 provider_hint=entry_provider_hint,
                                 blob_store=blob_store,
+                                bound_provider=bound_location_provider(fallback_provider),
                             ),
                         ):
                             if raw_data.blob_hash is None:
@@ -5352,13 +5741,39 @@ class LiveBatchProcessor:
                             )
                     except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                        # An unreadable member proves nothing about a refusal
+                        # it carried; keep that gap until the member is read.
+                        self._zip_member_refusals_this_pass.setdefault(str(path), set()).add(
+                            _zip_member_debt_subject(path, entry_ordinals[id(info)], info.filename)
+                        )
+                    except ForeignOriginContentError as exc:
+                        # A refused member is named on its own; admissible
+                        # siblings in the archive are still acquired. The
+                        # member yields no split before it validated whole,
+                        # and its captures are released with the refusal.
+                        self._record_zip_member_refusal(path, entry_ordinals[id(info)], info.filename, exc)
+                    except ContentIdentityRefusal as exc:
+                        refusals.append(f"{info.filename}: {exc}")
         except (zipfile.BadZipFile, OSError) as exc:
+            # An aborted scan reconciles nothing; drop its partial refusal set
+            # so a later pass starts clean.
+            self._zip_member_refusals_this_pass.pop(str(path), None)
             # Members stream into the archive's blob staging: a full or
             # read-only archive is not a property of this ZIP, and reporting
             # "no admissible record" would exclude the unchanged file for good.
             raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             return [], 0
+        if bound_location_provider(fallback_provider) is not None:
+            # Members a later archive revision removed keep no refusal gap:
+            # clear every member debt this pass did not re-record.
+            self._cursor.clear_convergence_debt_under_prefix(
+                stage="live_ingest_admission",
+                subject_type="source_path",
+                prefix=_zip_member_debt_prefix(path),
+                keep=frozenset(self._zip_member_refusals_this_pass.pop(str(path), ())),
+            )
+        self._settle_zip_member_refusals(path, refusals)
         return records, total_bytes
 
     def _extract_source_only_zip_member_records(
@@ -5379,6 +5794,7 @@ class LiveBatchProcessor:
         source = Source(name=fallback_provider.value, path=path.parent)
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
+        refusals: list[str] = []
         total_bytes = 0
         validator = _ZipEntryValidator(fallback_provider, cursor_state=None, zip_path=path)
         try:
@@ -5395,22 +5811,35 @@ class LiveBatchProcessor:
                         entry_ordinal=entry_ordinal,
                         split_index=split_index,
                     )
+                    member_context = ZipEntryReadContext(
+                        source=source,
+                        zip_path=path,
+                        entry=info,
+                        file_mtime=file_mtime,
+                        provider_hint=fallback_provider,
+                        blob_store=blob_store,
+                        bound_provider=bound_location_provider(fallback_provider),
+                    )
                     try:
+                        # The member is preserved through the boundary, which
+                        # refuses a foreign record before it is retained.
                         raw_data = stream_preserved_zip_entry_raw_data(
                             zf,
-                            ZipEntryReadContext(
-                                source=source,
-                                zip_path=path,
-                                entry=info,
-                                file_mtime=file_mtime,
-                                provider_hint=fallback_provider,
-                                blob_store=blob_store,
-                            ),
+                            member_context,
                             provider_hint=fallback_provider,
                             source_index=source_index,
                         )
                     except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                        self._zip_member_refusals_this_pass.setdefault(str(path), set()).add(
+                            _zip_member_debt_subject(path, entry_ordinal, info.filename)
+                        )
+                        continue
+                    except ForeignOriginContentError as exc:
+                        self._record_zip_member_refusal(path, entry_ordinal, info.filename, exc)
+                        continue
+                    except ContentIdentityRefusal as exc:
+                        refusals.append(f"{info.filename}: {exc}")
                         continue
                     if raw_data.blob_hash is None:
                         continue
@@ -5442,6 +5871,9 @@ class LiveBatchProcessor:
                         )
                     )
         except (zipfile.BadZipFile, OSError) as exc:
+            # An aborted scan reconciles nothing; drop its partial refusal set
+            # so a later pass starts clean.
+            self._zip_member_refusals_this_pass.pop(str(path), None)
             raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             # A transport/read failure is not evidence that the archive has no
@@ -5449,7 +5881,47 @@ class LiveBatchProcessor:
             # extraction so the caller records retryable failure state instead
             # of permanently acknowledging this source coordinate as excluded.
             return None
+        if bound_location_provider(fallback_provider) is not None:
+            self._cursor.clear_convergence_debt_under_prefix(
+                stage="live_ingest_admission",
+                subject_type="source_path",
+                prefix=_zip_member_debt_prefix(path),
+                keep=frozenset(self._zip_member_refusals_this_pass.pop(str(path), ())),
+            )
+        self._settle_zip_member_refusals(path, refusals)
         return records, total_bytes
+
+    def _settle_zip_member_refusals(self, path: Path, refusals: list[str]) -> None:
+        """Name every member of ``path`` refused a content identity, or clear the gap.
+
+        A refused member holds a token no archive value can store, so it is a
+        permanent property of these bytes: the ZIP's other members are still
+        ingested and its cursor still advances, and the refusal is recorded as
+        durable ``live_ingest_admission`` debt on the ZIP so the missing member
+        is a typed, visible gap rather than a log line. A later expansion of
+        the same path with no refusal clears it.
+        """
+        if not refusals:
+            self._cursor.clear_convergence_debt(
+                stage="live_ingest_admission",
+                subject_type="source_path",
+                subject_id=str(path),
+            )
+            return
+        reason = "content_identity_refused: " + "; ".join(refusals)
+        emit(
+            "live.ingest.zip_member_refused",
+            level=WARNING,
+            outcome="refused",
+            source_path=str(path),
+            reason=reason,
+        )
+        self._cursor.record_convergence_debt(
+            stage="live_ingest_admission",
+            subject_type="source_path",
+            subject_id=str(path),
+            error=reason,
+        )
 
     def _mark_excluded_cursor(
         self,
@@ -5481,6 +5953,29 @@ class LiveBatchProcessor:
             st_ino=getattr(stat, "st_ino", None),
             mtime_ns=getattr(stat, "st_mtime_ns", None),
             excluded=True,
+        )
+
+    def _record_zip_member_refusal(self, path: Path, ordinal: int, member: str, exc: ForeignOriginContentError) -> None:
+        """Keep a durable, retryable gap for one refused ZIP member.
+
+        The archive cursor advances with its admissible siblings, so the
+        refused member carries its own ``live_ingest_admission`` debt; a later
+        pass that admits the member clears it.
+        """
+        member_path = _zip_member_debt_subject(path, ordinal, member)
+        self._zip_member_refusals_this_pass.setdefault(str(path), set()).add(member_path)
+        emit(
+            "live.ingest.zip_member_refused",
+            level=WARNING,
+            outcome="refused",
+            source_path=member_path,
+            reason=foreign_origin_exclusion(exc),
+        )
+        self._cursor.record_convergence_debt(
+            stage="live_ingest_admission",
+            subject_type="source_path",
+            subject_id=member_path,
+            error=f"{exc.code}: {exc}",
         )
 
     def _mark_refused_cursor(
@@ -5548,7 +6043,7 @@ class LiveBatchProcessor:
         if not source_db.exists():
             return None
         try:
-            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(source_db)
         except sqlite3.Error:
             return None
         try:
@@ -6025,7 +6520,7 @@ class LiveBatchProcessor:
             for _ in RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS
         )
         try:
-            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(source_db)
             try:
                 return (
                     conn.execute(
@@ -6267,6 +6762,19 @@ class LiveBatchProcessor:
             return None
         if _file_observation(final_stat) != _file_observation(stat):
             return _DEFER_APPEND
+        # The append delta is retained under the location's origin exactly as
+        # a full capture is, so every appended record is validated. A foreign
+        # record falls back to the full route, whose captured-blob validation
+        # records the typed refusal.
+        append_source = self._source_name_for(path)
+        try:
+            admit_bound_bytes(
+                complete_payload,
+                str(path),
+                Provider.from_string(canonical_acquisition_provider(append_source, source_name=append_source)),
+            )
+        except ForeignOriginContentError:
+            return None
         append_result = self._append_payload_for_provider(path, self._source_name_for(path), complete_payload)
         if append_result is None:
             return None
@@ -6408,9 +6916,9 @@ class LiveBatchProcessor:
         if not source_db.exists() or not index_db.exists():
             return False
         try:
-            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(index_db)
             try:
-                conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+                attach_readonly_database(conn, source_db, alias="source_tier")
                 row = conn.execute(
                     """
                     SELECT 1
@@ -6422,7 +6930,6 @@ class LiveBatchProcessor:
                     """,
                     (str(path), expected_origin, expected_origin),
                 ).fetchone()
-                conn.execute("DETACH DATABASE source_tier")
             finally:
                 conn.close()
         except sqlite3.Error as exc:
@@ -6463,7 +6970,7 @@ class LiveBatchProcessor:
         if not index_db.exists():
             return False
         try:
-            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(index_db)
             try:
                 row = conn.execute(
                     """
@@ -6487,9 +6994,9 @@ class LiveBatchProcessor:
         if not index_db.exists() or not source_db.exists():
             return None
         try:
-            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(index_db)
             try:
-                conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+                attach_readonly_database(conn, source_db, alias="source_tier")
                 row = conn.execute(
                     """
                     SELECT s.native_id
@@ -6501,7 +7008,6 @@ class LiveBatchProcessor:
                     """,
                     (expected_origin, expected_origin, str(path)),
                 ).fetchone()
-                conn.execute("DETACH DATABASE source_tier")
             finally:
                 conn.close()
         except sqlite3.Error:
@@ -6647,7 +7153,7 @@ class LiveBatchProcessor:
             index_db = ArchiveLocation.resolve(archive_root).active_index_path
             with (
                 closing(sqlite3.connect(source_db)) as conn,
-                closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as index_conn,
+                closing(open_readonly_connection(index_db)) as index_conn,
                 conn,
             ):
                 conn.row_factory = sqlite3.Row

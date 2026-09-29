@@ -738,6 +738,7 @@ class BlobPublicationAbandonActuator(ConvergentReplay):
     required_confirmation: ConfirmationStrength = "confirm_flag"
 
     def prepare(self, args: BlobPublicationAbandonArgs) -> MutationPlan:
+        from polylogue.storage.blob_liveness import LivenessState
         from polylogue.storage.blob_publication import inspect_blob_publication_receipts
 
         requested = set(args.publication_ids)
@@ -745,10 +746,12 @@ class BlobPublicationAbandonActuator(ConvergentReplay):
             args.archive_root / "source.db",
             args.archive_root / "blob",
             index_db_path=_index_db_path(args.archive_root),
+            publication_ids=tuple(args.publication_ids),
         )
         present = {item.publication_id: item for item in receipts if item.publication_id in requested}
-        unreferenced = sorted(pid for pid, item in present.items() if not item.referenced)
+        unreferenced = sorted(pid for pid, item in present.items() if item.liveness.state is LivenessState.UNREFERENCED)
         referenced = sorted(pid for pid, item in present.items() if item.referenced)
+        blocked = sorted(pid for pid, item in present.items() if item.liveness.state is LivenessState.BLOCKED)
         return build_plan(
             operation=self.operation,
             destructive_class=self.destructive_class,
@@ -759,6 +762,7 @@ class BlobPublicationAbandonActuator(ConvergentReplay):
                 "requested": list(args.publication_ids),
                 "unreferenced": unreferenced,
                 "referenced": referenced,
+                "blocked": blocked,
                 "missing": sorted(requested - set(present)),
             },
         )
@@ -766,6 +770,9 @@ class BlobPublicationAbandonActuator(ConvergentReplay):
     def apply(self, plan: MutationPlan, args: BlobPublicationAbandonArgs) -> MutationReceipt:
         from polylogue.storage.blob_publication import abandon_blob_publication_receipts
 
+        blocked = cast("list[str]", plan.context.get("blocked", []))
+        if blocked:
+            raise RecoveryDeferredError(f"blob publication liveness is blocked for receipts: {blocked}")
         abandonment = abandon_blob_publication_receipts(
             args.archive_root / "source.db",
             args.archive_root / "blob",
@@ -1432,6 +1439,52 @@ class CaptureAssertionCandidateArgs:
     idempotency_key: str | None
     assertion_id: str
     ttl_seconds: int | None
+    #: Source evidence that is neither a target nor a scope, such as the
+    #: capture artifact a browser selection was taken from.
+    evidence_refs: tuple[str, ...] = ()
+
+
+def resolve_assertion_candidate_refs(archive: ArchiveStore, refs: Sequence[str], *, cwd: Path | None) -> list[str]:
+    """Resolve candidate target refs to archive identities.
+
+    The facade and the daemon actuator share this so a ref shape one accepts is
+    never refused by the other: ``last``, ``session:<id>``, a canonical
+    ``message:<id>`` ref, or a ``<session>::<message>`` evidence ref.
+    """
+    resolved_refs: list[str] = []
+    for ref in refs:
+        if ref == "last":
+            resolved_cwd = (cwd or Path.cwd()).resolve()
+            repo_root = next(
+                (candidate for candidate in (resolved_cwd, *resolved_cwd.parents) if (candidate / ".git").exists()),
+                resolved_cwd,
+            )
+            summaries = archive.list_summaries(cwd_prefix=str(repo_root), limit=1)
+            if not summaries:
+                raise ValueError("--ref last found no archived session for the current repository/cwd")
+            resolved_refs.append(f"session:{summaries[0].session_id}")
+            continue
+        parsed = parse_public_ref(ref)
+        if isinstance(parsed, ObjectRef):
+            if parsed.kind == "message":
+                resolved_refs.append(parsed.format())
+                continue
+            if parsed.kind != "session":
+                raise ValueError("--ref must be a session or message ref, or 'last'")
+            try:
+                session_id = archive.resolve_session_id(parsed.object_id)
+            except KeyError:
+                raise ValueError(f"session ref not found: {parsed.object_id}") from None
+            resolved_refs.append(f"session:{session_id}")
+            continue
+        if parsed.message_id is None or parsed.block_index is not None:
+            raise ValueError("--ref must identify a session or message")
+        try:
+            session_id = archive.resolve_session_id(parsed.session_id)
+        except KeyError:
+            raise ValueError(f"session ref not found: {parsed.session_id}") from None
+        resolved_refs.append(f"{session_id}::{parsed.message_id}")
+    return resolved_refs
 
 
 def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, object]:
@@ -1453,29 +1506,11 @@ def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, 
     if normalized_idempotency_key is not None and len(normalized_idempotency_key) > 240:
         raise ValueError("idempotency_key exceeds 240 characters")
 
-    resolved_refs: list[str] = []
-    for ref in args.refs:
-        if ref == "last":
-            resolved_cwd = (args.cwd or Path.cwd()).resolve()
-            repo_root = next(
-                (candidate for candidate in (resolved_cwd, *resolved_cwd.parents) if (candidate / ".git").exists()),
-                resolved_cwd,
-            )
-            summaries = args.archive.list_summaries(cwd_prefix=str(repo_root), limit=1)
-            if not summaries:
-                raise ValueError("--ref last found no archived session for the current repository/cwd")
-            resolved_refs.append(f"session:{summaries[0].session_id}")
-            continue
-        parsed = ObjectRef.parse(ref)
-        if parsed.kind != "session":
-            raise ValueError("--ref must be a session:<id> ref or 'last'")
-        try:
-            session_id = args.archive.resolve_session_id(parsed.object_id)
-        except KeyError:
-            raise ValueError(f"session ref not found: {parsed.object_id}") from None
-        resolved_refs.append(f"session:{session_id}")
+    resolved_refs = resolve_assertion_candidate_refs(args.archive, args.refs, cwd=args.cwd)
 
     normalized_scope_refs = [parse_public_ref(ref).format() for ref in args.scope_refs]
+    supplied_evidence_refs = [parse_public_ref(ref).format() for ref in args.evidence_refs]
+    evidence_refs = list(dict.fromkeys((*resolved_refs, *normalized_scope_refs, *supplied_evidence_refs)))
     if normalized_idempotency_key is None:
         assertion_id = args.assertion_id
     else:
@@ -1491,7 +1526,7 @@ def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, 
         "author_kind": normalized_author_kind,
         "author_ref": normalized_author_ref,
         "body_text": normalized_body,
-        "evidence_refs": list(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
+        "evidence_refs": evidence_refs,
         "kind": args.kind.value,
         "scope_refs": normalized_scope_refs,
         "target_ref": target_ref,
@@ -1510,10 +1545,11 @@ def _capture_candidate_inputs(args: CaptureAssertionCandidateArgs) -> dict[str, 
         "author_ref": normalized_author_ref,
         "body_text": normalized_body,
         "capture_fingerprint": capture_fingerprint,
-        "evidence_refs": list(dict.fromkeys((*resolved_refs, *normalized_scope_refs))),
+        "evidence_refs": evidence_refs,
         "kind": args.kind.value,
         "resolved_refs": resolved_refs,
         "scope_refs": normalized_scope_refs,
+        "supplied_evidence_refs": supplied_evidence_refs,
         "target_ref": target_ref,
         "ttl_seconds": args.ttl_seconds,
     }
@@ -1545,7 +1581,7 @@ class CaptureAssertionCandidateActuator(ConvergentReplay):
         assertion_id = str(context["assertion_id"])
         user_db = args.archive.user_db_path
         try:
-            conn = open_connection(user_db)
+            conn = open_connection(user_db, archive_root=args.archive._write_lease_archive_root)
             conn.row_factory = sqlite3.Row
             try:
                 conn.execute("BEGIN IMMEDIATE")
@@ -1635,6 +1671,7 @@ class CaptureAssertionCandidateActuator(ConvergentReplay):
             idempotency_key=None,
             assertion_id=str(context["assertion_id"]),
             ttl_seconds=cast("int | None", context["ttl_seconds"]),
+            evidence_refs=tuple(cast("list[str]", context["supplied_evidence_refs"])),
         )
 
 
@@ -1697,7 +1734,7 @@ class SetUserSettingActuator(ConvergentReplay):
         if not user_db.exists():
             raise ValueError("user settings tier is not initialized")
         try:
-            conn = open_connection(user_db)
+            conn = open_connection(user_db, archive_root=args.archive._write_lease_archive_root)
             conn.row_factory = sqlite3.Row
             try:
                 conn.execute("BEGIN IMMEDIATE")

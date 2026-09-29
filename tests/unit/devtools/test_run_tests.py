@@ -23,6 +23,7 @@ from devtools.pytest_slot import SlotOutcome
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
     CURRENT_STATISTICS_PATH,
+    VERIFY_RUNS_DIR,
     VerifyRun,
     git_head,
     git_worktree_content_sha256,
@@ -78,6 +79,7 @@ def test_build_pytest_cmd_uses_the_managed_plugin_contract() -> None:
     assert "pytest-testmon" not in cmd
     assert "xdist" not in cmd
     assert CLEAR_CONFIGURED_ADDOPTS in cmd
+    assert "--assert=plain" in cmd
     ignored_start = cmd.index(IGNORED_COLLECTION_ARGS[0])
     assert [*IGNORED_COLLECTION_ARGS] == cmd[ignored_start : ignored_start + len(IGNORED_COLLECTION_ARGS)]
 
@@ -213,6 +215,27 @@ def test_outliers_aggregate_phases_and_report_test_and_file_shares(
         (report_dir / name).write_text(
             json.dumps({"tests": [{"nodeid": nodeid, "call": {"duration": duration}}]}), encoding="utf-8"
         )
+
+    run_dir = tmp_path / VERIFY_RUNS_DIR / "completed"
+    steps = []
+    for index, path in enumerate(sorted(report_dir.glob("last-pytest-*.json"))):
+        step_id = f"{index:02d}-pytest-lane"
+        destination = run_dir / "steps" / step_id / "pytest-report.json"
+        destination.parent.mkdir(parents=True)
+        path.rename(destination)
+        steps.append({"name": f"pytest lane {index}", "step_id": step_id})
+    (run_dir / "run.json").write_text(
+        json.dumps(
+            {
+                "tier": "all",
+                "status": "success",
+                "finished_at": "2026-01-01T00:00:00Z",
+                "pytest_aggregate": {"complete_corpus_covered": True},
+                "steps": steps,
+            }
+        ),
+        encoding="utf-8",
+    )
 
     assert run_tests.print_outliers(5, root=tmp_path) == 0
     output = capsys.readouterr().out
@@ -1051,3 +1074,141 @@ def test_an_unfinishable_focused_run_is_never_adjudicated(monkeypatch: pytest.Mo
 
     assert exit_code == 3
     assert "rerun" not in metadata
+
+
+def test_an_oomd_killed_queued_run_is_typed_oom_killed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A unit systemd-oomd killed reads as ``oom_killed``, not a missing receipt.
+
+    The kill takes the in-unit receipt writer, so without the termination the
+    run would be ``worktree_provenance_unavailable`` at exit 125.
+
+    Anti-vacuity: drop the ``systemd_result`` read from the job's AgentCTL
+    outcome, or the ``oom_killed`` early return, and the diagnosis reverts to
+    the missing receipt.
+    """
+    state = tmp_path / "jobs"
+    state.mkdir()
+    reference = "polylogue-pytest_focused-0badf00d"
+    (state / f"{reference}.outcome").write_text(
+        json.dumps({"exit_code": 137, "outcome": "failed", "systemd_result": "oom-kill", "unit": "unit.service"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("devtools.verify_runs._agentctl_state_root", lambda env=None: state)
+    termination = pytest_slot._job_termination(reference)
+    assert termination == {"killer": "oom-kill", "unit": "unit.service"}
+    assert pytest_slot._job_termination("polylogue-pytest_focused-absent") is None
+
+    killed = SlotOutcome(returncode=137, slot="agentctl job 9", termination=termination)
+    monkeypatch.setattr(run_tests, "run_pytest", lambda *_a, **_k: killed)
+    rc, _elapsed, metadata = run_tests._run(
+        "pytest focused",
+        ["pytest"],
+        cwd=str(tmp_path),
+        env={},
+        run=cast(Any, None),
+        artifacts=cast(Any, None),
+        report_path=tmp_path / "report.json",
+    )
+    assert rc == 137
+    assert metadata["diagnosis"] == "oom_killed"
+    assert metadata["termination_killer"] == "oom-kill"
+    assert metadata["termination_unit"] == "unit.service"
+    # The kill took the slot receipt, so the tested tree is unknown.
+    assert metadata["worktree_provenance_unknown"] is True
+
+
+def test_an_oom_killed_step_keeps_its_diagnosis_over_the_missing_evidence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: without the ``oom_killed`` terminal carve-out in
+    ``finish_step`` the receipt reports ``pytest_no_report`` instead."""
+    history = _focused_run(
+        monkeypatch,
+        tmp_path,
+        result=(
+            137,
+            0.01,
+            {
+                "diagnosis": "oom_killed",
+                "termination_killer": "oom-kill",
+                "termination_unit": "unit.service",
+                "worktree_provenance_unknown": True,
+            },
+        ),
+        write_evidence=False,
+    )
+    assert history["exit"] == 137
+    assert history["diagnosis"] == "oom_killed"
+    assert history["steps"][0]["termination_killer"] == "oom-kill"
+    # Anti-vacuity: keep the submission head and the receipt names a tree
+    # pytest may never have run against.
+    assert history["git_head"] is None
+    assert history["worktree_capture_source"] == "unavailable"
+    from devtools import verify_runs
+
+    # The checkout at finalization must not stand in for the unknown tree.
+    history["final_git_head"] = "moved-after-the-kill"
+    canonical = verify_runs.canonical_verification_receipt(history)
+    assert canonical["source_revision"] is None
+    assert canonical["git_dirty"] is None
+    # The durable projections keep who ended the step, not only that it failed.
+    for durable in (
+        verify_runs.canonical_verification_receipt(history)["steps"][0],
+        verify_runs._semantic_history_row(history)["steps"][0],
+    ):
+        assert durable["termination_killer"] == "oom-kill"
+        assert durable["termination_unit"] == "unit.service"
+
+
+def test_a_queued_run_keeps_its_slot_receipt_and_any_recorded_killer(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: drop ``pytest_slot_receipt`` from the OOM return, or the
+    termination merge from the other returns, and these fields disappear."""
+    provenance = {"git_head": "abc", "git_branch": "b", "git_dirty": False, "git_worktree_content_sha256": "s"}
+    receipt = {"worktree_provenance": provenance, "memory_peak_mib": 900}
+
+    def run_with(outcome: SlotOutcome) -> dict[str, Any]:
+        monkeypatch.setattr(run_tests, "run_pytest", lambda *_a, **_k: outcome)
+        monkeypatch.setattr(run_tests, "write_run_receipt", lambda _path: None)
+        _rc, _elapsed, metadata = run_tests._run(
+            "pytest focused",
+            ["pytest"],
+            cwd=str(tmp_path),
+            env={},
+            run=cast(Any, None),
+            artifacts=cast(Any, None),
+            report_path=tmp_path / "report.json",
+        )
+        return metadata
+
+    oom = run_with(
+        SlotOutcome(
+            returncode=137, slot="agentctl job 9", receipt=receipt, termination={"killer": "oom-kill", "unit": "u"}
+        )
+    )
+    assert oom["diagnosis"] == "oom_killed"
+    assert oom["pytest_slot_receipt"] == receipt
+    assert oom["worktree_provenance"] == provenance
+
+    timed_out = run_with(
+        SlotOutcome(
+            returncode=124, slot="agentctl job 10", receipt=receipt, termination={"killer": "timeout", "unit": "u"}
+        )
+    )
+    assert timed_out["diagnosis"] == "pytest_failed"
+    assert timed_out["termination_killer"] == "timeout"
+    assert timed_out["termination_unit"] == "u"
+
+
+@pytest.mark.parametrize("selection", ["all", "affected", "descriptor"])
+def test_verify_pytest_command_keeps_plain_assertions(selection: str) -> None:
+    """Anti-vacuity: the verify step clears configured addopts; without
+    ``--assert=plain`` in the shared closed-world args the corpus run rewrites
+    assertions and retains their ASTs.
+    """
+    from devtools import verify
+
+    cmd = verify._pytest_command(selection=selection, worker_args=(), hypothesis_profile=None, explicit_tests=())
+    assert CLEAR_CONFIGURED_ADDOPTS in cmd
+    assert "--assert=plain" in cmd

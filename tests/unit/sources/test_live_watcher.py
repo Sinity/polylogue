@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import IO, Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -814,44 +814,6 @@ def test_cursor_records_genuine_deferral_as_deferred_not_failed(tmp_path: Path) 
     assert rows == {"conv-1": "deferred", "conv-2": "failed"}
 
 
-def test_cursor_startup_merges_retired_insights_debt_into_derived_stage(tmp_path: Path) -> None:
-    """Retired stage debt remains retryable after the stage rename."""
-    db_path = tmp_path / "live.sqlite"
-    store = CursorStore(db_path)
-    store.record_convergence_debt(
-        stage="derived",
-        subject_type="session_id",
-        subject_id="conv-1",
-        error="current deferral",
-        deferred=True,
-    )
-    with sqlite3.connect(tmp_path / "ops.db") as conn:
-        conn.execute(
-            """
-            INSERT INTO convergence_debt (
-                debt_id, stage, target_type, target_id, status, priority, attempts,
-                last_error, next_retry_at, materializer_version, created_at_ms, updated_at_ms
-            ) VALUES (?, 'insights', 'session_id', 'conv-1', 'failed', 7, 4, ?, ?, 'legacy', 10, 20)
-            """,
-            ("legacy-insights-debt", "legacy failure", "2026-05-24T00:00:00+00:00"),
-        )
-        conn.commit()
-
-    restarted = CursorStore(db_path)
-
-    debt = restarted.list_convergence_debt(limit=2)
-    assert len(debt) == 1
-    assert debt[0].stage == "derived"
-    assert debt[0].subject_type == "session_id"
-    assert debt[0].subject_id == "conv-1"
-    assert debt[0].status == "failed"
-    with sqlite3.connect(tmp_path / "ops.db") as conn:
-        attempts, priority, retry_at = conn.execute(
-            "SELECT attempts, priority, next_retry_at FROM convergence_debt WHERE stage = 'derived'"
-        ).fetchone()
-    assert (attempts, priority, retry_at) == (4, 7, "2026-05-24T00:00:00+00:00")
-
-
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor", "polylogue.sources.live.convergence_debt_retry")
 def test_cursor_records_messages_fts_surface_debt_as_immediately_due(
     tmp_path: Path,
@@ -1121,18 +1083,19 @@ async def test_live_full_ingest_streams_large_paths_before_processing(
     )
 
     calls: list[str] = []
-    original_prepare_from_path = BlobStore.prepare_from_path
+    original_prepare_from_fileobj = BlobStore.prepare_from_fileobj
 
-    def spy_prepare_from_path(
-        store: BlobStore, path: Path, *, heartbeat: Callable[[], None] | None = None
+    def spy_prepare_from_fileobj(
+        store: BlobStore, source: IO[bytes], *, heartbeat: Callable[[], None] | None = None
     ) -> PreparedBlob:
-        calls.append(f"path:{path.name}")
-        return original_prepare_from_path(store, path, heartbeat=heartbeat)
+        # The capture streams the file through the acquisition boundary.
+        calls.append(f"path:{Path(source.raw.name).name}")  # type: ignore[attr-defined]
+        return original_prepare_from_fileobj(store, source, heartbeat=heartbeat)
 
     def fail_prepare_from_bytes(_store: object, _payload: bytes) -> PreparedBlob:
         raise AssertionError("large live full ingest should stream from path")
 
-    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_path", spy_prepare_from_path)
+    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_fileobj", spy_prepare_from_fileobj)
     monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_bytes", fail_prepare_from_bytes)
 
     result = await processor._ingest_full_paths([source_path], source_name="projects")
@@ -1190,7 +1153,7 @@ def test_page_selection_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: py
     """One page reads its cursor rows in one bulk call, never one read per file.
 
     Anti-vacuity: replace the bulk ``get_records`` in
-    ``select_ingest_candidates`` with a per-path ``get_record`` loop and the
+    ``classify_ingest_candidates`` with a per-path ``get_record`` loop and the
     stubbed per-file reader below raises.
     """
     root = tmp_path / "src"
@@ -1213,8 +1176,35 @@ def test_page_selection_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(watcher._cursor, "get_records", counted_get_records)
     monkeypatch.setattr(watcher._cursor, "get_record", fail_get_record)
 
-    assert list(watcher.select_ingest_candidates(files)) == files
+    assert list(watcher.classify_ingest_candidates(files)[0]) == files
     assert bulk_calls == 1
+
+
+def test_page_classification_names_scheduled_retries_as_pending(tmp_path: Path) -> None:
+    """A not-yet-due retry is pending; a settled exclusion is neither.
+
+    Anti-vacuity (polylogue-b8of0): without the pending split the scheduled
+    retry reads exactly like a file its cursor already accounts for.
+    """
+    root = tmp_path / "src"
+    root.mkdir()
+    owed, settled = root / "owed.jsonl", root / "settled.jsonl"
+    for path in (owed, settled):
+        path.write_text('{"role":"user","content":"a"}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    watcher._cursor.set(owed, 0, failure_count=1, next_retry_at="2999-01-01T00:00:00+00:00")
+    observed = settled.stat()
+    watcher._cursor.set(
+        settled,
+        observed.st_size,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        st_dev=observed.st_dev,
+        st_ino=observed.st_ino,
+        mtime_ns=observed.st_mtime_ns,
+        excluded=True,
+    )
+
+    assert watcher.classify_ingest_candidates([owed, settled]) == ((), (owed,))
 
 
 async def _ingest_one(watcher: LiveWatcher, path: Path) -> None:
@@ -3576,7 +3566,7 @@ def test_page_selection_rebases_device_drift_after_one_prefix_proof(
 
     monkeypatch.setattr(watcher._cursor, "rebase_authoritative_observations", counted_rebase)
 
-    assert watcher.select_ingest_candidates([path]) == ()
+    assert watcher.classify_ingest_candidates([path])[0] == ()
     rebased = watcher._cursor.get_record(path)
     assert calls == 1
     assert rebase_batches == 1
@@ -3584,7 +3574,7 @@ def test_page_selection_rebases_device_drift_after_one_prefix_proof(
     assert rebased is not None
     assert rebased.st_dev == stat.st_dev
 
-    assert watcher.select_ingest_candidates([path]) == ()
+    assert watcher.classify_ingest_candidates([path])[0] == ()
     assert calls == 1
     assert parse_sources.await_count == 0
 
@@ -4191,3 +4181,75 @@ def test_stale_deferral_escalates_when_recorded_byte_size_lags_the_file(
     record = watcher._cursor.get_record(f)
     assert record is not None
     assert record.failure_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_budgeted_pass_with_a_no_session_file_stays_a_retryable_attempt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pass that settles one no-session file and leaves the rest unattempted
+    is not a whole-attempt UNSUPPORTED_SHAPE refusal.
+
+    Anti-vacuity (Codex): the no-session disposition required only an empty
+    retry list, and a time-budget omission is not in it, so ordinary backlog
+    left by the budget was recorded as a non-retryable attempt.
+    """
+    from polylogue.core.enums import IngestOutcome
+    from polylogue.sources.live.batch import LiveBatchProcessor
+
+    root = tmp_path / "claude-projects"
+    root.mkdir()
+    paths = [root / f"silent-{index}.jsonl" for index in range(3)]
+    for index, path in enumerate(paths):
+        path.write_text(
+            json.dumps(
+                {
+                    "type": "user",
+                    "message": {"role": "user", "content": ""},
+                    "uuid": f"u{index}",
+                    "sessionId": f"silent-{index}",
+                    "timestamp": "2026-01-01T00:00:00Z",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
+        (WatchSource(name="claude-code", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    elapsed = iter(float(step) * 1000.0 for step in range(1000))
+    monkeypatch.setattr(time, "monotonic", lambda: next(elapsed))
+
+    bounded = await processor.ingest_files(paths, emit_event=False, max_pass_seconds=1.0)
+
+    assert bounded.time_budget_exceeded is True
+    assert bounded.no_session_paths
+    with sqlite3.connect(cursor._ops_db_path) as ops:
+        (outcome_code,) = ops.execute("SELECT outcome_code FROM ingest_attempts ORDER BY rowid DESC LIMIT 1").fetchone()
+    assert outcome_code != IngestOutcome.UNSUPPORTED_SHAPE.value
+
+
+def test_cold_build_cursor_corroboration_reads_the_candidate_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-slc55: a cold build corroborates cursors against its candidate.
+
+    The writer publishes into the inactive candidate generation; the active
+    index is empty until promotion. Anti-vacuity: resolving the active index
+    here demotes every cursor the build just wrote and re-ingests the file.
+    """
+    from polylogue.sources.live import cold_build
+
+    candidate = tmp_path / ".index-generations" / "gen-1" / "index.db"
+    registered = SimpleNamespace(generation=SimpleNamespace(index_path=str(candidate)))
+    monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root=None: registered)
+    assert live_watcher._published_index_path(tmp_path) == candidate
+
+    monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root=None: None)
+    monkeypatch.setattr(live_watcher, "resolve_active_index_path", lambda root: root / "index.db")
+    assert live_watcher._published_index_path(tmp_path) == tmp_path / "index.db"

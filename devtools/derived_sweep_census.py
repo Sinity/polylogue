@@ -489,18 +489,45 @@ def _substitution_sites(
 
 def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
     """Census every derived-tier sweep candidate and read-path substitution."""
-    tiers = derived_table_tiers()
-    sites: dict[str, SweepSite] = {}
-
-    def record(site: SweepSite) -> None:
-        sites.setdefault(site.key, site)
-
+    census = DerivedSweepCensus()
     for path in sorted(package_root.rglob("*.py")):
         try:
             tree = parse_path(path)
         except (SyntaxError, UnicodeDecodeError):
             continue
-        relative = path.relative_to(repo_root).as_posix()
+        census.observe(tree, relative=path.relative_to(repo_root).as_posix())
+    return census.finish()
+
+
+class DerivedSweepCensus:
+    """The census, fed one parsed module at a time in path order.
+
+    A caller that already walks the package parses each module once and hands
+    it to every census that reads it, so no census holds the package's trees.
+    Repeated SQL sites retain the broadest scope and its source location.
+    Non-SQL sites and equal-scope sites retain their first observation.
+    """
+
+    def __init__(self) -> None:
+        self._tiers = derived_table_tiers()
+        self._sites: dict[str, SweepSite] = {}
+
+    def finish(self) -> CensusObservation:
+        return CensusObservation(sites=tuple(sorted(self._sites.values(), key=lambda item: item.key)))
+
+    def observe(self, tree: ast.Module, *, relative: str) -> None:
+        tiers = self._tiers
+        sites = self._sites
+
+        def record(site: SweepSite) -> None:
+            previous = sites.get(site.key)
+            if previous is None or (
+                previous.scope in _SCOPE_PRECEDENCE
+                and site.scope in _SCOPE_PRECEDENCE
+                and _worst_scope((previous.scope, site.scope)) != previous.scope
+            ):
+                sites[site.key] = site
+
         scopes = function_scopes(tree)
 
         # First pass: what each call site executes. The populations below are
@@ -512,6 +539,9 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
         omissible_by_function: dict[str, set[tuple[str, int]]] = {}
         pending_rewrites: list[SweepSite] = []
         module_writes = False
+        # A scope's string bindings are a function of the tree alone, so each
+        # scope resolves once per module rather than once per call site in it.
+        values_by_function: dict[str, dict[str, tuple[str, ...]]] = {}
 
         for node in walk_module(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
@@ -519,7 +549,9 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
             if node.func.attr not in SQL_EXECUTION_METHODS or not node.args:
                 continue
             function = scopes.get(node, "<module>")
-            values = string_values(tree, scope=function)
+            values = values_by_function.get(function)
+            if values is None:
+                values = values_by_function[function] = string_values(tree, scope=function, scopes=scopes)
             texts = statement_texts(node.args[0], values)
             if not texts:
                 continue
@@ -617,8 +649,6 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
                 )
             )
 
-    return CensusObservation(sites=tuple(sorted(sites.values(), key=lambda item: item.key)))
-
 
 @dataclass(frozen=True)
 class CensusEntry:
@@ -677,8 +707,17 @@ def load_declaration(path: Path) -> CensusDeclaration:
     )
 
 
-def collect_violations(*, repo_root: Path, declaration_path: Path | None = None) -> list[dict[str, object]]:
-    """Check the observed sweep census against its declaration."""
+def collect_violations(
+    *,
+    repo_root: Path,
+    declaration_path: Path | None = None,
+    observation: CensusObservation | None = None,
+) -> list[dict[str, object]]:
+    """Check the observed sweep census against its declaration.
+
+    *observation* is the census of the declaration's package when the caller
+    has already taken it in its own pass over the package.
+    """
     path = declaration_path or (repo_root / DECLARATION_PATH)
     if not path.is_file():
         return [{"rule": "derived_sweep_census_declaration_missing", "key": path.as_posix()}]
@@ -686,7 +725,8 @@ def collect_violations(*, repo_root: Path, declaration_path: Path | None = None)
     package_root = repo_root / declaration.package
     if declaration.package != "polylogue" or not package_root.is_dir():
         return [{"rule": "derived_sweep_census_package_invalid", "key": declaration.package}]
-    observation = census_package(package_root, repo_root=repo_root)
+    if observation is None:
+        observation = census_package(package_root, repo_root=repo_root)
 
     violations: list[dict[str, object]] = []
     for name in declaration.malformed:

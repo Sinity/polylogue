@@ -91,6 +91,8 @@ class OperationRuntime(Protocol):
 
     def emit_progress(self, request: DaemonOperationRequest, event: Mapping[str, object]) -> None: ...
 
+    embedding_convergence: object | None
+
 
 def operation_envelope(
     request: DaemonOperationRequest,
@@ -299,20 +301,25 @@ def execute_operation(request: DaemonOperationRequest, context: OperationContext
                     handler = resolve_operation_handler(spec)
                     result = handler(request, context, audit, snapshot)
                 else:
-                    from polylogue.operations.daemon_reads import execute_read_operation
+                    from polylogue.operations.daemon_reads import DaemonReadDependencies, execute_read_operation
+                    from polylogue.operations.operation_context import abort_checkpoint
 
-                    result = execute_read_operation(
-                        request.operation,
-                        request.payload,
-                        archive=snapshot.archive,
-                        serving_identity=context.serving_identity,
-                        dependencies=replace(
+                    dependencies = (
+                        replace(
                             context.read_dependencies,
                             vector_connection=snapshot.archive.operation_vector_connection,
                             vector_failure=snapshot.vector_failure or context.read_dependencies.vector_failure,
                         )
                         if context.read_dependencies is not None
-                        else None,
+                        else DaemonReadDependencies()
+                    )
+                    assert read_control is not None
+                    result = execute_read_operation(
+                        request.operation,
+                        request.payload,
+                        archive=snapshot.archive,
+                        serving_identity=context.serving_identity,
+                        dependencies=replace(dependencies, raise_if_aborted=abort_checkpoint(read_control)),
                         read_view=snapshot.read_view,
                     )
                 validate_operation_result(request.operation, result)

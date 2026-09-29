@@ -358,6 +358,7 @@ class CursorStore:
         # that already know the plain root should pass it explicitly via
         # ``ops_db_path`` instead of relying on the sibling derivation.
         self._ops_db_path = ops_db_path if ops_db_path is not None else db_path.with_name("ops.db")
+        self._archive_root = self._ops_db_path.parent
         # Per-thread holder for ``ops_write_scope``: ``conn`` (the shared
         # connection, or None), ``depth`` (re-entry count) and ``pending``
         # (buffered stage events awaiting the next commit on ``conn``).
@@ -376,7 +377,6 @@ class CursorStore:
                 return
             initialize_archive_database(self._ops_db_path, ArchiveTier.OPS)
             self._initialized = True
-            self._migrate_legacy_convergence_debt_stages()
             self._mark_interrupted_ops_attempts()
 
     @contextmanager
@@ -388,7 +388,7 @@ class CursorStore:
         # sqlite3.Connection`` only commits, it never closes — a per-operation
         # connection leak in the live cursor store).
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = open_connection(self._db_path, timeout=10.0)
+        conn = open_connection(self._db_path, timeout=10.0, archive_root=self._archive_root)
         try:
             with conn:
                 yield conn
@@ -421,7 +421,7 @@ class CursorStore:
         implicitly relied on, so a second, unserialized entrant raises
         :class:`UnleasedWriteError` instead of silently interleaving commits.
         """
-        require_write_lease("live ingest ops write scope")
+        require_write_lease("live ingest ops write scope", archive_root=self._archive_root)
         state = self._ops_scope
         if getattr(state, "conn", None) is not None:
             state.depth += 1
@@ -430,7 +430,7 @@ class CursorStore:
             finally:
                 state.depth -= 1
             return
-        conn = open_connection(self._ops_db_path, timeout=10.0)
+        conn = open_connection(self._ops_db_path, timeout=10.0, archive_root=self._archive_root)
         state.conn = conn
         state.depth = 1
         state.pending = []
@@ -489,7 +489,7 @@ class CursorStore:
     def _connect_ops(self) -> Iterator[sqlite3.Connection]:
         held = cast(sqlite3.Connection | None, getattr(self._ops_scope, "conn", None))
         if held is None:
-            conn = open_connection(self._ops_db_path, timeout=10.0)
+            conn = open_connection(self._ops_db_path, timeout=10.0, archive_root=self._archive_root)
             try:
                 with conn:
                     yield conn
@@ -561,17 +561,30 @@ class CursorStore:
         Retained raw observations are rediscovered from source membership by
         fair intake. Rewound file cursors retain acquisition's independent
         obligation to revisit an interrupted input.
+
+        The attempts stay ``running`` until the rewind has read source state.
+        A running attempt is the only record of which paths owe a rewind, so
+        marking it first and then failing the read (an expired frame, a busy
+        tier) left those cursors permanently ahead on every later startup.
         """
-        now_ms = to_epoch_ms(datetime.now(UTC), numeric_unit="milliseconds")
         interrupted_source_paths: list[str] = []
 
-        def write() -> None:
+        def read() -> None:
             with self._connect_ops() as conn:
                 rows = conn.execute(
                     "SELECT source_path, source_paths_json FROM ingest_attempts WHERE status = 'running'"
                 ).fetchall()
-                for source_path, source_paths_json in rows:
-                    interrupted_source_paths.extend(_ingest_attempt_source_paths(source_path, source_paths_json))
+            for source_path, source_paths_json in rows:
+                interrupted_source_paths.extend(_ingest_attempt_source_paths(source_path, source_paths_json))
+
+        if not best_effort_cursor_write("archive ops interrupted attempt read", read):
+            return
+        if not self._rewind_interrupted_unparsed_cursors(interrupted_source_paths):
+            return
+        now_ms = to_epoch_ms(datetime.now(UTC), numeric_unit="milliseconds")
+
+        def write() -> None:
+            with self._connect_ops() as conn:
                 conn.execute(
                     """
                     UPDATE ingest_attempts
@@ -587,9 +600,8 @@ class CursorStore:
                 conn.commit()
 
         best_effort_cursor_write("archive ops interrupted attempt recovery", write)
-        self._rewind_interrupted_unparsed_cursors(interrupted_source_paths)
 
-    def _rewind_interrupted_unparsed_cursors(self, source_paths: Iterable[str]) -> None:
+    def _rewind_interrupted_unparsed_cursors(self, source_paths: Iterable[str]) -> bool:
         """Reopen cursors that outran a raw row left unparsed by interruption.
 
         Full ingest admits source bytes before parsing them. If the daemon
@@ -599,15 +611,21 @@ class CursorStore:
         frontier checks and catch-up cannot treat the path as consumed.
         Decided ambiguous membership is already terminal authority and stays
         cursor-complete.
+
+        Returns true only when source state was read and every
+        rewind was written, so the caller keeps the attempts as the recovery
+        obligation otherwise. A read that keeps expiring propagates, with the
+        attempts still ``running`` for the next startup.
         """
         paths = tuple(dict.fromkeys(path for path in source_paths if path))
         if not paths:
-            return
+            return True
         source_db = self._ops_db_path.with_name("source.db")
         if not source_db.exists():
-            return
+            return True
+        unparsed: set[str] = set()
+        read_complete = True
         try:
-            unparsed: set[str] = set()
             with read_frame(source_db, tier=ArchiveTier.SOURCE, timeout_class="background-read") as frame:
                 for offset in range(0, len(paths), _INTERRUPTED_SOURCE_PATH_PAGE_SIZE):
                     page = tuple(paths[offset : offset + _INTERRUPTED_SOURCE_PATH_PAGE_SIZE])
@@ -640,9 +658,12 @@ class CursorStore:
                 "archive ops interrupted recovery: could not inspect source parse state",
                 exc_info=True,
             )
-            return
+            read_complete = False
+        if not read_complete:
+            # Not read: the attempts remain the recovery obligation.
+            return False
         if not unparsed:
-            return
+            return True
 
         def write() -> None:
             with self._connect_ops() as conn:
@@ -665,74 +686,7 @@ class CursorStore:
                         manage_transaction=False,
                     )
 
-        best_effort_cursor_write("archive ops rewind interrupted unparsed cursor", write)
-
-    def _migrate_legacy_convergence_debt_stages(self) -> None:
-        """Move retired stage names and subject types onto their retry routes."""
-
-        def write() -> None:
-            with self._connect_ops() as conn:
-                _begin_ops_write(conn)
-                for old_stage, old_type, new_stage, new_type in (
-                    ("insights", None, "derived", None),
-                    ("hook_paste_enrichment", "session", "hook_paste_enrichment", "session_id"),
-                ):
-                    rows = conn.execute(
-                        """
-                        SELECT debt_id, target_type, target_id, status, priority, attempts,
-                               last_error, next_retry_at, materializer_version,
-                               created_at_ms, updated_at_ms
-                        FROM convergence_debt
-                        WHERE stage = ? AND (? IS NULL OR target_type = ?)
-                        """,
-                        (old_stage, old_type, old_type),
-                    ).fetchall()
-                    for row in rows:
-                        target_type = new_type or row[1]
-                        existing = conn.execute(
-                            """
-                            SELECT debt_id, status, priority, attempts, last_error, next_retry_at,
-                                   materializer_version, created_at_ms, updated_at_ms
-                            FROM convergence_debt
-                            WHERE stage = ? AND target_type = ? AND target_id = ?
-                            """,
-                            (new_stage, target_type, row[2]),
-                        ).fetchone()
-                        if existing is None:
-                            conn.execute(
-                                "UPDATE convergence_debt SET stage = ?, target_type = ? WHERE debt_id = ?",
-                                (new_stage, target_type, row[0]),
-                            )
-                            continue
-                        status = "failed" if "failed" in {str(existing[1]), str(row[3])} else "deferred"
-                        retry_at = min(
-                            (value for value in (existing[5], row[7]) if value is not None),
-                            default=None,
-                        )
-                        conn.execute(
-                            """
-                            UPDATE convergence_debt
-                            SET status = ?, priority = MAX(priority, ?), attempts = MAX(attempts, ?),
-                                last_error = COALESCE(last_error, ?), next_retry_at = ?,
-                                materializer_version = COALESCE(materializer_version, ?),
-                                created_at_ms = MIN(created_at_ms, ?), updated_at_ms = MAX(updated_at_ms, ?)
-                            WHERE debt_id = ?
-                            """,
-                            (
-                                status,
-                                int(row[4]),
-                                int(row[5]),
-                                row[6],
-                                retry_at,
-                                row[8],
-                                int(row[9]),
-                                int(row[10]),
-                                existing[0],
-                            ),
-                        )
-                        conn.execute("DELETE FROM convergence_debt WHERE debt_id = ?", (row[0],))
-
-        best_effort_cursor_write("archive ops convergence-debt stage migration", write)
+        return best_effort_cursor_write("archive ops rewind interrupted unparsed cursor", write)
 
     @staticmethod
     def _write_cursor_record_on_conn(
@@ -2092,6 +2046,39 @@ class CursorStore:
             subject_id=subject_id,
             stages=preserved_stages,
         )
+
+    def clear_convergence_debt_under_prefix(
+        self,
+        *,
+        stage: str,
+        subject_type: str,
+        prefix: str,
+        keep: frozenset[str] = frozenset(),
+    ) -> None:
+        """Clear one stage's debt for every subject under ``prefix`` except ``keep``.
+
+        A container (a ZIP archive) owns the debt of its members; after a pass
+        over the container, members it no longer refuses -- including members a
+        later revision removed -- keep no gap.
+        """
+
+        def write() -> None:
+            with self._connect_ops() as conn:
+                # ``substr`` compares exactly; ``LIKE`` folds ASCII case and
+                # would reach a sibling archive differing only in case.
+                rows = conn.execute(
+                    "SELECT target_id FROM convergence_debt WHERE stage = ? AND target_type = ? "
+                    "AND substr(target_id, 1, ?) = ?",
+                    (stage, subject_type, len(prefix), prefix),
+                ).fetchall()
+                stale = [(stage, subject_type, row[0]) for row in rows if row[0] not in keep]
+                conn.executemany(
+                    "DELETE FROM convergence_debt WHERE stage = ? AND target_type = ? AND target_id = ?",
+                    stale,
+                )
+                conn.commit()
+
+        best_effort_cursor_write("archive ops convergence debt prefix clear", write)
 
     def clear_convergence_debt(
         self,

@@ -475,6 +475,16 @@
           "kind": "string",
           "name": "assertion_ref",
           "required_initial": false
+        },
+        {
+          "description": "Segment compilation profile: default, or prose_with_refs for prose recaps carrying evidence refs.",
+          "enum_values": [
+            "default",
+            "prose_with_refs"
+          ],
+          "kind": "string",
+          "name": "segment_profile",
+          "required_initial": false
         }
       ],
       "confirmation": null,
@@ -532,21 +542,15 @@
       "examples": [
         {
           "arguments": {
-            "include": [
-              "identity",
-              "coverage",
-              "freshness",
-              "readiness"
-            ],
             "scope": "archive"
           },
           "id": "status-archive",
-          "result_note": "Archive identity, selected source coverage, freshness/readiness state, and explicit degraded reasons.",
-          "title": "Establish archive authority before making a broad claim"
+          "result_note": "Archive session/message counts and origin totals only. These aggregate statistics do not establish archive identity, source coverage, freshness, or readiness.",
+          "title": "Read aggregate archive statistics"
         }
       ],
       "name": "status",
-      "purpose": "Report archive identity, readiness, freshness, coverage, coordination, embeddings, and governed operation state.",
+      "purpose": "Report status by scope: aggregate archive statistics, one source's freshness, embedding readiness, coordination, Sinex publication, or operation readiness.",
       "required_capability": null,
       "result_semantics": [
         "single_object",

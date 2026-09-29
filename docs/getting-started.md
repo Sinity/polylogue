@@ -10,8 +10,8 @@ Choose the channel that fits the host:
 
 ```bash
 # Python CLI in an isolated environment
-pipx install polylogue
-# or: uv tool install polylogue
+pipx install --python python3.14t polylogue
+# or: uv tool install --python 3.14t polylogue
 
 # Homebrew on macOS or Linux
 brew tap sinity/polylogue
@@ -159,8 +159,9 @@ Polylogue auto-discovers these directories:
 ~/.codex/sessions/         Codex sessions
 ```
 
-Custom watch roots can be given to the daemon with `--root`. For an explicit
-one-time import request, keep the daemon running and use:
+Sources are read only from these canonical locations; a tool that keeps its
+logs elsewhere is followed by a symlink at its canonical path. Account
+exports are imported deliberately, with the daemon running:
 
 ```bash
 polylogue import /path/to/exports

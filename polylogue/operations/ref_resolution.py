@@ -222,7 +222,7 @@ def plan_ref_resolution(ref: str, *, archive_root: Path) -> RefResolutionPlan:
         if object_ref.kind == "assertion":
             return _resolve_assertion_object_ref(root, ref, normalized_ref, object_ref)
         if object_ref.kind == "finding":
-            return _resolve_finding_object_ref(root, ref, normalized_ref, object_ref)
+            return _resolve_finding_object_ref(root, ref, normalized_ref, object_ref, archive.index_connection)
         if object_ref.kind == "annotation-batch":
             return _resolve_annotation_batch_object_ref(archive, ref, normalized_ref, object_ref)
         if object_ref.kind == "delegation":
@@ -362,7 +362,29 @@ def _invalid_unicode_ref_payload(ref: str) -> Any | None:
 #: (polylogue-rxdo analysis-provenance epic). ``resolve_ref`` returns a typed
 #: ``PendingObjectRefPayload`` (reason=substrate-pending) for these instead of
 #: attempting a lookup against tables that do not exist yet.
-_PENDING_OBJECT_REF_KINDS: frozenset[str] = frozenset({"query", "query-run", "result-set", "cohort", "analysis"})
+_PENDING_OBJECT_REF_KINDS: frozenset[str] = frozenset(
+    {
+        "query",
+        "query-run",
+        "result-set",
+        "cohort",
+        "analysis",
+        "match-set",
+        "finding",
+        "metric",
+        "pattern",
+        "experiment",
+        "improvement-loop",
+        "context-policy",
+        "relation",
+        "analysis-run",
+        "basket",
+        "judgment-set",
+        "ranker",
+        "elicitation-session",
+        "experiment-analysis",
+    }
+)
 
 
 def _pending_ref_payload(ref: str, normalized_ref: str, kind: str) -> Any:
@@ -599,6 +621,7 @@ def _resolve_finding_object_ref(
     ref: str,
     normalized_ref: str,
     object_ref: ObjectRef,
+    index_conn: sqlite3.Connection | None,
 ) -> PublicRefResolutionPayload:
     from polylogue.operations.finding_evidence import evaluate_finding_evidence
     from polylogue.storage.sqlite.finding_provenance import compute_finding_provenance
@@ -617,9 +640,9 @@ def _resolve_finding_object_ref(
         )
     with closing(open_readonly_connection(user_db)) as conn:
         conn.row_factory = sqlite3.Row
-        provenance = compute_finding_provenance(conn, object_ref.object_id)
+        provenance = compute_finding_provenance(conn, object_ref.object_id, index_conn=index_conn)
         controls_document = _finding_controls_document(conn, object_ref.object_id)
-        integrity = None if provenance is None else evaluate_finding_evidence(conn, provenance)
+        integrity = None if provenance is None else evaluate_finding_evidence(conn, provenance, index_conn=index_conn)
     if provenance is None or integrity is None:
         return cast(
             PublicRefResolutionPayload,
@@ -980,6 +1003,51 @@ def _resolve_runtime_object_ref(
     object_ref: ObjectRef,
 ) -> PublicRefResolutionPayload:
     from polylogue.surfaces.payloads import PublicRefResolutionPayload
+
+    if object_ref.kind == "context-snapshot":
+        from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
+
+        predicate = QueryFieldPredicate(
+            field="boundary",
+            values=("compaction",),
+            field_ref=QueryFieldRef(scope="unit", name="boundary", source_name="boundary", unit="context-snapshot"),
+        )
+        offset = 0
+        while True:
+            rows = archive.query_context_snapshots(predicate, limit=200, offset=offset)
+            for row in rows:
+                snapshot = row.snapshot
+                if snapshot.snapshot_ref.format() != normalized_ref:
+                    continue
+                from polylogue.surfaces.payloads import ContextSnapshotQueryRowPayload, model_json_document
+
+                payload = ContextSnapshotQueryRowPayload(
+                    snapshot_ref=snapshot.snapshot_ref.format(),
+                    session_id=row.session_id,
+                    origin=row.origin,
+                    title=row.title or row.session_id,
+                    run_ref=snapshot.run_ref.format(),
+                    boundary=snapshot.boundary,
+                    inheritance_mode=snapshot.inheritance_mode,
+                    segment_refs=tuple(item.format() for item in snapshot.segment_refs),
+                    evidence_refs=tuple(item.format() for item in snapshot.evidence_refs),
+                    metadata=dict(snapshot.metadata),
+                )
+                return PublicRefResolutionPayload(
+                    ref=ref,
+                    normalized_ref=normalized_ref,
+                    kind="context-snapshot",
+                    resolved=True,
+                    payload_kind="context-snapshot",
+                    payload=model_json_document(payload),
+                    title=row.title or row.session_id,
+                    summary=f"{payload.boundary} ({payload.inheritance_mode})",
+                    object_refs=(f"session:{row.session_id}", normalized_ref, payload.run_ref, *payload.segment_refs),
+                    evidence_refs=payload.evidence_refs,
+                )
+            if len(rows) < 200:
+                break
+            offset += len(rows)
 
     summary_offset = 0
     while True:

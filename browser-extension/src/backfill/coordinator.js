@@ -267,6 +267,9 @@ export class BackfillCoordinator {
       result = await adapter.enumerate(job.inventory_cursor, job.cutoff);
     } catch (error) {
       job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
+      // A shared provider cooldown refuses the request before it is sent: that
+      // is the provider's rate limit, not a transport failure.
+      if (sharedRateLimitError(error)) return this.handleProviderBlock(job, sharedRateLimitResponse(error), "rate_limited", now);
       return this.handleJobTransport(job, error, now);
     }
     job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
@@ -316,6 +319,10 @@ export class BackfillCoordinator {
       response = await this.adapters[job.provider].fetchNative(item.native_id);
     } catch (error) {
       job = await this.store.assertJobExecution(job.id, this.instanceId, job.execution_generation);
+      if (sharedRateLimitError(error)) {
+        await this.saveQueue(job, { ...item, state: "retry_wait", lease_owner: null, lease_expires_at_ms: null, last_response_class: "rate_limited", next_eligible_at_ms: now });
+        return this.handleProviderBlock(job, sharedRateLimitResponse(error), "rate_limited", now);
+      }
       if (bridgeOversizeError(error)) return this.holdBridgeOversize(job, item, error, now);
       if (providerContractDriftError(error)) {
         await this.saveQueue(job, {
@@ -591,13 +598,31 @@ export class BackfillCoordinator {
       const failures = Array.isArray(result?.failures) ? result.failures : [];
       if (!failures.length) return null;
       const errors = {};
-      const now = nowIso(this.clock());
+      const nowMs = this.clock();
+      const now = nowIso(nowMs);
       for (const failure of failures) {
         if (typeof failure?.job_id !== "string") continue;
         const detail = String(failure.error || "capture_job_receiver_commit_failed");
         errors[failure.job_id] = detail;
         const job = await this.store.getJob(failure.job_id);
         if (job?.status === "running") {
+          const retryUntil = Number.isFinite(failure.retry_until_ms)
+            ? failure.retry_until_ms
+            : Number.isFinite(failure.retry_after_ms) ? nowMs + Math.max(0, failure.retry_after_ms) : null;
+          if (failure.outcome === "rate_limited" && retryUntil !== null) {
+            // A provider throttle is retryable: keep the job running and let
+            // the alarm at the deadline resume it. Only operator-actionable
+            // failures pause. A job already cooling down is left unchanged so
+            // the checkpoint reaches a fixed point.
+            if (job.cooldown_reason === "provider_rate_limited" && job.cooldown_until_ms > nowMs) continue;
+            await this.store.controlJob(failure.job_id, "running", now, {
+              cooldown_reason: "provider_rate_limited",
+              cooldown_until_ms: retryUntil,
+              last_error: detail,
+            });
+            await this.schedule(job.id, retryUntil);
+            continue;
+          }
           await this.store.controlJob(failure.job_id, "paused", now, {
             cooldown_reason: "receiver_capture_job_authority_unavailable",
             last_error: detail,
@@ -641,4 +666,17 @@ export class BackfillCoordinator {
     if (!this.alarms?.create) return;
     await this.alarms.create(backfillAlarmName(jobId), { when: Math.max(this.clock() + 1000, whenMs) });
   }
+}
+
+// The runtime refuses a provider request while a shared cooldown is active and
+// throws a `rate_limited` error without contacting the provider. Treat it as
+// the rate limit it is, carrying the remaining cooldown as Retry-After.
+function sharedRateLimitError(error) {
+  return error?.outcome === "rate_limited";
+}
+
+function sharedRateLimitResponse(error) {
+  const seconds = Number(error?.retryAfterSeconds);
+  const value = Number.isFinite(seconds) && seconds >= 0 ? String(seconds) : null;
+  return { status: 429, headers: { get: (name) => (String(name).toLowerCase() === "retry-after" ? value : null) } };
 }

@@ -39,12 +39,6 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.audit_leaf import open_verified_audit_read_connection
 
 _DELETE_CAPABILITY = "archive.delete_session"
-# A preview persists one durable target row and one exact effect identity per
-# session, then revalidates every target at consumption. Ten 1,000-target
-# audit pages keeps that single-writer transaction bounded without regressing
-# the established multi-hundred-session CLI delete workflow. Larger selections
-# must be split into independent preview/authorize/delete operations.
-DELETE_PREVIEW_MAX_SESSION_IDS = 10_000
 _DELETE_PREVIEW_RESOLUTION_PAGE_SIZE = 256
 
 
@@ -101,8 +95,6 @@ def _binding() -> OperationBinding[SessionDeleteArgs, object]:
 
 
 def _canonical_session_ids(archive: ArchiveStore, requested: tuple[str, ...]) -> tuple[str, ...]:
-    if len(requested) > DELETE_PREVIEW_MAX_SESSION_IDS:
-        raise DeleteAuthorizationError("selection_exceeds_preview_work_budget")
     if len(set(requested)) != len(requested):
         raise DeleteAuthorizationError("selection_is_not_canonical")
 
@@ -187,7 +179,7 @@ def consume_cli_delete_many(archive_root: Path, tokens: tuple[str, ...], princip
     for index, token in enumerate(tokens):
         try:
             affected_count += consume_cli_delete(archive_root, token, principal).affected_count
-        except ValueError as exc:
+        except Exception as exc:
             # The failing chunk's index is exactly the number that committed
             # before it. Index zero means nothing committed and the batch was
             # refused, which the caller already reports correctly; past that

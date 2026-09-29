@@ -34,7 +34,8 @@ async def get_blocks(
             tool_result_exit_code,
             tool_outcome,
             tool_result_outcome_unknown_reason,
-            signature
+            signature,
+            CASE WHEN content_hash IS NULL THEN NULL ELSE lower(hex(content_hash)) END AS content_hash
         FROM blocks
         WHERE message_id IN ({placeholders})
         ORDER BY message_id, position

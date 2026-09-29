@@ -44,40 +44,17 @@ gemini-cli ``OriginSpec``), derivation resolves it from those retained bytes.
 
 from __future__ import annotations
 
-import json
 import os
-import re
+import sqlite3
+import tempfile
 from collections.abc import Callable
 from pathlib import Path
 
-from polylogue.core.hashing import hash_text
-from polylogue.core.json import JSONDocument, json_document
+from polylogue.core.json import JSONDocument
 from polylogue.logging import WARNING, emit
-from polylogue.sources.live.tool_result_sidecars import (
-    _MAX_SIDECAR_AGGREGATE_BYTES,
-    _MAX_SIDECAR_FILE_BYTES,
-    _SIDECAR_SIZE_EXCEEDED,
-    SidecarDebt,
-    SidecarJoinResult,
-    SidecarMatch,
-)
+from polylogue.sources.live.tool_result_sidecars import SidecarDebt, SidecarJoinResult, SidecarMatch
+from polylogue.sources.prepared_message_sink import GeminiToolOutputIndex, is_masked_tool_output
 from polylogue.sources.sidecar_evidence import RetainedSidecarFile, RetainedSidecarScope
-
-# The envelope's pointer line, and the bare path as it also appears inside the
-# retained head/tail excerpt. Both spellings resolve to the same basename.
-_POINTER_RE = re.compile(r"tool-outputs/[^\s\"'\\,)]+")
-
-# Gemini CLI's masking envelope. Either marker alone identifies a truncated
-# inline rendering: the wrapper tag is absent on some tools that emit only the
-# "Output too large" preamble.
-_MASK_RE = re.compile(
-    r"<tool_output_masked>|Output too large\. Showing first [\d,]+ and last [\d,]+ characters",
-)
-
-
-def is_masked_tool_output(text: str | None) -> bool:
-    """True when ``text`` is Gemini CLI's truncated rendering of a larger output."""
-    return bool(text) and _MASK_RE.search(text or "") is not None
 
 
 def resolve_tool_outputs_dir(source_path: str | Path | None, session_id: str | None) -> Path | None:
@@ -117,78 +94,6 @@ def _is_single_path_component(name: str) -> bool:
     return Path(name).name == name
 
 
-def _iter_tool_calls(payload: JSONDocument) -> list[JSONDocument]:
-    messages = payload.get("messages")
-    if not isinstance(messages, list):
-        return []
-    tool_calls: list[JSONDocument] = []
-    for message in messages:
-        raw_calls = json_document(message).get("toolCalls")
-        if not isinstance(raw_calls, list):
-            continue
-        tool_calls.extend(json_document(tool_call) for tool_call in raw_calls)
-    return tool_calls
-
-
-def _tool_call_texts(tool_record: JSONDocument) -> list[str]:
-    """Every string a tool call could carry a sidecar pointer in."""
-    texts: list[str] = []
-    results = tool_record.get("result")
-    for result_item in results if isinstance(results, list) else []:
-        response = json_document(json_document(result_item).get("functionResponse")).get("response")
-        texts.extend(value for value in json_document(response).values() if isinstance(value, str))
-    display = tool_record.get("resultDisplay")
-    if isinstance(display, str):
-        texts.append(display)
-    elif display is not None:
-        texts.append(json.dumps(display))
-    return texts
-
-
-def _tool_output_index(payload: JSONDocument) -> tuple[dict[str, tuple[int, bool]], dict[str, str]]:
-    """Return (tool id -> (inline output length, inline output is masked), cited basename -> tool id)."""
-    by_tool_id: dict[str, tuple[int, bool]] = {}
-    by_pointer_name: dict[str, str] = {}
-    for tool_record in _iter_tool_calls(payload):
-        tool_id = tool_record.get("id")
-        if not isinstance(tool_id, str) or not tool_id:
-            continue
-        inline = ""
-        masked = False
-        results = tool_record.get("result")
-        for result_item in results if isinstance(results, list) else []:
-            response = json_document(json_document(result_item).get("functionResponse")).get("response")
-            output = json_document(response).get("output")
-            if isinstance(output, str):
-                inline = output if len(output) > len(inline) else inline
-                masked = masked or is_masked_tool_output(output)
-        by_tool_id[tool_id] = (len(inline), masked)
-        for text in _tool_call_texts(tool_record):
-            for pointer in _POINTER_RE.findall(text):
-                by_pointer_name.setdefault(os.path.basename(pointer), tool_id)
-    return by_tool_id, by_pointer_name
-
-
-def _tool_id_for_stem(stem: str, by_tool_id: dict[str, tuple[int, bool]]) -> str | None:
-    """Resolve a sidecar filename stem to the tool id that produced it.
-
-    The stem is either the tool id verbatim or the id embedded between
-    underscore-delimited runs (``<tool>_<id>_<slug>``). Longest match wins, so
-    a shorter id that happens to be a prefix of a longer one never steals the
-    file.
-    """
-    if stem in by_tool_id:
-        return stem
-    candidates = [
-        tool_id
-        for tool_id in by_tool_id
-        if f"_{tool_id}_" in stem or stem.endswith(f"_{tool_id}") or stem.startswith(f"{tool_id}_")
-    ]
-    if not candidates:
-        return None
-    return max(candidates, key=len)
-
-
 def join_gemini_tool_output_sidecars(payload: JSONDocument, scope: RetainedSidecarScope) -> SidecarJoinResult:
     """Join ``scope``'s ``tool-outputs/session-<id>/*`` files to the tool calls that produced them.
 
@@ -202,87 +107,16 @@ def join_gemini_tool_output_sidecars(payload: JSONDocument, scope: RetainedSidec
     if not scope.available:
         return SidecarJoinResult()
 
-    by_tool_id, by_pointer_name = _tool_output_index(payload)
-
-    matched: list[SidecarMatch] = []
-    debt: list[SidecarDebt] = []
-    present: set[str] = set()
-    aggregate_bytes = 0
-    for entry in sorted(scope.files, key=lambda candidate: candidate.filename):
-        present.add(entry.filename)
-        byte_size = entry.byte_size
-        file_mtime_ms = entry.file_mtime_ms
-
-        stem = entry.filename.rsplit(".", 1)[0]
-        tool_id = _tool_id_for_stem(stem, by_tool_id) or by_pointer_name.get(entry.filename, by_pointer_name.get(stem))
-        if tool_id is None or tool_id not in by_tool_id:
-            debt.append(
-                SidecarDebt(
-                    filename=entry.filename,
-                    byte_size=byte_size,
-                    reason="no_owning_tool_call",
-                    file_mtime_ms=file_mtime_ms,
-                )
-            )
-            continue
-
-        # polylogue-9k62p: bound the read on the retained row's declared size
-        # rather than materializing whatever the file turns out to hold.
-        if byte_size > _MAX_SIDECAR_FILE_BYTES or aggregate_bytes + byte_size > _MAX_SIDECAR_AGGREGATE_BYTES:
-            debt.append(
-                SidecarDebt(
-                    filename=entry.filename,
-                    byte_size=byte_size,
-                    reason=_SIDECAR_SIZE_EXCEEDED,
-                    file_mtime_ms=file_mtime_ms,
-                )
-            )
-            continue
-
-        try:
-            full_text = entry.read_text()
-        except OSError as exc:
-            debt.append(
-                SidecarDebt(
-                    filename=entry.filename,
-                    byte_size=byte_size,
-                    reason=f"read_error:{type(exc).__name__}",
-                    file_mtime_ms=file_mtime_ms,
-                )
-            )
-            continue
-
-        aggregate_bytes += byte_size
-        inline_len, masked = by_tool_id[tool_id]
-        matched.append(
-            SidecarMatch(
-                tool_use_id=tool_id,
-                filename=entry.filename,
-                byte_size=byte_size,
-                content_hash=hash_text(full_text),
-                was_truncated=masked or len(full_text) > inline_len,
-                full_text=full_text,
-                file_mtime_ms=file_mtime_ms,
-            )
-        )
-
-    matched_ids = {match.tool_use_id for match in matched}
-    for expected_name, expected_tool_id in sorted(by_pointer_name.items()):
-        if expected_name in present or expected_tool_id in matched_ids:
-            # One envelope's head and tail can cite two spellings of the same
-            # persisted output, only one of which Gemini CLI wrote (see the
-            # module docstring). A pointer whose tool call already resolved is
-            # not a missing sidecar.
-            continue
-        debt.append(
-            SidecarDebt(
-                filename=expected_name,
-                byte_size=0,
-                reason="expected_sidecar_not_retained",
-                file_mtime_ms=None,
-            )
-        )
-    return SidecarJoinResult(matched=tuple(matched), debt=tuple(debt))
+    messages = payload.get("messages")
+    with tempfile.TemporaryDirectory() as directory, sqlite3.connect(Path(directory) / "index.db") as conn:
+        index = GeminiToolOutputIndex(conn)
+        for message in messages if isinstance(messages, list) else []:
+            index.observe(message)
+        outcomes = list(index.join(scope))
+    return SidecarJoinResult(
+        matched=tuple(item for item in outcomes if isinstance(item, SidecarMatch)),
+        debt=tuple(item for item in outcomes if isinstance(item, SidecarDebt)),
+    )
 
 
 def tool_output_files_from_directory(tool_outputs_dir: Path) -> tuple[RetainedSidecarFile, ...]:
@@ -297,26 +131,70 @@ def tool_output_files_from_directory(tool_outputs_dir: Path) -> tuple[RetainedSi
     for entry in sorted(tool_outputs_dir.iterdir()):
         if not entry.is_file():
             continue
+        identity: tuple[int, int, int, int, int] | None
         try:
             stat_result = entry.stat()
             byte_size = stat_result.st_size
             file_mtime_ms: int | None = int(stat_result.st_mtime * 1000)
+            identity = _file_identity(stat_result)
         except OSError:
-            byte_size, file_mtime_ms = 0, None
+            byte_size, file_mtime_ms, identity = 0, None, None
         files.append(
             RetainedSidecarFile(
                 filename=entry.name,
                 byte_size=byte_size,
                 file_mtime_ms=file_mtime_ms,
-                read_text=_read_text_from_path(entry),
+                read_text=_read_text_from_path(entry, expected_size=byte_size, enumerated=identity),
             )
         )
     return tuple(files)
 
 
-def _read_text_from_path(path: Path) -> Callable[[], str]:
+class SidecarChangedDuringReadError(OSError):
+    """The sidecar's bytes moved while it was read; the read is not evidence.
+
+    Gemini CLI may still be writing a tool output when ingest observes it.
+    The join records this as read-error debt, and the file's next change
+    brings it back through intake.
+    """
+
+
+def _file_identity(stat_result: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        stat_result.st_dev,
+        stat_result.st_ino,
+        stat_result.st_size,
+        stat_result.st_mtime_ns,
+        stat_result.st_ctime_ns,
+    )
+
+
+def _read_text_from_path(
+    path: Path, *, expected_size: int, enumerated: tuple[int, int, int, int, int] | None = None
+) -> Callable[[], str]:
+    """Read the sidecar the enumeration observed, or refuse it as changed.
+
+    The opened handle is compared with the enumerated device, inode, size,
+    mtime and ctime, not only with itself: a same-length rewrite or atomic
+    replacement between enumeration and read would otherwise pair new bytes
+    with the enumerated mtime.
+    """
+
     def read() -> str:
-        return path.read_text(encoding="utf-8", errors="replace")
+        with path.open("rb") as handle:
+            before = os.fstat(handle.fileno())
+            # One byte past the enumerated size proves growth without
+            # reading whatever a still-running writer appended.
+            payload = handle.read(expected_size + 1)
+            after = os.fstat(handle.fileno())
+        if (
+            len(payload) != expected_size
+            or (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns)
+            or after.st_size != expected_size
+            or (enumerated is not None and _file_identity(before) != enumerated)
+        ):
+            raise SidecarChangedDuringReadError(f"sidecar changed while it was read: {path.name}")
+        return payload.decode("utf-8", errors="replace")
 
     return read
 

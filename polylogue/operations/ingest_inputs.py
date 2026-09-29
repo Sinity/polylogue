@@ -6,7 +6,8 @@ import os
 import sqlite3
 import stat
 import tempfile
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Generator, Iterator
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +27,20 @@ from polylogue.storage.sqlite.archive_tiers.source_items import (
     RetainedSourceInput,
     source_item_id,
 )
+
+
+@contextmanager
+def spool_connection(path: Path | str, *, read_only: bool = False) -> Iterator[sqlite3.Connection]:
+    """Open one private spool database for one transaction, then close it.
+
+    ``sqlite3.Connection``'s own context manager commits or rolls back but
+    never closes, so a bare ``with sqlite3.connect(...)`` keeps the file
+    handle until garbage collection. Spools are private scratch owned by one
+    pass (docs/sqlite-connection-policy.md), not archive tiers.
+    """
+    target = f"file:{path}?mode=ro" if read_only else str(path)
+    with closing(sqlite3.connect(target, uri=read_only)) as conn, conn:
+        yield conn
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,7 +68,7 @@ def discover_ingest_input_spool(path: Path, *, source_path: str | None, check_st
     os.close(fd)
     spool = Path(name)
     try:
-        with sqlite3.connect(spool) as conn:
+        with spool_connection(spool) as conn:
             conn.execute("CREATE TABLE paths(coordinate TEXT PRIMARY KEY, physical TEXT NOT NULL) WITHOUT ROWID")
             mode = path.lstat().st_mode
             if stat.S_ISREG(mode):
@@ -88,7 +103,7 @@ def retain_input_page(
     check_stop: Callable[[], None],
 ) -> tuple[FrozenSourceInput, ...]:
     """One compute-phase page; its SQLite connection never crosses threads."""
-    with sqlite3.connect(f"file:{spool}?mode=ro", uri=True) as conn:
+    with spool_connection(spool, read_only=True) as conn:
         rows = conn.execute(
             "SELECT coordinate, physical FROM paths WHERE coordinate > ? ORDER BY coordinate LIMIT 256",
             (after_coordinate or "",),
@@ -179,6 +194,7 @@ def enumerate_ingest_input(
                 retained.entry_ordinal,
                 retained.split_index,
                 retained.data.addressing_mode.value if retained.data.addressing_mode is not None else None,
+                retained.data.content_identity,
             ),
             retained.member_count,
         )

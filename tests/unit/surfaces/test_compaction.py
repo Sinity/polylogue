@@ -1,7 +1,23 @@
 from __future__ import annotations
 
+import json
+
+import pytest
+
 from polylogue.context.compiler import ContextImage
-from polylogue.surfaces.compaction import CompactProjectionSpec, compact_sessions
+from polylogue.surfaces.compaction import (
+    CompactionBudgetTooSmallError,
+    CompactProjectionSpec,
+    CorpusCompactionPack,
+    compact_sessions,
+    estimate_serialized_tokens,
+)
+
+
+def _wire_tokens(pack: CorpusCompactionPack) -> int:
+    return estimate_serialized_tokens(
+        json.dumps(pack.model_dump(mode="json"), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    )
 
 
 def _sessions() -> list[dict[str, object]]:
@@ -55,9 +71,10 @@ def test_compaction_manifest_filters_spam_and_keeps_structured_failure_fix() -> 
     )
 
     refs = {item.anchor.ref.format() for item in pack.items}
-    assert "codex:a::m2::1" in refs
-    assert "codex:a::m3::2" in refs
-    assert "codex:a::m1::0" not in refs
+    # Anchors name messages, never their enumeration position.
+    assert "codex:a::m2" in refs
+    assert "codex:a::m3" in refs
+    assert "codex:a::m1" not in refs
     assert pack.manifest.drop_counts_by_material_origin["runtime_protocol"] == 1
     assert pack.manifest.drop_counts["successful_tool_spam"] == 1
     assert pack.manifest.duplicate_prefix_omissions == 1
@@ -77,15 +94,15 @@ def test_compaction_budget_is_deterministic_and_clips_before_dropping() -> None:
         {
             "id": "s",
             "messages": [
-                {"id": str(i), "text": "decision " * 20, "material_origin": "assistant_authored"} for i in range(20)
+                {"id": str(i), "text": "decision " * 100, "material_origin": "assistant_authored"} for i in range(20)
             ],
         }
     ]
-    spec = CompactProjectionSpec(max_tokens=60)
+    spec = CompactProjectionSpec(max_tokens=800)
     first = compact_sessions(sessions, spec=spec)
     second = compact_sessions(sessions, spec=spec)
     assert first.model_dump(mode="json") == second.model_dump(mode="json")
-    assert first.token_estimate <= 60
+    assert first.token_estimate <= spec.max_tokens
     assert first.manifest.degradation_order[:3] == ("clip", "collapse_runs_to_counts", "skeleton_only")
     assert first.manifest.drop_counts["budget_clip"] >= 1
 
@@ -103,3 +120,88 @@ def test_compaction_pack_is_not_context_image() -> None:
     )
     assert not isinstance(pack, ContextImage)
     assert pack.pack_ref.startswith("compact:")
+
+
+def test_compaction_uses_canonical_lineage_and_message_refs() -> None:
+    """Archive links deduplicate inherited prefixes and anchors name messages.
+
+    Anti-vacuity: swapping src/resolved-dst back to parent/child direction
+    retains the child's inherited prefix; passing the enumeration position to
+    EvidenceRef makes the first ref contain a bogus block suffix.
+    """
+    sessions = [
+        {"id": "parent", "messages": [{"id": "m0", "text": "shared", "material_origin": "human_authored"}]},
+        {
+            "id": "child",
+            "messages": [
+                {"id": "m0", "text": "shared", "material_origin": "human_authored"},
+                {"id": "m1", "text": "new", "material_origin": "human_authored"},
+            ],
+        },
+    ]
+    pack = compact_sessions(
+        sessions,
+        session_links=[
+            {"src_session_id": "child", "resolved_dst_session_id": "parent", "branch_point_message_id": "m0"}
+        ],
+    )
+    child_refs = {item.anchor.ref.format() for item in pack.items if item.session_id == "child"}
+    assert child_refs == {"child::m1"}
+    assert all("::0" not in ref and "::1" not in ref for ref in child_refs)
+
+
+def test_compaction_budget_counts_serialized_omissions() -> None:
+    """The advertised estimate is the estimate of the whole emitted pack.
+
+    Anti-vacuity: measuring compact JSON by whitespace-split words sees the
+    100 omission objects as about one word, so all of them stay in the pack
+    and its real wire estimate exceeds the budget; measuring a partial probe
+    instead of the emitted pack breaks the equality.
+    """
+    sessions = [
+        {
+            "id": "s",
+            "messages": [
+                {"id": str(i), "text": "private protocol details " * 10, "material_origin": "runtime_protocol"}
+                for i in range(100)
+            ],
+        }
+    ]
+    pack = compact_sessions(sessions, spec=CompactProjectionSpec(max_tokens=800))
+    assert pack.token_estimate == _wire_tokens(pack)
+    assert pack.token_estimate <= 800
+    assert 0 < len(pack.omissions) < 100
+    assert "omission_rows_truncated" in pack.manifest.unknown
+    assert pack.manifest.drop_counts["filtered_material_origin"] == 100
+
+
+def test_serialized_estimate_charges_unspaced_and_multilingual_text() -> None:
+    """Text without whitespace still costs in proportion to its bytes.
+
+    Anti-vacuity: a word-count-only estimator reports 1 for both inputs.
+    """
+    assert estimate_serialized_tokens(json.dumps([{"a": 1}] * 200, separators=(",", ":"))) >= 400
+    assert estimate_serialized_tokens("\u8a18\u9332" * 200) >= 300
+
+
+def test_compaction_refuses_a_budget_below_its_envelope() -> None:
+    """A budget smaller than the empty typed pack is refused, not mislabelled.
+
+    Anti-vacuity: breaking out of the budget loop instead of raising returns a
+    pack whose estimate exceeds ``max_tokens``.
+    """
+    with pytest.raises(CompactionBudgetTooSmallError) as refusal:
+        compact_sessions([], spec=CompactProjectionSpec(max_tokens=1))
+    assert refusal.value.envelope_tokens > 1
+
+
+def test_long_unbroken_runs_are_weighted_by_their_size() -> None:
+    """Anti-vacuity: counting a run as one word estimates ``"!" * 100000`` at
+    one token, so a tiny budget would accept it.
+    """
+    from polylogue.surfaces.compaction import estimate_serialized_tokens, estimate_tokens
+
+    run = "!" * 100_000
+    assert estimate_tokens(run) >= 10_000
+    assert estimate_serialized_tokens(f'{{"text":"{run}"}}') >= 10_000
+    assert estimate_tokens("one two three") == 3

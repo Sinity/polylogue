@@ -3,7 +3,7 @@
 Anti-vacuity: ``test_reingest_does_not_resurrect_excised_content`` exercises
 the real acquire-time write chokepoint
 (``write_source_raw_session``/``ContentExcisedError``) that
-``polylogue.pipeline.services.archive_ingest.parse_sources_archive`` relies
+``polylogue.operations.canonical_archive_ingest.ingest_one_shot_archive`` relies
 on for every ordinary re-ingest; removing the gate in
 ``write_source_raw_session`` (or reverting the ``write_pair`` skip-not-abort
 handling) makes it fail.
@@ -50,7 +50,7 @@ from polylogue.storage.accepted_marker_inputs import (
     persist_pending_marker_input_sync,
     prepare_accepted_marker_input,
 )
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ContentExcisedError,
     deterministic_blob_hash,
@@ -72,6 +72,8 @@ def _seed_session(
     with_embedding: bool = False,
 ) -> str:
     """Seed a minimal but real session spanning source.db + index.db (+ optionally embeddings.db)."""
+
+    initialize_active_archive_root(archive_root)
 
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
@@ -230,6 +232,7 @@ class TestApplySessionExcision:
         assert receipt.counts["index_messages"] == 1
         assert receipt.counts["index_blocks"] == 1
         assert receipt.counts["source_raw_rows"] == 1
+        assert receipt.counts["source_raw_existence_changes"] == 1
         assert receipt.counts["source_blob_refs"] == 1
         assert receipt.counts["embeddings_vectors"] == 1
         assert len(receipt.removed_blob_hashes) == 1
@@ -254,6 +257,7 @@ class TestApplySessionExcision:
         try:
             assert source_conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
             assert source_conn.execute("SELECT COUNT(*) FROM blob_refs").fetchone()[0] == 0
+            assert source_conn.execute("SELECT COUNT(*) FROM raw_existence_changes").fetchone()[0] == 0
         finally:
             source_conn.close()
 
@@ -416,12 +420,12 @@ class TestApplySessionExcision:
         original_connect = excision_module._connect_rw
         failed = False
 
-        def fail_user_commit(path: Path) -> sqlite3.Connection:
+        def fail_user_commit(path: Path, *, archive_root: Path) -> sqlite3.Connection:
             nonlocal failed
             if path.name == "user.db" and not failed:
                 failed = True
                 raise RuntimeError("simulated crash after source commit")
-            return original_connect(path)
+            return original_connect(path, archive_root=archive_root)
 
         monkeypatch.setattr(excision_module, "_connect_rw", fail_user_commit)
         with pytest.raises(RuntimeError, match="simulated crash"):
@@ -453,12 +457,12 @@ class TestApplySessionExcision:
         original_connect = excision_module._connect_rw
         failed = False
 
-        def fail_user_open(path: Path) -> sqlite3.Connection:
+        def fail_user_open(path: Path, *, archive_root: Path) -> sqlite3.Connection:
             nonlocal failed
             if path.name == "user.db" and not failed:
                 failed = True
                 raise RuntimeError("simulated source-first crash")
-            return original_connect(path)
+            return original_connect(path, archive_root=archive_root)
 
         monkeypatch.setattr(excision_module, "_connect_rw", fail_user_open)
         with pytest.raises(RuntimeError, match="source-first crash"):
@@ -512,12 +516,12 @@ class TestApplySessionExcision:
         original_connect = excision_module._connect_rw
         failed = False
 
-        def fail_index_commit(path: Path) -> sqlite3.Connection:
+        def fail_index_commit(path: Path, *, archive_root: Path) -> sqlite3.Connection:
             nonlocal failed
             if path.name == "index.db" and not failed:
                 failed = True
                 raise RuntimeError("simulated crash after receipt commit")
-            return original_connect(path)
+            return original_connect(path, archive_root=archive_root)
 
         monkeypatch.setattr(excision_module, "_connect_rw", fail_index_commit)
         with pytest.raises(RuntimeError, match="simulated crash"):
@@ -569,8 +573,43 @@ class TestApplySessionExcision:
         finally:
             source_conn.close()
 
+    def test_reingested_revision_does_not_reuse_old_excision_receipt(self, tmp_path: Path) -> None:
+        """A completed receipt only skips cleanup for the source revision it names.
+
+        Anti-vacuity: key retry detection only by session id and the second
+        excision leaves the newly written user assertion readable.
+        """
+        session_id = _seed_session(tmp_path, native_id="revision-reingest", payload=b'{"revision":1}')
+        apply_session_excision(tmp_path, session_id, reason="first revision", actor="user:local", now_ms=10)
+        assert _seed_session(tmp_path, native_id="revision-reingest", payload=b'{"revision":2}') == session_id
+
+        user_db = tmp_path / "user.db"
+        with sqlite3.connect(user_db) as conn:
+            from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+
+            with conn:
+                upsert_assertion(
+                    conn,
+                    assertion_id="assertion-note:new-revision",
+                    target_ref=f"session:{session_id}",
+                    kind=AssertionKind.NOTE,
+                    body_text="new revision secret",
+                    author_ref="user:local",
+                    author_kind="user",
+                    now_ms=20,
+                )
+
+        apply_session_excision(tmp_path, session_id, reason="second revision", actor="user:local", now_ms=30)
+        with sqlite3.connect(user_db) as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM assertions WHERE assertion_id = 'assertion-note:new-revision'"
+            ).fetchone() == (0,)
+
     def test_reingest_batch_skips_excised_file_without_aborting(self, tmp_path: Path) -> None:
         """The batch orchestration layer must skip-not-abort on ContentExcisedError.
+
+        Anti-vacuity: treating an excised path as a failed file makes the
+        canonical one-shot ingestion reject the batch instead of reporting a skip.
 
         Uses the shared synthetic-corpus generator (real provider-shaped
         files, the same fixture machinery as
@@ -581,12 +620,11 @@ class TestApplySessionExcision:
         import asyncio
 
         from polylogue.config import Source
-        from polylogue.pipeline.services.archive_ingest import parse_sources_archive
+        from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
         from polylogue.scenarios import build_default_corpus_specs
         from polylogue.schemas.synthetic import SyntheticCorpus
 
         archive_root = tmp_path / "archive"
-
         specs = build_default_corpus_specs(providers=["codex"], count=1, messages_min=2, messages_max=3, seed=11)
         corpus_dir = tmp_path / "corpus"
         written = SyntheticCorpus.write_spec_artifacts(specs[0], corpus_dir, prefix="corpus")
@@ -594,7 +632,7 @@ class TestApplySessionExcision:
         assert sources
 
         # First ingest establishes the raw row + session normally.
-        result_first = asyncio.run(parse_sources_archive(archive_root, sources))
+        result_first = asyncio.run(ingest_one_shot_archive(archive_root, sources))
         assert result_first.excised_skips == 0
         assert result_first.counts["sessions"] >= 1
 
@@ -607,9 +645,16 @@ class TestApplySessionExcision:
         session_id = str(row[0])
         receipt = apply_session_excision(archive_root, session_id, reason="test", actor="user:local")
         assert receipt.found is True
+        with sqlite3.connect(archive_root / "index.db") as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) FROM raw_revision_heads WHERE session_id = ?", (session_id,)
+            ).fetchone() == (0,)
+            assert conn.execute(
+                "SELECT COUNT(*) FROM raw_revision_applications WHERE session_id = ?", (session_id,)
+            ).fetchone() == (0,)
 
         # Re-ingest the SAME unmodified file: must skip (not raise/abort).
-        result_second = asyncio.run(parse_sources_archive(archive_root, sources))
+        result_second = asyncio.run(ingest_one_shot_archive(archive_root, sources))
         assert result_second.excised_skips >= 1
 
         index_conn = sqlite3.connect(archive_root / "index.db")

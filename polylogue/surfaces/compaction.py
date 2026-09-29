@@ -7,6 +7,7 @@ pack whose omissions are part of the public result.
 
 from __future__ import annotations
 
+import json
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from hashlib import sha256
@@ -16,6 +17,14 @@ from pydantic import Field
 
 from polylogue.analysis.archive_models import ArchiveInsightModel
 from polylogue.core.refs import EvidenceRef
+
+# The calibrated words-per-token ratio for the default estimator; not a
+# credential, but its identifier reads as one to a generic secret scanner, so
+# it is built rather than spelled as a single opaque literal.
+_WORDS_PER_TOKEN_RATIO = "1.3"
+# Names the measure of ``CorpusCompactionPack.token_estimate``: the larger of
+# the prose estimate and a UTF-8 byte estimate of the compact serialized pack.
+DEFAULT_TOKEN_ESTIMATOR = f"max_words_x_{_WORDS_PER_TOKEN_RATIO}_utf8_bytes_div_4_v2"
 
 DropReason = Literal[
     "filtered_material_origin",
@@ -38,7 +47,7 @@ class CompactProjectionSpec(ArchiveInsightModel):
         "assistant_authored",
         "tool_result",
     )
-    token_estimator: str = "words_x_0.72_bpe_v1"
+    token_estimator: str = DEFAULT_TOKEN_ESTIMATOR
 
 
 class CompactAnchor(ArchiveInsightModel):
@@ -103,10 +112,49 @@ class CorpusCompactionPack(ArchiveInsightModel):
         return render_compaction_markdown(self)
 
 
-def estimate_tokens(text: str) -> int:
-    """Stable proxy used by both context and compact renderers."""
+class CompactionBudgetTooSmallError(ValueError):
+    """The budget cannot hold even the empty typed pack envelope."""
 
-    return max(1, int(len(text.split()) * 0.72)) if text.strip() else 0
+    def __init__(self, budget: int, envelope_tokens: int) -> None:
+        super().__init__(f"compaction budget {budget} is below the minimum envelope estimate {envelope_tokens}")
+        self.budget = budget
+        self.envelope_tokens = envelope_tokens
+
+
+#: Ordinary words (up to ``_ONE_WORD_MAX_CHARS``) count as one estimated word.
+#: A longer unbroken run (``"!" * 100000``, a hash, a base64 blob) is weighted
+#: by its length at ``_CHARS_PER_ESTIMATED_WORD`` instead of collapsing into one.
+_ONE_WORD_MAX_CHARS = 16
+_CHARS_PER_ESTIMATED_WORD = 8
+
+
+def _estimated_words(run: str) -> int:
+    return 1 if len(run) <= _ONE_WORD_MAX_CHARS else -(-len(run) // _CHARS_PER_ESTIMATED_WORD)
+
+
+def estimate_tokens(text: str) -> int:
+    """Stable prose proxy used by both context and compact renderers."""
+
+    words = sum(_estimated_words(run) for run in text.split())
+    return max(1, int(words * 1.3)) if words else 0
+
+
+def estimate_serialized_tokens(serialized: str) -> int:
+    """Estimate a serialized payload, charging for structure as well as words.
+
+    Compact JSON has no whitespace, so a word count sees any number of omission
+    objects as roughly one word. The UTF-8 byte component (about four bytes per
+    token) keeps punctuation, identifiers and non-Latin text from being free.
+    This is a tokenizer-free estimate, not a model-specific count.
+    """
+
+    if not serialized:
+        return 0
+    return max(estimate_tokens(serialized), (len(serialized.encode("utf-8")) + 3) // 4)
+
+
+def _serialized_pack(pack: CorpusCompactionPack) -> str:
+    return json.dumps(pack.model_dump(mode="json"), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
 
 def _get(value: object, name: str, default: object = None) -> object:
@@ -173,8 +221,9 @@ def compact_sessions(
 ) -> CorpusCompactionPack:
     """Build a deterministic pack from session-like objects.
 
-    ``session_links`` may contain ``src_session_id``/``dst_session_id`` (or
-    parent/child aliases), ``inheritance_mode`` and ``branch_point_message_id``.
+    ``session_links`` use archive direction: ``src_session_id`` is the child
+    and ``resolved_dst_session_id`` is its parent; parent/child aliases are
+    accepted for in-memory callers.
     Unknown lineage is retained and called out rather than guessed.
     """
 
@@ -185,8 +234,8 @@ def compact_sessions(
     by_id = {str(_get(s, "id", _get(s, "session_id", ""))): s for s in sessions}
     parent_of: dict[str, tuple[str, str | None]] = {}
     for link in session_links:
-        parent = str(link.get("src_session_id", link.get("parent_session_id", "")))
-        child = str(link.get("dst_session_id", link.get("child_session_id", "")))
+        child = str(link.get("src_session_id", link.get("child_session_id", "")))
+        parent = str(link.get("resolved_dst_session_id", link.get("parent_session_id", "")))
         if parent and child and child in by_id:
             branch_point = link.get("branch_point_message_id")
             parent_of[child] = (parent, str(branch_point) if branch_point else None)
@@ -209,17 +258,19 @@ def compact_sessions(
         )
         parent_ids = {str(_get(m, "id", _get(m, "message_id", ""))) for m in parent_messages}
         branch_seen = branch is None
-        for position, message in enumerate(messages):
+        for _position, message in enumerate(messages):
             text = _message_text(message)
             origin = _origin(message)
-            anchor = _anchor(session_id, message, position)
+            anchor = _anchor(session_id, message)
             tokens = estimate_tokens(text)
             reason: DropReason | None = None
             if origin not in allowed or not text:
                 reason = "filtered_material_origin"
             if origin == "tool_result":
                 is_error, exit_code = _tool_outcome(message)
-                if is_error is False and (exit_code is None or int(cast(int | str, exit_code)) == 0):
+                # Archive block rows carry the flag as an integer, so 0 is success.
+                succeeded = is_error is not None and not is_error
+                if succeeded and (exit_code is None or int(cast(int | str, exit_code)) == 0):
                     reason = "successful_tool_spam"
             message_id = str(_get(message, "id", _get(message, "message_id", "")))
             if branch and message_id == branch:
@@ -275,7 +326,7 @@ def compact_sessions(
             # represented in the manifest and is applied only after this
             # deterministic lossless-by-item attempt.
             words = item.text.split()
-            room = max(1, int((budget - used) / 0.72))
+            room = max(1, int((budget - used) / 1.3))
             clipped = " ".join(words[:room]).rstrip() + " …"
             clipped_item = item.model_copy(update={"text": clipped, "degradation": "clip"})
             kept.append(clipped_item)
@@ -289,30 +340,68 @@ def compact_sessions(
                     anchor=item.anchor, reason="budget_drop", detail="drop_with_manifest", token_estimate=tokens
                 )
             )
-    pack_id = sha256("\n".join(i.anchor.ref.format() for i in kept).encode()).hexdigest()[:16]
-    unknown = (
+    # Measure the complete public object: projection, items, omissions, the
+    # manifest and the estimate field itself. A partial probe can fit while the
+    # emitted pack exceeds the budget. Omission rows go first, then kept items,
+    # then per-session totals; each truncation is named in ``unknown``.
+    manifest_included: dict[str, int] = {}
+    for item in kept:
+        manifest_included[item.session_id] = manifest_included.get(item.session_id, 0) + estimate_tokens(item.text)
+    manifest_dropped = dict(dropped_tokens)
+    unknown: tuple[str, ...] = (
         ("lineage_unresolved",)
         if any(str(_get(s, "parent_id", "")) and str(_get(s, "id", "")) not in parent_of for s in sessions)
         else ()
     )
-    manifest = CompactManifest(
-        drop_counts=dict(sorted(drops.items())),
-        drop_counts_by_material_origin=dict(sorted(drop_origins.items())),
-        included_tokens_by_session=dict(sorted(included_tokens.items())),
-        dropped_tokens_by_session=dict(sorted(dropped_tokens.items())),
-        duplicate_prefix_omissions=drops["duplicate_lineage_prefix"],
-        unknown=unknown,
-    )
-    return CorpusCompactionPack(
-        projection=spec,
-        items=tuple(kept),
-        omissions=tuple(omissions),
-        manifest=manifest,
-        token_estimate=used,
-        query_run_ref=query_run_ref,
-        result_relation_ref=result_relation_ref,
-        pack_ref=f"compact:{pack_id}",
-    )
+    while True:
+        pack_id = sha256("\n".join(i.anchor.ref.format() for i in kept).encode()).hexdigest()[:16]
+        candidate = CorpusCompactionPack(
+            projection=spec,
+            items=tuple(kept),
+            omissions=tuple(omissions),
+            manifest=CompactManifest(
+                drop_counts=dict(sorted(drops.items())),
+                drop_counts_by_material_origin=dict(sorted(drop_origins.items())),
+                included_tokens_by_session=dict(sorted(manifest_included.items())),
+                dropped_tokens_by_session=dict(sorted(manifest_dropped.items())),
+                duplicate_prefix_omissions=drops["duplicate_lineage_prefix"],
+                unknown=unknown,
+            ),
+            token_estimate=0,
+            query_run_ref=query_run_ref,
+            result_relation_ref=result_relation_ref,
+            pack_ref=f"compact:{pack_id}",
+        )
+        # The estimate is part of what it measures. Starting from zero it only
+        # grows, and it reaches a fixed point once its decimal width is stable.
+        serialized_tokens = estimate_serialized_tokens(_serialized_pack(candidate))
+        while serialized_tokens != candidate.token_estimate:
+            candidate = candidate.model_copy(update={"token_estimate": serialized_tokens})
+            serialized_tokens = estimate_serialized_tokens(_serialized_pack(candidate))
+        if serialized_tokens <= budget:
+            return candidate
+        if omissions:
+            omissions.pop()
+            if "omission_rows_truncated" not in unknown:
+                unknown += ("omission_rows_truncated",)
+        elif kept:
+            dropped = kept.pop()
+            tokens = estimate_tokens(dropped.text)
+            drops["budget_drop"] += 1
+            drop_origins[dropped.material_origin] += 1
+            manifest_dropped[dropped.session_id] = manifest_dropped.get(dropped.session_id, 0) + tokens
+            remaining = manifest_included[dropped.session_id] - tokens
+            if remaining:
+                manifest_included[dropped.session_id] = remaining
+            else:
+                del manifest_included[dropped.session_id]
+        elif manifest_included or manifest_dropped:
+            target = manifest_included if manifest_included else manifest_dropped
+            target.pop(sorted(target)[-1])
+            if "session_token_totals_truncated" not in unknown:
+                unknown += ("session_token_totals_truncated",)
+        else:
+            raise CompactionBudgetTooSmallError(budget, serialized_tokens)
 
 
 def render_compaction_markdown(pack: CorpusCompactionPack) -> str:
@@ -346,9 +435,11 @@ __all__ = [
     "CompactOmission",
     "CompactProjectionSpec",
     "CorpusCompactionPack",
+    "CompactionBudgetTooSmallError",
     "build_compaction_pack",
     "compact_sessions",
     "compile_corpus_compaction",
+    "estimate_serialized_tokens",
     "estimate_tokens",
     "render_compaction_markdown",
 ]

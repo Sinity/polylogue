@@ -31,7 +31,9 @@ from polylogue.core.json import JSONDecodeError, JSONValue
 from polylogue.core.json import loads as json_loads
 from polylogue.core.write_hold import check_write_hold_budget
 from polylogue.pipeline.services.process_pool import select_ingest_worker_count
+from polylogue.sources.acquisition_boundary import refuse_declared_foreign, refuse_foreign_path
 from polylogue.sources.dispatch import (
+    ForeignOriginContentError,
     detect_provider,
     detect_provider_from_raw_bytes_evidence,
     is_jsonl_source_path,
@@ -306,6 +308,10 @@ class _FullIngestResult:
     #: Admitted paths whose provider is the source fallback only because
     #: detection crashed, with the failure. A shape fallback is not listed.
     detection_fallbacks: dict[Path, str] = field(default_factory=dict)
+    #: Succeeded paths whose every record parsed to zero sessions. The cursor
+    #: advances like any success, so identical bytes are not re-parsed, but
+    #: the intake outcome is an exclusion, never an admission (xf8qp).
+    no_session: list[Path] = field(default_factory=list)
     raw_fingerprints: dict[Path, str] = field(default_factory=dict)
     raw_byte_sizes: dict[Path, int] = field(default_factory=dict)
     raw_frontier_sizes: dict[Path, int] = field(default_factory=dict)
@@ -319,6 +325,7 @@ class _FullIngestResult:
     ingested_message_count: int = 0
     changed_session_count: int = 0
     excised_skips: int = 0
+    excised_paths: tuple[Path, ...] = ()
     stage_timings_s: dict[str, float] = field(default_factory=dict)
     # Real session ids materialized by this full-ingest group (polylogue-20d.13),
     # threaded from ``_IngestBatchSummary.changed_session_ids`` so callers can
@@ -334,6 +341,10 @@ class _FullIngestResult:
     # group's cursors first and only then stops taking new work -- a batch is
     # never left committed-and-failed with its cursor unrecorded.
     write_hold_exhausted: bool = False
+    #: Planned paths held back for publication order: each shares a
+    #: canonical session with a path this group published, so it was not
+    #: attempted here and publishes in the next group.
+    ordering_held: list[Path] = field(default_factory=list)
 
 
 def _full_ingest_result_from_summary(
@@ -345,6 +356,7 @@ def _full_ingest_result_from_summary(
     source_payload_read_bytes: int,
     excluded: dict[Path, str] | None = None,
     detection_fallbacks: dict[Path, str] | None = None,
+    no_session: list[Path] | None = None,
     raw_fingerprints: dict[Path, str],
     raw_byte_sizes: dict[Path, int],
     raw_frontier_sizes: dict[Path, int] | None = None,
@@ -355,6 +367,7 @@ def _full_ingest_result_from_summary(
     captured_file_observations: dict[Path, tuple[int, int, int, int, int]] | None = None,
     summary: object | None,
     excised_skips: int = 0,
+    excised_paths: tuple[Path, ...] = (),
     time_budget_exceeded: bool = False,
     write_hold_exhausted: bool = False,
 ) -> _FullIngestResult:
@@ -366,6 +379,7 @@ def _full_ingest_result_from_summary(
         source_payload_read_bytes=source_payload_read_bytes,
         excluded=dict(excluded or {}),
         detection_fallbacks=dict(detection_fallbacks or {}),
+        no_session=list(no_session or ()),
         raw_fingerprints=raw_fingerprints,
         raw_byte_sizes=raw_byte_sizes,
         raw_frontier_sizes=raw_frontier_sizes or {},
@@ -379,6 +393,7 @@ def _full_ingest_result_from_summary(
         ingested_message_count=int(getattr(summary, "total_msgs", 0)) if summary is not None else 0,
         changed_session_count=len(getattr(summary, "changed_session_ids", ())) if summary is not None else 0,
         excised_skips=excised_skips,
+        excised_paths=excised_paths,
         changed_session_ids=tuple(getattr(summary, "changed_session_ids", ()) or ()) if summary is not None else (),
         stage_timings_s=dict(getattr(summary, "stage_timings_s", {})) if summary is not None else {},
         time_budget_exceeded=time_budget_exceeded,
@@ -399,7 +414,7 @@ class JsonlBoundary:
     malformed_record: bool = False
 
 
-_JSONL_BLANK_LINE_RE = re.compile(rb"(?:\A|\n)[ \t\r]*(?:\n|\Z)")
+_JSONL_BLANK_LINE_RE = re.compile(rb"(?:\A|\n)(?:[ \t\r]*\n|[ \t\r]+\Z)")
 
 
 def _jsonl_record_count(prefix: bytes) -> int:
@@ -911,8 +926,9 @@ def detect_provider_from_path_sample_evidence(
             return fallback_provider, _crash(exc)
     if fallback_provider is Provider.ANTIGRAVITY and antigravity.looks_like_trajectory_db_path(path):
         return Provider.ANTIGRAVITY, None
-    if hermes_state.looks_like_state_db_path(path) or hermes_verification.looks_like_verification_evidence_db_path(
-        path
+    if fallback_provider in (Provider.HERMES, Provider.UNKNOWN) and (
+        hermes_state.looks_like_state_db_path(path)
+        or hermes_verification.looks_like_verification_evidence_db_path(path)
     ):
         return Provider.HERMES, None
     if is_jsonl_source_path(str(path)):
@@ -1010,14 +1026,16 @@ def _jsonl_provider_and_session_artifact(
     """
     from polylogue.sources.origin_specs import path_declaration_refuses_session
 
+    # A ``raw-only`` declaration is terminal: its bytes are evidence and the
+    # record shape cannot decide otherwise (polylogue-ximhz). Checked before
+    # any content probe, so a prompt-history log -- whose rows carry the same
+    # ``sessionId`` keys a transcript does -- is never session-parsed.
+    if path_declaration_refuses_session(fallback_provider, path):
+        return fallback_provider, False, None
     records, failure = _jsonl_sample_with_failure(path)
     detected = detect_provider(records) if records else None
     provider = detected or fallback_provider
     detection_failure = failure if detected is None else None
-    # A ``raw-only`` declaration is terminal: its bytes are evidence and the
-    # record shape cannot decide otherwise (polylogue-ximhz). Checked before
-    # the content probe so a prompt-history log -- whose rows carry the same
-    # ``sessionId`` keys a transcript does -- is never session-parsed.
     if path_declaration_refuses_session(provider, path):
         return provider, False, detection_failure
     if checkpoint is None:
@@ -1056,7 +1074,7 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
         # transcript directory, so location cannot outrank its provenance.
         from polylogue.sources.origin_specs import recognize_source_class
 
-        recognition = recognize_source_class(provider, path, source_size_bytes=_path_size(path))
+        recognition = recognize_source_class(provider, path)
         if recognition is not None and recognition.source_class != "session":
             return False
         path_classification = classify_artifact_path(path, provider=provider)
@@ -1094,8 +1112,23 @@ _RETRYABLE_READ_ERRNOS = frozenset(
 )
 
 
+class RetryableSourceReadError(RuntimeError):
+    """A source read failed for a reason a later pass can clear.
+
+    Raised by :func:`classify_pre_acquisition` so callers handle a retryable
+    read as a typed outcome instead of catching raw SQLite or OS errors.
+    """
+
+    def __init__(self, path: Path, cause: BaseException) -> None:
+        super().__init__(f"{path}: {cause}")
+        self.path = path
+        self.cause = cause
+
+
 def retryable_read_fault(exc: BaseException) -> bool:
     """Whether a source read failed for a reason a later read can clear."""
+    if isinstance(exc, RetryableSourceReadError):
+        return True
     sqlite_code = getattr(exc, "sqlite_errorcode", None)
     return (isinstance(exc, OSError) and exc.errno in _RETRYABLE_READ_ERRNOS) or (
         isinstance(exc, sqlite3.Error)
@@ -1133,6 +1166,17 @@ class PreAcquisitionDecision:
     excluded_reason: str | None
     detected_provider: Provider | None = None
     detection_crash: str | None = None
+    #: The exclusion is a foreign-origin refusal, recorded as refused.
+    refused: bool = False
+
+
+def foreign_origin_exclusion(exc: ForeignOriginContentError) -> str:
+    """The typed reason intake records for a refused foreign-origin file.
+
+    Intake's cursor and the production baseline's exclusion carry the same
+    reason, so a file intake refuses is never a revision the baseline demands.
+    """
+    return f"{exc.code}: {exc}"
 
 
 def classify_pre_acquisition(
@@ -1157,20 +1201,34 @@ def classify_pre_acquisition(
     instead, so the caller retries the file rather than excluding a valid
     database for good; bytes that are not a readable database stay excluded.
     """
-    decision = _classify_pre_acquisition(
-        path,
-        fallback_provider=fallback_provider,
-        source_only=source_only,
-        size_bytes=size_bytes,
-        checkpoint=checkpoint,
-    )
+    try:
+        decision = _classify_pre_acquisition(
+            path,
+            fallback_provider=fallback_provider,
+            source_only=source_only,
+            size_bytes=size_bytes,
+            checkpoint=checkpoint,
+        )
+    except (OSError, sqlite3.Error) as exc:
+        if retryable_read_fault(exc):
+            raise RetryableSourceReadError(path, exc) from exc
+        raise
     if decision.excluded_reason is not None and is_sqlite_path(path):
-        try:
-            probe_sqlite_readable(path)
-        except (OSError, sqlite3.Error) as exc:
-            if retryable_read_fault(exc):
-                raise
+        _raise_retryable_probe_fault(path)
     return decision
+
+
+def _raise_retryable_probe_fault(path: Path) -> None:
+    """Raise :class:`RetryableSourceReadError` if the database cannot be read now.
+
+    Any other probe failure (bytes that are not a database) leaves the
+    exclusion standing, so it is deliberately not raised.
+    """
+    try:
+        probe_sqlite_readable(path)
+    except (OSError, sqlite3.Error) as exc:
+        if retryable_read_fault(exc):
+            raise RetryableSourceReadError(path, exc) from exc
 
 
 def _classify_pre_acquisition(
@@ -1190,6 +1248,11 @@ def _classify_pre_acquisition(
     if path.suffix.lower() == ".zip":
         # ZIP members are admitted or excluded one by one by the member walk.
         return PreAcquisitionDecision(None)
+    try:
+        # A declared database of another origin is foreign by its name.
+        refuse_declared_foreign(path.name, fallback_provider)
+    except ForeignOriginContentError as exc:
+        return PreAcquisitionDecision(foreign_origin_exclusion(exc), refused=True)
     if (
         fallback_provider is Provider.ANTIGRAVITY
         and path.suffix.lower() == ".pb"
@@ -1205,10 +1268,15 @@ def _classify_pre_acquisition(
         and hermes_member is not None
         and hermes_member.disposition != "out-of-scope"
     )
-    source_class = recognize_source_class(
-        fallback_provider, path, source_only=source_only, source_size_bytes=size_bytes
-    )
+    source_class = recognize_source_class(fallback_provider, path, source_only=source_only)
     if source_class is not None and source_class.source_class == "unsupported" and not hermes_owned_sqlite_name:
+        # Unknown/config/cache material under a broad root is a typed
+        # non-session observation -- unless the boundary finds another
+        # origin's records in it, which is a refusal. A read fault raises.
+        try:
+            refuse_foreign_path(path, fallback_provider)
+        except ForeignOriginContentError as exc:
+            return PreAcquisitionDecision(foreign_origin_exclusion(exc), refused=True)
         return PreAcquisitionDecision("unsupported source class")
     if fallback_provider in {Provider.ANTIGRAVITY, Provider.UNKNOWN} and antigravity.looks_like_trajectory_db_path(
         path

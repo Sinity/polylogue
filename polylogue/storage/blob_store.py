@@ -72,6 +72,10 @@ def _write_all(fd: int, data: bytes) -> None:
         offset += written
 
 
+class BlobVerificationCancelledError(Exception):
+    """A blob re-hash stopped at a chunk boundary because its caller was cancelled."""
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedBlob:
     """Hashed bytes staged outside the content-addressed namespace."""
@@ -298,7 +302,12 @@ class BlobStore:
                 self.discard_staging_path(temporary_path)
             raise
 
-    def prepare_from_writer(self, write: Callable[[IO[bytes]], None]) -> PreparedBlob:
+    def prepare_from_writer(
+        self,
+        write: Callable[[IO[bytes]], None],
+        *,
+        heartbeat: Heartbeat | None = None,
+    ) -> PreparedBlob:
         """Stage the bytes a producer writes, then hash them in place.
 
         For a producer that can only write, such as a streaming download that
@@ -324,6 +333,9 @@ class BlobStore:
                 while chunk := handle.read(_CHUNK_SIZE):
                     hasher.update(chunk)
                     size += len(chunk)
+                    if heartbeat is not None:
+                        with suppress(Exception):
+                            heartbeat()
             os.chmod(temporary_path, 0o600)
             return PreparedBlob(hasher.hexdigest(), size, temporary_path)
         except BaseException:
@@ -403,6 +415,23 @@ class BlobStore:
             self._fsync_directory(self.root)
         return outcome
 
+    def publish_prepared_renewing(self, prepared: PreparedBlob) -> tuple[str, int]:
+        """Publish like :meth:`publish_prepared`, renewing an existing copy's age.
+
+        For a publisher outside the archive reservation protocol (a parse
+        worker without a write lease). Deduplicating against an old,
+        unreferenced copy would hand back bytes blob GC may reclaim at once;
+        touching the copy's mtime puts it back inside GC's minimum-age window
+        until the writer reserves it (``ArchiveBlobPublisher.adopt_published``
+        proves it present then). The prepared file is consumed either way.
+        """
+        try:
+            os.utime(self.blob_path(prepared.hash_hex))
+        except FileNotFoundError:
+            return self.publish_prepared(prepared)
+        self.discard_prepared(prepared)
+        return prepared.hash_hex, prepared.size_bytes
+
     def publish_many(self, prepared: Iterable[PreparedBlob]) -> tuple[tuple[str, int], ...]:
         """Publish a prepared batch in input order, persisting each directory once.
 
@@ -413,25 +442,35 @@ class BlobStore:
         hash prefix paid one directory fsync per blob for one directory's worth
         of durability (polylogue-rk0it AC5). Nothing observable is weakened: no
         caller may advance a cursor or certify retention on a partial return,
-        and a batch that raises leaves the same on-disk state the per-blob loop
-        left -- bytes in place, the directory entry not yet persisted, and the
-        retained source still the recovery authority.
+        and a batch that raises persists every directory touched before
+        propagating the failure, leaving the retained source as recovery
+        authority without relying on a future deduplicating retry.
         """
         results: list[tuple[str, int]] = []
         # Insertion-ordered distinct shards: one fsync per directory, in the
         # order the batch first touched them.
         shard_directories: dict[Path, None] = {}
         root_needs_fsync = False
-        for item in prepared:
-            outcome, shard_directory, shard_created = self._place_prepared(item)
-            results.append(outcome)
-            if shard_directory is not None:
-                shard_directories[shard_directory] = None
-            root_needs_fsync = root_needs_fsync or shard_created
-        for shard_directory in shard_directories:
-            self._fsync_directory(shard_directory)
-        if root_needs_fsync:
-            self._fsync_directory(self.root)
+        try:
+            for item in prepared:
+                outcome, shard_directory, shard_created = self._place_prepared(item)
+                results.append(outcome)
+                if shard_directory is not None:
+                    shard_directories[shard_directory] = None
+                root_needs_fsync = root_needs_fsync or shard_created
+            for shard_directory in shard_directories:
+                self._fsync_directory(shard_directory)
+            if root_needs_fsync:
+                self._fsync_directory(self.root)
+        except BaseException:
+            # Earlier renames are already visible. Persist their names before
+            # returning the error, or a retry could deduplicate them and lose
+            # the only opportunity to make those names durable.
+            for shard_directory in shard_directories:
+                self._fsync_directory(shard_directory)
+            if root_needs_fsync:
+                self._fsync_directory(self.root)
+            raise
         return tuple(results)
 
     def discard_prepared(self, prepared: PreparedBlob) -> None:
@@ -475,6 +514,23 @@ class BlobStore:
         finally:
             self.discard_prepared(prepared)
 
+    def write_from_writer(
+        self,
+        write: Callable[[IO[bytes]], None],
+        *,
+        heartbeat: Heartbeat | None = None,
+    ) -> tuple[str, int]:
+        """Publish the bytes a producer writes, staged once on disk.
+
+        Unlike exporting to a work file and then ``write_from_path``, no
+        second full-size staging copy ever coexists with the first.
+        """
+        prepared = self.prepare_from_writer(write, heartbeat=heartbeat)
+        try:
+            return self.publish_prepared(prepared)
+        finally:
+            self.discard_prepared(prepared)
+
     def write_from_bytes(self, data: bytes) -> tuple[str, int]:
         """Hash in-memory bytes and write to the store.
 
@@ -509,14 +565,20 @@ class BlobStore:
     # Integrity
     # ------------------------------------------------------------------
 
-    def verify(self, hash_hex: str) -> bool:
-        """Re-hash the blob on disk and verify it matches the expected hash."""
+    def verify(self, hash_hex: str, *, stop: Callable[[], bool] | None = None) -> bool:
+        """Re-hash the blob on disk and verify it matches the expected hash.
+
+        ``stop`` is polled between chunks; when it returns true the scan
+        raises ``BlobVerificationCancelledError`` instead of answering.
+        """
         path = self.blob_path(hash_hex)
         if not path.exists():
             return False
         hasher = hashlib.sha256()
         with builtins_open(path, "rb") as f:
             while True:
+                if stop is not None and stop():
+                    raise BlobVerificationCancelledError(hash_hex)
                 chunk = f.read(_CHUNK_SIZE)
                 if not chunk:
                     break

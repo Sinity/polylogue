@@ -28,10 +28,10 @@ def _envelope(
 
 
 def test_archive_messages_payload_carries_lineage_completeness() -> None:
-    truncated = _envelope(lineage_complete=False, lineage_truncation_reason="depth_limit")
+    truncated = _envelope(lineage_complete=False, lineage_truncation_reason="cycle")
     payload = archive_messages_payload(truncated, limit=50, offset=0)
     assert payload.lineage_complete is False
-    assert payload.lineage_truncation_reason == "depth_limit"
+    assert payload.lineage_truncation_reason == "cycle"
 
     complete = _envelope(lineage_complete=True, lineage_truncation_reason=None)
     payload = archive_messages_payload(complete, limit=50, offset=0)

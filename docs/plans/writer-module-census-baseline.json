@@ -13,6 +13,11 @@
     ]
   },
   {
+    "file": "polylogue/api/archive.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/archive/session_revision_membership.py",
     "tiers": [],
     "authority": "scratch"
@@ -32,6 +37,11 @@
     "tiers": [
       "ops"
     ]
+  },
+  {
+    "file": "polylogue/core/content_identity.py",
+    "tiers": [],
+    "authority": "scratch"
   },
   {
     "file": "polylogue/daemon/cursor_lag_baseline.py",
@@ -75,15 +85,15 @@
     ]
   },
   {
+    "file": "polylogue/operations/daemon_ingest.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
     "file": "polylogue/operations/facade_writers.py",
     "tiers": [
       "index"
     ]
-  },
-  {
-    "file": "polylogue/operations/daemon_ingest.py",
-    "tiers": [],
-    "authority": "scratch"
   },
   {
     "file": "polylogue/operations/ingest_inputs.py",
@@ -182,6 +192,16 @@
   },
   {
     "file": "polylogue/sources/parsers/codex.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/drive.py",
+    "tiers": [],
+    "authority": "scratch"
+  },
+  {
+    "file": "polylogue/sources/parsers/otel_genai.py",
     "tiers": [],
     "authority": "scratch"
   },

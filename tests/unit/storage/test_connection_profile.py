@@ -12,6 +12,7 @@ from polylogue.core.errors import SchemaSkew
 from polylogue.storage.sqlite import connection_profile
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.schema_bootstrap import stamp_derived_schema_identity
 
 
 def _declared_profile(name: str) -> connection_profile.SQLiteConnectionProfile:
@@ -323,8 +324,12 @@ def test_index_write_profiles_refuse_stale_sibling_before_attach(
 ) -> None:
     root = tmp_path
     index_path = root / "index.db"
-    with sqlite3.connect(index_path) as connection:
+    with closing(sqlite3.connect(index_path)) as connection:
         connection.execute(f"PRAGMA user_version = {ARCHIVE_VERSION_BY_TIER[ArchiveTier.INDEX]}")
+        # The index itself must be current, identity included, or its own
+        # derived-identity check refuses first and no sibling is consulted.
+        stamp_derived_schema_identity(connection, ArchiveTier.INDEX.value)
+        connection.commit()
     sibling_path = root / f"{sibling_tier.value}.db"
     # A version this runtime cannot serve in either direction. Stepping one
     # below the expected version collapses onto 0 for a version-1 tier, which
@@ -445,3 +450,18 @@ def test_explicit_read_timeout_bounds_the_lock_wait_even_at_the_default_value(tm
     assert busy_ms(timeout_class="background-read") == 30_000
     assert busy_ms(timeout_class="background-read", timeout=5.0) == 5_000
     assert busy_ms(timeout=0.2) == 200
+
+
+@pytest.mark.parametrize("factory", [connection_profile.open_connection, connection_profile.open_daemon_connection])
+@pytest.mark.parametrize("tier", [ArchiveTier.USER, ArchiveTier.SOURCE, ArchiveTier.EMBEDDINGS])
+def test_writers_refuse_an_uninitialized_durable_tier(
+    tmp_path: Path, factory: Callable[..., sqlite3.Connection], tier: ArchiveTier
+) -> None:
+    """The former shared read exemption returned a writable zero-schema handle."""
+    path = tmp_path / f"{tier.value}.db"
+    path.touch()
+    with pytest.raises(SchemaSkew) as raised:
+        with factory(path):
+            pass
+    assert raised.value.tier == tier.value
+    assert raised.value.found == 0

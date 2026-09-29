@@ -18,7 +18,7 @@ import {
   runningPollDelayMs,
   scheduleFreshnessHint,
 } from "../capture/freshness.js";
-import { clampProviderCooldownMs } from "../capture/provider_cooldown.js";
+import { MAX_PROVIDER_COOLDOWN_MS, clampProviderCooldownMs } from "../capture/provider_cooldown.js";
 import { BACKGROUND_ALARMS } from "./adapters.js";
 import { registerBackgroundEvents } from "./events.js";
 
@@ -50,6 +50,8 @@ const CAPTURE_LOG_LIMIT = 80;
 const DEBUG_LOG_LIMIT = 160;
 const CONVERSATION_TIMELINE_KEY = "polylogueConversationTimeline";
 const ACCEPTED_MESSAGE_IDENTITIES_KEY = "polylogueAcceptedMessageIdentities";
+// Version 2 keys each session's accepted identities by message ref.
+const ACCEPTED_MESSAGE_IDENTITIES_VERSION_KEY = "polylogueAcceptedMessageIdentitiesVersion";
 const CONVERSATION_TIMELINE_EVENT_LIMIT = 24;
 const BACKFILL_RECOVERY_CHECKPOINT_KEY = "polylogueBackfillRecoveryCheckpoint";
 const BACKFILL_WORKER_EPOCH = globalThis.crypto?.randomUUID?.() || `worker-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -86,6 +88,21 @@ function serializeStorageMutation(mutation) {
   const result = storageMutationQueue.then(mutation, mutation);
   storageMutationQueue = result.then(() => undefined, () => undefined);
   return result;
+}
+
+function replaceLegacyAcceptedMessageIdentities() {
+  // The accepted-identity cache is derived from receiver responses. A cache
+  // written in the version 1 scalar shape is dropped rather than read; the
+  // capture the extension runs on install or update rewrites it keyed by
+  // message ref.
+  return serializeStorageMutation(async () => {
+    const current = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_VERSION_KEY]: 1 });
+    if (Number(current[ACCEPTED_MESSAGE_IDENTITIES_VERSION_KEY]) >= 2) return;
+    await runtimeChrome.storage.local.set({
+      [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {},
+      [ACCEPTED_MESSAGE_IDENTITIES_VERSION_KEY]: 2,
+    });
+  });
 }
 
 function serializeCaptureQueueMutation(mutation) {
@@ -183,7 +200,13 @@ async function commitCaptureJobsToReceiver(instanceId, checkpoint) {
       await client.checkpoint(adopted, payload);
       return null;
     } catch (error) {
-      return { job_id: job.id, error: String(error?.message || error) };
+      return {
+        job_id: job.id,
+        error: String(error?.message || error),
+        outcome: error?.outcome || null,
+        retry_after_ms: Number.isFinite(error?.retryAfterMs) ? error.retryAfterMs : null,
+        retry_until_ms: Number.isFinite(error?.retryUntilMs) ? error.retryUntilMs : null,
+      };
     }
   }));
   return { failures: results.filter(Boolean) };
@@ -810,7 +833,9 @@ async function clearRetryAlarm() {
 
 function isRetryableCaptureError(error) {
   if (!error) return false;
-  if (typeof error.status === "number") return error.status >= 500 || error.status === 429;
+  // 408: the receiver cancelled an upload that stopped sending, releasing the
+  // disk space it had reserved; the capture itself was never refused.
+  if (typeof error.status === "number") return error.status >= 500 || error.status === 429 || error.status === 408;
   // No HTTP status means fetch itself rejected (offline, DNS failure, refused
   // connection, CORS) rather than the receiver answering with an error body.
   return true;
@@ -1606,6 +1631,7 @@ async function missionIntelligenceProjection(state, configuredUrl) {
   });
   if (state?.error === "unauthorized") return unavailable("unauthorized", "receiver_authorization_required");
   if (state?.online === false) return unavailable("offline", "receiver_unavailable");
+  if (state?.archive_state?.state === "failed") return unavailable("failed", state.archive_state.reason || state.archive_state.error || "archive_ingest_failed");
   if (!indexedSessionId) return unavailable("uncaptured", "canonical_session_not_indexed");
 
   const encodedProvider = encodeURIComponent(state.provider || "");
@@ -1617,11 +1643,19 @@ async function missionIntelligenceProjection(state, configuredUrl) {
       MISSION_INTELLIGENCE_TIMEOUT_MS,
     );
   } catch (error) {
-    return unavailable(error?.status === 401 ? "unauthorized" : "offline", error?.message || "projection_unavailable");
+    const status = error?.status === 401 ? "unauthorized" : error?.status === 404 ? "incompatible" : error?.status ? "receiver_error" : "offline";
+    return unavailable(status, error?.message || "projection_unavailable");
   }
+  const archiveUrl = new URL(base);
+  // The receiver (8765) does not serve archive pages. The daemon's canonical
+  // reader is the separate web endpoint (8766) and uses /s/:session_id.
+  if (archiveUrl.port === "8765") archiveUrl.port = "8766";
+  archiveUrl.pathname = `/s/${encodeURIComponent(indexedSessionId)}`;
+  archiveUrl.search = "";
+  archiveUrl.hash = "";
   return {
     ...projection,
-    archive: { ...projection.archive, url: `${base}/?q=${encodeURIComponent(indexedSessionId)}` },
+    archive: { ...projection.archive, url: archiveUrl.toString() },
     cost: {
       ...(projection.cost || {}),
       status: projection.cost?.status === "unavailable" ? "unknown" : (projection.cost?.status || "unknown"),
@@ -1841,14 +1875,39 @@ function providerTab(provider, { allowCreate = false } = {}) {
   return tracked;
 }
 
+// A provider-controlled Retry-After can parse to Infinity or NaN. Only a
+// finite positive number of seconds is a usable delay; anything else falls
+// back to the default rate-limit delay rather than an unbounded deadline.
+// A finite but huge value (1e307) still overflows once converted to
+// milliseconds, so seconds are bounded by the cooldown ceiling here, before
+// any conversion.
+function finiteRetryAfterSeconds(value) {
+  const seconds = Number(value);
+  if (!Number.isFinite(seconds) || seconds <= 0) return null;
+  return Math.min(seconds, MAX_PROVIDER_COOLDOWN_MS / 1000);
+}
+
 function withProviderTransportOperation(provider, operation, { checkThrottle = true } = {}) {
   const prior = providerTransportOperations.get(provider) || Promise.resolve();
   const result = prior.catch(() => undefined).then(async () => {
     if (checkThrottle) await requireProviderThrottleAvailability(provider);
     try {
-      return await operation();
+      const value = await operation();
+      // Some operations report a provider refusal as a resolved failure
+      // result rather than a throw; a rate limit there must still set the
+      // shared cooldown, or the next request contacts the provider during
+      // its advertised Retry-After. A 429 without a Retry-After header is
+      // still a rate limit; the recorder supplies the default delay.
+      if (value && value.ok === false) {
+        const refusal = new Error(value.detail || "browser_action_failed");
+        if (value.outcome) refusal.outcome = value.outcome;
+        refusal.retryAfterSeconds = finiteRetryAfterSeconds(value.retry_after_seconds);
+        const classified = classifyBrowserActionFailure(refusal, refusal.retryAfterSeconds);
+        if (classified.outcome === "rate_limited") await recordProviderThrottle(provider, refusal, classified);
+      }
+      return value;
     } catch (error) {
-      const classified = classifyBrowserActionFailure(error, error?.retryAfterSeconds || null);
+      const classified = classifyBrowserActionFailure(error, finiteRetryAfterSeconds(error?.retryAfterSeconds));
       if (classified.outcome === "rate_limited" && !error?.providerThrottleApplied) {
         await recordProviderThrottle(provider, error, classified);
       }
@@ -1865,6 +1924,7 @@ function withProviderTransportOperation(provider, operation, { checkThrottle = t
 function providerThrottleError(deadline, nowMs) {
   const error = new Error("provider_rate_limited");
   error.outcome = "rate_limited";
+  error.retryUntilMs = deadline;
   error.retryAfterMs = Math.max(0, deadline - nowMs);
   error.retryAfterSeconds = Math.ceil(error.retryAfterMs / 1000);
   error.providerThrottleApplied = true;
@@ -2030,7 +2090,7 @@ async function providerAccountHandle(provider) {
       }
       throw error;
     }
-  }, { checkThrottle: false });
+  });
 }
 
 async function cleanupBackfillTransportTab(alarmName) {
@@ -2851,6 +2911,12 @@ function conversationIdForUrl(url) {
     if (provider === "claude-ai") {
       return parts[0] === "chat" && parts[1] ? parts[1] : null;
     }
+    if (provider === "gemini") {
+      // Mirror src/content/gemini.js:conversationIdFromUrl exactly, so a
+      // Gemini freshness hint routed through captureTab reaches the content script.
+      return parsed.searchParams.get("conversation") || parsed.searchParams.get("id") ||
+        parsed.pathname.match(/\/app\/([A-Za-z0-9_-]+)/)?.[1] || null;
+    }
     if (provider === "grok") {
       // grok.com's own conversation URLs are /c/<uuid> (verified live,
       // 2026-07-31, same convention as ChatGPT/Claude above). The /chat/
@@ -3108,7 +3174,7 @@ function stateSnapshotForTab(tab, globalState, ledger, pairing, health) {
   };
 }
 
-async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
+async function missionControlSnapshot(tab = null, { refresh = true, includeIntelligence = false } = {}) {
   const resolvedTab = tab || (runtimeChrome.tabs?.query
     ? (await runtimeChrome.tabs.query({ active: true, currentWindow: true }))[0]
     : null);
@@ -3160,10 +3226,22 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
     ? stored[CONVERSATION_TIMELINE_KEY]?.[timelineKey] || []
     : [];
   const settings = await receiverSettings();
-  const intelligence = await missionIntelligenceProjection(state, settings.baseUrl);
-  const acceptedIdentityMap = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
-  const acceptedIdentity = state.provider && state.provider_session_id
-    ? acceptedIdentityMap[ACCEPTED_MESSAGE_IDENTITIES_KEY]?.[sessionKey(state.provider, state.provider_session_id)] || null
+  const intelligence = includeIntelligence ? await missionIntelligenceProjection(state, settings.baseUrl) : null;
+  let assertionCapability = false;
+  if (includeIntelligence && receiverOnline) {
+    try {
+      const capabilities = await getJson("/v1/browser-captures/capabilities", PROVIDER_REQUEST_TIMEOUT_MS);
+      // Only the declared top-level field is authoritative; any other shape
+      // fails closed and leaves Save unavailable.
+      assertionCapability = capabilities?.assertion_candidates === true;
+    } catch { /* An unreachable capability probe fails closed. */ }
+  }
+  // Queued behind the startup migration and any capture's identity write.
+  const acceptedIdentityMap = await serializeStorageMutation(
+    () => runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} }),
+  );
+  const acceptedIdentities = state.provider && state.provider_session_id
+    ? acceptedIdentityMap[ACCEPTED_MESSAGE_IDENTITIES_KEY]?.[sessionKey(state.provider, state.provider_session_id)] || {}
     : null;
 
   return {
@@ -3195,11 +3273,11 @@ async function missionControlSnapshot(tab = null, { refresh = true } = {}) {
     ambient,
     assertions: {
       selection_candidate_supported: true,
-      persistence_supported: true,
-      accepted_identity: acceptedIdentity,
-      reason: "candidate_assertion_route",
+      persistence_supported: assertionCapability,
+      accepted_identities: acceptedIdentities,
+      reason: assertionCapability ? "candidate_assertion_route" : "receiver_capability_unavailable",
     },
-    intelligence,
+    ...(includeIntelligence ? { intelligence } : {}),
   };
 }
 
@@ -3225,6 +3303,7 @@ export function startBackgroundRuntime(adapters) {
   runtimeChrome = adapters;
   runtimeNetwork = adapters.network;
 void loadCaptureQueueIntoCache();
+void replaceLegacyAcceptedMessageIdentities();
 void ensureBrowserActionAlarm();
 void ensureCaptureFreshnessAlarms();
 
@@ -3258,7 +3337,7 @@ void ensureCaptureFreshnessAlarms();
 runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     if (message.type === "polylogue.missionControl.status") {
-      sendResponse(await missionControlSnapshot(sender.tab || null, { refresh: message.refresh !== false }));
+      sendResponse(await missionControlSnapshot(sender.tab || null, { refresh: message.refresh !== false, includeIntelligence: message.include_intelligence === true }));
       return;
     }
     if (message.type === "polylogue.providerThrottle") {
@@ -3384,11 +3463,17 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (sender.tab) await requirePairedTrustedReceiver();
         result = await postJson("/v1/browser-captures", envelope);
         if (Array.isArray(result?.accepted_identities)) {
-          const current = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
           const key = sessionKey(summary.provider, summary.providerSessionId);
-          const native = result.accepted_identities.find((item) => item?.fidelity === "native") || null;
-          await runtimeChrome.storage.local.set({
-            [ACCEPTED_MESSAGE_IDENTITIES_KEY]: { ...current[ACCEPTED_MESSAGE_IDENTITIES_KEY], [key]: native },
+          const identities = Object.fromEntries(
+            result.accepted_identities
+              .filter((item) => item?.fidelity === "native" && typeof item?.message_ref === "string" && item.message_ref)
+              .map((item) => [item.message_ref, item]),
+          );
+          await serializeStorageMutation(async () => {
+            const current = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
+            await runtimeChrome.storage.local.set({
+              [ACCEPTED_MESSAGE_IDENTITIES_KEY]: { ...current[ACCEPTED_MESSAGE_IDENTITIES_KEY], [key]: identities },
+            });
           });
         }
       } catch (error) {
@@ -3519,6 +3604,16 @@ runtimeChrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           || (senderSessionId && senderSessionId !== TEMPORARY_CHAT_SENTINEL && nativeId !== senderSessionId))
       ) {
         throw new Error("freshness_hint_sender_identity_mismatch");
+      }
+      if (provider !== "chatgpt" && sender.tab) {
+        // The freshness queue only knows how to refetch ChatGPT. Other
+        // providers recapture their own tab through captureTab, which applies
+        // the same automatic-capture policy and receiver pairing checks.
+        const capture = await captureTab(sender.tab, message.reason || "provider_page_hint");
+        // captureTab returns null when it never reached the content script
+        // (no session identity, paused policy, unpaired receiver); say so.
+        sendResponse(capture ? { ok: true, scheduled: false, capture } : { ok: false, scheduled: false, error: "capture_not_started" });
+        return;
       }
       sendResponse({
         ok: true,

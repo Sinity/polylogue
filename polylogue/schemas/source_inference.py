@@ -36,7 +36,11 @@ from polylogue.core.json import JSONDecodeError, JSONDocument, JSONValue, is_jso
 from polylogue.core.schema_subjects import inference_exclusion_reason, subject_admits_member
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.schemas.generation.evidence import SchemaEvidence
-from polylogue.schemas.observation import extract_schema_units_from_payload, resolve_provider_config
+from polylogue.schemas.observation import (
+    declared_structured_observation_config,
+    extract_schema_units_from_payload,
+    resolve_provider_config,
+)
 from polylogue.schemas.source_cache import CachedContribution, SourceContributionCache
 from polylogue.schemas.source_document_identity import DOCUMENT_UPDATE_FIELDS, native_document_identity
 from polylogue.schemas.source_recipe import (
@@ -637,6 +641,13 @@ def _preflight_terminal(candidate: _SourceCandidate) -> SourceTerminal | None:
         return SourceTerminal("unsupported", byte_count, reason="antigravity_protobuf_adapter_unavailable")
     if provider is Provider.ANTIGRAVITY and candidate.path.suffix.lower() == ".md":
         return SourceTerminal("intentionally_excluded", byte_count, reason="antigravity_markdown_sidecar")
+    if candidate.path.suffix.lower() in {".db", ".sqlite", ".sqlite3"} or looks_like_logical_export_path(
+        candidate.path
+    ):
+        binding = _declared_database_binding(candidate.path)
+        if binding is None or binding.member.disposition == "out-of-scope":
+            return SourceTerminal("unsupported", byte_count, reason="sqlite_value_inference_not_supported")
+        return None
     recognition = recognize_source_class(provider, candidate.path)
     if recognition is not None and recognition.source_class != "session":
         # Fact artifacts are structured, declared non-session inputs.  They
@@ -658,15 +669,6 @@ def _preflight_terminal(candidate: _SourceCandidate) -> SourceTerminal | None:
             byte_count,
             reason=f"source_class_{recognition.source_class}",
         )
-    if candidate.path.suffix.lower() in {".db", ".sqlite", ".sqlite3"} or looks_like_logical_export_path(
-        candidate.path
-    ):
-        # Declared database members have a format-specific schema adapter
-        # (logical table/column observation below).  Unknown members retain
-        # the previous explicit unsupported outcome.
-        binding = _declared_database_binding(candidate.path)
-        if binding is None or binding.member.disposition == "out-of-scope":
-            return SourceTerminal("unsupported", byte_count, reason="sqlite_value_inference_not_supported")
     return None
 
 
@@ -959,6 +961,7 @@ def _collect_payload_evidence(
             config = replace(config, sample_granularity="record", record_type_key="type")
     payload_replay: _PayloadReplay | None = None
     admitted_artifact_kind: str | None = None
+    artifact_scoped_identity = False
     initial_source_id = f"{candidate.provider}:revision:{revision.revision_sha256}"
     if config.sample_granularity == "record":
         payload_replay = _PayloadReplay(payloads, replay_payloads=replay_payloads)
@@ -979,20 +982,12 @@ def _collect_payload_evidence(
             # an admission cohort here: each record is classified through the
             # strong path rule below, preserving the sidecar family even when
             # its values happen to resemble a transcript.
-            rule = artifact_rule_for_path(provider, str(candidate.path))
-            if rule is None or rule.observation_strategy not in {
-                "structured-records",
-                "structured-documents",
-            }:
+            structured_config = declared_structured_observation_config(provider, candidate.path, config)
+            if structured_config is None:
                 payload_replay.close()
                 return (), 0, (), False
-            # A JSON sidecar is one structured document even when its provider
-            # happens to use a record-stream config (for example Claude's
-            # sessions-index.json). Keeping the document envelope here makes
-            # additive fields observable instead of accidentally sampling only
-            # nested objects such as ``sessions[]``.
-            if rule.observation_strategy == "structured-documents" and candidate.path.suffix.lower() == ".json":
-                config = replace(config, sample_granularity="document", record_type_key=None)
+            artifact_scoped_identity = True
+            config = structured_config
         else:
             admitted_artifact_kind = artifact.cohort
         for record in payload_replay:
@@ -1121,7 +1116,8 @@ def _collect_payload_evidence(
             if declared:
                 header_source_id = declared
                 header_update = update
-            declared_source_id = hash_payload({"source": declared or header_source_id})
+            source_identity = candidate.logical_source_id if artifact_scoped_identity else declared or header_source_id
+            declared_source_id = hash_payload({"source": source_identity})
             effective_update = update if update is not None else (header_update if not declared else None)
             if spool is None:
                 prior_update = update_keys.get(declared_source_id)
@@ -1379,11 +1375,24 @@ def _collect_database_schema_candidate(
                 actual_tables | set(member.logical_tables) | {rule.table for rule in member.table_rules}
             )
             table_shapes: dict[str, JSONDocument] = {}
+            exported_columns: dict[str, list[sqlite3.Row]] = {}
+            if looks_like_logical_export_path(candidate.path):
+                header = read_export_header(candidate.path)
+                with closing(sqlite3.connect(":memory:")) as declared_schema:
+                    for kind, _name, _table_name, sql in header.schema:
+                        if kind == "table" and isinstance(sql, str):
+                            declared_schema.execute(sql)
+                    for table in actual_tables:
+                        quoted = '"' + table.replace('"', '""') + '"'
+                        exported_columns[table] = declared_schema.execute(f"PRAGMA table_info({quoted})").fetchall()
             for table in table_names:
                 quoted = '"' + table.replace('"', '""') + '"'
                 columns: list[JSONDocument] = []
                 if table in actual_tables:
-                    for row in conn.execute(f"PRAGMA table_info({quoted})").fetchall():
+                    column_rows = exported_columns.get(table)
+                    if column_rows is None:
+                        column_rows = conn.execute(f"PRAGMA table_info({quoted})").fetchall()
+                    for row in column_rows:
                         columns.append(
                             {
                                 "name": str(row[1]),

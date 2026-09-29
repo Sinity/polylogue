@@ -20,6 +20,7 @@ import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import stat
 import tempfile
 import zipfile
@@ -349,6 +350,48 @@ def _sha256_path(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _snapshot_regular_file(path: Path) -> tuple[str, int, str]:
+    """Hash one descriptor's captured prefix and return its matching identity.
+
+    A concurrent append after ``fstat`` must not pair an old size with a digest
+    read through EOF. Reading exactly the captured size gives one coherent
+    append-log prefix, even if the path grows while the descriptor is read.
+    If the file changed while it was read (its ctime moved), the prefix is
+    hashed again: an append leaves it identical, while an in-place rewrite does
+    not and is refused rather than published as one observation.
+    """
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, os.O_RDONLY)
+        info = os.fstat(descriptor)
+        first = _hash_prefix(descriptor, info.st_size, path)
+        after = os.fstat(descriptor)
+        truncated = after.st_size < info.st_size
+        changed = after.st_ctime_ns != info.st_ctime_ns
+        if truncated or (changed and _hash_prefix(descriptor, info.st_size, path) != first):
+            raise SourceSnapshotError(f"source member was rewritten while reading: {path}")
+    except OSError as exc:
+        raise SourceSnapshotError(f"source member is unreadable: {path}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    return first, info.st_size, _identity(info)
+
+
+def _hash_prefix(descriptor: int, size: int, path: Path) -> str:
+    """SHA-256 of the first ``size`` bytes of an open descriptor."""
+    digest = hashlib.sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    remaining = size
+    while remaining:
+        chunk = os.read(descriptor, min(1024 * 1024, remaining))
+        if not chunk:
+            raise SourceSnapshotError(f"source member was truncated while reading: {path}")
+        digest.update(chunk)
+        remaining -= len(chunk)
+    return digest.hexdigest()
+
+
 def _root_identity(root: Path) -> SourceRootIdentity:
     try:
         info = root.lstat()
@@ -423,8 +466,9 @@ def _observe(binding: SourceCutBinding) -> tuple[CutItem, ...]:
             # and page layout are transport observations, not source meaning.
             content_sha256 = identity
         else:
-            identity = _identity(info)
-            content_sha256 = _sha256_path(path)
+            content_sha256, captured_size, identity = _snapshot_regular_file(path)
+            result.append(CutItem(binding.source.source_id, coordinate, identity, content_sha256, captured_size))
+            continue
         result.append(CutItem(binding.source.source_id, coordinate, identity, content_sha256, info.st_size))
     return tuple(result)
 
@@ -437,13 +481,18 @@ def observe_source_members(declaration: SourceDeclaration) -> tuple[CutItem, ...
     are observed at their declared logical granularity rather than being
     reduced to one root row or a filesystem byte count.
     """
-    return _observe(
-        SourceCutBinding(
-            declaration,
-            _root_identity(declaration.root),
-            _default_policy(declaration.role),
+    try:
+        return _observe(
+            SourceCutBinding(
+                declaration,
+                _root_identity(declaration.root),
+                _default_policy(declaration.role),
+            )
         )
-    )
+    except sqlite3.DatabaseError as exc:
+        # An unreadable declared SQLite root is an unavailable source, typed
+        # at this seam rather than by each caller.
+        raise SourceSnapshotError(f"source database unreadable: {exc}") from exc
 
 
 def _try_reflink(source: Path, destination: Path) -> bool:
@@ -895,6 +944,11 @@ def execute_source_cut(preflight: SourceCutPreflight, destination: Path) -> Sour
     destination = destination.absolute()
     destination.parent.mkdir(parents=True, exist_ok=True)
     _reclaim_orphaned_staging(destination.parent, preflight.request_id)
+    if not destination.exists():
+        # A crash can land after the active spool was renamed but before the
+        # candidate directory was published. Restore the retired generation
+        # before root verification so the same preflight remains retryable.
+        _recover_markerless_spool_handoffs(preflight)
     if destination.exists():
         try:
             preflight.verify_roots(allow_handed_off_spools=True)

@@ -6,7 +6,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -15,7 +15,7 @@ from polylogue.config import Config
 from polylogue.config import active_archive_root as _active_archive_root
 from polylogue.context.compiler import ContextImage
 from polylogue.core.enums import AssertionKind, AssertionStatus
-from polylogue.core.refs import ObjectRef, normalize_object_ref_text, parse_public_ref
+from polylogue.core.refs import normalize_object_ref_text, parse_public_ref
 from polylogue.operations.archive_mutation import require_archive_write_authority as _require_archive_write_authority
 from polylogue.storage.sqlite.archive_tiers.context_delivery_write import ArchiveContextDeliveryEnvelope
 from polylogue.storage.sqlite.connection_profile import open_connection
@@ -51,7 +51,7 @@ def _archive_record_context_delivery(
         image, boundary=boundary, run_ref=run_ref, inheritance_mode=inheritance_mode
     )
     try:
-        conn = open_connection(user_db)
+        conn = open_connection(user_db, archive_root=user_db.parent)
         conn.row_factory = sqlite3.Row
         try:
             envelope = write_context_delivery(
@@ -90,7 +90,7 @@ def _archive_judge_assertion_candidate(
         raise ValueError("assertion user tier is not initialized")
     _require_archive_write_authority(config, "api.judge_assertion_candidate")
     try:
-        conn = open_connection(user_db)
+        conn = open_connection(user_db, archive_root=user_db.parent)
         conn.row_factory = sqlite3.Row
         try:
             result = judge_assertion_candidate(
@@ -124,6 +124,7 @@ def _archive_capture_assertion_candidate(
     author_kind: str = "user",
     idempotency_key: str | None = None,
     ttl_seconds: int | None = None,
+    capture_provenance: Mapping[str, object] | None = None,
 ) -> Any:
     """Write one terminal-captured assertion through the user-tier gate.
 
@@ -161,31 +162,11 @@ def _archive_capture_assertion_candidate(
             f"{normalized_author_ref}\0{normalized_idempotency_key}".encode("utf-8", errors="surrogatepass")
         ).hexdigest()
         assertion_id = f"assertion-terminal-note:{identity}"
-    resolved_refs: list[str] = []
     _require_archive_write_authority(config, "api.capture_assertion_candidate")
     with ArchiveStore.open_existing(_active_archive_root(config), read_only=False) as archive:
-        for ref in refs:
-            if ref == "last":
-                resolved_cwd = (cwd or Path.cwd()).resolve()
-                repo_root = next(
-                    (candidate for candidate in (resolved_cwd, *resolved_cwd.parents) if (candidate / ".git").exists()),
-                    resolved_cwd,
-                )
-                summaries = archive.list_summaries(cwd_prefix=str(repo_root), limit=1)
-                if not summaries:
-                    raise ValueError("--ref last found no archived session for the current repository/cwd")
-                session_ref = f"session:{summaries[0].session_id}"
-                resolved_refs.append(session_ref)
-                continue
-            parsed = ObjectRef.parse(ref)
-            if parsed.kind != "session":
-                raise ValueError("--ref must be a session:<id> ref or 'last'")
-            try:
-                session_id = archive.resolve_session_id(parsed.object_id)
-            except KeyError:
-                raise ValueError(f"session ref not found: {parsed.object_id}") from None
-            resolved_refs.append(f"session:{session_id}")
+        from polylogue.operations.mutation_actuators import resolve_assertion_candidate_refs
 
+        resolved_refs = resolve_assertion_candidate_refs(archive, refs, cwd=cwd)
         normalized_scope_refs = [parse_public_ref(ref).format() for ref in scope_refs]
         target_ref = resolved_refs[0] if resolved_refs else f"assertion:{assertion_id}"
         user_db = archive.user_db_path
@@ -210,7 +191,7 @@ def _archive_capture_assertion_candidate(
 
     try:
         _require_archive_write_authority(config, "api.capture_assertion_candidate")
-        conn = open_connection(user_db)
+        conn = open_connection(user_db, archive_root=user_db.parent)
         conn.row_factory = sqlite3.Row
         try:
             # The key lookup and first write share one reservation. Without
@@ -252,9 +233,10 @@ def _archive_capture_assertion_candidate(
                 kind=kind,
                 key="terminal-note",
                 value={
-                    "capture_surface": "terminal",
+                    "capture_surface": "browser" if capture_provenance is not None else "terminal",
                     "scope_refs": normalized_scope_refs,
                     "unanchored": not bool(resolved_refs),
+                    **({"source_observation": dict(capture_provenance)} if capture_provenance is not None else {}),
                 },
                 body_text=normalized_body,
                 author_ref=normalized_author_ref,
@@ -287,7 +269,7 @@ def _archive_judge_assertion_candidates(
         raise ValueError("assertion user tier is not initialized")
     _require_archive_write_authority(config, "api.judge_assertion_candidates")
     try:
-        conn = open_connection(user_db)
+        conn = open_connection(user_db, archive_root=user_db.parent)
         conn.row_factory = sqlite3.Row
         try:
             result = judge_assertion_candidates(conn, items)
@@ -322,7 +304,7 @@ def _archive_record_comparative_judgment(
     _require_archive_write_authority(config, "api.record_comparative_judgment")
     initialize_archive_database(user_db, ArchiveTier.USER)
     try:
-        conn = open_connection(user_db)
+        conn = open_connection(user_db, archive_root=user_db.parent)
         conn.row_factory = sqlite3.Row
         try:
             envelope = upsert_comparative_judgment_assertion(conn, judgment, author_kind=author_kind)
@@ -343,12 +325,20 @@ def record_manual_continuation_product(config: Config, child_session_id: str, pa
     root = _active_archive_root(config)
     _require_archive_write_authority(config, "api.record_manual_continuation")
     now_ms = int(datetime.now(UTC).timestamp() * 1000)
-    index = open_connection(root / "index.db")
+    index = open_connection(root / "index.db", archive_root=root)
     try:
         if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (child,)).fetchone() is None:
             raise ValueError("manual continuation child session does not exist")
         if index.execute("SELECT 1 FROM sessions WHERE session_id = ?", (parent,)).fetchone() is None:
             raise ValueError("manual continuation parent session does not exist")
+        from polylogue.storage.sqlite.archive_tiers.write import _resolve_session_graph, _would_create_cycle
+
+        # The edge is written already resolved, and the resolver's cycle guard
+        # only examines unresolved inbound edges, so validate it here before any
+        # projection refresh can publish a cyclic parent chain.
+        cycle_walk = _would_create_cycle(index, child_id=child, proposed_parent_id=parent)
+        if cycle_walk.outcome != "acyclic":
+            raise ValueError(f"manual continuation refused ({cycle_walk.outcome}): {' -> '.join(cycle_walk.path)}")
         index.execute(
             # ``status`` is an exceptional marker (``TopologyEdgeStatus``:
             # repaired / quarantined / authority-contradicted), not the
@@ -363,11 +353,8 @@ def record_manual_continuation_product(config: Config, child_session_id: str, pa
                        'manual-continuation', 1.0, '[]', ?)""",
             (child, parent_origin, parent_native, parent, now_ms),
         )
-        # Reuse the canonical cycle and topology projection pass so the edge
-        # cannot be accepted by this facade while its read accelerators remain
-        # stale. Unsafe cycles are quarantined by that writer.
-        from polylogue.storage.sqlite.archive_tiers.write import _resolve_session_graph
-
+        # Reuse the canonical topology projection pass so the accepted edge's
+        # read accelerators are refreshed in the same transaction.
         child_origin, child_native = child.split(":", 1)
         _resolve_session_graph(index, child, child_native, child_origin)
         index.commit()
@@ -376,7 +363,7 @@ def record_manual_continuation_product(config: Config, child_session_id: str, pa
 
     from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
 
-    user = open_connection(root / "user.db")
+    user = open_connection(root / "user.db", archive_root=root)
     try:
         upsert_assertion(
             user,
@@ -410,7 +397,7 @@ def record_context_ledger_product(config: Config, admission: Any, *, observed_at
     _require_archive_write_authority(config, "api.context_injection_ledger")
     if not ops_db.exists():
         initialize_archive_database(ops_db, ArchiveTier.OPS)
-    ops_conn = open_connection(ops_db)
+    ops_conn = open_connection(ops_db, archive_root=ops_db.parent)
     try:
         record_context_ledger(ops_conn, admission, observed_at_ms=observed_at_ms)
     finally:

@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import functools
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from time import time
 from typing import Any, cast
 
-from polylogue.operations.audit import AuditRepository, MachineRequestBinding
+from polylogue.operations.audit import (
+    MACHINE_PAGE_KINDS,
+    MACHINE_PAGE_PARTS,
+    AuditRepository,
+    MachineRequestBinding,
+    machine_pages_kind,
+)
 from polylogue.operations.bindings import OperationBinding, runtime_operation_binding
 from polylogue.operations.daemon_protocol import DaemonOperationRequest
 from polylogue.operations.delete_authorization import _canonical_session_ids
@@ -23,12 +31,24 @@ from polylogue.operations.mutation_actuators import (
 )
 from polylogue.operations.mutation_transaction import (
     MAX_MUTATION_PLAN_TARGETS,
+    ConfirmationRequiredError,
     MutationPreview,
     OperationExecutor,
     compute_parameter_digest,
 )
 from polylogue.operations.operation_context import OperationContext, OperationControlRead, PinnedOperationRead
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+_CONFIRMATION_REQUIRED_OPERATIONS = frozenset(
+    {
+        "mutation.session.excision",
+        "mutation.session.lifecycle-request",
+        "mutation.identity-reset",
+        "mutation.raw-authority-blocker.resolve",
+        "maintenance.reset",
+        "maintenance.blob-publications.abandon",
+    }
+)
 
 
 def _execute_named_mutation(
@@ -42,6 +62,12 @@ def _execute_named_mutation(
     """Run one legacy domain actuator under the daemon's write authority."""
     assert context.runtime is not None
     binding = runtime_operation_binding(actuator)
+    if (
+        request.operation in _CONFIRMATION_REQUIRED_OPERATIONS
+        and binding.actuator.required_confirmation != "role_only"
+        and request.payload.get("confirm") is not True
+    ):
+        raise ConfirmationRequiredError(f"{request.operation} requires explicit confirmation")
     executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
     preview = executor.prepare_bound_for_archive(binding, args, context.principal, archive_root=context.archive_root)
     authorization = executor.authorize_bound(binding, preview, context.principal, confirmation_strength="bound_token")
@@ -152,6 +178,14 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
             raise ValueError("reset is unsafe for a managed active generation")
         names = [("index database", "index.db")] if flags["index"] else []
         if flags["database"]:
+            if bool(payload.get("include_source_db", False)):
+                from polylogue.operations.reset_safety import unresolvable_raw_source_count
+
+                at_risk = unresolvable_raw_source_count(root)
+                if at_risk:
+                    raise ValueError(
+                        f"refusing to delete source.db: {at_risk} raw row(s) reference source paths that no longer exist"
+                    )
             # ``embeddings.db`` is absent deliberately: bootstrap classifies it
             # ``expensive_rebuild`` because nothing replays its vectors from
             # source.db -- they are re-purchased from the embedding provider.
@@ -178,6 +212,10 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
         path = root / "user.db"
         if path.exists():
             targets.append(("user database", path))
+        for suffix in ("-wal", "-shm"):
+            sidecar = path.with_name(f"{path.name}{suffix}")
+            if sidecar.exists():
+                targets.append((f"user database {suffix}", sidecar))
     if flags["blob"]:
         path = blob_store_root()
         if path.exists():
@@ -202,6 +240,14 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
         path = state_home() / "last-source.json"
         if path.exists():
             targets.append(("last-source state", path))
+    expected = payload.get("expected_targets")
+    if expected is not None:
+        if not isinstance(expected, list) or any(not isinstance(path, str) for path in expected):
+            raise ValueError("reset expected_targets must be a list of absolute paths")
+        resolved_expected = tuple(sorted(str(Path(path).resolve()) for path in expected))
+        resolved_actual = tuple(sorted(str(path.resolve()) for _name, path in targets))
+        if resolved_expected != resolved_actual:
+            raise ValueError("reset targets changed since confirmation; preview the targets again")
     return targets
 
 
@@ -488,6 +534,8 @@ def _previews(
     snapshot: PinnedOperationRead,
     operation: OperationBinding[Any, object],
     args: tuple[object, ...],
+    *,
+    expires_at_ms: int | None = None,
 ) -> tuple[MutationPreview, ...]:
     executor = OperationExecutor()
     instance = audit.ensure_archive_authority(now_ms=int(time() * 1000))
@@ -503,9 +551,70 @@ def _previews(
                 archive_identity_digest=snapshot.identity.authority_identity_digest,
                 parameter_digest=compute_parameter_digest(raw_plan),
                 raw_plan=raw_plan,
+                expires_at_ms=expires_at_ms,
             )
         )
     return tuple(previews)
+
+
+#: The delete preview's request budget (its operation deadline) and a
+#: preview's lifetime once prepared (``OperationExecutor.prepare_bound``).
+_DELETE_PREVIEW_BUDGET_MS = 300_000
+_PREVIEW_LIFETIME_MS = 60_000
+
+
+def _accepted_pages(audit: AuditRepository, binding: MachineRequestBinding, kind: str) -> int | None:
+    """Parts a paged request already accepted: ``None`` when it is complete."""
+    prior = audit.machine_request(binding)
+    if prior is None:
+        return 0
+    if prior["artifact_kind"] == machine_pages_kind(kind):
+        if prior.get("stop_reason"):
+            # Startup fenced a request its dead daemon left half-accepted.
+            raise ValueError(f"{binding.operation_name} was interrupted before it was fully accepted; submit it again")
+        return _audit_int(prior["part_count"], field="part count")
+    return None
+
+
+@contextmanager
+def _fenced_on_failure(audit: AuditRepository, binding: MachineRequestBinding) -> Iterator[None]:
+    """Stop a staged request whose later page fails, so it reads terminal."""
+    try:
+        yield
+    except Exception:
+        record = audit.machine_request(binding)
+        if record is not None and record["artifact_kind"] in MACHINE_PAGE_KINDS and not record.get("stop_reason"):
+            audit.stop_machine_batch(binding, "refused")
+        raise
+
+
+def _page_bounds(
+    total: int,
+    start: int,
+    *,
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    binding: MachineRequestBinding,
+) -> Iterator[tuple[int, int, bool]]:
+    """``(offset, end, final)`` for each page of ``total`` parts from ``start``.
+
+    Between pages, a cancellation fences the staged request, so it reads
+    cancelled instead of every remaining page being accepted regardless. The
+    request deadline does not: a durably accepted batch that is still
+    progressing is finished, not failed and restarted, and its authority is
+    judged by its progress (``AuditRepository.handshake_as_of_ms``).
+    """
+    for offset in range(start, total, MACHINE_PAGE_PARTS):
+        if offset > 0 and context.runtime is not None:
+            stop = context.runtime.stop_reason(request)
+            if stop == "cancelled":
+                audit.stop_machine_batch(binding, stop)
+                from polylogue.archive.query.execution_control import QueryCancelledError
+
+                raise QueryCancelledError(f"{binding.operation_name} stopped after {offset} parts: {stop}")
+        end = min(offset + MACHINE_PAGE_PARTS, total)
+        yield offset, end, end == total
 
 
 def mutation_session_delete_preview(
@@ -515,30 +624,31 @@ def mutation_session_delete_preview(
     snapshot: PinnedOperationRead,
 ) -> dict[str, object]:
     binding = _binding(request, context, snapshot)
-    prior = audit.machine_request(binding)
-    if prior is not None:
-        refs = tuple(str(part["artifact_ref"]) for part in audit.machine_parts(binding))
-        previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs)
-        ids = tuple(target.ref.removeprefix("session:") for preview in previews for target in preview.plan.targets)
-    else:
+    accepted = _accepted_pages(audit, binding, "preview-batch")
+    if accepted is not None:
+        # Accepted durably at its first page and extended page by page, so a
+        # selection of any size is prepared and a restart resumes it.
         ids = _canonical_session_ids(snapshot.archive, tuple(cast(list[str], request.payload["session_ids"])))
         operation = runtime_operation_binding(SessionDeleteActuator())
-        args = tuple(
-            SessionDeleteArgs(snapshot.archive, ids[offset : offset + MAX_MUTATION_PLAN_TARGETS])
-            for offset in range(0, len(ids), MAX_MUTATION_PLAN_TARGETS)
-        )
-        previews = _previews(request, context, audit, snapshot, operation, args)
-        with audit.bind_machine_request(binding, transition="create_preview_batch"):
-            refs = tuple(audit.create_preview_batch(tuple(preview.plan for preview in previews), context.principal))
-    return {
-        "status": "prepared",
-        "operation": "delete",
-        "preview_ref": refs[0],
-        "preview_refs": list(refs),
-        "session_ids": list(ids),
-        "session_count": len(ids),
-        "expires_at_ms": min(preview.plan.expires_at_ms for preview in previews),
-    }
+        chunks = [
+            ids[offset : offset + MAX_MUTATION_PLAN_TARGETS] for offset in range(0, len(ids), MAX_MUTATION_PLAN_TARGETS)
+        ]
+        # Every page expires together, a full preview lifetime after the
+        # request's own budget from its durable acceptance, so no page lapses
+        # while the same request is still preparing later ones.
+        staged = audit.machine_request(binding)
+        accepted_at_ms = int(cast(int, staged["accepted_at_ms"])) if staged is not None else int(time() * 1000)
+        expires_at_ms = accepted_at_ms + _DELETE_PREVIEW_BUDGET_MS + _PREVIEW_LIFETIME_MS
+        with _fenced_on_failure(audit, binding):
+            for offset, end, final in _page_bounds(
+                len(chunks), accepted, request=request, context=context, audit=audit, binding=binding
+            ):
+                args = tuple(SessionDeleteArgs(snapshot.archive, chunk) for chunk in chunks[offset:end])
+                previews = _previews(request, context, audit, snapshot, operation, args, expires_at_ms=expires_at_ms)
+                with audit.bind_machine_request(binding, transition="create_preview_batch", page=(offset, final)):
+                    audit.create_preview_batch(tuple(preview.plan for preview in previews), context.principal)
+    # Counted and sampled from the durable rows: no target list is rebuilt.
+    return audit.machine_preview_summary(binding)
 
 
 def mutation_session_delete_authorize(
@@ -548,21 +658,29 @@ def mutation_session_delete_authorize(
     snapshot: PinnedOperationRead,
 ) -> dict[str, object]:
     binding = _binding(request, context, snapshot)
-    prior = audit.machine_request(binding)
-    if prior is not None:
-        refs = [str(part["artifact_ref"]) for part in audit.machine_parts(binding)]
-    else:
-        previews = tuple(
-            audit.preview_for_principal(ref, context.principal) for ref in _refs(request.payload, "preview_ref")
-        )
+    accepted = _accepted_pages(audit, binding, "authorization-batch")
+    if accepted is not None:
+        preview_refs = _refs(request.payload, "preview_ref")
         operation = runtime_operation_binding(SessionDeleteActuator())
-        executor = OperationExecutor()
-        authorizations = tuple(
-            executor.authorize_bound(operation, preview, context.principal, confirmation_strength="bound_token")
-            for preview in previews
-        )
-        with audit.bind_machine_request(binding, transition="issue_authorization_batch"):
-            refs = audit.issue_authorization_batch(previews, context.principal, authorizations)
+        with _fenced_on_failure(audit, binding):
+            for offset, end, final in _page_bounds(
+                len(preview_refs), accepted, request=request, context=context, audit=audit, binding=binding
+            ):
+                previews = tuple(
+                    audit.preview_for_principal(ref, context.principal) for ref in preview_refs[offset:end]
+                )
+                # Judged as of the handshake's progress, as the audit tier
+                # judges the same page, so a long paged preview does not
+                # expire its own authorization.
+                as_of_ms = audit.handshake_as_of_ms(binding, preview_refs=preview_refs[offset:end])
+                executor = OperationExecutor(now_ms=functools.partial(int, as_of_ms))
+                authorizations = tuple(
+                    executor.authorize_bound(operation, preview, context.principal, confirmation_strength="bound_token")
+                    for preview in previews
+                )
+                with audit.bind_machine_request(binding, transition="issue_authorization_batch", page=(offset, final)):
+                    audit.issue_authorization_batch(previews, context.principal, authorizations)
+    refs = [str(part["artifact_ref"]) for part in audit.machine_parts(binding)]
     return {"status": "authorized", "authorization_ref": refs[0], "authorization_refs": refs}
 
 
@@ -573,13 +691,16 @@ def mutation_session_delete_cancel(
     snapshot: PinnedOperationRead,
 ) -> dict[str, object]:
     binding = _binding(request, context, snapshot)
-    if audit.machine_request(binding) is None:
-        previews = tuple(
-            audit.preview_for_principal(ref, context.principal) for ref in _refs(request.payload, "preview_ref")
-        )
-        with audit.bind_machine_request(binding, transition="cancel_preview_batch"):
-            audit.cancel_preview_batch(previews, context.principal)
     refs = _refs(request.payload, "preview_ref")
+    accepted = _accepted_pages(audit, binding, "cancelled-preview-batch")
+    if accepted is not None:
+        with _fenced_on_failure(audit, binding):
+            for offset, end, final in _page_bounds(
+                len(refs), accepted, request=request, context=context, audit=audit, binding=binding
+            ):
+                previews = tuple(audit.preview_for_principal(ref, context.principal) for ref in refs[offset:end])
+                with audit.bind_machine_request(binding, transition="cancel_preview_batch", page=(offset, final)):
+                    audit.cancel_preview_batch(previews, context.principal)
     return {"status": "cancelled", "preview_ref": refs[0], "preview_refs": list(refs)}
 
 
@@ -618,15 +739,15 @@ def _execute_batch(
 ) -> dict[str, object]:
     assert context.runtime is not None
     binding = _binding(request, context, snapshot)
+    accepted = _accepted_pages(audit, binding, "execution-batch")
+    if accepted is not None:
+        with _fenced_on_failure(audit, binding):
+            for offset, end, final in _page_bounds(
+                len(refs), accepted, request=request, context=context, audit=audit, binding=binding
+            ):
+                with audit.bind_machine_request(binding, transition="accept_execution_batch", page=(offset, final)):
+                    audit.accept_execution_batch(refs[offset:end], context.principal)
     record = audit.machine_request(binding)
-    if record is None:
-        with audit.bind_machine_request(
-            binding,
-            transition="accept_execution_batch",
-            deadline_unix_ms=context.runtime.request_deadline_unix_ms(request),
-        ):
-            audit.accept_execution_batch(refs, context.principal)
-        record = audit.machine_request(binding)
     assert record is not None
     if record["artifact_kind"] != "execution-batch":
         raise ValueError("machine request is not an execution batch")
@@ -646,12 +767,11 @@ def _execute_batch(
                 # Startup's shared recovery classifier owns interrupted domain
                 # receipts. A consumed part is never replayed or reauthorized.
                 break
-            stop = context.runtime.stop_reason(request)
-            deadline = record.get("accepted_deadline_unix_ms")
-            if stop is None and deadline is not None and int(time() * 1000) >= _audit_int(deadline, field="deadline"):
-                stop = "deadline"
-            if stop is not None:
-                audit.stop_machine_batch(binding, stop)
+            # Only an explicit cancellation stops a progressing execution: a
+            # request deadline would fence the untouched suffix of a deletion
+            # that is still advancing, leaving it partial for no reason.
+            if context.runtime.stop_reason(request) == "cancelled":
+                audit.stop_machine_batch(binding, "cancelled")
                 break
             try:
                 preview, authorization = audit.authorization_for_principal(
@@ -937,6 +1057,7 @@ def mutation_assertion_candidate_capture(
             kind=AssertionKind.from_string(str(payload["kind"])),
             refs=tuple(str(ref) for ref in cast(list[str], payload.get("refs") or [])),
             scope_refs=tuple(str(ref) for ref in cast(list[str], payload.get("scope_refs") or [])),
+            evidence_refs=tuple(str(ref) for ref in cast(list[str], payload.get("evidence_refs") or [])),
             cwd=None if raw_cwd is None else Path(str(raw_cwd)),
             author_ref=author_ref,
             author_kind=str(payload.get("author_kind") or "user"),
@@ -1104,21 +1225,31 @@ def mutation_annotation_import_batch(
             return resolve_ref_against_archive(snapshot.archive, ref, archive_root=context.archive_root)
 
     delegation = delegate_write_lease()
+    runtime = context.runtime
+
+    def accept() -> None:
+        # Validation can outlive the exchange's deadline. Cross the acceptance
+        # boundary only if the exchange is still live, so the runtime never
+        # reports timed-out or disconnected-before-acceptance for a write that
+        # then commits.
+        runtime.begin_unbound_write(request)
 
     async def _run() -> AnnotationBatchImportResult:
         with adopt_write_lease(delegation):
             handle = cast(Any, _DaemonImportArchiveHandle())
             if registry is None:
-                return await import_annotation_batch(handle, product_request)
-            return await import_annotation_batch(handle, product_request, registry=registry)
+                return await import_annotation_batch(handle, product_request, before_durable_execution=accept)
+            return await import_annotation_batch(
+                handle, product_request, registry=registry, before_durable_execution=accept
+            )
 
     result = asyncio.run(_run())
     return {
         "operation": request.operation,
         "outcome": "completed",
         "sequence": 1,
-        "effect": "committed" if result.valid_count else "no-effect",
-        "affected_count": result.valid_count,
+        "effect": "committed",
+        "affected_count": result.valid_count + 1,
         "result": result.model_dump(mode="json"),
     }
 
@@ -1155,7 +1286,7 @@ def mutation_judgment_record(
     elif not user_db.exists():
         raise ValueError("assertion user tier is not initialized")
 
-    conn = open_connection(user_db)
+    conn = open_connection(user_db, archive_root=context.archive_root)
     conn.row_factory = sqlite3.Row
     try:
         if kind == "comparative":

@@ -66,6 +66,7 @@ from polylogue.sources.sqlite_snapshot import (
     sqlite_source_revision,
 )
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
 # Bump whenever parser semantics change the values derived from already-
@@ -311,6 +312,27 @@ def _is_retryable_lock_error(exc: sqlite3.OperationalError) -> bool:
     return "database is locked" in message or "database table is locked" in message or "busy" in message
 
 
+class WatcherRootsUnavailableError(RuntimeError):
+    """Raised when the watcher is started with no existing source root."""
+
+
+def _published_index_path(archive_root: Path) -> Path:
+    """The index this watcher's writes publish into.
+
+    Cursor corroboration asks whether a file's raw is materialized in the
+    index. During a cold build that is the inactive candidate generation the
+    writer is filling, not the still-active (empty or old) index: checking
+    the active one demoted every cursor the build had just written and
+    re-ingested the file from scratch.
+    """
+    from polylogue.sources.live.cold_build import active_cold_build_generation
+
+    generation = active_cold_build_generation(archive_root)
+    if generation is not None:
+        return Path(generation.generation.index_path)
+    return resolve_active_index_path(archive_root)
+
+
 class LiveWatcher:
     """Filesystem watch that wakes the fair-intake dispatcher.
 
@@ -452,21 +474,31 @@ class LiveWatcher:
         """Return configured roots that exist at the instant of a scan."""
         return [source.root for source in self._sources if source.exists()]
 
-    async def run(self) -> None:
-        # Hook commands create their first carrier lazily.  Ensure the nested
-        # root exists before ``awatch`` snapshots its roots, otherwise a daemon
-        # that starts before the first hook event never sees that file.
+    def prepare_watch_roots(self) -> list[Path]:
+        """Create the writable hook carrier roots and return what can be watched.
+
+        Hook commands create their first carrier lazily.  The nested root must
+        exist before ``awatch`` snapshots its roots, otherwise a daemon that
+        starts before the first hook event never sees that file.  An empty
+        result means there is nothing to watch; the daemon resolves that as an
+        unavailable watcher before starting :meth:`run`.
+        """
         for source in self._hook_sources():
             # Untagged single-root callers predate the topology contract and
             # are necessarily the primary.  Tagged legacy roots remain
             # strictly read-only and are never created by the watcher.
             if source.role in {None, "primary-writable"}:
                 source.root.mkdir(parents=True, exist_ok=True)
-        roots = self._existing_source_roots()
+        return self._existing_source_roots()
+
+    async def run(self) -> None:
+        roots = self.prepare_watch_roots()
         if not roots:
-            logger.warning("live.watcher: no source roots exist; nothing to watch")
+            # Reachable only when every root vanished after the daemon's own
+            # check. Returning would read as a completed watch, so raise and
+            # let the declared failure policy decide.
             self._watcher_ready.set()
-            return
+            raise WatcherRootsUnavailableError("no configured source root exists")
 
         watch_task = asyncio.create_task(self._watch_changes(roots))
         await asyncio.sleep(0)
@@ -535,7 +567,31 @@ class LiveWatcher:
     # Shared helpers
     # ------------------------------------------------------------------
 
-    def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
+    def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        """Split one page into (needed now, pending a scheduled retry).
+
+        A path whose cursor carries a retry that is not yet due is owed work,
+        not accounted for: reporting it as already admitted acknowledged the
+        page and dropped the obligation (polylogue-b8of0). Everything else
+        not needed is covered by its cursor.
+        """
+        needed = self._select_ingest_candidates(paths)
+        if len(needed) == len(paths):
+            return needed, ()
+        chosen = set(needed)
+        remaining = [path for path in paths if path not in chosen]
+        records = self._cursor.get_records(remaining)
+        pending = tuple(
+            path
+            for path in remaining
+            if (record := records.get(path)) is not None
+            and not record.excluded
+            and record.next_retry_at is not None
+            and not _retry_due(record.next_retry_at)
+        )
+        return needed, pending
+
+    def _select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
         """Narrow one admitted page to the files that actually need ingesting.
 
         The dispatcher's discovery is a bounded walk with a disposable
@@ -916,7 +972,7 @@ class LiveWatcher:
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         source_db = archive_root / "source.db"
         try:
-            index_db = resolve_active_index_path(archive_root)
+            index_db = _published_index_path(archive_root)
         except (ArchiveLocationError, OSError, UnicodeError):
             self._archived_cursor_conns = None
             yield
@@ -924,9 +980,9 @@ class LiveWatcher:
         conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
         if source_db.exists() and index_db.exists():
             try:
-                source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0)
+                source_conn = open_readonly_connection(source_db, timeout=1.0)
                 try:
-                    index_conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)
+                    index_conn = open_readonly_connection(index_db, timeout=1.0)
                 except sqlite3.Error:
                     source_conn.close()
                     raise
@@ -1050,12 +1106,12 @@ class LiveWatcher:
                 return self._path_corroborated_by_index(path, source_conn=shared[0], index_conn=shared[1])
             archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
             source_db = archive_root / "source.db"
-            index_db = resolve_active_index_path(archive_root)
+            index_db = _published_index_path(archive_root)
             if not source_db.exists() or not index_db.exists():
                 return True
             with (
-                closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0)) as source_conn,
-                closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as index_conn,
+                closing(open_readonly_connection(source_db, timeout=1.0)) as source_conn,
+                closing(open_readonly_connection(index_db, timeout=1.0)) as index_conn,
             ):
                 return self._path_corroborated_by_index(path, source_conn=source_conn, index_conn=index_conn)
         except (ArchiveLocationError, OSError, UnicodeError, sqlite3.Error):
@@ -1093,12 +1149,12 @@ class LiveWatcher:
                 ) or self._decided_unresolved_cursor_row(path, source_conn=shared[0])
             else:
                 source_db = archive_root / "source.db"
-                index_db = resolve_active_index_path(archive_root)
+                index_db = _published_index_path(archive_root)
                 if not source_db.exists() or not index_db.exists():
                     return _ArchivedCursorReconciliation.UNAVAILABLE
                 with (
-                    closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0)) as source_conn,
-                    closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as index_conn,
+                    closing(open_readonly_connection(source_db, timeout=1.0)) as source_conn,
+                    closing(open_readonly_connection(index_db, timeout=1.0)) as index_conn,
                 ):
                     row = self._archived_cursor_row(
                         path, source_conn=source_conn, index_conn=index_conn
@@ -1179,6 +1235,14 @@ class LiveWatcher:
         logger.info("live.watcher: reconciled cursor from archive source row for %s", path)
         return _ArchivedCursorReconciliation.RECONCILED
 
+    def offer_parse_lookahead(self, paths: Sequence[Path], *, source_name: str) -> None:
+        """Offer the paths a later batch will ingest in full for read-ahead parsing.
+
+        Nothing is read or submitted here: the next ingest filters and
+        submits the offer while it owns the stage under the ingest lock.
+        """
+        self._batch_processor.offer_parse_lookahead(paths, source_name=source_name)
+
     async def _ingest_files(
         self,
         paths: list[Path],
@@ -1198,17 +1262,22 @@ class LiveWatcher:
         """
         from polylogue.core.degraded import is_fully_degraded
 
-        if not is_fully_degraded():
-            # A degraded batch returns its skip metrics without the gate.
-            self._batch_processor.require_cursor_authority(paths)
-        async with self._ingest_lock:
-            return await self._batch_processor.ingest_files(
-                paths,
-                queued_file_count=queued_file_count,
-                skipped_file_count=skipped_file_count,
-                max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
-                whole_archive_convergence=whole_archive_convergence,
-            )
+        try:
+            if not is_fully_degraded():
+                # A degraded batch returns its skip metrics without the gate.
+                self._batch_processor.require_cursor_authority(paths)
+            async with self._ingest_lock:
+                return await self._batch_processor.ingest_files(
+                    paths,
+                    queued_file_count=queued_file_count,
+                    skipped_file_count=skipped_file_count,
+                    max_pass_seconds=_LIVE_INGEST_MAX_PASS_SECONDS,
+                    whole_archive_convergence=whole_archive_convergence,
+                )
+        finally:
+            # A lookahead belongs to the batch it was offered beside, including
+            # one the authority gate refused before it took the lock.
+            self._batch_processor.drop_parse_lookahead()
 
     async def _converge_embeddings_off_writer(self, paths: Sequence[Path]) -> None:
         """Converge this batch's embeddings after the ingest lease is released."""
@@ -1368,25 +1437,6 @@ class LiveWatcher:
         )
 
 
-def _legacy_data_home_inbox_sources() -> tuple[WatchSource, ...]:
-    """Return the XDG data-home inbox when the archive root has moved away.
-
-    ``archive_root()`` defaults to ``data_home()``, so an archive whose root
-    was later pointed elsewhere leaves its inbox behind under no watch root at
-    all: exports staged there before the move are acquired by nothing, and a
-    wipe-and-reconverge never reads them. Same finite legacy-root topology the
-    hook spools already carry. Inert where the two inboxes coincide.
-    """
-    from polylogue.paths import archive_root, data_home
-
-    legacy_root = data_home() / "inbox"
-    if legacy_root.resolve() == (archive_root() / "inbox").resolve():
-        return ()
-    # Named apart from the archive inbox: two watch sources may not share a
-    # name, or every by-name lookup silently sees only the last one.
-    return (WatchSource(name="inbox-legacy", root=legacy_root, suffixes=INBOX_SOURCE_SUFFIXES),)
-
-
 def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ...]:
     """Discover the default live-source roots from XDG/home conventions.
 
@@ -1490,9 +1540,34 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         # #1683: inbox accepts archive, zip, and json-line formats so that
         # GDPR exports (typically .zip) and raw .json dumps are observed.
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
-        *_legacy_data_home_inbox_sources(),
         *hook_carrier_watch_sources(hook_spool_sources()),
     )
+
+
+#: Watch sources whose directory Polylogue itself creates and writes; their
+#: existence proves nothing about any tool's material.
+POLYLOGUE_OWNED_SOURCE_NAMES = frozenset({"browser-capture", "inbox"})
+
+
+def daemon_watch_sources(
+    *,
+    browser_capture_spool_path: Path | None = None,
+    hermes_root: Path | None = None,
+) -> tuple[WatchSource, ...]:
+    """The daemon's watch set: every origin at its canonical location.
+
+    There are no custom source roots. Each origin is acquired from the place
+    its tool writes it, account exports arrive through ``polylogue import``
+    into the archive inbox, and a relocated tool directory is followed by a
+    symlink at the canonical path rather than by configuration. The one
+    substitution is the browser-capture spool, which Polylogue itself owns.
+    """
+    sources = list(default_sources(hermes_root=hermes_root))
+    if browser_capture_spool_path is not None:
+        spool = browser_capture_spool_path.expanduser()
+        sources = [source for source in sources if source.name != "browser-capture"]
+        sources.append(WatchSource(name="browser-capture", root=spool, suffixes=(".json",)))
+    return tuple(sources)
 
 
 def _cursor_db_path(polylogue: ArchiveRootOwner) -> Path:
@@ -1584,4 +1659,4 @@ def _cursor_stat_matches(cursor: CursorRecord, stat: os.stat_result) -> bool:
     )
 
 
-__all__ = ["LiveWatcher", "WatchSource", "default_sources"]
+__all__ = ["LiveWatcher", "WatchSource", "WatcherRootsUnavailableError", "default_sources"]

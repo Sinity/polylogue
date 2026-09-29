@@ -11,6 +11,7 @@ import uuid
 from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import closing
 from dataclasses import dataclass
+from functools import partial
 from itertools import islice
 from pathlib import Path
 from typing import BinaryIO, cast, overload
@@ -18,7 +19,7 @@ from urllib.parse import quote
 
 import ijson
 
-from polylogue.core.enums import Provider
+from polylogue.core.enums import BlockType, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
 from polylogue.core.json import JSONValue
 from polylogue.core.sources import origin_from_provider
@@ -26,8 +27,11 @@ from polylogue.logging import WARNING, emit
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import (
     _json_subtree,
+    _root_envelope_without,
     _skip_json_subtree,
+    claude_ai_object_envelope,
     claude_design_object_envelope,
+    drive_chunked_prompt_envelope,
     generic_message_object_envelope,
     grok_export_item_count,
     hermes_snapshot_envelope,
@@ -35,6 +39,8 @@ from polylogue.sources.decoder_json import (
     iter_json_container_records,
     json_record_container,
     normalize_ijson_stdlib_numbers,
+    spill_member_arrays,
+    spill_otlp_spans,
 )
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import (
@@ -48,25 +54,37 @@ from polylogue.sources.dispatch import (
 from polylogue.sources.parsers import (
     browser_capture,
     chatgpt,
+    drive,
     grok,
+    hermes_identity,
     hermes_spans,
     hermes_state,
     hermes_verification,
     local_agent,
+    otel_genai,
 )
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.parsers.base_support import _unknown_wire_type
-from polylogue.sources.parsers.claude.ai_parser import parse_design_stream
+from polylogue.sources.parsers.base_support import (
+    _unknown_wire_type,
+    admit_parsed_sessions,
+    hermes_unknown_wire_type,
+    otel_genai_unknown_wire_type,
+)
+from polylogue.sources.parsers.claude.ai_parser import parse_ai_stream, parse_design_stream
 from polylogue.sources.prepared_message_sink import (
     ChatGPTNodeMapping,
+    ClaudeAttachmentScratch,
+    ClaudeChatEvidence,
+    GeminiToolOutputIndex,
+    ScratchSessionSpill,
     SqliteAttachmentSink,
     SqliteMessageSink,
     SqliteMessageStore,
     SqliteSessionEventSink,
-    prepare_simple_chatgpt_mapping,
+    discard_decoded_sessions,
     read_chatgpt_mapping_object,
 )
-from polylogue.sources.sidecar_evidence import SidecarResolver
+from polylogue.sources.sidecar_evidence import RetainedSidecarScope, SidecarResolver
 from polylogue.storage.sqlite.archive_tiers.write import (
     PreparedSessionWrite,
     append_session_to_shard,
@@ -127,10 +145,16 @@ def _append_gemini_raw_message(conn: sqlite3.Connection, ordinal: int, item: obj
     )
 
 
-def _source_digest(path: Path) -> str:
+class VerificationCancelledError(Exception):
+    """A digest pass stopped at a chunk boundary because its caller was cancelled."""
+
+
+def _source_digest(path: Path, *, stop: Callable[[], bool] | None = None) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
         for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            if stop is not None and stop():
+                raise VerificationCancelledError(str(path))
             digest.update(chunk)
     return digest.hexdigest()
 
@@ -172,12 +196,12 @@ class PreparedFileSeal:
             raise ValueError(f"prepared file changed while sealing: {path}")
         return cls(digest, *_file_identity(after))
 
-    def verify(self, path: Path, *, full: bool) -> None:
+    def verify(self, path: Path, *, full: bool, stop: Callable[[], bool] | None = None) -> None:
         before = path.stat()
         if _file_identity(before) != self.identity:
             raise ValueError(f"prepared file identity changed: {path}")
         if full:
-            if _source_digest(path) != self.sha256:
+            if _source_digest(path, stop=stop) != self.sha256:
                 raise ValueError(f"prepared file content changed: {path}")
             after = path.stat()
             if _file_identity(after) != self.identity:
@@ -186,6 +210,192 @@ class PreparedFileSeal:
     @property
     def identity(self) -> tuple[int, int, int, int, int]:
         return self.device, self.inode, self.size, self.mtime_ns, self.ctime_ns
+
+
+def _hermes_atif_envelope(handle: BinaryIO) -> tuple[dict[str, JSONValue], bool] | None:
+    """Prove one Hermes ATIF trajectory and report whether it has subagents.
+
+    Hermes lowering tries ATOF event lists, state and verification exports
+    before ATIF, so documents those detectors claim stay on that route. ATIF
+    lowering has no admission ledger, so no future wire type is carried.
+    """
+    result = _root_envelope_without(handle, frozenset({"steps", "subagent_trajectories"}), frozenset({"atof_version"}))
+    if result is None:
+        return None
+    envelope, arrays = result
+    envelope.pop("__admission_future_type", None)
+    if arrays["steps"] != 1 or arrays["subagent_trajectories"] > 1:
+        return None
+    witness: dict[str, JSONValue] = {**envelope, "steps": []}
+    if (
+        not hermes_spans.looks_like_atif_payload(witness)
+        or hermes_state.looks_like_state_db_payload(witness)
+        or hermes_verification.looks_like_verification_evidence_db_payload(witness)
+    ):
+        return None
+    return envelope, arrays["subagent_trajectories"] == 1
+
+
+def _spill_atif_subagents(handle: BinaryIO, conn: sqlite3.Connection) -> bool:
+    """Spill each ATIF subagent entry and its steps into scratch, one step at a time.
+
+    Returns ``False`` for an entry that repeats ``steps``; the scratch tables
+    are then dropped and the document stays on the object parser.
+    """
+    conn.execute(
+        "CREATE TABLE atif_subagent (ordinal INTEGER PRIMARY KEY, fields_json TEXT NOT NULL, step_count INTEGER)"
+    )
+    conn.execute(
+        "CREATE TABLE atif_subagent_step (subagent INTEGER NOT NULL, ordinal INTEGER NOT NULL, "
+        "step_json TEXT NOT NULL, PRIMARY KEY (subagent, ordinal)) WITHOUT ROWID"
+    )
+
+    def on_member(index: int, fields: JSONValue, count: int | None) -> None:
+        conn.execute("INSERT INTO atif_subagent VALUES (?, ?, ?)", (index, json.dumps(fields), count))
+
+    def on_step(index: int, ordinal: int, step: JSONValue) -> None:
+        conn.execute("INSERT INTO atif_subagent_step VALUES (?, ?, ?)", (index, ordinal, json.dumps(step)))
+
+    if spill_member_arrays(handle, "subagent_trajectories", "steps", on_member=on_member, on_nested_item=on_step):
+        return True
+    _drop_atif_subagents(conn)
+    return False
+
+
+def _drop_atif_subagents(conn: sqlite3.Connection) -> None:
+    conn.execute("DROP TABLE atif_subagent")
+    conn.execute("DROP TABLE atif_subagent_step")
+
+
+def _atif_subagent_steps(conn: sqlite3.Connection, subagent: int) -> Iterator[JSONValue]:
+    for (step_json,) in conn.execute(
+        "SELECT step_json FROM atif_subagent_step WHERE subagent = ? ORDER BY ordinal", (subagent,)
+    ):
+        yield cast(JSONValue, json.loads(step_json))
+
+
+def _atif_subagents(conn: sqlite3.Connection) -> Iterator[hermes_spans.AtifSubagent]:
+    """Rebuild spilled subagent entries one at a time; steps stay in scratch."""
+    for ordinal, fields_json, step_count in conn.execute(
+        "SELECT ordinal, fields_json, step_count FROM atif_subagent ORDER BY ordinal"
+    ):
+        fields = json.loads(fields_json)
+        yield hermes_spans.AtifSubagent(
+            fields if isinstance(fields, dict) else {},
+            step_count,
+            partial(_atif_subagent_steps, conn, ordinal),
+        )
+
+
+def _atif_subagent_witness(conn: sqlite3.Connection) -> list[JSONValue]:
+    """The first 64 subagent entries, each with at most its first 64 steps."""
+    witness: list[JSONValue] = []
+    for ordinal, fields_json, step_count in conn.execute(
+        "SELECT ordinal, fields_json, step_count FROM atif_subagent ORDER BY ordinal LIMIT 64"
+    ):
+        fields = json.loads(fields_json)
+        if step_count is not None:
+            fields["steps"] = list(islice(_atif_subagent_steps(conn, ordinal), 64))
+        witness.append(fields)
+    return witness
+
+
+def _otlp_envelope(handle: BinaryIO) -> tuple[dict[str, JSONValue], str] | None:
+    """Prove one OTLP-JSON export and name the root span array the parser reads.
+
+    Returns every root field but the span arrays. Session wrappers and
+    browser captures, which the lowering routes elsewhere, stay there.
+    """
+    result = _root_envelope_without(handle, frozenset({"resourceSpans", "resource_spans"}), frozenset({"sessions"}))
+    if result is None:
+        return None
+    envelope, arrays = result
+    envelope.pop("__admission_future_type", None)
+    if browser_capture.looks_like(envelope):
+        return None
+    if arrays["resourceSpans"]:
+        return envelope, "resourceSpans"
+    if arrays["resource_spans"]:
+        return envelope, "resource_spans"
+    return None
+
+
+def _index_otlp_spans(
+    handle: BinaryIO, root_key: str, conn: sqlite3.Connection
+) -> tuple[otel_genai.OtelSpanIndex, str | None] | None:
+    """Spill an OTLP export's spans to scratch, then index them in document order.
+
+    A span's resource identity and scope schema URL may follow it in the
+    document, so spans are joined to both only after the walk. Returns the
+    index and the first unknown span ``kind`` the admission scan of the
+    whole document would report, or ``None``, with no tables left behind,
+    when the walk refuses the document.
+    """
+    conn.execute(
+        "CREATE TABLE otlp_resource (resource INTEGER PRIMARY KEY, resource_id TEXT NOT NULL, scope_field TEXT)"
+    )
+    conn.execute(
+        "CREATE TABLE otlp_scope (resource INTEGER NOT NULL, scope_field TEXT NOT NULL, scope INTEGER NOT NULL, "
+        "schema_url TEXT NOT NULL, PRIMARY KEY (resource, scope_field, scope)) WITHOUT ROWID"
+    )
+    conn.execute(
+        "CREATE TABLE otlp_span (resource INTEGER NOT NULL, scope_field TEXT NOT NULL, scope INTEGER NOT NULL, "
+        "span INTEGER NOT NULL, span_json TEXT NOT NULL, PRIMARY KEY (resource, scope_field, scope, span)) WITHOUT ROWID"
+    )
+    # The admission scan reads every object span's ``kind``, identified or
+    # not, in the scope array the parser reads.
+    conn.execute(
+        "CREATE TABLE otlp_unknown_kind (resource INTEGER NOT NULL, scope_field TEXT NOT NULL, "
+        "scope INTEGER NOT NULL, span INTEGER NOT NULL, kind TEXT NOT NULL, "
+        "PRIMARY KEY (resource, scope_field, scope, span)) WITHOUT ROWID"
+    )
+
+    def on_resource(resource: int, fields: dict[str, object], scope_field: str | None) -> None:
+        conn.execute(
+            "INSERT INTO otlp_resource VALUES (?, ?, ?)",
+            (resource, json.dumps(otel_genai.resource_id_for(fields)), scope_field),
+        )
+
+    def on_scope(resource: int, scope_field: str, scope: int, fields: dict[str, object]) -> None:
+        conn.execute(
+            "INSERT INTO otlp_scope VALUES (?, ?, ?, ?)",
+            (resource, scope_field, scope, json.dumps(otel_genai.scope_schema_url(fields))),
+        )
+
+    def on_span(resource: int, scope_field: str, scope: int, span_ordinal: int, span: dict[str, object]) -> None:
+        unknown_kind = otel_genai_unknown_wire_type(
+            {"resourceSpans": [{"scopeSpans": [{"spans": [{"kind": span.get("kind")}]}]}]}
+        )
+        if unknown_kind is not None:
+            conn.execute(
+                "INSERT INTO otlp_unknown_kind VALUES (?, ?, ?, ?, ?)",
+                (resource, scope_field, scope, span_ordinal, json.dumps(unknown_kind)),
+            )
+        if otel_genai.has_span_identity(span):
+            conn.execute(
+                "INSERT INTO otlp_span VALUES (?, ?, ?, ?, ?)",
+                (resource, scope_field, scope, span_ordinal, json.dumps(span)),
+            )
+
+    result: tuple[otel_genai.OtelSpanIndex, str | None] | None = None
+    if spill_otlp_spans(handle, root_key, on_resource=on_resource, on_scope=on_scope, on_span=on_span):
+        unknown_row = conn.execute(
+            "SELECT u.kind FROM otlp_unknown_kind u "
+            "JOIN otlp_resource r ON r.resource = u.resource AND r.scope_field = u.scope_field "
+            "ORDER BY u.resource, u.scope, u.span LIMIT 1"
+        ).fetchone()
+        index = otel_genai.OtelSpanIndex(conn)
+        result = (index, json.loads(unknown_row[0]) if unknown_row is not None else None)
+        for resource_id_json, schema_url_json, span_json in conn.execute(
+            "SELECT r.resource_id, c.schema_url, s.span_json FROM otlp_span s "
+            "JOIN otlp_resource r ON r.resource = s.resource AND r.scope_field = s.scope_field "
+            "JOIN otlp_scope c ON c.resource = s.resource AND c.scope_field = s.scope_field AND c.scope = s.scope "
+            "ORDER BY s.resource, s.scope, s.span"
+        ):
+            index.add(json.loads(resource_id_json), json.loads(span_json), json.loads(schema_url_json))
+    for table in ("otlp_resource", "otlp_scope", "otlp_span", "otlp_unknown_kind"):
+        conn.execute(f"DROP TABLE {table}")
+    return result
 
 
 def _file_identity(stat: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -210,6 +420,11 @@ class PreparedJsonl:
     resolved_provider: Provider | None = None
     positive_evidence_filtered: bool = False
     attempt_directory: Path | None = None
+    #: For a terminal failure that never read bytes into a blob (a worker
+    #: lost on this file), the source's (size, mtime_ns, inode) when the
+    #: failing preparation began. Publication must not apply the failure to a
+    #: capture of any other revision.
+    failed_observation: tuple[int, int, int] | None = None
 
     @classmethod
     def seal(
@@ -240,8 +455,12 @@ class PreparedJsonl:
             attempt_directory=attempt_directory,
         )
 
-    def verify_files(self, *, full: bool) -> None:
-        """Scan bytes before admission; recheck inode identity at publication."""
+    def verify_files(self, *, full: bool, stop: Callable[[], bool] | None = None) -> None:
+        """Scan bytes before admission; recheck inode identity at publication.
+
+        ``stop`` is polled between digest chunks; when it returns true the
+        scan raises ``VerificationCancelledError``.
+        """
         if (
             self.sessions_path is None
             or self.shard_path is None
@@ -249,12 +468,14 @@ class PreparedJsonl:
             or self.shard_seal is None
         ):
             raise ValueError("JSONL preparation lacks closed-file seals")
-        self.sessions_seal.verify(self.sessions_path, full=full)
-        self.shard_seal.verify(self.shard_path, full=full)
+        self.sessions_seal.verify(self.sessions_path, full=full, stop=stop)
+        self.shard_seal.verify(self.shard_path, full=full, stop=stop)
 
     def discard(self) -> None:
         for prepared in self.prepared_writes:
             prepared.close()
+        if self.sessions_path is not None:
+            discard_decoded_sessions(self.sessions_path)
         if self.attempt_directory is not None:
             try:
                 shutil.rmtree(self.attempt_directory)
@@ -554,6 +775,7 @@ def _append_artifact_session(store: SqliteMessageStore, ordinal: int, session: P
         attachments.extend(session.attachments)
     metadata = session.model_dump(mode="json", exclude={"messages", "session_events", "attachments"})
     metadata["content_hash"] = session.content_hash
+    metadata["enrichment_evidence_key"] = session.enrichment_evidence_key
     metadata["unit_accounting"] = (
         session.unit_accounting.model_dump(mode="json") if session.unit_accounting is not None else None
     )
@@ -609,7 +831,11 @@ def prepare_jsonl_blob(
     classify_hermes_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
     classify_chatgpt_object: Callable[[dict[str, object]], bool] | None = None,
     classify_claude_design_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
+    classify_claude_ai_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
+    classify_drive_chunked_object: Callable[[dict[str, JSONValue]], bool] | None = None,
+    classify_hermes_atif_object: Callable[[dict[str, JSONValue]], bool] | None = None,
     classify_gemini_object: Callable[[dict[str, JSONValue], Sequence[JSONValue]], bool] | None = None,
+    classify_otel_object: Callable[[dict[str, JSONValue]], bool] | None = None,
     attempt_directory: Path | None = None,
 ) -> PreparedJsonl:
     """Parse and seal one source without transferring a parsed tree over IPC."""
@@ -635,9 +861,14 @@ def prepare_jsonl_blob(
         generic_envelope: dict[str, JSONValue] | None = None
         hermes_envelope: dict[str, JSONValue] | None = None
         design_envelope: dict[str, JSONValue] | None = None
+        claude_ai_envelope: dict[str, JSONValue] | None = None
+        drive_chunked: tuple[dict[str, JSONValue], str] | None = None
+        atif: tuple[dict[str, JSONValue], bool] | None = None
+        otel: tuple[dict[str, JSONValue], str, tuple[otel_genai.OtelSpanIndex, str | None]] | None = None
         chatgpt_envelope: dict[str, object] | None = None
         chatgpt_mapping: ChatGPTNodeMapping | None = None
         gemini_envelope: dict[str, JSONValue] | None = None
+        gemini_sidecar_scope: RetainedSidecarScope | None = None
         grok_count: int | None = None
         grok_positive_marker = False
         if not is_stream and provider is Provider.CHATGPT and Path(source_path).name.lower().endswith(".json"):
@@ -645,6 +876,9 @@ def prepare_jsonl_blob(
                 read_result = read_chatgpt_mapping_object(handle, store.conn)
             if (
                 read_result is not None
+                # Detector precedence: a browser-capture envelope may also
+                # carry a valid ``mapping``; the capture route owns it.
+                and not browser_capture.looks_like({**read_result[0], "mapping": {}})
                 and read_result[1].children_are_all_strings()
                 and chatgpt._mapping_nodes_are_valid(read_result[1].shallow_view())
             ):
@@ -680,9 +914,8 @@ def prepare_jsonl_blob(
                 store.conn.execute("DROP TABLE gemini_raw_message")
             elif sidecar_resolver is not None:
                 session_id = gemini_envelope.get("sessionId")
-                if isinstance(session_id, str) and sidecar_resolver.gemini_cli_scope(source_path, session_id).available:
-                    gemini_envelope = None
-                    store.conn.execute("DROP TABLE gemini_raw_message")
+                if isinstance(session_id, str):
+                    gemini_sidecar_scope = sidecar_resolver.gemini_cli_scope(source_path, session_id)
         # Cohort callbacks may inspect or rewrite the entire parse result.
         # The direct worker route can publish independent bundle members.
         if (
@@ -707,11 +940,15 @@ def prepare_jsonl_blob(
             and (prepare_records is None or classify_grok_export is not None)
             and Path(source_path).name.lower().endswith(".json")
         ):
-            store.conn.execute("CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL)")
+            store.conn.execute(
+                "CREATE TABLE grok_member_valid (ordinal INTEGER PRIMARY KEY, valid INTEGER NOT NULL, future_type TEXT)"
+            )
             grok_probe_conn = store.conn
 
-            def record_grok_member(index: int, valid: bool) -> None:
-                grok_probe_conn.execute("INSERT INTO grok_member_valid VALUES (?, ?)", (index, int(valid)))
+            def record_grok_member(index: int, valid: bool, future_type: str | None) -> None:
+                grok_probe_conn.execute(
+                    "INSERT INTO grok_member_valid VALUES (?, ?, ?)", (index, int(valid), future_type)
+                )
 
             def record_grok_marker(found: bool) -> None:
                 nonlocal grok_positive_marker
@@ -755,6 +992,54 @@ def prepare_jsonl_blob(
         ):
             with source.open("rb") as handle:
                 design_envelope = claude_design_object_envelope(handle)
+        if (
+            not is_stream
+            and provider is Provider.CLAUDE_AI
+            and (prepare_sessions is None or classify_claude_ai_object is not None)
+            and (prepare_records is None or classify_claude_ai_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+            and stream_prefix is None
+        ):
+            with source.open("rb") as handle:
+                claude_ai_envelope = claude_ai_object_envelope(handle)
+        if (
+            not is_stream
+            and provider in {Provider.DRIVE, Provider.GEMINI}
+            and (prepare_sessions is None or classify_drive_chunked_object is not None)
+            and (prepare_records is None or classify_drive_chunked_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+            and generic_envelope is None
+        ):
+            with source.open("rb") as handle:
+                drive_chunked = drive_chunked_prompt_envelope(handle)
+        if (
+            not is_stream
+            and provider is Provider.HERMES
+            and (prepare_sessions is None or classify_hermes_atif_object is not None)
+            and (prepare_records is None or classify_hermes_atif_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+            and hermes_envelope is None
+        ):
+            with source.open("rb") as handle:
+                atif = _hermes_atif_envelope(handle)
+            if atif is not None and atif[1]:
+                with source.open("rb") as handle:
+                    if not _spill_atif_subagents(handle, store.conn):
+                        atif = None
+        if (
+            not is_stream
+            and provider is Provider.OTEL_GENAI
+            and (prepare_sessions is None or classify_otel_object is not None)
+            and (prepare_records is None or classify_otel_object is not None)
+            and Path(source_path).name.lower().endswith(".json")
+        ):
+            with source.open("rb") as handle:
+                otlp = _otlp_envelope(handle)
+            if otlp is not None:
+                with source.open("rb") as handle:
+                    otel_spilled = _index_otlp_spans(handle, otlp[1], store.conn)
+                if otel_spilled is not None:
+                    otel = (*otlp, otel_spilled)
         if gemini_envelope is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
@@ -780,6 +1065,25 @@ def prepare_jsonl_blob(
                 )
                 admitted = local_agent.parse_gemini_cli(gemini_envelope, fallback_id)
                 gemini_session = gemini_session.model_copy(update={"unit_accounting": admitted.unit_accounting})
+                if gemini_sidecar_scope is not None and gemini_sidecar_scope.available:
+                    index = GeminiToolOutputIndex(store.conn)
+                    for row in store.conn.execute("SELECT message_json FROM gemini_raw_message ORDER BY ordinal"):
+                        index.observe(json.loads(row[0]))
+                    for outcome in index.join(gemini_sidecar_scope):
+                        gemini_session.session_events.append(local_agent.gemini_sidecar_event(outcome))
+                    for position in range(len(gemini_session.messages)):
+                        message = gemini_session.messages[position]
+                        updated_blocks = [
+                            block.model_copy(update={"text": replacement})
+                            if block.type is BlockType.TOOL_RESULT
+                            and block.tool_id is not None
+                            and (replacement := index.replacement_for(block.tool_id)) is not None
+                            else block
+                            for block in message.blocks
+                        ]
+                        if updated_blocks != message.blocks:
+                            gemini_session.messages[position] = message.model_copy(update={"blocks": updated_blocks})
+                    index.close()
             store.conn.execute("DROP TABLE gemini_raw_message")
             if gemini_session is not None and require_positive_conversational_evidence(
                 [gemini_session], provider=provider, source_path=source_path
@@ -816,10 +1120,13 @@ def prepare_jsonl_blob(
             chatgpt_admitted = (
                 classify_chatgpt_object(chatgpt_envelope) if classify_chatgpt_object is not None else True
             )
+            # The parser reads the mapping node by node from scratch, and
+            # keeps its normalized messages, attachments and events there.
             session: ParsedSession | None = (
-                (
-                    prepare_simple_chatgpt_mapping(chatgpt_envelope, chatgpt_mapping, store, f"{fallback_id}-0")
-                    or chatgpt.parse(chatgpt_envelope, f"{fallback_id}-0")
+                chatgpt.parse(
+                    {**chatgpt_envelope, "mapping": chatgpt_mapping.shallow_view()},
+                    f"{fallback_id}-0",
+                    spill=ScratchSessionSpill(store),
                 )
                 if chatgpt_admitted
                 else None
@@ -834,10 +1141,18 @@ def prepare_jsonl_blob(
                 next_attachment = store._next_attachment_ordinal
                 next_event = store._next_event_ordinal
                 try:
-                    attachments = store.new_attachment_sink()
-                    attachments.extend(session.attachments)
-                    events = store.new_event_sink()
-                    events.extend(session.session_events)
+                    source_attachments: object = session.attachments
+                    if isinstance(source_attachments, SqliteAttachmentSink):
+                        attachments = source_attachments
+                    else:
+                        attachments = store.new_attachment_sink()
+                        attachments.extend(session.attachments)
+                    source_events: object = session.session_events
+                    if isinstance(source_events, SqliteSessionEventSink):
+                        events = source_events
+                    else:
+                        events = store.new_event_sink()
+                        events.extend(session.session_events)
                     session = session.model_copy(update={"attachments": attachments, "session_events": events})
                     if prepare_sessions is not None:
                         selected = prepare_sessions([session])
@@ -880,14 +1195,14 @@ def prepare_jsonl_blob(
                     "DELETE FROM prepared_attachment WHERE session_ordinal NOT IN "
                     "(SELECT attachment_ordinal FROM prepared_session)"
                 )
-            store.conn.execute("DROP TABLE chatgpt_node")
-            store.conn.execute("DROP TABLE chatgpt_child")
+            # Parser-only scratch never reaches the sealed artifact.
             for table in (
-                "chatgpt_simple_node",
-                "chatgpt_simple_sibling",
-                "chatgpt_simple_child",
-                "chatgpt_simple_active",
-                "chatgpt_simple_message",
+                "chatgpt_node",
+                "chatgpt_child",
+                "chatgpt_sibling",
+                "chatgpt_entry",
+                "scratch_string_set",
+                "scratch_string_map",
             ):
                 store.conn.execute(f"DROP TABLE IF EXISTS {table}")
             after_hash = _source_digest(source)
@@ -1063,6 +1378,287 @@ def prepare_jsonl_blob(
             store.conn.commit()
             shard_path = shard_builder.seal().path
             shard_builder = None
+        elif claude_ai_envelope is not None:
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+            claude_ai_admitted = True
+            if classify_claude_ai_object is not None:
+                with source.open("rb") as handle:
+                    sample = tuple(
+                        islice(
+                            (
+                                cast(JSONValue, normalize_ijson_stdlib_numbers(item))
+                                for item in ijson.items(handle, "chat_messages.item")
+                            ),
+                            64,
+                        )
+                    )
+                claude_ai_admitted = classify_claude_ai_object(claude_ai_envelope, sample)
+            session = None
+            if claude_ai_admitted:
+                evidence_store = ClaudeChatEvidence(store.conn)
+                attachment_rows = ClaudeAttachmentScratch(store.conn)
+                with source.open("rb") as handle:
+                    # The collecting route parses this document as a one-item
+                    # bundle, so its fallback identity carries that suffix.
+                    session = parse_ai_stream(
+                        claude_ai_envelope,
+                        (normalize_ijson_stdlib_numbers(item) for item in ijson.items(handle, "chat_messages.item")),
+                        f"{fallback_id}-0",
+                        evidence_store=evidence_store,
+                        messages=store.new_sink(),
+                        session_events=store.new_event_sink(),
+                        attachment_rows=attachment_rows,
+                        attachments=store.new_attachment_sink(),
+                    )
+                evidence_store.close()
+                attachment_rows.close()
+            session_count = 0
+            if session is not None and require_positive_conversational_evidence(
+                [session], provider=provider, source_path=source_path
+            ):
+                if prepare_sessions is not None:
+                    selected = prepare_sessions([session])
+                    if len(selected) > 1:
+                        raise ValueError("Claude AI object finalizer expanded one session")
+                    session = selected[0] if selected else None
+                elif prepare_session is not None:
+                    session = prepare_session(session)
+            else:
+                session = None
+            if session is not None:
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            for table, column in (
+                ("prepared_message", "message_ordinal"),
+                ("prepared_event", "event_ordinal"),
+                ("prepared_attachment", "attachment_ordinal"),
+            ):
+                store.conn.execute(
+                    f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
+                )
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
+        elif drive_chunked is not None:
+            drive_envelope, chunk_prefix = drive_chunked
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+
+            def drive_chunks() -> Iterator[object]:
+                with source.open("rb") as handle:
+                    for item in ijson.items(handle, f"{chunk_prefix}.item"):
+                        yield normalize_ijson_stdlib_numbers(item)
+
+            drive_admitted = True
+            if classify_drive_chunked_object is not None:
+                chunk_sample: list[JSONValue] = [cast(JSONValue, item) for item in islice(drive_chunks(), 64)]
+                witness = {key: value for key, value in drive_envelope.items() if not key.startswith("__")}
+                if chunk_prefix == "chunks":
+                    witness["chunks"] = chunk_sample
+                else:
+                    prompt = witness.get("chunkedPrompt")
+                    witness["chunkedPrompt"] = {**(prompt if isinstance(prompt, dict) else {}), "chunks": chunk_sample}
+                drive_admitted = classify_drive_chunked_object(witness)
+            session = None
+            if drive_admitted:
+                session = drive.parse_chunked_prompt_stream(
+                    provider,
+                    drive_envelope,
+                    drive_chunks,
+                    fallback_id,
+                    messages=store.new_sink(),
+                    session_events=store.new_event_sink(),
+                    attachments=store.new_attachment_sink(),
+                    scratch=store.conn,
+                )
+            session_count = 0
+            if session is not None and require_positive_conversational_evidence(
+                [session], provider=provider, source_path=source_path
+            ):
+                if prepare_sessions is not None:
+                    selected = prepare_sessions([session])
+                    if len(selected) > 1:
+                        raise ValueError("chunked prompt finalizer expanded one session")
+                    session = selected[0] if selected else None
+                elif prepare_session is not None:
+                    session = prepare_session(session)
+            else:
+                session = None
+            if session is not None:
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            for table, column in (
+                ("prepared_message", "message_ordinal"),
+                ("prepared_event", "event_ordinal"),
+                ("prepared_attachment", "attachment_ordinal"),
+            ):
+                store.conn.execute(
+                    f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
+                )
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
+        elif atif is not None:
+            atif_envelope, atif_has_subagents = atif
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+
+            def atif_steps() -> Iterator[JSONValue]:
+                with source.open("rb") as handle:
+                    for item in ijson.items(handle, "steps.item"):
+                        yield cast(JSONValue, normalize_ijson_stdlib_numbers(item))
+
+            atif_admitted = True
+            if classify_hermes_atif_object is not None:
+                atif_witness: dict[str, JSONValue] = {**atif_envelope, "steps": list(islice(atif_steps(), 64))}
+                if atif_has_subagents:
+                    atif_witness["subagent_trajectories"] = _atif_subagent_witness(store.conn)
+                atif_admitted = classify_hermes_atif_object(atif_witness)
+            atif_sessions: list[ParsedSession] = []
+            if atif_admitted:
+                # The dispatch route proves the whole document against the
+                # Hermes discriminator scan, which reads only the envelope's
+                # and each step's ``type``/``kind``. The steps are observed
+                # as the parser consumes them, so the streamed carrier gets the
+                # same conservation proof without holding the document.
+                unknown_steps: list[JSONValue] = []
+
+                def observed_steps() -> Iterator[JSONValue]:
+                    for step in atif_steps():
+                        if not unknown_steps and isinstance(step, dict):
+                            discriminators: dict[str, JSONValue] = {
+                                key: step[key] for key in ("type", "kind") if key in step
+                            }
+                            if hermes_unknown_wire_type({"steps": [discriminators]}) is not None:
+                                unknown_steps.append(discriminators)
+                        yield step
+
+                steps = observed_steps()
+                atif_sessions = hermes_spans.parse_atif_stream(
+                    atif_envelope,
+                    steps,
+                    _atif_subagents(store.conn) if atif_has_subagents else (),
+                    fallback_id,
+                    profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)),
+                    new_events=store.new_event_sink,
+                )
+                if atif_sessions:
+                    for _ in steps:  # a parser that stopped early still owes the rest a scan
+                        pass
+                    atif_sessions = admit_parsed_sessions(
+                        "hermes", {**atif_envelope, "steps": unknown_steps}, atif_sessions
+                    )
+            if atif_has_subagents:
+                _drop_atif_subagents(store.conn)
+            atif_sessions = require_positive_conversational_evidence(
+                atif_sessions, provider=provider, source_path=source_path
+            )
+            if prepare_sessions is not None:
+                atif_sessions = prepare_sessions(atif_sessions)
+            elif prepare_session is not None:
+                atif_sessions = [prepare_session(session) for session in atif_sessions]
+            session_count = 0
+            for session in atif_sessions:
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            for table, column in (
+                ("prepared_message", "message_ordinal"),
+                ("prepared_event", "event_ordinal"),
+                ("prepared_attachment", "attachment_ordinal"),
+            ):
+                store.conn.execute(
+                    f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
+                )
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
+        elif otel is not None:
+            otel_envelope, otel_root_key, (otel_index, otel_unknown_kind) = otel
+            # The dispatch route proves the whole document against the OTLP
+            # discriminator scan, which reads only each span's ``kind``; the
+            # spill recorded the first unknown one, so this one-record
+            # document carries the same conservation proof.
+            otel_admission_payload: dict[str, JSONValue] = (
+                {otel_root_key: [{"scopeSpans": [{"spans": [{"kind": otel_unknown_kind}]}]}]}
+                if otel_unknown_kind is not None
+                else {}
+            )
+            _create_artifact_tables(store.conn)
+            shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
+            # Taxonomy decides a declared OTLP path by its rule and root
+            # markers, so the witness carries the root fields, not the spans.
+            otel_admitted = otel_index.normalizable and (
+                classify_otel_object is None or classify_otel_object({**otel_envelope, otel_root_key: []})
+            )
+            session_count = 0
+            for session in (
+                otel_index.sessions(new_messages=store.new_sink, new_events=store.new_event_sink)
+                if otel_admitted
+                else ()
+            ):
+                session = admit_parsed_sessions(provider.value.replace("-", "_"), otel_admission_payload, [session])[0]
+                if not require_positive_conversational_evidence([session], provider=provider, source_path=source_path):
+                    continue
+                if prepare_sessions is not None:
+                    selected = prepare_sessions([session])
+                    if len(selected) > 1:
+                        raise ValueError("OTLP per-session finalizer expanded one session")
+                    if not selected:
+                        continue
+                    session = selected[0]
+                elif prepare_session is not None:
+                    session = prepare_session(session)
+                session.content_hash = session_content_hash(session)
+                append_session_to_shard(shard_builder, session)
+                _append_artifact_session(store, session_count, session)
+                session_count += 1
+            otel_index.close()
+            for table, column in (
+                ("prepared_message", "message_ordinal"),
+                ("prepared_event", "event_ordinal"),
+                ("prepared_attachment", "attachment_ordinal"),
+            ):
+                store.conn.execute(
+                    f"DELETE FROM {table} WHERE session_ordinal NOT IN (SELECT {column} FROM prepared_session)"
+                )
+            after_hash = _source_digest(source)
+            if before_hash != after_hash:
+                raise _SourceChangedDuringPreparationError("blob changed during worker preparation")
+            enrichment_digest, enrichment_index_path = (
+                preparation_dependency() if preparation_dependency is not None else (None, None)
+            )
+            _seal_artifact(store.conn, after_hash, session_count, enrichment_digest, enrichment_index_path)
+            store.conn.commit()
+            shard_path = shard_builder.seal().path
+            shard_builder = None
         elif grok_count is not None:
             _create_artifact_tables(store.conn)
             shard_builder = SessionShardBuilder(artifact_directory / f"shard-{uuid.uuid4().hex}.db")
@@ -1106,13 +1702,22 @@ def prepare_jsonl_blob(
                             fallback_id if grok_count == 1 else f"{fallback_id}-{member_index}",
                             member_messages,
                         )
-                        # The event probe leaves future wire types on the
-                        # ordinary parser path. Admit this known outer record
-                        # through the same wrapper without reloading responses.
-                        admitted = grok.parse_conversation(
-                            {"conversation": {}, "responses": []}, session.provider_session_id
+                        # Admit this outer record through the parser's own
+                        # wrapper, over a stub carrying the member's first
+                        # future wire type, without reloading its responses.
+                        future_row = grok_member_conn.execute(
+                            "SELECT future_type FROM grok_member_valid WHERE ordinal = ?", (member_index,)
+                        ).fetchone()
+                        admission_stub: dict[str, object] = {"conversation": {}, "responses": []}
+                        if future_row is not None and future_row[0] is not None:
+                            admission_stub["type"] = future_row[0]
+                        admitted = grok.parse_conversation(admission_stub, session.provider_session_id)
+                        session = session.model_copy(
+                            update={
+                                "session_events": [*session.session_events, *admitted.session_events],
+                                "unit_accounting": admitted.unit_accounting,
+                            }
                         )
-                        session = session.model_copy(update={"unit_accounting": admitted.unit_accounting})
                         if prepare_sessions is not None:
                             selected = prepare_sessions([session])
                             if len(selected) > 1:
@@ -1259,6 +1864,10 @@ def prepare_jsonl_blob(
             or generic_envelope is not None
             or hermes_envelope is not None
             or design_envelope is not None
+            or claude_ai_envelope is not None
+            or drive_chunked is not None
+            or atif is not None
+            or otel is not None
             or (grok_count is not None and classify_grok_export is not None)
             or (prepare_sessions is None and prepare_session is not None),
             attempt_directory=attempt_directory,

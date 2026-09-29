@@ -36,6 +36,7 @@ from polylogue.core.dates import parse_date
 from polylogue.core.enums import ActionResultState
 from polylogue.core.json import JSONValue, require_json_value
 from polylogue.core.refs import delegation_edge_object_id
+from polylogue.core.tool_identity import sql_coalesced_json_extract
 from polylogue.storage.search.query_support import normalize_fts5_query
 from polylogue.storage.sqlite.action_relation import bounded_action_relation_cte
 from polylogue.storage.sqlite.archive_tiers.types import (
@@ -266,6 +267,35 @@ class ArchiveDelegationQueryRow:
 
 
 @dataclass(frozen=True, slots=True)
+class DelegationPageKey:
+    """Keyset position after one row in ``query_delegations`` order.
+
+    The order is (parent session, instruction block or else child session,
+    rows without an instruction block last). ``delegation_id`` is
+    ``COALESCE(instruction_tool_use_block_id, parent || ':' || child)``, so
+    that triple is unique and the order is total: a reader resuming after a
+    key neither skips nor repeats a row, and each page costs its own rows
+    rather than a rescan of every earlier page.
+    """
+
+    parent_session_id: str
+    order_key: str
+    edge_only: bool
+
+    @classmethod
+    def after_row(cls, row: ArchiveDelegationQueryRow) -> DelegationPageKey:
+        # NULL-coalescing exactly as the SQL order does: an empty-string id is
+        # a value, not an absence, so ``or`` would key on the wrong column.
+        block_id = row.instruction_tool_use_block_id
+        order_key = block_id if block_id is not None else row.child_session_id
+        return cls(
+            parent_session_id=row.parent_session_id,
+            order_key=order_key if order_key is not None else "",
+            edge_only=block_id is None,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveDelegationContextRow:
     """One bounded message excerpt surrounding a delegation dispatch."""
 
@@ -295,6 +325,7 @@ class ArchiveDelegationCard:
     parent_followup: tuple[ArchiveDelegationContextRow, ...]
     parent_followup_truncated: bool
     annotation_refs: tuple[str, ...]
+    annotation_refs_truncated: bool
     evidence_refs: tuple[str, ...]
 
 
@@ -487,6 +518,11 @@ def _delegation_instruction(payload: str | None) -> str | None:
                 return value
         return None
     return None
+
+
+#: Assertion refs the delegation card embeds directly. A declared page bound,
+#: not a refusal: a caller wanting the rest resolves ``target_ref`` itself.
+_DELEGATION_ANNOTATION_REFS_LIMIT = 50
 
 
 def _bounded_delegation_card_text(value: str | None, *, limit: int) -> tuple[str | None, bool]:
@@ -737,16 +773,20 @@ def _action_command_expression(row_alias: str) -> str:
     """
 
     execution_tools = ", ".join(_sql_string_literal(name) for name in _LEGACY_EXECUTION_TOOL_NAMES)
+    # The surrogate-safe projection the generated tool columns use: a stored
+    # lone-surrogate escape must not decode into text that is not UTF-8.
+    cmd = sql_coalesced_json_extract(f"{row_alias}.tool_input", ("cmd",))
+    arguments = sql_coalesced_json_extract(f"{row_alias}.tool_input", ("arguments",))
     return f"""
         COALESCE(
             NULLIF({row_alias}.tool_command, ''),
             CASE
                 WHEN LOWER(COALESCE({row_alias}.tool_name, '')) IN ({execution_tools}) THEN
                     COALESCE(
-                        NULLIF(json_extract({row_alias}.tool_input, '$.cmd'), ''),
+                        NULLIF({cmd}, ''),
                         CASE
                             WHEN json_type({row_alias}.tool_input, '$.arguments') = 'text'
-                                THEN NULLIF(json_extract({row_alias}.tool_input, '$.arguments'), '')
+                                THEN NULLIF({arguments}, '')
                             ELSE NULL
                         END
                     )
@@ -1977,8 +2017,11 @@ def _run_field_predicate_clause(run_alias: str, predicate: QueryFieldPredicate) 
 
 def _delegation_instruction_sql_expression(delegation_alias: str) -> str:
     payload = f"{delegation_alias}.instruction_payload"
+    # The surrogate-safe projection: a stored lone-surrogate escape must not
+    # decode into text that is not UTF-8.
     candidates = ", ".join(
-        f"NULLIF(CASE WHEN json_type({payload}, '$.{key}') = 'text' THEN json_extract({payload}, '$.{key}') END, '')"
+        f"NULLIF(CASE WHEN json_type({payload}, '$.{key}') = 'text' "
+        f"THEN {sql_coalesced_json_extract(payload, (key,))} END, '')"
         for key in ("prompt", "description", "instruction", "task")
     )
     return (
@@ -4332,6 +4375,7 @@ def get_delegation_card(
     )
 
     annotation_refs: tuple[str, ...] = ()
+    annotation_refs_truncated = False
     if self.user_db_path.exists():
         self._attach_user_tier_if_present()
         assertion_rows = self._conn.execute(
@@ -4340,10 +4384,12 @@ def get_delegation_card(
             FROM user_tier.assertions
             WHERE target_ref = ?
             ORDER BY updated_at_ms DESC, assertion_id
-            LIMIT 20
+            LIMIT ?
             """,
-            (delegation_ref,),
+            (delegation_ref, _DELEGATION_ANNOTATION_REFS_LIMIT + 1),
         ).fetchall()
+        annotation_refs_truncated = len(assertion_rows) > _DELEGATION_ANNOTATION_REFS_LIMIT
+        assertion_rows = assertion_rows[:_DELEGATION_ANNOTATION_REFS_LIMIT]
         annotation_refs = tuple(f"assertion:{row['assertion_id']}" for row in assertion_rows)
 
     evidence_refs: list[str] = []
@@ -4375,6 +4421,7 @@ def get_delegation_card(
         parent_followup=parent_followup,
         parent_followup_truncated=parent_followup_truncated,
         annotation_refs=annotation_refs,
+        annotation_refs_truncated=annotation_refs_truncated,
         evidence_refs=tuple(dict.fromkeys(evidence_refs)),
     )
 
@@ -4388,8 +4435,17 @@ def query_delegations(
     session_filters: Mapping[str, object] | None = None,
     sort: None = None,
     sort_direction: Literal["asc", "desc"] = "asc",
+    after: DelegationPageKey | None = None,
+    max_text_bytes: int | None = None,
 ) -> list[ArchiveDelegationQueryRow]:
-    """Return delegation attempts without inferring child utility or success."""
+    """Return delegation attempts without inferring child utility or success.
+
+    ``after`` resumes strictly past a row in the same order and direction,
+    as a keyset alternative to ``offset`` for reading the whole relation.
+    ``max_text_bytes`` ends the page early once its rows' instruction and
+    artifact text would exceed that many bytes; a page always holds at
+    least one row, so a keyset reader still reaches every row.
+    """
 
     if sort is not None:
         raise ValueError("delegation rows do not expose an honest time sort")
@@ -4397,25 +4453,50 @@ def query_delegations(
     normalized_offset = max(int(offset), 0)
     order_direction = _query_unit_order_direction(sort_direction)
     clause, params = _structural_predicate_clause("delegation", "d", predicate, session_alias="s")
+    order_columns = (
+        "d.parent_session_id",
+        "COALESCE(d.instruction_tool_use_block_id, d.child_session_id, '')",
+        "(d.instruction_tool_use_block_id IS NULL)",
+    )
+    if after is not None:
+        comparison = ">" if order_direction == "ASC" else "<"
+        keyset = f"({', '.join(order_columns)}) {comparison} (?, ?, ?)"
+        clause = f"({clause}) AND {keyset}" if clause else keyset
+        params = [*params, after.parent_session_id, after.order_key, int(after.edge_only)]
     where_clause = f"WHERE {clause}" if clause else ""
     session_clause = ""
     session_params: list[object] = []
     if session_filters:
         session_clause, session_params = cast(Any, _session_filter_clause)("s", prefix="AND", **session_filters)
-    rows = self._conn.execute(
+    cursor = self._conn.execute(
         f"""
         SELECT d.*
         FROM delegation_facts d
         JOIN sessions s ON s.session_id = d.parent_session_id
         {where_clause}
         {session_clause}
-        ORDER BY d.parent_session_id {order_direction},
-                 COALESCE(d.instruction_tool_use_block_id, d.child_session_id) {order_direction}
+        ORDER BY {", ".join(f"{column} {order_direction}" for column in order_columns)}
         LIMIT ? OFFSET ?
         """,
         [*params, *session_params, normalized_limit, normalized_offset],
-    ).fetchall()
-    return [_archive_delegation_query_row(row) for row in rows]
+    )
+    if max_text_bytes is None:
+        return [_archive_delegation_query_row(row) for row in cursor.fetchall()]
+    page: list[ArchiveDelegationQueryRow] = []
+    text_bytes = 0
+    for row in cursor:
+        delegation = _archive_delegation_query_row(row)
+        row_bytes = sum(
+            len(text.encode("utf-8"))
+            for text in (delegation.instruction_payload, delegation.artifact_text)
+            if text is not None
+        )
+        if page and text_bytes + row_bytes > max_text_bytes:
+            break
+        page.append(delegation)
+        text_bytes += row_bytes
+    cursor.close()
+    return page
 
 
 def get_delegation_ancestry(self: _ArchiveQueryReadsHost, session_id: str) -> list[ArchiveDelegationAncestryRow]:

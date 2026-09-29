@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, TypeGuard
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
@@ -60,6 +60,34 @@ class BrowserCaptureAcceptedIdentity(BaseModel):
     adapter_version: str | None = None
 
 
+#: Attachment fields that carry the attachment's bytes as base64.
+ATTACHMENT_CARRIER_FIELDS: tuple[str, ...] = ("content_base64", "inline_base64", "data")
+
+
+class SpilledCarrier(str):
+    """An attachment byte carrier already decoded into the blob store.
+
+    The streamed ingest decode (``capture_stream.load_capture_for_ingest``)
+    puts one in place of a base64 string so the carrier is never held beside
+    the rest of the capture. JSON decoding cannot produce one, so a posted
+    envelope cannot claim a blob. It reads as the empty string to shape and
+    schema inspection; :func:`validate_capture_envelope` lifts it onto the
+    validated attachment.
+    """
+
+    blob_hash: str
+    size_bytes: int
+
+    def __new__(cls, blob_hash: str, size_bytes: int) -> SpilledCarrier:
+        carrier = super().__new__(cls, "")
+        carrier.blob_hash = blob_hash
+        carrier.size_bytes = size_bytes
+        return carrier
+
+    def __getnewargs__(self) -> tuple[str, int]:  # type: ignore[override]
+        return (self.blob_hash, self.size_bytes)
+
+
 class BrowserCaptureAttachment(BaseModel):
     """Attachment reference observed in a browser-hosted LLM session."""
 
@@ -75,11 +103,16 @@ class BrowserCaptureAttachment(BaseModel):
     content_base64: str | None = None
     data: str | None = None
     provider_meta: dict[str, object] = Field(default_factory=dict)
+    _spilled_carriers: dict[str, SpilledCarrier] = PrivateAttr(default_factory=dict)
 
     @field_validator("provider_meta", mode="before")
     @classmethod
     def coerce_provider_meta(cls, value: object) -> dict[str, object]:
         return dict(json_document(value))
+
+    def spilled_carrier(self, field_name: str) -> SpilledCarrier | None:
+        """The blob a streamed decode moved ``field_name``'s bytes into, if any."""
+        return self._spilled_carriers.get(field_name)
 
 
 class BrowserCaptureBlock(BaseModel):
@@ -343,7 +376,7 @@ class BrowserCaptureAcceptedPayload(BaseModel):
 
 
 class BrowserCaptureCapabilitiesPayload(BaseModel):
-    """Receiver-declared browser-capture contract required before backfill."""
+    """Receiver-declared browser-capture capabilities required by extensions."""
 
     ok: Literal[True] = True
     receiver: Literal["polylogue-browser-capture"] = BROWSER_CAPTURE_RECEIVER
@@ -352,6 +385,7 @@ class BrowserCaptureCapabilitiesPayload(BaseModel):
         "receiver_request_id",
         "content_hash",
     )
+    assertion_candidates: Literal[True] = True
 
 
 class BrowserBackfillCheckpointRequest(BaseModel):
@@ -547,6 +581,8 @@ class BrowserActionTarget(BaseModel):
 
 class BrowserActionPresentation(BaseModel):
     """Exact provider UI selection requested at the submit boundary."""
+
+    model_config = ConfigDict(protected_namespaces=())
 
     surface: Literal["chat"] = "chat"
     model_slug: str = Field(min_length=1, max_length=160)
@@ -770,6 +806,40 @@ def envelope_has_native_provider_payload(envelope: BrowserCaptureEnvelope) -> bo
     return False
 
 
+def _lift_spilled_carriers(raw_items: object, attachments: list[BrowserCaptureAttachment]) -> None:
+    if not isinstance(raw_items, list):
+        return
+    for raw, attachment in zip(raw_items, attachments, strict=False):
+        if not isinstance(raw, Mapping):
+            continue
+        spilled = {
+            field_name: value
+            for field_name in ATTACHMENT_CARRIER_FIELDS
+            if isinstance(value := raw.get(field_name), SpilledCarrier)
+        }
+        if spilled:
+            attachment._spilled_carriers = spilled
+
+
+def validate_capture_envelope(payload: object) -> BrowserCaptureEnvelope:
+    """Validate an envelope, keeping carriers a streamed decode spilled.
+
+    Validation turns a :class:`SpilledCarrier` into a plain empty string;
+    the blob it names is re-attached to the attachment at the same position.
+    """
+    envelope = BrowserCaptureEnvelope.model_validate(payload)
+    session = payload.get("session") if isinstance(payload, Mapping) else None
+    if not isinstance(session, Mapping):
+        return envelope
+    _lift_spilled_carriers(session.get("attachments"), envelope.session.attachments)
+    raw_turns = session.get("turns")
+    if isinstance(raw_turns, list):
+        for raw_turn, turn in zip(raw_turns, envelope.session.turns, strict=False):
+            if isinstance(raw_turn, Mapping):
+                _lift_spilled_carriers(raw_turn.get("attachments"), turn.attachments)
+    return envelope
+
+
 def looks_like_browser_capture(payload: object) -> bool:
     """Return whether a payload is a browser-capture envelope."""
     if not isinstance(payload, dict):
@@ -818,7 +888,10 @@ __all__ = [
     "BrowserCaptureCapabilitiesPayload",
     "BrowserCaptureArchiveLifecycle",
     "BrowserCaptureArchiveStatePayload",
+    "ATTACHMENT_CARRIER_FIELDS",
     "BrowserCaptureAttachment",
+    "SpilledCarrier",
+    "validate_capture_envelope",
     "BrowserCaptureEnvelope",
     "BrowserCaptureErrorPayload",
     "BrowserCaptureInterruption",

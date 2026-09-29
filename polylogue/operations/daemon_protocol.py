@@ -94,6 +94,11 @@ class ChronicleReadRequest(QueryRequest):
     projection: dict[str, object] = Field(default_factory=dict)
 
 
+class CompactReadRequest(QueryRequest):
+    session_id: str | None = None
+    projection: dict[str, object] = Field(default_factory=dict)
+
+
 class EffectiveContextReadRequest(_OperationPayload):
     session_id: str = Field(min_length=1)
     at_position: int | None = None
@@ -507,13 +512,21 @@ class InsightRebuildRequest(_OperationPayload):
         return self
 
 
+#: Transport bound shared by every delete phase. A selection accepted by the
+#: preview yields one preview (then authorization) reference per chunk, so the
+#: follow-up phases must accept a body sized for the same selection.
+DELETE_SELECTION_MAX_BODY_BYTES = 64 * 1024 * 1024
+
+
 class DeletePreviewRequest(_OperationPayload):
-    session_ids: list[str] = Field(min_length=1, max_length=10_000)
+    # No count cap: the preview splits any selection into bounded audit
+    # chunks, and the operation's ``max_body_bytes`` bounds the transport.
+    session_ids: list[str] = Field(min_length=1)
 
 
 class DeleteAuthorizeRequest(_OperationPayload):
     preview_ref: str | None = Field(default=None, min_length=1)
-    preview_refs: list[str] | None = Field(default=None, min_length=1, max_length=40)
+    preview_refs: list[str] | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def exact_reference_shape(self) -> DeleteAuthorizeRequest:
@@ -532,7 +545,7 @@ class DeleteCancelRequest(DeleteAuthorizeRequest):
 
 class DeleteExecuteRequest(_OperationPayload):
     authorization_ref: str | None = Field(default=None, min_length=1)
-    authorization_refs: list[str] | None = Field(default=None, min_length=1, max_length=40)
+    authorization_refs: list[str] | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def exact_reference_shape(self) -> DeleteExecuteRequest:
@@ -645,6 +658,8 @@ class AssertionCandidateCaptureRequest(_OperationPayload):
     kind: str = Field(min_length=1, max_length=64)
     refs: list[str] = Field(default_factory=list, max_length=64)
     scope_refs: list[str] = Field(default_factory=list, max_length=64)
+    # Bounded by the operation's request body size, not by a count.
+    evidence_refs: list[str] = Field(default_factory=list)
     cwd: str | None = None
     author_ref: str = Field(default="user:local", min_length=1, max_length=512)
     author_kind: str = Field(default="user", min_length=1, max_length=64)
@@ -655,7 +670,7 @@ class AssertionCandidateCaptureRequest(_OperationPayload):
     def nonblank_body_and_refs(self) -> AssertionCandidateCaptureRequest:
         if not self.body_text.strip():
             raise ValueError("note text cannot be empty")
-        if any(not value.strip() for value in (*self.refs, *self.scope_refs)):
+        if any(not value.strip() for value in (*self.refs, *self.scope_refs, *self.evidence_refs)):
             raise ValueError("refs must be nonempty")
         return self
 
@@ -698,6 +713,8 @@ class AnnotationBatchImportOperationRequest(_OperationPayload):
     ``polylogue.annotations.importer`` is not one of the four executor
     modules it names (polylogue-gjwto / polylogue-r29bv AC3).
     """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True, protected_namespaces=())
 
     jsonl: str = Field(min_length=1, max_length=MAX_ANNOTATION_IMPORT_BYTES)
     batch_id: str = Field(min_length=1, max_length=256)
@@ -762,6 +779,7 @@ class SessionExcisionRequest(_OperationPayload):
     reason: str = Field(min_length=1, max_length=4096)
     actor: str = Field(min_length=1, max_length=512)
     cascade_lineage: bool = False
+    confirm: bool = False
 
 
 class SessionLifecycleRequest(_OperationPayload):
@@ -769,16 +787,19 @@ class SessionLifecycleRequest(_OperationPayload):
     mode: Literal["mirror", "primary"]
     reason: str = Field(min_length=1, max_length=4096)
     actor: str = Field(min_length=1, max_length=512)
+    confirm: bool = False
 
 
 class IdentityResetRequest(_OperationPayload):
     session_ids: list[str] = Field(min_length=1, max_length=10_000)
     reason: str = Field(min_length=1, max_length=4096)
+    confirm: bool = False
 
 
 class RawAuthorityBlockerResolveRequest(_OperationPayload):
     blocker_id: str = Field(min_length=1)
     resolution: str = Field(min_length=1, max_length=4096)
+    confirm: bool = False
 
 
 class ResetRequest(_OperationPayload):
@@ -791,10 +812,15 @@ class ResetRequest(_OperationPayload):
     cache: bool = False
     auth: bool = False
     reset_all: bool = False
+    confirm: bool = False
+    # Omitted means "no preview was asserted"; an explicit list, even an empty
+    # one, must equal the resolved targets.
+    expected_targets: list[str] | None = Field(default=None, max_length=10_000)
 
 
 class BlobPublicationsAbandonRequest(_OperationPayload):
-    publication_ids: list[str] = Field(min_length=1, max_length=10_000)
+    publication_ids: list[str] = Field(min_length=1, max_length=256)
+    confirm: bool = False
 
 
 class DemoAugmentRequest(_OperationPayload):
@@ -945,6 +971,11 @@ class ChronicleReadResult(_OperationResult):
     payload: dict[str, object]
 
 
+class CompactReadResult(_OperationResult):
+    view: Literal["compact"]
+    payload: dict[str, object]
+
+
 class EffectiveContextReadResult(_OperationResult):
     view: Literal["effective_context"]
     payload: dict[str, object]
@@ -1090,7 +1121,7 @@ class MutationResult(_OperationPayload):
     preview_refs: list[str] | None = None
     authorization_ref: str | None = None
     authorization_refs: list[str] | None = None
-    session_ids: list[str] | None = None
+    session_ids_sample: list[str] | None = None
     session_count: int | None = Field(default=None, ge=0)
     expires_at_ms: int | None = None
     outcome: str | None = None
@@ -1133,10 +1164,17 @@ class MutationResult(_OperationPayload):
             if self.outcome not in DAEMON_OPERATION_OUTCOMES or self.sequence is None:
                 raise ValueError("mutation lifecycle result requires outcome and durable sequence")
         elif self.status == "prepared":
-            if not self.preview_refs or self.preview_ref != self.preview_refs[0] or self.session_ids is None:
-                raise ValueError("prepared result requires exact preview references and selection")
-            if self.session_count != len(self.session_ids) or self.expires_at_ms is None:
-                raise ValueError("prepared result requires selection count and expiry")
+            from polylogue.operations.mutation_transaction import DELETE_PREVIEW_SAMPLE_IDS
+
+            if not self.preview_refs or self.preview_ref != self.preview_refs[0] or self.session_ids_sample is None:
+                raise ValueError("prepared result requires exact preview references and selection sample")
+            if (
+                self.session_count is None
+                or self.session_count < 1
+                or len(self.session_ids_sample) != min(self.session_count, DELETE_PREVIEW_SAMPLE_IDS)
+                or self.expires_at_ms is None
+            ):
+                raise ValueError("prepared result requires selection count, its leading sample and expiry")
         elif self.status == "authorized":
             if not self.authorization_refs or self.authorization_ref != self.authorization_refs[0]:
                 raise ValueError("authorized result requires exact authorization references")
@@ -1146,27 +1184,33 @@ class MutationResult(_OperationPayload):
 
 
 class EmbeddingBackfillProgress(_OperationPayload):
-    state: Literal["stopped", "complete"]
-    computed: int = Field(ge=0)
-    failed: int = Field(ge=0)
-    estimated_cost_usd: float = Field(ge=0)
+    state: Literal["stopped", "complete", "unknown"]
+    computed: int | None = Field(default=None, ge=0)
+    failed: int | None = Field(default=None, ge=0)
+    estimated_cost_usd: float | None = Field(default=None, ge=0)
 
 
 class EmbeddingBackfillCounts(_OperationPayload):
-    done: int = Field(ge=0)
-    pending: int = Field(ge=0)
-    failed: int = Field(ge=0)
+    done: int | None = Field(default=None, ge=0)
+    pending: int | None = Field(default=None, ge=0)
+    failed: int | None = Field(default=None, ge=0)
+
+
+class EmbeddingBackfillFailure(_OperationPayload):
+    code: str = Field(min_length=1, max_length=64)
+    message: str = Field(min_length=1, max_length=512)
 
 
 class EmbeddingBackfillResult(_OperationPayload):
     operation: Literal["maintenance.embeddings.backfill"]
     outcome: Literal["completed", "stopped", "cancelled", "failed"]
     sequence: int = Field(ge=1)
-    effect: Literal["committed", "no-effect"]
-    affected_count: int = Field(ge=0)
+    effect: Literal["committed", "no-effect", "indeterminate"]
+    affected_count: int | None = Field(default=None, ge=0)
     stop_reason: str | None = None
     progress: EmbeddingBackfillProgress
     result: EmbeddingBackfillCounts
+    error: EmbeddingBackfillFailure | None = None
 
 
 class AcceptedOperationReference(_OperationPayload):
@@ -1180,14 +1224,9 @@ class AcceptedOperationReference(_OperationPayload):
     artifact_kind: str = Field(min_length=1)
     artifact_ref: str = Field(min_length=1)
     accepted_at_ms: int = Field(ge=0)
-    part_count: int = Field(ge=1, le=4096)
+    #: Paged machine batches accept any number of parts (polylogue-zxbbl).
+    part_count: int = Field(ge=1)
     accepted_deadline_unix_ms: int | None
-
-    @model_validator(mode="after")
-    def operation_part_bound(self) -> AcceptedOperationReference:
-        if self.operation_name != "maintenance.insights.rebuild" and self.part_count > 40:
-            raise ValueError("operation exceeds its forty-part acceptance bound")
-        return self
 
     def to_dict(self) -> dict[str, object]:
         return self.model_dump(mode="json")
@@ -1451,6 +1490,14 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="read.chronicle.result/v1",
         request_model=ChronicleReadRequest,
         result_model=ChronicleReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.compact",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.compact.result/v1",
+        request_model=CompactReadRequest,
+        result_model=CompactReadResult,
     ),
     DaemonOperationSpec(
         "read.effective_context",
@@ -2139,10 +2186,12 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.WRITE,
         DaemonFallback.NEVER,
         capability="archive.delete_session",
-        deadline_s=30.0,
-        # A preview carries the exact selection: up to
-        # ``DELETE_PREVIEW_MAX_SESSION_IDS`` session ids, not a parameter map.
-        max_body_bytes=64 * 1024 * 1024,
+        # Accepted durably at its first page; the caller follows the durable
+        # request to completion (polylogue-zxbbl), within the budget execute has.
+        deadline_s=300.0,
+        # A preview carries the exact selection -- every session id, split
+        # into bounded preview chunks -- not a parameter map.
+        max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.preview.request/v1",
         result_contract="mutation.session.delete.preview.result/v1",
         request_type="DeletePreviewRequest",
@@ -2155,7 +2204,11 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.WRITE,
         DaemonFallback.NEVER,
         capability="archive.delete_session",
-        deadline_s=30.0,
+        # Accepted durably at its first page; the caller follows the durable
+        # request to completion (polylogue-zxbbl), within the budget execute has.
+        deadline_s=300.0,
+        # Carries one reference per preview chunk of the selection.
+        max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.authorize.request/v1",
         result_contract="mutation.session.delete.authorize.result/v1",
         request_type="DeleteAuthorizeRequest",
@@ -2168,7 +2221,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.CONTROL,
         DaemonFallback.NEVER,
         capability="archive.delete_session",
-        deadline_s=30.0,
+        # Paged like the preview it releases, within the same budget.
+        deadline_s=300.0,
+        # Carries one reference per preview chunk of the selection.
+        max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.cancel.request/v1",
         result_contract="mutation.session.delete.cancel.result/v1",
         request_type="DeleteCancelRequest",
@@ -2184,6 +2240,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=300.0,
         progress=True,
         accepted_reference=True,
+        # Carries one reference per preview chunk of the selection.
+        max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.execute.request/v1",
         result_contract="mutation.result/v1",
         request_type="DeleteExecuteRequest",
@@ -2254,7 +2312,9 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonFallback.NEVER,
         capability="archive.capture_assertion_candidate",
         deadline_s=120.0,
-        max_body_bytes=1024 * 1024,
+        # 256 KiB of stdin can expand to six JSON bytes per control character
+        # when ensure_ascii escaping is applied by the daemon client.
+        max_body_bytes=2 * 1024 * 1024,
         request_contract="mutation.assertion.candidate.capture.request/v1",
         result_contract="mutation.result/v1",
         request_type="AssertionCandidateCaptureRequest",
@@ -2285,13 +2345,14 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonFallback.NEVER,
         capability="archive.import_annotation_batch",
         deadline_s=120.0,
-        max_body_bytes=MAX_ANNOTATION_IMPORT_BYTES + 64 * 1024,
+        max_body_bytes=MAX_ANNOTATION_IMPORT_BYTES * 6 + 64 * 1024,
         request_contract="mutation.annotation.import_batch.request/v1",
         result_contract="mutation.result/v1",
         request_type="AnnotationBatchImportOperationRequest",
         result_type="MutationResult",
         request_model=AnnotationBatchImportOperationRequest,
         result_model=MutationResult,
+        idempotent=True,
         handler="mutation_annotation_import_batch",
     ),
     DaemonOperationSpec(

@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
     from polylogue.config import Config
     from polylogue.core.protocols import VectorProvider
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSearchHit, ArchiveSessionSummary
 
 LaneName = Literal["text", "action", "vector"]
 LaneFailureKind = Literal["unavailable", "construction_failed", "execution_failed"]
@@ -47,6 +48,15 @@ class SearchExecution:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class ArchiveSearchResult:
+    """One ranked read and the lane evidence from that same execution."""
+
+    hits: list[tuple[ArchiveSessionSearchHit, ArchiveSessionSummary]]
+    retrieval_lane: str
+    execution: SearchExecution
+
+
 def resolve_vector_provider(
     config: Config | None,
     *,
@@ -59,10 +69,14 @@ def resolve_vector_provider(
     from polylogue.storage.search_providers import create_vector_provider
 
     try:
-        resolved = create_vector_provider(
-            config,
-            db_path=archive_root / "embeddings.db",
-            archive_root=archive_root,
+        resolved = (
+            None
+            if config is None
+            else create_vector_provider(
+                config,
+                db_path=archive_root / "embeddings.db",
+                archive_root=archive_root,
+            )
         )
     except Exception as exc:
         return None, LaneFailure(
@@ -81,4 +95,4 @@ def resolve_vector_provider(
     return resolved, None
 
 
-__all__ = ["LaneFailure", "SearchExecution", "resolve_vector_provider"]
+__all__ = ["ArchiveSearchResult", "LaneFailure", "SearchExecution", "resolve_vector_provider"]

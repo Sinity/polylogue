@@ -19,8 +19,8 @@ from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast, overload
 
 from polylogue.core.digest import QUERY
 from polylogue.core.enums import BlockType, Origin, Provider
-from polylogue.core.hashing import hash_bytes, hash_payload
-from polylogue.core.json import JSONValue, dumps
+from polylogue.core.hashing import hash_bytes, hash_item_payload, hash_payload
+from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.sqlite_scratch import connect_scratch_database
@@ -157,6 +157,7 @@ _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
     },
     "ParsedSession": {
         "content_hash": "parse-side validated identity carrier, not semantic session content",
+        "enrichment_evidence_key": "binding to the retained evidence enrichment read, not session content",
         "provider_session_aliases": "parser-derived alternate session identifiers are retained as lookup metadata",
         "created_at_provenance": "timestamp authority provenance is independent metadata",
         "updated_at_provenance": "timestamp authority provenance is independent metadata",
@@ -225,8 +226,15 @@ def bound_session_content_hash(convo: ParsedSession) -> ContentHash | None:
 
 def _hash_field_value(value: object) -> JSONValue:
     cls = type(value)
-    if cls is str or value is None or cls is int or cls is bool or cls is float:
-        # Plain scalars carry neither ``model_dump`` nor a nested container.
+    if cls is str:
+        return _EMPTY_SENTINEL if value == "" else nfc(cast(str, value))
+    if value is None:
+        return _NULL_SENTINEL
+    if cls is int or cls is bool or cls is float:
+        return cast(JSONValue, value)
+    if cls is dict or cls is tuple or isinstance(value, Enum):
+        # Neither a pydantic model nor a list to unpack: straight to the plain
+        # walk, without the ``model_dump`` probe or the ``Mapping`` ABC check.
         return cast(JSONValue, _normalize_nested_for_hash(value))
     if hasattr(value, "model_dump"):
         value = value.model_dump(mode="json")
@@ -481,7 +489,11 @@ def _canonical_sort_key(value: object) -> str:
     over everything the vocabulary below admits, and is the same idiom the
     publication encoder already uses (``sinex/material_adapter.py``).
     """
-    return dumps(value, sort_keys=True)
+    # The query digest's stdlib encoder preserves the non-finite float tokens,
+    # while the core JSON document encoder intentionally lowers them to null.
+    # Use the digest representation here so NaN and infinities cannot tie in
+    # a set's sort key and leak the set's iteration order into the hash.
+    return hash_payload(value)
 
 
 def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> object:
@@ -735,7 +747,7 @@ def idless_session_identity(
         ),
         "first_message_text": _normalize_for_hash(first_message_text if isinstance(first_message_text, str) else None),
     }
-    return f"conversation-{hash_payload(payload)[:24]}"
+    return f"conversation-{hash_item_payload(payload)[:24]}"
 
 
 def message_id(session_id: SessionId, provider_message_id: str) -> MessageId:
@@ -837,7 +849,7 @@ def message_content_identity(message: ParsedMessage) -> str:
     message that is inserted, removed or reordered *elsewhere* in the export
     must not change the identity of this one (polylogue-eqsri).
     """
-    return hash_payload(_message_semantic_payload(message))[:MESSAGE_CONTENT_IDENTITY_HEX_CHARS]
+    return hash_item_payload(_message_semantic_payload(message))[:MESSAGE_CONTENT_IDENTITY_HEX_CHARS]
 
 
 def message_content_identities(
@@ -985,7 +997,7 @@ def _message_revision_match_id(message: ParsedMessage) -> str:
         payload["text"] = _normalize_for_hash(message.text)
         if message.blocks and not _is_redundant_text_only_block(message):
             payload["content_blocks"] = [_content_block_payload(b) for b in message.blocks]
-    return f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload(payload)}"
+    return f"{_CONTENT_ANCHOR_PREFIX}:{hash_item_payload(payload)}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1123,7 +1135,7 @@ def disk_message_owner_resolution(messages: Sequence[ParsedMessage]) -> Iterator
         for ordinal, message in enumerate(messages):
             total = ordinal + 1
             revision = _message_revision_match_id(message)
-            content = f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload(_message_comparison_payload(message))}"
+            content = f"{_CONTENT_ANCHOR_PREFIX}:{hash_item_payload(_message_comparison_payload(message))}"
             coordinate = _message_owner_coordinate(message, ordinal)
             stable = coordinate.stable_key
             physical = coordinate.physical_key
@@ -1212,7 +1224,7 @@ def message_owner_resolution(messages: list[ParsedMessage]) -> MessageOwnerResol
     revision_ids = tuple(_message_revision_match_id(message) for message in messages)
     revision_counts = Counter(revision_ids)
     content_ids = tuple(
-        f"{_CONTENT_ANCHOR_PREFIX}:{hash_payload(_message_comparison_payload(message))}" for message in messages
+        f"{_CONTENT_ANCHOR_PREFIX}:{hash_item_payload(_message_comparison_payload(message))}" for message in messages
     )
     content_counts = Counter(content_ids)
     coordinates = tuple(_message_owner_coordinate(message, index) for index, message in enumerate(messages))
@@ -1335,7 +1347,7 @@ def message_identity_hash(*, id: str) -> bytes:
     covers requires editing this signature -- an explicit, reviewable
     decision, never a side effect of a parser gaining a new field.
     """
-    return bytes.fromhex(hash_payload({"id": id}))
+    return bytes.fromhex(hash_item_payload({"id": id}))
 
 
 #: Fields of an attachment hash payload that answer *which attachment is
@@ -1372,7 +1384,7 @@ def attachment_identity_hash(*, message_id: JSONValue, name: JSONValue, mime_typ
     (e.g. spreading a full attachment payload dict as ``**kwargs``) is a
     ``TypeError``, not a value this function has to remember to strip.
     """
-    return bytes.fromhex(hash_payload({"message_id": message_id, "name": name, "mime_type": mime_type}))
+    return bytes.fromhex(hash_item_payload({"message_id": message_id, "name": name, "mime_type": mime_type}))
 
 
 def _attachment_hash_payload(
@@ -1496,7 +1508,7 @@ def _event_content_payload(event: ParsedSessionEvent) -> dict[str, JSONValue]:
         "event_type": _normalize_for_hash(event.event_type),
         "timestamp": _normalize_for_hash(timestamp),
         "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
-        "payload": hash_payload(_hashed_event_payload(event.event_type, payload)),
+        "payload": hash_item_payload(_hashed_event_payload(event.event_type, payload)),
     }
 
 
@@ -1521,7 +1533,7 @@ def event_base_identity_hash(*, event_type: JSONValue, source_message_provider_i
     ``timestamp``/``payload``) is a ``TypeError``.
     """
     return bytes.fromhex(
-        hash_payload({"event_type": event_type, "source_message_provider_id": source_message_provider_id})
+        hash_item_payload({"event_type": event_type, "source_message_provider_id": source_message_provider_id})
     )
 
 
@@ -1543,7 +1555,7 @@ def event_anchor_free_identity_hash(content_payload: Mapping[str, JSONValue]) ->
     moved event with itself.
     """
     return bytes.fromhex(
-        hash_payload({key: value for key, value in content_payload.items() if key != "source_message_provider_id"})
+        hash_item_payload({key: value for key, value in content_payload.items() if key != "source_message_provider_id"})
     )
 
 
@@ -1555,7 +1567,7 @@ def event_canonical_identity_hash(*, base_identity: bytes, content_hash: bytes) 
     ``chatgpt_block_metadata`` events on the same message, one per block) --
     still content-derived, never the array index (polylogue-aggz).
     """
-    return bytes.fromhex(hash_payload({"base_identity": base_identity.hex(), "content": content_hash.hex()}))
+    return bytes.fromhex(hash_item_payload({"base_identity": base_identity.hex(), "content": content_hash.hex()}))
 
 
 def _session_hash_payload(
@@ -1599,7 +1611,9 @@ def _session_hash_components(
     caller re-deriving its own copy. Byte-identical to computing each
     payload independently -- pure sharing of an already-pure computation.
     """
-    owner_resolution = message_owner_resolution(convo.messages)
+    # Owner keys anchor attachments only; the disk-backed route resolves them
+    # under the same condition.
+    owner_resolution = message_owner_resolution(convo.messages) if convo.attachments else None
     # Private owner keys may use duplicate-occurrence evidence. Revision
     # identity must remain the intrinsic role/timestamp axis for timestamped
     # id-less messages, independent of the sibling count in this acquisition.
@@ -1610,6 +1624,7 @@ def _session_hash_components(
     ]
     attachments_payload: list[dict[str, JSONValue]] = []
     for attachment in convo.attachments:
+        assert owner_resolution is not None
         try:
             owner_anchor = attachment_message_owner_key(attachment, owner_resolution)
         except MessageOwnerAmbiguityError:
@@ -1623,7 +1638,7 @@ def _session_hash_components(
             "event_type": _normalize_for_hash(event.event_type),
             "timestamp": _normalize_for_hash(event.timestamp),
             "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
-            "payload": hash_payload(_hashed_event_payload(event.event_type, event.payload)),
+            "payload": hash_item_payload(_hashed_event_payload(event.event_type, event.payload)),
         }
         for event_index, event in enumerate(convo.session_events)
     ]
@@ -1637,9 +1652,7 @@ def _session_tree_hash(
     attachments_payload: list[dict[str, JSONValue]],
     session_events_payload: list[dict[str, JSONValue]],
 ) -> str:
-    session_fields = _model_hash_payload(
-        convo, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}
-    )
+    session_fields = _session_semantic_fields(convo)
     return hash_payload(
         _session_hash_payload(
             title=convo.title,
@@ -1651,6 +1664,15 @@ def _session_tree_hash(
         )
         | {"semantic_session_fields": session_fields}
     )
+
+
+def _session_semantic_fields(convo: ParsedSession) -> dict[str, JSONValue]:
+    fields = _model_hash_payload(convo, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"})
+    # Provider aliases can map to the same public source identity. Hash that
+    # canonical identity so replay through an alternate supported route does
+    # not create a content revision for identical session content.
+    fields["source_name"] = _normalize_for_hash(origin_from_provider(convo.source_name).value)
+    return fields
 
 
 def _stream_session_tree_hash(convo: ParsedSession) -> str:
@@ -1731,7 +1753,7 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
             literal(",")
         write(_message_hash_payload(message, _message_revision_match_id(message)))
     literal('],"semantic_session_fields":')
-    write(_model_hash_payload(convo, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}))
+    write(_session_semantic_fields(convo))
     literal(',"session_events":[')
     for event_index, event in enumerate(convo.session_events):
         if event_index:
@@ -1742,7 +1764,7 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
                 "event_type": _normalize_for_hash(event.event_type),
                 "timestamp": _normalize_for_hash(event.timestamp),
                 "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
-                "payload": hash_payload(_hashed_event_payload(event.event_type, event.payload)),
+                "payload": hash_item_payload(_hashed_event_payload(event.event_type, event.payload)),
             }
         )
     literal('],"title":')
@@ -1789,7 +1811,7 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
             native_id = payload["id"]
             assert isinstance(native_id, str)
             identity = message_identity_hash(id=native_id)
-            content = bytes.fromhex(hash_payload(payload))
+            content = bytes.fromhex(hash_item_payload(payload))
             conn.execute("INSERT INTO message_hash VALUES (?, ?)", (message_count - 1, content))
             conn.execute(
                 "INSERT INTO message_content VALUES (?, ?, 1) ON CONFLICT(identity, content) "
@@ -1822,17 +1844,17 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
                 "event_type": _normalize_for_hash(event.event_type),
                 "timestamp": _normalize_for_hash(event.timestamp),
                 "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
-                "payload": hash_payload(_hashed_event_payload(event.event_type, event.payload)),
+                "payload": hash_item_payload(_hashed_event_payload(event.event_type, event.payload)),
             }
             conn.execute(
-                "INSERT INTO event_hash VALUES (?, ?)", (event_count - 1, bytes.fromhex(hash_payload(payload)))
+                "INSERT INTO event_hash VALUES (?, ?)", (event_count - 1, bytes.fromhex(hash_item_payload(payload)))
             )
             content_payload = _event_content_payload(event)
             base_identity = event_base_identity_hash(
                 event_type=content_payload["event_type"],
                 source_message_provider_id=content_payload["source_message_provider_id"],
             )
-            content = bytes.fromhex(hash_payload(content_payload))
+            content = bytes.fromhex(hash_item_payload(content_payload))
             canonical_identity = event_canonical_identity_hash(base_identity=base_identity, content_hash=content)
             conn.execute("INSERT OR IGNORE INTO event_content VALUES (?, ?)", (canonical_identity, content))
             if _anchor_is_remeasured(event):
@@ -1902,7 +1924,7 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
         identity = message_identity_hash(id=message_native_id)
         if not message.provider_message_id.strip() and message.timestamp is not None:
             mutable_message_identities.add(identity)
-        content = bytes.fromhex(hash_payload(payload))
+        content = bytes.fromhex(hash_item_payload(payload))
         message_content_counts[(identity, content)] += 1
         message_hashes.append(content)
     attachment_identities: set[bytes] = set()
@@ -1920,7 +1942,7 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
     event_content_hashes: list[bytes] = []
     event_anchor_free_identities: list[bytes | None] = []
     for payload, event in zip(session_events_payload, convo.session_events, strict=True):
-        event_hashes.append(bytes.fromhex(hash_payload(payload)))
+        event_hashes.append(bytes.fromhex(hash_item_payload(payload)))
         content_payload = _event_content_payload(event)
         event_base_identities.append(
             event_base_identity_hash(
@@ -1928,7 +1950,7 @@ def session_revision_projection(convo: ParsedSession) -> SessionRevisionProjecti
                 source_message_provider_id=content_payload["source_message_provider_id"],
             )
         )
-        event_content_hashes.append(bytes.fromhex(hash_payload(content_payload)))
+        event_content_hashes.append(bytes.fromhex(hash_item_payload(content_payload)))
         # Narrowed to the same shape the payload allowlist targets: an event
         # type with a registered allowlist that declares itself
         # provider-remeasured. That is the ChatGPT generation_lifecycle shape

@@ -9,12 +9,13 @@ from itertools import chain
 from typing import IO, TYPE_CHECKING
 
 from polylogue.archive.artifact_taxonomy import ArtifactClassification, classify_artifact
-from polylogue.core.content_identity import payload_content_identity
+from polylogue.core.content_identity import ContentIdentityRefusal, payload_content_identity
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.logging import get_logger
 
+from .acquisition_boundary import admit_bound_bytes, bind_stream, drain_bound
 from .assembly import get_assembly_spec
 from .cursor import _ParseContext
 from .decoder_json import JsonValue
@@ -95,6 +96,39 @@ class _SessionEmitter:
                 Used when the caller pre-read the whole file for grouped
                 providers with ``capture_raw=True``.
         """
+        # Every route into parsing reads through the acquisition boundary: a
+        # record of another origin at a bound location is refused as its
+        # bytes are read, before any record is decoded or parsed.
+        handle = bind_stream(handle, stream_name, self._ctx.bound_provider)
+        if pre_read_bytes is not None:
+            admit_bound_bytes(pre_read_bytes, stream_name, self._ctx.bound_provider)
+        emitted = self._emit_stream(handle, stream_name, pre_read_bytes, precomputed_raw, session_artifact)
+        if self._ctx.bound_provider is None:
+            yield from emitted
+            return
+        # At a bound location the stream is one admission unit: a record is
+        # refused only when its bytes are read, so no session leaves before
+        # the whole stream validated.
+        collected: list[tuple[RawSessionData | None, ParsedSession]] = []
+        try:
+            collected.extend(emitted)
+        except ContentIdentityRefusal:
+            # An element whose identity cannot be stored is the stream's
+            # recorded gap; the sessions parsed beside it are still emitted
+            # once the rest of the stream validated.
+            drain_bound(handle)
+            yield from collected
+            raise
+        yield from collected
+
+    def _emit_stream(
+        self,
+        handle: IO[bytes],
+        stream_name: str,
+        pre_read_bytes: bytes | None,
+        precomputed_raw: RawSessionData | None,
+        session_artifact: ArtifactClassification | None,
+    ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         is_jsonl = is_jsonl_source_path(stream_name)
 
         if is_jsonl and self._ctx.should_group:
@@ -200,6 +234,7 @@ class _SessionEmitter:
         session_artifact: ArtifactClassification | None = None,
     ) -> Iterable[tuple[RawSessionData | None, ParsedSession]]:
         source_index = 0
+        refusals: list[ContentIdentityRefusal] = []
         for payload in payloads:
             try:
                 resolved = self._resolve_payload(payload)
@@ -216,11 +251,18 @@ class _SessionEmitter:
                     raw_data: RawSessionData | None = whole_file_raw
                 elif self._ctx.capture_raw:
                     raw_bytes = json_dumps_bytes(payload)
-                    raw_data = self._make_raw(
-                        raw_bytes,
-                        source_index=source_index,
-                        provider_override=resolved.provider,
-                    )
+                    try:
+                        raw_data = self._make_raw(
+                            raw_bytes,
+                            source_index=source_index,
+                            provider_override=resolved.provider,
+                        )
+                    except ContentIdentityRefusal as refusal:
+                        # This element is the member's recorded gap; the
+                        # elements after it are still parsed and captured.
+                        refusals.append(refusal)
+                        source_index += 1
+                        continue
                 else:
                     raw_data = None
 
@@ -236,6 +278,8 @@ class _SessionEmitter:
             except Exception:
                 logger.exception("Error processing payload from %s", stream_name)
                 raise
+        if refusals:
+            raise refusals[0]
 
     def _sniff_jsonl_payloads(
         self,

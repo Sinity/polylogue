@@ -167,10 +167,6 @@
       "digest": "9198064b17098044e3a9af4623b1e43ebc84346b"
     },
     {
-      "file": "polylogue/daemon/catchup_status.py",
-      "digest": "ff72e875274ffcc19b05228caaf1cb09f45b030c"
-    },
-    {
       "file": "polylogue/daemon/cli.py",
       "digest": "8eb587bcf838ae5e852841cf5d7fe9652f69bca2"
     },
@@ -722,20 +718,12 @@
       "count": 2
     },
     {
-      "file": "polylogue/sources/live/cursor.py",
-      "digest": "81ce7f9a711dc1ef2bf4b4a372c6985e3f0e7b1e"
-    },
-    {
       "file": "polylogue/sources/live/hook_tool_response.py",
       "digest": "9ed4db00c6ca6fc8fb93ce408c457615f4badac9"
     },
     {
       "file": "polylogue/sources/live/hook_tool_response.py",
       "digest": "a7b83dca8221443a76d724228c62f508d6db99a5"
-    },
-    {
-      "file": "polylogue/sources/live/production_baseline.py",
-      "digest": "741396bb2726923221c287c8d117a21e8cd57b33"
     },
     {
       "file": "polylogue/sources/live/sqlite_locking.py",
@@ -928,10 +916,6 @@
     },
     {
       "file": "polylogue/storage/sqlite/agent_thread_state.py",
-      "digest": "4a5bdd9359f15bafda7bf01f764e2efc6a7f9492"
-    },
-    {
-      "file": "polylogue/storage/sqlite/agent_thread_state.py",
       "digest": "521aacc1dc4345c4827c7c3ace113ce663bd8b96"
     },
     {
@@ -966,10 +950,6 @@
     {
       "file": "polylogue/storage/sqlite/archive_tiers/write.py",
       "digest": "6cb024d5e4962151626476fa9419117a7e6abf4d"
-    },
-    {
-      "file": "polylogue/storage/sqlite/audit_continuity.py",
-      "digest": "8d4646d35d5aa424ac37aacbc1389babe82b87ad"
     },
     {
       "file": "polylogue/storage/sqlite/connection_profile.py",
@@ -1014,6 +994,14 @@
     {
       "file": "polylogue/storage/usage.py",
       "digest": "97fe52950a1ef81ad18bea6adf76e4c6bd298919"
+    },
+    {
+      "file": "polylogue/sources/codex_state_evidence.py",
+      "digest": "54d96cca8ab9b6943fd62cb5326413f33fdd9d70"
+    },
+    {
+      "file": "polylogue/sources/live/production_baseline.py",
+      "digest": "741396bb2726923221c287c8d117a21e8cd57b33"
     }
   ]
 }

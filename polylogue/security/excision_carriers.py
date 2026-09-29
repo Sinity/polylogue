@@ -84,7 +84,13 @@ class SessionCarrier:
 
 
 def _carriers(*specs: SessionCarrier) -> dict[str, SessionCarrier]:
-    return {spec.table: spec for spec in specs}
+    carriers: dict[str, SessionCarrier] = {}
+    for spec in specs:
+        if spec.table in carriers:
+            # A second declaration would silently replace the first one's reach.
+            raise ValueError(f"session carrier {spec.table!r} is declared twice")
+        carriers[spec.table] = spec
+    return carriers
 
 
 #: The declared reach of every session-keyed source-tier relation.
@@ -97,6 +103,11 @@ SESSION_CARRIERS: Final[dict[str, SessionCarrier]] = _carriers(
         "raw_sessions",
         CarrierReach.EXCISED,
         "the acquisition itself; deleted with its blob_refs and an excised_content marker",
+    ),
+    SessionCarrier(
+        "raw_existence_changes",
+        CarrierReach.EXCISED,
+        "frontier history is scrubbed for every raw id deleted by session excision",
     ),
     SessionCarrier(
         "pending_accepted_marker_inputs",
@@ -112,12 +123,6 @@ SESSION_CARRIERS: Final[dict[str, SessionCarrier]] = _carriers(
         "excised_marker_inputs",
         CarrierReach.TOMBSTONE,
         "content-free terminal marker-carrier evidence is deliberately retained",
-    ),
-    SessionCarrier(
-        "raw_existence_changes",
-        CarrierReach.TOMBSTONE,
-        "the frontier-admission journal records only the deleted raw key, written by the raw_sessions "
-        "delete trigger; it is the evidence that the excised acquisition is gone",
     ),
     SessionCarrier(
         "raw_hook_events",

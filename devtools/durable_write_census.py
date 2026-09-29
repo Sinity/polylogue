@@ -80,7 +80,7 @@ from __future__ import annotations
 
 import ast
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -589,10 +589,13 @@ def _is_archive_tier_runtime_module(relative: str) -> bool:
     return relative.startswith("polylogue/storage/sqlite/archive_tiers/")
 
 
+#: One parsed module as the post-passes read it: path, tree, repository-relative
+#: path, resolved string bindings and node scopes.
+ParsedModule = tuple[Path, ast.Module, str, dict[str, tuple[str, ...]], dict[ast.AST, tuple[str, ast.AST | None]]]
+
+
 def _function_table_parameters(
-    parsed_modules: Iterable[
-        tuple[Path, ast.Module, str, dict[str, tuple[str, ...]], dict[ast.AST, tuple[str, ast.AST | None]]]
-    ],
+    parsed_modules: Iterable[ParsedModule],
     dynamic_sites: Iterable[WriteSite],
 ) -> dict[str, tuple[str, int | None]]:
     """Locate dynamic write helpers that explicitly accept a ``table`` argument.
@@ -629,18 +632,24 @@ def _function_table_parameters(
 
 
 def _dynamic_table_targets(
-    parsed_modules: Iterable[
-        tuple[Path, ast.Module, str, dict[str, tuple[str, ...]], dict[ast.AST, tuple[str, ast.AST | None]]]
-    ],
+    parse_modules: Callable[[Iterable[str]], Iterable[ParsedModule]],
     dynamic_sites: Iterable[WriteSite],
+    called_names: Mapping[str, frozenset[str]],
 ) -> tuple[DynamicTableTarget, ...]:
-    """Resolve literal table arguments supplied to dynamic-table helpers."""
-    parameters = _function_table_parameters(parsed_modules, dynamic_sites)
+    """Resolve literal table arguments supplied to dynamic-table helpers.
+
+    *parse_modules* parses the named modules; *called_names* holds every name
+    each module calls, so only modules that can call a helper are parsed.
+    """
+    dynamic_sites = tuple(dynamic_sites)
+    wanted_files = {site.file for site in dynamic_sites if site.table == UNRESOLVED_TABLE}
+    parameters = _function_table_parameters(parse_modules(wanted_files), dynamic_sites)
     by_name: dict[str, list[tuple[str, int | None]]] = {}
     for helper_key, descriptor in parameters.items():
         by_name.setdefault(descriptor[0], []).append((helper_key, descriptor[1]))
     targets: dict[tuple[str, str, str, int], DynamicTableTarget] = {}
-    for _path, tree, relative, values, _scopes in parsed_modules:
+    callers = [relative for relative, names in called_names.items() if not names.isdisjoint(by_name)]
+    for _path, tree, relative, values, _scopes in parse_modules(callers):
         for node in walk_module(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -676,9 +685,7 @@ def _dynamic_table_targets(
 
 
 def _index_foreign_key_cleanup_helpers(
-    parsed_modules: Iterable[
-        tuple[Path, ast.Module, str, dict[str, tuple[str, ...]], dict[ast.AST, tuple[str, ast.AST | None]]]
-    ],
+    parsed_modules: Iterable[ParsedModule],
 ) -> frozenset[str]:
     """Find helpers that derive both dynamic actions from current FK metadata."""
     helpers: set[str] = set()
@@ -721,25 +728,61 @@ def _index_foreign_key_cleanup_helpers(
 
 def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
     """Census every durable rewrite statement and caller-supplied-SQL helper."""
-    table_tiers = durable_table_tiers()
-    sites: dict[str, WriteSite] = {}
-    helpers: dict[str, HelperSite] = {}
-    runtime_creations: dict[str, RuntimeTableCreation] = {}
-    parsed_modules: list[
-        tuple[Path, ast.Module, str, dict[str, tuple[str, ...]], dict[ast.AST, tuple[str, ast.AST | None]]]
-    ] = []
-
-    for path in sorted(package_root.rglob("*.py")):
+    paths = sorted(package_root.rglob("*.py"))
+    census = DurableWriteCensus()
+    for path in paths:
+        relative = path.relative_to(repo_root).as_posix()
+        if census.reads_runtime_ddl(relative):
+            try:
+                tree = parse_path(path)
+            except (SyntaxError, UnicodeDecodeError):
+                continue
+            census.observe_runtime_ddl(tree, relative=relative)
+    for path in paths:
         try:
             tree = parse_path(path)
         except (SyntaxError, UnicodeDecodeError):
             continue
-        relative = path.relative_to(repo_root).as_posix()
+        census.observe(tree, path=path, relative=path.relative_to(repo_root).as_posix())
+    return census.finish()
+
+
+class DurableWriteCensus:
+    """The census, fed parsed modules in path order, in two rounds.
+
+    Every archive-tier runtime module goes to :meth:`observe_runtime_ddl`
+    first, because classifying a statement needs every runtime-created table.
+    Every module then goes to :meth:`observe`. Neither round keeps a tree:
+    what :meth:`finish` needs from other modules afterwards -- the helpers
+    that take a ``table`` argument and their literal call sites -- lives in a
+    few modules found by name, which it parses again. A caller that already
+    walks the package can therefore feed this census from the same parse as
+    every other census, and no census holds the package's trees at once.
+    """
+
+    def __init__(self) -> None:
+        self._table_tiers = durable_table_tiers()
+        self._sites: dict[str, WriteSite] = {}
+        self._helpers: dict[str, HelperSite] = {}
+        self._runtime_creations: dict[str, RuntimeTableCreation] = {}
+        self._runtime_persistent_tables: frozenset[str] | None = None
+        self._paths: dict[str, Path] = {}
+        self._called_names: dict[str, frozenset[str]] = {}
+        self._fk_cleanup_helpers: set[str] = set()
+
+    @staticmethod
+    def reads_runtime_ddl(relative: str) -> bool:
+        return _is_archive_tier_runtime_module(relative)
+
+    def observe_runtime_ddl(self, tree: ast.Module, *, relative: str) -> None:
+        if self._runtime_persistent_tables is not None:
+            raise RuntimeError("every runtime DDL module must be observed before the first module")
+        if not _is_archive_tier_runtime_module(relative):
+            return
+        table_tiers = self._table_tiers
+        runtime_creations = self._runtime_creations
         values = _string_values(tree)
         scopes = _scopes(tree)
-        parsed_modules.append((path, tree, relative, values, scopes))
-        if not _is_archive_tier_runtime_module(relative):
-            continue
         memory_connections = _memory_connection_names(tree)
         for node in walk_module(tree):
             if not isinstance(node, ast.Call):
@@ -766,10 +809,24 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
                 if creation is not None:
                     runtime_creations.setdefault(creation.key, creation)
 
-    runtime_persistent_tables = frozenset(
-        creation.table for creation in runtime_creations.values() if creation.disposition == "persistent"
-    )
-    for _path, tree, relative, values, scopes in parsed_modules:
+    def observe(self, tree: ast.Module, *, path: Path, relative: str) -> None:
+        if self._runtime_persistent_tables is None:
+            self._runtime_persistent_tables = frozenset(
+                creation.table for creation in self._runtime_creations.values() if creation.disposition == "persistent"
+            )
+        runtime_persistent_tables = self._runtime_persistent_tables
+        table_tiers = self._table_tiers
+        sites = self._sites
+        helpers = self._helpers
+        values = _string_values(tree)
+        scopes = _scopes(tree)
+        self._paths[relative] = path
+        self._called_names[relative] = frozenset(
+            node.func.id if isinstance(node.func, ast.Name) else node.func.attr
+            for node in walk_module(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name | ast.Attribute)
+        )
+        self._fk_cleanup_helpers.update(_index_foreign_key_cleanup_helpers(((path, tree, relative, values, scopes),)))
         for node in walk_module(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -811,14 +868,22 @@ def census_package(package_root: Path, *, repo_root: Path) -> CensusObservation:
                 )
                 sites.setdefault(site.key, site)
 
-    dynamic_targets = _dynamic_table_targets(parsed_modules, sites.values())
-    return CensusObservation(
-        sites=tuple(sorted(sites.values(), key=lambda item: item.key)),
-        helpers=tuple(sorted(helpers.values(), key=lambda item: item.key)),
-        runtime_creations=tuple(sorted(runtime_creations.values(), key=lambda item: item.key)),
-        dynamic_targets=dynamic_targets,
-        index_foreign_key_cleanup_helpers=_index_foreign_key_cleanup_helpers(parsed_modules),
-    )
+    def finish(self) -> CensusObservation:
+        sites = self._sites
+        return CensusObservation(
+            sites=tuple(sorted(sites.values(), key=lambda item: item.key)),
+            helpers=tuple(sorted(self._helpers.values(), key=lambda item: item.key)),
+            runtime_creations=tuple(sorted(self._runtime_creations.values(), key=lambda item: item.key)),
+            dynamic_targets=_dynamic_table_targets(self._reparsed, sites.values(), self._called_names),
+            index_foreign_key_cleanup_helpers=frozenset(self._fk_cleanup_helpers),
+        )
+
+    def _reparsed(self, relatives: Iterable[str]) -> Iterator[ParsedModule]:
+        """Parse the named observed modules again, in path order."""
+        for relative in sorted(set(relatives) & self._paths.keys(), key=lambda item: self._paths[item]):
+            path = self._paths[relative]
+            tree = parse_path(path)
+            yield path, tree, relative, _string_values(tree), _scopes(tree)
 
 
 def _as_strings(value: object) -> tuple[str, ...]:
@@ -932,13 +997,23 @@ def load_declaration(path: Path) -> CensusDeclaration:
     )
 
 
-def collect_violations(*, repo_root: Path, declaration_path: Path | None = None) -> list[dict[str, object]]:
-    """Check the observed durable-rewrite census against its declaration."""
+def collect_violations(
+    *,
+    repo_root: Path,
+    declaration_path: Path | None = None,
+    observation: CensusObservation | None = None,
+) -> list[dict[str, object]]:
+    """Check the observed durable-rewrite census against its declaration.
+
+    *observation* is the census of the declaration's package when the caller
+    has already taken it in its own pass over the package.
+    """
     path = declaration_path or (repo_root / DECLARATION_PATH)
     if not path.is_file():
         return [{"rule": "durable_write_census_declaration_missing", "key": path.as_posix()}]
     declaration = load_declaration(path)
-    observation = census_package(repo_root / declaration.package, repo_root=repo_root)
+    if observation is None:
+        observation = census_package(repo_root / declaration.package, repo_root=repo_root)
 
     violations: list[dict[str, object]] = []
     for name in declaration.malformed:

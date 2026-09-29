@@ -56,6 +56,10 @@ class ArchiveTierUnavailableError(DatabaseError):
         self.guidance = guidance
         super().__init__(f"{tier} tier unavailable at {path}: {reason}. {guidance}")
 
+    @property
+    def public_message(self) -> str:
+        return f"{self.tier} archive tier is unavailable. {self.guidance}"
+
 
 class SchemaRefusalError(DatabaseError):
     """Base class for schema refusals raised before a tier can be served.
@@ -210,36 +214,12 @@ class UnsupportedInsightFilterError(PolylogueError):
         )
 
 
-class PostFilterAfterLimitError(PolylogueError):
-    """A post-filtered read scope is too large to evaluate before its page.
-
-    A filter with no SQL reduction must be applied over the whole matched set
-    before the page is cut, or the page becomes the denominator ("of the newest
-    N, the matching ones"). Above the declared candidate cap the honest answer
-    is a named refusal, not a quietly mis-scoped page.
-    """
-
-    code = "post_filter_scope_too_large"
-    http_status_code: int = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
-
-    def __init__(self, *, filter_name: str, route: str, candidate_count: int, cap: int) -> None:
-        self.filter_name = filter_name
-        self.route = route
-        self.candidate_count = candidate_count
-        self.cap = cap
-        super().__init__(
-            f"{route} must evaluate '{filter_name}' over {candidate_count} candidate sessions, "
-            f"above the declared cap of {cap}; narrow the scope (origin:, since/until) and retry"
-        )
-
-
 __all__ = [
     "ArchiveTierUnavailableError",
     "InsightMaintenanceRequiresDaemonError",
     "DatabaseError",
     "EmbeddingRetrievalNotReadyError",
     "PolylogueError",
-    "PostFilterAfterLimitError",
     "RawCASFrontierError",
     "SchemaRefusalError",
     "SchemaVersionMismatchError",

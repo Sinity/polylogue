@@ -328,7 +328,7 @@ class TestActiveAppendNoFullReread:
         assert counter.calls_by_site.get("fingerprint_file", 0) == 0, (
             f"append-only batch must not call fingerprint_file; got {counter.summary()}"
         )
-        assert counter.calls_by_site.get("blob_store.write_from_path", 0) == 0, (
+        assert counter.calls_by_site.get("capture_bound_path", 0) == 0, (
             f"append-only batch must not stream full file to blob; got {counter.summary()}"
         )
         # Source-payload reads should be small — the append payload plus
@@ -372,7 +372,7 @@ class TestActiveAppendNoFullReread:
         assert counter.calls_by_site.get("fingerprint_file", 0) == 0, (
             f"tool-result-only append must not call fingerprint_file; got {counter.summary()}"
         )
-        assert counter.calls_by_site.get("blob_store.write_from_path", 0) == 0, (
+        assert counter.calls_by_site.get("capture_bound_path", 0) == 0, (
             f"tool-result-only append must not full-reread; got {counter.summary()}"
         )
         max_allowed = appended_bytes * 8 + 64 * 1024
@@ -453,7 +453,7 @@ class TestActiveAppendNoFullReread:
         assert second.append_file_count == 1
         assert second.full_file_count == 0
         assert full_route_paths == []
-        assert counter.calls_by_site.get("blob_store.write_from_path", 0) == 0, counter.summary()
+        assert counter.calls_by_site.get("capture_bound_path", 0) == 0, counter.summary()
         second_cursor = proc._cursor.get_record(path)
         assert second_cursor is not None
         assert second_cursor.byte_offset == path.stat().st_size
@@ -612,7 +612,7 @@ class TestSubagentAppendDoesNotFullReread:
         assert counter.calls_by_site.get("fingerprint_file", 0) == 0, (
             f"subagent append rehashed the file: {counter.summary()}"
         )
-        assert counter.calls_by_site.get("blob_store.write_from_path", 0) == 0, (
+        assert counter.calls_by_site.get("capture_bound_path", 0) == 0, (
             f"subagent append full-rewrote the blob: {counter.summary()}"
         )
         max_allowed = appended_bytes * 8 + 64 * 1024

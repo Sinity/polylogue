@@ -157,6 +157,7 @@ class RouteObservationDrops:
             "total": self.total,
             "accounting_complete": self.accounting_complete,
             "by_reason": dict(sorted(self.by_reason.items())),
+            "by_route": dict(sorted(self.by_route.items())),
             "unattributed": self.unattributed,
         }
 
@@ -189,30 +190,34 @@ class RouteObservationDropLedger:
     instead is :attr:`RouteObservationDrops.accounting_complete`.
     """
 
-    __slots__ = ("_by_reason", "_by_route")
+    __slots__ = ("_counts",)
 
     def __init__(self) -> None:
-        self._by_reason: dict[str, int] = {}
-        self._by_route: dict[str, int] = {}
+        # Aggregated counters: bounded by the declared reasons and routes,
+        # not by lifetime request volume.
+        self._counts: dict[tuple[str, str], int] = {}
 
     def record(self, reason: RouteObservationDropReason, *, surface: str, route: str, count: int = 1) -> None:
         if count <= 0:
             return
-        self._by_reason[reason.value] = self._by_reason.get(reason.value, 0) + count
-        key = route_key(surface, route)
-        self._by_route[key] = self._by_route.get(key, 0) + count
+        key = (reason.value, route_key(surface, route))
+        self._counts[key] = self._counts.get(key, 0) + count
 
     def snapshot(self) -> RouteObservationDrops:
         """Return the drops this process has seen. Never claims completeness."""
+        reasons: dict[str, int] = {}
+        routes: dict[str, int] = {}
+        for (reason, route), count in self._counts.items():
+            reasons[reason] = reasons.get(reason, 0) + count
+            routes[route] = routes.get(route, 0) + count
         return RouteObservationDrops(
             accounting_complete=False,
-            by_reason=dict(self._by_reason),
-            by_route=dict(self._by_route),
+            by_reason=reasons,
+            by_route=routes,
         )
 
     def reset(self) -> None:
-        self._by_reason.clear()
-        self._by_route.clear()
+        self._counts.clear()
 
 
 _DROP_LEDGER = RouteObservationDropLedger()
@@ -434,7 +439,8 @@ class RouteObservationReceipt:
                 wall_ms=phase.wall_ms,
                 cpu_ms=phase.cpu_ms,
                 response_bytes=self.response_bytes if phase.name == DEFAULT_ROUTE_PHASE else None,
-                unavailable=phase.unavailable,
+                unavailable=phase.unavailable
+                + (("response_bytes",) if phase.name == DEFAULT_ROUTE_PHASE and self.response_bytes is None else ()),
             )
             for phase in self.phases
         )
@@ -461,6 +467,8 @@ def _workload_status(status: str) -> WorkloadRunStatus:
 
     if status in ("error", "timed_out", "unavailable"):
         return WorkloadRunStatus.FAILED
+    if status == "degraded":
+        return WorkloadRunStatus.INTERRUPTED
     return WorkloadRunStatus.SUCCEEDED
 
 
@@ -557,6 +565,10 @@ def observe_route(
     unchanged.
     """
     resolved_spec = spec if spec is not None else RouteObservationSpec(surface=surface, route=route, verb=verb)
+    if spec is not None and (
+        surface != spec.surface or route != spec.route or (verb is not None and verb != spec.verb)
+    ):
+        raise ValueError("route observation spec identity must match the call-site identity")
     ctx = RouteObservationContext(daemon_path=daemon_path)
     ctx._declared_phases = resolved_spec.phases
     started_at_ms = int(time.time() * 1000)
@@ -573,15 +585,40 @@ def observe_route(
             wall_ms=max(0.0, (time.monotonic() - started_monotonic) * 1000.0),
             cpu_ms=max(0.0, (time.process_time() - started_cpu) * 1000.0),
         )
+        phases_by_name: dict[str, RoutePhaseObservation] = {DEFAULT_ROUTE_PHASE: total}
+        for phase in ctx._phases:
+            previous = phases_by_name.get(phase.name)
+            phases_by_name[phase.name] = (
+                phase
+                if previous is None
+                else RoutePhaseObservation(
+                    phase.name,
+                    previous.wall_ms + phase.wall_ms,
+                    None if previous.cpu_ms is None or phase.cpu_ms is None else previous.cpu_ms + phase.cpu_ms,
+                )
+            )
+        invalid_daemon_path = False
+        try:
+            recordable_path = _recordable_daemon_path(ctx.daemon_path)
+        except Exception:
+            _DROP_LEDGER.record(
+                RouteObservationDropReason.EMIT_FAILED, surface=resolved_spec.surface, route=resolved_spec.route
+            )
+            invalid_daemon_path = True
+            recordable_path = None
         receipt = RouteObservationReceipt(
             spec=resolved_spec,
             trace_id=trace_id or str(uuid.uuid4()),
             run_id=run_id or str(uuid.uuid4()),
             parent_run_id=parent_run_id,
             started_at_ms=started_at_ms,
-            phases=(total, *ctx._phases),
+            phases=tuple(
+                phases_by_name[name]
+                for name in (DEFAULT_ROUTE_PHASE, *resolved_spec.phases[1:])
+                if name in phases_by_name
+            ),
             status=ctx.status,
-            daemon_path=_recordable_daemon_path(ctx.daemon_path),
+            daemon_path=recordable_path,
             build_id=_current_git_head(git_head_cwd) if git_head_cwd is not None else None,
             archive_id=archive_id,
             archive_epoch=archive_epoch,
@@ -591,7 +628,8 @@ def observe_route(
             sampled=resolved_spec.sampled,
         )
         ctx.receipt = receipt
-        _emit_best_effort(archive_root=archive_root, receipt=receipt)
+        if not invalid_daemon_path:
+            _emit_best_effort(archive_root=archive_root, receipt=receipt)
 
 
 def open_observation_connection(ops_db: Path) -> sqlite3.Connection:
@@ -623,7 +661,7 @@ def _emit_best_effort(*, archive_root: Path | None, receipt: RouteObservationRec
 
         conn = open_observation_connection(ops_db)
         try:
-            changes_before = conn.total_changes
+            pruned: list[tuple[str, str]] = []
             record_route_observation(
                 conn,
                 trace_id=receipt.trace_id,
@@ -638,18 +676,15 @@ def _emit_best_effort(*, archive_root: Path | None, receipt: RouteObservationRec
                 archive_epoch=receipt.archive_epoch,
                 attributes=receipt.to_attributes(),
                 sampled=receipt.sampled,
+                pruned=pruned,
             )
-            # The writer prunes by retention window and row cap inside the same
-            # transaction. Every row it removed is one the next percentile will
-            # not see; ``total_changes`` counts the insert plus those deletes,
-            # so the surplus is the pruned count without a second query.
-            pruned = max(0, (conn.total_changes - changes_before) - 1)
-            _DROP_LEDGER.record(
-                RouteObservationDropReason.PRUNED,
-                surface=spec.surface,
-                route=spec.route,
-                count=pruned,
-            )
+            # The writer reports each row its retention and cap prunes
+            # removed, so every drop stays attributed to its own route.
+            removed: dict[tuple[str, str], int] = {}
+            for identity in pruned:
+                removed[identity] = removed.get(identity, 0) + 1
+            for (surface, route), count in removed.items():
+                _DROP_LEDGER.record(RouteObservationDropReason.PRUNED, surface=surface, route=route, count=count)
         finally:
             conn.close()
     except Exception:
@@ -727,13 +762,16 @@ class RouteLatencyReport:
     def unattributed_drops(self) -> int:
         """Drops that belong to no rendered bucket, and would vanish if the
         report were flattened to its buckets."""
-        return self.drops.unattributed
+        visible = {route_key(bucket.surface, bucket.route) for bucket in self.buckets}
+        return max(0, self.drops.total - sum(self.drops.by_route.get(key, 0) for key in visible))
 
     @property
     def is_complete(self) -> bool:
         return self.drops.accounting_complete and self.drops.total == 0
 
     def to_payload(self) -> dict[str, object]:
+        drops = self.drops.to_payload()
+        drops["unattributed"] = self.unattributed_drops
         return {
             "buckets": [
                 {
@@ -751,7 +789,7 @@ class RouteLatencyReport:
                 }
                 for bucket in self.buckets
             ],
-            "drops": self.drops.to_payload(),
+            "drops": drops,
         }
 
 
@@ -831,12 +869,13 @@ def read_side_drops(*, observation_count: int, mcp_call_count: int, row_limit: i
     same reason an emit-time drop is.
     """
     drops = RouteObservationDrops.unaccounted()
-    truncated = sum(1 for count in (observation_count, mcp_call_count) if count >= row_limit)
-    if truncated:
+    if observation_count >= row_limit or mcp_call_count >= row_limit:
+        # We know a table was truncated, not how many rows were omitted.
+        # Keep accounting incomplete without inventing a dropped-row count.
         drops = drops.merged_with(
             RouteObservationDrops(
                 accounting_complete=False,
-                by_reason={RouteObservationDropReason.READ_LIMIT_TRUNCATED.value: truncated},
+                by_reason={RouteObservationDropReason.READ_LIMIT_TRUNCATED.value: 0},
             )
         )
     return drops

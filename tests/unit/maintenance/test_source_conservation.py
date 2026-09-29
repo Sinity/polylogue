@@ -264,11 +264,11 @@ def test_configured_but_unacquired_member_blocks_even_with_other_rows(tmp_path: 
     assert _count(check, "frontier_unacquired") == 1
 
 
-def test_archive_member_frontier_matches_the_canonical_member_coordinate(tmp_path: Path) -> None:
-    """An acquired ``archive!member`` address must not become an orphan.
+def test_archive_member_frontier_matches_the_production_zip_address(tmp_path: Path) -> None:
+    """A production ``archive:member`` address must not become an orphan.
 
-    Anti-vacuity: building the expected address from the already archive-prefixed
-    frontier coordinate produces ``archive!archive!member``.  Falling back to
+    Anti-vacuity: adding a second separator to the already archive-prefixed
+    frontier coordinate produces ``archive:archive!member``. Falling back to
     the archive root then loses member-level ownership and cannot distinguish
     equal-byte sibling members.
     """
@@ -277,7 +277,7 @@ def test_archive_member_frontier_matches_the_canonical_member_coordinate(tmp_pat
     with zipfile.ZipFile(archive, "w") as output:
         output.writestr("sessions/one.json", "session payload")
     blob_hash = BlobStore(tmp_path / "blob").write_from_bytes(b"session payload")[0]
-    source_path = Path(f"{archive}!sessions/one.json")
+    source_path = Path(f"{archive}:sessions/one.json")
     source_conn = sqlite3.connect(tmp_path / "source.db")
     try:
         _insert_raw(
@@ -503,6 +503,43 @@ def test_fragment_identity_shapes_cover_each_declared_prefix_and_meta_suffix() -
     assert fragment_identity_shape("5ecdb160-agent-af4e") is None
 
 
+def test_work_event_on_an_indexed_session_is_materialized(tmp_path: Path) -> None:
+    """A retained agent work event is conserved by the session it annotates.
+
+    Anti-vacuity: the work event is its own logical source and no session
+    names its raw, so counting only ``sessions.raw_id`` types it
+    ``unexplained``, and probing its archive-authored source path types it
+    ``source_missing``.
+    """
+    _seed(tmp_path)
+    blob_hash = BlobStore(tmp_path / "blob").write_from_bytes(b"work event")[0]
+    raw_id = "agent-work-event:" + "e" * 64
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_raw(
+            source_conn,
+            raw_id=raw_id,
+            origin="claude-code-session",
+            native_id="session",
+            source_path=Path(raw_id),
+            blob_hash=blob_hash,
+            parsed=True,
+        )
+        # Admission makes each work event its own logical source.
+        source_conn.execute(
+            "UPDATE raw_sessions SET logical_source_key = raw_id, revision_kind = 'full' WHERE raw_id = ?", (raw_id,)
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.OK, check.summary
+    assert _count(check, "materialized") == 2
+    sample = _terms(check)["materialized"]["sample"]
+    assert isinstance(sample, list)
+    assert raw_id in sample
+
+
 def test_parsed_raw_without_session_or_rule_is_unexplained(tmp_path: Path) -> None:
     _seed(tmp_path)
     stray = _write_source(tmp_path, "stray.json", b"{}")
@@ -572,6 +609,109 @@ def test_parse_failure_is_a_typed_exclusion(tmp_path: Path) -> None:
         source_conn.close()
     check = _run(tmp_path)
     assert check.status is OutcomeStatus.OK
+    assert _count(check, "parse_failure") == 1
+
+
+def test_value_bound_refusal_is_a_counted_warning_not_a_parse_failure(tmp_path: Path) -> None:
+    """A session refused for an oversized value stays a visible gap.
+
+    Anti-vacuity: drop the ``value_bound_refused`` CASE arm and the raw types
+    as an ordinary ``parse_failure`` with an OK check, hiding the gap.
+    """
+    _seed(tmp_path)
+    giant = _write_source(tmp_path, "giant.json", b"{}")
+    blob_hash = BlobStore(tmp_path / "blob").write_from_bytes(b"{}")[0]
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_raw(
+            source_conn,
+            raw_id="raw-giant",
+            origin="chatgpt-export",
+            native_id="giant",
+            source_path=giant,
+            blob_hash=blob_hash,
+            parsed=True,
+        )
+        source_conn.execute(
+            "UPDATE raw_sessions SET parse_error = ? WHERE raw_id = 'raw-giant'",
+            (
+                "RuntimeError: off-writer preparation failed: ValueBoundRefusedError: value_bound_refused: "
+                "a decoded string of 70000000 characters exceeds the declared resident bound of 67108864",
+            ),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    check = _run(tmp_path)
+    assert check.status is OutcomeStatus.WARNING
+    assert _count(check, "value_bound_refused") == 1
+    assert _count(check, "parse_failure") == 0
+    assert check.evidence["blocking_count"] == 0
+
+
+def test_value_bound_token_is_matched_literally(tmp_path: Path) -> None:
+    """Only the exact refusal token types a raw as ``value_bound_refused``.
+
+    Anti-vacuity: a ``LIKE`` pattern treats each ``_`` as a wildcard, so the
+    source-controlled text ``value-bound-refused`` in an ordinary parser
+    error would be reported as a value-bound refusal.
+    """
+    _seed(tmp_path)
+    source = _write_source(tmp_path, "lookalike.json", b"{}")
+    blob_hash = BlobStore(tmp_path / "blob").write_from_bytes(b"{}")[0]
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_raw(
+            source_conn,
+            raw_id="raw-lookalike",
+            origin="chatgpt-export",
+            native_id="lookalike",
+            source_path=source,
+            blob_hash=blob_hash,
+            parsed=True,
+        )
+        source_conn.execute(
+            "UPDATE raw_sessions SET parse_error = ? WHERE raw_id = 'raw-lookalike'",
+            ("ValueError: unexpected field 'value-bound-refused' in node",),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    check = _run(tmp_path)
+    assert _count(check, "value_bound_refused") == 0
+    assert _count(check, "parse_failure") == 1
+
+
+def test_a_path_naming_the_refusal_token_is_an_ordinary_parse_failure(tmp_path: Path) -> None:
+    """Only the typed error's serialized head types a raw as ``value_bound_refused``.
+
+    Anti-vacuity (Codex P2, #5643): search the diagnostic for the bare token
+    and an unsupported input at ``/imports/value_bound_refused.json`` is
+    counted as a physical value-bound refusal.
+    """
+    _seed(tmp_path)
+    source = _write_source(tmp_path, "value_bound_refused.json", b"{}")
+    blob_hash = BlobStore(tmp_path / "blob").write_from_bytes(b"{}")[0]
+    source_conn = sqlite3.connect(tmp_path / "source.db")
+    try:
+        _insert_raw(
+            source_conn,
+            raw_id="raw-named",
+            origin="chatgpt-export",
+            native_id="named",
+            source_path=source,
+            blob_hash=blob_hash,
+            parsed=True,
+        )
+        source_conn.execute(
+            "UPDATE raw_sessions SET parse_error = ? WHERE raw_id = 'raw-named'",
+            ("parse: unsupported input /imports/value_bound_refused.json",),
+        )
+        source_conn.commit()
+    finally:
+        source_conn.close()
+    check = _run(tmp_path)
+    assert _count(check, "value_bound_refused") == 0
     assert _count(check, "parse_failure") == 1
 
 

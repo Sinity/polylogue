@@ -49,6 +49,30 @@ def test_schema_version_details_keep_measured_versions() -> None:
     assert details["actual_identity"] is None
 
 
+@pytest.mark.parametrize(
+    ("action", "state", "route", "retryable"),
+    [
+        ("upgrade_runtime", "upgrade_required", "upgrade_runtime", False),
+        ("retry", "retry", "retry", True),
+    ],
+)
+def test_schema_version_refusal_preserves_lifecycle_action(
+    action: str, state: str, route: str, retryable: bool
+) -> None:
+    """Read refusal metadata preserves upgrade and transient-read remedies.
+
+    Anti-vacuity: drop the lifecycle_action projection and both cases collapse
+    into daemon_convergence/rebuilding.
+    """
+    refusal = SchemaVersionMismatchError(
+        "schema mismatch", current_version=12, expected_version=13, lifecycle_action=action
+    )
+    details = schema_refusal_details(refusal)
+    assert details["state"] == state
+    assert details["route"] == route
+    assert details["retryable"] is retryable
+
+
 def test_operation_refusal_is_degraded_and_typed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from polylogue.operations import daemon_execution
 

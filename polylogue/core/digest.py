@@ -257,13 +257,22 @@ def stdlib_chunks(value: object, *, ensure_ascii: bool, depth: int = _STREAM_FRA
     yield "]"
 
 
-def digest(value: object, profile: DigestProfile) -> str:
-    """Return the SHA-256 hex digest of *value*'s canonical bytes under *profile*."""
+def digest(value: object, profile: DigestProfile, *, frame_depth: int = _STREAM_FRAME_DEPTH) -> str:
+    """Return the SHA-256 hex digest of *value*'s canonical bytes under *profile*.
+
+    ``frame_depth`` only moves where a stdlib profile splits the encoding, never
+    the bytes. A caller digesting one item (a message, an event) passes ``0``:
+    the item is already the chunk size, and framing its fields costs an encoder
+    call per member.
+    """
     if profile.encoder == "core-json":
         return profile.digest_prefix + hashlib.sha256(canonical_bytes(value, profile)).hexdigest()
     prepared = value if _passthrough(profile) else _prepared(value, profile)
+    if frame_depth <= 0:
+        encoded = _STDLIB_ENCODERS[profile.ensure_ascii].encode(prepared)
+        return profile.digest_prefix + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
     hasher = hashlib.sha256()
-    for chunk in stdlib_chunks(prepared, ensure_ascii=profile.ensure_ascii):
+    for chunk in stdlib_chunks(prepared, ensure_ascii=profile.ensure_ascii, depth=frame_depth):
         hasher.update(chunk.encode("utf-8"))
     return profile.digest_prefix + hasher.hexdigest()
 

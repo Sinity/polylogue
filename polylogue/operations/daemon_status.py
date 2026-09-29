@@ -92,10 +92,14 @@ def produce_direct_status(
 
     settings = embedding_status_settings_from_config(config)
 
-    embedding_status = embedding_status_payload_from_connections(
-        index_conn,
-        config=config,
-        include_detail=False,
+    embedding_status = (
+        embedding_status_payload_from_connections(
+            index_conn,
+            config=config,
+            include_detail=False,
+        )
+        if _attached_connection(index_conn, "embeddings_tier") is not None
+        else None
     ) or _unavailable_embedding_status(settings)
     archive_stats.update(
         {
@@ -699,10 +703,10 @@ def _schema_drift_status(conn: sqlite3.Connection | None, *, now_ms: int) -> dic
 
 
 def _raw_replay_backlog_status(index_conn: sqlite3.Connection, *, archive_root: Path) -> dict[str, object]:
-    del index_conn
+    main = next((Path(str(row[2])) for row in index_conn.execute("PRAGMA database_list") if row[1] == "main"), None)
     from polylogue.operations.raw_observation_derivation import raw_observation_backlog_snapshot
 
-    return raw_observation_backlog_snapshot(archive_root, limit=5)
+    return raw_observation_backlog_snapshot(archive_root, limit=5, index_db_path=main)
 
 
 def _components(
@@ -938,7 +942,7 @@ def _sqlite_maintenance(conn: sqlite3.Connection) -> dict[str, object]:
                 "state": "unavailable",
             }
             continue
-        rows: int | None = None
+        rows: int | None = 0
         try:
             if _table_exists(conn, "sqlite_stat1", schema=alias):
                 row = conn.execute(f"SELECT COUNT(*) FROM {alias}.sqlite_stat1").fetchone()

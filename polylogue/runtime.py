@@ -248,6 +248,15 @@ def require_free_threaded_runtime(*, consumer: str) -> RuntimeIdentity:
                 f"{consumer} requires free-threaded-compatible extensions; "
                 f"failed imports or ABI checks: {', '.join(incompatible)}; refusing to start"
             )
+        # An extension import may enable the GIL without raising ImportError.
+        # Re-read the live interpreter state after every probe import so the
+        # returned identity describes the runtime we actually validated.
+        identity = runtime_identity()
+        if identity.gil_enabled:
+            raise RuntimeContractError(
+                f"{consumer} requires CPython 3.14 free-threading; the GIL was enabled while probing extensions; "
+                "refusing to start before archive or network work"
+            )
         return identity
     raise RuntimeContractError(
         f"{consumer} requires CPython 3.14 free-threading; {reason}; refusing to start before archive or network work"

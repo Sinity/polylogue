@@ -25,12 +25,10 @@ reaches for it.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import sys
-from collections.abc import Iterator
-from contextlib import contextmanager
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -282,10 +280,13 @@ def append_event(
     resolved_id = str(normalized["event_id"])
     if not resolved_id or not _EVENT_ID_ALPHABET.issuperset(resolved_id):
         raise HookSpoolRecordError("hook carrier event_id must contain only letters, digits, '_' or '-'")
-    with _carrier_lock(Path(root), exclusive=False):
-        target = carrier_path(root, str(normalized["provider"]))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        append_carrier_line(target, normalized)
+    # Producers never wait for the one-shot legacy drain. Each hook process
+    # owns a PID-scoped carrier, while the compactor writes its own carrier;
+    # both can append concurrently without sharing a file. A five-second hook
+    # deadline must not be spent waiting for a large legacy spool fold.
+    target = carrier_path(root, str(normalized["provider"]))
+    target.parent.mkdir(parents=True, exist_ok=True)
+    append_carrier_line(target, normalized)
     return str(target)
 
 
@@ -343,23 +344,25 @@ ACKNOWLEDGED_DIRNAME = "acknowledged"
 _CARRIER_DRAIN_LOCK = ".carrier-drain.lock"
 
 
-@contextmanager
-def _carrier_lock(root: Path, *, exclusive: bool) -> Iterator[None]:
-    """Block producers while the legacy carrier drain owns the spool."""
-    root.mkdir(parents=True, exist_ok=True)
-    with (root / _CARRIER_DRAIN_LOCK).open("a+b") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
-        try:
-            yield
-        finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-
-
-def _carrier_paths(root: Path) -> list[str]:
+def _carrier_scope_summary(root: Path) -> dict[str, object]:
+    """Count carriers with one live directory iterator per depth, not per file."""
     carrier_root = root / CARRIERS_DIRNAME
-    if not carrier_root.exists():
-        return []
-    return sorted(str(path) for path in carrier_root.rglob("*.ndjson") if path.is_file())
+    count = 0
+    if carrier_root.exists():
+        stack = [os.scandir(carrier_root)]
+        try:
+            while stack:
+                entry = next(stack[-1], None)
+                if entry is None:
+                    stack.pop().close()
+                elif entry.is_dir(follow_symlinks=False):
+                    stack.append(os.scandir(entry.path))
+                elif entry.is_file(follow_symlinks=False) and Path(entry.name).suffix == ".ndjson":
+                    count += 1
+        finally:
+            for entries in stack:
+                entries.close()
+    return {"file_count": count}
 
 
 class _CompactionSink:
@@ -428,6 +431,7 @@ def _retire(path: Path, root: Path, bucket: str) -> None:
 #: legacy spool, where a single unbounded pass re-folds everything and appends
 #: a second full copy of every event to the carriers.
 COMPACTION_CHECKPOINT_EVENTS = 10_000
+_LEGACY_COMPACTION_LOCK = threading.Lock()
 
 
 def _sorted_directory(directory: Path) -> list[os.DirEntry[str]]:
@@ -586,22 +590,31 @@ def compact_legacy_spool(
     max_bytes: int = MAX_COMPACTED_CARRIER_BYTES,
     checkpoint_events: int = COMPACTION_CHECKPOINT_EVENTS,
 ) -> dict[str, object]:
-    """Drain the retired spool under an explicit carrier-producer quiesce.
+    """Drain the retired spool without blocking hook producers.
 
-    A producer racing this operation blocks on the shared lock and resumes
-    only after the receipt is complete. Such an event is a post-release
-    arrival for the next acquisition pass, never an omitted in-flight item.
+    The lock serializes concurrent compactors only. Live producers use unique
+    append-only carriers and can proceed while this bounded legacy drain runs.
     """
 
-    with _carrier_lock(root, exclusive=True):
-        before = _carrier_paths(root)
-        summary = _compact_legacy_spool_unlocked(root, max_bytes=max_bytes, checkpoint_events=checkpoint_events)
-        after = _carrier_paths(root)
+    root.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(root / _CARRIER_DRAIN_LOCK, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        # POSIX record locks do not serialize independent threads in one
+        # process, so retain the file lock and add an in-process mutex.
+        with _LEGACY_COMPACTION_LOCK:
+            os.lockf(lock_fd, os.F_LOCK, 0)
+            try:
+                before = _carrier_scope_summary(root)
+                summary = _compact_legacy_spool_unlocked(root, max_bytes=max_bytes, checkpoint_events=checkpoint_events)
+                after = _carrier_scope_summary(root)
+            finally:
+                os.lockf(lock_fd, os.F_ULOCK, 0)
+    finally:
+        os.close(lock_fd)
     summary.update(
-        carrier_quiesced=True,
-        carrier_arrivals_during_drain=0,
-        carrier_arrival_policy="producer blocked by exclusive drain lock; post-release arrivals deferred",
-        carrier_scope=sorted(set(before) | set(after)),
+        carrier_compaction_serialized=True,
+        carrier_producer_policy="hook producers do not wait for the legacy drain lock",
+        carrier_scope={"before": before, "after": after},
         conservation_reconciliation="event_id basename; acknowledged day shard is destination metadata",
     )
     return summary

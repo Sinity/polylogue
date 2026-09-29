@@ -36,6 +36,8 @@ from polylogue.operations.topology_envelope import (
 READINESS_OK: Final[str] = "ok"
 READINESS_PARTIAL: Final[str] = "partial"
 READINESS_EMPTY: Final[str] = "empty"
+_SQLITE_INTEGER_MAX: Final[int] = (1 << 63) - 1
+_TOPOLOGY_PAGE_LIMIT: Final[int] = MAX_NODE_LIMIT
 
 
 def coerce_node_limit(raw: str | None) -> int | None:
@@ -67,7 +69,9 @@ def coerce_node_offset(raw: str | None) -> int | None:
         value = int(token)
     except (TypeError, ValueError):
         return None
-    return value if value >= 0 else None
+    # The reader binds offset + page width as SQLite LIMIT/OFFSET integers.
+    # Reject tokens whose derived LIMIT could overflow SQLite's signed range.
+    return value if 0 <= value <= _SQLITE_INTEGER_MAX - _TOPOLOGY_PAGE_LIMIT else None
 
 
 def _readiness(
@@ -75,6 +79,7 @@ def _readiness(
     truncated_count: int,
     unresolved_edge_count: int,
     cycle_detected: bool,
+    conflicting_parent_detected: bool,
     node_count: int,
 ) -> str:
     """Map structural state to the chip vocabulary.
@@ -86,9 +91,15 @@ def _readiness(
     is ``ok``.
     """
 
-    if node_count <= 1 and truncated_count == 0 and unresolved_edge_count == 0 and not cycle_detected:
+    if (
+        node_count <= 1
+        and truncated_count == 0
+        and unresolved_edge_count == 0
+        and not cycle_detected
+        and not conflicting_parent_detected
+    ):
         return READINESS_EMPTY
-    if truncated_count > 0 or unresolved_edge_count > 0 or cycle_detected:
+    if truncated_count > 0 or unresolved_edge_count > 0 or cycle_detected or conflicting_parent_detected:
         return READINESS_PARTIAL
     return READINESS_OK
 
@@ -97,6 +108,7 @@ def build_topology_envelope(
     topology: SessionTopology,
     *,
     node_limit: int = DEFAULT_NODE_LIMIT,
+    node_offset: int = 0,
 ) -> dict[str, object]:
     """Frame the canonical topology envelope for the HTTP reader.
 
@@ -115,7 +127,7 @@ def build_topology_envelope(
     """
 
     effective_limit = max(1, min(node_limit, MAX_NODE_LIMIT))
-    bounded = topology_public_envelope(topology, node_limit=effective_limit)
+    bounded = topology_public_envelope(topology, node_limit=effective_limit, node_offset=node_offset)
 
     kept_nodes = cast("list[dict[str, object]]", bounded["nodes"])
     kept_edges = cast("list[dict[str, object]]", bounded["edges"])
@@ -126,6 +138,7 @@ def build_topology_envelope(
         truncated_count=truncated_count,
         unresolved_edge_count=unresolved_edge_count,
         cycle_detected=topology.cycle_detected,
+        conflicting_parent_detected=topology.conflicting_parent_detected,
         node_count=len(kept_nodes),
     )
 

@@ -37,6 +37,7 @@ import sqlite3
 from pathlib import Path
 
 import aiosqlite
+import pytest
 
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
@@ -303,3 +304,55 @@ def test_codex_profile_undercounts_without_model_usage_anti_vacuity(tmp_path: Pa
     assert corrected_profile.total_cache_read_tokens == _CODEX_EXPECTED_CACHE_READ
     assert corrected_profile.total_cache_write_tokens == _CODEX_EXPECTED_CACHE_WRITE
     conn.close()
+
+
+@pytest.mark.parametrize("route", ["single", "batch", "list"])
+async def test_profile_rows_and_usage_overlay_share_one_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    """Anti-vacuity: without one snapshot, a commit between the two reads pairs
+    the old profile title with the replaced usage row (9000 input tokens)."""
+    from polylogue.archive.semantic.cost_records import ModelUsageTotals
+    from polylogue.storage.derived.session.profile_cost import read_model_usage_batch_async as read_usage
+    from polylogue.storage.query_models import SessionProfileListQuery
+    from polylogue.storage.sqlite.queries import session_insight_profile_reads
+
+    writer = _make_archive_conn(tmp_path)
+    try:
+        # WAL lets the interleaved writer commit while the reader holds its snapshot.
+        writer.execute("PRAGMA journal_mode = WAL")
+        session_id = write_parsed_session_to_archive(writer, _claude_code_session("profile-snapshot"))
+        rebuild_session_insights_sync(writer, session_ids=[session_id])
+        writer.commit()
+        title = writer.execute("SELECT title FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0]
+        committed = False
+
+        async def interleaved(conn: aiosqlite.Connection, ids: list[str]) -> dict[str, list[ModelUsageTotals]]:
+            nonlocal committed
+            if not committed:
+                committed = True
+                writer.execute("UPDATE session_profiles SET title = 'replacement' WHERE session_id = ?", (session_id,))
+                writer.execute("UPDATE session_model_usage SET input_tokens = 9000 WHERE session_id = ?", (session_id,))
+                writer.commit()
+            return await read_usage(conn, ids)
+
+        monkeypatch.setattr(session_insight_profile_reads, "read_model_usage_batch_async", interleaved)
+        async with aiosqlite.connect(tmp_path / "index.db") as reader:
+            reader.row_factory = aiosqlite.Row
+            if route == "single":
+                profile = await session_insight_profile_reads.get_session_profile(reader, session_id)
+            elif route == "batch":
+                profile = (await session_insight_profile_reads.get_session_profiles_batch(reader, [session_id]))[
+                    session_id
+                ]
+            else:
+                (profile,) = await session_insight_profile_reads.list_session_profiles(
+                    reader, SessionProfileListQuery()
+                )
+            assert not reader.in_transaction
+        assert committed
+        assert profile is not None
+        assert profile.title == title
+        assert profile.total_input_tokens == 1_000
+    finally:
+        writer.close()

@@ -708,3 +708,124 @@ def test_contested_provider_identity_is_refused_not_downloaded_under_a_lexical_w
     assert surviving == ["drive-file-contested-a", "drive-file-contested-z"]
     index.close()
     source.close()
+
+
+def _seed_contested(tmp_path: Path, *, with_resolvable: bool) -> tuple[sqlite3.Connection, str]:
+    """One reference with two 'file' ids of one kind, optionally beside a resolvable one."""
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    write_parsed_session_to_archive(index, _session("contested", file_id="drive-file-contested-a"), raw_id="c-raw")
+    if with_resolvable:
+        write_parsed_session_to_archive(index, _session("resolvable", file_id="drive-file-resolvable"), raw_id="r-raw")
+    ref_id = str(
+        index.execute("SELECT r.ref_id FROM attachment_refs AS r WHERE r.session_id LIKE '%contested'").fetchone()[
+            "ref_id"
+        ]
+    )
+    index.execute(
+        "INSERT INTO attachment_native_ids (ref_id, id_kind, native_id) VALUES (?, 'file', 'drive-file-contested-z')",
+        (ref_id,),
+    )
+    index.commit()
+    source = sqlite3.connect(tmp_path / "source.db")
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+    source.close()
+    return index, ref_id
+
+
+class _CountingDriveClient:
+    constructed = 0
+    downloads: list[str] = []
+
+    def __init__(self) -> None:
+        type(self).constructed += 1
+
+    def download_into(self, file_id: str, handle: IO[bytes]) -> None:
+        type(self).downloads.append(file_id)
+        handle.write(b"bytes for %s" % file_id.encode())
+
+
+def _run_passes(tmp_path: Path, passes: int) -> type[_CountingDriveClient]:
+    from polylogue.core.stage_admission import stage_write_admission
+    from polylogue.daemon.convergence import DaemonConverger
+    from polylogue.operations.attachment_convergence import make_attachment_convergence_stage
+
+    client = type("_Client", (_CountingDriveClient,), {"constructed": 0, "downloads": []})
+    stage = make_attachment_convergence_stage(
+        tmp_path / "index.db", archive_root=tmp_path, client_factory=client, limit=10
+    )
+    converger = DaemonConverger(stages=(stage,))
+    with stage_write_admission(lambda _actor, work: work()):
+        for _ in range(passes):
+            converger.converge_batch((tmp_path / "source-batch.jsonl",))
+    return client
+
+
+def test_contested_only_identity_is_not_complete_and_never_re_executes(tmp_path: Path) -> None:
+    """polylogue-xfw1t: a contested reference is reported, not retried forever.
+
+    Anti-vacuity: counting every unfetched Drive ref in the stage check (the
+    previous predicate) executes the stage on each of the three passes, so
+    ``constructed`` is 3; folding ``unresolved_identity`` back out of
+    ``complete`` certifies this archive complete.
+    """
+    index, ref_id = _seed_contested(tmp_path, with_resolvable=False)
+    client = _run_passes(tmp_path, passes=3)
+    assert client.constructed == 0
+    assert client.downloads == []
+
+    source = sqlite3.connect(tmp_path / "source.db")
+    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=_into(lambda _id: b""))
+    assert result.unresolved_identity == 1
+    assert not result.transport_pending
+    assert not result.complete
+    status = index.execute(
+        "SELECT a.acquisition_status FROM attachments a JOIN attachment_refs r ON r.attachment_id = a.attachment_id "
+        "WHERE r.ref_id = ?",
+        (ref_id,),
+    ).fetchone()[0]
+    assert status == "unfetched"
+    index.close()
+    source.close()
+
+
+def test_mixed_set_fetches_resolvable_work_once_and_stays_incomplete(tmp_path: Path) -> None:
+    """Resolvable work proceeds; the contested remainder bounds no further execution.
+
+    Anti-vacuity: with contested identity counted as deferred transport work
+    the stage returns pending after acquiring the resolvable row and every
+    later pass re-executes it, so ``constructed`` becomes 3.
+    """
+    index, _ref_id = _seed_contested(tmp_path, with_resolvable=True)
+    client = _run_passes(tmp_path, passes=3)
+    assert client.downloads == ["drive-file-resolvable"]
+    assert client.constructed == 1
+
+    source = sqlite3.connect(tmp_path / "source.db")
+    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=_into(lambda _id: b""))
+    assert result.unresolved_identity == 1
+    assert result.inspected == 0
+    assert not result.complete
+    index.close()
+    source.close()
+
+
+def test_terminal_absence_stays_distinct_from_contested_identity(tmp_path: Path) -> None:
+    """A provider 404 is terminal ``unavailable`` and completes the obligation; contested identity does not."""
+    initialize_active_archive_root(tmp_path)
+    index = _open_index(tmp_path / "index.db")
+    write_parsed_session_to_archive(index, _session("gone", file_id="drive-file-gone"), raw_id="g-raw")
+    source = sqlite3.connect(tmp_path / "source.db")
+    source.row_factory = sqlite3.Row
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+
+    def missing(file_id: str, _handle: IO[bytes]) -> None:
+        raise DriveNotFoundError(file_id)
+
+    result = converge_drive_attachments(index, source, archive_root=tmp_path, download_into=missing)
+    assert result.terminal == 1
+    assert result.unresolved_identity == 0
+    assert result.complete
+    assert index.execute("SELECT acquisition_status FROM attachments").fetchone()[0] == "unavailable"
+    index.close()
+    source.close()

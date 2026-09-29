@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from polylogue.logging import DEBUG, emit
@@ -341,6 +341,9 @@ def _scope_predicate(source_scope: str | None) -> tuple[str, list[str]]:
     return "g.graph_id = ?", [thread_state_graph_id(source_scope)]
 
 
+_TITLE_TABLES = ("work_evidence_edges", "work_evidence_graphs", "work_evidence_nodes")
+
+
 def read_thread_titles(
     conn: sqlite3.Connection,
     *,
@@ -349,8 +352,10 @@ def read_thread_titles(
 ) -> dict[str, str]:
     """Return ``{thread_id: title}`` from the claimed titles in the graph.
 
-    Any failure (missing table, locked file) degrades to an empty mapping,
-    matching every other sidecar source in the title ladder.
+    Only a genuinely absent evidence table means "no titles". Any other read
+    failure (an interrupted or expired frame, a locked or unreadable file)
+    propagates: reporting it as absence would let ingest persist sessions
+    without their retained titles instead of retrying.
     """
     predicate, parameters = _scope_predicate(source_scope)
     base = f"""
@@ -363,40 +368,43 @@ def read_thread_titles(
     """
     ordering = _RECENCY.format(alias="e")
     titles: dict[str, str] = {}
-    try:
-        rows: list[tuple[object, ...]] = []
-        if thread_ids is None:
-            rows = conn.execute(f"{base} {ordering}", parameters).fetchall()
-        else:
-            wanted = list(dict.fromkeys(thread_ids))
-            if not wanted:
-                return {}
-            for start in range(0, len(wanted), 500):
-                chunk = wanted[start : start + 500]
-                if source_scope is None:
-                    # Scope is unknown, so match on the thread-id tail of the
-                    # context ref rather than on a ref we cannot spell.
-                    clause = " OR ".join("e.source_ref LIKE ?" for _ in chunk)
-                    chunk_parameters = [f"%{_SCOPE_SEPARATOR}{item}" for item in chunk]
-                else:
-                    clause = " OR ".join("e.source_ref = ?" for _ in chunk)
-                    chunk_parameters = [thread_context_ref(source_scope, item) for item in chunk]
-                rows.extend(
-                    conn.execute(
-                        f"{base} AND ({clause}) {ordering}",
-                        [*parameters, *chunk_parameters],
-                    ).fetchall()
-                )
-    except sqlite3.Error as exc:
+    present = conn.execute(
+        "SELECT COUNT(DISTINCT name) FROM sqlite_master WHERE type = 'table' AND name IN (?, ?, ?)",
+        _TITLE_TABLES,
+    ).fetchone()[0]
+    if present != len(_TITLE_TABLES):
+        # Only a genuinely absent evidence table means "no titles"; every read
+        # failure below propagates.
         emit(
-            "storage.agent_thread_state.titles_unreadable",
+            "storage.agent_thread_state.titles_absent",
             level=DEBUG,
-            outcome="unmeasured",
-            reason="the index tier is unreadable, so the title lane degrades to empty",
-            error_type=type(exc).__name__,
-            error_detail=str(exc),
+            outcome="empty",
+            reason="the index tier has no work-evidence graph tables, so there are no retained titles",
         )
         return {}
+    rows: list[tuple[object, ...]] = []
+    if thread_ids is None:
+        rows = conn.execute(f"{base} {ordering}", parameters).fetchall()
+    else:
+        wanted = list(dict.fromkeys(thread_ids))
+        if not wanted:
+            return {}
+        for start in range(0, len(wanted), 500):
+            chunk = wanted[start : start + 500]
+            if source_scope is None:
+                # Scope is unknown, so match on the thread-id tail of the
+                # context ref rather than on a ref we cannot spell.
+                clause = " OR ".join("e.source_ref LIKE ?" for _ in chunk)
+                chunk_parameters = [f"%{_SCOPE_SEPARATOR}{item}" for item in chunk]
+            else:
+                clause = " OR ".join("e.source_ref = ?" for _ in chunk)
+                chunk_parameters = [thread_context_ref(source_scope, item) for item in chunk]
+            rows.extend(
+                conn.execute(
+                    f"{base} AND ({clause}) {ordering}",
+                    [*parameters, *chunk_parameters],
+                ).fetchall()
+            )
     for row in rows:
         thread_id = thread_id_from_context_ref(str(row[0]))
         title = row[1]
@@ -436,6 +444,42 @@ def read_spawn_edges(conn: sqlite3.Connection, *, source_scope: str | None = Non
         if parent and child:
             edges.setdefault((parent, child), str(row[2] or "unknown"))
     return edges
+
+
+def read_spawn_parents(conn: sqlite3.Connection, child_thread_ids: Iterable[str]) -> dict[str, str]:
+    """Return ``{child_thread_id: parent_thread_id}`` for the children the graph is not silent about.
+
+    Each child gets the parent :func:`read_parent_thread_id` would report, by
+    the same recency order across every scope. Comparing this per child before
+    and after a snapshot revision is what says whose projected parent moved;
+    the set of edges ever seen cannot, because superseded edges are retained
+    and a parent that returns (A, then B, then A) adds no new edge. A read
+    failure propagates: the caller is mid-write and must not re-derive from a
+    graph it could not read.
+    """
+    wanted = {child for child in child_thread_ids if child}
+    if not wanted:
+        return {}
+    predicate, parameters = _scope_predicate(None)
+    rows = conn.execute(
+        f"""
+        SELECT e.source_ref, e.target_ref
+        FROM work_evidence_edges AS e
+        JOIN work_evidence_graphs AS g ON g.graph_id = e.graph_id
+        WHERE {predicate} AND e.edge_kind = 'invoked'
+        {_RECENCY.format(alias="e")}, e.source_ref
+        """,
+        parameters,
+    ).fetchall()
+    parents: dict[str, str] = {}
+    for row in rows:
+        child = thread_id_from_context_ref(str(row[1]))
+        if child not in wanted or child in parents:
+            continue
+        parent = thread_id_from_context_ref(str(row[0])).strip()
+        if parent:
+            parents[child] = parent
+    return parents
 
 
 def read_spawn_edge_children(conn: sqlite3.Connection) -> set[str]:
@@ -498,6 +542,7 @@ __all__ = [
     "read_provenance",
     "read_spawn_edge_children",
     "read_spawn_edges",
+    "read_spawn_parents",
     "read_thread_titles",
     "thread_context_id",
     "thread_context_ref",

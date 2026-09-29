@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from http.client import HTTPConnection
@@ -55,17 +56,26 @@ def request(host: str, port: int, method: str, path: str, body: dict[str, object
     return response.status, json.loads(response.read())
 
 
-def housekeeping(host: str, port: int, *, now: datetime | None = None) -> list[str]:
-    """Drive the receiver's spool housekeeping route, which owns retention collection."""
+def _stored_job_ids(spool_path: Path) -> set[str]:
+    with sqlite3.connect(capture_job_database_path(spool_path)) as connection:
+        return {row[0] for row in connection.execute("SELECT job_id FROM capture_jobs")}
+
+
+def housekeeping(host: str, port: int, spool_path: Path, *, now: datetime | None = None) -> list[str]:
+    """Drive discovery, the route every extension capture cycle opens with, and
+    return the job IDs the receiver collected on that pass."""
+    before = _stored_job_ids(spool_path)
     original = capture_jobs_module._now
     if now is not None:
         capture_jobs_module._now = lambda: now
     try:
-        status, payload = request(host, port, "GET", "/v1/capture-jobs/orphans?client_protocol=1", {})
+        status, _payload = request(
+            host, port, "POST", "/v1/capture-jobs/discover", {"provider": "chatgpt", "account_scope": SCOPE}
+        )
     finally:
         capture_jobs_module._now = original
     assert status == 200
-    return cast(list[str], payload["collected"])
+    return sorted(before - _stored_job_ids(spool_path))
 
 
 def create(host: str, port: int) -> dict[str, Any]:
@@ -499,11 +509,24 @@ def test_events_are_receiver_ordered_scoped_and_idempotent(tmp_path: Path) -> No
         assert page["timelines"] == {"conversation:1": [first["event"]]}
 
 
+def test_http_rejects_event_cursor_outside_sqlite_integer_range(tmp_path: Path) -> None:
+    """Anti-vacuity: passing this cursor to sqlite binding raises OverflowError."""
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        path = (
+            f"/v1/capture-jobs/{job['job_id']}/events?provider=chatgpt&account_scope={SCOPE}"
+            "&client_protocol=1&before_revision=999999999999999999999999999999"
+        )
+        status, response = request(host, port, "GET", path, {})
+    assert status == 400
+    assert response["error"] == "invalid_capture_job_events_query"
+
+
 def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_path: Path) -> None:
     """Anti-vacuity: timestamp order or retention/terminal/lease bypass makes this fail.
 
-    Collection is driven only through the receiver's housekeeping route, so
-    unwiring it from that route makes this fail too.
+    Collection is driven through discovery, the route the extension opens every
+    capture cycle with, so unwiring it from that route makes this fail too.
     """
     with receiver(tmp_path) as (host, port):
         job = create(host, port)
@@ -584,7 +607,7 @@ def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_pat
         )
         assert status == 200
         future = datetime(2050, 1, 1, tzinfo=UTC)
-        assert housekeeping(host, port, now=future) == []
+        assert housekeeping(host, port, tmp_path, now=future) == []
 
         status, completed = request(
             host,
@@ -599,7 +622,7 @@ def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_pat
             },
         )
         assert status == 200
-        assert housekeeping(host, port) == []
+        assert housekeeping(host, port, tmp_path) == []
         status, page = request(
             host,
             port,
@@ -609,7 +632,7 @@ def test_timeline_uses_receiver_order_and_gc_requires_terminal_retention(tmp_pat
         )
         assert status == 200
         assert page["timelines"]["conversation:1"] == [second["event"], first["event"]]
-        assert housekeeping(host, port, now=future) == [job["job_id"]]
+        assert housekeeping(host, port, tmp_path, now=future) == [job["job_id"]]
         assert (
             request(
                 host,
@@ -703,10 +726,52 @@ def test_orphan_census_reports_unreadable_files_and_refreshes_diagnostics(tmp_pa
         refreshed = next(entry for entry in second if entry["orphan_kind"] == "malformed_legacy_checkpoint")
         assert refreshed["diagnostic"] == "account scope unavailable; explicit migration or abandonment required"
         unreadable_entry = next(entry for entry in second if entry["orphan_kind"] == "unreadable_legacy_checkpoint")
-        assert unreadable_entry["path"] == str(unreadable)
+        assert str(unreadable_entry["source_digest"]).startswith("path-sha256:")
+        assert str(unreadable) not in json.dumps(unreadable_entry)
         assert unreadable_entry["errno_class"] == "PermissionError"
     finally:
         connection.close()
+
+
+def test_concurrent_first_registry_opens_serialize_schema_upgrade(tmp_path: Path) -> None:
+    """Anti-vacuity: racing ALTER TABLE callers must not see duplicate-column errors."""
+    registries = [CaptureJobRegistry(tmp_path, f"receiver-{index}") for index in range(8)]
+
+    def open_and_close(registry: CaptureJobRegistry) -> None:
+        connection = registry._connect()
+        connection.close()
+
+    with ThreadPoolExecutor(max_workers=len(registries)) as pool:
+        list(pool.map(open_and_close, registries))
+
+
+def test_timeline_retention_ignores_empty_and_non_string_refs(tmp_path: Path) -> None:
+    """Anti-vacuity: SQL IS NOT NULL counted refs the projection cannot timeline."""
+    registry = CaptureJobRegistry(tmp_path, "receiver")
+    _, created = registry.create(
+        {
+            "provider": "chatgpt",
+            "account_scope": SCOPE,
+            "client_protocol": 1,
+            "intent": {
+                "schema_version": 1,
+                "version": 1,
+                "intent_key": INTENT_KEY,
+                "payload": {},
+                "digest": canonical_digest({}),
+            },
+        }
+    )
+    job_id = cast(dict[str, Any], created["job"])["job_id"]
+    with registry._connection() as connection:
+        for index, ref in enumerate(("", None, 17)):
+            connection.execute(
+                "INSERT INTO capture_job_events "
+                "(event_id, job_id, event_revision, job_revision, kind, refs_json, payload_json, request_id, occurred_at) "
+                "VALUES (?, ?, ?, 0, 'first-seen', ?, '{}', ?, '2026-01-01T00:00:00Z')",
+                (f"bad-ref-{index}", job_id, index + 1, canonical_json({"conversation_ref": ref}), f"bad-{index}"),
+            )
+        assert CaptureJobRegistry._holds_conversation_timeline(connection, job_id) is False
 
 
 def test_registry_uses_full_synchronous_mode(tmp_path: Path) -> None:
@@ -923,7 +988,7 @@ def test_terminal_retry_transitions_retention_without_a_client_declaration(tmp_p
         # The checkpoint left an intent-keyed timeline, so this job is the
         # record of it and housekeeping must not collect it.
         assert completed["receipt"]["retention"]["timeline_authoritative"] is True
-        assert housekeeping(host, port, now=datetime(2050, 1, 1, tzinfo=UTC)) == []
+        assert housekeeping(host, port, tmp_path, now=datetime(2050, 1, 1, tzinfo=UTC)) == []
 
 
 def test_checkpoint_persists_a_timeline_the_projection_surfaces(tmp_path: Path) -> None:
@@ -1110,16 +1175,16 @@ def test_a_job_cannot_accumulate_unbounded_events(tmp_path: Path) -> None:
         assert stored == 2
 
 
-def test_capture_job_routes_do_not_inherit_the_capture_envelope_body_cap(tmp_path: Path) -> None:
-    """Anti-vacuity: the 128 MiB cap is sized for capture envelopes carrying
-    conversation content; control messages must not inherit it, or the
-    receiver reads and json.loads-es up to 128 MiB per request before any
-    registry validation runs. Restoring the shared cap in ``_capture_job_body``
-    makes this red: the oversized control message is parsed instead of refused
-    on size."""
-    from polylogue.browser_capture.server import MAX_BROWSER_CAPTURE_BODY_BYTES, MAX_CAPTURE_JOB_BODY_BYTES
+def test_capture_job_routes_do_not_inherit_the_general_control_body_bound(tmp_path: Path) -> None:
+    """Anti-vacuity: capture-job requests carry job control, never content, so
+    they must not inherit the general control-message bound, or the receiver
+    reads and json.loads-es up to that bound per request before any registry
+    validation runs. Restoring the shared bound in ``_capture_job_body`` makes
+    this red: the oversized control message is parsed instead of refused on
+    size."""
+    from polylogue.browser_capture.server import MAX_CAPTURE_JOB_BODY_BYTES, MAX_CONTROL_BODY_BYTES
 
-    assert MAX_CAPTURE_JOB_BODY_BYTES < MAX_BROWSER_CAPTURE_BODY_BYTES
+    assert MAX_CAPTURE_JOB_BODY_BYTES < MAX_CONTROL_BODY_BYTES
     with receiver(tmp_path) as (host, port):
         job = create(host, port)
         adopted = adopt(host, port, job)
@@ -1192,7 +1257,7 @@ def test_checkpoint_after_terminal_update_is_kept(tmp_path: Path) -> None:
         )
         assert checkpointed["job"]["retention"]["state"] == "eligible"
         assert checkpointed["job"]["retention"]["timeline_authoritative"] is True
-        assert housekeeping(host, port, now=datetime(2050, 1, 1, tzinfo=UTC)) == []
+        assert housekeeping(host, port, tmp_path, now=datetime(2050, 1, 1, tzinfo=UTC)) == []
         status, page = request(
             host,
             port,
@@ -1237,3 +1302,174 @@ def test_checkpoint_after_terminal_update_is_kept(tmp_path: Path) -> None:
         )
         assert status == 200
         assert refetched["job"]["retention"]["timeline_authoritative"] is False
+
+
+def test_explicit_default_retention_is_durable_declaration(tmp_path: Path) -> None:
+    """Anti-vacuity: value equality must not erase an explicit client declaration."""
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+        adopted = adopt(host, port, job)
+        body = {
+            "provider": "chatgpt",
+            "account_scope": SCOPE,
+            "lease_id": adopted["lease"]["lease_id"],
+            "generation": adopted["lease"]["generation"],
+            "proof": adopted["lease"]["proof"],
+            "expected_revision": adopted["job"]["revision"],
+            "request_id": "declare-default-retention",
+            "retention": {"state": "active", "hold_reason": None, "timeline_authoritative": True},
+        }
+        status, declared = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", body)
+        assert status == 200
+        assert declared["duplicate"] is False
+
+        body.update(
+            request_id="terminal-after-declaration",
+            expected_revision=declared["job"]["revision"],
+            retention=None,
+            retry={"state": "completed", "attempt": 1, "reason": None, "next_eligible_at": None},
+        )
+        body.pop("retention")
+        status, terminal = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", body)
+        assert status == 200
+        assert terminal["job"]["retention"]["state"] == "active"
+
+
+def _declared_after_upgrade(tmp_path: Path, job_id: str, retention: Mapping[str, object]) -> int:
+    """Rewind the registry to its pre-``retention_declared`` shape and reopen it."""
+    path = capture_job_database_path(tmp_path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE capture_jobs SET retention_json=? WHERE job_id=?", (canonical_json(retention), job_id)
+        )
+        connection.execute("ALTER TABLE capture_jobs DROP COLUMN retention_declared")
+    # An upgrade runs in a fresh process; forget this one's once-per-file schema check.
+    capture_jobs_module._SCHEMA_READY.clear()
+    registry = CaptureJobRegistry(spool_path=tmp_path, receiver_id="upgrade-test")
+    with registry._connection() as connection:
+        row = connection.execute("SELECT retention_declared FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
+    return int(row[0])
+
+
+def test_upgrade_marks_only_non_default_retention_as_declared(tmp_path: Path) -> None:
+    """Anti-vacuity: comparing retention_json by spelling marks the sorted-key
+    default declared, so the first assertion fails and terminal jobs never
+    become eligible for collection.
+    """
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+    default = {"state": "active", "hold_reason": None, "timeline_authoritative": True}
+    assert _declared_after_upgrade(tmp_path, job["job_id"], default) == 0
+    held = {"state": "held", "hold_reason": "operator", "timeline_authoritative": True}
+    assert _declared_after_upgrade(tmp_path, job["job_id"], held) == 1
+
+
+def _retired_job(host: str, port: int) -> str:
+    """Drive one job to completed, eligible, non-authoritative and checkpointed."""
+    job = create(host, port)
+    adopted = adopt(host, port, job)
+    lease = adopted["lease"]
+    base = {
+        "provider": "chatgpt",
+        "account_scope": SCOPE,
+        "lease_id": lease["lease_id"],
+        "generation": lease["generation"],
+        "proof": lease["proof"],
+    }
+    checkpointed = _checkpoint(host, port, job["job_id"], lease, adopted["job"]["revision"], 0, {"cursor": 1}, "cp")
+    status, retained = request(
+        host,
+        port,
+        "POST",
+        f"/v1/capture-jobs/{job['job_id']}/update",
+        {
+            **base,
+            "request_id": "declare-eligible",
+            "expected_revision": checkpointed["job"]["revision"],
+            "retention": {"state": "eligible", "hold_reason": None, "timeline_authoritative": False},
+        },
+    )
+    assert status == 200
+    status, _completed = request(
+        host,
+        port,
+        "POST",
+        f"/v1/capture-jobs/{job['job_id']}/update",
+        {
+            **base,
+            "request_id": "complete",
+            "expected_revision": retained["job"]["revision"],
+            "retry": {"state": "completed", "attempt": 1, "reason": None, "next_eligible_at": None},
+        },
+    )
+    assert status == 200
+    return cast(str, job["job_id"])
+
+
+def _job_row_counts(spool_path: Path, job_id: str) -> dict[str, int]:
+    with sqlite3.connect(capture_job_database_path(spool_path)) as connection:
+        return {
+            table: connection.execute(f"SELECT COUNT(*) FROM {table} WHERE job_id=?", (job_id,)).fetchone()[0]
+            for table in (
+                "capture_jobs",
+                "capture_job_events",
+                "capture_job_receipts",
+                "capture_job_update_receipts",
+            )
+        }
+
+
+@pytest.mark.parametrize("route", ["discover", "create"])
+def test_client_capture_routes_collect_a_retired_job(tmp_path: Path, route: str) -> None:
+    """A retired job is collected by the routes the extension actually calls.
+
+    ``browser-extension/src/backfill/capture_jobs.js`` opens every capture
+    cycle with ``POST /v1/capture-jobs/discover`` and creates a job only for an
+    unknown intent; nothing in the extension or the daemon issues the orphan
+    census route. Anti-vacuity: removing the ``gc()`` call from ``discover()``
+    or ``create()`` leaves the job and every row it owns in place, and the
+    orphan census asserted first is no longer where collection happens.
+    """
+    with receiver(tmp_path) as (host, port):
+        job_id = _retired_job(host, port)
+        stored = _job_row_counts(tmp_path, job_id)
+        assert all(count > 0 for count in stored.values()), stored
+
+        future = datetime(2050, 1, 1, tzinfo=UTC)
+        original = capture_jobs_module._now
+        capture_jobs_module._now = lambda: future
+        try:
+            status, census = request(host, port, "GET", "/v1/capture-jobs/orphans?client_protocol=1", {})
+            assert status == 200 and "collected" not in census
+            assert _job_row_counts(tmp_path, job_id) == stored
+
+            if route == "discover":
+                status, found = request(
+                    host, port, "POST", "/v1/capture-jobs/discover", {"provider": "chatgpt", "account_scope": SCOPE}
+                )
+                assert status == 200
+                assert found["jobs"] == []
+            else:
+                payload = {"cutoff": "2027-01-01T00:00:00Z"}
+                status, created = request(
+                    host,
+                    port,
+                    "POST",
+                    "/v1/capture-jobs",
+                    {
+                        "provider": "chatgpt",
+                        "account_scope": SCOPE,
+                        "request_id": "next-intent",
+                        "intent": {
+                            "schema_version": 1,
+                            "version": 1,
+                            "intent_key": "i1:" + "C" * 43,
+                            "payload": payload,
+                            "digest": canonical_digest(payload),
+                        },
+                    },
+                )
+                assert status == 201 and created["job"]["job_id"] != job_id
+        finally:
+            capture_jobs_module._now = original
+        assert _job_row_counts(tmp_path, job_id) == dict.fromkeys(stored, 0)

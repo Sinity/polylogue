@@ -513,6 +513,7 @@ class BoundedComputeAdapter:
             )
         handle = cancellation or CancellationHandle()
         future: Future[T] = Future()
+        future.add_done_callback(lambda done: handle.cancel() if done.cancelled() else None)
         task = _Task(
             function=function,
             # The scheduler queue is heterogeneous, while this public handle
@@ -532,7 +533,17 @@ class BoundedComputeAdapter:
                     admission_class=admission_class,
                     evidence={"capacity_units": self.capacity_units},
                 )
-            self._acquire_locked(self._classes[admission_class], units, estimated_bytes)
+            state = self._classes[admission_class]
+            if min(units, self.max_workers) > state.ceiling_slots:
+                raise DaemonBackpressureError(
+                    "operation exceeds its admission class slot ceiling",
+                    admission_class=admission_class,
+                    evidence={
+                        "class_ceiling_slots": state.ceiling_slots,
+                        "requested_slots": min(units, self.max_workers),
+                    },
+                )
+            self._acquire_locked(state, units, estimated_bytes)
             self._queues[admission_class].append(task)
             runnable = self._drain_locked()
 
@@ -568,6 +579,12 @@ class BoundedComputeAdapter:
             if self._active_slots + task.slots > self.max_workers - self._unmet_other_slot_reserves(name):
                 continue
             if self._group_active_slots(name) + task.slots > state.ceiling_slots:
+                # Do not backfill a background slot with a later turn while
+                # the selected class head is runnable except for its own
+                # multi-slot footprint. Its current occupants will release
+                # together, allowing this head to make progress.
+                if background_turn is not None:
+                    return None
                 continue
             queue.popleft()
             if background_turn is not None:
@@ -729,6 +746,21 @@ class BoundedComputeAdapter:
                 task.future.set_exception(DaemonOperationCancelled("daemon compute adapter shut down"))
         self.executor.shutdown(wait=wait, cancel_futures=cancel_futures)
 
+    def close(self, *, join_timeout_s: float) -> tuple[str, ...]:
+        """Shut down and join the worker threads within one shared deadline.
+
+        Cancelling the future that awaited a worker does not stop the worker,
+        so an owner that needs its threads gone has to join them. Returns the
+        names of workers still alive when the deadline expires: a running
+        job cannot be interrupted, only named.
+        """
+        self.shutdown(wait=False, cancel_futures=True)
+        deadline = monotonic() + join_timeout_s
+        workers = tuple(getattr(self.executor, "_threads", ()))
+        for worker in workers:
+            worker.join(max(0.0, deadline - monotonic()))
+        return tuple(worker.name for worker in workers if worker.is_alive())
+
 
 #: The one compute capacity daemon-internal lease-free work is admitted
 #: through. The HTTP/UDS servers each publish the adapter they already own, so
@@ -759,14 +791,18 @@ def daemon_compute_adapter() -> BoundedComputeAdapter:
         return _SHARED_COMPUTE_ADAPTER
 
 
-def reset_daemon_compute_adapter() -> None:
-    """Drop the shared adapter so a new process scope can publish its own."""
+def reset_daemon_compute_adapter(*, join_timeout_s: float = 0.0) -> tuple[str, ...]:
+    """Drop the shared adapter so a new process scope can publish its own.
+
+    Returns the worker threads still alive after *join_timeout_s*.
+    """
     global _SHARED_COMPUTE_ADAPTER
     with _SHARED_COMPUTE_LOCK:
         adapter = _SHARED_COMPUTE_ADAPTER
         _SHARED_COMPUTE_ADAPTER = None
-    if adapter is not None:
-        adapter.shutdown(wait=False, cancel_futures=True)
+    if not isinstance(adapter, BoundedComputeAdapter):
+        return ()
+    return adapter.close(join_timeout_s=join_timeout_s)
 
 
 __all__ = [

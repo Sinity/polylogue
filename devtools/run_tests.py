@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -43,6 +44,7 @@ from devtools.checkout_identity import (
     default_branch_refusal,
 )
 from devtools.pytest_invocation import (
+    ASSERT_PLAIN_ARGS,
     CLEAR_CONFIGURED_ADDOPTS,
     IGNORED_COLLECTION_ARGS,
     SUITE_COST_PLUGIN_NAME,
@@ -52,6 +54,7 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
+    OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
     PytestSlotUnavailableError,
     basetemp_root,
@@ -60,12 +63,15 @@ from devtools.pytest_slot import (
     run_pytest,
     run_pytest_isolated,
     sweep_stale_temp_trees,
+    termination_metadata,
 )
 from devtools.pytest_stream_report import report_file_argument, spool_paths
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
 from devtools.testmon_provision import TESTMON_COVERAGE_CORE, inspect_testmon_graph
 from devtools.toolchain import venv_python
 from devtools.verify_runs import (
+    PYTEST_CANONICAL_REPORT_NAME,
+    VERIFY_RUNS_DIR,
     PytestStepArtifacts,
     VerifyRun,
     append_verification_evidence,
@@ -81,7 +87,6 @@ from devtools.verify_runs import (
 ROOT = Path(__file__).resolve().parent.parent
 PYTEST_REPORT_DIR = Path(".cache/verify")
 PYTEST_REPORT_PATH = PYTEST_REPORT_DIR / "last-pytest.json"
-PYTEST_PARALLEL_REPORT_PATTERN = "last-pytest-parallel-*.json"
 DEFAULT_OUTLIER_COUNT = 10
 PYTEST_PROGRESS_PATH = PYTEST_REPORT_DIR / "current-pytest-progress.json"
 PYTEST_EVENTS_PATH = PYTEST_REPORT_DIR / "current-pytest-events.jsonl"
@@ -122,6 +127,18 @@ _NON_PATH_VALUE_OPTIONS = frozenset(
 )
 
 
+class _FocusedTestInterrupted(KeyboardInterrupt):
+    """A terminating signal whose conventional exit code belongs in the receipt."""
+
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+        super().__init__(signal.Signals(signum).name)
+
+
+def _interrupt_focused_test(signum: int, _frame: object) -> None:
+    raise _FocusedTestInterrupted(signum)
+
+
 def _prepare_nodatacow_parent(path: Path) -> None:
     """Best-effortly mark the parent of a pytest basetemp as nodatacow."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -146,24 +163,66 @@ def _format_duration(seconds: float) -> str:
     return f"{seconds / 60:.1f}m" if seconds >= 60 else f"{seconds:.2f}s"
 
 
-def print_outliers(limit: int = DEFAULT_OUTLIER_COUNT, *, root: Path = ROOT) -> int:
-    """Print slow tests and files from the latest full-run pytest reports."""
-    report_paths = sorted(
-        path for path in (root / PYTEST_REPORT_DIR).glob("last-pytest-*.json") if path.name != PYTEST_REPORT_PATH.name
-    )
-    tests: list[tuple[str, str, float]] = []
-    for path in report_paths:
+def _full_run_reports(root: Path) -> list[Path]:
+    """Select every pytest lane through one completed full-corpus receipt."""
+    latest: tuple[str, str, Path, dict[str, Any]] | None = None
+    for path in (root / VERIFY_RUNS_DIR).glob("*/run.json"):
         try:
-            report = json.loads(path.read_text(encoding="utf-8"))
+            receipt = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if not isinstance(report, dict):
+        if not isinstance(receipt, dict):
             continue
-        for test in report.get("tests", []):
-            if not isinstance(test, dict) or not isinstance(test.get("nodeid"), str):
-                continue
-            duration = _phase_duration(test)
-            tests.append((test["nodeid"], test["nodeid"].split("::", 1)[0], duration))
+        aggregate = receipt.get("pytest_aggregate")
+        finished_at = receipt.get("finished_at")
+        if (
+            receipt.get("tier") != "all"
+            or receipt.get("status") != "success"
+            or not isinstance(aggregate, dict)
+            or aggregate.get("complete_corpus_covered") is not True
+            or not isinstance(finished_at, str)
+            or not finished_at
+        ):
+            continue
+        candidate = (finished_at, path.parent.name, path, receipt)
+        if latest is None or candidate[:2] > latest[:2]:
+            latest = candidate
+    if latest is None:
+        return []
+    receipt_path, receipt = latest[2], latest[3]
+    steps = receipt.get("steps")
+    if not isinstance(steps, list):
+        raise ValueError(f"completed full run has no step list: {receipt_path}")
+    reports: list[Path] = []
+    for step in steps:
+        if not isinstance(step, dict) or not isinstance(step.get("name"), str):
+            raise ValueError(f"malformed step in {receipt_path}")
+        if not step["name"].startswith("pytest"):
+            continue
+        step_id = step.get("step_id")
+        if not isinstance(step_id, str) or not step_id or Path(step_id).name != step_id or step_id in {".", ".."}:
+            raise ValueError(f"invalid pytest step identity in {receipt_path}")
+        reports.append(receipt_path.parent / "steps" / step_id / PYTEST_CANONICAL_REPORT_NAME)
+    return reports
+
+
+def print_outliers(limit: int = DEFAULT_OUTLIER_COUNT, *, root: Path = ROOT) -> int:
+    """Print slow tests and files from the latest completed full-corpus run."""
+    tests: list[tuple[str, str, float]] = []
+    try:
+        report_paths = _full_run_reports(root)
+        for path in report_paths:
+            report = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(report, dict) or not isinstance(report.get("tests"), list):
+                raise ValueError(f"invalid pytest report: {path}")
+            for test in report["tests"]:
+                if not isinstance(test, dict) or not isinstance(test.get("nodeid"), str):
+                    raise ValueError(f"invalid test entry in {path}")
+                duration = _phase_duration(test)
+                tests.append((test["nodeid"], test["nodeid"].split("::", 1)[0], duration))
+    except (OSError, ValueError, TypeError) as exc:
+        print(f"devtools test --outliers: incomplete full-run evidence: {exc}", file=sys.stderr)
+        return 2
     if not tests:
         print("devtools test --outliers: no readable full-run pytest receipts", file=sys.stderr)
         return 2
@@ -369,6 +428,7 @@ def build_pytest_cmd(selection: list[str], *, report_path: Path = PYTEST_REPORT_
         SUITE_COST_PLUGIN_NAME,
         *managed_plugin_args(testmon=False, xdist=_has_worker_flag(selection)),
         CLEAR_CONFIGURED_ADDOPTS,
+        ASSERT_PLAIN_ARGS,
         report_file_argument(report_path),
         *collection_args,
         *selection,
@@ -439,13 +499,36 @@ def _run(
             },
         )
     returncode = outcome.returncode
+    killed = termination_metadata(outcome)
+    if killed.get("diagnosis") == OOM_KILLED_DIAGNOSIS:
+        # The kill took the unit's receipt writer with it, so the provenance
+        # check below would name the missing receipt instead of the cause.
+        return (
+            returncode or 137,
+            time.monotonic() - started,
+            {
+                **killed,
+                "pytest_slot": outcome.slot,
+                **({"pytest_slot_log": str(outcome.log_path)} if outcome.log_path is not None else {}),
+                **({"pytest_slot_receipt": outcome.receipt} if outcome.receipt is not None else {}),
+                # The tree pytest ran against is whatever the slot recorded
+                # before the kill; without that record it is unknown, never
+                # the tree admitted at submission.
+                **(
+                    {"worktree_provenance": outcome.receipt["worktree_provenance"]}
+                    if isinstance(outcome.receipt, dict)
+                    and isinstance(outcome.receipt.get("worktree_provenance"), dict)
+                    else {"worktree_provenance_unknown": True}
+                ),
+            },
+        )
     if outcome.slot.startswith("agentctl job") and (
         not isinstance(outcome.receipt, dict) or not isinstance(outcome.receipt.get("worktree_provenance"), dict)
     ):
         return (
             125,
             time.monotonic() - started,
-            {"diagnosis": "worktree_provenance_unavailable", "pytest_slot": outcome.slot},
+            {"diagnosis": "worktree_provenance_unavailable", **killed, "pytest_slot": outcome.slot},
         )
     # Exit 1 is "tests failed", the only outcome a rerun can speak to. Exit 2
     # (interrupted), 3 (internal error), 4 (usage) and the signal codes
@@ -476,6 +559,8 @@ def _run(
         time.monotonic() - started,
         {
             "diagnosis": "pytest_passed" if returncode == 0 else "pytest_failed",
+            # Another recorded killer (a unit timeout) keeps its attribution.
+            **killed,
             "pytest_slot": outcome.slot,
             **({"rerun": rerun} if rerun is not None else {}),
             **({"suite_cost_receipt": str(suite_cost_receipt)} if suite_cost_receipt is not None else {}),
@@ -659,6 +744,7 @@ def main(argv: list[str] | None = None) -> int:
     _clear_pytest_report(report_path)
     artifacts = run.start_step(label="pytest focused", cmd=cmd)
     started = time.monotonic()
+    previous_sigterm = signal.signal(signal.SIGTERM, _interrupt_focused_test)
     try:
         pytest_env = focused_pytest_env(run=run, artifacts=artifacts)
         pytest_env.pop("POLYLOGUE_PYTEST_CONTAINMENT_PATH", None)
@@ -715,6 +801,10 @@ def main(argv: list[str] | None = None) -> int:
         metadata["hypothesis_profile"] = hypothesis_profile
         metadata["hypothesis_profile_source"] = hypothesis_profile_source
         metadata["runner"] = runner
+    except _FocusedTestInterrupted as exc:
+        rc = 128 + exc.signum
+        elapsed = time.monotonic() - started
+        metadata = {"diagnosis": "pytest_interrupted", "termination_reason": signal.Signals(exc.signum).name.lower()}
     except KeyboardInterrupt:
         rc = 130
         elapsed = time.monotonic() - started
@@ -729,6 +819,8 @@ def main(argv: list[str] | None = None) -> int:
         }
         elapsed = time.monotonic() - started
         sys.stderr.write(f"devtools test: cannot start pytest: {exc}\n")
+    finally:
+        signal.signal(signal.SIGTERM, previous_sigterm)
     step = run.finish_step(
         step_id=artifacts.step_id,
         result={"duration_s": elapsed, **metadata, "exit": rc},
@@ -737,6 +829,8 @@ def main(argv: list[str] | None = None) -> int:
         rc = int(step["exit"])
         metadata = step
     provenance = metadata.get("worktree_provenance")
+    if not isinstance(provenance, dict) and metadata.get("worktree_provenance_unknown"):
+        run.record_execution_worktree({"capture_source": "unavailable"})
     if isinstance(provenance, dict):
         run.record_execution_worktree(provenance)
         # Report what actually ran, not what was admitted at submission.
@@ -756,18 +850,14 @@ def main(argv: list[str] | None = None) -> int:
     statistics: dict[str, Any] = cast(
         dict[str, Any], metadata.get("statistics") if isinstance(metadata.get("statistics"), dict) else {}
     )
-    if rc == 5:
-        # pytest exits 5 both when a selection genuinely matches nothing and
-        # when a path in it does not exist, and the two are indistinguishable
-        # to a caller. A selection derived from `git diff --name-only` contains
-        # files the branch deleted, so the whole run silently collects nothing
-        # and reads as "no work to do".
+    if rc in {4, 5}:
+        # Missing directory selections are pytest usage errors (exit 4), not
+        # empty collections (exit 5). Diagnose only paths actually absent;
+        # unrelated usage errors must not be described as empty selections.
         absent = absent_selection_paths(selection, root=ROOT)
         if absent:
-            sys.stderr.write(
-                "devtools test: collected nothing because these paths do not exist: " + ", ".join(absent) + "\n"
-            )
-        else:
+            sys.stderr.write("devtools test: these selection paths do not exist: " + ", ".join(absent) + "\n")
+        elif rc == 5:
             sys.stderr.write(
                 "devtools test: the selection collected no tests; every path exists, "
                 "so check the -k/-m expression or retry if runs are contending.\n"
@@ -799,14 +889,15 @@ def main(argv: list[str] | None = None) -> int:
     # whatever the run found; carrying the outcome in the stream keeps it out of
     # reach of that mistake. The receipt is this run's own file, never a
     # `current-*` name a concurrent run in the same checkout would overwrite.
-    receipt = run.relative_run_dir / "run.json"
+    # Absolute, because main() moved to ROOT and the caller's shell did not.
+    receipt = (run.run_dir / "run.json").resolve()
     # The rest of the artifacts are reference material, not a result. Printing
     # them after every green run trains the reader to skip the tail of the
     # output, which is exactly where a failure summary appears. `devtools why`
     # reaches them on demand. When they are printed, it is before the verdict,
     # so the verdict and the checkout it tested stay the last line.
     if _verbose_output() or rc != 0:
-        sys.stderr.write(f"\ndevtools test: artifacts={run.relative_run_dir}/steps/{artifacts.step_id}")
+        sys.stderr.write(f"\ndevtools test: artifacts={(run.run_dir / 'steps' / artifacts.step_id).resolve()}")
     sys.stderr.write(
         f"\ndevtools test: {'PASSED' if rc == 0 else 'FAILED'} exit={rc} "
         f"diagnosis={metadata.get('diagnosis') or 'unknown'} receipt={receipt} {identity.describe()}\n"

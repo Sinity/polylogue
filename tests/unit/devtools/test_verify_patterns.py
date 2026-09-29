@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import subprocess
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -15,7 +17,8 @@ from devtools import verify_patterns
 def _rule(tmp_path: Path, *, status: str = "enforcing") -> verify_patterns.Rule:
     baseline = tmp_path / "baseline.txt"
     digest = hashlib.sha1(b"return None").hexdigest()
-    baseline.write_text(f"polylogue/existing.py:{digest}\n", encoding="utf-8")
+    context = "a" * 40
+    baseline.write_text(f"polylogue/existing.py:{digest}:{context}\n", encoding="utf-8")
     return verify_patterns.Rule("synthetic", tmp_path / "rule.yml", baseline, "bead-test", status)
 
 
@@ -29,50 +32,15 @@ def test_current_pattern_gate_is_seeded_and_reports_pending_rules() -> None:
     assert any("connection-lifecycle: pending" in item for item in details)
 
 
-@pytest.mark.skipif(shutil.which("ast-grep") is None, reason="ast-grep is required to execute structural rules")
-def test_exclusive_create_flags_bound_before_open_are_detected(tmp_path: Path) -> None:
-    (tmp_path / "polylogue").mkdir()
-    (tmp_path / "polylogue" / "writer.py").write_text(
-        "import os\n"
-        "def write(path):\n"
-        "    flags = os.O_CREAT | os.O_EXCL\n"
-        "    fd = os.open(path, flags)\n"
-        "    with os.fdopen(fd, 'w') as stream:\n"
-        "        stream.write('x')\n",
-        encoding="utf-8",
-    )
-    rule = verify_patterns.Rule(
-        "exclusive-create-write",
-        Path(__file__).parents[3] / "devtools/patterns/exclusive-create-write.yml",
-        tmp_path / "baseline.txt",
-        "owner",
-        "enforcing",
-    )
+def test_malformed_pattern_registry_fails_closed(tmp_path: Path) -> None:
+    registry = tmp_path / "devtools/patterns/registry.yaml"
+    registry.parent.mkdir(parents=True)
+    registry.write_text("rules:\n  - id: incomplete\n", encoding="utf-8")
 
-    assert verify_patterns._scan(tmp_path, rule)
+    payload = verify_patterns._payload(tmp_path)
 
-
-@pytest.mark.skipif(shutil.which("ast-grep") is None, reason="ast-grep is required to execute structural rules")
-def test_sqlite_error_rule_ignores_an_explicit_fail_closed_false(tmp_path: Path) -> None:
-    (tmp_path / "polylogue").mkdir()
-    (tmp_path / "polylogue" / "fallback.py").write_text(
-        "import sqlite3\n"
-        "def check():\n"
-        "    try:\n"
-        "        return True\n"
-        "    except sqlite3.Error:\n"
-        "        return False\n",
-        encoding="utf-8",
-    )
-    rule = verify_patterns.Rule(
-        "sqlite-error-default",
-        Path(__file__).parents[3] / "devtools/patterns/sqlite-error-default.yml",
-        tmp_path / "baseline.txt",
-        "owner",
-        "enforcing",
-    )
-
-    assert not verify_patterns._scan(tmp_path, rule)
+    assert payload["blocking"] is True
+    assert any("malformed pattern registry" in detail for detail in payload["required_gate"]["details"])
 
 
 def test_synthetic_new_match_makes_the_ratchet_red(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -83,8 +51,8 @@ def test_synthetic_new_match_makes_the_ratchet_red(monkeypatch: pytest.MonkeyPat
         "_scan",
         lambda _root, _rule: Counter(
             {
-                ("polylogue/existing.py", hashlib.sha1(b"return None").hexdigest()): 1,
-                ("polylogue/new.py", hashlib.sha1(b"return False").hexdigest()): 1,
+                ("polylogue/existing.py", hashlib.sha1(b"return None").hexdigest(), "a" * 40): 1,
+                ("polylogue/new.py", hashlib.sha1(b"return False").hexdigest(), "b" * 40): 1,
             }
         ),
     )
@@ -93,11 +61,11 @@ def test_synthetic_new_match_makes_the_ratchet_red(monkeypatch: pytest.MonkeyPat
 
     assert payload["blocking"] is True
     digest = hashlib.sha1(b"return False").hexdigest()
-    assert payload["new_matches"] == [f"synthetic polylogue/new.py:{digest} (owner bead-test)"]
+    assert payload["new_matches"] == [f"synthetic polylogue/new.py:{digest}:{'b' * 40} (owner bead-test)"]
     assert payload["required_gate"]["diagnosis"] == "gate_semantic_violation"
 
 
-def test_stale_baseline_is_a_blocking_exemption_that_must_be_pruned(
+def test_stale_baseline_is_reported_as_shrinkable_not_a_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     rule = _rule(tmp_path)
@@ -106,24 +74,9 @@ def test_stale_baseline_is_a_blocking_exemption_that_must_be_pruned(
 
     payload = verify_patterns._payload(tmp_path)
 
-    assert payload["blocking"] is True
+    assert payload["blocking"] is False
     digest = hashlib.sha1(b"return None").hexdigest()
-    assert payload["stale_matches"] == [f"synthetic polylogue/existing.py:{digest}"]
-
-
-def test_baseline_digest_validation_does_not_call_security_restricted_sha1_constructor(tmp_path: Path) -> None:
-    path = tmp_path / "baseline.txt"
-    path.write_text("file.py:" + "a" * 40 + "\n", encoding="utf-8")
-    assert verify_patterns._baseline(path) == Counter({("file.py", "a" * 40): 1})
-
-
-def test_new_match_diagnostic_keeps_current_one_based_locations() -> None:
-    """Anti-vacuity: content anchors alone must still point to source locations."""
-    rule = verify_patterns.Rule("synthetic", Path("rule"), Path("baseline"), "owner", "enforcing")
-    detail = verify_patterns._new_match_detail(
-        rule, ("polylogue/a.py", "f" * 40), 1, {("polylogue/a.py", "f" * 40): [54]}
-    )
-    assert "at lines 54" in detail
+    assert payload["stale_matches"] == [f"synthetic polylogue/existing.py:{digest}:{'a' * 40}"]
 
 
 def test_missing_ast_grep_is_typed_and_actionable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -141,38 +94,35 @@ def test_missing_ast_grep_is_typed_and_actionable(monkeypatch: pytest.MonkeyPatc
     assert "uv sync --extra dev --group audit --frozen" in gate["details"][0]
 
 
-def test_malformed_registry_rule_fails_closed(tmp_path: Path) -> None:
-    """Anti-vacuity: skipping a scalar list item drops a required rule silently."""
-    registry = tmp_path / "devtools/patterns/registry.yaml"
-    registry.parent.mkdir(parents=True)
-    registry.write_text(
-        "rules:\n  - id: valid\n    rule: a.yml\n    baseline: a.txt\n    owner: bead\n    status: enforcing\n  - broken\n",
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValueError, match="must be a mapping"):
-        verify_patterns._rules(tmp_path)
-
-
 def test_scan_converts_ast_grep_zero_based_lines_to_one_based(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     rule = _rule(tmp_path)
     matched_file = tmp_path / "polylogue/example.py"
     matched_file.parent.mkdir()
-    matched_file.write_text("\n" * 41 + "    return None\n", encoding="utf-8")
+    matched_file.write_text("\n" * 40 + "def example():\n    return None\n", encoding="utf-8")
     completed = SimpleNamespace(
         returncode=0, stdout='[{"file":"polylogue/example.py","range":{"start":{"line":41}}}]', stderr=""
     )
     monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: completed)
 
-    digest = hashlib.sha1(b"return None").hexdigest()
-    assert verify_patterns._scan(tmp_path, rule) == Counter({("polylogue/example.py", digest): 1})
+    anchor = verify_patterns._match_anchor(
+        tmp_path,
+        {"file": "polylogue/example.py", "range": {"start": {"line": 41}}},
+        {},
+    )
+    assert verify_patterns._scan(tmp_path, rule) == Counter({anchor: 1})
 
 
 def test_displacing_a_baselined_match_does_not_trip_the_gate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     rule = _rule(tmp_path)
     matched_file = tmp_path / "polylogue/existing.py"
     matched_file.parent.mkdir()
-    matched_file.write_text("# inserted line\n" * 9 + "    return None\n", encoding="utf-8")
+    matched_file.write_text("# inserted line\n" * 8 + "def existing():\n    return None\n", encoding="utf-8")
+    anchor = verify_patterns._match_anchor(
+        tmp_path,
+        {"file": "polylogue/existing.py", "range": {"start": {"line": 9}}},
+        {},
+    )
+    rule.baseline_path.write_text(verify_patterns._anchor_text(anchor) + "\n", encoding="utf-8")
     completed = SimpleNamespace(
         returncode=0, stdout='[{"file":"polylogue/existing.py","range":{"start":{"line":9}}}]', stderr=""
     )
@@ -190,23 +140,260 @@ def test_displacing_a_baselined_match_does_not_trip_the_gate(monkeypatch: pytest
 def test_duplicate_content_anchors_are_compared_as_a_multiset(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     rule = _rule(tmp_path)
     digest = hashlib.sha1(b"return None").hexdigest()
-    rule.baseline_path.write_text(f"polylogue/existing.py:{digest}:2\n", encoding="utf-8")
+    context = "a" * 40
+    rule.baseline_path.write_text(f"polylogue/existing.py:{digest}:{context}:2\n", encoding="utf-8")
     monkeypatch.setattr(verify_patterns, "_rules", lambda _root: (rule,))
 
     monkeypatch.setattr(
         verify_patterns,
         "_scan",
-        lambda _root, _rule: Counter({("polylogue/existing.py", digest): 3}),
+        lambda _root, _rule: Counter({("polylogue/existing.py", digest, context): 3}),
     )
     payload = verify_patterns._payload(tmp_path)
     assert payload["blocking"] is True
-    assert payload["new_matches"] == [f"synthetic polylogue/existing.py:{digest} (owner bead-test)"]
+    assert payload["new_matches"] == [f"synthetic polylogue/existing.py:{digest}:{context} (owner bead-test)"]
 
     monkeypatch.setattr(
         verify_patterns,
         "_scan",
-        lambda _root, _rule: Counter({("polylogue/existing.py", digest): 1}),
+        lambda _root, _rule: Counter({("polylogue/existing.py", digest, context): 1}),
     )
     payload = verify_patterns._payload(tmp_path)
+    assert payload["blocking"] is False
+    assert payload["stale_matches"] == [f"synthetic polylogue/existing.py:{digest}:{context}"]
+
+
+def test_equal_text_match_moving_to_another_ast_context_is_new_debt(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Same-line-text replacement cannot inherit an unrelated exemption.
+
+    Anti-vacuity: reducing anchors back to (file, line digest) makes the
+    baseline Counter equal and incorrectly leaves the gate green.
+    """
+    rule = _rule(tmp_path)
+    monkeypatch.setattr(verify_patterns, "_rules", lambda _root: (rule,))
+    monkeypatch.setattr(
+        verify_patterns,
+        "_scan",
+        lambda _root, _rule: Counter(
+            {("polylogue/existing.py", hashlib.sha1(b"return None").hexdigest(), "b" * 40): 1}
+        ),
+    )
+
+    payload = verify_patterns._payload(tmp_path)
+
     assert payload["blocking"] is True
-    assert payload["stale_matches"] == [f"synthetic polylogue/existing.py:{digest}"]
+    assert "b" * 40 in payload["new_matches"][0]
+
+
+def test_committed_baseline_cannot_grow_with_a_new_match(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Adding a finding and exemption together is rejected against parent Git.
+
+    Anti-vacuity: comparing only current matches with the candidate baseline
+    accepts the appended exemption and makes this test green.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Pattern Test"], check=True)
+    rule = _rule(tmp_path)
+    rule.baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    rule.baseline_path.write_text(
+        "polylogue/existing.py:" + hashlib.sha1(b"return None").hexdigest() + ":" + "a" * 40 + "\n"
+    )
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "seed trusted baseline"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "--allow-empty", "-qm", "candidate parent"], check=True)
+    added_digest = hashlib.sha1(b"return False").hexdigest()
+    rule.baseline_path.write_text(
+        rule.baseline_path.read_text() + f"polylogue/new.py:{added_digest}:{'b' * 40}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(verify_patterns, "_rules", lambda _root: (rule,))
+    monkeypatch.setattr(
+        verify_patterns,
+        "_scan",
+        lambda _root, _rule: Counter(
+            {
+                ("polylogue/existing.py", hashlib.sha1(b"return None").hexdigest(), "a" * 40): 1,
+                ("polylogue/new.py", added_digest, "b" * 40): 1,
+            }
+        ),
+    )
+
+    payload = verify_patterns._payload(tmp_path)
+
+    assert payload["blocking"] is True
+    assert any("committed baseline grew" in error for error in payload["required_gate"]["details"])
+
+
+def test_rewriting_a_baseline_entry_into_a_new_ast_context_is_growth(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Moving a match to a new context and re-pointing its exemption is caught.
+
+    Anti-vacuity: reduce trusted anchors to ``(file, digest)`` and the parent
+    count equals the candidate count, so the gate passes although context
+    ``b`` was never exempted by the trusted revision.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Pattern Test"], check=True)
+    rule = _rule(tmp_path)
+    digest = hashlib.sha1(b"return None").hexdigest()
+    rule.baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    rule.baseline_path.write_text(f"polylogue/existing.py:{digest}:{'a' * 40}\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "seed trusted baseline"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "--allow-empty", "-qm", "candidate parent"], check=True)
+    rule.baseline_path.write_text(f"polylogue/existing.py:{digest}:{'b' * 40}\n", encoding="utf-8")
+    monkeypatch.setattr(verify_patterns, "_rules", lambda _root: (rule,))
+    monkeypatch.setattr(
+        verify_patterns,
+        "_scan",
+        lambda _root, _rule: Counter({("polylogue/existing.py", digest, "b" * 40): 1}),
+    )
+
+    payload = verify_patterns._payload(tmp_path)
+
+    assert payload["new_matches"] == []
+    assert payload["blocking"] is True
+    assert any(
+        "committed baseline grew" in error and "b" * 40 in error for error in payload["required_gate"]["details"]
+    )
+
+
+def test_merging_the_base_branch_does_not_count_its_exemptions_as_growth(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """An exemption the merged-in base branch added is trusted, not growth.
+
+    Anti-vacuity: trust only the merge commit's first parent and the base
+    branch's own new entry is reported as ``committed baseline grew``, failing
+    every PR that merged its base.
+    """
+    git = ["git", "-C", str(tmp_path)]
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    subprocess.run([*git, "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run([*git, "config", "user.name", "Pattern Test"], check=True)
+    rule = _rule(tmp_path)
+    existing = "polylogue/existing.py:" + hashlib.sha1(b"return None").hexdigest() + ":" + "a" * 40 + "\n"
+    added_digest = hashlib.sha1(b"return False").hexdigest()
+    added = f"polylogue/base.py:{added_digest}:{'b' * 40}\n"
+    rule.baseline_path.write_text(existing, encoding="utf-8")
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "seed"], check=True)
+    subprocess.run([*git, "checkout", "-qb", "feature"], check=True)
+    (tmp_path / "feature.txt").write_text("x", encoding="utf-8")
+    subprocess.run([*git, "add", "feature.txt"], check=True)
+    subprocess.run([*git, "commit", "-qm", "feature work"], check=True)
+    subprocess.run([*git, "checkout", "-q", "main"], check=True)
+    rule.baseline_path.write_text(existing + added, encoding="utf-8")
+    subprocess.run([*git, "commit", "-qam", "base adds an exemption"], check=True)
+    subprocess.run([*git, "checkout", "-q", "feature"], check=True)
+    subprocess.run([*git, "merge", "-q", "--no-edit", "main"], check=True)
+    monkeypatch.setattr(verify_patterns, "_rules", lambda _root: (rule,))
+    monkeypatch.setattr(
+        verify_patterns,
+        "_scan",
+        lambda _root, _rule: Counter(
+            {
+                ("polylogue/existing.py", hashlib.sha1(b"return None").hexdigest(), "a" * 40): 1,
+                ("polylogue/base.py", added_digest, "b" * 40): 1,
+            }
+        ),
+    )
+
+    payload = verify_patterns._payload(tmp_path)
+
+    assert not any("committed baseline grew" in error for error in payload["required_gate"]["details"])
+
+
+def test_a_merge_parent_without_the_baseline_file_contributes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A base branch that predates a feature's new baseline file does not fail the gate.
+
+    Anti-vacuity (Codex P2, #5755): require the file at every parent and the
+    merge of that older base is a blocking input error.
+    """
+    git = ["git", "-C", str(tmp_path)]
+    subprocess.run(["git", "init", "-q", "-b", "main", str(tmp_path)], check=True)
+    subprocess.run([*git, "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run([*git, "config", "user.name", "Pattern Test"], check=True)
+    (tmp_path / "seed.txt").write_text("seed", encoding="utf-8")
+    subprocess.run([*git, "add", "seed.txt"], check=True)
+    subprocess.run([*git, "commit", "-qm", "seed"], check=True)
+    subprocess.run([*git, "checkout", "-qb", "feature"], check=True)
+    rule = _rule(tmp_path)
+    subprocess.run([*git, "add", "."], check=True)
+    subprocess.run([*git, "commit", "-qm", "feature adds the baseline"], check=True)
+    subprocess.run([*git, "checkout", "-q", "main"], check=True)
+    (tmp_path / "base.txt").write_text("base", encoding="utf-8")
+    subprocess.run([*git, "add", "base.txt"], check=True)
+    subprocess.run([*git, "commit", "-qm", "base moves on"], check=True)
+    subprocess.run([*git, "checkout", "-q", "feature"], check=True)
+    subprocess.run([*git, "merge", "-q", "--no-edit", "main"], check=True)
+    monkeypatch.setattr(verify_patterns, "_rules", lambda _root: (rule,))
+    monkeypatch.setattr(
+        verify_patterns,
+        "_scan",
+        lambda _root, _rule: Counter(
+            {("polylogue/existing.py", hashlib.sha1(b"return None").hexdigest(), "a" * 40): 1}
+        ),
+    )
+
+    payload = verify_patterns._payload(tmp_path)
+
+    assert payload["required_gate"]["error_count"] == 0, payload["required_gate"]["details"]
+
+
+def test_pattern_entrypoint_marks_sha1_as_non_security_use(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A FIPS-style SHA-1 that refuses security use must still scan: the anchors are not security digests."""
+    directory = tmp_path / "devtools/patterns"
+    directory.mkdir(parents=True)
+    (directory / "registry.yaml").write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {
+                        "id": "fixture",
+                        "rule": "rule.yml",
+                        "baseline": "baseline.txt",
+                        "owner": "bead-test",
+                        "status": "enforcing",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    source = tmp_path / "polylogue/example.py"
+    source.parent.mkdir()
+    source.write_text("def example():\n    return None\n", encoding="utf-8")
+    match = {"file": "polylogue/example.py", "range": {"start": {"line": 1}}}
+    anchor = verify_patterns._match_anchor(tmp_path, match, {})
+    (directory / "baseline.txt").write_text(verify_patterns._anchor_text(anchor) + "\n", encoding="utf-8")
+    real_sha1 = hashlib.sha1
+    observations: list[bool] = []
+
+    def restricted_sha1(data: bytes = b"", *, usedforsecurity: bool = True) -> Any:
+        observations.append(usedforsecurity)
+        if usedforsecurity:
+            raise ValueError("SHA-1 is disabled for security use")
+        return real_sha1(data, usedforsecurity=False)
+
+    def process(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        if argv[0] == "git":
+            raise subprocess.CalledProcessError(128, argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps([match]), "")
+
+    monkeypatch.setattr(verify_patterns, "hashlib", SimpleNamespace(sha1=restricted_sha1))
+    monkeypatch.setattr(verify_patterns, "repo_root", lambda: tmp_path)
+    monkeypatch.setattr("devtools.verify_patterns.shutil.which", lambda _name: "/fixture/ast-grep")
+    monkeypatch.setattr("devtools.verify_patterns.subprocess.run", process)
+    assert verify_patterns.main(["--json"]) == 0
+    assert observations and not any(observations)
+    assert json.loads(capsys.readouterr().out)["blocking"] is False

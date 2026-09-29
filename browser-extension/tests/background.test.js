@@ -1877,7 +1877,9 @@ describe("background receiver diagnostics", () => {
       expect(status.cooldown_reason).toBe("provider_rate_limited");
     });
 
-    expect(status.cooldown_until_ms).toBe(Date.parse(status.updated_at) + 60000);
+    const remainingCooldownMs = status.cooldown_until_ms - Date.parse(status.updated_at);
+    expect(remainingCooldownMs).toBeGreaterThanOrEqual(59000);
+    expect(remainingCooldownMs).toBeLessThanOrEqual(60000);
     expect(status.inventory_complete).toBe(false);
   });
 
@@ -2267,6 +2269,47 @@ describe("background receiver diagnostics", () => {
     expect(response).toMatchObject({ ok: false, error: "freshness_hint_sender_identity_mismatch" });
   });
 
+  it("anti-vacuity: a Gemini freshness hint reaches the Gemini content script", async () => {
+    // Without a Gemini branch in conversationIdForUrl, captureTab returns null
+    // before messaging the tab and the hint was still reported as ok.
+    const geminiUrl = "https://gemini.google.com/app/gemini-fresh";
+    tabs = [{ id: 42, url: geminiUrl, title: "Gemini" }];
+    stored.polylogueReceiverPairing = {
+      state: "online",
+      receiver_id: "rx-auto-capture",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-auto-capture", api_schema: "polylogue-browser-capture/v1" });
+      }
+      return responseJson(
+        { provider: "gemini", provider_session_id: "gemini-fresh", state: "archived", lifecycle: "archived", captured: true, spooled: false },
+        { requestId: "archive-state-gemini" },
+      );
+    });
+    globalThis.chrome.tabs.sendMessage = vi.fn(async (_tabId, message) => (
+      message.type === "polylogue.capturePage" ? { ok: true, archiveState: { state: "archived" } } : null
+    ));
+
+    await sendRuntimeMessage(
+      {
+        type: "polylogue.captureFreshnessHint",
+        provider: "gemini",
+        provider_session_id: "gemini-fresh",
+        reason: "provider_turns_changed",
+        delay_ms: 0,
+      },
+      { tab: { id: 42, url: geminiUrl } },
+    );
+
+    expect(globalThis.chrome.tabs.sendMessage).toHaveBeenCalledWith(
+      42,
+      expect.objectContaining({ type: "polylogue.capturePage" }),
+    );
+  });
+
   it("does not fetch a missing conversation while automatic capture is paused", async () => {
     tabs = [{ id: 42, url: "https://chatgpt.com/c/conv-paused", title: "ChatGPT" }];
     await sendRuntimeMessage({
@@ -2386,6 +2429,81 @@ describe("background receiver diagnostics", () => {
     const freshnessAlarms = globalThis.chrome.alarms.create.mock.calls
       .filter(([name]) => name === "polylogueCaptureFreshnessWake");
     expect(freshnessAlarms.at(-1)[1]).toEqual({ when: 173_000 });
+  });
+
+  // Anti-vacuity: restore `Number(value.retry_after_seconds) || null` and an
+  // Infinity Retry-After passes through, so no finite cooldown is stored.
+  it("uses the default rate-limit delay for a non-finite resolved Retry-After", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/infinite-retry", title: "ChatGPT" }];
+    stored.polylogueReceiverPairing = {
+      state: "online",
+      receiver_id: "rx-infinite-retry",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-infinite-retry", api_schema: "polylogue-browser-capture/v1" });
+      }
+      throw new Error(`unexpected receiver request: ${url}`);
+    });
+    globalThis.chrome.tabs.sendMessage = vi.fn(async () => ({
+      ok: false,
+      error: "rate_limited",
+      outcome: "rate_limited",
+      retry_after_seconds: Infinity,
+    }));
+
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "infinite-retry",
+      reason: "generation_completed",
+      delay_ms: 0,
+    });
+
+    alarmListener({ name: "polylogueCaptureFreshnessWake" });
+    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.provider_cooldowns.chatgpt)
+      .toBe(100_000 + 15 * 60_000));
+  });
+
+  // Anti-vacuity (Codex P2, #5700): accept any finite seconds value and a
+  // 307-digit Retry-After becomes Infinity once converted to milliseconds,
+  // storing an unbounded cooldown instead of the 24-hour ceiling.
+  it("bounds a huge finite resolved Retry-After at the cooldown ceiling", async () => {
+    vi.spyOn(Date, "now").mockReturnValue(100_000);
+    tabs = [{ id: 42, url: "https://chatgpt.com/c/huge-retry", title: "ChatGPT" }];
+    stored.polylogueReceiverPairing = {
+      state: "online",
+      receiver_id: "rx-huge-retry",
+      api_schema: "polylogue-browser-capture/v1",
+      endpoint: "http://127.0.0.1:8875",
+    };
+    globalThis.fetch = vi.fn(async (url) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-huge-retry", api_schema: "polylogue-browser-capture/v1" });
+      }
+      throw new Error(`unexpected receiver request: ${url}`);
+    });
+    globalThis.chrome.tabs.sendMessage = vi.fn(async () => ({
+      ok: false,
+      error: "rate_limited",
+      outcome: "rate_limited",
+      retry_after_seconds: 1e307,
+    }));
+
+    await sendRuntimeMessage({
+      type: "polylogue.captureFreshnessHint",
+      provider: "chatgpt",
+      provider_session_id: "huge-retry",
+      reason: "generation_completed",
+      delay_ms: 0,
+    });
+
+    alarmListener({ name: "polylogueCaptureFreshnessWake" });
+    await vi.waitFor(() => expect(stored.polylogueCaptureFreshnessQueue.provider_cooldowns.chatgpt)
+      .toBe(100_000 + 24 * 60 * 60 * 1000));
   });
 
   it("persists a content-reported rate limit before another conversation can capture", async () => {
@@ -2781,6 +2899,18 @@ describe("capture retry queue", () => {
     expect(stored.polylogueCaptureQueue.entries.at(-1).envelope.session.provider_session_id).toBe("conv-21");
   });
 
+  it("queues a capture whose stalled upload the receiver cancelled with 408", async () => {
+    globalThis.fetch = vi.fn(async () => responseJson({ error: "upload_stalled" }, { ok: false, status: 408 }));
+
+    await sendRuntimeMessage({
+      type: "polylogue.capture",
+      envelope: { session: { provider: "chatgpt", provider_session_id: "conv-stalled" } },
+    });
+
+    expect(stored.polylogueCaptureQueue.entries).toHaveLength(1);
+    expect(stored.polylogueCaptureQueue.entries[0].envelope.session.provider_session_id).toBe("conv-stalled");
+  });
+
   it("summarizes the retry queue for the popup without leaking full envelope internals", async () => {
     globalThis.fetch = vi.fn(async () => {
       throw new TypeError("offline");
@@ -3116,6 +3246,51 @@ describe("provider-neutral browser action worker", () => {
     alarmListener({ name: "polylogueBrowserActionWake" });
     await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("rate_limited"));
     expect(updates.at(-1)).toMatchObject({ retry_after_seconds: 75, phase: "provider_action_failed" });
+  });
+
+  it("records a provider cooldown for a resolved 429 without Retry-After", async () => {
+    const action = {
+      action_id: "action-rate-bare",
+      receiver_id: "rx-action-test",
+      provider: "chatgpt",
+      operation: "conversation.create",
+      target: { conversation_id: "new", conversation_url: null, project_ref: null },
+      text: "Harmless rate-limit fixture.",
+      attachments: [],
+      presentation: { surface: "chat", model_slug: "gpt-5-6-pro", model_label: "GPT-5.6 Sol", effort_label: "Pro" },
+      submit_policy: "submit_once",
+      status: "leased",
+    };
+    const updates = [];
+    let claimed = false;
+    globalThis.fetch = vi.fn(async (url, options = {}) => {
+      if (String(url).endsWith("/v1/status")) {
+        return responseJson({ ok: true, receiver_id: "rx-action-test", api_schema: "polylogue-browser-capture/v1" });
+      }
+      if (String(url).includes("/v1/browser-actions?claim_by=")) {
+        if (claimed) return responseJson({ actions: [] });
+        claimed = true;
+        return responseJson({ actions: [action] });
+      }
+      if (String(url).endsWith("/v1/browser-actions/action-rate-bare/events")) {
+        updates.push(JSON.parse(options.body));
+        return responseJson({ action });
+      }
+      return responseJson({ error: "unexpected" }, { ok: false, status: 500 });
+    });
+    globalThis.chrome.scripting.executeScript = vi.fn(async () => [{ result: {
+      ok: false,
+      detail: "provider response http_429",
+      retry_after_seconds: null,
+      submission_may_have_occurred: false,
+    } }]);
+
+    alarmListener({ name: "polylogueBrowserActionWake" });
+    await vi.waitFor(() => expect(updates.at(-1)?.outcome).toBe("rate_limited"));
+    // Red if the transport wrapper records a cooldown only when the resolved
+    // failure carried a Retry-After: the next operation would reach the
+    // provider immediately.
+    expect(stored.polylogueCaptureFreshnessQueue?.provider_cooldowns?.chatgpt).toBeGreaterThan(Date.now());
   });
 
   it("stops reading an attachment response at the extension transport limit", async () => {
@@ -3637,5 +3812,37 @@ describe("pairing-code bootstrap (polylogue-gnie)", () => {
 
     expect(response).toMatchObject({ ok: false, error: "Failed to fetch" });
     expect(stored.receiverAuthToken).toBe("");
+  });
+});
+
+describe("accepted message identity storage", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("drops a version 1 identity cache instead of reading it", async () => {
+    // Anti-vacuity: without the startup replacement the snapshot indexes the
+    // stale scalar entry as if it were a keyed map and reports its fields as
+    // accepted message refs.
+    const legacy = {
+      message_ref: "chatgpt-export:conv-123:n:m1",
+      evidence_ref: "chatgpt/conv-123.json#message:m1",
+      fidelity: "native",
+    };
+    await loadBackground({
+      polylogueState: { provider: "chatgpt", provider_session_id: "conv-123" },
+      polylogueAcceptedMessageIdentities: { "chatgpt:conv-123": legacy },
+    });
+    globalThis.fetch = vi.fn(async () => responseJson({ ok: false }, { ok: false, status: 503 }));
+
+    const snapshot = await sendRuntimeMessage(
+      { type: "polylogue.missionControl.status", refresh: false },
+      { tab: { id: 7, url: "https://chatgpt.com/c/conv-123", title: "conversation" } },
+    );
+
+    expect(stored.polylogueAcceptedMessageIdentitiesVersion).toBe(2);
+    expect(stored.polylogueAcceptedMessageIdentities).toEqual({});
+    expect(snapshot.assertions.accepted_identities).toEqual({});
   });
 });

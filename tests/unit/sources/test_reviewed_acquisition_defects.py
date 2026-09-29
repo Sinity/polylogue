@@ -171,6 +171,9 @@ def test_gemini_cli_parsing_is_not_path_independent() -> None:
     from polylogue.sources.revision_backfill import _PATH_INDEPENDENT_PARSE_PROVIDERS
 
     assert Provider.GEMINI_CLI not in _PATH_INDEPENDENT_PARSE_PROVIDERS
+    # Claude Code resolves retained tool-result sidecars and subagent
+    # siblings from ``source_path`` the same way.
+    assert Provider.CLAUDE_CODE not in _PATH_INDEPENDENT_PARSE_PROVIDERS
     # The opposite direction: emptying the set would also pass the assertion
     # above, so pin a provider that is genuinely path-independent.
     assert Provider.CHATGPT in _PATH_INDEPENDENT_PARSE_PROVIDERS
@@ -188,7 +191,6 @@ def test_antigravity_trajectory_db_is_not_skipped_as_a_protobuf(tmp_path: Path) 
     """
     import inspect
 
-    from polylogue.pipeline.services import archive_ingest
     from polylogue.sources import source_parsing
     from polylogue.sources.parsers import antigravity
 
@@ -206,11 +208,10 @@ def test_antigravity_trajectory_db_is_not_skipped_as_a_protobuf(tmp_path: Path) 
     classification = antigravity.classify_source_path(trajectory)
     assert classification.role is antigravity.AntigravitySourceRole.CONVERSATION_PROTOBUF
 
-    for module in (source_parsing, archive_ingest):
-        source = inspect.getsource(module)
-        skip_count = source.count("AntigravitySourceRole.CONVERSATION_PROTOBUF")
-        suffix_count = source.count('path.suffix.lower() == ".pb"')
-        assert skip_count == suffix_count, module.__name__
+    source = inspect.getsource(source_parsing)
+    skip_count = source.count("AntigravitySourceRole.CONVERSATION_PROTOBUF")
+    suffix_count = source.count('path.suffix.lower() == ".pb"')
+    assert skip_count == suffix_count, source_parsing.__name__
 
 
 @pytest.mark.asyncio

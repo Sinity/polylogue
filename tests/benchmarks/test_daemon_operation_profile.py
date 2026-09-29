@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import threading
+import uuid
 from collections import deque
 from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -22,7 +23,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 from resource import RUSAGE_SELF, getrusage
 from time import perf_counter, sleep
-from typing import Any
+from typing import Any, SupportsFloat, cast
 
 import pytest
 
@@ -81,6 +82,7 @@ def _operation(client: DaemonClient, name: str, payload: dict[str, object] | Non
     assert isinstance(result, dict)
     assert result.get("protocol") == "polylogue.daemon-operation/v1"
     assert result.get("error") is None
+    assert result.get("outcome") == "completed", result.get("outcome")
     return result
 
 
@@ -341,36 +343,110 @@ def test_bench_daemon_live_completion(benchmark: BenchmarkFixture, bench_daemon_
 
 
 @pytest.mark.benchmark
-def test_bench_daemon_cancellation(benchmark: BenchmarkFixture, bench_daemon_uds_client: DaemonClient) -> None:
+def test_bench_daemon_cancellation(
+    benchmark: BenchmarkFixture, bench_daemon_uds_client: DaemonClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import polylogue.operations.daemon_reads as daemon_reads
+
+    query_started = threading.Event()
+    real_query_payload = daemon_reads._query_payload
+
+    def delayed_query_payload(*args: Any, **kwargs: Any) -> Any:
+        # Keep the read in flight long enough for the benchmark's independent
+        # cancellation exchange to reach the daemon deterministically.
+        query_started.set()
+        sleep(0.1)
+        return real_query_payload(*args, **kwargs)
+
+    monkeypatch.setattr(daemon_reads, "_query_payload", delayed_query_payload)
+
     def run() -> dict[str, object]:
-        return _operation(bench_daemon_uds_client, "cli.query", {"params": {"limit": 1}})
+        request_id = uuid.uuid4().hex
+        query_started.clear()
+        started = perf_counter()
+        response: list[dict[str, object]] = []
+        failures: list[BaseException] = []
+
+        def submit() -> None:
+            try:
+                result = bench_daemon_uds_client.operation(
+                    "cli.query",
+                    {"params": {"limit": 20}},
+                    request_id=request_id,
+                    cancellation_token=request_id,
+                )
+                assert isinstance(result, dict)
+                response.append(result)
+            except BaseException as error:
+                failures.append(error)
+
+        request = threading.Thread(target=submit, daemon=True)
+        request.start()
+        assert query_started.wait(timeout=10), "query never reached daemon execution"
+        cancellation = bench_daemon_uds_client.cancel(request_id)
+        assert isinstance(cancellation, dict)
+        request.join(timeout=30)
+        assert not request.is_alive(), "cancelled query did not release its client request"
+        assert not failures, failures
+        assert len(response) == 1
+        result = response[0]
+        assert result.get("outcome") == "cancelled", result.get("outcome")
+        assert result.get("progress") != {"state": "complete"}
+        result["_cancellation_elapsed_ms"] = (perf_counter() - started) * 1000
+        return result
 
     result = benchmark_repeated(benchmark, run)
-    assert result["progress"] == {"state": "complete"}
     record_metrics(
         benchmark,
-        cancellation_ms=bench_daemon_uds_client.last_elapsed_ms or 0,
+        cancellation_ms=float(cast(SupportsFloat, result["_cancellation_elapsed_ms"])),
         bytes=len(json.dumps(result, separators=(",", ":")).encode()),
     )
+
+
+#: Parallel ``cli.query`` reads in one concurrent-reads round.
+_CONCURRENT_READS_PER_ROUND = 4
+
+
+def concurrent_read_round(
+    socket_path: Path,
+    read_index: Iterator[int],
+    *,
+    timeout_s: float = 2,
+    elapsed: list[int] | None = None,
+) -> list[dict[str, object]]:
+    """Issue one round of the concurrent-reads lane: four parallel ``cli.query`` reads.
+
+    Every read must reach the archive query path, or the lane times the daemon
+    read cache instead of the interference it names. The cache keys on the
+    params fingerprint and nothing in this lane moves its epoch, so the params
+    come from ``read_index``, a counter shared by every round: an in-round
+    index would give round 2 exactly round 1's fingerprints.
+    """
+    params = [
+        {"limit": 5 + index % 4, "offset": index} for index in itertools.islice(read_index, _CONCURRENT_READS_PER_ROUND)
+    ]
+
+    def one(read_params: dict[str, int]) -> dict[str, object]:
+        client = DaemonClient(socket_path, timeout_s=timeout_s)
+        result = _operation(client, "cli.query", {"params": read_params})
+        if elapsed is not None:
+            elapsed.append(client.last_elapsed_ms or 0)
+        return result
+
+    with ThreadPoolExecutor(max_workers=_CONCURRENT_READS_PER_ROUND) as pool:
+        return list(pool.map(one, params))
 
 
 @pytest.mark.benchmark
 def test_bench_daemon_concurrent_reads(benchmark: BenchmarkFixture, bench_daemon_uds_client: DaemonClient) -> None:
     socket_path = bench_daemon_uds_client.socket_path
     elapsed: list[int] = []
+    # Offsets 100.. stay clear of the other lanes on this shared daemon, whose
+    # reads would otherwise leave cache entries this lane's first round hits.
+    read_index = itertools.count(100)
 
     def run() -> list[dict[str, object]]:
-        def one(index: int) -> dict[str, object]:
-            # Distinct params per worker: identical requests are served from the
-            # daemon read cache, which measures the cache rather than the
-            # interference this benchmark names.
-            client = DaemonClient(socket_path, timeout_s=2)
-            result = _operation(client, "cli.query", {"params": {"limit": 5 + index, "offset": index}})
-            elapsed.append(client.last_elapsed_ms or 0)
-            return result
-
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            return list(pool.map(one, range(4)))
+        return concurrent_read_round(socket_path, read_index, elapsed=elapsed)
 
     results = benchmark_repeated(benchmark, run)
     assert len(results) == 4
@@ -559,10 +635,11 @@ def test_bench_daemon_mixed_load(
         started = perf_counter()
         execution_context = kwargs.get("execution_context")
         request_id = getattr(execution_context, "call_id", None)
-        assert isinstance(request_id, str) and request_id, "read frame lacks its request correlation id"
         with real_open_operation_read(*args, **kwargs) as snapshot:
-            elapsed_ms = (perf_counter() - started) * 1000
-            frame_timings.record(request_id, elapsed_ms)
+            # Mutating operations intentionally open without a read execution
+            # context. Correlate only measured reads that have a request id.
+            if isinstance(request_id, str) and request_id:
+                frame_timings.record(request_id, (perf_counter() - started) * 1000)
             yield snapshot
 
     real_query_payload = daemon_reads._query_payload
@@ -792,6 +869,8 @@ def test_bench_daemon_mixed_load(
     def phase_read(params: Mapping[str, object]) -> dict[str, object]:
         client = DaemonClient(socket_path, timeout_s=5)
         result = _operation(client, "cli.query", {"params": params})
+        assert result.get("outcome") == "completed", result.get("outcome")
+        assert result.get("error") is None, result.get("error")
         client_ms = float(client.last_elapsed_ms or 0)
         request_id = result.get("request_id")
         assert isinstance(request_id, str) and request_id
@@ -1076,6 +1155,64 @@ def test_profile_declares_mixed_load_queue_high_water_metrics() -> None:
     assert isinstance(manifest_metrics, list)
     assert expected <= set(PROFILE_METRICS)
     assert expected <= set(manifest_metrics)
+
+
+def test_concurrent_read_rounds_stay_on_the_archive_path(
+    bench_daemon_uds_client: DaemonClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every round of the concurrent-reads lane must reach the archive, not only the first.
+
+    ``benchmark_repeated`` calls the lane's round several times against one
+    daemon whose cache epoch nothing in the lane moves. The positive control
+    replays the superseded per-round params (``limit 5 + i, offset i`` for the
+    in-round index) on the same daemon and injection: its second round is
+    served from the cache, so the first half is evidence about the params and
+    not about a cache that was never reachable.
+
+    Anti-vacuity: draw the params from the in-round index again and round 2
+    of the live series skips the injection, so the first assertion goes red.
+    """
+    import polylogue.operations.daemon_reads as daemon_reads
+
+    real_query_payload = daemon_reads._query_payload
+    injected: list[float] = []
+
+    def slow_query_payload(*args: Any, **kwargs: Any) -> Any:
+        injected.append(perf_counter())
+        sleep(_ARCHIVE_PATH_INJECTION_MS / 1000)
+        return real_query_payload(*args, **kwargs)
+
+    monkeypatch.setattr(daemon_reads, "_query_payload", slow_query_payload)
+    socket_path = bench_daemon_uds_client.socket_path
+
+    # A base offset no other lane in this module uses, so no read is a hit an
+    # earlier test left in the shared daemon's cache.
+    rounds = 2
+    read_index = itertools.count(300)
+    live: list[int] = []
+    for _ in range(rounds):
+        concurrent_read_round(socket_path, read_index, timeout_s=10, elapsed=live)
+    window = rounds * _CONCURRENT_READS_PER_ROUND
+    assert min(live) >= _ARCHIVE_PATH_INJECTION_MS, (
+        f"a concurrent read was served from the cache instead of the archive: {live} ms, "
+        f"injection {_ARCHIVE_PATH_INJECTION_MS} ms"
+    )
+    assert len(injected) == window, f"{len(injected)} archive queries for {window} distinct reads"
+
+    def superseded_round() -> list[int]:
+        elapsed: list[int] = []
+        for index in range(_CONCURRENT_READS_PER_ROUND):
+            client = DaemonClient(socket_path, timeout_s=10)
+            _operation(client, "cli.query", {"params": {"limit": 5 + index, "offset": 400 + index}})
+            elapsed.append(client.last_elapsed_ms or 0)
+        return elapsed
+
+    superseded_round()
+    repeated = superseded_round()
+    assert max(repeated) < _ARCHIVE_PATH_INJECTION_MS, (
+        f"the superseded per-round params reached the archive on a repeat, so this control proves nothing: {repeated} ms"
+    )
+    assert len(injected) == window + _CONCURRENT_READS_PER_ROUND
 
 
 def test_mixed_load_series_stays_on_the_archive_path_across_rounds(

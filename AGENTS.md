@@ -77,10 +77,12 @@ Before a storage, daemon, MCP, source, or query change, read its
   source files may be ingested into the empty archive.
 - Later durable-tier changes (`source`, `user`, `audit`) are additive numbered
   migrations under `storage/sqlite/migrations/`, one step at a time. Derived
-  tiers have no migration chain: `archive_tiers/schema_identity.py` stamps an
-  identity over their DDL plus the lowering, materializer, and replay-routing
-  fingerprints, every open compares it, and a mismatch is a typed
-  `SchemaSkew` resolved by reconvergence through the daemon. Classify a schema
+  tiers have no migration chain. For `index` and `ops`,
+  `archive_tiers/schema_identity.py` stamps an identity over their DDL plus
+  the lowering, materializer, and replay-routing fingerprints, every open
+  compares it, and a mismatch is a typed `SchemaSkew` resolved by
+  reconvergence through the daemon. `embeddings` carries no schema identity;
+  its DDL is versioned by `EMBEDDINGS_SCHEMA_VERSION`. Classify a schema
   change before editing: metadata-only, index-only, additive-derived,
   additive-durable, or semantic-reparse.
 - Those fingerprints are AST closures over imported source, so an ordinary
@@ -152,8 +154,8 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
   head covering every affected file, and batch review-thread fixes into one
   push. Re-running only the failing ids is diagnosis on an unchanged tree;
   after a source change, re-run the complete affected selection. Reuse a receipt across related
-  tasks. The hosted quick gate covers static checks, so a local
-  `verify --quick` before pushing is optional.
+  tasks. The pre-push hook runs `devtools verify --quick` on the pushed HEAD;
+  the hosted quick gate stays the enforced record.
 - `devtools verify --quick` runs the static gates (`devtools gate --list`
   enumerates them; `devtools gate <name>` runs one).
   `devtools verify` selects affected tests from a usable testmon graph and
@@ -178,19 +180,25 @@ command needs its `CommandSpec` and `devtools render devtools-reference`).
   daemon → lifecycle, cancellation, restart; MCP → registry and the shared
   product route.
 
-## Review guidelines
+## Code Review Rules
 
+Read and apply `docs/review/codex-review-guide.md` (exhaustive review,
+checklist, severity, noise)
+and the nested `AGENTS.md` beside each changed file.
+- A change to an interface, command, config key, schema, route, or file format
+  updates every consumer (callers, CLI/MCP, tests, docs, generated references,
+  configs, hooks) and deletes the predecessor in the same change; name a
+  missed consumer, P1 when a caller breaks.
+- A compatibility path in a diff (shim, alias, fallback, dual read/write,
+  deprecated wrapper) is a defect. A finding whose remedy keeps the old path,
+  or migrates prior archive state into fresh v1, is noise.
+- A cap, timeout, or truncation that refuses or cuts valid input is a defect;
+  ask for paging or streaming, never a new limit.
 - A finding names a concrete input at the reviewed head and the wrong
-  observable outcome. A scenario that needs the environment corrupted below
-  its own integrity contract (lockfile, provision stamp, environment digest)
-  is out of scope.
-- Receipts and caches are keyed on declared inputs; do not ask for filesystem
-  enumeration as a cache key.
-- A thread answered by a commit or a stated refutation is closed unless the
-  answer is wrong; do not restate it in a later round.
-- Judge a test by the anti-vacuity condition it names, not by whether it could
-  be stricter.
-- Publication text and task metadata are not review targets.
+  observable outcome; environment corruption below its integrity contract is
+  out of scope.
+- A thread answered by a commit or refutation is closed unless the answer is
+  wrong. Publication text and task metadata are not review targets.
 
 ## Commits and PRs
 
@@ -198,6 +206,11 @@ Product code lands through feature branches and squash-merged PRs to
 protected `master`. The PR title is the conventional squash subject (72
 characters or fewer, imperative). The body has Summary, Problem (with
 evidence), Solution, Verification (exact commands and the line that matters),
-and honest residuals. Put no resolver keywords beside issue numbers unless the
-operator asks. release-please owns the version and changelog. Before writing
-"unified" or "complete", grep the diff and check both paths.
+Self-review, and honest residuals. Before every push, the author reviews its
+full diff against `master` with the checklist in
+`docs/review/codex-review-guide.md`, fixes everything found, and repeats until
+a pass is clean; Self-review narrates that last pass item by item (a tick or
+N/A with the reason, how it applied, evidence) and is public text. Put no
+resolver keywords beside issue numbers unless the operator asks.
+release-please owns the version and changelog. Before writing "unified" or
+"complete", grep the diff and check both paths.

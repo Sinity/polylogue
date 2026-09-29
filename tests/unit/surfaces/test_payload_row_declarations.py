@@ -311,6 +311,7 @@ def test_delegation_card_payload_preserves_authority_contradicted_state() -> Non
         parent_followup=(),
         parent_followup_truncated=False,
         annotation_refs=(),
+        annotation_refs_truncated=False,
         evidence_refs=(),
     )
 

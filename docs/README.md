@@ -88,6 +88,7 @@ Start with **Guides** for a task, **Reference** for a surface contract, and **Ar
 | [AgentCTL Development-Loop Proof](dev-loop.md) | Declared browser-capture proof with AgentCTL-owned host lifecycle. |
 | [Visual Evidence](visual-evidence.md) | Synthetic reader DOM/media evidence lanes and local screenshot boundaries. |
 | [Release Checklist](release.md) | Cut-time packaging, installed-artifact, and publish checks. |
+| [Codex Review Guide](review/codex-review-guide.md) | Review checklist shared by Codex and authors' self-review, exhaustive-review rule, finding format, severity scale, and noise list. |
 
 ## Demos, Evidence, and Product
 

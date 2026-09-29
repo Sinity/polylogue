@@ -47,7 +47,7 @@ def _events_db_path() -> Path:
 #: statement, and running it on EVERY emit put that aggregate wait inside the
 #: write-coordinator's shutdown window -- a SIGTERM'd daemon then exceeded its
 #: 15s exit deadline stuck in tier DDL (polylogue-b9oi8). First emit still
-#: converges the tier, so benign-DDL convergence-on-open is preserved.
+#: converges the tier.
 _CONVERGED_EVENT_DBS: set[Path] = set()
 
 
@@ -58,7 +58,7 @@ def _ensure_events_db(path: Path | None = None) -> sqlite3.Connection:
         path.parent.mkdir(parents=True, exist_ok=True)
         initialize_archive_database(path, ArchiveTier.OPS)
         _CONVERGED_EVENT_DBS.add(path)
-    conn = open_daemon_connection(path)
+    conn = open_daemon_connection(path, archive_root=path.parent)
     conn.executescript(_DAEMON_EVENTS_DDL)
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(daemon_events)")}
     if "idempotency_key" not in columns:
@@ -188,8 +188,10 @@ def prune_daemon_events(
     monotonic in ``id`` -- ``observed_at_ms`` is caller-supplied and the wall
     clock can step backwards -- so age retention keeps the first row the
     horizon retains and everything after it, rather than every row whose
-    timestamp happens to be old. That over-retains an out-of-order old row
-    sitting behind a young one; ``max_rows`` still bounds the ledger's size.
+    timestamp happens to be old. Deleting through the highest expired ID
+    instead would discard in-window rows ahead of it. This over-retains an
+    out-of-order old row sitting behind a young one; ``max_rows`` still bounds
+    the ledger's size.
     """
     resolved = daemon_event_retention() if retention is None else retention
     if not resolved.is_bounded:
@@ -535,10 +537,21 @@ def query_events_since(
     """
     conn = _open_events_reader()
     if conn is None:
-        # No ledger file, or an ops database predating the event schema: there
-        # is no retained range to compare a cursor against, so this stays the
-        # documented empty-ledger result rather than a fabricated refusal.
-        return DaemonEventPage(status=EventCursorStatus.OK, events=(), retained_min_id=None, latest_id=0)
+        if last_id <= 0:
+            return DaemonEventPage(status=EventCursorStatus.OK, events=(), retained_min_id=None, latest_id=0)
+        resync = build_snapshot_envelope(
+            event_id=0,
+            ts=_iso_from_ms(current_epoch_ms()),
+            event_count=0,
+            first_event_id=None,
+            last_event_id=None,
+            kind_counts={},
+            resync_reason="ledger_reset",
+            requested_since=last_id,
+        )
+        return DaemonEventPage(
+            status=EventCursorStatus.AGED_OUT, events=(), retained_min_id=None, latest_id=0, resync=resync
+        )
     try:
         conn.execute("BEGIN")
         retained_min, latest = _retained_range(conn)

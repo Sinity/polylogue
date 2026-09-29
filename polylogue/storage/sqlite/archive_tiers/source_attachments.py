@@ -110,22 +110,38 @@ def record_source_attachments(
     """
     normalized = _preflight_source_attachments(attachments)
 
+    generation = conn.execute(
+        "SELECT sealed_at_ms FROM source_generations WHERE source_generation_id=?",
+        (source_generation_id,),
+    ).fetchone()
+    if generation is None:
+        raise KeyError(f"unknown source generation: {source_generation_id}")
+    sealed = generation[0] is not None
+    if sealed:
+        # A replay of already recorded facts remains idempotent after sealing.
+        # It cannot add a reference or advance pending evidence.
+        for attachment, _origin, _disposition in normalized:
+            row = conn.execute(
+                f"SELECT {', '.join(_COMPARED_FIELDS)} FROM source_attachments "
+                "WHERE source_generation_id = ? AND reference_id = ?",
+                (source_generation_id, attachment.reference_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"source generation is already sealed: {source_generation_id}")
+            stored = {
+                field: bytes(value) if isinstance(value, memoryview) else value
+                for field, value in zip(_COMPARED_FIELDS, tuple(row), strict=True)
+            }
+            offered = _offered_attachment(attachment, _origin, _disposition)
+            if any(stored[field] != offered[field] for field in _COMPARED_FIELDS):
+                raise ValueError(f"source generation is already sealed: {source_generation_id}")
+        return
+
     for attachment, origin, disposition in normalized:
         # Reachability is deliberately storage-local and derived from the
         # disposition, so there is no second independently extendable list:
         # acquired is current; every other owned disposition is unavailable.
-        offered: dict[str, object] = {
-            "origin": origin,
-            "source_class": attachment.source_class,
-            "reachability": "current" if attachment.disposition == "acquired" else "unavailable",
-            "reference_count": attachment.reference_count,
-            "payload_identity": attachment.payload_identity,
-            "blob_hash": attachment.blob_hash,
-            "byte_count": attachment.byte_count,
-            "disposition": disposition,
-            "reason": attachment.reason,
-            "evidence_ref": attachment.evidence_ref,
-        }
+        offered = _offered_attachment(attachment, origin, disposition)
         # Select positionally and zip: the caller's ``row_factory`` is not
         # this module's to assume, and a plain tuple row has no name lookup.
         stored_row = conn.execute(
@@ -210,6 +226,21 @@ def _preflight_source_attachments(
             raise ValueError("unavailable attachment requires an evidence-backed reason")
         normalized.append((attachment, origin, disposition))
     return normalized
+
+
+def _offered_attachment(attachment: SourceAttachment, origin: str, disposition: str) -> dict[str, object]:
+    return {
+        "origin": origin,
+        "source_class": attachment.source_class,
+        "reachability": "current" if attachment.disposition == "acquired" else "unavailable",
+        "reference_count": attachment.reference_count,
+        "payload_identity": attachment.payload_identity,
+        "blob_hash": attachment.blob_hash,
+        "byte_count": attachment.byte_count,
+        "disposition": disposition,
+        "reason": attachment.reason,
+        "evidence_ref": attachment.evidence_ref,
+    }
 
 
 def _apply_replay(

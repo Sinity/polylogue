@@ -133,6 +133,7 @@ def _fields() -> dict[str, FieldKind]:
         "derivation_key",
         "candidate_ref",
         "assertion_id",
+        "attachment_id",
     )
 
     # -- classification tokens -------------------------------------------
@@ -150,6 +151,7 @@ def _fields() -> dict[str, FieldKind]:
         "component",
         "tier",
         "reason",
+        "subject_kind",
         "error_type",
         "identity_source",
         "inheritance_mode",
@@ -200,6 +202,8 @@ def _fields() -> dict[str, FieldKind]:
         "messages",
         "blocks",
         "raws",
+        "paths",
+        "attempt_bytes",
         "files",
         "considered",
         "ingested",

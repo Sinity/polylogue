@@ -485,6 +485,34 @@ def test_optimized_python_is_refused_before_running_verification() -> None:
     assert json.loads(result.stdout)["diagnosis"] == "optimized_python"
 
 
+def test_incomplete_dependency_sync_is_refused_before_running_verification(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A devshell whose ``uv sync --frozen`` failed must not produce a verdict.
+
+    The hook keeps the previous ``.venv`` and exports
+    ``POLYLOGUE_DEVSHELL_DEPENDENCY_SYNC=incomplete``; verification of that
+    environment would be evidence about another lockfile.
+
+    Anti-vacuity: drop the refusal and ``_main`` proceeds to anchor paths and
+    record a run, which the sentinel below turns into a failure.
+    """
+
+    monkeypatch.setenv(verify.DEPENDENCY_SYNC_ENV, verify.DEPENDENCY_SYNC_INCOMPLETE)
+
+    def ran_past_preflight() -> None:
+        raise AssertionError("verification started on an unsynced environment")
+
+    monkeypatch.setattr(verify, "_anchor_verification_paths", ran_past_preflight)
+
+    exit_code = verify._main(["--quick", "--json"])
+
+    assert exit_code == 125
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["status"] == "refused"
+    assert payload["diagnosis"] == "dependency_sync_incomplete"
+
+
 def test_interrupted_aggregate_keeps_completed_lane_outcomes() -> None:
     aggregate = verify._aggregate_pytest_results(
         [{"name": "pytest (parallel)", "statistics": {"outcomes": {"passed": 4}}}],
@@ -1106,7 +1134,7 @@ def test_affected_admission_refuses_without_launching_pytest(
     monkeypatch.setattr(verify, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(verify, "git_head", lambda _root: "head")
 
-    def capture_run(label: str, **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+    def capture_run(label: str, _command: list[str], **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
         launched.append(label)
         return 0, 0.1, {}
 
@@ -1116,6 +1144,7 @@ def test_affected_admission_refuses_without_launching_pytest(
     monkeypatch.setattr(verify, "prune_successful_verify_runs", lambda **_kwargs: None)
 
     assert verify._main([]) == 2
+    assert launched, "an affected admission refusal must still run the static gates"
     assert not any(label.startswith("pytest") for label in launched)
     assert history["testmon_selection"]["admission"]["status"] == expected_status
     assert history["pytest_aggregate"]["selected_union_count"] == selected_count
@@ -1191,11 +1220,11 @@ def test_verify_pytest_step_uses_the_explicit_runner(
 
     def managed(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         called.append("managed")
-        return SimpleNamespace(returncode=0, slot="managed", receipt=None)
+        return SimpleNamespace(returncode=0, slot="managed", receipt=None, termination=None)
 
     def isolated(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
         called.append("isolated")
-        return SimpleNamespace(returncode=0, slot="isolated", receipt=None)
+        return SimpleNamespace(returncode=0, slot="isolated", receipt=None, termination=None)
 
     monkeypatch.setattr(verify, "run_pytest", managed)
     monkeypatch.setattr(verify, "run_pytest_isolated", isolated)
@@ -2027,3 +2056,27 @@ def test_stopping_gates_shares_one_grace_period(monkeypatch: pytest.MonkeyPatch)
     verify._stop_gate_processes()
 
     assert waits == [10.0, 0.0]
+
+
+def test_verify_names_an_oomd_killed_pytest_step(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: drop the termination merge in ``verify._run`` and the
+    step reads ``pytest_failed`` with no killer or unit."""
+    monkeypatch.setattr(verify, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(verify, "_clear_pytest_report", lambda _command: None)
+    monkeypatch.setattr(verify, "executable_gate_result", lambda *_args, **_kwargs: SimpleNamespace(ok=True))
+    killed = SimpleNamespace(
+        returncode=137,
+        slot="agentctl job 9",
+        receipt=None,
+        termination={"killer": "oom-kill", "unit": "unit.service"},
+    )
+    monkeypatch.setattr(verify, "run_pytest", lambda *_args, **_kwargs: killed)
+    run = VerifyRun(tier="test", argv=[], git_head="head", root=tmp_path)
+
+    exit_code, _elapsed, metadata = verify._run("pytest selected", ["pytest"], run=run)
+
+    assert exit_code == 137
+    assert metadata["diagnosis"] == "oom_killed"
+    assert metadata["termination_killer"] == "oom-kill"
+    assert metadata["termination_unit"] == "unit.service"

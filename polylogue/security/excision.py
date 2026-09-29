@@ -101,10 +101,11 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
+from polylogue.archive.revision_authority import WORK_EVENT_RAW_ID_PREFIX
 from polylogue.core.enums import AssertionKind, AssertionStatus, AssertionVisibility, Origin, Provider
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.security.excision_carriers import (
@@ -152,9 +153,9 @@ def _connect_ro(path: Path) -> sqlite3.Connection:
     return open_profiled_connection(path, profile=READ_PROFILES["background-read"])
 
 
-def _connect_rw(path: Path) -> sqlite3.Connection:
+def _connect_rw(path: Path, *, archive_root: Path) -> sqlite3.Connection:
     """Open a one-shot writable tier connection, attaching no sibling tier."""
-    return open_isolated_write_connection(path, purpose=f"excision apply({path})")
+    return open_isolated_write_connection(path, purpose=f"excision apply({path})", archive_root=archive_root)
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,6 +366,7 @@ def _resolve_session_excision_target(
             # every retained revision of that same file is covered too.
             fact_raw_ids = _session_fact_raw_ids(conn, session_id)
             raw_ids.extend(fact_raw_ids)
+            raw_ids.extend(_session_work_event_raw_ids(conn, session_id))
             marker_target_raw_ids = frozenset(raw_ids)
             resolved = _durable_revision_closure(conn, raw_ids) if raw_ids else ()
             marker_target_raw_ids = frozenset(resolved)
@@ -658,6 +660,46 @@ def _resolve_container_disposition(conn: sqlite3.Connection, raw_ids: Sequence[s
     )
 
 
+def _bind_cascade_container_disposition(
+    archive_root: Path, targets: tuple[ExcisionTarget, ...]
+) -> tuple[ExcisionTarget, ...]:
+    """Resolve shared container liveness against every raw in the cascade."""
+    raw_ids = tuple(dict.fromkeys(raw.raw_id for target in targets for raw in target.raw_targets))
+    source_db = archive_root / "source.db"
+    if not raw_ids or not source_db.exists() or not targets:
+        return targets
+    conn = _connect_ro(source_db)
+    try:
+        disposition = _resolve_container_disposition(conn, raw_ids)
+    finally:
+        conn.close()
+    # Container disposition is applied before raw deletion. Put the union
+    # disposition on one target so shared items are removed exactly once.
+    return tuple(
+        replace(target, containers=disposition if index == 0 else ContainerDisposition())
+        for index, target in enumerate(targets)
+    )
+
+
+def _session_work_event_raw_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
+    """Raw ids of the agent work events retained for this session.
+
+    Each work event is its own logical source, so neither the transcript's
+    revision closure nor ``sessions.raw_id`` reaches it. Its raw row carries
+    the annotated session's ``(origin, native_id)``, which is the link.
+    """
+    origin, _, native_id = session_id.partition(":")
+    if not origin or not native_id:
+        return ()
+    return tuple(
+        str(row[0])
+        for row in conn.execute(
+            "SELECT raw_id FROM raw_sessions WHERE raw_id GLOB ? AND origin = ? AND native_id = ?",
+            (f"{WORK_EVENT_RAW_ID_PREFIX}*", origin, native_id),
+        ).fetchall()
+    )
+
+
 def _session_fact_raw_ids(conn: sqlite3.Connection, session_id: str) -> tuple[str, ...]:
     """Raw ids of fact-tier evidence whose declared identity is this session.
 
@@ -852,6 +894,8 @@ def plan_session_excision(archive_root: Path, session_id: str, *, cascade_lineag
         _resolve_session_excision_target(archive_root, candidate, target_session_ids=target_session_ids)
         for candidate in session_ids
     )
+    if cascade_lineage:
+        targets = _bind_cascade_container_disposition(archive_root, targets)
     target = targets[-1]
     if not target.found:
         return ExcisionPlan(session_id=session_id, found=False)
@@ -1082,7 +1126,7 @@ def _apply_single_session_excision(
 
     embeddings_db = archive_root / "embeddings.db"
     if embeddings_db.exists() and target.message_ids:
-        conn = _connect_rw(embeddings_db)
+        conn = _connect_rw(embeddings_db, archive_root=archive_root)
         try:
             try_load_sqlite_vec(conn)
             with conn:
@@ -1149,7 +1193,7 @@ def _apply_single_session_excision(
         or target.material_ids
         or target.marker_input_targets
     ):
-        conn = _connect_rw(source_db)
+        conn = _connect_rw(source_db, archive_root=archive_root)
         conn.execute("PRAGMA foreign_keys = ON")
         try:
             with conn:
@@ -1226,6 +1270,13 @@ def _apply_single_session_excision(
                     counts["source_blob_refs"] += max(cursor.rowcount, 0)
                     cursor = conn.execute("DELETE FROM raw_sessions WHERE raw_id = ?", (raw_target.raw_id,))
                     counts["source_raw_rows"] += max(cursor.rowcount, 0)
+                    if _table_exists(conn, "raw_existence_changes"):
+                        cursor = conn.execute(
+                            "DELETE FROM raw_existence_changes WHERE raw_id = ?", (raw_target.raw_id,)
+                        )
+                        counts["source_raw_existence_changes"] = counts.get("source_raw_existence_changes", 0) + max(
+                            cursor.rowcount, 0
+                        )
                     for blob_hash in sibling_hashes:
                         record_excised_blob_hash(
                             conn,
@@ -1373,7 +1424,7 @@ def _apply_single_session_excision(
     # before index cleanup so a crash after the receipt remains attributable.
     user_db = archive_root / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    conn = _connect_rw(user_db)
+    conn = _connect_rw(user_db, archive_root=archive_root)
     existing_receipt: tuple[str, dict[str, object]] | None = None
     receipt_id = _receipt_assertion_id(session_id, timestamp)
     try:
@@ -1387,6 +1438,13 @@ def _apply_single_session_excision(
                 value = json.loads(str(row[1]))
                 if isinstance(value, dict):
                     existing_receipt = (str(row[0]), value)
+                    prior_hashes = value.get("removed_blob_hashes")
+                    prior_hash_set = {str(item) for item in prior_hashes} if isinstance(prior_hashes, list) else set()
+                    current_hashes = {raw.blob_hash.hex() for raw in target.raw_targets}
+                    # A receipt for the same stable session ID is only a retry
+                    # when it proves this source revision was already removed.
+                    if current_hashes and not current_hashes.issubset(prior_hash_set):
+                        existing_receipt = None
             if existing_receipt is None:
                 refs = _target_refs(target)
                 removed_assertions = 0
@@ -1445,10 +1503,18 @@ def _apply_single_session_excision(
         conn.close()
 
     if index_db.exists():
-        conn = _connect_rw(index_db)
-        conn.execute("PRAGMA foreign_keys = ON")
+        conn = _connect_rw(index_db, archive_root=archive_root)
         try:
             with conn:
+                if target.raw_targets and _table_exists(conn, "raw_revision_applications"):
+                    raw_ids = tuple(raw.raw_id for raw in target.raw_targets)
+                    marks = ",".join("?" for _ in raw_ids)
+                    conn.execute(
+                        f"DELETE FROM raw_revision_applications WHERE session_id = ? OR raw_id IN ({marks})",
+                        (session_id, *raw_ids),
+                    )
+                if _table_exists(conn, "raw_revision_heads"):
+                    conn.execute("DELETE FROM raw_revision_heads WHERE session_id = ?", (session_id,))
                 if target.marker_input_targets and _table_exists(conn, "ingest_marker_witnesses"):
                     placeholders = ",".join("?" for _ in target.marker_input_targets)
                     conn.execute(
@@ -1458,11 +1524,17 @@ def _apply_single_session_excision(
                     # Keep the preflight target count in the receipt; retries
                     # return that same persisted value after this idempotent
                     # deletion has completed.
-                cursor = conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
-                if existing_receipt is None:
-                    counts["index_sessions"] = max(cursor.rowcount, 0)
         finally:
             conn.close()
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        if target.session_exists:
+            with ArchiveStore.open_existing(archive_root, read_only=False) as archive:
+                deleted_sessions = archive.delete_sessions((session_id,))
+        else:
+            deleted_sessions = 0
+        if existing_receipt is None:
+            counts["index_sessions"] = deleted_sessions
 
     if existing_receipt is not None:
         receipt_id, value = existing_receipt
@@ -1549,6 +1621,7 @@ def apply_session_excision(
         _resolve_session_excision_target(archive_root, candidate, target_session_ids=target_session_ids)
         for candidate in session_ids
     )
+    targets = _bind_cascade_container_disposition(archive_root, targets)
     target = targets[-1]
     if not target.found:
         return ExcisionReceipt(session_id=session_id, found=False)

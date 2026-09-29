@@ -12,7 +12,7 @@ from polylogue.daemon.convergence import (
     DaemonConverger,
     SessionProfileConvergenceOwner,
 )
-from polylogue.daemon.derivation import Budget, DerivationReport
+from polylogue.daemon.derivation import Budget, DerivationReport, Outcome, WorkCounters
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance, make_session_insight_maintenance
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
@@ -111,7 +111,15 @@ def compose_session_profile_callback(
     # A completed domain restarts on its next owner pass. Keep one domain
     # active until its bounded cursor is swept so earlier sessions cannot
     # consume the budget before a later domain reaches the same archive tail.
-    audit_domains = (summary.domain, usage_rollup.domain, profile.domain)
+    # Marker delivery is an independent durable cursor. Keep it in the bounded
+    # startup audit so a long profile scan cannot starve accepted markers.
+    audit_domains = (summary.domain, usage_rollup.domain, profile.domain, markers.domain)
+    # A swept domain that retained quiet or blocked keys stays owed, but the
+    # audit rotates past it so it cannot starve the independent domains behind
+    # it. When an owed domain later completes, the domains after it read its
+    # new output and are owed again.
+    owed_domains = set(audit_domains)
+    retried_domains: set[str] = set()
     audit_budget = Budget(discovery=128, inspection=128, compute=64, publication=64, retained_outcomes=64)
     audit_lock = asyncio.Lock()
     audit_index = 0
@@ -130,8 +138,22 @@ def compose_session_profile_callback(
         )
         audit_reset = False
         if report.cursor.position(domain).swept:
-            audit_index += 1
-            if audit_index == len(audit_domains):
+            if report.pending:
+                retried_domains.add(domain)
+            else:
+                owed_domains.discard(domain)
+                if domain in retried_domains:
+                    retried_domains.discard(domain)
+                    owed_domains.update(audit_domains[audit_index + 1 :])
+            if owed_domains:
+                audit_index = next(
+                    index
+                    for step in range(1, len(audit_domains) + 1)
+                    if audit_domains[index := (audit_index + step) % len(audit_domains)] in owed_domains
+                )
+                audit_reset = True
+            else:
+                audit_index = len(audit_domains)
                 demand_reset = True
         return report
 
@@ -171,6 +193,9 @@ def compose_session_profile_callback(
     async def converge_promoted() -> DerivationReport:
         nonlocal audit_index, audit_reset, demand_reset
         async with audit_lock:
+            owed_domains.clear()
+            owed_domains.update(audit_domains)
+            retried_domains.clear()
             audit_index = 0
             audit_reset = True
             demand_reset = False
@@ -180,7 +205,7 @@ def compose_session_profile_callback(
             for _ in range(len(audit_domains) - 1):
                 if audit_index == len(audit_domains):
                     break
-                report = await audit_tick()
+                report = _merge_reports(report, await audit_tick())
             return report
 
     return ComposedSessionProfiles(
@@ -189,4 +214,29 @@ def compose_session_profile_callback(
         make_session_insight_maintenance(owner, index_db_path=index_path, archive_root=archive_root),
         audit_pending=lambda: audit_index < len(audit_domains),
         audit_pass=audit_pass,
+    )
+
+
+def _merge_reports(first: DerivationReport, second: DerivationReport) -> DerivationReport:
+    """Retain bounded outcomes from every domain pass of one promotion."""
+    counts = {
+        outcome: first.count(outcome) + second.count(outcome)
+        for outcome in Outcome
+        if first.count(outcome) + second.count(outcome)
+    }
+    first_work, second_work = first.work, second.work
+    work = WorkCounters(
+        pages=first_work.pages + second_work.pages,
+        discovered=first_work.discovered + second_work.discovered,
+        inspected=first_work.inspected + second_work.inspected,
+        prerequisites_inspected=first_work.prerequisites_inspected + second_work.prerequisites_inspected,
+        computed=first_work.computed + second_work.computed,
+        published=first_work.published + second_work.published,
+    )
+    return replace(
+        second,
+        outcomes=first.outcomes + second.outcomes,
+        counts=counts,
+        work=work,
+        truncated=first.truncated or second.truncated,
     )

@@ -8,6 +8,7 @@ import hashlib
 import inspect
 import json
 import os
+import re
 import sqlite3
 import stat
 import threading
@@ -55,6 +56,9 @@ async def _unused_session_profile_callback(_session_ids: Sequence[str] | None) -
 class _NoIntakeHints:
     def intake_revision(self, source: WatchSource) -> int:
         return 0
+
+    def prepare_watch_roots(self) -> list[Path]:
+        return [Path("/synthetic-watch-root")]
 
 
 def _resolved_config(**overrides: object) -> Any:
@@ -328,45 +332,6 @@ def test_polylogued_status_plain_reports_schema_mismatch(tmp_path: Path) -> None
 
 @pytest.mark.contract
 @pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
-def test_drain_convergence_debt_migrates_retired_insights_stage(
-    tmp_path: Path,
-    frozen_clock: FrozenClock,
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    db = tmp_path / "index.db"
-    source = tmp_path / "session.jsonl"
-    source.write_text("{}\n", encoding="utf-8")
-    cursor = CursorStore(db)
-    cursor.record_convergence_debt(
-        stage="insights",
-        subject_type="source_path",
-        subject_id=str(source),
-        error="initial failure",
-    )
-    with sqlite3.connect(tmp_path / "ops.db") as conn:
-        conn.execute(
-            "UPDATE convergence_debt SET next_retry_at = '1970-01-01T00:00:00+00:00'",
-        )
-        conn.commit()
-    stage = ConvergenceStage(
-        name="derived",
-        description="retry test",
-        check=lambda candidate: candidate == source,
-        execute=lambda candidate: candidate == source,
-    )
-    with patch("polylogue.daemon.convergence_stages.make_default_convergence_stages", return_value=(stage,)):
-        retried = daemon_cli._drain_convergence_debt_once(db)
-        debt_after = cursor.list_convergence_debt()
-
-    assert retried == 0
-    assert len(debt_after) == 1
-    assert debt_after[0].stage == "derived"
-    assert cursor.get_record(source) is None
-
-
-@pytest.mark.contract
-@pytest.mark.frozen_clock_modules("polylogue.sources.live.cursor")
 def test_drain_convergence_debt_retries_session_subjects_without_source_lookup(
     tmp_path: Path,
     frozen_clock: FrozenClock,
@@ -450,102 +415,13 @@ def test_drain_convergence_debt_preserves_error_for_unimplemented_stage(
     assert row.last_error == "alias collision truncated child prefix at message 42"
 
 
-def test_no_default_sources_makes_root_the_complete_watch_set(tmp_path: Path) -> None:
-    """``--no-default-sources`` drops the typed defaults; the default stays additive.
-
-    Anti-vacuity: keeping ``default_sources()`` in the list when
-    ``include_defaults=False`` leaves the hermes/inbox/browser-capture roots in
-    the watch set, so the isolated-root assertion fails; dropping them
-    unconditionally makes the additive assertion fail.
-    """
-    from polylogue.daemon import cli as daemon_cli
-
-    isolated = tmp_path / "isolated"
-    isolated.mkdir()
-
-    with patch("polylogue.paths.archive_root", return_value=tmp_path / "archive"):
-        additive = daemon_cli._watch_sources_from_roots((isolated,))
-        exclusive = daemon_cli._watch_sources_from_roots((isolated,), include_defaults=False)
-
-    assert len(additive) > 1
-    assert isolated in {source.root for source in additive}
-    assert [source.root for source in exclusive] == [isolated]
-
-    # The flag is wired onto the daemon entry points, not just the helper.
-    for command in (daemon_cli.run_command, daemon_cli.watch_command):
-        assert "no_default_sources" in {param.name for param in command.params}
-
-
-@pytest.mark.parametrize("command", ("run", "watch"))
-def test_named_default_sources_keep_typed_rules_and_explicit_roots(
-    workspace_env: dict[str, Path], tmp_path: Path, command: str
-) -> None:
-    """Selecting provider defaults excludes internal roots without widening provider rules."""
-    from polylogue.daemon import cli as daemon_cli
-
-    selected_names = (
-        "claude-code",
-        "claude-code-todos",
-        "claude-code-history",
-        "codex",
-        "codex-state",
-        "codex-memories",
-        "gemini-cli",
-        "hermes",
-        "antigravity",
-    )
-    external_root = tmp_path / "account-export"
-    defaults = {source.name: source for source in daemon_cli.default_sources()}
-    recorded: dict[str, object] = {}
-
-    async def fake_run_daemon_services(**kwargs: object) -> None:
-        recorded.update(kwargs)
-
-    args = [command]
-    for name in selected_names:
-        args.extend(("--default-source", name))
-    args.extend(("--root", str(external_root)))
-    if command == "run":
-        args.extend(("--spool", str(tmp_path / "old-browser-spool"), "--no-browser-capture", "--no-api"))
-    with patch("polylogue.daemon.cli.run_daemon_services", side_effect=fake_run_daemon_services):
-        result = CliRunner().invoke(main, args)
-
-    assert result.exit_code == 0, result.output
-    sources = recorded["sources"]
-    assert isinstance(sources, tuple)
-    assert tuple(source for source in sources if source.name in defaults) == tuple(
-        defaults[name] for name in selected_names
-    )
-    assert sources[-1] == WatchSource(
-        name="account-export",
-        root=external_root,
-        suffixes=(".json", ".jsonl", ".ndjson", ".zip"),
-        required=True,
-    )
-    assert {source.name for source in sources} == {*selected_names, "account-export"}
-
-
-@pytest.mark.parametrize("command", ("run", "watch"))
-def test_named_default_source_rejects_unknown_and_conflicting_selection(command: str) -> None:
-    unknown = CliRunner().invoke(main, [command, "--default-source", "claud-code"])
-    assert unknown.exit_code != 0
-    assert "unknown default source(s): claud-code" in unknown.output
-
-    conflicting = CliRunner().invoke(
-        main,
-        [command, "--root", "/tmp/account-export", "--no-default-sources", "--default-source", "codex"],
-    )
-    assert conflicting.exit_code != 0
-    assert "--default-source cannot be used with --no-default-sources" in conflicting.output
-
-
 def test_periodic_convergence_check_treats_sqlite_lock_as_archive_busy(tmp_path: Path) -> None:
     from polylogue.daemon import cli as daemon_cli
 
     db = tmp_path / "index.db"
     db.touch()
 
-    def fake_drain(_db: Path) -> int:
+    def fake_drain(_db: Path, **_kwargs: object) -> tuple[int, int]:
         raise sqlite3.OperationalError("database is locked")
 
     with (
@@ -680,9 +556,9 @@ def test_periodic_convergence_check_waits_for_watcher_registration(
     raw_retention_calls: list[None] = []
     drained = asyncio.Event()
 
-    def fake_drain(drain_db: Path) -> int:
+    def fake_drain(drain_db: Path, **_kwargs: object) -> tuple[int, int]:
         drains.append(drain_db)
-        return 0
+        return 0, 0
 
     async def fake_session_profiles(scope: tuple[str, ...] | None) -> object:
         profile_scopes.append(scope)
@@ -743,7 +619,7 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
     db = tmp_path / "index.db"
     db.touch()
 
-    def fake_drain(_db: Path) -> int:
+    def fake_drain(_db: Path, **_kwargs: object) -> tuple[int, int]:
         raise RuntimeError("unexpected convergence retry failure")
 
     # The drain itself runs off the writer lease (polylogue-ssplv); the
@@ -757,10 +633,14 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
         ),
         capture() as records,
     ):
-        asyncio.run(daemon_cli._retry_convergence_debt_once(db))
+        failure = asyncio.run(daemon_cli._retry_convergence_debt_once(db))
 
-    # The span's terminal event is emitted from ``__exit__``, so the swallowed
-    # failure is still on the record at ERROR rather than silently dropped.
+    # The failure is handed back so the periodic loop re-raises it after its
+    # other stages and records it as ``last_error`` (polylogue-hu24g); before,
+    # it was suppressed and only the span's event remained.
+    assert isinstance(failure, RuntimeError)
+    # The span's terminal event is emitted from ``__exit__``, so the
+    # failure is also on the record at ERROR.
     errors = [r for r in records if r["event"] == "daemon.convergence_debt.pass.error"]
     assert len(errors) == 1
     assert errors[0]["level"] == "error"
@@ -768,6 +648,50 @@ def test_periodic_convergence_check_warns_on_non_lock_failures(tmp_path: Path) -
     assert errors[0]["error_type"] == "RuntimeError"
     assert "unexpected convergence retry failure" in str(errors[0]["error_detail"])
     assert [r for r in records if r["event"] == "daemon.convergence_debt.pass.ok"] == []
+
+
+def test_an_unreadable_config_is_reported_not_read_as_no_drive_sources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity (polylogue-hu24g): ``suppress(Exception)`` left the Drive
+    intake class unregistered for the daemon's life with no event at all."""
+    import polylogue.config as config_module
+    from polylogue.daemon import cli as daemon_cli
+
+    def unreadable() -> Config:
+        raise OSError("config unreadable")
+
+    monkeypatch.setattr(config_module, "get_config", unreadable)
+    with capture() as records:
+        assert daemon_cli._drive_sources_configured() is False
+    events = [record for record in records if record["event"] == "daemon.intake.drive_config_unreadable"]
+    assert len(events) == 1
+    assert events[0]["error_type"] == "OSError"
+
+
+def test_an_alert_probe_that_raises_is_itself_an_alert(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (polylogue-hu24g): both heartbeat probes ran under
+    ``suppress(Exception)``, so a probe that raised could never alert."""
+    import polylogue.hooks as hooks
+    from polylogue.daemon import cli as daemon_cli
+
+    def broken_drift(_harness: str) -> list[Path]:
+        raise PermissionError("hook directory unreadable")
+
+    def broken_depth(*, cap: int) -> int:
+        raise OSError("spool unreadable")
+
+    monkeypatch.setattr(hooks, "hook_install_sidecar_drift", broken_drift)
+    monkeypatch.setattr(daemon_cli, "_browser_capture_spool_pending_file_count", broken_depth)
+    with capture() as records:
+        daemon_cli._log_spool_depth_if_notable()
+
+    failed = [record for record in records if record["event"] == "daemon.alert_probe.failed"]
+    assert sorted((record["operation"], record["component"]) for record in failed) == [
+        ("browser_capture_spool_depth", "browser-capture"),
+        ("hook_install_sidecar_drift", "claude-code"),
+        ("hook_install_sidecar_drift", "codex"),
+    ]
 
 
 def test_polylogued_browser_capture_help_lists_service_commands() -> None:
@@ -853,7 +777,7 @@ def test_polylogued_run_uses_default_sources() -> None:
     sources = (WatchSource(name="codex", root=Path("/tmp/codex")),)
 
     with (
-        patch("polylogue.daemon.cli.default_sources", return_value=sources) as default_sources,
+        patch("polylogue.sources.live.watcher.default_sources", return_value=sources) as default_sources,
         patch("polylogue.daemon.cli.asyncio.run") as run,
     ):
         result = CliRunner().invoke(main, ["run", "--no-browser-capture", "--no-api"])
@@ -889,8 +813,8 @@ def test_spool_override_replaces_default_browser_capture_source() -> None:
         WatchSource(name="browser-capture", root=default_spool, suffixes=(".json",)),
     )
 
-    with patch("polylogue.daemon.cli.default_sources", return_value=sources):
-        resolved = daemon_cli._watch_sources_from_roots((), browser_capture_spool_path=override_spool)
+    with patch("polylogue.sources.live.watcher.default_sources", return_value=sources):
+        resolved = daemon_cli._watch_sources(browser_capture_spool_path=override_spool)
 
     assert resolved == (
         WatchSource(name="codex", root=Path("/tmp/codex")),
@@ -909,8 +833,6 @@ def test_polylogued_run_can_skip_configured_source_catchup() -> None:
             main,
             [
                 "run",
-                "--root",
-                "/tmp/codex",
                 "--no-source-catchup",
                 "--no-browser-capture",
                 "--no-api",
@@ -922,8 +844,6 @@ def test_polylogued_run_can_skip_configured_source_catchup() -> None:
     assert recorded["enable_source_catchup"] is False
     recorded_sources = recorded["sources"]
     assert isinstance(recorded_sources, tuple)
-    roots = {source.root for source in recorded_sources}
-    assert Path("/tmp/codex") in roots
     assert {source.name for source in recorded_sources} >= {
         "claude-code",
         "claude-code-todos",
@@ -957,7 +877,7 @@ def test_polylogued_watch_uses_default_sources(workspace_env: dict[str, Path]) -
         assert kwargs["enable_watch"] is True
 
     with (
-        patch("polylogue.daemon.cli.default_sources", return_value=sources) as default_sources,
+        patch("polylogue.sources.live.watcher.default_sources", return_value=sources) as default_sources,
         patch("polylogue.daemon.cli.run_daemon_services", side_effect=fake_run_daemon_services) as run_services,
     ):
         result = runner.invoke(main, ["watch"])
@@ -1005,33 +925,6 @@ def test_polylogued_watch_reports_archive_ownership_conflict_as_click_error(
     assert "archive location already owned" in result.output
     assert "Watching" not in result.output
     assert "Traceback" not in result.output
-
-
-def test_polylogued_watch_builds_sources_from_roots(workspace_env: dict[str, Path], tmp_path: Path) -> None:
-    root_a = tmp_path / "claude-code"
-    root_b = tmp_path / "codex"
-
-    typed_default = WatchSource(name="typed-default", root=tmp_path / "typed-default")
-    with (
-        patch("polylogue.daemon.cli.default_sources", return_value=(typed_default,)),
-        patch("polylogue.daemon.cli.asyncio.run") as run,
-    ):
-        result = CliRunner().invoke(
-            main,
-            [
-                "watch",
-                "--root",
-                str(root_a),
-                "--root",
-                str(root_b),
-            ],
-        )
-
-    assert result.exit_code == 0
-    coroutine = run.call_args.kwargs.get("main") or run.call_args.args[0]
-    assert inspect.iscoroutine(coroutine)
-    coroutine.close()
-    assert "Watching" not in result.stderr
 
 
 def test_drive_source_catchup_skips_when_no_drive_sources(tmp_path: Path) -> None:
@@ -1201,79 +1094,6 @@ def test_drive_source_catchup_safe_wrapper_logs_failure() -> None:
     assert "drive unavailable" in str(failures[0]["error_detail"])
 
 
-def test_explicit_archive_inbox_root_keeps_import_suffixes(workspace_env: dict[str, Path]) -> None:
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES
-
-    inbox = workspace_env["archive_root"] / "inbox"
-    ordinary = workspace_env["archive_root"] / "ordinary-jsonl-root"
-
-    sources = daemon_cli._watch_sources_from_roots((inbox, ordinary))
-
-    assert next(source for source in sources if source.root == inbox) == WatchSource(
-        name="inbox", root=inbox, suffixes=INBOX_SOURCE_SUFFIXES, required=True
-    )
-    assert next(source for source in sources if source.root == ordinary) == WatchSource(
-        name="ordinary-jsonl-root",
-        root=ordinary,
-        suffixes=(".json", ".jsonl", ".ndjson", ".zip"),
-        required=True,
-    )
-    assert {source.name for source in sources} >= {
-        "claude-code",
-        "claude-code-todos",
-        "codex",
-        "gemini-cli",
-        "hermes",
-        "antigravity",
-        "browser-capture",
-    }
-
-
-def test_configured_root_does_not_duplicate_typed_default(workspace_env: dict[str, Path]) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    default_root = next(source.root for source in daemon_cli.default_sources() if source.name == "codex")
-    sources = daemon_cli._watch_sources_from_roots((default_root,))
-
-    assert sum(source.root == default_root for source in sources) == 1
-    assert next(source for source in sources if source.root == default_root).name == "codex"
-    assert next(source for source in sources if source.root == default_root).required
-
-
-def test_configured_missing_default_root_remains_a_required_baseline_fault(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.sources.live.production_baseline import capture_production_source_baseline
-    from polylogue.sources.live.watcher import WatchSource
-
-    missing = tmp_path / "codex"
-    monkeypatch.setattr(daemon_cli, "default_sources", lambda **_kwargs: (WatchSource("codex", missing),))
-    source = daemon_cli._watch_sources_from_roots((missing,))[0]
-    assert source.required
-    baseline = capture_production_source_baseline((source,), operation_id="missing")
-    assert any(row.path == str(missing) and row.disposition == "fault" for row in baseline.decisions)
-
-
-def test_default_sources_watch_the_legacy_data_home_inbox(workspace_env: dict[str, Path]) -> None:
-    """An archive root moved off the XDG data home leaves an inbox behind it,
-    and exports staged there before the move are under no other watch root.
-
-    Anti-vacuity: drop ``_legacy_data_home_inbox_sources`` and the only inbox
-    root is the archive one, so a wipe-and-reconverge never reads the older
-    inbox at all.
-    """
-    from polylogue.daemon import cli as daemon_cli
-
-    inbox_roots = {source.root for source in daemon_cli.default_sources() if source.name in {"inbox", "inbox-legacy"}}
-
-    assert inbox_roots == {
-        workspace_env["archive_root"] / "inbox",
-        workspace_env["data_root"] / "polylogue" / "inbox",
-    }
-
-
 def test_default_sources_name_one_inbox_when_the_archive_lives_in_the_data_home(
     workspace_env: dict[str, Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -1322,72 +1142,6 @@ def test_hook_carrier_sources_are_named_apart_but_owned_by_their_provider(worksp
     for provider in HOOK_CARRIER_PROVIDERS:
         assert f"{provider}-hooks" in names
         assert canonical_runtime_provider(f"{provider}-hooks") == provider
-
-
-def test_additional_root_excludes_provider_state_suffixes(workspace_env: dict[str, Path]) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    root = workspace_env["archive_root"] / "export-root"
-    source = next(source for source in daemon_cli._watch_sources_from_roots((root,)) if source.root == root)
-
-    assert source.suffixes == (".json", ".jsonl", ".ndjson", ".zip")
-    assert ".db" not in source.suffixes
-    assert ".sqlite" not in source.suffixes
-
-
-def test_explicit_browser_capture_root_keeps_capture_suffixes(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import polylogue.paths as polylogue_paths
-    from polylogue.daemon import cli as daemon_cli
-
-    spool = tmp_path / "polylogue" / "browser-capture"
-    ordinary = tmp_path / "ordinary-jsonl-root"
-    monkeypatch.setattr(polylogue_paths, "browser_capture_spool_root", lambda: spool)
-
-    sources = daemon_cli._watch_sources_from_roots((spool, ordinary))
-
-    assert next(source for source in sources if source.root == spool) == WatchSource(
-        name="browser-capture", root=spool, suffixes=(".json",), required=True
-    )
-    assert next(source for source in sources if source.root == ordinary).suffixes == (
-        ".json",
-        ".jsonl",
-        ".ndjson",
-        ".zip",
-    )
-    assert {source.name for source in sources} >= {
-        "claude-code",
-        "claude-code-todos",
-        "codex",
-        "gemini-cli",
-        "hermes",
-        "antigravity",
-        "browser-capture",
-    }
-
-
-def test_explicit_browser_capture_root_uses_spool_override_classifier(tmp_path: Path) -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    override_spool = tmp_path / "override-browser-capture"
-    ordinary = tmp_path / "ordinary-jsonl-root"
-
-    sources = daemon_cli._watch_sources_from_roots(
-        (override_spool, ordinary),
-        browser_capture_spool_path=override_spool,
-    )
-
-    assert next(source for source in sources if source.root == override_spool) == WatchSource(
-        name="browser-capture", root=override_spool, suffixes=(".json",), required=True
-    )
-    assert next(source for source in sources if source.root == ordinary).suffixes == (
-        ".json",
-        ".jsonl",
-        ".ndjson",
-        ".zip",
-    )
 
 
 def test_periodic_db_optimize_does_not_run_on_startup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -2163,7 +1917,8 @@ def test_pidfile_remains_locked_until_admitted_writers_are_drained(
     retained_fd = daemon_cli._release_pidfile_after_writer_drain(owner_fd, writer_drained=False)
 
     assert retained_fd == owner_fd
-    with pytest.raises(RuntimeError, match="another daemon may be running"):
+    # The refusal is the contract, not its wording.
+    with pytest.raises(RuntimeError, match=re.escape(str(pidfile))):
         daemon_cli._acquire_pidfile(pidfile)
 
     assert daemon_cli._release_pidfile_after_writer_drain(retained_fd, writer_drained=True) is None
@@ -2309,7 +2064,9 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
                 queue_units=0,
                 thread_name_prefix="test-daemon-api",
             )
-            self.operation_runtime = SimpleNamespace(shutdown=self._shutdown_operation_runtime)
+            self.operation_runtime = SimpleNamespace(
+                shutdown=self._shutdown_operation_runtime, embedding_convergence=None
+            )
 
         async def _shutdown_operation_runtime(self) -> None:
             events.append("operation-runtime-shutdown")
@@ -2386,7 +2143,7 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
                 lambda **_kwargs: fake_loop("raw-observation"),
             )
         )
-        stack.enter_context(patch.object(daemon_cli, "_periodic_heartbeat", lambda: fake_loop("heartbeat")))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_heartbeat", lambda **_kwargs: fake_loop("heartbeat")))
 
         def fake_periodic_convergence(_sources: tuple[WatchSource, ...], **kwargs: object) -> object:
             periodic_profile_callbacks.append(kwargs["session_profile_callback"])
@@ -3193,7 +2950,7 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
     async def shutdown_operation_runtime() -> None:
         return None
 
-    api_server.operation_runtime = SimpleNamespace(shutdown=shutdown_operation_runtime)
+    api_server.operation_runtime = SimpleNamespace(shutdown=shutdown_operation_runtime, embedding_convergence=None)
     interrupted_cleanup_calls = 0
 
     def mark_interrupted_cleanup() -> None:
@@ -3619,11 +3376,18 @@ def test_raw_observation_publication_holds_writer_lease_through_replay(
     assert held == 0
 
 
-def test_raw_owner_cancellation_settles_publication_and_fts(
+def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Cancelling preparation still settles the shielded canonical publication."""
+    """A cancelled owner stops its preparation; the raw stays pending, not lost.
+
+    Since #5691 the owner publishes its cancellation to the compute pass
+    (``compute_cancel``), and retained preparation stops at its next check
+    instead of publishing after the owner is gone. Anti-vacuity: a cancelled
+    pass that publishes anyway fails the zero-session check, and one that
+    leaves the raw terminal fails the next pass's session and FTS checks.
+    """
     from polylogue.core.enums import Provider
     from polylogue.daemon.derivation import DerivationFrame, ReplacementLike
     from polylogue.daemon.execution import BoundedComputeAdapter
@@ -3693,6 +3457,9 @@ def test_raw_owner_cancellation_settles_publication_and_fts(
             release.set()
             with pytest.raises(asyncio.CancelledError):
                 await task
+            with sqlite3.connect(tmp_path / "index.db") as conn:
+                assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+            await owner.converge_raw_id(raw_id)
             with sqlite3.connect(tmp_path / "index.db") as conn:
                 assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
                 assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] > 0
@@ -3927,6 +3694,14 @@ def _daemon_startup_stubs(
     async def _noop_fts(*_args: object, **_kwargs: object) -> object:
         return SimpleNamespace(failed=0)
 
+    # Modules that bind ``archive_root`` at import are imported before the
+    # patch, or the first test to import them lazily would pin its own root
+    # for every later test. The environment names the same root, so the
+    # real resolver and the patched one agree.
+    import polylogue.daemon.events
+    import polylogue.daemon.lifecycle  # noqa: F401
+
+    stack.enter_context(patch.dict(os.environ, {"POLYLOGUE_ARCHIVE_ROOT": str(tmp_path)}))
     stack.enter_context(patch("polylogue.paths.archive_root", return_value=tmp_path))
     stack.enter_context(patch.object(daemon_cli, "_check_schema_version_fast", return_value=ok_schema))
     stack.enter_context(
@@ -4032,7 +3807,7 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
             task = asyncio.create_task(
                 daemon_cli.run_daemon_services(
                     sources=(WatchSource("codex", source_root, suffixes=(".jsonl",)),),
-                    enable_watch=False,
+                    enable_watch=True,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
@@ -4180,7 +3955,7 @@ async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_pa
             task = asyncio.create_task(
                 daemon_cli.run_daemon_services(
                     sources=(WatchSource("codex", source_root, suffixes=(".jsonl",)),),
-                    enable_watch=False,
+                    enable_watch=True,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
@@ -4329,7 +4104,7 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
                         WatchSource("codex", source_root, suffixes=(".jsonl",), required=True),
                         WatchSource("missing", missing_root, suffixes=(".jsonl",), required=True),
                     ),
-                    enable_watch=False,
+                    enable_watch=True,
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
@@ -4413,7 +4188,13 @@ class _SpawnedTask:
         return f"{self.name} ({self.frame})"
 
 
-def _run_with_task_inventory(coro: Any, *, into: list[_SpawnedTask], orphans: list[str] | None = None) -> None:
+def _run_with_task_inventory(
+    coro: Any,
+    *,
+    into: list[_SpawnedTask],
+    orphans: list[str] | None = None,
+    thread_orphans: list[str] | None = None,
+) -> None:
     """Run *coro* under ``asyncio.run``, recording every task the loop creates.
 
     The denominator is taken from the event loop, not from the registry.
@@ -4427,9 +4208,15 @@ def _run_with_task_inventory(coro: Any, *, into: list[_SpawnedTask], orphans: li
     Not covered, and deliberately named rather than implied: a task created
     on a *different* loop inside a worker thread. The daemon's threaded work
     goes through the compute adapter and ``asyncio.to_thread``, neither of
-    which creates a task.
+    which creates a task. Those threads are counted separately:
+    ``thread_orphans`` receives every thread started during the run that is
+    still alive once ``asyncio.run`` has joined its default executor, because
+    cancelling the task that awaited a thread does not stop the thread.
     """
+    import threading as _threading
     import traceback as _tb
+
+    threads_before = set(_threading.enumerate())
 
     tasks: list[asyncio.Task[Any]] = []
 
@@ -4460,7 +4247,13 @@ def _run_with_task_inventory(coro: Any, *, into: list[_SpawnedTask], orphans: li
             if orphans is not None:
                 orphans.extend(task.get_name() for task in tasks if not task.done())
 
-    asyncio.run(_main())
+    try:
+        asyncio.run(_main())
+    finally:
+        if thread_orphans is not None:
+            thread_orphans.extend(
+                thread.name for thread in _threading.enumerate() if thread not in threads_before and thread.is_alive()
+            )
 
 
 def _capture_supervisor(stack: contextlib.ExitStack, daemon_cli: Any) -> list[Any]:
@@ -4531,6 +4324,7 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
         _daemon_startup_stubs(stack, daemon_cli, tmp_path)
         created: list[_SpawnedTask] = []
         orphans: list[str] = []
+        thread_orphans: list[str] = []
         supervisors = _capture_supervisor(stack, daemon_cli)
         stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
         stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
@@ -4567,9 +4361,11 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
             ),
             into=created,
             orphans=orphans,
+            thread_orphans=thread_orphans,
         )
     assert created, "the task factory recorded nothing; the inventory never observed the route"
     assert orphans == [], f"the composition route returned with live children: {orphans}"
+    assert thread_orphans == [], f"the composition route returned with live threads: {thread_orphans}"
 
     unowned = [
         entry
@@ -4610,6 +4406,99 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
     assert set(supervised_names) == resolved_with_a_task, (
         f"supervised tasks {sorted(set(supervised_names) ^ resolved_with_a_task)} do not match resolved services"
     )
+
+
+def test_a_watcher_with_no_roots_is_unavailable_on_the_production_route(tmp_path: Path) -> None:
+    """A watcher with nothing to watch settles ``unavailable``, never ``completed``.
+
+    ``watcher`` is declared ``FAIL_DAEMON``. A watcher that returned when no
+    root existed settled ``stopped: completed``: the policy never applied and
+    status read a watch that did its work. The composition route now resolves
+    it before a task exists, names the reason, releases the maintenance gate
+    that waits on watch registration, and keeps fair intake running.
+
+    Anti-vacuity: drop the ``prepare_watch_roots`` check in
+    ``run_daemon_services`` and the watcher is started, which this fake refuses.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.services import ServiceState
+    from polylogue.daemon.supervisor import TASK_NAME_PREFIX
+
+    class FakePolylogue:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *exc: object) -> None:
+            return None
+
+    class RootlessWatcher(_NoIntakeHints):
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self.watcher_ready = asyncio.Event()
+
+        def prepare_watch_roots(self) -> list[Path]:
+            return []
+
+        async def run(self) -> None:
+            raise AssertionError("a watcher with no roots was started")
+
+        def stop(self) -> None:
+            return None
+
+    async def idle_loop(**_kwargs: object) -> None:
+        await asyncio.Event().wait()
+
+    async def intake_stops(_self: object) -> None:
+        await asyncio.sleep(0)
+        raise RuntimeError("intake stopped")
+
+    with contextlib.ExitStack() as stack:
+        _daemon_startup_stubs(stack, daemon_cli, tmp_path)
+        created: list[_SpawnedTask] = []
+        supervisors = _capture_supervisor(stack, daemon_cli)
+        stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
+        stack.enter_context(patch.object(daemon_cli, "LiveWatcher", RootlessWatcher))
+        stack.enter_context(patch("polylogue.operations.intake_adapters.DaemonIntakeService.run", intake_stops))
+        for attribute in (
+            "_periodic_lifecycle_heartbeat",
+            "_periodic_health_check",
+            "_periodic_wal_checkpoint",
+            "_periodic_fts_merge",
+            "_periodic_heartbeat",
+            "_periodic_db_optimize",
+            "_periodic_status_snapshot_refresh",
+            "_periodic_raw_materialization_convergence",
+        ):
+            stack.enter_context(patch.object(daemon_cli, attribute, idle_loop))
+        stack.enter_context(patch.object(daemon_cli, "_periodic_convergence_check", lambda *_a, **_k: idle_loop()))
+        for target in (
+            "polylogue.daemon.embedding_backlog.periodic_embedding_backlog_check",
+            "polylogue.daemon.embedding_backlog.periodic_embedding_orphan_reconcile_check",
+            "polylogue.daemon.judgment_automation.periodic_judgment_automation_sweep",
+            "polylogue.daemon.blob_gc_periodic.periodic_blob_gc_check",
+            "polylogue.daemon.blob_gc_periodic.periodic_blob_publication_reconciliation_check",
+            "polylogue.daemon.secret_scan_sweep.periodic_secret_scan_sweep",
+        ):
+            stack.enter_context(patch(target, idle_loop))
+        stack.enter_context(pytest.raises(RuntimeError, match="intake stopped"))
+        _run_with_task_inventory(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="codex", root=tmp_path / "absent-codex"),),
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            ),
+            into=created,
+        )
+
+    supervisor = supervisors[0]
+    assert supervisor.state("watcher") is ServiceState.UNAVAILABLE
+    assert supervisor.state("watcher_registered_bridge") is ServiceState.UNAVAILABLE
+    reasons = {transition.service: transition.reason for transition in supervisor.transitions()}
+    assert reasons["watcher"] == "no configured source root exists"
+    assert f"{TASK_NAME_PREFIX}watcher" not in {entry.name for entry in created}
+    assert supervisor.state("fair_intake") is ServiceState.FAILED
 
 
 @pytest.mark.parametrize("embeddings_configured", [False, True])
@@ -5162,3 +5051,50 @@ async def test_an_orphaned_service_retains_archive_ownership_on_the_production_r
     # exists because the one thing shutdown must not do with a live child is
     # claim the process stopped cleanly.
     assert [record for record in events if record.get("event") == "daemon.stopped"] == []
+
+
+@pytest.mark.parametrize("command", ("run", "watch"))
+@pytest.mark.parametrize("flag", ("--root", "--default-source", "--no-default-sources"))
+def test_daemon_has_no_custom_source_roots_or_source_narrowing(command: str, flag: str) -> None:
+    """Every origin is acquired only from its canonical location.
+
+    Anti-vacuity: restoring any of the three options lets it parse instead of
+    failing as an unknown option.
+    """
+    result = CliRunner().invoke(main, [command, flag, "/tmp/elsewhere", "--help"])
+
+    assert result.exit_code != 0
+    assert f"No such option '{flag}'" in result.output
+
+
+def test_owned_source_roots_are_decided_by_role_not_resolved_location(tmp_path: Path) -> None:
+    """A provider root relocated into the archive tree is still the provider's.
+
+    Anti-vacuity: classify by ``resolve(strict=False).is_relative_to(archive)``
+    again and the dangling ``claude-code`` symlink below is treated as owned,
+    so startup's ``mkdir(exist_ok=True)`` raises ``FileExistsError`` on it.
+    """
+    from polylogue.daemon.cli import _is_polylogue_owned_source, _watch_sources
+    from polylogue.sources.hooks import HookSpoolSourceSpec
+    from polylogue.sources.live.watcher import WatchSource, hook_carrier_watch_sources
+
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    relocated = tmp_path / "home" / ".claude" / "projects"
+    relocated.parent.mkdir(parents=True)
+    relocated.symlink_to(archive / "provider-data" / "claude")  # target absent: dangling
+    provider = WatchSource(name="claude-code", root=relocated)
+    assert not _is_polylogue_owned_source(provider)
+
+    owned = [source for source in _watch_sources() if _is_polylogue_owned_source(source)]
+    assert {"browser-capture", "inbox"} <= {source.name for source in owned}
+    assert all(source.name in {"browser-capture", "inbox"} or source.role == "primary-writable" for source in owned)
+    assert not any(source.name in {"claude-code", "codex", "gemini-cli", "hermes"} for source in owned)
+    primary = hook_carrier_watch_sources(
+        (HookSpoolSourceSpec(source_id="hooks", role="primary-writable", root=tmp_path / "hooks"),)
+    )
+    legacy = hook_carrier_watch_sources(
+        (HookSpoolSourceSpec(source_id="old-hooks", role="legacy-read-only", root=tmp_path / "old"),)
+    )
+    assert primary and all(_is_polylogue_owned_source(source) for source in primary)
+    assert legacy and not any(_is_polylogue_owned_source(source) for source in legacy)

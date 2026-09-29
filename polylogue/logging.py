@@ -9,6 +9,7 @@ from __future__ import annotations
 import atexit
 import contextlib
 import contextvars
+import functools
 import json
 import logging
 import math
@@ -454,6 +455,29 @@ def propagate(function: Callable[_P, _R]) -> Callable[_P, _R]:
         return context.run(lambda: function(*args, **kwargs))
 
     return runner
+
+
+def carry_context(function: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Wrap ``function`` so it runs with the submitter's correlation fields only.
+
+    Unlike :func:`propagate`, this carries no other context variable (write
+    authority stays with its owner) and the wrapper pickles, so it crosses a
+    process-pool boundary. The worker's own correlation is *replaced* for the
+    call: a reused executor thread that inherited an earlier submitter's
+    context (``thread_inherit_context`` on the free-threaded build) cannot
+    report that submitter's span.
+    """
+    return functools.partial(_run_with_correlation, dict(current_context()), function)
+
+
+def _run_with_correlation(
+    correlation: Mapping[str, object], function: Callable[..., _R], /, *args: object, **kwargs: object
+) -> _R:
+    token = _context.set(dict(correlation))
+    try:
+        return function(*args, **kwargs)
+    finally:
+        _context.reset(token)
 
 
 def _validate(fields: Mapping[str, object]) -> tuple[dict[str, object], dict[str, str]]:
@@ -1160,7 +1184,10 @@ def configure_events(
     owns_stream = False
     if target is None:
         log_file = os.environ.get("POLYLOGUE_LOG_FILE")
-        target = open(log_file, "a", encoding="utf-8") if log_file else _stderr_proxy  # noqa: SIM115
+        # Line-buffered append: parse-pool worker processes open the same
+        # file, and one write per record keeps their lines from interleaving
+        # mid-record with the parent's buffered output.
+        target = open(log_file, "a", encoding="utf-8", buffering=1) if log_file else _stderr_proxy  # noqa: SIM115
         owns_stream = bool(log_file)
 
     # Replace rather than stack: a second call (a test, a re-entered CLI

@@ -147,18 +147,19 @@ def compose_outcome_checks(owners: Iterable[OutcomeOwner]) -> OutcomeReport:
     """Run named owners independently, preserving typed failures and siblings."""
     results: list[OutcomeCheck] = []
     for owner in owners:
-        if owner.check is None:
-            results.append(
-                OutcomeCompositionFailure(
-                    name=owner.name,
-                    status=OutcomeStatus.ERROR,
-                    summary="domain owner omitted its check",
-                    failure_kind=OutcomeCompositionFailureKind.OWNER_OMITTED,
-                )
-            )
-            continue
         try:
-            results.append(owner.check())
+            check = owner.check
+            if check is None:
+                results.append(
+                    OutcomeCompositionFailure(
+                        name=owner.name,
+                        status=OutcomeStatus.ERROR,
+                        summary="domain owner omitted its check",
+                        failure_kind=OutcomeCompositionFailureKind.OWNER_OMITTED,
+                    )
+                )
+                continue
+            results.append(check())
         except Exception as exc:
             results.append(
                 OutcomeCompositionFailure(

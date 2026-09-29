@@ -78,11 +78,13 @@ same directory tree.
 
 ## Input Conventions
 
-- `polylogued run` watches typed built-in sources and any configured additional roots, and owns ingestion.
+- `polylogued run` watches each origin at its canonical location and owns ingestion. There are no configurable source roots.
 - Use `polylogue import PATH` to ask the running daemon to import an explicit
   file or directory.
-- Directory names are for organization only; providers are detected from content.
-- Additional roots admit `.json`, `.jsonl`, `.ndjson`, and `.zip` through content detection. Typed provider sources retain their narrower contracts, including SQLite state where declared.
+- A canonical location binds its origin: content there is validated against
+  that origin, and another origin's shape is refused, never reclassified.
+  Only the import inbox and browser-capture envelopes (which declare their
+  provider) detect the provider from content.
 
 ## Configuration Model
 
@@ -163,7 +165,7 @@ configured Voyage key.
 
 | Class | Where it lives | Examples | Reload behavior |
 | --- | --- | --- | --- |
-| Static startup config | TOML/env/CLI | archive root, API host/port/token, browser-capture host/port/spool/origins, source roots | Restart `polylogued` after changing. |
+| Static startup config | TOML/env/CLI | archive root, API host/port/token, browser-capture host/port/spool/origins | Restart `polylogued` after changing. |
 | Deployment policy | TOML/env/Nix/HM/systemd | remote-bind opt-in, auth requirements, systemd memory/IO limits, schema validation mode | Restart the managed service; policy is outside archive content hashes. |
 | Runtime mutable user state | `user.db` | tags, marks, saved views, workspaces, assertions, authored overlays | Mutated through CLI/API; not TOML and not source content. |
 | Provider/cost controls | TOML/env | `embedding.enabled`, `embedding.max_cost_usd`, `VOYAGE_API_KEY` | Embedding loops read the gate/cost controls; no provider call happens unless explicitly enabled and credentials are present. |
@@ -175,10 +177,6 @@ configured Voyage key.
 ```toml
 [archive]
 root = "/home/user/.local/share/polylogue"
-
-[daemon]
-host = "127.0.0.1" # legacy alias used by Nix/HM when api/browser host is omitted
-port = 8766         # legacy API port alias
 
 [daemon.api]
 host = "127.0.0.1"
@@ -192,9 +190,6 @@ allowed_origins = "chrome-extension://*"
 allow_remote = false
 # auth_token = "..."   # required for remote binding or web origins
 # spool_path = "/home/user/.local/share/polylogue/browser-capture"
-
-[sources]
-roots = ["/home/user/.claude/projects", "/home/user/.codex/sessions"]
 
 [embedding]
 enabled = false
@@ -344,10 +339,10 @@ A few keys not shown in the full example above, with their TOML path:
 | `daemon_parse_stage_workers` | `daemon.raw_materialization.parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool (polylogue-m6tp phase (a); always runs -- pre-parses raw-materialization census candidates in a bounded thread pool before the writer hold); unset/`<=0` uses the adaptive `cpu_count - 1` default. |
 | `daemon_parse_stage_max_inflight_bytes` | `daemon.raw_materialization.parse_stage_max_inflight_bytes` | Whale-memory budget (bytes) for raw payloads admitted while prefetch parses are in flight; unset/`<=0` uses the adaptive 1/16-physical-RAM default (clamped [64 MiB, 2 GiB]). |
 | `daemon_parse_stage_max_cached_tree_bytes` | `daemon.raw_materialization.parse_stage_max_cached_tree_bytes` | Whole-cache budget (bytes) for estimated parsed-tree bytes held resident between `warm()` passes; unset/`<=0` uses the adaptive 1/8-physical-RAM default (clamped [256 MiB, 4 GiB]). |
-| `daemon_parse_stage_warm_timeout_seconds` | `daemon.raw_materialization.parse_stage_warm_timeout_seconds` | Bound (seconds) on how long a prefetch `warm()` pass waits for its dispatched workers; unset/`<=0` uses the 300s default. |
+| `daemon_parse_stage_stall_report_seconds` | `daemon.raw_materialization.parse_stage_stall_report_seconds` | Seconds without a completed worker before a prefetch `warm()` pass reports `daemon.parse_prefetch.preparation_stalled`. Not a deadline: the pass keeps waiting. Unset/`<=0` uses the 300s default. |
 | `live_watcher_parse_stage_workers` | `watcher.parse_stage_workers` | Worker cap for the watcher-owned pre-parse thread pool (polylogue-wf8a; always runs -- pre-parses the live watcher's full-ingest catch-up/live-batch candidates in a bounded thread pool before the writer hold); unset/`<=0` uses the adaptive `cpu_count - 1` default. |
 | `live_watcher_parse_stage_max_inflight_bytes` | `watcher.parse_stage_max_inflight_bytes` | Whale-memory budget (bytes) for in-flight watcher prefetch payloads; unset/`<=0` uses the adaptive 1/32-physical-RAM default (clamped [64 MiB, 512 MiB]). |
-| `live_watcher_parse_stage_warm_timeout_seconds` | `watcher.parse_stage_warm_timeout_seconds` | Bound (seconds) on how long a watcher prefetch `warm()` pass waits for its dispatched workers; unset/`<=0` uses the 60s default. |
+| `live_watcher_parse_stage_stall_report_seconds` | `watcher.parse_stage_stall_report_seconds` | Seconds without forward progress before a watcher preparation reports `live.parse_prefetch.preparation_stalled`. Not a deadline: the warm keeps waiting. Separately, on the process pool a preparation whose attempt directory has not grown for 600s plus its source size at 256 KiB/s is stopped (`live.parse_prefetch.preparation_hung`) and counted as a worker loss; three losses on an unchanged file make a recorded parse failure. Unset/`<=0` uses the 60s default. |
 | `judgment_automation_enabled` | `judgment_automation.enabled` | Opt-in (polylogue-6qjc, default off): schedule the daemon judgment-automation sweep that calls the `judge` dispatcher on auto-judgeable assertion candidates per policy and escalates the rest to a `handoff` assertion. Exercises the same authority as the MCP `judge` dispatcher, so the sweep also requires `mcp_judge_enabled`. See [`docs/daemon.md`](daemon.md). |
 | `judgment_automation_interval_s` | `judgment_automation.interval_s` | Seconds between judgment-automation sweeps (default 3600; floored at 60 at runtime). |
 | `judgment_automation_batch_limit` | `judgment_automation.batch_limit` | Maximum candidates judged per judgment-automation sweep (default 200). |
@@ -398,10 +393,10 @@ Common runtime overrides:
 | `POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS` | `daemon_parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `daemon_parse_stage_max_inflight_bytes` | In-flight raw-payload budget for the prefetch cache. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES` | `daemon_parse_stage_max_cached_tree_bytes` | Resident parsed-tree budget for the prefetch cache. |
-| `POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS` | `daemon_parse_stage_warm_timeout_seconds` | Timeout for a prefetch `warm()` pass. |
+| `POLYLOGUE_DAEMON_PARSE_STAGE_STALL_REPORT_SECONDS` | `daemon_parse_stage_stall_report_seconds` | Stall-report interval for a prefetch `warm()` pass. |
 | `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WORKERS` | `live_watcher_parse_stage_workers` | Worker cap for the watcher-owned pre-parse thread pool. |
 | `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `live_watcher_parse_stage_max_inflight_bytes` | In-flight payload budget for the watcher prefetch cache. |
-| `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS` | `live_watcher_parse_stage_warm_timeout_seconds` | Timeout for a watcher prefetch `warm()` pass. |
+| `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_STALL_REPORT_SECONDS` | `live_watcher_parse_stage_stall_report_seconds` | Stall-report interval for a watcher preparation. |
 
 `POLYLOGUE_SESSION_REF` is deliberately not a layered config key. It is
 launcher/harness-injected correlation metadata for one process invocation,

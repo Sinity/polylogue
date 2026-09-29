@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-TokenProvenance = Literal["provider_reported", "tokenizer_estimated", "heuristic_estimated", "unknown"]
+TokenProvenance = Literal["provider_reported", "tokenizer_estimated", "heuristic_estimated", "mixed", "unknown"]
 CostConfidence = Literal["reported", "estimated", "partial", "unknown"]
 CostBasis = Literal[
     "api_billed", "api_equivalent_estimated", "subscription_equivalent_estimated", "configured_manual", "unknown"
@@ -57,7 +57,7 @@ class ModelUsageTotals(BaseModel):
     estimate from per-message fields Codex rarely populates (polylogue-r7p6).
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, protected_namespaces=())
     model_name: str | None = None
     input_tokens: int = 0
     output_tokens: int = 0

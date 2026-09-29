@@ -17,15 +17,19 @@ from pathlib import Path
 
 from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, BoundedMemberReport, ZipAdmission
 from polylogue.config import Source
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Provider
+from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_raw_id, zip_member_source_index
 from polylogue.logging import WARNING, emit
+from polylogue.sources.acquisition_boundary import refuse_declared_foreign
 from polylogue.sources.decoder_zip import (
     ZipEntryValidator,
     declared_artifact_provider,
     is_declared_artifact_path,
     provider_detection_path,
 )
+from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider
 from polylogue.sources.live.admission import ArtifactIdentity
 from polylogue.sources.origin_specs import database_member_for_filename
 from polylogue.sources.parsers.base import RawSessionData
@@ -70,12 +74,16 @@ def iter_retained_source_records(
     logical_path = Path(source_path)
     source = Source(name=source_name or "machine-ingest", path=logical_path)
     binding = database_member_for_filename(logical_path.name)
-    try:
-        declared_provider = Provider(source.name)
-    except ValueError:
-        declared_provider = Provider.UNKNOWN
+    # Source aliases (``codex-state``, ``aistudio``) resolve to their origin.
+    declared_provider = Provider.from_string(canonical_acquisition_provider(source.name, source_name=source.name))
     provider = binding.provider if binding is not None else declared_provider
+    # The declared source location binds (not a sniffed dominant provider), so
+    # an operator-imported archive stays unbound and classifies its members.
+    location_binding = bound_location_provider(declared_provider)
     if logical_path.suffix.lower() != ".zip":
+        # A declared database member of another origin is not this
+        # location's material; the decode below reads through the boundary.
+        refuse_declared_foreign(logical_path.name, declared_provider)
         data = read_plain_source_file(
             SourceReadContext(
                 source=source,
@@ -145,29 +153,48 @@ def iter_retained_source_records(
             entry_provider = provider
             if provider is Provider.UNKNOWN:
                 entry_provider = declared_artifact_provider(entry.filename) or provider
-            context = ZipEntryReadContext(source, logical_path, entry, None, entry_provider, blob_store)
-            for data in iter_zip_entry_raw_data(archive, context):
-                split = data.source_index or 0
-                mode = data.addressing_mode
-                if mode not in {MemberAddressingMode.WHOLE_MEMBER, MemberAddressingMode.ELEMENT_OF_CONTAINER}:
-                    raise ValueError("retained ZIP record has no exact addressing mode")
-                if data.blob_hash is None:
-                    raise ValueError("retained ZIP decoder did not retain its raw bytes")
-                yield RetainedRawRecord(
-                    json.dumps(["zip-v2", ordinal, split, mode.value], separators=(",", ":")),
-                    data.model_copy(
-                        update={"source_index": zip_member_source_index(entry_ordinal=ordinal, split_index=split)}
-                    ),
-                    zip_member_raw_id(
-                        source_path=data.source_path,
-                        entry_ordinal=ordinal,
-                        split_index=split,
-                        blob_hash=data.blob_hash,
-                    ),
-                    ordinal,
-                    split,
-                    member_count=len(entries),
-                )
+            context = ZipEntryReadContext(
+                source,
+                logical_path,
+                entry,
+                None,
+                entry_provider,
+                blob_store,
+                bound_provider=location_binding,
+            )
+            try:
+                # A member's splits leave only once the whole member validated;
+                # a foreign member raises before any is yielded.
+                for data in iter_zip_entry_raw_data(archive, context):
+                    split = data.source_index or 0
+                    mode = data.addressing_mode
+                    if mode not in {MemberAddressingMode.WHOLE_MEMBER, MemberAddressingMode.ELEMENT_OF_CONTAINER}:
+                        raise ValueError("retained ZIP record has no exact addressing mode")
+                    if data.blob_hash is None:
+                        raise ValueError("retained ZIP decoder did not retain its raw bytes")
+                    yield RetainedRawRecord(
+                        json.dumps(["zip-v2", ordinal, split, mode.value], separators=(",", ":")),
+                        data.model_copy(
+                            update={"source_index": zip_member_source_index(entry_ordinal=ordinal, split_index=split)}
+                        ),
+                        zip_member_raw_id(
+                            source_path=data.source_path,
+                            entry_ordinal=ordinal,
+                            split_index=split,
+                            blob_hash=data.blob_hash,
+                        ),
+                        ordinal,
+                        split,
+                        member_count=len(entries),
+                    )
+            except ForeignOriginContentError as exc:
+                # The declared source binds; a foreign member is a typed
+                # refusal in the member denominator, never a retained raw.
+                record_rejected(entry, f"{exc.code}: {exc}")
+            except ContentIdentityRefusal as exc:
+                # The member cannot be stored: a recorded refusal, not an
+                # aborted acquisition of the whole ZIP.
+                record_rejected(entry, f"content_identity_refused: {exc}")
     for ordinal, member_name, disposition, diagnostic in dispositions:
         if on_member_disposition is None:
             continue

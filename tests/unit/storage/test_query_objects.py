@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import json
 import sqlite3
 
 import pytest
 
+from polylogue.core.query_identity import JsonValue
 from polylogue.security.query_excision import apply_query_excision, plan_query_excision
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -15,7 +15,6 @@ from polylogue.storage.sqlite.query_objects import (
     get_retained_query_run,
     get_watched_query_baseline,
     list_watched_queries,
-    migrate_saved_query_assertions,
     promote_query,
     promote_result_set,
     put_evaluation_receipt,
@@ -238,24 +237,6 @@ def test_query_edge_rejects_derived_from_cycle() -> None:
             edge_kind="derived-from",
             created_at_ms=4,
         )
-
-
-def test_saved_query_migration_preserves_all_assertions_and_repoints_targets() -> None:
-    conn = _conn()
-    conn.execute(
-        "INSERT INTO assertions (assertion_id, target_ref, kind, value_json, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
-        ("saved", "saved_view:one", "saved_query", json.dumps({"origin": "codex-session"}), 1, 1),
-    )
-    conn.execute(
-        "INSERT INTO assertions (assertion_id, target_ref, kind, body_text, created_at_ms, updated_at_ms) VALUES (?, ?, ?, ?, ?, ?)",
-        ("note", "session:one", "note", "must survive", 1, 1),
-    )
-
-    assert migrate_saved_query_assertions(conn) == 1
-    assert conn.execute("SELECT COUNT(*) FROM assertions").fetchone()[0] == 2
-    target_ref = conn.execute("SELECT target_ref FROM assertions WHERE assertion_id = 'saved'").fetchone()[0]
-    assert str(target_ref).startswith("query:")
-    assert conn.execute("SELECT COUNT(*) FROM queries").fetchone()[0] == 1
 
 
 def test_promotion_requires_complete_privacy_contract() -> None:
@@ -573,3 +554,24 @@ def test_watch_baseline_and_receipt_ids_reject_cross_query_or_conflicting_state(
             "INSERT INTO watched_query_baselines (query_hash, result_set_id, updated_at_ms) VALUES (?, ?, ?)",
             (first.query_hash, second_result.result_set_id, 4),
         )
+
+
+def test_put_query_returns_existing_promotion_contract() -> None:
+    """A repeat put must not replace durable promotion metadata with defaults."""
+    conn = _conn()
+    try:
+        plan: dict[str, JsonValue] = {"field": "origin", "value": "codex-session"}
+        original = put_query(conn, plan, grain="session", lane="dialogue", rank_policy="mixed", created_at_ms=1)
+        promoted = promote_query(
+            conn,
+            query_hash=original.query_hash,
+            privacy_class="private",
+            retention_policy={"basis": "explicit"},
+            excision_link="excision:query-contract",
+            promoted_at_ms=2,
+        )
+        repeated = put_query(conn, plan, grain="session", lane="dialogue", rank_policy="mixed", created_at_ms=3)
+        assert repeated == promoted
+        assert repeated.privacy_class == "private"
+    finally:
+        conn.close()

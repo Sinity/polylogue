@@ -47,7 +47,11 @@ from polylogue.core.sources import origin_from_provider
 from polylogue.core.storage_faults import raise_if_storage_fault, storage_fault_kind
 from polylogue.core.timestamp_authority import session_evidence_timestamps
 from polylogue.logging import emit, get_logger
-from polylogue.markers.preparation import marker_candidates_for_prepared_write, marker_recipe_fingerprint
+from polylogue.markers.preparation import (
+    marker_candidates_for_prepared_write,
+    marker_recipe_fingerprint,
+    retired_marker_assertion_ids,
+)
 from polylogue.pipeline.ids import bound_session_content_hash, session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
 from polylogue.pipeline.ingest_outcomes import (
@@ -114,6 +118,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _repair_stale_session_observations,
     prepare_session_write,
     replace_parser_ingest_flag_tags,
+    report_reextracted_prefix_blocks,
     upsert_parser_ingest_flag_tags,
     write_parsed_session_to_archive,
 )
@@ -826,6 +831,10 @@ class _CohortCachingBlobPublisher(ArchiveBlobPublisher):
             return self._inner.open(hash_hex)
         return io.BytesIO(data)
 
+    def read_all(self, hash_hex: str) -> bytes:
+        data = self._cohort_cache.read(self._inner, hash_hex)
+        return self._inner.read_all(hash_hex) if data is None else data
+
 
 class _DriveRevisionGovernanceAdapter:
     """Minimal ``RawRevisionGovernanceHost`` for Drive lineage bookkeeping.
@@ -1383,6 +1392,7 @@ def _write_session(
         counts["skipped_session_events"] = len(payload.parsed_session.session_events)
         if _needs_session_fts_repair(conn, payload.session_id):
             counts[_FTS_REPAIR_COUNT_KEY] = 1
+        _bind_session_enrichment(conn, source_conn, payload)
         return False, counts
 
     if (
@@ -1402,9 +1412,16 @@ def _write_session(
     if blob_publisher is not None:
         preacquired_attachment_blobs = {}
         for attachment in session_to_write.attachments:
-            if attachment.inline_bytes is None:
+            if attachment.inline_bytes is not None:
+                hash_hex, size = blob_publisher.write_from_bytes(attachment.inline_bytes)
+            elif attachment.precomputed_blob is not None:
+                # Bytes a parse worker already published (a streamed browser
+                # capture's spilled carriers, ChatGPT asset sidecars) are
+                # GC-eligible until referenced; reserve them like a write so
+                # the flush proves they are still present.
+                hash_hex, size = blob_publisher.adopt_published(*attachment.precomputed_blob)
+            else:
                 continue
-            hash_hex, size = blob_publisher.write_from_bytes(attachment.inline_bytes)
             receipt_id = blob_publisher.receipt_id(hash_hex)
             blob_hash = bytes.fromhex(hash_hex)
             preacquired_attachment_blobs[attachment.acquisition_key] = (blob_hash, size, "acquired")
@@ -1415,13 +1432,12 @@ def _write_session(
         )
         counts.update(sidecar_blob_counts)
         blob_publisher.flush()
-    for attachment in session_to_write.attachments:
+    for attachment in session_to_write.attachments if blob_publisher is None else ():
         # bd polylogue-8ac0: bytes for this attachment were already streamed
         # into the blob store during sidecar discovery (e.g. ChatGPT ``.dat``
         # asset acquisition) -- record the already-known hash/size directly
-        # rather than re-hashing. Independent of ``blob_publisher`` (no new
-        # write happens here) and skipped when ``inline_bytes`` already
-        # claimed this attachment above.
+        # rather than re-hashing. With a publisher the loop above already
+        # reserved and recorded it; this covers publisher-less callers.
         if attachment.inline_bytes is not None or attachment.precomputed_blob is None:
             continue
         if preacquired_attachment_blobs is None:
@@ -1443,6 +1459,9 @@ def _write_session(
             fallback_timestamp=payload.fallback_timestamp,
             source_conn=source_conn,
             signature_cache=signature_cache,
+            # The worker's carrier covers the full session; the admission gate
+            # declines it for an append delta or a lineage-sliced tail.
+            prepared_rows=payload.prepared_rows,
         )
     if prepared_writes is not None and prepared_write is not None:
         # Register before the writer call so entry cleanup owns this carrier
@@ -1493,19 +1512,26 @@ def _write_session(
         write_outcome=writer_outcomes,
         manage_transaction=manage_transaction,
     )
-    if writer_outcomes and writer_outcomes[0].stale_skipped:
+    if pending_attachment_receipts is not None:
+        # Receipts are consumed with the batch commit whether or not the writer
+        # published this session: a skipped write (stale revision, tombstone
+        # suppression) never creates the referent, and an unconsumed
+        # reservation would pin its blob against GC as permanent debt.
+        pending_attachment_receipts.extend(publication_receipts)
+    if writer_outcomes and (writer_outcomes[0].stale_skipped or writer_outcomes[0].suppression_skipped):
         if prepared_writes is not None and prepared_write is not None:
             prepared_writes.remove(prepared_write)
             if prepared_write is not payload.prepared_write:
                 prepared_write.close()
-        _repair_stale_revision_observations(conn, payload)
+        if writer_outcomes[0].stale_skipped:
+            _repair_stale_revision_observations(conn, payload)
         counts["skipped_sessions"] = 1
         counts["skipped_messages"] = payload.message_count
         counts["skipped_attachments"] = payload.attachment_count
         counts["skipped_session_events"] = len(payload.parsed_session.session_events)
         return False, counts
-    if pending_attachment_receipts is not None:
-        pending_attachment_receipts.extend(publication_receipts)
+    if not (writer_outcomes and writer_outcomes[0].suppression_skipped):
+        _bind_session_enrichment(conn, source_conn, payload)
     if attachment_owner_resolutions is not None and writer_outcomes:
         for attachment_id, reason in writer_outcomes[0].unresolved_attachment_owners:
             attachment_owner_resolutions.append(
@@ -1522,6 +1548,45 @@ def _write_session(
     counts["session_events"] = len(session_to_write.session_events)
 
     return True, counts
+
+
+def _bind_session_enrichment(
+    conn: sqlite3.Connection, source_conn: sqlite3.Connection | None, payload: SessionWritePayload
+) -> None:
+    """Bind this accepted session to its enrichment evidence, if still current.
+
+    The parsed session carries the key of the evidence it was enriched from
+    (stamped by the worker or retained enricher). Without a source handle, a
+    carried key, or with evidence that moved since, nothing is bound and
+    inspection re-derives the session on the retained route.
+    """
+    from polylogue.sources.revision_backfill import (
+        provider_binds_enrichment,
+        record_session_enrichment_binding,
+        session_enrichment_evidence_key,
+    )
+
+    if source_conn is None or not payload.raw_id or not provider_binds_enrichment(payload.parsed_session.source_name):
+        return
+
+    row = source_conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (payload.raw_id,)).fetchone()
+    native = conn.execute("SELECT native_id FROM sessions WHERE session_id = ?", (payload.session_id,)).fetchone()
+    main = next((entry for entry in source_conn.execute("PRAGMA database_list") if entry[1] == "main"), None)
+    if row is None or row[0] is None or native is None or main is None or not main[2]:
+        return
+    record_session_enrichment_binding(
+        conn,
+        session_id=payload.session_id,
+        carried_key=payload.parsed_session.enrichment_evidence_key,
+        current_key=session_enrichment_evidence_key(
+            provider=payload.parsed_session.source_name,
+            source_path=str(row[0]),
+            native_id=str(native[0]),
+            index_conn=conn,
+            source_conn=source_conn,
+            blob_root=Path(main[2]).parent / "blob",
+        ),
+    )
 
 
 def _refresh_session_raw_link(conn: sqlite3.Connection, session_id: str, raw_id: str | None) -> bool:
@@ -1665,16 +1730,14 @@ def _reuse_current_accepted_marker_carrier(
 ) -> bool:
     """Reuse an accepted carrier before the ordinary session writer runs.
 
-    A matching current-incarnation witness proves this exact accepted request
-    already crossed the index commit boundary. A pending carrier without its
-    own witness can make the same proof when every requested session is
-    already materialized with the retained input hash in that incarnation.
-    That occurs if a rollback lost the first raw's index transaction and a
-    different raw then published the identical normalized session. In either
-    case replay must keep the carrier and skip session preparation, whose
-    no-op disposition could otherwise look like a different marker
-    interpretation. Other missing witnesses (including a replacement index)
-    still fall through to the normal writer and exact-byte re-witness checks.
+    Only a matching current-incarnation witness proves this exact request
+    already crossed the index commit boundary, so only then may replay keep
+    the carrier and skip session preparation. A pending carrier without a
+    witness never committed in this incarnation; it is not evidence that the
+    index holds its writes (another raw's identical session proves nothing
+    about this raw's provenance, stale siblings, flags, accounting, FTS state
+    or candidate coordinates). Such a request runs the ordinary writer, and
+    witness publication replaces the uncommitted pending bytes.
     """
     if source_conn is None or not ir.sessions:
         return False
@@ -1726,29 +1789,7 @@ def _reuse_current_accepted_marker_carrier(
             return False
         summary.marker_batches_by_raw_id[ir.raw_id] = batch
         return True
-
-    # A pending carrier is bound to this physical index incarnation. If an
-    # intervening raw has already materialized every exact request input, it
-    # supplies the missing successful index publication without permitting a
-    # new carrier to replace the retained bytes. Do not infer this from mere
-    # session IDs: a stale or different interpretation can name the same ID.
-    if state != "pending":
-        return False
-    for binding in request_sessions:
-        session_id = binding.get("session_id")
-        input_content_hash = binding.get("input_content_hash")
-        if not isinstance(session_id, str) or not session_id:
-            return False
-        if not isinstance(input_content_hash, str) or len(input_content_hash) != 64:
-            return False
-        row = index_conn.execute(
-            "SELECT lower(hex(content_hash)) FROM sessions WHERE session_id = ?",
-            (session_id,),
-        ).fetchone()
-        if row is None or str(row[0]) != input_content_hash.lower():
-            return False
-    summary.marker_batches_by_raw_id[ir.raw_id] = batch
-    return True
+    return False
 
 
 class FtsTriggerRestorationError(RuntimeError):
@@ -1793,23 +1834,31 @@ def _write_session_entry(
     try:
         t_write = time.perf_counter()
         write_stage_timings: dict[str, float] = {}
-        content_changed, counts = _write_session(
-            conn,
-            cdata,
-            manage_transaction=not batch_owns_transaction,
-            force_write=force_write,
-            signature_cache=signature_cache,
-            stage_timings_s=write_stage_timings,
-            blob_publisher=blob_publisher,
-            pending_attachment_receipts=pending_attachment_receipts,
-            source_conn=source_conn,
-            fresh_build=fresh_build,
-            fresh_build_batch=fresh_build_batch,
-            attachment_owner_resolutions=summary.attachment_owner_resolutions,
-            drive_plans=drive_plans,
-            drive_cohort_cache=drive_cohort_cache,
-            prepared_writes=prepared_writes,
-        )
+        retired_assertions: set[str] = set()
+
+        def retire_prefix_block(message_id: str, position: int, text: str) -> None:
+            retired_assertions.update(retired_marker_assertion_ids(message_id, position, text))
+
+        with report_reextracted_prefix_blocks(retire_prefix_block):
+            content_changed, counts = _write_session(
+                conn,
+                cdata,
+                manage_transaction=not batch_owns_transaction,
+                force_write=force_write,
+                signature_cache=signature_cache,
+                stage_timings_s=write_stage_timings,
+                blob_publisher=blob_publisher,
+                pending_attachment_receipts=pending_attachment_receipts,
+                source_conn=source_conn,
+                fresh_build=fresh_build,
+                fresh_build_batch=fresh_build_batch,
+                attachment_owner_resolutions=summary.attachment_owner_resolutions,
+                drive_plans=drive_plans,
+                drive_cohort_cache=drive_cohort_cache,
+                prepared_writes=prepared_writes,
+            )
+        if retired_assertions:
+            summary.marker_retired_assertions.setdefault((raw_id, cdata.session_id), set()).update(retired_assertions)
         marker_write = prepared_writes[0] if prepared_writes else None
         for stage, elapsed_s in write_stage_timings.items():
             summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s
@@ -1957,6 +2006,23 @@ def _delete_sessions_without_fk_cascade(conn: sqlite3.Connection, session_ids: S
             conn.execute(f"UPDATE {table} SET {column} = NULL WHERE {column} IN ({placeholders})", params)
         elif on_delete.upper() == "CASCADE":
             conn.execute(f"DELETE FROM {table} WHERE {column} IN ({placeholders})", params)
+    # Bulk ingest disables SQLite FK actions. Owner rows may reference only
+    # the compound (message_id, session_id) key, so they are invisible to the
+    # direct-session scan above. Delete those message-owned rows explicitly
+    # while their session_id still identifies the stale subtree.
+    table_rows = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    for table_row in table_rows:
+        table_name = str(table_row[0])
+        owns_message_rows = False
+        for fk in conn.execute(f"PRAGMA foreign_key_list({_quote_identifier(table_name)})").fetchall():
+            if str(fk[2]) == "messages" and str(fk[6]).upper() == "CASCADE" and str(fk[3]) == "session_id":
+                owns_message_rows = True
+                break
+        if owns_message_rows:
+            conn.execute(
+                f"DELETE FROM {_quote_identifier(table_name)} WHERE {_quote_identifier('session_id')} IN ({placeholders})",
+                params,
+            )
 
 
 def _session_foreign_key_actions(conn: sqlite3.Connection) -> list[tuple[str, str, str]]:
@@ -1988,6 +2054,7 @@ def _drain_ready_session_entries(
     fresh_build: bool = False,
     fresh_build_batch: set[str] | None = None,
     drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
+    drive_cohort_cache: DriveRevisionCohortCache | None = None,
 ) -> int:
     if not fresh_build:
         _delete_stale_sessions_for_raw_entries(conn, ready_entries)
@@ -2002,7 +2069,8 @@ def _drain_ready_session_entries(
     signature_cache = LineageSignatureCache()
     # polylogue-ojjet: one Drive revision-cohort blob cache per drained
     # batch, the same lifetime as the signature cache above.
-    drive_cohort_cache = DriveRevisionCohortCache()
+    if drive_cohort_cache is None:
+        drive_cohort_cache = DriveRevisionCohortCache()
     if fresh_build and fresh_build_batch is None:
         fresh_build_batch = set()
     for raw_id, cdata in _topo_sort_session_entries(ready_entries):
@@ -2334,6 +2402,7 @@ def _drain_ingest_result(
     fresh_build_batch: set[str] | None = None,
     drive_plans: Mapping[str, RevisionReplayPlan | None] | None = None,
     marker_acceptance_enabled: bool = False,
+    drive_cohort_cache: DriveRevisionCohortCache | None = None,
 ) -> None:
     _record_outcome(summary, ir)
     _observe_current_rss(summary)
@@ -2414,6 +2483,7 @@ def _drain_ingest_result(
             fresh_build=fresh_build,
             fresh_build_batch=fresh_build_batch,
             drive_plans=drive_plans,
+            drive_cohort_cache=drive_cohort_cache,
         )
     if written_count == 0:
         summary.skipped_raw_ids.add(ir.raw_id)
@@ -2463,6 +2533,7 @@ def _consume_ingest_results(
     )
     transaction_started = False
     fresh_build_batch: set[str] | None = set() if fresh_build else None
+    drive_cohort_cache = DriveRevisionCohortCache()
 
     def ensure_index_transaction() -> None:
         nonlocal transaction_started
@@ -2502,6 +2573,7 @@ def _consume_ingest_results(
                 fresh_build=fresh_build,
                 fresh_build_batch=fresh_build_batch,
                 marker_acceptance_enabled=marker_acceptance_enabled,
+                drive_cohort_cache=drive_cohort_cache,
             )
         finally:
             discard_ingest_result_payload(ir)
@@ -2564,6 +2636,7 @@ def _publish_marker_witnesses_before_index_commit(
     from polylogue.storage.accepted_marker_inputs import (
         persist_pending_marker_input_sync,
         prepare_accepted_marker_input,
+        replace_uncommitted_pending_marker_input_sync,
         retained_marker_input_sync,
     )
 
@@ -2588,6 +2661,9 @@ def _publish_marker_witnesses_before_index_commit(
             session = dict(selected_by_id.get(session_id, binding))
             session["disposition"] = dispositions.get(session_id, "no-op")
             session.setdefault("candidates", [])
+            retired = summary.marker_retired_assertions.get((raw_id, session_id))
+            if retired:
+                session["retired_assertions"] = sorted(retired)
             carrier_sessions.append(session)
         # Defensive fallback for adapters that produced a write entry without
         # its outcome frame. Preserve every prepared carrier in that case.
@@ -2630,7 +2706,30 @@ def _publish_marker_witnesses_before_index_commit(
         source_conn.execute("BEGIN IMMEDIATE")
         for batch in requests.values():
             retained = retained_marker_input_sync(source_conn, batch.identity)
-            if retained is None:
+            if (
+                retained is not None
+                and retained[0] == "pending"
+                and (retained[1].payload != batch.payload or retained[2] != incarnation_id)
+                and index_conn.execute(
+                    "SELECT 1 FROM ingest_marker_witnesses WHERE request_key = ?", (batch.identity,)
+                ).fetchone()
+                is None
+            ):
+                # No witness in this open index transaction's incarnation: the
+                # retained pending bytes belong to an attempt whose index
+                # commit never happened here. They were never accepted or
+                # delivered, so the ordinary writer's current interpretation
+                # replaces them rather than stranding the raw.
+                replace_uncommitted_pending_marker_input_sync(
+                    source_conn,
+                    batch,
+                    retained_digest=retained[1].payload_sha256,
+                    expected_incarnation_id=incarnation_id,
+                )
+                source_states[batch.identity] = "pending-new"
+                retained_batches[batch.identity] = batch
+                retained_incarnations[batch.identity] = incarnation_id
+            elif retained is None:
                 source_states[batch.identity] = persist_pending_marker_input_sync(
                     source_conn, batch, expected_incarnation_id=incarnation_id
                 )

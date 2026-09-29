@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import (
     AliasChoices,
     BaseModel,
+    ConfigDict,
     Field,
     FieldSerializationInfo,
     ValidationInfo,
@@ -319,6 +320,13 @@ class ParsedContentBlock(BaseModel):
         return BlockType.from_string(str(v))
 
 
+#: Validation context flag for data parsed from JSON text by a parser other
+#: than pydantic's (the prepared sink reads surrogate escapes with the
+#: stdlib): fields rendered differently in JSON mode parse as JSON mode would.
+SINK_JSON_CONTEXT_KEY = "polylogue.json_sourced"
+SINK_JSON_CONTEXT: dict[str, object] = {SINK_JSON_CONTEXT_KEY: True}
+
+
 class ParsedPasteEvidence(BaseModel):
     position: int = 0
     start_offset: int | None = None
@@ -334,7 +342,8 @@ class ParsedPasteEvidence(BaseModel):
     def _parse_content_hash(cls, value: object, info: ValidationInfo) -> object:
         # JSON mode receives the hex representation emitted below; Python
         # callers continue to supply the raw digest bytes.
-        if info.mode == "json" and isinstance(value, str):
+        json_sourced = info.mode == "json" or bool(info.context and info.context.get(SINK_JSON_CONTEXT_KEY))
+        if json_sourced and isinstance(value, str):
             return bytes.fromhex(value)
         return value
 
@@ -376,6 +385,8 @@ def _require_plausible_occurred_at_ms(value: int | None) -> int | None:
 
 
 class ParsedMessage(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     provider_message_id: str
     role: Role
     text: str | None = None
@@ -663,6 +674,12 @@ class ParsedSession(BaseModel):
     # validate and publish the source-bound digest without hashing the tree a
     # second time.  It is excluded from payloads and semantic identity.
     content_hash: str | None = Field(default=None, exclude=True, repr=False)
+    # Enrichment carrier: the digest of the retained evidence this session was
+    # enriched from (``session_enrichment_evidence_key``), stamped where the
+    # enrichment ran. The writer binds it only when the archive still holds
+    # that evidence, so a session enriched before its index or thread state
+    # arrived is re-derived rather than certified. Not session content.
+    enrichment_evidence_key: str | None = Field(default=None, exclude=True, repr=False)
     messages: list[ParsedMessage]
     # Parser-only admission proof. It is excluded from serialized payloads and
     # content hashes, but the storage writer validates it before lowering.
@@ -812,12 +829,6 @@ class RawSessionData(BaseModel):
     # Structural value identity for container members.  This is the replay
     # authority; source_index remains only a coordinate hint.
     content_identity: str | None = None
-    # Set when a declared ceiling forced ``content_identity`` to fall back to
-    # the payload's byte digest instead of its structural identity
-    # (polylogue-dhkuu Finding C). A skipped structural identity is not
-    # silently equivalent to a computed one, so the reason travels with the
-    # record rather than being dropped.
-    content_identity_skipped_reason: str | None = Field(default=None, exclude=True)
     file_mtime: str | None = None
     provider_hint: Provider | None = None
     blob_hash: str | None = None

@@ -126,6 +126,23 @@ def test_read_open_rejects_stale_index_identity(tmp_path: Path) -> None:
     assert isinstance(exc_info.value, SchemaSkewError)
 
 
+def test_tier_reader_refuses_derived_identity_mismatch(tmp_path: Path) -> None:
+    """Identity skew must produce a refusal before a usable tier handle; removing the check yields a handle."""
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.tier_access import TierRefusal, acquire_tier_reader
+
+    with ArchiveStore(tmp_path, initialize=True, read_only=False):
+        pass
+    index_path = tmp_path / "index.db"
+    with sqlite3.connect(index_path) as connection:
+        connection.execute("UPDATE schema_identity SET identity = 'wrong' WHERE tier = 'index'")
+
+    result = acquire_tier_reader(ArchiveTier.INDEX, index_path)
+
+    assert isinstance(result, TierRefusal)
+    assert result.reason == "schema_identity_mismatch"
+
+
 def test_active_archive_root_refuses_replacement_after_acquiring_ownership(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -275,7 +292,9 @@ def test_pinned_read_only_store_blocks_all_archive_tier_mutations(tmp_path: Path
         assert archive.read_session(session_id).session_id == session_id
         source_reader = archive.source_connection
         assert source_reader.execute("PRAGMA query_only").fetchone()[0] == 1
-        with pytest.raises(sqlite3.OperationalError, match="readonly|read.only"):
+        # The profiled reader's authorizer (#5564) refuses the write at prepare
+        # time ("not authorized"), before SQLite's own read-only check can.
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly|read.only"):
             source_reader.execute("UPDATE raw_hook_events SET event_type = event_type")
         assert archive.list_user_tags() == {"pinned": 1}
         hook_summary = archive.hook_event_summary_for_session(session_id)

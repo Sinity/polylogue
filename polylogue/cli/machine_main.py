@@ -97,7 +97,7 @@ def run_machine_entry(
 
     if not wants_json(argv):
         try:
-            cli(standalone_mode=False)
+            result = cli(standalone_mode=False)
         except click.UsageError as exc:
             _show_usage_with_hint(exc)
             raise SystemExit(getattr(exc, "exit_code", 2)) from exc
@@ -127,11 +127,15 @@ def run_machine_entry(
         except Exception as exc:
             click.ClickException(f"unexpected error: {type(exc).__name__}: {exc}").show()
             raise SystemExit(1) from exc
+        if isinstance(result, int) and not isinstance(result, bool) and result:
+            raise SystemExit(result)
         return
 
     command = extract_command(argv)
+    # A swallowed SystemExit(0) leaves no return value; start from "no code".
+    result = None
     try:
-        cli(standalone_mode=False)
+        result = cli(standalone_mode=False)
     except click.UsageError as exc:
         option = getattr(exc, "option_name", None) or extract_option(str(exc))
         error_invalid_arguments(
@@ -159,6 +163,8 @@ def run_machine_entry(
             archive_root=exc.archive_root,
         ).emit(exit_code=exc.exit_code)
     except OperationUnavailableError as exc:
+        from polylogue.cli.render.outcome import FAILED_READ_EXIT_CODE
+
         # The kernel's own daemon-absent refusal. It is a RuntimeError rather
         # than a ClickException, so without this branch it reached the generic
         # handler and emitted ``runtime_error`` -- the precise flattening the
@@ -171,7 +177,7 @@ def run_machine_entry(
             command=command,
             operation=exc.operation,
             archive_root=exc.archive_root,
-        ).emit(exit_code=2)
+        ).emit(exit_code=FAILED_READ_EXIT_CODE)
     except click.ClickException as exc:
         error_runtime(
             exc.format_message(),
@@ -209,6 +215,8 @@ def run_machine_entry(
             command=command,
             exception_type=type(exc).__qualname__,
         ).emit(exit_code=1)
+    if isinstance(result, int) and not isinstance(result, bool) and result:
+        raise SystemExit(result)
 
 
 __all__ = ["extract_option", "run_machine_entry"]

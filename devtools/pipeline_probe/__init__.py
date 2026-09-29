@@ -13,7 +13,7 @@ from pathlib import Path
 from devtools.pipeline_probe.engine import run_probe
 from devtools.pipeline_probe.report import _capture_regression_case
 from devtools.pipeline_probe.request import ProbeSummary, _parse_args, _request_from_args
-from devtools.pipeline_probe.result import _build_budget_report
+from devtools.pipeline_probe.result import _build_budget_report, _pipeline_workload_receipt
 from devtools.pipeline_probe.staging import _write_probe_sources
 
 __all__ = [
@@ -41,6 +41,17 @@ def main(argv: list[str] | None = None) -> int:
     budget_report = _build_budget_report(summary, active_request)
     if budget_report is not None:
         summary["budgets"] = budget_report
+        workload_receipt = budget_report["workload_receipt"]
+    else:
+        # Ordinary probes have no regression limits, but are still workload
+        # executions and must carry the same receipt as budgeted probes.
+        workload_receipt = _pipeline_workload_receipt(
+            summary,
+            active_request,
+            observed_total_ms=None,
+            observed_peak_rss_mb=None,
+        )
+    summary["workload_receipt"] = workload_receipt
     regression_case = _capture_regression_case(summary, args)
     if regression_case is not None:
         summary["regression_case"] = regression_case

@@ -9,9 +9,8 @@ once, with no raw row carrying a parse error.
 
 The existing whole-daemon SIGKILL test proves session counts after a kill at a
 random moment of a cold build. This one pins the moment to the write itself
-and checks message and raw rows. A kill inside an *append* write is not
-covered here: the file route alone leaves that tail to raw materialization
-(tracked separately).
+and checks message and raw rows, for a first ingest and for an append to an
+already-ingested file.
 """
 
 from __future__ import annotations
@@ -28,6 +27,7 @@ from typing import Any
 
 import pytest
 
+import polylogue.sources.live.cursor as cursor_module
 from polylogue import Polylogue
 from polylogue.daemon.intake import AdmissionOutcome
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
@@ -126,6 +126,17 @@ async def _admit(archive_root: Path, source_root: Path) -> dict[str, Any]:
     dispatcher re-offers it); deferral is not the outcome under test, so a
     fresh page is offered until the item gets a verdict.
     """
+    pages = await _admit_pages(archive_root, source_root, pages=_MAX_DEFERRED_PAGES, stop_on_verdict=True)
+    outcomes = pages[-1]
+    if {result.outcome for result in outcomes.values()} == {AdmissionOutcome.DEFERRED}:
+        raise AssertionError(f"the source stayed deferred for {_MAX_DEFERRED_PAGES} pages: {outcomes}")
+    return outcomes
+
+
+async def _admit_pages(
+    archive_root: Path, source_root: Path, *, pages: int, stop_on_verdict: bool = False
+) -> list[dict[str, Any]]:
+    """Offer ``pages`` fresh pages through the production intake route."""
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     watcher = LiveWatcher(
         archive,
@@ -134,16 +145,16 @@ async def _admit(archive_root: Path, source_root: Path) -> dict[str, Any]:
         read_snapshot=open_operation_read,
     )
     try:
-        outcomes: dict[str, Any] = {}
-        for _ in range(_MAX_DEFERRED_PAGES):
+        observed: list[dict[str, Any]] = []
+        for _ in range(pages):
             adapter = FileIntakeAdapter(
                 DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=watcher._sources),
                 watcher._sources[0],
             )
-            outcomes = dict(await adapter.admit_page(await adapter.discover(limit=8)))
-            if {result.outcome for result in outcomes.values()} != {AdmissionOutcome.DEFERRED}:
-                return outcomes
-        raise AssertionError(f"the source stayed deferred for {_MAX_DEFERRED_PAGES} pages: {outcomes}")
+            observed.append(dict(await adapter.admit_page(await adapter.discover(limit=8))))
+            if stop_on_verdict and {result.outcome for result in observed[-1].values()} != {AdmissionOutcome.DEFERRED}:
+                break
+        return observed
     finally:
         watcher.stop()
         await archive.close()
@@ -219,6 +230,57 @@ async def test_sigkill_inside_the_first_index_write_recovers_exactly(workspace_e
     _append(source_path, range(0, 6))
     _kill_child_during_write(archive_root, source_root, kill_at=1, log_dir=log_dir)
     assert _message_rows(archive_root) == (0, 0, 0)
+
+    outcomes = await _admit(archive_root, source_root)
+    assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.ADMITTED}, outcomes
+
+    assert _message_rows(archive_root) == (6, 6, 1)
+    assert _raw_parse_errors(archive_root, source_path) == []
+
+
+@pytest.mark.asyncio
+async def test_sigkill_inside_an_append_index_write_recovers_exactly(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A kill inside the append's index write loses no appended message.
+
+    Anti-vacuity (polylogue-b8of0): recovery that trusts the retained,
+    never-parsed append raws as already admitted reports the restart page
+    DUPLICATE and leaves the index at 3 messages; one that re-applies the
+    committed prefix without idempotent identity shows ``total > distinct``.
+    """
+    archive_root = workspace_env["archive_root"]
+    source_root = workspace_env["data_root"] / "claude-projects"
+    source_root.mkdir(parents=True)
+    source_path = source_root / "session.jsonl"
+    log_dir = workspace_env["state_dir"]
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    _append(source_path, range(0, 3))
+    first = await _admit(archive_root, source_root)
+    assert {result.outcome for result in first.values()} == {AdmissionOutcome.ADMITTED}, first
+    assert _message_rows(archive_root) == (3, 3, 1)
+
+    _append(source_path, range(3, 6))
+    _kill_child_during_write(archive_root, source_root, kill_at=1, log_dir=log_dir)
+    assert _message_rows(archive_root) == (3, 3, 1)
+
+    # Force the restart's first page to defer the tail's preparation: the
+    # worker cannot finish inside a 1 ms warm window. The deferral schedules a
+    # retry, and until that retry is due the tail is owed work, so no page may
+    # acknowledge it as DUPLICATE. Before the fix the second page did, and the
+    # appended messages were never materialized.
+    monkeypatch.setenv("POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS", "0.001")
+    restart_pages = await _admit_pages(archive_root, source_root, pages=3)
+    assert all(result.outcome is AdmissionOutcome.DEFERRED for page in restart_pages for result in page.values()), (
+        restart_pages
+    )
+    assert _message_rows(archive_root) == (3, 3, 1)
+
+    # Make the scheduled retry due at once so the next pages reach it.
+    monkeypatch.delenv("POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS")
+    monkeypatch.setattr(cursor_module, "_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S", 0)
+    CursorStore(archive_root / "index.db").defer_full_cursor_reconciliation(source_path)
 
     outcomes = await _admit(archive_root, source_root)
     assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.ADMITTED}, outcomes

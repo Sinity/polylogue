@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections import deque
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Coroutine, Mapping
 from concurrent.futures import Future
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from time import monotonic, time
-from typing import TYPE_CHECKING, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, TypeVar, cast
 
 from polylogue.archive.query.execution_control import QueryCancelledError, QueryExecutionContext, QueryTimeoutError
 from polylogue.daemon.execution import (
@@ -23,6 +23,7 @@ from polylogue.daemon.execution import (
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
 from polylogue.logging import propagate
 from polylogue.operations.audit import (
+    MACHINE_PAGE_KINDS,
     AuditContinuityError,
     AuditRepository,
     MachineRequestBinding,
@@ -36,7 +37,7 @@ from polylogue.operations.daemon_protocol import (
     DaemonOperationRequest,
     daemon_operation_spec,
 )
-from polylogue.operations.daemon_reads import DaemonReadDependencies
+from polylogue.operations.daemon_reads import DaemonReadDependencies, operation_deadline_s, read_is_archive_scan
 from polylogue.operations.machine_lifecycle import machine_request_state
 from polylogue.operations.mutation_transaction import MutationPrincipal
 from polylogue.operations.operation_context import (
@@ -63,8 +64,63 @@ def _operation_int(value: object, *, field: str) -> int:
     return value
 
 
+#: Operations that run as coroutines on the owner loop. Each crosses its
+#: acceptance boundary through ``audit_for_request`` or ``begin_unbound_write``,
+#: which refuse once the exchange is cancelled.
+_STAGED_OPERATIONS = frozenset(
+    {"ingest", "maintenance.insights.rebuild", "maintenance.embeddings.backfill", "maintenance.backup"}
+)
+
+
 class BeforeAcceptanceCancelledError(RuntimeError):
     """Cancellation won the lock before durable prepare could begin."""
+
+
+class _StagedTask(Generic[_T]):
+    """A coroutine on the owner loop whose future settles only with its task.
+
+    ``run_coroutine_threadsafe`` marks its proxy future cancelled at once,
+    while the task behind it may still be awaiting a running compute phase and
+    its ``finally`` cleanup. Shutdown and the exchange's settled callback wait
+    on this future, so cancellation is forwarded to the task and the future
+    takes the task's terminal state only when the task has actually finished.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, start: Callable[[], Coroutine[Any, Any, _T]]) -> None:
+        self.future: Future[_T] = Future()
+        self._loop = loop
+        self._task: asyncio.Task[_T] | None = None
+        self._cancelled = False
+        loop.call_soon_threadsafe(self._start, start)
+
+    def cancel(self) -> None:
+        """Request cancellation from any thread; the future settles with the task."""
+        self._loop.call_soon_threadsafe(self._cancel)
+
+    def _start(self, start: Callable[[], Coroutine[Any, Any, _T]]) -> None:
+        # ``_start`` and ``_cancel`` both run on the owner loop in submission
+        # order, so a cancellation either precedes the task or reaches it.
+        if self._cancelled:
+            return
+        self._task = self._loop.create_task(start())
+        self._task.add_done_callback(self._settle)
+
+    def _cancel(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+        elif not self._cancelled:
+            self._cancelled = True
+            self.future.cancel()
+
+    def _settle(self, task: asyncio.Task[_T]) -> None:
+        if self.future.done():
+            return
+        if task.cancelled():
+            self.future.cancel()
+        elif (exc := task.exception()) is not None:
+            self.future.set_exception(exc)
+        else:
+            self.future.set_result(task.result())
 
 
 @dataclass(slots=True)
@@ -106,6 +162,9 @@ class DaemonOperationRuntime:
         self._read_dependencies_factory = read_dependencies_factory
         self._owner_loop = owner_loop
         self._session_maintenance = session_maintenance
+        # The daemon CLI installs its resident embedding convergence owner
+        # here so staged backfill operations share the same pass lock.
+        self.embedding_convergence: object | None = None
         self._condition = threading.Condition(threading.RLock())
         self._exchanges: dict[str, _Exchange] = {}
         self._closing = False
@@ -380,13 +439,18 @@ class DaemonOperationRuntime:
             else self._read_dependencies
         )
         dependencies = replace(dependencies or DaemonReadDependencies(), status_now_ms=int(time() * 1000))
-        deadline = started + min(spec.deadline_s, (request.deadline_ms or int(spec.deadline_s * 1000)) / 1000)
+        archive_scan = spec.authority is DaemonAuthority.READ and read_is_archive_scan(
+            request.operation, request.payload
+        )
+        deadline_s = operation_deadline_s(request.operation, request.payload)
+        deadline = started + min(deadline_s, (request.deadline_ms or int(deadline_s * 1000)) / 1000)
         read_control = (
             QueryExecutionContext(
                 call_id=str(request.request_id),
                 query_ref=request.fingerprint,
                 deadline_monotonic=deadline,
                 owner_ref=principal.actor_ref,
+                workload_class="scan" if archive_scan else "interactive",
             )
             if spec.authority is DaemonAuthority.READ or request.operation.startswith("operation.")
             else None
@@ -486,9 +550,12 @@ class DaemonOperationRuntime:
             # Preview-page records are only staging authority; _durable
             # deliberately excludes them from this recovery boundary so their
             # normal sealing exchange may continue.
+            # A paged batch still staging is resumed the same way: its handler
+            # appends the pages it has not yet accepted.
             if (
                 record is not None
                 and record["artifact_kind"] != "insight-preview-pages"
+                and record["artifact_kind"] not in MACHINE_PAGE_KINDS
                 and durable is not None
                 and durable["outcome"] in {"running", "indeterminate"}
             ):
@@ -574,12 +641,7 @@ class DaemonOperationRuntime:
                     return execute_operation(request, context)
 
                 try:
-                    if request.operation in {
-                        "ingest",
-                        "maintenance.insights.rebuild",
-                        "maintenance.embeddings.backfill",
-                        "maintenance.backup",
-                    }:
+                    if request.operation in _STAGED_OPERATIONS:
                         if self._owner_loop is None:
                             self._exchanges.pop(request_id)
                             return operation_envelope(
@@ -600,19 +662,25 @@ class DaemonOperationRuntime:
                             "maintenance.backup": execute_backup_operation,
                         }[request.operation]
 
-                        exchange.future = asyncio.run_coroutine_threadsafe(staged(request, context), self._owner_loop)
+                        staged_task = _StagedTask(self._owner_loop, lambda: staged(request, context))
+                        exchange.future = staged_task.future
 
                         def cancel_staged_before_acceptance() -> None:
                             with self._condition:
                                 if not exchange.acceptance_started:
-                                    assert exchange.future is not None
-                                    exchange.future.cancel()
+                                    staged_task.cancel()
 
                         exchange.cancellation.add_listener(cancel_staged_before_acceptance)
                     else:
                         scheduled = self._kernel.submit(
                             propagate(work),
-                            admission_class="interactive-read" if spec.authority is DaemonAuthority.READ else "control",
+                            admission_class=(
+                                "bulk-candidate"
+                                if archive_scan
+                                else "interactive-read"
+                                if spec.authority is DaemonAuthority.READ
+                                else "control"
+                            ),
                             # A control exchange keeps its durable authority after
                             # acceptance, but before that boundary a disconnect or
                             # deadline must release a queued reservation just as a
@@ -846,13 +914,27 @@ class DaemonOperationRuntime:
                     still_executing = (
                         exchange is not None and exchange.future is not None and not exchange.future.done()
                     )
-                    state = {"outcome": "running" if still_executing else "indeterminate", "sequence": 0}
+                    if cancelled_before_acceptance and exchange is None:
+                        state = {
+                            "outcome": "cancelled",
+                            "effect": "no-effect",
+                            "cancellation_requested": True,
+                            "sequence": 0,
+                        }
+                    else:
+                        state = {"outcome": "running" if still_executing else "indeterminate", "sequence": 0}
                 if state is None:
-                    if exchange is None:
+                    unwinding = (
+                        exchange is not None
+                        and cancelled_before_acceptance
+                        and exchange.request.operation in _STAGED_OPERATIONS
+                    )
+                    if exchange is None or unwinding:
                         if cancelled_before_acceptance:
-                            # This request released a queued exchange that had
-                            # committed nothing. Its absence here is that act,
-                            # not an unknown reference.
+                            # This request released an exchange that had
+                            # committed nothing. A staged task still unwinding
+                            # its cleanup cannot commit later: its acceptance
+                            # fence reads the same cancellation under this lock.
                             return OperationControlResult(
                                 {
                                     "outcome": "cancelled",

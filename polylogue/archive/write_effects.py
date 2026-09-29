@@ -29,7 +29,12 @@ from dataclasses import dataclass, replace
 from typing import Any, Literal
 from uuid import uuid4
 
-from polylogue.archive.write_gateway import WriteOperation, WriteResult, write_operation_policy_for
+from polylogue.archive.write_gateway import (
+    WriteEffectReceipt,
+    WriteOperation,
+    WriteResult,
+    write_operation_policy_for,
+)
 from polylogue.logging import ERROR, WARNING, emit
 
 WriteEffectPhase = Literal["in-transaction", "post-commit", "async-deferred"]
@@ -67,15 +72,6 @@ class WriteEffectContext:
     staleness_key: str
     run_archive_effects: bool
     deferred_scheduler: Callable[[WriteEffect, WriteEffectContext], None] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class WriteEffectReceipt:
-    name: str
-    phase: WriteEffectPhase
-    disposition: Literal["applied", "enqueued", "skipped", "failed"]
-    retryable: bool = False
-    error: str | None = None
 
 
 def _always_run(_ctx: WriteEffectContext) -> bool:
@@ -228,24 +224,18 @@ def _invalidate_insights_should_run(ctx: WriteEffectContext) -> bool:
 
 
 def _invalidate_insights_effect(ctx: WriteEffectContext) -> None:
-    """Mark session insight inputs stale in a separate post-commit connection."""
-    db_path = ctx.payload.get("_db_path")
-    if not db_path:
-        raise RuntimeError("deferred insight invalidation requires _db_path")
-    from polylogue.storage.sqlite.connection import open_connection
-
+    """Invalidate derived inputs on the admitted archive transaction."""
     session_ids = ctx.changed_session_ids
-    with open_connection(db_path) as conn:
-        # A coalesced retry may carry more IDs than one statement may bind.
-        for start in range(0, len(session_ids), 500):
-            chunk = session_ids[start : start + 500]
-            placeholders = ", ".join("?" for _ in chunk)
-            conn.execute(
-                f"UPDATE session_profiles SET source_sort_key = NULL, source_updated_at = NULL "
-                f"WHERE session_id IN ({placeholders})",
-                chunk,
-            )
-        conn.commit()
+    # Keep each statement below SQLite's variable limit while preserving the
+    # caller-owned transaction and its single-writer admission.
+    for start in range(0, len(session_ids), 500):
+        chunk = session_ids[start : start + 500]
+        placeholders = ", ".join("?" for _ in chunk)
+        ctx.conn.execute(
+            f"UPDATE session_profiles SET source_sort_key = NULL, source_updated_at = NULL "
+            f"WHERE session_id IN ({placeholders})",
+            chunk,
+        )
 
 
 def _announce_ingest_should_run(ctx: WriteEffectContext) -> bool:
@@ -299,7 +289,7 @@ WRITE_EFFECT_REGISTRY: tuple[WriteEffect, ...] = (
     ),
     WriteEffect(
         name="invalidate_session_insights",
-        phase="async-deferred",
+        phase="in-transaction",
         run=_invalidate_insights_effect,
         should_run=_invalidate_insights_should_run,
         failure_policy="log-and-continue",
@@ -367,6 +357,9 @@ def _run_registered_effects(
                     error_type=type(exc).__name__,
                     error_detail=str(exc),
                 )
+                receipts.append(
+                    WriteEffectReceipt(effect.name, effect.phase, "failed", retryable=False, error=str(exc))
+                )
                 continue
             raise
         timings[effect.name] = time.perf_counter() - started_at
@@ -416,7 +409,8 @@ def commit_archive_write_effects(
         database_row = conn.execute("PRAGMA database_list").fetchall()
         if database_row and database_row[0][2]:
             payload = {**payload, "_db_path": database_row[0][2]}
-    staleness_key = f"{effect_scope}:{op.value}:{','.join(sorted_ids)}"
+    archive_identity = str(payload.get("_db_path", ""))
+    staleness_key = f"{archive_identity}:{effect_scope}:{op.value}:{','.join(sorted_ids)}"
     ctx = WriteEffectContext(
         conn=conn,
         op=op,

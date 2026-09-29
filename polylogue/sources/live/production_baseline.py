@@ -13,27 +13,35 @@ from pathlib import Path
 
 from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, ZipAdmission, ZipBombError
 from polylogue.config import Source
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Provider
 from polylogue.core.provider_identity import canonical_acquisition_provider
-from polylogue.core.raw_coordinates import zip_member_source_index
+from polylogue.core.raw_coordinates import zip_member_source_coordinate, zip_member_source_index
 from polylogue.maintenance.receipt_fs import (
     atomic_replace_receipt,
     existing_maintenance_receipt_directory,
     maintenance_receipt_directory,
     read_optional_receipt,
 )
+from polylogue.sources.acquisition_boundary import open_bound_path
 from polylogue.sources.decoder_zip import (
     ZipEntryValidator,
     declared_artifact_provider,
     is_declared_artifact_path,
     provider_detection_path,
 )
-from polylogue.sources.live.batch_support import classify_pre_acquisition, retryable_read_fault
+from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider
+from polylogue.sources.live.batch_support import (
+    RetryableSourceReadError,
+    classify_pre_acquisition,
+    foreign_origin_exclusion,
+    retryable_read_fault,
+)
 from polylogue.sources.live.discovery import _source_path_steps
 from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
-    replay_zip_entry_acquisition_payloads,
+    replay_zip_entry_acquisition_revisions,
     sniff_zip_provider,
 )
 from polylogue.sources.sqlite_snapshot import is_sqlite_path, sqlite_member_revision_and_size
@@ -352,6 +360,8 @@ def _unchanged_revision(row: SourceDecision) -> bool:
     A database's logical revision is not re-derived here: an earlier accepted
     database revision stays demanded.
     """
+    if row.reason == "archive_member":
+        return _unchanged_member_revision(row)
     path = Path(row.path)
     if is_sqlite_path(path):
         return False
@@ -361,13 +371,59 @@ def _unchanged_revision(row: SourceDecision) -> bool:
         return False
 
 
-def _revision(path: Path, *, cancelled: Callable[[], bool] | None = None) -> tuple[str, int]:
+def _unchanged_member_revision(row: SourceDecision) -> bool:
+    """Whether an accepted ZIP member revision is still what the member holds.
+
+    The member is replayed unbound, exactly as acquisition splits it, and the
+    earlier revision is unchanged when one of the current payloads hashes to
+    it. Any read fault keeps the earlier revision demanded.
+    """
+    cut = row.path.lower().find(".zip:")
+    if cut == -1 or row.source_index is None:
+        return False
+    archive_file, member = Path(row.path[: cut + 4]), row.path[cut + 5 :]
+    try:
+        entry_ordinal, _split = zip_member_source_coordinate(row.source_index)
+        with zipfile.ZipFile(archive_file) as archive:
+            entries = archive.infolist()
+            if entry_ordinal >= len(entries) or entries[entry_ordinal].filename != member:
+                return False
+            context = ZipEntryReadContext(
+                Source(name=row.source, path=archive_file.parent),
+                archive_file,
+                entries[entry_ordinal],
+                None,
+                Provider.from_string(canonical_acquisition_provider(row.source, source_name=row.source)),
+                None,  # type: ignore[arg-type]
+                bound_provider=None,
+            )
+            return any(
+                unit.revision == row.revision for unit in replay_zip_entry_acquisition_revisions(archive, context)
+            )
+    except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile, ContentIdentityRefusal):
+        return False
+
+
+def _revision(
+    path: Path,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+    location: Provider | None = None,
+) -> tuple[str, int]:
+    """Hash one file; with ``location``, through the boundary that validates the bytes it hashes.
+
+    Validating a separate read would let a file that changes in between be
+    baselined as accepted while live capture refuses its bytes.
+    """
     _check_observation_cancelled(cancelled)
     if is_sqlite_path(path):
         return sqlite_member_revision_and_size(path)
     digest = hashlib.sha256()
     size = 0
-    with path.open("rb") as stream:
+    # The bytes hashed are read through the acquisition boundary, as live
+    # capture reads them, or the baseline would accept a file whose raw
+    # revision live intake refuses.
+    with open_bound_path(path, location) as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             _check_observation_cancelled(cancelled)
             digest.update(chunk)
@@ -394,6 +450,9 @@ def _archive_members(
             if provider_detection_path(info.filename)
         ]
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        # The location binds, not the sniffed dominant provider: an inbox
+        # archive stays unbound so each member classifies, as in live intake.
+        location_binding = bound_location_provider(provider)
         if provider is Provider.UNKNOWN:
             provider = sniff_zip_provider(archive, detection_entries) or provider
         allowed_path = is_declared_artifact_path if provider is Provider.UNKNOWN else None
@@ -415,6 +474,9 @@ def _archive_members(
             if info.file_size == 0:
                 excluded(info, "empty_member")
                 continue
+            # A member is one admission unit: its accepted decisions join the
+            # denominator only once every record validated.
+            member_decisions: list[SourceDecision] = []
             try:
                 entry_provider = provider
                 if provider is Provider.UNKNOWN:
@@ -426,23 +488,39 @@ def _archive_members(
                     None,
                     entry_provider,
                     None,  # type: ignore[arg-type]
+                    bound_provider=location_binding,
                 )
-                for payload in replay_zip_entry_acquisition_payloads(archive, context):
+                for unit in replay_zip_entry_acquisition_revisions(
+                    archive, context, checkpoint=lambda: _check_observation_cancelled(cancelled)
+                ):
                     _check_observation_cancelled(cancelled)
-                    split = payload.source_index or 0
-                    members.append(
+                    split = unit.source_index or 0
+                    member_decisions.append(
                         SourceDecision(
                             source_name,
                             f"{path}:{info.filename}",
                             "accepted",
                             "archive_member",
-                            hashlib.sha256(payload.payload_bytes).hexdigest(),
+                            unit.revision,
                             zip_member_source_index(entry_ordinal=ordinals[id(info)], split_index=split),
-                            len(payload.payload_bytes),
+                            unit.size_bytes,
                         )
                     )
                     if progress is not None:
-                        progress("baseline_hash", revisions=1, hashed_bytes=len(payload.payload_bytes))
+                        progress("baseline_hash", revisions=1, hashed_bytes=unit.size_bytes)
+                members.extend(member_decisions)
+            except ForeignOriginContentError as exc:
+                # The live acquisition refuses this member with this reason;
+                # the baseline must not expect a raw row for it, and a resumed
+                # build retires an earlier acceptance of the same bytes.
+                excluded(info, f"intake_excluded:{foreign_origin_exclusion(exc)}")
+            except ContentIdentityRefusal as exc:
+                # Raised once the member was read whole. The refused element is
+                # a typed member fault; acquisition still retains its validated
+                # sibling splits, so they stay demanded.
+                members.extend(member_decisions)
+                fault(info, f"content_identity_refused:{exc}")
+                continue
             except (OSError, UnicodeError, ValueError, ZipBombError, zipfile.BadZipFile) as exc:
                 reason = "revision_io_unavailable" if retryable_read_fault(exc) else "archive_member_unreadable"
                 fault(info, f"{reason}:{exc}")
@@ -594,9 +672,28 @@ def capture_production_source_baseline(
                         )
                     )
                     continue
-                revision, material_bytes = _revision(path, cancelled=cancelled)
+                # A file intake retains is captured through the acquisition
+                # boundary; hashing it through the same boundary refuses
+                # exactly the files that capture refuses, with intake's reason.
+                location = bound_location_provider(
+                    Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+                )
+                try:
+                    revision, material_bytes = _revision(path, cancelled=cancelled, location=location)
+                except ForeignOriginContentError as exc:
+                    decisions.append(
+                        SourceDecision(
+                            source_name, str(path), "excluded", f"intake_excluded:{foreign_origin_exclusion(exc)}"
+                        )
+                    )
+                    continue
                 if progress is not None:
                     progress("baseline_hash", revisions=1, hashed_bytes=material_bytes)
+            except RetryableSourceReadError as exc:
+                decisions.append(
+                    SourceDecision(source_name, str(path), "fault", f"revision_io_unavailable:{exc.cause}")
+                )
+                continue
             except (OSError, sqlite3.Error, ValueError, zipfile.BadZipFile) as exc:
                 reason = "revision_io_unavailable" if retryable_read_fault(exc) else "revision_unreadable"
                 decisions.append(SourceDecision(source_name, str(path), "fault", f"{reason}:{exc}"))

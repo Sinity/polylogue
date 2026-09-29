@@ -13,6 +13,7 @@ import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -37,6 +38,7 @@ from polylogue.storage.runtime import (
 )
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from polylogue.storage.sqlite.connection import open_connection
+from tests.infra.daemon_operations import daemon_serving_archive
 from tests.infra.identity import archive_message_id
 from tests.infra.storage_records import (
     make_attachment,
@@ -427,6 +429,57 @@ async def test_list_summaries_by_query_uses_current_session_columns(tmp_path: Pa
         await repo.close()
 
 
+@pytest.mark.asyncio
+async def test_list_summaries_by_query_hydrates_session_profile_slice(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Repository summaries carry profile outcome/cost only from a current profile.
+
+    Anti-vacuity: removing the batch profile lookup leaves the first summary's
+    defaults (None); overlaying unconditionally publishes the placeholder zero
+    as a known cost on the second and the stale row's facts on the third.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.storage.repository.archive import sessions as sessions_module
+    from polylogue.storage.repository.archive.sessions import RepositoryArchiveSessionMixin
+    from polylogue.storage.runtime import SESSION_INSIGHT_MATERIALIZER_VERSION
+
+    records = [
+        make_session(f"conv-profile-{name}", source_name="codex", title=name) for name in ("known", "unknown", "stale")
+    ]
+    ids = [str(record.session_id) for record in records]
+    profiles = {
+        ids[0]: SimpleNamespace(terminal_state="refused", total_cost_usd=1.75, cost_provenance="provider_reported"),
+        ids[1]: SimpleNamespace(terminal_state="completed", total_cost_usd=0.0, cost_provenance="unknown"),
+        ids[2]: SimpleNamespace(terminal_state="failed", total_cost_usd=9.0, cost_provenance="provider_reported"),
+    }
+    profile_records = {
+        session_id: SimpleNamespace(
+            session_id=session_id,
+            input_content_hash=None if session_id == ids[2] else "bound",
+            materializer_version=SESSION_INSIGHT_MATERIALIZER_VERSION,
+        )
+        for session_id in ids
+    }
+    monkeypatch.setattr(sessions_module, "hydrate_session_profile", lambda record: profiles[record.session_id])
+    queries = SimpleNamespace(
+        list_session_summaries=AsyncMock(return_value=records),
+        get_message_counts_batch=AsyncMock(return_value=dict.fromkeys(ids, 4)),
+    )
+
+    class _Repo(RepositoryArchiveSessionMixin):
+        def __init__(self) -> None:
+            self.queries = cast(Any, queries)
+            setattr(self, "_fetch_tags_by_session", AsyncMock(return_value={}))  # noqa: B010
+            setattr(self, "get_session_profile_records_batch", AsyncMock(return_value=profile_records))  # noqa: B010
+
+    repo = _Repo()
+    known, unknown, stale = await repo.list_summaries_by_query(_record_query(origin="codex-session", limit=3))
+    assert (known.terminal_state, known.total_cost_usd, known.cost_provenance) == ("refused", 1.75, "provider_reported")
+    assert (unknown.terminal_state, unknown.total_cost_usd, unknown.cost_provenance) == ("completed", None, None)
+    assert (stale.terminal_state, stale.total_cost_usd, stale.cost_provenance) == (None, None, None)
+    cast(AsyncMock, repo.get_session_profile_records_batch).assert_awaited_once_with(ids)
+
+
 def test_actions_view_uses_blocks_without_session_payload_bloat(workspace_env: dict[str, Path]) -> None:
     """The archive actions surface derives from blocks and has no session payload column.
 
@@ -610,7 +663,7 @@ async def test_backend_action_terms_filter_contract(workspace_env: dict[str, Pat
     with ArchiveStore.open_existing(archive_root) as archive:
 
         def ids(**kwargs: object) -> list[str]:
-            return [summary.session_id for summary in archive.list_summaries(limit=10, **kwargs)]  # type: ignore[arg-type]
+            return [summary.session_id for summary in archive.list_summaries(limit=10, **kwargs)]
 
         assert ids(action_terms=("search",)) == [nid("conv-search")]
         assert archive.count_sessions(action_terms=("search",)) == 1
@@ -1130,13 +1183,14 @@ class TestTagAssignmentLaws:
 
             (SessionBuilder(db_path, conv_id).provider("test").title("Tag Test").add_message("m1", text="Hello").save())
 
-            repo = archive_for_scenario_db(db_path)
-            try:
-                await repo.add_tag(native_session_id_for("test", conv_id), tag)
-                listed = await repo.list_tags()
-                assert tag.strip().lower() in listed
-            finally:
-                await repo.close()
+            with daemon_serving_archive(db_path.parent):
+                repo = archive_for_scenario_db(db_path)
+                try:
+                    await repo.add_tag(native_session_id_for("test", conv_id), tag)
+                    listed = await repo.list_tags()
+                    assert tag.strip().lower() in listed
+                finally:
+                    await repo.close()
 
     @pytest.mark.parametrize("tag", ["missing", "Needs-Review", "  spaced-tag  "])
     async def test_remove_tag_is_idempotent(self, tag: str) -> None:
@@ -1156,13 +1210,14 @@ class TestTagAssignmentLaws:
                 .save()
             )
 
-            repo = archive_for_scenario_db(db_path)
-            try:
-                await repo.remove_tag(native_session_id_for("test", conv_id), tag)
-                listed = await repo.list_tags()
-                assert tag.strip().lower() not in listed
-            finally:
-                await repo.close()
+            with daemon_serving_archive(db_path.parent):
+                repo = archive_for_scenario_db(db_path)
+                try:
+                    await repo.remove_tag(native_session_id_for("test", conv_id), tag)
+                    listed = await repo.list_tags()
+                    assert tag.strip().lower() not in listed
+                finally:
+                    await repo.close()
 
 
 _SIMPLE_TITLE_SEARCH_CASES = (
@@ -1691,12 +1746,19 @@ class TestInfraTagAssignment:
             db_path = archive_root / "index.db"
             seed_session_graph(db_path, spec.sessions)
 
-            repo = archive_for_scenario_db(db_path)
-            try:
+            # The tag primitive the daemon's TagAddActuator applies. A daemon
+            # per Hypothesis example would test process lifecycle, not tag
+            # storage laws; the facade route is covered by the
+            # daemon-served tests above.
+            from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+            with ArchiveStore(archive_root) as store:
                 for conv, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
                     for tag in tags:
-                        await repo.add_tag(native_session_id_for(conv.provider, conv.session_id), tag)
+                        store.add_user_tags((native_session_id_for(conv.provider, conv.session_id),), (tag,))
 
+            repo = archive_for_scenario_db(db_path)
+            try:
                 listed = await repo.list_tags()
                 for _conv, tags in zip(spec.sessions, spec.tag_sequences, strict=True):
                     for tag in set(tags):
@@ -1704,6 +1766,12 @@ class TestInfraTagAssignment:
                 assert await repo.list_tags() == expected_tag_counts(spec)
             finally:
                 await repo.close()
+                # Each Hypothesis example seeds a new archive through
+                # ``open_connection``'s per-path cache; the autouse fixture
+                # clears it only between tests, not between examples.
+                from polylogue.storage.sqlite.connection import _clear_connection_cache
+
+                _clear_connection_cache()
 
 
 _LITERAL_TITLE_SEARCH_CASES = (

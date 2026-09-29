@@ -11,14 +11,7 @@ let
 
   settingsLib = import ./lib/settings.nix { inherit lib pkgs; };
 
-  watch = settingsLib.effectiveWatch {
-    settings = cfg.settings;
-    discoverSources = cfg.discoverSources;
-  };
-
-  effectiveSettings = cfg.settings // {
-    daemon = cfg.settings.daemon // { inherit watch; };
-  };
+  effectiveSettings = cfg.settings;
 
   configFile = settingsLib.renderConfigFile effectiveSettings;
 
@@ -44,8 +37,6 @@ in
         and passed to the daemon via ``POLYLOGUE_CONFIG``.
       '';
     };
-
-    discoverSources = settingsLib.discoverSourcesOption;
 
     settings = settingsLib.settingsOptions;
 

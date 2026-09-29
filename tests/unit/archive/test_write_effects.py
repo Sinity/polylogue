@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import get_type_hints
 
 import pytest
 
@@ -10,7 +11,7 @@ from polylogue.archive.write_effects import (
     WriteEffectContext,
     commit_archive_write_effects,
 )
-from polylogue.archive.write_gateway import WriteOperation
+from polylogue.archive.write_gateway import WriteEffectReceipt, WriteOperation, WriteResult
 from polylogue.storage.sqlite.connection import open_connection
 
 
@@ -30,7 +31,7 @@ def test_registry_declares_the_canonical_effects_in_order() -> None:
         # The bus announcement is post-commit on purpose: a subscriber woken by
         # an uncommitted write could read rows that still roll back.
         "post-commit",
-        "async-deferred",
+        "in-transaction",
     ]
     assert [effect.failure_policy for effect in WRITE_EFFECT_REGISTRY] == [
         "abort",
@@ -39,6 +40,10 @@ def test_registry_declares_the_canonical_effects_in_order() -> None:
         "log-and-continue",
         "log-and-continue",
     ]
+
+
+def test_write_result_receipt_annotation_resolves_at_runtime() -> None:
+    assert get_type_hints(WriteResult)["effect_receipts"] == tuple[WriteEffectReceipt, ...]
 
 
 def test_commit_write_effects_positive_case_runs_fts_repair_and_cache_invalidation(
@@ -73,7 +78,11 @@ def test_commit_write_effects_positive_case_runs_fts_repair_and_cache_invalidati
     assert result.rows_affected == 2
     assert repaired == [("c1", "c2")]
     assert invalidated == [True]
-    assert result.effect_receipts[-1].disposition == "enqueued"
+    insight_invalidation = next(
+        receipt for receipt in result.effect_receipts if receipt.name == "invalidate_session_insights"
+    )
+    assert insight_invalidation.disposition == "applied"
+    assert insight_invalidation.phase == "in-transaction"
 
 
 def test_commit_write_effects_degraded_case_skips_conditional_effects_when_no_ids(
@@ -215,3 +224,66 @@ def test_abort_failure_policy_propagates(tmp_path: Path, monkeypatch: pytest.Mon
         conn.execute("BEGIN IMMEDIATE")
         with pytest.raises(RuntimeError, match="simulated effect failure"):
             commit_archive_write_effects(conn, WriteOperation.INGEST, {"changed_session_ids": ()})
+
+
+def test_tolerated_effect_failure_has_failed_receipt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from polylogue.archive import write_effects as module
+
+    effect = WriteEffect(
+        name="tolerated",
+        phase="in-transaction",
+        run=lambda _ctx: (_ for _ in ()).throw(RuntimeError("effect broke")),
+        failure_policy="log-and-continue",
+    )
+    monkeypatch.setattr(module, "WRITE_EFFECT_REGISTRY", (effect,))
+    with open_connection(tmp_path / "archive.db") as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        result = commit_archive_write_effects(conn, WriteOperation.INGEST, {})
+    assert result.effect_receipts == (
+        module.WriteEffectReceipt("tolerated", "in-transaction", "failed", error="effect broke"),
+    )
+
+
+def test_deferred_insight_invalidation_follows_a_repointed_index(tmp_path: Path) -> None:
+    """The deferred invalidation writes the generation the path names now.
+
+    Anti-vacuity: reopen through the thread-local cached ``connection_context``
+    and the second delivery reuses the handle to the retired file, leaving the
+    promoted generation's profile marked fresh.
+    """
+    import sqlite3
+    from typing import Any, cast
+
+    from polylogue.archive.write_effects import WriteEffectContext, _invalidate_insights_effect
+
+    def generation(name: str) -> Path:
+        path = tmp_path / name
+        conn = sqlite3.connect(path)
+        conn.execute("CREATE TABLE session_profiles (session_id TEXT, source_sort_key TEXT, source_updated_at TEXT)")
+        conn.execute("INSERT INTO session_profiles VALUES ('s1', 'k', 'u')")
+        conn.commit()
+        conn.close()
+        return path
+
+    old, new = generation("gen-a.db"), generation("gen-b.db")
+    active = tmp_path / "profiles.db"
+    active.symlink_to(old)
+
+    def deliver() -> None:
+        ctx = WriteEffectContext(
+            conn=cast(Any, None),
+            op=cast(Any, None),
+            payload={"_db_path": str(active)},
+            changed_session_ids=("s1",),
+            staleness_key="k",
+            run_archive_effects=True,
+        )
+        _invalidate_insights_effect(ctx)
+
+    deliver()
+    active.unlink()
+    active.symlink_to(new)
+    deliver()
+
+    row = sqlite3.connect(new).execute("SELECT source_sort_key FROM session_profiles").fetchone()
+    assert row == (None,)

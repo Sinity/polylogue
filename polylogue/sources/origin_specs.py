@@ -24,10 +24,12 @@ import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from functools import cache, lru_cache
+from itertools import islice
 from pathlib import Path
-from typing import Literal, cast
+from typing import IO, Literal, cast
 
 from polylogue.core.enums import Origin, Provider, ToolResultUnknownReason
+from polylogue.core.json_envelope import jsonl_record_envelopes, sqlite_value_limit, top_level_envelopes
 from polylogue.declarations import (
     CompatibilityKey,
     CompletenessEdge,
@@ -680,36 +682,18 @@ def _looks_like_extracted_transcript_corpus_path(
     return looks_like_extracted_transcript_corpus(dict_items)
 
 
-#: Ceiling for structural probes that still require a whole document. Large
-#: Hermes snapshots use the parser's bounded envelope probe below, so this
-#: value does not reject that supported shape based on file size.
-SOURCE_CLASS_JSON_PROBE_MAX_BYTES = 64 * 1024 * 1024
+#: Records a JSONL candidate is classified by: a declared JSONL source's kind
+#: shows in its leading records, and every record is read whole however long.
+SOURCE_CLASS_JSONL_LEADING_RECORDS = 32
 
 
-def _bounded_jsonl_records(path: Path, *, limit: int, max_record_bytes: int) -> list[object]:
-    """Parse at most ``limit`` JSONL records, never holding more than one record.
-
-    A record longer than ``max_record_bytes`` is skipped rather than read: the
-    structural signatures below are decided by a record's leading keys, so an
-    unbounded line buys no classification accuracy.
-    """
-    records: list[object] = []
-    with path.open(encoding="utf-8") as handle:
-        while len(records) < limit:
-            chunk = handle.readline(max_record_bytes + 1)
-            if not chunk:
-                break
-            if len(chunk) > max_record_bytes:
-                # Drain the rest of this oversized record in bounded steps so
-                # the next readline starts at a real record boundary.
-                while True:
-                    tail = handle.readline(max_record_bytes)
-                    if not tail or tail.endswith("\n"):
-                        break
-                continue
-            if chunk.strip():
-                records.append(json.loads(chunk))
-    return records
+def _first_significant_byte(handle: IO[bytes]) -> bytes:
+    """The first byte of a document that is not JSON whitespace, or ``b""``."""
+    while chunk := handle.read(64 * 1024):
+        stripped = chunk.lstrip(b" \t\r\n")
+        if stripped:
+            return stripped[:1]
+    return b""
 
 
 def recognize_source_class(
@@ -718,7 +702,6 @@ def recognize_source_class(
     *,
     payload: object | None = None,
     source_only: bool = False,
-    source_size_bytes: int | None = None,
 ) -> SourceClassRecognition | None:
     """Classify broad-root candidates before provider-session admission.
 
@@ -726,9 +709,7 @@ def recognize_source_class(
     enumerate cheaply by suffix, but may not assign a provider session from
     that suffix alone.
 
-    ``source_size_bytes`` is the candidate's already-observed stat size. When
-    given, a whole-document probe above
-    :data:`SOURCE_CLASS_JSON_PROBE_MAX_BYTES` is refused instead of performed.
+    The JSON probe streams, so a candidate's size never changes the answer.
     """
     if provider is Provider.UNKNOWN:
         if source_only and Path(source_path).suffix.lower() in {".db", ".sqlite", ".sqlite3"}:
@@ -801,38 +782,66 @@ def recognize_source_class(
         return None
 
     if payload is None:
+        import ijson
+
+        is_jsonl = path.suffix.lower() in {".jsonl", ".ndjson"}
+        # Only the root fields a signature reads are kept, so a document of any
+        # width costs the same memory.
+        fields = (
+            hermes_spans.ATIF_SIGNATURE_FIELDS
+            | hermes_spans.ATOF_SIGNATURE_FIELDS
+            | local_agent.HERMES_SIGNATURE_FIELDS
+            if provider is Provider.HERMES
+            else antigravity.MARKDOWN_EXPORT_SIGNATURE_FIELDS
+        )
+        tail_violates_atof = False
         try:
-            if path.suffix.lower() in {".jsonl", ".ndjson"}:
-                # Imported lazily: ``archive.raw_payload`` imports
-                # ``sources.dispatch``, which imports this module back.
-                from polylogue.archive.raw_payload.decode import JSONL_RECORD_INSPECTION_BYTES
-
-                payload = _bounded_jsonl_records(path, limit=32, max_record_bytes=JSONL_RECORD_INSPECTION_BYTES)
-            else:
-                if source_size_bytes is not None and source_size_bytes > SOURCE_CLASS_JSON_PROBE_MAX_BYTES:
-                    if provider is Provider.HERMES:
-                        # Hermes snapshots have one production bounded probe
-                        # that retains the parser's required envelope and
-                        # leaves the messages array out of Python memory. Use
-                        # it to admit that supported shape even when unrelated
-                        # document fields make the file large. Other large
-                        # JSON shapes remain explicitly unrecognized here.
-                        from polylogue.sources.decoder_json import hermes_snapshot_envelope
-
-                        with path.open("rb") as handle:
-                            envelope = hermes_snapshot_envelope(handle)
-                        candidate = {**envelope, "messages": []} if envelope is not None else None
-                        if candidate is not None and local_agent.looks_like_hermes(candidate):
-                            return SourceClassRecognition(
-                                "session", "Hermes snapshot recognized by bounded structural probe"
-                            )
-                    return SourceClassRecognition(
-                        "unsupported",
-                        "candidate exceeds the structural source-class inspection ceiling",
+            with path.open("rb") as handle:
+                if is_jsonl:
+                    payload = list(
+                        islice(jsonl_record_envelopes(handle, fields=fields), SOURCE_CLASS_JSONL_LEADING_RECORDS)
                     )
-                payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            return SourceClassRecognition("unsupported", "Hermes candidate is not readable JSON")
+                else:
+                    # The record parser holds a JSON document whole (ijson's
+                    # item list, then ``json.load``), so a document beyond the
+                    # record bound is refused by name, as an over-bound JSONL
+                    # line is (polylogue-0df0u).
+                    size = path.stat().st_size
+                    if size > sqlite_value_limit():
+                        return SourceClassRecognition(
+                            "unsupported",
+                            f"{provider.value} JSON document of {size} bytes is beyond the record bound",
+                        )
+                    first = _first_significant_byte(handle)
+                    handle.seek(0)
+                    if first == b"[":
+                        # The signature is read from the leading records; the
+                        # rest is streamed, its envelopes dropped as they come,
+                        # because the record parser reads the whole array: a
+                        # malformed tail refuses it, and the Hermes predicate
+                        # applies to every member.
+                        elements = top_level_envelopes(handle, expand_arrays=True, fields=fields)
+                        payload = list(islice(elements, SOURCE_CLASS_JSONL_LEADING_RECORDS))
+                        for element in elements:
+                            if (
+                                provider is Provider.HERMES
+                                and isinstance(element, dict)
+                                and element
+                                and not hermes_spans.looks_like_atof_payload(element)
+                            ):
+                                tail_violates_atof = True
+                    elif first == b"{":
+                        (payload,) = top_level_envelopes(handle, expand_arrays=False, fields=fields)
+                    else:
+                        # A scalar root carries no source signature; its body
+                        # is never scanned.
+                        return SourceClassRecognition(
+                            "unsupported", f"{provider.value} candidate has no JSON object or array root"
+                        )
+        except (OSError, UnicodeDecodeError, ValueError, ArithmeticError, ijson.JSONError):
+            return SourceClassRecognition("unsupported", f"{provider.value} candidate is not readable JSON")
+        if tail_violates_atof:
+            return SourceClassRecognition("unsupported", "Hermes array holds a member without the ATOF signature")
 
     if provider is Provider.HERMES:
         record = payload if isinstance(payload, dict) else None
@@ -842,9 +851,11 @@ def recognize_source_class(
             or local_agent.looks_like_hermes(record)
         ):
             return SourceClassRecognition("session", "Hermes declared JSON structural signature")
-        if isinstance(payload, list) and any(
-            isinstance(item, dict) and hermes_spans.looks_like_atof_payload(item) for item in payload
-        ):
+        # The same all-record predicate the artifact route applies
+        # (artifact_taxonomy.runtime._classify_list): one non-ATOF mapping in
+        # the sample means replay admits no session from this file.
+        records = [item for item in payload if isinstance(item, dict) and item] if isinstance(payload, list) else []
+        if records and all(hermes_spans.looks_like_atof_payload(item) for item in records):
             return SourceClassRecognition("session", "Hermes ATOF JSONL structural signature")
         return SourceClassRecognition("unsupported", "Hermes candidate has no declared source-class signature")
 
@@ -1929,8 +1940,9 @@ def path_declaration_refuses_session(provider: Provider, source_path: str | Path
     tool-result sidecar can reproduce a genuine export byte-for-byte
     (polylogue-omsw) and a prompt-history log carries the same ``sessionId``
     keys a transcript does (polylogue-ximhz). For those families the path rule
-    is terminal. ``fact`` and ``session`` rules keep the ordinary behaviour
-    where positive decoded session evidence may outrank a location.
+    is terminal and shape is never consulted. For ``fact`` and ``session``
+    rules, shape only validates the location's own origin: content of another
+    origin is refused (``ForeignOriginContentError``), never reinterpreted.
     """
     rule = artifact_rule_for_path(provider, str(source_path))
     return rule is not None and rule.parse_policy == "raw-only"
@@ -2369,10 +2381,8 @@ def _codex_spec() -> OriginSpec:
             "the parsed session retains and becomes its own "
             "codex_replacement_context session_event only when it is retained "
             "nowhere else; per-entry phase/ghost_commit/image annotation "
-            "stays a bounded aggregate on the compaction event. A replacement "
-            "text value over 256 KiB is not copied into the derived index: a "
-            "codex_replacement_context_omitted event records its size, SHA-256, "
-            "and source_blob reconstruction route instead.",
+            "stays a bounded aggregate on the compaction event. Each distinct "
+            "replacement-only value is stored once whatever its size or count.",
             "event_msg.task_complete.last_agent_message (acquired, "
             "polylogue-6ev92): the turn's final assistant text repeated on "
             "the completion marker. Measured over 270 real rollout files, all "
@@ -2619,6 +2629,23 @@ def _gemini_cli_spec() -> OriginSpec:
                     "Tool output is provider payload, not a stable sidecar record contract; retain bytes and join "
                     "to the owning tool result without inferring a public schema."
                 ),
+            ),
+            OriginArtifactRule(
+                kind="prompt_history_log",
+                # ``~/.gemini/tmp/<project>/logs.json`` is Gemini CLI's prompt
+                # log. Its rows carry ``sessionId``/``type``/``message`` keys
+                # that another origin's detector also recognizes, so the path
+                # rule, not content shape, decides that it is never a session.
+                path_pattern=r"(?:^|/)logs\.json$",
+                parse_policy="raw-only",
+                parser_path=None,
+                coverage_role="prompt_history_log",
+                fidelity_note=(
+                    "Gemini CLI prompt-log rows are retained verbatim as evidence; they are the user's "
+                    "prompts only and duplicate what the chat checkpoints carry, so they are never a session."
+                ),
+                path_suffixes=(".json",),
+                watch_suffixes=(),
             ),
         ),
         fidelity_notes=(
@@ -3035,7 +3062,7 @@ def _aistudio_drive_spec() -> OriginSpec:
             message_parent=TopologyCapability(
                 "carried",
                 (
-                    "drive._branch_parent_message_provider_id/_branch_child_parent_map -> ParsedMessage.parent_message_provider_id; only id/messageId are local message evidence",
+                    "drive._branch_parent_message_provider_id/_ChunkOrder.branch_parent -> ParsedMessage.parent_message_provider_id; only id/messageId are local message evidence",
                 ),
             ),
             message_branch_state=TopologyCapability(
@@ -3058,14 +3085,17 @@ def _aistudio_drive_spec() -> OriginSpec:
 
 
 def _otel_genai_spec() -> OriginSpec:
-    """Declare configured local OTLP JSON as an explicit source origin."""
+    """Declare OTLP JSON trace exports, imported through the archive inbox."""
     from polylogue.sources.parsers.otel_genai import OTLP_JSON_DIALECT, SEMCONV_SCHEMA_URL
 
     return _executable_spec(
         Origin.OTEL_GENAI,
         provider=Provider.OTEL_GENAI,
         tightness=95,
-        discovery="Explicitly configured OTLP-JSON file with GenAI span attributes.",
+        discovery=(
+            "OTLP-JSON trace export with GenAI span attributes, imported with `polylogue import`; no tool writes "
+            "these to a canonical location, so the import inbox, which classifies by shape, is its live route."
+        ),
         acquisition_modes=("otlp-json-file",),
         parser_paths=("polylogue/sources/parsers/otel_genai.py",),
         fixture_paths=("tests/unit/sources/parsers/test_otel_genai.py", "tests/fixtures/otel-genai/trace.json"),
@@ -3078,8 +3108,8 @@ def _otel_genai_spec() -> OriginSpec:
                 parser_path="polylogue/sources/parsers/otel_genai.py",
                 coverage_role="otlp_json_export",
                 fidelity_note=(
-                    "An explicitly configured root supplies the source scope; parser admission still requires an "
-                    "OTLP JSON document with a normalizable GenAI span."
+                    "The import inbox supplies the source scope; parser admission still requires an OTLP JSON "
+                    "document with a normalizable GenAI span."
                 ),
                 path_suffixes=(".json",),
                 watch_suffixes=(".json",),
@@ -3418,7 +3448,7 @@ _ORIGIN_COMPLETENESS_MODES: dict[Origin, tuple[OriginCompletenessMode, ...]] = {
 }
 
 
-_ALL_BROWSER_CAPTURE_PROVIDERS = tuple(Provider)
+_ALL_BROWSER_CAPTURE_PROVIDERS = tuple(provider for provider in Provider if provider is not Provider.BEADS)
 
 _ORIGIN_DETECTOR_BINDINGS: dict[Origin, tuple[DetectorBinding, ...]] = {
     Origin.CLAUDE_CODE_SESSION: (

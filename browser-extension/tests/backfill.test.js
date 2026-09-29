@@ -243,6 +243,27 @@ describe("background backfill coordinator", () => {
     expect(await h.store.getJob(healthy.id)).toMatchObject({ status: "running" });
   });
 
+  it("keeps a rate-limited checkpoint failure running until its retry deadline", async () => {
+    // Anti-vacuity: pausing here leaves the job non-runnable, so the alarm at
+    // the deadline could never resume it without operator action.
+    const h = harness();
+    const job = await startJob(h);
+    const retryUntil = h.now() + 60_000;
+    h.coordinator.checkpoint = vi.fn(async () => ({
+      failures: [{ job_id: job.id, error: "provider_throttled", outcome: "rate_limited", retry_until_ms: retryUntil }],
+    }));
+    h.alarms.create.mockClear();
+
+    await h.coordinator.status(job.id);
+
+    expect(await h.store.getJob(job.id)).toMatchObject({
+      status: "running",
+      cooldown_reason: "provider_rate_limited",
+      cooldown_until_ms: retryUntil,
+    });
+    expect(h.alarms.create).toHaveBeenCalledWith(expect.any(String), { when: retryUntil });
+  });
+
   it("coalesces concurrent receiver-authority checkpoints across status readers", async () => {
     let releaseCheckpoint;
     const checkpoint = vi.fn(async () => new Promise((resolve) => { releaseCheckpoint = resolve; }));
@@ -586,6 +607,24 @@ describe("background backfill coordinator", () => {
     expect(await store.getJob("local-chatgpt")).toBeUndefined();
     expect(await store.getJob("remote-chatgpt")).toMatchObject({ status: "paused" });
     expect(await store.getJob("local-claude")).toMatchObject({ id: "local-claude" });
+  });
+
+  it("treats a shared provider cooldown as a rate limit, not a transport failure", async () => {
+    // Anti-vacuity: route the shared-cooldown refusal back through
+    // retryTransport and the job counts transport failures and pauses as
+    // repeated_transport_failures although no provider request was made.
+    const adapter = new FixtureAdapter(["one"]);
+    const cooldown = Object.assign(new Error("provider_rate_limited"), { outcome: "rate_limited", retryAfterSeconds: 30 });
+    const h = harness({ adapter, policy: { breakerThreshold: 2 } });
+    const job = await startJob(h);
+    await enumerateThenAdvance(h, job);
+    adapter.fetchError = cooldown;
+    await h.coordinator.wake(job.id);
+    const status = await h.coordinator.status(job.id);
+    expect(status.cooldown_reason).toBe("provider_rate_limited");
+    expect(status.cooldown_until_ms).toBe(h.now() + 30000);
+    expect(status.transport_failures || 0).toBe(0);
+    expect(status.status).not.toBe("paused");
   });
 
   it("honors Retry-After exactly and opens a circuit after repeated 429s", async () => {

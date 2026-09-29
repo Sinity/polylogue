@@ -89,9 +89,17 @@ def vector_binding_from_config(config: Config) -> VectorReadBinding | None:
     )
 
 
+def never_aborted() -> None:
+    """The abort checkpoint of a read no execution context controls."""
+
+
 @dataclass(frozen=True, slots=True)
 class DaemonReadDependencies:
     """Explicit non-SQL dependencies resolved by the daemon operation context.
+
+    ``raise_if_aborted`` is the read's Python-level abort checkpoint between
+    SQL statements; the daemon binds it to the read's execution context, and
+    it raises that context's typed cancelled / timed-out / over-budget error.
 
     ``vector_failure`` records a failed/unavailable provider construction so a
     hybrid query retains its lexical answer with a named gap.  Provider
@@ -103,6 +111,7 @@ class DaemonReadDependencies:
     vector_connection: sqlite3.Connection | None = None
     vector_failure: LaneFailure | None = None
     runtime_status: Mapping[str, object] | None = None
+    raise_if_aborted: Callable[[], None] = never_aborted
     status_now_ms: int | None = None
     status_config: Config | PolylogueConfig | None = None
 
@@ -211,6 +220,10 @@ def execute_read_operation(
         from polylogue.operations.read_view_chronicle import execute_chronicle_read
 
         result = execute_chronicle_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
+    elif name == "read.compact":
+        from polylogue.operations.read_view_compact import execute_compact_read
+
+        result = execute_compact_read(payload, archive=archive, vector_provider=dependencies.vector_provider)
     elif name == "read.effective_context":
         from polylogue.operations.read_view_extras import execute_effective_context_read
 
@@ -222,7 +235,7 @@ def execute_read_operation(
     elif name == "read.topology":
         from polylogue.operations.read_view_lineage import execute_topology_read
 
-        result = execute_topology_read(payload, archive=archive)
+        result = execute_topology_read(payload, archive=archive, raise_if_aborted=dependencies.raise_if_aborted)
     elif name == "read.neighbors":
         from polylogue.operations.read_view_extras import execute_neighbor_read
 
@@ -303,16 +316,85 @@ def _cacheable_read(name: str, payload: Mapping[str, object]) -> bool:
     if name == "facets":
         return True
     if name == "cli.query":
-        return not requires_vector_snapshot(name, payload)
+        params = _params(payload)
+        spec = _cli_query_spec(params)
+        return (
+            not requires_vector_snapshot(name, payload)
+            and spec.sample is None
+            and spec.sort != "random"
+            and not any(_is_relative_date_bound(getattr(spec, field)) for field in ("since", "until"))
+        )
     return False
+
+
+def _is_relative_date_bound(value: object) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    from datetime import datetime
+
+    try:
+        datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return False
+
+
+#: Deadline of a declared read that a request's own shape makes archive-scan
+#: work; matches the declared deadline of the daemon's other scan operations.
+READ_SCAN_DEADLINE_S = 120.0
+
+
+def read_is_archive_scan(name: str, payload: Mapping[str, object]) -> bool:
+    """Whether this read request must read every candidate, decided before it runs.
+
+    A chronicle page ordered by a composed count hydrates every matching
+    session whatever its page size, so it is admitted as scan work rather
+    than against the capacity and deadline reserved for interactive reads.
+    """
+    if name != "read.chronicle":
+        return False
+    from polylogue.core.errors import PolylogueError
+    from polylogue.operations.read_view_chronicle import chronicle_payload_is_scan
+
+    try:
+        return chronicle_payload_is_scan(payload)
+    except (ValueError, TypeError, PolylogueError):
+        # An invalid request (a bad sort is a ``QuerySpecError``) is refused
+        # by execution with its typed error, never by this classifier.
+        return False
+
+
+def operation_deadline_s(name: str, payload: Mapping[str, object]) -> float:
+    """The execution deadline one request carries, decided from its shape.
+
+    The declared spec deadline, except a read that is archive-scan work, which
+    gets the scan deadline. Clients and the runtime read the same value, so a
+    client never sends (or waits with) a deadline shorter than the one the
+    runtime admits the request under.
+    """
+    from polylogue.operations.daemon_protocol import DaemonAuthority, daemon_operation_spec
+
+    spec = daemon_operation_spec(name)
+    if spec is None:
+        raise ValueError(f"operation is not declared: {name}")
+    if spec.authority is DaemonAuthority.READ and read_is_archive_scan(name, payload):
+        return READ_SCAN_DEADLINE_S
+    return spec.deadline_s
 
 
 def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:
     """Return whether this declared read needs a coherent vector handle."""
 
-    if name not in {"cli.query", "read.temporal", "read.chronicle"}:
+    if name not in {"cli.query", "read.temporal", "read.chronicle", "read.compact"}:
         return False
-    spec = _cli_query_spec(_params(payload))
+    from polylogue.core.errors import PolylogueError
+
+    try:
+        spec = _cli_query_spec(_params(payload))
+    except (ValueError, TypeError, PolylogueError):
+        # Like ``read_is_archive_scan``: an invalid request is refused by
+        # execution with its typed error, never by this pre-dispatch check.
+        return False
     return bool(spec.similar_text or spec.similar_session_id or spec.retrieval_lane == "hybrid")
 
 
@@ -381,7 +463,7 @@ def _query_payload(
     # Decided after the projection runs: the attached-unit row ceiling is one
     # of this operation's own facts, and an envelope carrying a cut projection
     # is not an ``ok`` answer about those sessions.
-    outcome = decide_outcome(matched=total, degraded=attached_gaps)
+    outcome = decide_outcome(matched=len(summaries), degraded=attached_gaps)
     lineage_edges = _lineage_edges_payload(session_ids, spec=spec, archive=archive)
     return {
         "outcome": outcome.to_dict(),
@@ -583,32 +665,36 @@ def _search_payload(
             ),
         )
     plan = fetch_spec.to_plan(vector_provider=vector_provider)
-    pairs, resolved_lane = archive_search_hits(
+    result = archive_search_hits(
         plan,
         archive_root=archive.archive_root,
         config=None,
         archive=archive,
+        vector_failure=vector_failure,
     )
+    resolved_lane = result.retrieval_lane
     query_text = (
         " ".join((*fetch_spec.query_terms, *fetch_spec.contains_terms)).strip() or fetch_spec.similar_text or ""
     )
-    hits = project_search_hits(plan, pairs, resolved_lane, vector_failure=vector_failure)
+    hits = project_search_hits(plan, result)
     hit_payloads = tuple(
         SessionSearchHitPayload.from_search_hit(hit, message_count=hit.summary.message_count) for hit in hits
     )
     # Vector backends deliberately expose a bounded nearest-neighbour page, not
     # an archive-wide cardinality.  ``None`` is the canonical honest total.
-    if needs_vector:
+    if needs_vector or fetch_spec.retrieval_lane == "actions":
         total: int | None = None
     else:
         from polylogue.api.archive import _archive_count_sessions_for_spec
 
         total = _archive_count_sessions_for_spec(archive, fetch_spec)
+    # Same projection as the API builder: ``matched`` is the query's match
+    # total, ``analyzed`` the hit window this route returns.
     authority = authority_for_reader(
         archive,
         server_identity="daemon" if serving_identity == "daemon" else "direct",
         started_at=monotonic(),
-    ).model_copy(update={"matched": len(hit_payloads), "analyzed": total})
+    ).model_copy(update={"matched": total, "analyzed": len(hit_payloads)})
     # The ranked envelope must name what it counted.  Without this a
     # ``--no-root`` search reports subagent/branch rows under the "top-level
     # sessions" label, because the renderer has nothing to read but a default.
@@ -616,14 +702,14 @@ def _search_payload(
     # filter rather than the unset spec field.
     from polylogue.archive.query.spec import resolve_default_root_filter, session_count_unit_label
 
-    envelope = build_search_envelope(
+    envelope_model = build_search_envelope(
         hit_payloads,
         total=total,
         total_unit=session_count_unit_label(
             resolve_default_root_filter(fetch_spec.root, boolean_predicate=fetch_spec.boolean_predicate)
         ),
         limit=display_limit,
-        offset=spec.offset,
+        offset=cursor.r if cursor is not None else spec.offset,
         query=query_text,
         retrieval_lane=resolved_lane,
         sort=spec.sort,
@@ -631,12 +717,21 @@ def _search_payload(
         request_identity=request_identity,
         execution=hits.execution,
         authority=authority,
-    ).model_dump(mode="json")
+    )
+    # The builder decides ``outcome`` from the page it emits -- after the
+    # cursor trims stragglers and the limit truncates -- so the emitted hits
+    # and the authority count must be that same page, never the raw fetch.
+    emitted_hits = envelope_model.hits
+    if envelope_model.authority is not None:
+        envelope_model = envelope_model.model_copy(
+            update={"authority": envelope_model.authority.model_copy(update={"analyzed": len(emitted_hits)})}
+        )
+    envelope = envelope_model.model_dump(mode="json")
     # Match the direct branch's hit shape exactly: ``archive_query._hit_payload``
     # dumps the same ``SessionSearchHitPayload`` with ``exclude_none=True``.
     # The envelope keeps its own explicit nulls -- a vector page's ``total`` is
     # an honest ``None`` and dropping the key would read as "not reported".
-    envelope["hits"] = [hit.model_dump(mode="json", exclude_none=True) for hit in hit_payloads]
+    envelope["hits"] = [hit.model_dump(mode="json", exclude_none=True) for hit in emitted_hits]
     # The ranked envelope's own continuation is ``next_cursor``; ``next_offset``
     # is the offset-shaped answer the list page also gives, decided by the one
     # helper so a client walking pages cannot see the two paths disagree.
@@ -653,8 +748,15 @@ def _search_payload(
     # the helper's own no-total rule -- a page that filled its bound continues,
     # a short page terminates -- rather than by a denominator in the wrong
     # unit.
+    # The continuation must track what this response actually emitted: the
+    # cursor page's own effective offset (``cursor.r``, not the caller's
+    # original ``spec.offset``) plus the *emitted* page after the cursor
+    # trims stragglers and the limit truncates it -- not the raw fetch.
     envelope["next_offset"] = page_next_offset(
-        offset=spec.offset, returned=len(hit_payloads), total=None, limit=display_limit
+        offset=cursor.r if cursor is not None else spec.offset,
+        returned=len(emitted_hits),
+        total=None,
+        limit=display_limit,
     )
     return envelope
 
@@ -841,23 +943,17 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
     away from it: no ``family_status``, ``availability``, ``deadline_s``,
     ``elapsed_s`` or ``stale_age_s``; hard-coded ``budget_exceeded`` and
     ``cost_class``; its own family lists (``omitted`` in both complete and
-    deferred, no ``total_counts``); and no ``PostFilterScopeTooLargeError``
-    handling, so a too-large scope raised instead of degrading. Building the
+    deferred, no ``total_counts``). Building the
     shared model and dumping it keeps the two surfaces equal by construction
     rather than by matching key lists.
 
-    ``scope_gaps`` is the one input that still had to be threaded by hand, and
-    it was not: this route dropped the collector, so a scope that hit
-    ``FACET_SCOPE_SESSION_CAP`` reported buckets rolled from a truncated
-    denominator as ``outcome: ok`` with every family in ``complete_families``,
-    while the API route on the identical cap reported ``degraded`` and named
-    the gap. This is the production route the CLI reads through, so the
-    truncated answer was the one operators actually saw.
+    ``scope_gaps`` is threaded through both ``_archive_facet_buckets`` calls
+    and ``build_facets_response`` so every declared gap reaches the envelope.
     """
 
     import time
 
-    from polylogue.api.archive import PostFilterScopeTooLargeError, _archive_facet_buckets, build_facets_response
+    from polylogue.api.archive import _archive_facet_buckets, build_facets_response
     from polylogue.archive.query.expression import compile_expression_into
     from polylogue.archive.query.spec import SessionQuerySpec
 
@@ -876,16 +972,8 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
     started_at = time.perf_counter()
     scope_gaps: list[str] = []
     global_buckets = _archive_facet_buckets(archive, None, include_deferred=include_deferred, scope_gaps=scope_gaps)
-    post_filter_gap: str | None = None
     if scoped_to_query:
-        try:
-            scoped_buckets = _archive_facet_buckets(
-                archive, spec, include_deferred=include_deferred, scope_gaps=scope_gaps
-            )
-        except PostFilterScopeTooLargeError as exc:
-            from polylogue.archive.query.facets import FacetBuckets
-
-            scoped_buckets, post_filter_gap = FacetBuckets(), exc.gap_reason
+        scoped_buckets = _archive_facet_buckets(archive, spec, include_deferred=include_deferred, scope_gaps=scope_gaps)
     else:
         scoped_buckets = global_buckets
 
@@ -896,7 +984,6 @@ def _facets_payload(params: Mapping[str, object], *, archive: ArchiveStore) -> d
         include_deferred=include_deferred,
         elapsed_s=time.perf_counter() - started_at,
         include_idf=not _truthy(params.get("no_idf")),
-        post_filter_gap=post_filter_gap,
         scope_gaps=scope_gaps,
     )
     return cast(dict[str, object], response.model_dump(by_alias=True, mode="json"))
@@ -1167,7 +1254,7 @@ def _session_identity_projection(
     are retained so the window's own coordinates stay honest.
     """
 
-    from polylogue.archive.hydration import archive_message_to_domain
+    from polylogue.archive.hydration import archive_block_to_domain, archive_message_to_domain
     from polylogue.surfaces.payloads import message_topology_from_domain
 
     return {
@@ -1194,7 +1281,9 @@ def _session_identity_projection(
                         "text": block.text,
                         "tool_name": block.tool_name,
                         "tool_id": block.tool_id,
-                        "tool_input": block.tool_input,
+                        # The column holds JSON text; expose the object the
+                        # shared hydrator decodes, as every other block read does.
+                        "tool_input": archive_block_to_domain(block).get("tool_input"),
                         "semantic_type": block.semantic_type,
                     }
                     for block in message.blocks
@@ -1444,10 +1533,18 @@ def _session_messages_payload(
             ),
         )
 
-    window = read_transcript_window_sync(archive, request, read=read)
+    # A projection is part of the continuation identity only when one was
+    # requested, so a default-projection token resumes across surfaces while
+    # a token minted under a different projection is still refused.
+    window = read_transcript_window_sync(
+        archive,
+        request,
+        read=read,
+        extra_arguments={"projection": dict(raw_projection)} if raw_projection else None,
+    )
     result: dict[str, object] = {
         "outcome": lineage_page_outcome(
-            matched=window.total,
+            matched=len(window.rows),
             complete=window.lineage_complete,
             truncation_reason=window.lineage_truncation_reason,
         ).to_dict(),

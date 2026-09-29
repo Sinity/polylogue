@@ -52,7 +52,14 @@ from .parsers.base import (
     mark_last_occurrence_as_active_leaf,
 )
 from .parsers.base_models import upgrade_chat_export_user_authorship
-from .parsers.base_support import iter_messages_from_list
+from .parsers.base_support import (
+    AdmissionObserver,
+    admit_parsed_sessions,
+    claude_code_unknown_wire_type,
+    codex_unknown_wire_type,
+    hermes_unknown_wire_type,
+    iter_messages_from_list,
+)
 from .parsers.claude import code_parser as claude_code_parser
 from .parsers.claude.code_parser import apply_tool_result_sidecars
 from .parsers.claude.stream_scratch import ClaudeStreamScratch, SqliteStringSet
@@ -221,6 +228,18 @@ def _browser_capture_provider(payload: object) -> Provider | None:
     return Provider.from_string(provider if isinstance(provider, str) else None)
 
 
+def _declared_capture_provider(record: PayloadRecord) -> Provider | None:
+    """The provider a browser-capture envelope declares; the envelope owns it.
+
+    Location binding for captures is enforced at acquisition, where the
+    location is known; here ``runtime_provider`` is only a parser hint (a
+    mixed capture sequence's first element), so each envelope keeps its own
+    declared provider.
+    """
+    provider = _browser_capture_provider(record)
+    return None if provider in (None, Provider.UNKNOWN) else provider
+
+
 def _looks_like_browser_capture_sequence(payload: object) -> bool:
     record = _first_sequence_record(payload)
     return record is not None and browser_capture.looks_like(record)
@@ -379,16 +398,85 @@ def _looks_like_gemini_mapping_sequence(payload: object) -> bool:
     return record is not None and _looks_like_gemini_mapping(record)
 
 
-def detect_provider_evidence(payload: object, path: object | None = None) -> tuple[Provider | None, str]:
+class ForeignOriginContentError(ValueError):
+    """Content at a location bound to one origin carries another origin's shape.
+
+    A source location admits only its own origin's material. A Codex rollout
+    in Claude Code's project directory, or a Gemini CLI prompt log that
+    happens to look like Claude Code records, is refused -- never reparsed as
+    the origin its shape suggests, and never silently skipped.
+    """
+
+    code = "foreign_origin_content"
+
+    def __init__(self, *, expected: Provider, found: Provider, evidence: str) -> None:
+        super().__init__(
+            f"content at a {expected.value} location has {found.value} shape ({evidence}); "
+            "refused: a location admits only its own origin"
+        )
+        self.expected = expected
+        self.found = found
+        self.evidence = evidence
+
+    def __reduce__(self) -> tuple[object, ...]:
+        # Parse workers run in subprocesses; the refusal must survive pickling.
+        return (_rebuild_foreign_origin_error, (self.expected.value, self.found.value, self.evidence))
+
+
+def _rebuild_foreign_origin_error(expected: str, found: str, evidence: str) -> ForeignOriginContentError:
+    return ForeignOriginContentError(expected=Provider(expected), found=Provider(found), evidence=evidence)
+
+
+def bound_location_provider(expected: Provider | str | None) -> Provider | None:
+    """The origin a location binds, or ``None`` for a classifying location.
+
+    Only locations without a single owning origin -- the operator's import
+    inbox and browser-capture envelopes, which declare their provider -- run
+    shape classification. Every other location binds its origin, and shape
+    detection there only validates.
+    """
+    if expected is None:
+        return None
+    provider = Provider.from_string(expected)
+    return None if provider is Provider.UNKNOWN else provider
+
+
+def detect_provider_evidence(
+    payload: object,
+    path: object | None = None,
+    *,
+    expected: Provider | str | None = None,
+) -> tuple[Provider | None, str]:
     """Infer provider from payload shape, plus the evidence that decided it.
 
-    ``detect_provider`` is a thin wrapper over this function that discards the
-    evidence label for existing call sites; use this variant wherever the
-    deciding rule needs to be surfaced (acquisition logging, ``import
-    explain``-style diagnostics).
+    With ``expected`` naming a bound location origin, the result is either
+    that origin or ``None``; a payload carrying another origin's shape raises
+    :class:`ForeignOriginContentError`. ``detect_provider`` is a thin wrapper
+    that discards the evidence label.
     """
     del path
+    provider, evidence = _classify_provider_evidence(payload)
+    bound = bound_location_provider(expected)
+    if bound is not None and provider is not None and not same_origin(provider, bound):
+        raise ForeignOriginContentError(expected=bound, found=provider, evidence=evidence)
+    return provider, evidence
 
+
+def same_origin(left: Provider, right: Provider) -> bool:
+    """Whether two provider wires name the same archive origin.
+
+    Wires are not origins: ``drive`` and ``gemini`` both denote AI Studio on
+    Drive, so a Drive location validating a ``gemini``-shaped prompt is its
+    own origin, not foreign content.
+    """
+    if left is right:
+        return True
+    from polylogue.core.sources import origin_from_provider
+
+    return origin_from_provider(left) is origin_from_provider(right)
+
+
+def _classify_provider_evidence(payload: object) -> tuple[Provider | None, str]:
     if record := _payload_record(payload):
         provider, evidence = detector_registry().detect(DetectionMode.RECORD, record)
         return provider, evidence or "no detector matched (single record)"
@@ -404,9 +492,14 @@ def detect_provider_evidence(payload: object, path: object | None = None) -> tup
     return None, "payload is not a JSON document or sequence"
 
 
-def detect_provider(payload: object, path: object | None = None) -> Provider | None:
-    """Infer provider from payload shape. Path is accepted for surface compatibility."""
-    return detect_provider_evidence(payload, path)[0]
+def detect_provider(
+    payload: object,
+    path: object | None = None,
+    *,
+    expected: Provider | str | None = None,
+) -> Provider | None:
+    """Infer provider from payload shape, validated against a bound location origin."""
+    return detect_provider_evidence(payload, path, expected=expected)[0]
 
 
 def detect_provider_from_raw_bytes_evidence(
@@ -696,8 +789,7 @@ _TITLE_EVIDENCE_PRECEDENCE: tuple[tuple[tuple[TitleSource, str | None], ...], ..
 def _title_evidence_rank(session: ParsedSession) -> int:
     """Rank a chunk's title evidence; higher wins, 0 means no evidence.
 
-    ``TitleSource.PATH`` and a NULL ``title_source`` both rank 0: neither is
-    produced by any parser today, and a raw-id fallback title carries no
+    A NULL ``title_source`` ranks 0: a raw-id fallback title carries no
     evidence to prefer.
     """
     source = session.title_source
@@ -714,6 +806,23 @@ def _title_evidence_rank(session: ParsedSession) -> int:
             if prefix is None and tier_source is source:
                 return len(tiers) - index
     return 0
+
+
+def _later_chunk_title_winner(existing: ParsedSession, later: ParsedSession) -> ParsedSession:
+    """Resolve title evidence across two consecutive chunks of one stream.
+
+    Stronger evidence wins. Between equal provider records the later chunk
+    wins, as the whole-file parse keeps the latest rename or ai-title record;
+    a first-human-message heuristic (and absent evidence) keeps the earlier
+    chunk, whose first message it names.
+    """
+    existing_rank = _title_evidence_rank(existing)
+    later_rank = _title_evidence_rank(later)
+    if existing_rank != later_rank:
+        return existing if existing_rank > later_rank else later
+    if existing.title_source is TitleSource.ORIGIN:
+        return later
+    return existing
 
 
 def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[ParsedSession]:
@@ -829,7 +938,7 @@ def merge_parsed_session_chunks(sessions: Iterable[ParsedSession]) -> list[Parse
         # a later chunk of the same streamed session. All three title fields
         # move together so title_source/title_ref never point at a different
         # chunk's evidence than the title text they describe.
-        title_winner = existing if _title_evidence_rank(existing) >= _title_evidence_rank(session) else session
+        title_winner = _later_chunk_title_winner(existing, session)
         # A branch point names a message inside the parent, so it is only
         # carried forward from a chunk that asserts the parent that wins.
         parent_winner = existing if existing.parent_session_provider_id else session
@@ -1058,6 +1167,10 @@ def _claude_code_multiway_parse_inner(
     sidecar_accumulators: dict[str, ToolResultIndexAccumulator] | None = {} if sidecar_scope is not None else None
 
     accumulators: dict[str, claude_code_parser._SessionAccumulator] = {}
+    # One admission observer per session group: an outer record belongs to
+    # exactly the session it folds into, so each session's ledger proves its
+    # own records rather than the whole multi-session stream.
+    observers: dict[str, AdmissionObserver] = {}
     group_order: list[str] = []
     provisional_groups: set[str] = set()
     pending_prefix: list[tuple[object, PayloadRecord | None]] = []
@@ -1088,6 +1201,14 @@ def _claude_code_multiway_parse_inner(
         # ``record`` is the caller's already-coerced view of ``item``. Coercing
         # walks the whole decoded record, so it happens once per record here,
         # not once per read of a field.
+        observer = observers.get(group_id)
+        if observer is None:
+            observer = observers[group_id] = AdmissionObserver(claude_code_unknown_wire_type)
+        # ``_fold_code_record`` silently drops a dict record whose ``type``
+        # is missing or not a string (logged, never folded into evidence);
+        # the admission ledger must not still count that as MATERIALIZED.
+        recognized = not (isinstance(item, dict) and not isinstance(item.get("type"), str))
+        observer.observe(item, source_index=index, recognized=recognized)
         if sidecar_accumulators is not None:
             sidecar_accumulators[group_id].observe(item)
         if record is not None and not is_agent_fallback and group_id == fallback_id:
@@ -1184,6 +1305,9 @@ def _claude_code_multiway_parse_inner(
 
     for group_id in group_order:
         session = claude_code_parser._finalize_code_session(accumulators[group_id])
+        session = observers.setdefault(group_id, AdmissionObserver(claude_code_unknown_wire_type)).apply(
+            session, "claude_code"
+        )
         if sidecar_accumulators is not None:
             # sidecar_accumulators is only set when the scope resolved, which
             # itself only happens when source_path is not None.
@@ -1401,6 +1525,7 @@ def _lower_drive_like_payload(
     fallback_id: str,
     *,
     depth: int,
+    source_path: str | None,
     schema_resolution: SchemaResolution | None,
 ) -> list[LoweredPayloadSpec]:
     payloads = _payload_sequence(shaped_payload)
@@ -1428,6 +1553,7 @@ def _lower_drive_like_payload(
                         provider,
                         item,
                         fallback_id if len(payloads) == 1 else f"{fallback_id}-{index}",
+                        source_path=source_path,
                         depth=depth + 1,
                         schema_resolution=schema_resolution,
                     )
@@ -1444,6 +1570,7 @@ def _lower_drive_like_payload(
                     provider,
                     item,
                     fallback_id if len(payloads) == 1 else f"{fallback_id}-{index}",
+                    source_path=source_path,
                     depth=depth + 1,
                     schema_resolution=schema_resolution,
                 )
@@ -1454,7 +1581,7 @@ def _lower_drive_like_payload(
     if record is None:
         return []
     if local_agent.looks_like_gemini_cli(record):
-        return [_local_agent_document_spec(Provider.GEMINI_CLI, record, fallback_id)]
+        return [_local_agent_document_spec(Provider.GEMINI_CLI, record, fallback_id, source_path=source_path)]
     if _record_messages(record) is not None:
         return [_generic_messages_spec(provider, record, fallback_id)]
     # This handles one already-lowered record, not a whole document/list, so
@@ -1533,6 +1660,8 @@ def _lower_payload_specs(
     source_path: str | None = None,
 ) -> list[LoweredPayloadSpec]:
     runtime_provider = Provider.from_string(provider)
+    if runtime_provider is Provider.BEADS:
+        return []
     if depth > _MAX_PARSE_DEPTH:
         logger.warning("Recursion depth exceeded parsing %s (provider=%s)", fallback_id, provider)
         return []
@@ -1549,7 +1678,9 @@ def _lower_payload_specs(
             )
         ]
     if record is not None and browser_capture.looks_like(record):
-        provider = detect_provider(record) or runtime_provider
+        provider = _declared_capture_provider(record) or runtime_provider
+        if provider is Provider.BEADS:
+            return []
         return [
             LoweredPayloadSpec(
                 provider=provider,
@@ -1577,7 +1708,7 @@ def _lower_payload_specs(
             if item_record is None or not browser_capture.looks_like(item_record):
                 browser_capture_specs = []
                 break
-            provider = detect_provider(item_record) or runtime_provider
+            provider = _declared_capture_provider(item_record) or runtime_provider
             browser_capture_specs.append(
                 LoweredPayloadSpec(
                     provider=provider,
@@ -1629,6 +1760,7 @@ def _lower_payload_specs(
             shaped_payload,
             fallback_id,
             depth=depth,
+            source_path=source_path,
             schema_resolution=schema_resolution,
         )
     if runtime_provider is Provider.HERMES:
@@ -1770,6 +1902,18 @@ def parse_generic_messages_stream(
 
 
 def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:
+    """Parse one lowered spec through the shared admission boundary.
+
+    Every production route passes here, including the ones that reach an
+    undecorated entry point (Hermes state/ATIF/verification, Antigravity
+    markdown, Codex streams); their single-session results get the same
+    outer-record ledger the decorated leaf parsers attach.
+    """
+    sessions = _parse_lowered_spec_unadmitted(spec, resolver)
+    return admit_parsed_sessions(spec.provider.value.replace("-", "_"), spec.payload, sessions)
+
+
+def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:
     if spec.mode == "browser_capture":
         record = _payload_record(spec.payload)
         return [browser_capture.parse(record, spec.fallback_id)] if record is not None else []
@@ -1940,8 +2084,8 @@ def require_positive_conversational_evidence(
     own OriginSpec/``classify_artifact`` path-and-shape gate from
     polylogue-6mpy -- this filter catches the sibling case where the shape
     is recognized but the parsed *content* still carries no message), and
-    ``pipeline/services/archive_ingest.py`` (the one-shot importer behind
-    ``Polylogue.parse_file``/``parse_sources`` and the demo seeder).
+    ``operations/canonical_archive_ingest.py`` (the one-shot importer behind
+    the demo seeder).
 
     Measured against the live archive (2026-07-31, read-only query against
     ``index.db``/``source.db``): every verified zero-message
@@ -2109,6 +2253,26 @@ def _lower_shared_chatgpt_document(record: PayloadRecord) -> ChatGPTLoweredDocum
     )
 
 
+def _validation_error_locations(exc: Exception) -> str | None:
+    """Where an envelope failed validation, never what it contained.
+
+    A validation error's rendering quotes the offending input, which here is
+    the operator's captured conversation; only field locations and error
+    kinds may reach a log.
+    """
+    errors = getattr(exc, "errors", None)
+    if not callable(errors):
+        return None
+    try:
+        details = errors(include_input=False, include_url=False, include_context=False)
+    except Exception:
+        return None
+    return "; ".join(
+        f"{'.'.join(str(part) for part in detail.get('loc', ()))}: {detail.get('type', 'invalid')}"
+        for detail in details[:8]
+    )[:512]
+
+
 def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLoweredDocument]:
     """Lower direct, bundled, and browser-capture ChatGPT payloads.
 
@@ -2141,7 +2305,17 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
         if spec.mode == "browser_capture":
             try:
                 envelope = BrowserCaptureEnvelope.model_validate(record)
-            except Exception:
+            except Exception as exc:
+                # The parser refuses this envelope too, so it contributes no
+                # document; but the census must not undercount silently.
+                emit(
+                    "sources.census.browser_capture_envelope_invalid",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="envelope_invalid",
+                    error_type=type(exc).__name__,
+                    error_detail=_validation_error_locations(exc),
+                )
                 continue
             native = envelope.raw_provider_payload
             # The census must lower exactly what the parser materializes. A
@@ -2199,6 +2373,40 @@ def lower_chatgpt_documents(payload: object, fallback_id: str) -> list[ChatGPTLo
     return documents
 
 
+def chatgpt_rejected_mapping_candidates(payload: object) -> list[str | None]:
+    """Conversation-shaped bundle records the ChatGPT bundle lowering rejects.
+
+    :func:`lower_chatgpt_documents` returns only admitted conversations, so a
+    census built from it alone cannot see a rejected sibling of a valid one.
+    This applies the bundle lowering's own near-miss test and returns each
+    rejected record's conversation id, or ``None`` when it names none.
+    """
+    records = _payload_sequence(payload)
+    if records is None:
+        record = _payload_record(payload)
+        conversations = record.get("conversations") if record is not None else None
+        if not isinstance(conversations, list):
+            return []
+        records = conversations
+    rejected: list[str | None] = []
+    for item in records:
+        record = _payload_record(item)
+        if record is None or chatgpt_codex_sidecar.looks_like(record):
+            continue
+        if _looks_like_chatgpt_mapping_candidate(record) and not chatgpt.looks_like_fragment(record):
+            rejected.append(
+                next(
+                    (
+                        str(record[key])
+                        for key in ("id", "uuid", "conversation_id")
+                        if isinstance(record.get(key), str) and record[key]
+                    ),
+                    None,
+                )
+            )
+    return rejected
+
+
 def parse_stream_payload(
     provider: str | Provider,
     payloads: Iterable[object],
@@ -2228,30 +2436,50 @@ def parse_stream_payload(
             )
         )
     if runtime_provider is Provider.CODEX:
-        return [
-            codex.parse_stream(
-                payloads,
-                fallback_id,
-                message_sink=message_sink_factory() if message_sink_factory is not None else None,
-                event_sink=event_sink_factory() if event_sink_factory is not None else None,
-            )
-        ]
+        observer = AdmissionObserver(codex_unknown_wire_type)
+        session = codex.parse_stream(
+            observer.observing(payloads),
+            fallback_id,
+            message_sink=message_sink_factory() if message_sink_factory is not None else None,
+            event_sink=event_sink_factory() if event_sink_factory is not None else None,
+        )
+        return [observer.apply(session, "codex")]
     if runtime_provider is Provider.HERMES:
-        return hermes_spans.parse_atof_stream(
-            payloads,
+        observer = AdmissionObserver(hermes_unknown_wire_type)
+
+        def admitted(records: Iterable[object]) -> Iterator[object]:
+            # The parser's own recognition decides: a known-kind record it
+            # skips (no uuid, say) is refused, not counted as materialized.
+            for item in records:
+                record = _payload_record(item)
+                observer.observe(
+                    item,
+                    malformed=record is not None
+                    and hermes_unknown_wire_type(record) is None
+                    and not hermes_spans.looks_like_atof_payload(record),
+                )
+                yield item
+
+        sessions = hermes_spans.parse_atof_stream(
+            admitted(payloads),
             fallback_id,
             profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)) if source_path else None,
         )
+        return observer.apply_each(sessions, "hermes")
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")
 
 
 __all__ = [
     "GROUP_PROVIDERS",
+    "chatgpt_rejected_mapping_candidates",
     "STREAM_RECORD_PROVIDERS",
     "LoweredPayloadSpec",
     "ChatGPTLoweredDocument",
     "_detect_provider_from_raw_bytes",
     "detect_provider",
+    "ForeignOriginContentError",
+    "bound_location_provider",
+    "same_origin",
     "detect_provider_evidence",
     "detect_provider_from_raw_bytes_evidence",
     "is_jsonl_source_path",

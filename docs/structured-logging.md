@@ -65,7 +65,14 @@ one unit of work followable across the daemon's concurrency:
 - **Pooled threads** — a reused worker does not acquire the submitter's current
   context automatically. `propagate(fn)` copies the full context, including
   any writer authority, so it belongs only at an intentional full-context
-  handoff.
+  handoff. `carry_context(fn)` carries only the correlation fields, replaces
+  whatever stale context a reused worker holds, and pickles, so parse-pool
+  submits use it for both thread and process executors.
+- **Process-pool workers** — `process_pool_executor` initializes each worker
+  with `configure_events()` from the inherited environment and the parent's
+  run context, and drains the worker's queue through a multiprocessing
+  finalizer (workers exit through `os._exit`, which skips `atexit`). A worker's
+  events therefore reach the same `POLYLOGUE_LOG_FILE` or stderr as the parent.
 
 `span` also issues `trace_id` / `span_id` / `parent_span_id`, so nested work
 forms a tree within one `run_id`.
@@ -143,7 +150,7 @@ but are marked `LOCAL_ONLY_FIELDS` for any future export path.
 | --- | --- | --- |
 | `POLYLOGUE_LOG_FORMAT` | `json`, `console` | `console` |
 | `POLYLOGUE_LOG_LEVEL` | `trace`…`error` | `info` |
-| `POLYLOGUE_LOG_FILE` | path; appends | stderr |
+| `POLYLOGUE_LOG_FILE` | path; appends one line-buffered write per record, shared with pool workers | stderr |
 | `POLYLOGUE_LOG_REDACT` | `1`/`true`/`yes`; strips quarantined fields from both the JSON and console forms | off |
 
 `json` is the storage form (one object per line, sorted keys — diffable and
@@ -273,7 +280,8 @@ Two properties of the ratchet are worth knowing before you read a verdict:
 - The rule matches the AST, so a `logging.getLogger` mentioned in a docstring
   or comment is not a match. A `grep -c` will therefore read higher than the
   gate's match count; reconcile against the gate, not against grep.
-- A baseline entry is `path:sha1(stripped source line)`. Editing a *baselined*
+- A baseline entry is `path:sha1(stripped source line):sha1(enclosing AST path)`,
+  with an optional `:count` for duplicates. Editing a *baselined*
   line — even cosmetically — retires the old anchor and presents a new one,
   which the ratchet reads as a new violation. Convert such a line rather than
   reformatting it.

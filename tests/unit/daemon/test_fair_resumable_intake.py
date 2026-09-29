@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import os
 import random
+import sqlite3
 import threading
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
@@ -337,7 +338,8 @@ async def test_file_discovery_keeps_its_page_under_repeated_watcher_hints(tmp_pa
     page = await adapter.discover(limit=1)
     assert [item.payload for item in page] == [changed]
     await adapter.acknowledge(page[0])
-    assert await adapter.discover(limit=1) == ()
+    # The lookahead already reached the walk's end, so the queued rescan
+    # starts on the next discovery.
     page = await adapter.discover(limit=1)
     assert [item.payload for item in page] == [inserted]
 
@@ -421,7 +423,8 @@ async def test_vanished_pending_file_does_not_block_walk_or_queued_rescan(tmp_pa
     later_page = await adapter.discover(limit=1)
     assert [item.payload for item in later_page] == [later]
     await adapter.acknowledge(later_page[0])
-    assert await adapter.discover(limit=1) == ()
+    # The lookahead already reached the walk's end, so the queued rescan
+    # starts on the next discovery.
     rescan_page = await adapter.discover(limit=1)
     assert [item.payload for item in rescan_page] == [inserted]
 
@@ -599,8 +602,8 @@ async def test_retry_cooldown_does_not_restart_large_file_walk(
         def intake_revision(self, _source: WatchSource) -> int:
             return self.revision
 
-        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
-            return tuple(path for path in paths if path == poison or path.name == "0.json")
+        def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            return tuple(path for path in paths if path == poison or path.name == "0.json"), ()
 
         async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
             if paths == [poison]:
@@ -700,8 +703,8 @@ async def test_retry_debt_overflow_revisits_evicted_file_after_cooldown(
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
-        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
-            return tuple(paths)
+        def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            return tuple(paths), ()
 
         async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
             if now[0] < 5.0:
@@ -763,8 +766,8 @@ async def test_mixed_fresh_page_keeps_failed_sibling_retryable(tmp_path: Path, v
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
-        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
-            return tuple(paths)
+        def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            return tuple(paths), ()
 
         async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
             if failed in paths and now[0] < 5.0 and vanish_without_hint and failed.exists():
@@ -932,8 +935,8 @@ async def test_cursor_row_without_due_authority_does_not_replace_local_retry_deb
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
-        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
-            return tuple(paths)
+        def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            return tuple(paths), ()
 
         async def _ingest_files(self, _paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
             return SimpleNamespace(succeeded_paths=(), failed_paths=(str(carrier),), source_payload_read_bytes=0)
@@ -1136,7 +1139,7 @@ async def test_path_scoped_refusal_skips_regular_candidate_selection(tmp_path: P
         _cursor=cursor,
         _batch_processor=PartialRefusalProcessor(),
         intake_revision=lambda _source: 0,
-        select_ingest_candidates=select,
+        classify_ingest_candidates=lambda paths: (select(paths), ()),
         _ingest_files=ingest,
     )
     adapter = FileIntakeAdapter(
@@ -1150,6 +1153,51 @@ async def test_path_scoped_refusal_skips_regular_candidate_selection(tmp_path: P
     assert outcomes[page[1].item_id].outcome is AdmissionOutcome.ADMITTED
     assert watcher._batch_processor._refused_paths == frozenset()
     assert cursor.has_pending_retries((root,)) is True
+
+
+@pytest.mark.asyncio
+async def test_a_scheduled_retry_is_deferred_not_acknowledged_as_a_duplicate(tmp_path: Path) -> None:
+    """A path whose cursor retry is not yet due stays owed work.
+
+    Anti-vacuity (polylogue-b8of0): reporting every unselected path as a
+    DUPLICATE acknowledges the page and drops the scheduled retry.
+    """
+    root = tmp_path / "source"
+    root.mkdir()
+    owed, current = (root / name for name in ("a.json", "b.json"))
+    owed.write_text("{}")
+    current.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    ingested: list[Path] = []
+
+    class RefusingNothing:
+        _refused_paths: frozenset[Path] = frozenset()
+
+        def require_cursor_authority(self, paths: Sequence[Path]) -> None:
+            return None
+
+    async def ingest(paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+        ingested.extend(paths)
+        return SimpleNamespace(succeeded_paths=(), source_payload_read_bytes=0)
+
+    watcher = SimpleNamespace(
+        _cursor=CursorStore(tmp_path / "index.db"),
+        _batch_processor=RefusingNothing(),
+        intake_revision=lambda _source: 0,
+        classify_ingest_candidates=lambda paths: ((), (owed,)),
+        _ingest_files=ingest,
+    )
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    page = await adapter.discover(limit=2)
+    outcomes = await adapter.admit_page(page)
+    by_path = {Path(cast(Any, item.payload)): outcomes[item.item_id] for item in page}
+    assert by_path[owed].outcome is AdmissionOutcome.DEFERRED
+    assert by_path[owed].actual_cost == 0
+    assert by_path[current].outcome is AdmissionOutcome.DUPLICATE
+    assert ingested == []
 
 
 @pytest.mark.asyncio
@@ -1168,8 +1216,8 @@ async def test_partially_planned_local_retry_rotates_past_poison(tmp_path: Path)
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
-        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
-            return tuple(paths)
+        def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            return tuple(paths), ()
 
         async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
             succeeded = tuple(path for path in paths if path != poison)
@@ -1335,8 +1383,8 @@ async def test_cold_build_waits_for_local_retry_debt_without_cursor_row(
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
-        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
-            return tuple(paths)
+        def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            return tuple(paths), ()
 
         async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
             self.attempts += 1
@@ -2401,6 +2449,112 @@ async def test_an_unmeasurable_callback_class_reserves_a_budget_share() -> None:
     assert report.estimated_cost == UNMEASURABLE_INTAKE_COST_BYTES
 
 
+def test_callback_adapter_failure_signature_keys_on_the_exception_type() -> None:
+    """A repeated distinct exception on one item must not share a signature.
+
+    ``_failure_signature`` takes the text before the first colon in the
+    reason. ``CallbackIntakeAdapter`` used to format its reason as
+    ``"<class_name>: <ExceptionType>: <detail>"``, so every failure -- of
+    whatever exception type -- shared the adapter's class name as its
+    signature and could isolate the item after ``max_deterministic_cooldowns``
+    even though the underlying defect never repeated.
+
+    Anti-vacuity: reverting to ``f"{self.class_name}: {type(exc).__name__}: {exc}"``
+    makes the two distinct exception types below compare equal.
+    """
+    from polylogue.daemon.intake import _failure_signature
+
+    def callback_raising(exc: BaseException) -> int:
+        raise exc
+
+    async def admit(exc: BaseException) -> str | None:
+        adapter = CallbackIntakeAdapter("configured_remote", lambda: callback_raising(exc))
+        item = IntakeItem(item_id="x", class_name="configured_remote", payload=None, estimated_cost=1)
+        outcome = await adapter.admit(item)
+        return outcome.reason
+
+    key_error_reason = asyncio.run(admit(KeyError("field")))
+    type_error_reason = asyncio.run(admit(TypeError("shape")))
+    assert _failure_signature(key_error_reason) != _failure_signature(type_error_reason)
+    assert _failure_signature(key_error_reason) == "KeyError"
+    assert _failure_signature(type_error_reason) == "TypeError"
+
+
+def test_raw_materialization_failure_signature_keys_on_the_exception_type() -> None:
+    """The raw-materialization adapter had the same class-label-first bug.
+
+    ``RawMaterializationIntakeAdapter`` formatted its reason as
+    ``"raw materialization: <ExceptionType>: <detail>"``, so every failure
+    shared the constant "raw materialization" label as its signature
+    instead of the exception type, the same defect fixed on
+    ``CallbackIntakeAdapter`` above.
+
+    Anti-vacuity: reverting to that format makes the two distinct exception
+    types below compare equal.
+    """
+    from polylogue.daemon.intake import _failure_signature
+
+    def admit_raising(exc: BaseException) -> Callable[[str], int]:
+        def admit_id(_raw_id: str) -> int:
+            raise exc
+
+        return admit_id
+
+    async def admit(exc: BaseException) -> str | None:
+        adapter = RawMaterializationIntakeAdapter(lambda _limit: (), admit_raising(exc))
+        outcome = await adapter.admit(IntakeItem(item_id="raw-1", class_name="raw_materialization"))
+        return outcome.reason
+
+    key_error_reason = asyncio.run(admit(KeyError("field")))
+    type_error_reason = asyncio.run(admit(TypeError("shape")))
+    assert _failure_signature(key_error_reason) != _failure_signature(type_error_reason)
+    assert _failure_signature(key_error_reason) == "KeyError"
+    assert _failure_signature(type_error_reason) == "TypeError"
+
+
+@pytest.mark.asyncio
+async def test_a_deferred_retry_placeholders_zero_cost_is_not_replaced() -> None:
+    """A DEFERRED item reporting ``actual_cost=0`` must return its estimate.
+
+    ``item_cost if result.actual_cost is None else max(0, ...)`` distinguishes
+    an explicit zero (no work attempted; the retry is still pending) from a
+    measurement the adapter never took. The acknowledgeable-result path once
+    used ``result.actual_cost or item_cost``, which treats zero as falsy and
+    charges the full estimate anyway, so a large file waiting on its retry
+    never returns the deficit it reserved.
+
+    Anti-vacuity: reverting to ``max(1, int(result.actual_cost or item_cost))``
+    makes this assertion red.
+    """
+
+    class PendingRetryAdapter:
+        def __init__(self) -> None:
+            self.acknowledged: list[str] = []
+
+        async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+            return [IntakeItem(item_id="big-pending-retry", class_name="configured_local", estimated_cost=10_000_000)]
+
+        async def admit(self, _item: IntakeItem) -> AdmissionResult:
+            return AdmissionResult(AdmissionOutcome.DEFERRED, actual_cost=0)
+
+        async def acknowledge(self, item: IntakeItem) -> None:
+            self.acknowledged.append(item.item_id)
+
+    from polylogue.daemon.intake import DEFAULT_INTAKE_BYTE_BUDGET
+
+    dispatcher = FairIntakeDispatcher(
+        (IntakeClassSpec("configured_local", cast(Any, PendingRetryAdapter()), page_size=1),)
+    )
+
+    await dispatcher.run_once()
+
+    # Planning reserves the full 10,000,000-byte estimate against the pass's
+    # share; an honored zero actual cost returns every reserved byte, so the
+    # deficit lands back at the untouched per-class share.
+    runtime = dispatcher._runtime["configured_local"]
+    assert runtime.deficit == DEFAULT_INTAKE_BYTE_BUDGET
+
+
 @pytest.mark.asyncio
 async def test_a_pass_of_only_duplicates_is_not_progress() -> None:
     """A static source must back off to the idle delay, not spin.
@@ -2625,8 +2779,8 @@ async def test_archive_sidecars_do_not_restart_a_file_sweep_but_new_source_files
     # after the active continuation reaches its end.
     earlier = tmp_path / "b.json"
     earlier.write_text("{}")
-    assert await adapter.discover(limit=1) == ()
-    assert adapter.discovery_pending
+    # The lookahead already reached the walk's end, so the restart begins on
+    # the next discovery.
     restarted = await adapter.discover(limit=1)
     assert [item.payload for item in restarted] == [paths[0]]
     await adapter.acknowledge(restarted[0])
@@ -3476,6 +3630,166 @@ async def test_an_unhalted_source_is_still_planned(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_deterministic_admission_failure_is_isolated_not_retried_forever() -> None:
+    """An unchanged item failing the same non-transient way stops being retried.
+
+    Anti-vacuity (polylogue-wyi9p): with the attempt counter reset after every
+    cooldown, the defect is retried each cooldown for the daemon's life and
+    ``isolated_items`` stays empty. A transient failure (a lock) must keep
+    retrying, so the same loop over it never isolates.
+    """
+
+    now = [0.0]
+
+    def broken(item: IntakeItem) -> AdmissionResult:
+        if item.item_id != "poison":
+            return AdmissionResult(AdmissionOutcome.ADMITTED)
+        raise KeyError("missing_field")
+
+    def locked(item: IntakeItem) -> AdmissionResult:
+        if item.item_id != "poison":
+            return AdmissionResult(AdmissionOutcome.ADMITTED)
+        raise sqlite3.OperationalError("database is locked")
+
+    for outcome_for, expect_isolated in ((broken, True), (locked, False)):
+        adapter = FakeAdapter("capture", ["poison", "sibling"], outcome_for=outcome_for)
+        dispatcher = FairIntakeDispatcher(
+            [
+                IntakeClassSpec(
+                    name="capture",
+                    adapter=adapter,
+                    max_attempts=1,
+                    retry_cooldown_s=1.0,
+                    max_deterministic_cooldowns=3,
+                )
+            ],
+            clock=lambda: now[0],
+        )
+        for _ in range(6):
+            now[0] += 2.0
+            await dispatcher.run_once()
+        assert (dispatcher.isolated_items("capture") == frozenset({"poison"})) is expect_isolated
+        # The failing item never blocks the rest of its class.
+        assert adapter.acknowledged == ["sibling"]
+
+
+@pytest.mark.asyncio
+async def test_a_sqlite_error_escaping_page_admission_is_reported_once_per_page() -> None:
+    """Anti-vacuity (polylogue-wyi9p): an error the adapter's page handler
+    does not catch, such as ``sqlite3.IntegrityError``, produced no
+    ``page_refused`` event; its reason appeared only per item."""
+
+    class PageAdapter(FakeAdapter):
+        async def admit_page(self, _items: Sequence[IntakeItem]) -> dict[str, AdmissionResult]:
+            raise sqlite3.IntegrityError("UNIQUE constraint failed: raws.raw_id")
+
+    dispatcher = FairIntakeDispatcher([IntakeClassSpec(name="capture", adapter=PageAdapter("capture", ["a", "b"]))])
+    with capture() as records:
+        report = await dispatcher.run_once()
+
+    refused = [record for record in records if record["event"] == "daemon.intake.page_refused"]
+    assert [(record["component"], record["error_type"], record["files"]) for record in refused] == [
+        ("capture", "IntegrityError", 2)
+    ]
+    assert report.require_report("capture").retried == 2
+
+
+def test_only_contention_and_storage_faults_are_transient() -> None:
+    """Anti-vacuity: classifying by exception class alone made every
+    ``sqlite3.OperationalError`` transient, so ``no such table`` was retried
+    after every cooldown forever instead of being isolated."""
+    from polylogue.daemon.intake import is_transient_admission_error
+
+    locked = sqlite3.OperationalError("database is locked")
+    locked.sqlite_errorcode = 5  # SQLITE_BUSY
+    missing = sqlite3.OperationalError("no such table: raws")
+    missing.sqlite_errorcode = 1  # SQLITE_ERROR
+    assert is_transient_admission_error(locked) is True
+    assert is_transient_admission_error(OSError("disk")) is True
+    assert is_transient_admission_error(missing) is False
+    assert is_transient_admission_error(KeyError("field")) is False
+
+
+@pytest.mark.asyncio
+async def test_new_content_under_an_isolated_identity_is_admitted_again() -> None:
+    """Isolation binds to the revision that failed, not the path alone.
+
+    Anti-vacuity (Codex): with a path-only isolated key, a poison capture
+    replaced at the same path by a valid export stayed skipped until the
+    daemon restarted, whatever its new content.
+    """
+
+    now = [0.0]
+    revision = ["poison-bytes"]
+
+    class RevisedAdapter(FakeAdapter):
+        async def discover(self, *, limit: int) -> Sequence[IntakeItem]:
+            return [
+                IntakeItem(item_id=name, class_name=self.class_name, revision=revision[0])
+                for name in self.pending[:limit]
+            ]
+
+    def by_revision(item: IntakeItem) -> AdmissionResult:
+        if item.revision == "poison-bytes":
+            raise KeyError("missing_field")
+        return AdmissionResult(AdmissionOutcome.ADMITTED)
+
+    adapter = RevisedAdapter("capture", ["export"], outcome_for=by_revision)
+    dispatcher = FairIntakeDispatcher(
+        [
+            IntakeClassSpec(
+                name="capture", adapter=adapter, max_attempts=1, retry_cooldown_s=1.0, max_deterministic_cooldowns=3
+            )
+        ],
+        clock=lambda: now[0],
+    )
+    for _ in range(6):
+        now[0] += 2.0
+        await dispatcher.run_once()
+    assert dispatcher.isolated_items("capture") == frozenset({"export"})
+    assert adapter.admitted == []
+
+    revision[0] = "valid-bytes"
+    now[0] += 2.0
+    await dispatcher.run_once()
+    assert adapter.admitted == ["export"]
+    assert dispatcher.isolated_items("capture") == frozenset()
+
+
+@pytest.mark.asyncio
+async def test_a_success_between_failures_restarts_the_isolation_streak() -> None:
+    """Anti-vacuity: an exhaustion count kept across a successful admission
+    isolates a persistent item after failures that were never consecutive."""
+
+    now = [0.0]
+    fail = [True]
+
+    def flaky(_item: IntakeItem) -> AdmissionResult:
+        if fail[0]:
+            raise KeyError("missing_field")
+        return AdmissionResult(AdmissionOutcome.DUPLICATE)
+
+    class PersistentAdapter(FakeAdapter):
+        async def acknowledge(self, item: IntakeItem) -> None:
+            self.acknowledged.append(item.item_id)
+
+    adapter = PersistentAdapter("capture", ["poison"], outcome_for=flaky)
+    dispatcher = FairIntakeDispatcher(
+        [
+            IntakeClassSpec(
+                name="capture", adapter=adapter, max_attempts=1, retry_cooldown_s=1.0, max_deterministic_cooldowns=3
+            )
+        ],
+        clock=lambda: now[0],
+    )
+    for failing in (True, True, False, True, True):
+        fail[0] = failing
+        now[0] += 2.0
+        await dispatcher.run_once()
+    assert dispatcher.isolated_items("capture") == frozenset()
+
+
+@pytest.mark.asyncio
 async def test_degraded_intake_service_parks_without_passes_or_settlement() -> None:
     """A fully degraded daemon runs no intake pass and never settles a cold build.
 
@@ -3585,3 +3899,84 @@ async def test_unattempted_retryable_results_count_no_attempt() -> None:
     runtime = dispatcher._runtime["configured_local"]
     assert runtime.attempts == {}
     assert runtime.retry_after == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "transient"),
+    [
+        (ValueError("malformed selection"), False),
+        (OSError("disk busy"), True),
+    ],
+)
+async def test_a_caught_page_error_is_classified_like_an_escaped_one(
+    workspace_env: dict[str, Path], error: Exception, transient: bool
+) -> None:
+    """Anti-vacuity (Codex): the file adapter's own handler returned every
+    caught ``ValueError`` as transient, so a deterministic page failure reset
+    its exhaustion streak each cooldown and was retried forever."""
+    from polylogue import Polylogue
+    from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
+    from polylogue.operations.operation_context import open_operation_read
+    from polylogue.sources.live import LiveWatcher, WatchSource
+    from polylogue.sources.live.cursor import CursorStore
+
+    archive_root = workspace_env["archive_root"]
+    source_root = workspace_env["data_root"] / "claude-projects"
+    source_root.mkdir(parents=True)
+    (source_root / "a.jsonl").write_text("{}\n", encoding="utf-8")
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    watcher = LiveWatcher(
+        archive,
+        (WatchSource(name="claude-code", root=source_root),),
+        cursor=CursorStore(archive_root / "index.db"),
+        read_snapshot=open_operation_read,
+    )
+
+    async def failing_ingest(*_args: object, **_kwargs: object) -> object:
+        raise error
+
+    watcher._ingest_files = failing_ingest  # type: ignore[method-assign,assignment]
+    try:
+        adapter = FileIntakeAdapter(
+            DaemonIntakeContext(archive_root=archive_root, watcher=watcher, sources=watcher._sources),
+            watcher._sources[0],
+        )
+        outcomes = await adapter.admit_page(await adapter.discover(limit=8))
+    finally:
+        watcher.stop()
+        await archive.close()
+    assert outcomes
+    assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.RETRYABLE}
+    assert {result.transient for result in outcomes.values()} == {transient}
+
+
+@pytest.mark.asyncio
+async def test_a_transient_failure_mid_window_breaks_the_isolation_streak() -> None:
+    """Anti-vacuity (Codex): only the result on the cooldown boundary was
+    examined, so two clean deterministic windows followed by a window of
+    transient-then-deterministic results isolated the item."""
+
+    now = [0.0]
+    script: list[BaseException] = []
+
+    def scripted(_item: IntakeItem) -> AdmissionResult:
+        raise script.pop(0)
+
+    adapter = FakeAdapter("capture", ["poison"], outcome_for=scripted)
+    dispatcher = FairIntakeDispatcher(
+        [
+            IntakeClassSpec(
+                name="capture", adapter=adapter, max_attempts=2, retry_cooldown_s=1.0, max_deterministic_cooldowns=3
+            )
+        ],
+        clock=lambda: now[0],
+    )
+    locked = sqlite3.OperationalError("database is locked")
+    locked.sqlite_errorcode = 5  # SQLITE_BUSY
+    script.extend([KeyError("f"), KeyError("f"), KeyError("f"), KeyError("f"), locked, KeyError("f")])
+    for _ in range(6):
+        now[0] += 2.0
+        await dispatcher.run_once()
+    assert not script
+    assert dispatcher.isolated_items("capture") == frozenset()

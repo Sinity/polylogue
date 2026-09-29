@@ -756,6 +756,12 @@ def test_full_evidence_backup_proves_retired_root_recorded_path(
     assert result.verification["recoverable_source_blob_count"] == 1
 
 
+def test_resolved_direct_path_keeps_colon_as_filename_data(tmp_path: Path) -> None:
+    """Anti-vacuity: treating every colon as a ZIP separator mangles this path."""
+    source = str(tmp_path / "session:export.json")
+    assert backup_mod._resolved_source_path(source, tmp_path) == source
+
+
 def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
     workspace_env: dict[str, Path],
     tmp_path: Path,
@@ -2342,3 +2348,36 @@ def test_embedded_backup_refused_beside_resident_daemon(
         process.wait(timeout=30)
         if process.stdout is not None:
             process.stdout.close()
+
+
+def test_reset_safety_requires_the_retained_zip_member_not_just_a_zip(
+    workspace_env: dict[str, Path],
+) -> None:
+    """Anti-vacuity: checking only that the container is a ZIP reports zero
+    at-risk rows after the member is gone, and reset would delete the only copy.
+    """
+    from polylogue.operations.reset_safety import unresolvable_raw_source_count
+
+    archive_root = workspace_env["archive_root"]
+    zip_path = archive_root / "bundle.zip"
+    member_payload = dumps_bytes({"id": "recoverable"})
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("conversation.json", member_payload)
+    with seed_durable_tier(archive_root / "source.db") as conn:
+        conn.execute(
+            """INSERT INTO raw_sessions (
+                raw_id, origin, source_path, source_index, blob_hash, blob_size,
+                acquired_at_ms, validation_status
+            ) VALUES (?, 'chatgpt-export', ?, 0, ?, ?, 1, 'passed')""",
+            (
+                "zip-member",
+                f"{zip_path}:conversation.json",
+                hashlib.sha256(member_payload).digest(),
+                len(member_payload),
+            ),
+        )
+    assert unresolvable_raw_source_count(archive_root) == 0
+
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("other.json", member_payload)
+    assert unresolvable_raw_source_count(archive_root) == 1

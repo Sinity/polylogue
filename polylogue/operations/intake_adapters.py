@@ -16,7 +16,9 @@ import sqlite3
 import stat
 import threading
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterator, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
@@ -32,10 +34,12 @@ from polylogue.daemon.intake import (
     IntakeAdapter,
     IntakeItem,
     IntakePass,
+    is_transient_admission_error,
 )
 from polylogue.logging import ERROR, WARNING, emit
 from polylogue.maintenance.candidate_capacity import ArchiveCapacityError, InsufficientCapacityError
 from polylogue.maintenance.receipt_fs import MaintenanceReceiptPathError
+from polylogue.sources.live.batch import CursorAuthorityBlockedError
 from polylogue.sources.live.cold_build import (
     ColdBuildGeneration,
     active_cold_build_generation,
@@ -79,6 +83,9 @@ __all__ = [
 
 _RAW_DISCOVERY_INSPECTION_LIMIT = 32
 _FILE_DISCOVERY_STEP_LIMIT = 256
+#: Fresh paths discovered beyond the offered page, so the next page's parsing
+#: can be prefetched while the current page publishes.
+_FRESH_LOOKAHEAD_PAGES = 1
 _FILE_DISCOVERY_RESCAN_S = 600.0
 _FILE_RETRY_DELAY_S = 5.0
 
@@ -353,7 +360,12 @@ class FileIntakeAdapter(IntakeAdapter):
         # retaining that stale page forever prevents both later paths and a
         # queued rescan from running. Recreated files return in a later scan.
         self._fresh_pending = [path for path in self._fresh_pending if self._pending_path_is_live(path)]
+        lookahead = limit * (1 + _FRESH_LOOKAHEAD_PAGES)
         if self._fresh_pending:
+            # A live walk refills the lookahead behind the carried-over page;
+            # without it every other page would have nothing to prefetch.
+            if self._fresh_walk is not None:
+                self._extend_fresh_pending(lookahead)
             return self._offer_fresh_page(limit)
         if self._fresh_exhausted:
             if self._rescan_after_walk:
@@ -382,12 +394,20 @@ class FileIntakeAdapter(IntakeAdapter):
                     getattr(self._discovery_thread, "token", None), disposition=disposition
                 ),
             )
-        steps = max(_FILE_DISCOVERY_STEP_LIMIT, limit)
+        self._extend_fresh_pending(lookahead)
+        return self._offer_fresh_page(limit)
+
+    def _extend_fresh_pending(self, target: int) -> None:
+        """Walk until ``target`` fresh paths are pending or the step budget is spent."""
+        walk = self._fresh_walk
+        if walk is None:
+            return
+        steps = max(_FILE_DISCOVERY_STEP_LIMIT, target)
         for _ in range(steps):
-            if len(self._fresh_pending) >= limit:
+            if len(self._fresh_pending) >= target:
                 break
             try:
-                path = next(self._fresh_walk)
+                path = next(walk)
             except StopIteration:
                 self._fresh_walk = None
                 self._fresh_exhausted = True
@@ -402,7 +422,6 @@ class FileIntakeAdapter(IntakeAdapter):
                 raise
             if path is not None:
                 self._fresh_pending.append(path)
-        return self._offer_fresh_page(limit)
 
     def _discover_sync(self, limit: int) -> Sequence[IntakeItem]:
         generation = self._ledger_generation()
@@ -482,17 +501,21 @@ class FileIntakeAdapter(IntakeAdapter):
             self._retry_page_pending = True
         items: list[IntakeItem] = []
         for path in paths:
+            revision: str | None
             try:
                 observed = path.lstat()
                 size = observed.st_size if stat.S_ISREG(observed.st_mode) else 1
+                revision = f"{observed.st_size}:{observed.st_mtime_ns}:{observed.st_ino}"
             except OSError:
                 size = 1
+                revision = None
             items.append(
                 IntakeItem(
                     item_id=f"file:{path.absolute()}",
                     class_name=self.class_name,
                     payload=path,
                     estimated_cost=max(1, size),
+                    revision=revision,
                 )
             )
         return tuple(items)
@@ -808,10 +831,11 @@ class FileIntakeAdapter(IntakeAdapter):
             # handing those to the batch buys a planning pass per file per
             # pass for no admission.
             paths = [Path(cast(Any, item.payload)) for item in batch]
-            select = getattr(self.context.watcher, "select_ingest_candidates", None)
-            if not callable(select):
+            classify = getattr(self.context.watcher, "classify_ingest_candidates", None)
+            pending_retry: set[Path] = set()
+            if not callable(classify):
                 needed = set(paths)
-            elif callable(run_writer_sync):
+            else:
                 # The selection is a read that can decide to write: an
                 # incomplete-append deferral, an archived-cursor
                 # reconciliation and a device-drift rebase all correct cursor
@@ -819,11 +843,23 @@ class FileIntakeAdapter(IntakeAdapter):
                 # run through the writer admission like every other one --
                 # under process-wide lease enforcement an unadmitted cursor
                 # write is refused, which turned the whole page retryable.
-                needed = set(await run_writer_sync("watcher.intake.select", select, paths))
-            else:
-                needed = set(select(paths))
+                if callable(run_writer_sync):
+                    selected, pending = await run_writer_sync("watcher.intake.select", classify, paths)
+                else:
+                    selected, pending = classify(paths)
+                needed = set(selected)
+                pending_retry = set(pending)
             skipped = [item for item in batch if Path(cast(Any, item.payload)) not in needed]
             for item in skipped:
+                if Path(cast(Any, item.payload)) in pending_retry:
+                    # A scheduled retry is owed work, not an admission: the
+                    # item stays unacknowledged until the retry runs.
+                    outcomes[item.item_id] = AdmissionResult(
+                        AdmissionOutcome.DEFERRED,
+                        reason=f"source retry pending: {item.payload}",
+                        actual_cost=0,
+                    )
+                    continue
                 outcomes[item.item_id] = AdmissionResult(
                     AdmissionOutcome.DUPLICATE, actual_cost=max(1, int(item.estimated_cost))
                 )
@@ -831,6 +867,12 @@ class FileIntakeAdapter(IntakeAdapter):
             if not batch:
                 return outcomes
             paths = [Path(cast(Any, item.payload)) for item in batch]
+            # Skipped paths belong to this page too; they must not stand in
+            # for the next page in the lookahead slice.
+            page = set(paths) | {Path(cast(Any, item.payload)) for item in skipped}
+            # The current page is warmed by its own ingest. What overlaps its
+            # publication is the next page, sampled off the admission path.
+            self._offer_parse_lookahead([path for path in self._fresh_pending if path not in page][: len(paths)])
             metrics = await self.context.watcher._ingest_files(
                 paths,
                 queued_file_count=len(paths) + len(skipped),
@@ -860,7 +902,8 @@ class FileIntakeAdapter(IntakeAdapter):
             # A cursor-authority refusal lands here too: it is retryable for
             # every item in the page, and nothing in the archive changed. Say
             # so once per page: a class that reports only ``retried`` counts
-            # is otherwise a silent refusal with no reason anywhere.
+            # is otherwise a silent refusal with no reason anywhere. Anything
+            # else escapes to the dispatcher, which reports it the same way.
             reason = f"{type(exc).__name__}: {exc}"
             emit(
                 "daemon.intake.page_refused",
@@ -872,8 +915,11 @@ class FileIntakeAdapter(IntakeAdapter):
                 error_type=type(exc).__name__,
                 error_detail=str(exc),
             )
+            # A cursor-authority refusal clears once the frontier proof does;
+            # any other error here is classified like one that escaped.
+            transient = isinstance(exc, CursorAuthorityBlockedError) or is_transient_admission_error(exc)
             for item in batch:
-                outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.RETRYABLE, reason=reason)
+                outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.RETRYABLE, reason=reason, transient=transient)
             return outcomes
 
         stale_cursor_writes = int(getattr(metrics, "stale_cursor_write_count", 0) or 0)
@@ -897,6 +943,7 @@ class FileIntakeAdapter(IntakeAdapter):
         # failure here.
         failed -= deferred
         excluded_by_path = dict(getattr(metrics, "excluded_paths", {}) or {})
+        no_session = set(getattr(metrics, "no_session_paths", ()) or ())
         if not succeeded:
             # This route calls ``_ingest_files`` directly, so the watcher's
             # own ``_log_ingest_metrics`` never runs for it and the
@@ -919,7 +966,16 @@ class FileIntakeAdapter(IntakeAdapter):
             key = str(Path(cast(Any, item.payload)))
             item_estimate = max(1, int(item.estimated_cost))
             actual_cost = max(1, round(read_bytes * item_estimate / estimated_total)) if read_bytes else item_estimate
-            if key in succeeded:
+            if key in no_session:
+                # Acquired and parsed, but no session came of it: the raw
+                # carries the typed terminal outcome, and reporting ADMITTED
+                # counted a file that produced nothing (polylogue-xf8qp).
+                outcomes[item.item_id] = AdmissionResult(
+                    AdmissionOutcome.EXCLUDED,
+                    reason=f"source produced no sessions: {key}",
+                    actual_cost=actual_cost,
+                )
+            elif key in succeeded:
                 outcomes[item.item_id] = AdmissionResult(AdmissionOutcome.ADMITTED, actual_cost=actual_cost)
             elif excluded_by_path.get(key) in {REFUSED_UNATTEMPTED, REFUSED_UNATTEMPTED_TIME_BUDGET}:
                 self._fresh_attempted_paths.discard(Path(cast(Any, item.payload)))
@@ -982,7 +1038,7 @@ class FileIntakeAdapter(IntakeAdapter):
                     for offered in offered_local_retries:
                         if offered in self._fresh_retry_debt:
                             self._fresh_retry_debt[offered] = now
-        admitted_paths = [path for path in paths if str(path) in succeeded]
+        admitted_paths = [path for path in paths if str(path) in succeeded and str(path) not in no_session]
         if admitted_paths and not is_fully_degraded():
             # A later file in this batch may have degraded the daemon; derived
             # follow-up converges from durable evidence once it recovers.
@@ -993,6 +1049,18 @@ class FileIntakeAdapter(IntakeAdapter):
             if callable(converge_profiles):
                 await converge_profiles(tuple(getattr(metrics, "changed_session_ids", ()) or ()))
         return outcomes
+
+    def _offer_parse_lookahead(self, paths: Sequence[Path]) -> None:
+        """Offer the next page's files for read-ahead parsing.
+
+        Nothing is read here. The next full ingest keeps only cursorless
+        files, the ones certain to be ingested in full, and the parse stage
+        samples and prepares them in workers it can reap, so a slow or
+        unavailable lookahead file never delays the page being admitted.
+        """
+        offer = getattr(self.context.watcher, "offer_parse_lookahead", None)
+        if callable(offer) and paths:
+            offer(tuple(paths), source_name=self.source.name)
 
     async def acknowledge(self, item: IntakeItem) -> None:
         # Files remain retained source carriers.  The live batch's durable
@@ -1090,11 +1158,17 @@ class MultiplexIntakeAdapter(IntakeAdapter):
                 schedulable.append(adapter)
                 continue
             if self._halts is not None and self._halts.is_halted(unit):
+                from polylogue.daemon.discovery_progress import abandon_discovery
+
+                abandon_discovery(adapter)
                 continue
             halted = source_halt(unit)
             if halted is not None:
                 if self._halts is not None:
                     self._halts.halt(unit, f"{halted.code}: {halted.message}")
+                    from polylogue.daemon.discovery_progress import abandon_discovery
+
+                    abandon_discovery(adapter)
                     emit(
                         "daemon.intake.source_halted",
                         level=WARNING,
@@ -1134,7 +1208,24 @@ class MultiplexIntakeAdapter(IntakeAdapter):
             remaining = limit - len(result)
             if remaining <= 0:
                 break
-            page = await adapter.discover(limit=remaining)
+            try:
+                page = await adapter.discover(limit=remaining)
+            except WalkRefusedError as exc:
+                # One root's absence (an uninstalled or relocated tool) is
+                # that sub-unit's own retryable gap, not this class's: a
+                # sibling root that IS present must still offer its own
+                # pending files this pass instead of the round-robin
+                # aborting on the first unavailable root it visits.
+                unit = _sub_unit_name(adapter)
+                emit(
+                    "daemon.intake.sub_unit_walk_refused",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="walk_refused",
+                    component=unit or "unknown",
+                    error_detail=str(exc),
+                )
+                continue
             result.extend(page)
             owners.extend([adapter] * len(page))
         self._next = (start + 1) % len(adapters)
@@ -1156,6 +1247,9 @@ class MultiplexIntakeAdapter(IntakeAdapter):
             return result
         reason = result.reason or "source reported terminal failure"
         self._halts.halt(unit, reason)
+        from polylogue.daemon.discovery_progress import abandon_discovery
+
+        abandon_discovery(adapter)
         emit(
             "daemon.intake.source_halted",
             level=WARNING,
@@ -1259,7 +1353,14 @@ class CallbackIntakeAdapter(IntakeAdapter):
                 actual_cost=self.estimated_cost,
             )
         except Exception as exc:
-            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"{self.class_name}: {exc}")
+            return AdmissionResult(
+                AdmissionOutcome.RETRYABLE,
+                # The exception type leads so `_failure_signature`, which
+                # takes the text before the first colon, keys on it rather
+                # than on the adapter's class name shared by every failure.
+                reason=f"{type(exc).__name__}: {self.class_name}: {exc}",
+                transient=is_transient_admission_error(exc),
+            )
 
     async def acknowledge(self, item: IntakeItem) -> None:
         if not self.persistent:
@@ -1302,7 +1403,15 @@ class RawMaterializationIntakeAdapter(IntakeAdapter):
                 actual_cost=item.estimated_cost,
             )
         except Exception as exc:
-            return AdmissionResult(AdmissionOutcome.RETRYABLE, reason=f"raw materialization: {exc}")
+            return AdmissionResult(
+                AdmissionOutcome.RETRYABLE,
+                # The exception type leads, as elsewhere, so
+                # `_failure_signature` (text before the first colon) keys on
+                # it rather than on the constant "raw materialization" label
+                # every failure of this class would otherwise share.
+                reason=f"{type(exc).__name__}: raw materialization: {exc}",
+                transient=is_transient_admission_error(exc),
+            )
 
     async def acknowledge(self, item: IntakeItem) -> None:
         return None
@@ -1346,7 +1455,21 @@ class RawMaterializationDiscovery:
         #: stalled head.
         self._held_page: tuple[str | None, tuple[str, ...]] | None = None
         self._frontier: int = 0
-        self._arrivals_first = False
+        #: Which lane leads the next discovery call. Arrivals, the sweep and
+        #: any queued project dependents rotate, so no lane -- not even a
+        #: project scan whose every page owes work -- starves the others.
+        self._lane_turn = 0
+        #: Sessions whose enrichment evidence just arrived: a project's
+        #: ``sessions-index.json`` names the transcripts beside it. Inspected
+        #: on later calls, after the evidence itself was admitted, so a
+        #: title curated after its transcript was written converges promptly.
+        #: A scheduling hint only: the sweep re-inspects every raw anyway, and
+        #: inspection compares each output's evidence binding with the
+        #: evidence the archive holds (install-wide history and thread state
+        #: converge through that sweep).
+        #: Pending project scans: (project directory, last served path,
+        #: last served rowid). Paged by ``_dependents_selected``.
+        self._evidence_projects: deque[tuple[str, str, int]] = deque()
 
     def _raw_frontier(self) -> int:
         """Return the durable high-water mark for admitted raw observations."""
@@ -1419,17 +1542,20 @@ class RawMaterializationDiscovery:
             self._cursor = None
             self._held_page = None
             self._frontier = self._raw_frontier()
-            self._arrivals_first = False
+            self._lane_turn = 0
 
         inspected_limit = min(limit, _RAW_DISCOVERY_INSPECTION_LIMIT)
         adapter = make_raw_observation_derivation(self._archive_root)
-        self._arrivals_first = not self._arrivals_first
-        lanes: tuple[Callable[[Any, Any, int], tuple[str, ...]], ...] = (
-            (self._arrival_selected, self._sweep_selected)
-            if self._arrivals_first
-            else (self._sweep_selected, self._arrival_selected)
+        # Queued project dependents join the rotation only while a scan is
+        # pending, so arrivals and the sweep otherwise keep alternating.
+        rotation: tuple[Callable[[Any, Any, int], tuple[str, ...]], ...] = (
+            self._arrival_selected,
+            self._sweep_selected,
+            *((self._dependents_selected,) if self._evidence_projects else ()),
         )
-        for lane in lanes:
+        turn = self._lane_turn % len(rotation)
+        self._lane_turn += 1
+        for lane in (*rotation[turn:], *rotation[:turn]):
             selected = lane(frame, adapter, inspected_limit)
             if selected:
                 return self._with_costs(selected)
@@ -1440,8 +1566,65 @@ class RawMaterializationDiscovery:
         self._frontier = frontier
         if not page:
             return ()
+        self._queue_evidence_dependents(page)
         statuses = adapter.inspect(frame, page)
         return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+
+    def _dependents_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
+        """Serve at most ``limit`` transcripts of the queued project scans.
+
+        Each queued scan is a continuation over one project's transcripts, so
+        a project with a long retained history is paged like the sweep rather
+        than listed whole when its index arrives.
+        """
+        if not self._evidence_projects:
+            return ()
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        page: list[str] = []
+        with closing(open_readonly_connection(self._archive_root / "source.db", timeout=5.0)) as conn:
+            while self._evidence_projects and len(page) < limit:
+                project, after_path, after_rowid = self._evidence_projects[0]
+                wanted = limit - len(page)
+                rows = conn.execute(
+                    "SELECT raw_id, source_path, rowid FROM raw_sessions "
+                    "WHERE source_path >= ? AND source_path < ? AND source_path LIKE '%.jsonl' "
+                    "AND (source_path > ? OR (source_path = ? AND rowid > ?)) "
+                    "ORDER BY source_path, rowid LIMIT ?",
+                    (project + "/", project + "0", after_path, after_path, after_rowid, wanted),
+                ).fetchall()
+                page.extend(str(row[0]) for row in rows)
+                if len(rows) < wanted:
+                    self._evidence_projects.popleft()
+                else:
+                    self._evidence_projects[0] = (project, str(rows[-1][1]), int(rows[-1][2]))
+        if not page:
+            return ()
+        statuses = adapter.inspect(frame, tuple(page))
+        return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+
+    def _queue_evidence_dependents(self, arrived: Sequence[str]) -> None:
+        """Queue a scan of the project each newly admitted session index describes."""
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        source_db = self._archive_root / "source.db"
+        with closing(open_readonly_connection(source_db, timeout=5.0)) as conn:
+            placeholders = ",".join("?" for _ in arrived)
+            indexes = conn.execute(
+                f"SELECT source_path FROM raw_sessions WHERE raw_id IN ({placeholders}) "
+                "AND source_path LIKE '%/sessions-index.json'",
+                tuple(arrived),
+            ).fetchall()
+        arrived_projects = dict.fromkeys(str(index_path).rsplit("/", 1)[0] for (index_path,) in indexes)
+        if not arrived_projects:
+            return
+        # A project already queued restarts from its first transcript: the
+        # ones its scan already served were inspected against the older
+        # index. One scan per project keeps the queue bounded by projects.
+        pending = [entry for entry in self._evidence_projects if entry[0] not in arrived_projects]
+        self._evidence_projects.clear()
+        self._evidence_projects.extend(pending)
+        self._evidence_projects.extend((project, "", -1) for project in arrived_projects)
 
     def _sweep_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
         # At most one released page is skipped per call, so a stalled head

@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     from polylogue.storage.archive_tuple_location import InactiveTierDestination
 
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
-from polylogue.storage.sqlite.archive_tiers.index_convergence import apply_index_benign_ddl_convergence
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.audit_leaf import AuditLeafError, assert_verified_audit_leaf
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -143,7 +142,7 @@ _TIER_PROTOTYPE_LOCK = threading.Lock()
 #:   ~102ms re-stamping an unchanged derived identity -- which is why an
 #:   already-current tier now takes :func:`converge_same_version_tier`.
 #: * ``schema_convergence`` -- ops.db proved current by its recorded schema
-#:   digest, so only the additive convergence plan ran.
+#:   digest, so only the additive same-version convergence steps ran.
 #:
 #: Kept because the split is not observable from the outside: all of them look
 #: like "initialize a tier" to a caller, while their costs differ by two orders
@@ -349,8 +348,7 @@ def converge_same_version_tier(
 
     What is *not* redundant stays: ops.db evolves by idempotent additive DDL
     without a version bump, so it keeps the full pass; user.db gains declared
-    annotation schemas; index.db takes its registered benign DDL convergence
-    and runtime indexes.
+    annotation schemas; index.db takes its runtime indexes.
 
     ``derived_identity`` selects which of the two existing identity policies the
     caller already had, because they are not interchangeable and this function
@@ -374,17 +372,10 @@ def converge_same_version_tier(
         _ensure_user_annotation_schemas(conn)
         conn.commit()
     elif tier is ArchiveTier.INDEX:
-        # index.db is rebuildable, but a *benign* registered DDL delta
-        # (idempotent, data-non-transforming, zero-consumer at this exact
-        # version -- see index_convergence.py) does not need the full rebuild a
-        # schema-version bump would force. Re-apply the registry on every
-        # same-version open so an already-populated archive converges without
-        # touching INDEX_SCHEMA_VERSION.
         from polylogue.storage.sqlite.runtime_indexes import ensure_runtime_indexes_sync
         from polylogue.storage.sqlite.schema_manifest import assert_schema_manifest
 
         ensure_runtime_indexes_sync(conn)
-        apply_index_benign_ddl_convergence(conn)
         _apply_derived_identity_policy(conn, tier, derived_identity)
         assert_schema_manifest(conn, tier)
     elif tier is ArchiveTier.EMBEDDINGS:
@@ -520,13 +511,6 @@ def _apply_archive_tier_convergence(
         ensure_embedding_catchup_run_outcome_columns(conn)
         ensure_ops_status_checks(conn)
         _ensure_schema_drift_samples_check(conn)
-        _apply_ops_benign_ddl_convergence(conn)
-    if tier is ArchiveTier.INDEX:
-        # Fresh init never had a registered drop's target table, and any
-        # additive registry entry lands identically to canonical DDL -- this
-        # is a no-op today, kept for fresh-init/converged-live parity (see
-        # index_convergence.py module docstring).
-        apply_index_benign_ddl_convergence(conn)
     if tier is ArchiveTier.USER:
         _ensure_user_annotation_schemas(conn)
     if tier is ArchiveTier.OPS:
@@ -584,14 +568,6 @@ def _ensure_schema_drift_samples_check(conn: sqlite3.Connection) -> None:
 
     conn.execute("DROP TABLE IF EXISTS schema_drift_samples")
     conn.executescript(SCHEMA_DRIFT_SAMPLES_DDL)
-
-
-def _apply_ops_benign_ddl_convergence(conn: sqlite3.Connection) -> None:
-    """Apply the declared idempotent OPS same-version fast-forward plan."""
-    from polylogue.storage.sqlite.archive_tiers.ops import OPS_BENIGN_DDL_CONVERGENCE_PLAN
-
-    for entry in OPS_BENIGN_DDL_CONVERGENCE_PLAN:
-        conn.execute(entry.sql)
 
 
 def _ensure_user_annotation_schemas(conn: sqlite3.Connection) -> None:
@@ -808,7 +784,6 @@ _LOST_AUDIT_TIER_REFUSAL = (
 
 def _initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
-    from polylogue.operations.durable_change_train import audit_adoption_receipt_path, recover_pending_audit_adoption
     from polylogue.storage.archive_identity import (
         ArchiveLocation,
         OwnedArchiveLocation,
@@ -865,7 +840,6 @@ def _initialize_active_archive_root(root: Path) -> None:
             (root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS
         )
         manifest_root = root / ".maintenance-state" / "durable-change-trains"
-        pending_audit_adoption = audit_adoption_receipt_path(root).exists()
         has_durable_train_state = bool(_durable_train_manifest_paths(manifest_root))
         has_bootstrap_marker = (manifest_root / ".bootstrap").is_file()
         pending_bootstrap_path = manifest_root / ".bootstrap.pending"
@@ -891,15 +865,11 @@ def _initialize_active_archive_root(root: Path) -> None:
             (root / archive_tier_spec(tier).filename).exists() or (root / archive_tier_spec(tier).filename).is_symlink()
             for tier in DURABLE_MIGRATION_TIERS
         )
-        missing_audit_with_recovery_receipt = (
-            pending_audit_adoption and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
-        )
-        # A lineage member that has lost only ``audit.db`` has a named recovery
-        # route, and the generic marker text describes none of it. Prove the
-        # surviving durable pair belongs to this lineage -- which also reports
-        # a symlinked or multiply-linked source/user tier first, because that
-        # is the more severe finding -- and then raise the adoption refusal the
-        # operator can act on.
+        # A lineage member that has lost only ``audit.db`` gets the named
+        # lost-tier refusal, not the generic marker text. Prove the surviving
+        # durable pair belongs to this lineage -- which also reports a
+        # symlinked or multiply-linked source/user tier first, because that is
+        # the more severe finding -- and then refuse by name.
         established_pair_without_audit = (
             format_marker.is_file()
             and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).exists()
@@ -908,9 +878,7 @@ def _initialize_active_archive_root(root: Path) -> None:
                 (root / archive_tier_spec(tier).filename).is_file() for tier in (ArchiveTier.SOURCE, ArchiveTier.USER)
             )
         )
-        if any_durable_tier_exists and not (
-            (has_pending_bootstrap and not has_bootstrap_marker) or missing_audit_with_recovery_receipt
-        ):
+        if any_durable_tier_exists and not (has_pending_bootstrap and not has_bootstrap_marker):
             if established_pair_without_audit:
                 assert_archive_format_lineage(root, tiers=frozenset({ArchiveTier.SOURCE, ArchiveTier.USER}))
                 raise RuntimeError(_LOST_AUDIT_TIER_REFUSAL)
@@ -918,19 +886,6 @@ def _initialize_active_archive_root(root: Path) -> None:
         elif format_marker.exists() and not any_durable_tier_exists:
             raise RuntimeError(f"archive format marker exists without a six-tier archive: {format_marker}")
 
-        def classify_paths() -> tuple[bool, bool]:
-            durable_exists = any((root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS)
-            adoption = (
-                (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
-                and all((root / archive_tier_spec(tier).filename).is_file() for tier in DURABLE_MIGRATION_TIERS)
-                and manifest_root.is_dir()
-                and not has_durable_train_state
-                and not has_bootstrap_marker
-                and not has_pending_bootstrap
-            )
-            return durable_exists, adoption
-
-        durable_tier_exists, pre_marker_adoption = classify_paths()
         fresh_durable_bootstrap = (
             not durable_tier_exists
             and not has_durable_train_state
@@ -943,13 +898,6 @@ def _initialize_active_archive_root(root: Path) -> None:
         if fresh_durable_bootstrap:
             assert_owned_root()
             _record_fresh_durable_bootstrap_intent(root)
-        if pending_audit_adoption:
-            assert_owned_root()
-            recover_pending_audit_adoption(root)
-            # Receipt-backed recovery can add audit.db to a legacy archive.
-            # Recompute the path-sensitive classification before deciding
-            # whether startup must create the missing bootstrap marker.
-            durable_tier_exists, pre_marker_adoption = classify_paths()
         established_archive = has_bootstrap_marker or (
             (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
             and (root / archive_tier_spec(ArchiveTier.USER).filename).is_file()
@@ -972,7 +920,7 @@ def _initialize_active_archive_root(root: Path) -> None:
             and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
         ):
             raise RuntimeError(_LOST_AUDIT_TIER_REFUSAL)
-        if not recovering_fresh_durable_bootstrap and not pre_marker_adoption and not format_marker.exists():
+        if not recovering_fresh_durable_bootstrap and not format_marker.exists():
             assert_owned_root()
             reconcile_durable_change_trains_on_startup(root)
         location = ArchiveLocation.resolve(root)
@@ -987,13 +935,6 @@ def _initialize_active_archive_root(root: Path) -> None:
             assert_owned_root()
             _record_fresh_durable_bootstrap(root)
             record_fresh_archive_format(root)
-        elif pre_marker_adoption:
-            from polylogue.storage.sqlite.durable_change_train import _adopt_pre_marker_durable_bootstrap
-
-            assert_owned_root()
-            _adopt_pre_marker_durable_bootstrap(root)
-            assert_owned_root()
-            reconcile_durable_change_trains_on_startup(root)
         elif has_pending_bootstrap:
             # A crash after publishing the completed marker but before
             # removing the intent is harmless. Keep the intent until the
@@ -1033,7 +974,6 @@ def _archive_generation_token(root: Path) -> tuple[object, ...]:
     archive swapped underneath a running process. Anything this token cannot
     see belongs to another writer, which the single-writer contract excludes.
     """
-    from polylogue.operations.durable_change_train import audit_adoption_receipt_path
     from polylogue.storage.archive_identity import ArchiveLocation
     from polylogue.storage.sqlite.archive_tiers.archive_plan import archive_format_marker_path
 
@@ -1074,7 +1014,6 @@ def _archive_generation_token(root: Path) -> tuple[object, ...]:
         format_marker_digest(archive_format_marker_path(root)),
         (manifest_root / ".bootstrap").is_file(),
         (manifest_root / ".bootstrap.pending").is_file(),
-        audit_adoption_receipt_path(root).is_file(),
         manifest_entries,
     )
 
@@ -1163,6 +1102,7 @@ def open_initialized_tier_connection(
     timeout: float = 30.0,
     busy_timeout_ms: int | None = None,
     daemon: bool = True,
+    archive_root: Path | str | None = None,
 ) -> sqlite3.Connection:
     """Open a tier database that may not exist yet, materialise it, and validate.
 
@@ -1187,9 +1127,10 @@ def open_initialized_tier_connection(
             busy_timeout_ms=busy_timeout_ms,
             tier=tier,
             validate_schema=False,
+            archive_root=archive_root,
         )
     else:
-        conn = open_connection(path, timeout=timeout, tier=tier, validate_schema=False)
+        conn = open_connection(path, timeout=timeout, tier=tier, validate_schema=False, archive_root=archive_root)
     try:
         stored_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
         required_version = archive_tier_spec(tier).version
@@ -1210,7 +1151,7 @@ def open_initialized_tier_connection(
             # Performance only: the redundant whole-tier DDL goes, the identity
             # policy this route has always applied stays. See
             # converge_same_version_tier on why the two are separable.
-            converge_same_version_tier(conn, tier, derived_identity="stamp")
+            converge_same_version_tier(conn, tier, derived_identity="verify")
         else:
             initialize_archive_tier(conn, tier)
         assert_tier_schema_supported(conn, path, tier)

@@ -42,10 +42,12 @@ from devtools.pytest_invocation import (
 )
 from devtools.pytest_rerun import rerun_failed_once
 from devtools.pytest_slot import (
+    OOM_KILLED_DIAGNOSIS,
     WORKTREE_PROVENANCE_ENV,
     PytestSlotUnavailableError,
     run_pytest,
     run_pytest_isolated,
+    termination_metadata,
 )
 from devtools.pytest_stream_report import REPORT_FILE_OPTION, report_file_argument, spool_paths
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, write_run_receipt
@@ -129,7 +131,7 @@ _GRAPH_FREE_SELECTIONS = frozenset({"descriptor", "none"})
 DESCRIPTOR_CONTRACT_TESTS = (
     "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_declared_browser_smoke_has_no_private_browser_service_lease",
     "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_declared_live_provider_proof_declares_no_port_lease",
-    "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_agentctl_parser_accepts_the_unleased_shared_chrome_operation",
+    "tests/unit/devtools/test_deployment_browser_smoke_service.py::test_descriptor_declares_the_unleased_shared_chrome_operation_and_workspace_contract",
     "tests/unit/devtools/test_dev_loop_service.py::test_declared_operation_has_a_json_contract_and_no_retired_keys",
     "tests/unit/devtools/test_seeded_archive_cache_gc.py::test_declared_agentctl_operation_is_bounded_and_previewable",
     "tests/unit/devtools/test_agent_env.py::test_every_declared_pytest_pool_operation_classifies_its_own_worker",
@@ -600,15 +602,6 @@ def _clear_pytest_report(command: Sequence[str]) -> None:
                 path.unlink()
 
 
-def _clear_full_run_shards() -> None:
-    """Prevent stale full-corpus shards from being attributed to this run."""
-    for report in (ROOT / Path(".cache/verify")).glob("last-pytest-*.json"):
-        if report.name == "last-pytest.json":
-            continue
-        with contextlib.suppress(FileNotFoundError):
-            report.unlink()
-
-
 def _read_json(path: Path) -> dict[str, Any] | None:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -822,6 +815,7 @@ def _run(
     hypothesis_profile_source: str | None = None
     completed: subprocess.CompletedProcess[Any]
     rerun: dict[str, Any] | None = None
+    termination: dict[str, Any] = {}
     executable_result = executable_gate_result(command, gate=label, env=env)
     if not executable_result.ok:
         early_metadata = {
@@ -866,6 +860,7 @@ def _run(
             _write_step_result(label, pytest_step, f"FAILED ({exc})")
             return 125, time.monotonic() - started, early_metadata
         slot = outcome.slot
+        termination = termination_metadata(outcome)
         completed = subprocess.CompletedProcess(command, outcome.returncode)
         metadata_receipt = outcome.receipt
         # Exit 1 is "tests failed", the only outcome a rerun can speak to.
@@ -903,6 +898,7 @@ def _run(
     }
     if pytest_step:
         metadata["pytest_slot"] = slot
+        metadata.update(termination)
         metadata["hypothesis_profile"] = hypothesis_profile
         metadata["hypothesis_profile_source"] = hypothesis_profile_source
         metadata["runner"] = runner
@@ -1061,7 +1057,7 @@ def _verification_workload_receipt(
     exit_code: int,
 ) -> dict[str, Any]:
     """Adapt verifier step timing into the shared workload receipt contract."""
-    phases = tuple(str(result["name"]) for result in results)
+    phases = tuple(str(result["name"]) for result in results) or ("finalization",)
     spec = WorkloadEnvelopeSpec(
         workload_id=f"devtools:verify:{tier}",
         family_id="verification",
@@ -1078,6 +1074,14 @@ def _verification_workload_receipt(
         )
         for result in results
     )
+    if not observations:
+        observations = (
+            WorkloadPhaseObservation(
+                name="finalization",
+                wall_ms=0.0,
+                unavailable=_UNMEASURED_WORKLOAD_DIMENSIONS,
+            ),
+        )
     receipt = WorkloadReceipt.from_observations(
         spec=spec,
         status=WorkloadRunStatus.SUCCEEDED if exit_code == 0 else WorkloadRunStatus.FAILED,
@@ -1151,6 +1155,13 @@ def _finish_and_record_verification(
     workload_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Finish, durably append, and prune every terminal verification path."""
+    if workload_receipt is None:
+        workload_receipt = _verification_workload_receipt(
+            tier=str(run._payload["tier"]),
+            git_head=run._payload.get("git_head"),
+            results=(),
+            exit_code=exit_code,
+        )
     payload = run.finish(
         exit_code=exit_code,
         duration_s=duration_s,
@@ -1210,6 +1221,13 @@ def _aggregate_pytest_results(
     }
 
 
+#: Set by the devshell hook on every entry (flake.nix): ``complete`` when
+#: ``.venv`` matches this checkout's pyproject.toml and uv.lock, ``incomplete``
+#: when that sync failed and the previous environment was kept.
+DEPENDENCY_SYNC_ENV = "POLYLOGUE_DEVSHELL_DEPENDENCY_SYNC"
+DEPENDENCY_SYNC_INCOMPLETE = "incomplete"
+
+
 def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = None) -> int:
     arguments = list(argv or [])
     refusal = refuse_verify_tier(arguments, os.environ)
@@ -1260,6 +1278,25 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         else:
             sys.stderr.write(message + "\n")
         return 125
+    if os.environ.get(DEPENDENCY_SYNC_ENV) == DEPENDENCY_SYNC_INCOMPLETE:
+        message = (
+            "devtools verify refuses an unsynced environment: the devshell's `uv sync --frozen` failed, so .venv "
+            "still holds the dependencies of an earlier pyproject.toml/uv.lock; fix the sync and re-enter the shell"
+        )
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "status": "refused",
+                        "diagnosis": "dependency_sync_incomplete",
+                        "message": message,
+                        "exit_code": 125,
+                    }
+                )
+            )
+        else:
+            sys.stderr.write(message + "\n")
+        return 125
     _anchor_verification_paths()
     identity = checkout_identity(ROOT)
     branch_refusal = default_branch_refusal(identity, command="devtools verify", allowed=args.on_default_branch)
@@ -1295,8 +1332,6 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
     validate_authority_matrix()
     started = time.monotonic()
     selection = "all" if args.all_tests else "affected"
-    if args.all_tests:
-        _clear_full_run_shards()
     changed_paths: frozenset[str] | None = None
     if not args.quick and not args.all_tests:
         changed_paths = _git_changed_paths(ROOT)
@@ -1330,66 +1365,120 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         mirror_current=agentctl_operation is None,
         agentctl_operation=agentctl_operation,
     )
-    if not args.quick:
-        admission: AffectedAdmission | None = None
-        if selection == "affected":
-            admission = _affected_admission(
-                root=ROOT, graph=graph, forced_tests=_forced_tests(selection, changed_paths)
-            )
-        run.record_selection(
-            selection_mode=selection,
-            graph_status=str(graph.status),
-            graph_reason=graph.reason,
-            full_rerun_cause=graph.full_rerun_cause if selection not in _GRAPH_FREE_SELECTIONS else None,
-            graph_recorded_tests=getattr(graph, "recorded_tests", None),
-            graph_source_dependencies=getattr(graph, "source_dependencies", None),
-            seed_source=str(testmon_datafile(primary_worktree())) if seeded_from_primary else None,
-            seed_source_mtime_ns=(
-                testmon_datafile(primary_worktree()).stat().st_mtime_ns if seeded_from_primary else None
-            ),
-            selection_reason=(
-                admission.reason if admission is not None else _selection_reason(selection, changed_paths)
-            ),
-            selected_count=admission.selected_count if admission is not None else None,
-            estimated_seconds=admission.estimated_seconds if admission is not None else None,
-            admission=admission.to_payload() if admission is not None else None,
-        )
-        if selection == "none":
-            sys.stderr.write("verify: no pytest step: " + str(_selection_reason(selection, changed_paths)) + "\n")
-        if admission is not None and not admission.admitted:
-            payload = _finish_and_record_verification(
-                run=run,
-                exit_code=2,
-                duration_s=time.monotonic() - started,
-                diagnosis="affected_admission_refused",
-                verification_scope=scope.value,
-                final_git_head=git_head(ROOT),
-                pytest_aggregate={
-                    "selection_mode": "affected",
-                    "selected_union_count": admission.selected_count,
-                    "terminal_union_count": 0,
-                    "outcomes": {},
-                    "terminal_green": False,
-                    "complete_corpus_covered": False,
-                    "admission": admission.to_payload(),
-                },
-            )
-            _emit_affected_admission_refusal(graph=graph, decision=admission)
-            _emit(payload, use_json=args.json, operation=agentctl_operation)
-            return 2
-    steps = build_verify_steps(
-        quick=args.quick,
-        selection=selection,
-        hypothesis_profile=args.hypothesis_profile,
-        changed_paths=changed_paths,
-    )
     results: list[dict[str, Any]] = []
+    # Everything from receipt creation to the terminal verdict runs under the
+    # interruption handlers: a signal during selection, admission or the
+    # post-step accounting still finishes this run instead of leaving it
+    # ``running``. The publication itself stays outside, so a signal cannot
+    # finish an already-finished run a second time.
     try:
+        refused: AffectedAdmission | None = None
+        if not args.quick:
+            admission: AffectedAdmission | None = None
+            if selection == "affected":
+                admission = _affected_admission(
+                    root=ROOT, graph=graph, forced_tests=_forced_tests(selection, changed_paths)
+                )
+            run.record_selection(
+                selection_mode=selection,
+                graph_status=str(graph.status),
+                graph_reason=graph.reason,
+                full_rerun_cause=graph.full_rerun_cause if selection not in _GRAPH_FREE_SELECTIONS else None,
+                graph_recorded_tests=getattr(graph, "recorded_tests", None),
+                graph_source_dependencies=getattr(graph, "source_dependencies", None),
+                seed_source=str(testmon_datafile(primary_worktree())) if seeded_from_primary else None,
+                seed_source_mtime_ns=(
+                    testmon_datafile(primary_worktree()).stat().st_mtime_ns if seeded_from_primary else None
+                ),
+                selection_reason=(
+                    admission.reason if admission is not None else _selection_reason(selection, changed_paths)
+                ),
+                selected_count=admission.selected_count if admission is not None else None,
+                estimated_seconds=admission.estimated_seconds if admission is not None else None,
+                admission=admission.to_payload() if admission is not None else None,
+            )
+            if selection == "none":
+                sys.stderr.write("verify: no pytest step: " + str(_selection_reason(selection, changed_paths)) + "\n")
+            if admission is not None and not admission.admitted:
+                refused = admission
+        # A refused admission withholds pytest, not the static gates.
+        steps = build_verify_steps(
+            quick=args.quick or refused is not None,
+            selection=selection,
+            hypothesis_profile=args.hypothesis_profile,
+            changed_paths=changed_paths,
+        )
         exit_code = 0
         for label, (rc, elapsed, metadata) in _run_steps(steps, run=run, runner=args.runner):
             results.append({"name": label, "duration_s": round(elapsed, 2), "exit": rc, **metadata})
             if rc:
                 exit_code = exit_code or rc
+        executed: set[tuple[object, object, object]] = set()
+        tree_unknown = False
+        for result in results:
+            slot_receipt = result.get("pytest_slot_receipt")
+            provenance = slot_receipt.get("worktree_provenance") if isinstance(slot_receipt, Mapping) else None
+            if isinstance(provenance, Mapping):
+                # The receipt and verdict name what pytest executed, not what was admitted.
+                run.record_execution_worktree(provenance)
+                executed.add(
+                    (
+                        provenance.get("git_branch"),
+                        provenance.get("git_head"),
+                        provenance.get("git_worktree_content_sha256"),
+                    )
+                )
+            elif result.get("diagnosis") == OOM_KILLED_DIAGNOSIS:
+                # The kill took the slot receipt, so nothing identified the tree
+                # pytest ran against; the admitted head is not that evidence.
+                tree_unknown = True
+        if tree_unknown:
+            # Recorded after every step, so a later step's provenance cannot
+            # stand in for the tree the killed step ran against.
+            run.record_execution_worktree({"capture_source": "unavailable"})
+        # The static gates read the checkout directly, with no slot to re-check it:
+        # a run whose branch, HEAD or Git-visible content changed while it ran, or
+        # whose pytest step executed other content, verified no single tree.
+        finished_identity = checkout_identity(ROOT)
+        finished_content = git_worktree_content_sha256(ROOT)
+        checkout_moved = (
+            (finished_identity.branch, finished_identity.head) != (identity.branch, identity.head)
+            or finished_content != started_content
+            or bool(executed - {(identity.branch, identity.head, started_content)})
+        )
+        if checkout_moved:
+            sys.stderr.write(
+                f"verify: the checkout moved during the run (started {identity.describe()}, "
+                f"finished {finished_identity.describe()}); the result is void\n"
+            )
+            exit_code = exit_code or 1
+        # The retained exit code is the first failure's; its diagnosis must be too.
+        diagnosis = next(
+            (str(result["diagnosis"]) for result in results if result["exit"] != 0),
+            None,
+        )
+        if checkout_moved:
+            diagnosis = "checkout_moved_during_run"
+        if refused is not None:
+            exit_code = exit_code or 2
+            diagnosis = diagnosis or "affected_admission_refused"
+            aggregate: dict[str, Any] = {
+                "selection_mode": "affected",
+                "selected_union_count": refused.selected_count,
+                "terminal_union_count": 0,
+                "outcomes": {},
+                "terminal_green": False,
+                "complete_corpus_covered": False,
+                "admission": refused.to_payload(),
+            }
+        else:
+            aggregate = _aggregate_pytest_results(
+                results,
+                expected_step_count=sum(label.startswith("pytest") for label, _command in steps),
+                mode="quick" if args.quick else selection,
+                exit_code=exit_code,
+            )
+        final_head = git_head(ROOT)
     except VerificationInterrupted as exc:
         return _finish_interrupted_verification(
             run=run,
@@ -1414,56 +1503,13 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             termination_reason="operator_interrupt",
             results=results,
         )
-    executed: set[tuple[object, object, object]] = set()
-    for result in results:
-        slot_receipt = result.get("pytest_slot_receipt")
-        provenance = slot_receipt.get("worktree_provenance") if isinstance(slot_receipt, Mapping) else None
-        if isinstance(provenance, Mapping):
-            # The receipt and verdict name what pytest executed, not what was admitted.
-            run.record_execution_worktree(provenance)
-            executed.add(
-                (
-                    provenance.get("git_branch"),
-                    provenance.get("git_head"),
-                    provenance.get("git_worktree_content_sha256"),
-                )
-            )
-    # The static gates read the checkout directly, with no slot to re-check it:
-    # a run whose branch, HEAD or Git-visible content changed while it ran, or
-    # whose pytest step executed other content, verified no single tree.
-    finished_identity = checkout_identity(ROOT)
-    finished_content = git_worktree_content_sha256(ROOT)
-    checkout_moved = (
-        (finished_identity.branch, finished_identity.head) != (identity.branch, identity.head)
-        or finished_content != started_content
-        or bool(executed - {(identity.branch, identity.head, started_content)})
-    )
-    if checkout_moved:
-        sys.stderr.write(
-            f"verify: the checkout moved during the run (started {identity.describe()}, "
-            f"finished {finished_identity.describe()}); the result is void\n"
-        )
-        exit_code = exit_code or 1
-    aggregate = _aggregate_pytest_results(
-        results,
-        expected_step_count=sum(label.startswith("pytest") for label, _command in steps),
-        mode="quick" if args.quick else selection,
-        exit_code=exit_code,
-    )
-    # The retained exit code is the first failure's; its diagnosis must be too.
-    diagnosis = next(
-        (str(result["diagnosis"]) for result in results if result["exit"] != 0),
-        None,
-    )
-    if checkout_moved:
-        diagnosis = "checkout_moved_during_run"
     payload = _finish_and_record_verification(
         run=run,
         exit_code=exit_code,
         duration_s=time.monotonic() - started,
         diagnosis=diagnosis,
         verification_scope=scope.value,
-        final_git_head=git_head(ROOT),
+        final_git_head=final_head,
         pytest_aggregate=aggregate,
         workload_receipt=_verification_workload_receipt(
             tier=tier,
@@ -1472,6 +1518,8 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
             exit_code=exit_code,
         ),
     )
+    if refused is not None:
+        _emit_affected_admission_refusal(graph=graph, decision=refused)
     _emit(payload, use_json=args.json, operation=agentctl_operation)
     return exit_code
 

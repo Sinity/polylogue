@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -455,6 +455,7 @@ class VerifyRun:
                 # the evidence verdict would restate the absence and lose the
                 # reason for it. The reason is what the receipt is read for.
                 explicit_terminal = result.get("diagnosis") in {
+                    "oom_killed",
                     "focused_test_runner_exception",
                     "pytest_interrupted",
                     "pytest_slot_unavailable",
@@ -725,33 +726,38 @@ def _read_json_pinned(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
-def _read_history_pinned(path: Path) -> list[dict[str, Any]]:
+def _iter_history_pinned(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield each well-formed history row, one line at a time.
+
+    The shared history is append-only and grows with every run on the host,
+    so no caller holds it whole: materializing it was the verifier's largest
+    allocation, held for the length of the run.
+    """
     try:
         parent_fd = _open_pinned_dir(path.parent)
     except FileNotFoundError:
-        return []
+        return
     try:
         try:
             fd = os.open(path.name, os.O_RDONLY | _O_NOFOLLOW, dir_fd=parent_fd)
         except FileNotFoundError:
-            return []
+            return
     finally:
         os.close(parent_fd)
     try:
-        with os.fdopen(fd, "r", encoding="utf-8") as handle:
-            rows: list[dict[str, Any]] = []
-            for line in handle:
-                try:
-                    payload = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(payload, dict):
-                    rows.append(payload)
-            return rows
+        handle = os.fdopen(fd, "r", encoding="utf-8")
     except OSError:
         with contextlib.suppress(OSError):
             os.close(fd)
         raise
+    with handle:
+        for line in handle:
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                yield payload
 
 
 def _tree_size_without_links(root: Path, *, budget: _NodeBudget | None = None, depth: int = 0) -> tuple[int, bool]:
@@ -916,6 +922,9 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                 "exit_code": raw.get("exit"),
                 "duration_s": raw.get("duration_s"),
                 "diagnosis": raw.get("diagnosis"),
+                "termination_reason": raw.get("termination_reason"),
+                "termination_killer": raw.get("termination_killer"),
+                "termination_unit": raw.get("termination_unit"),
                 "pytest_slot_receipt": _durable_slot_receipt(raw.get("pytest_slot_receipt")),
                 "artifact_ref": f"polylogue://verification/{entry.get('run_id')}/steps/{raw.get('step_id')}"
                 if raw.get("step_id") is not None
@@ -931,13 +940,21 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
                     step["flaky"] = flaky
                     step["flaky_count"] = len(flaky)
             steps.append({key: value for key, value in step.items() if value is not None})
+    tree_unknown = entry.get("worktree_capture_source") == "unavailable"
     result: dict[str, Any] = {
         "schema_version": 1,
         "kind": "polylogue.verification-receipt",
         "run_id": entry.get("run_id"),
+        # An execution tree nobody captured is unknown: the checkout at
+        # finalization is not evidence of what ran.
         "source_revision": None
-        if entry.get("git_dirty") or entry.get("final_git_dirty")
-        else entry.get("final_git_head") or entry.get("git_head"),
+        if tree_unknown
+        or entry.get("git_dirty")
+        or entry.get("final_git_dirty")
+        # A head that moved under the run (or was never observed at the end)
+        # names a revision nobody tested.
+        or entry.get("final_git_head") != entry.get("git_head")
+        else entry.get("git_head"),
         "status": _terminal_status(entry),
         "started_at": entry.get("started_at"),
         "finished_at": entry.get("finished_at"),
@@ -945,7 +962,7 @@ def canonical_verification_receipt(entry: Mapping[str, Any]) -> dict[str, Any]:
         "steps": steps,
         "artifact_ref": f"polylogue://verification/{entry.get('run_id')}",
         "semantic_status": entry.get("status"),
-        "git_dirty": bool(entry.get("git_dirty") or entry.get("final_git_dirty")),
+        "git_dirty": None if tree_unknown else bool(entry.get("git_dirty") or entry.get("final_git_dirty")),
         "tier": entry.get("tier"),
         "verification_scope": entry.get("verification_scope"),
     }
@@ -1029,7 +1046,20 @@ def _semantic_history_row(entry: Mapping[str, Any]) -> dict[str, Any]:
     raw_steps = entry.get("steps")
     if isinstance(raw_steps, list):
         row["steps"] = [
-            {key: step[key] for key in ("step_id", "name", "exit", "status", "diagnosis") if key in step}
+            {
+                key: step[key]
+                for key in (
+                    "step_id",
+                    "name",
+                    "exit",
+                    "status",
+                    "diagnosis",
+                    "termination_reason",
+                    "termination_killer",
+                    "termination_unit",
+                )
+                if key in step
+            }
             for step in raw_steps
             if isinstance(step, Mapping)
         ]
@@ -1069,7 +1099,7 @@ def read_verification_evidence(path: Path) -> list[dict[str, Any]]:
     """Read only valid canonical rows for a Lynchpin-style projection."""
     return [
         row
-        for row in _read_history_pinned(_absolute_path(path))
+        for row in _iter_history_pinned(_absolute_path(path))
         if row.get("kind") == "polylogue.verification-receipt" and row.get("schema_version") == 1
     ]
 
@@ -1131,8 +1161,24 @@ def prune_successful_verify_runs(
             "retention_locked": True,
         }
     try:
+        # Only the fields pruning reads are kept per run; the latest row for a
+        # run still wins.
+        durable: dict[str, dict[str, Any]] = {}
         try:
-            history_rows = _read_history_pinned(resolved_history)
+            for row in _iter_history_pinned(resolved_history):
+                run_id = row.get("run_id")
+                if isinstance(run_id, str) and row.get("status") != "running":
+                    aggregate = row.get("pytest_aggregate")
+                    durable[run_id] = {
+                        "status": row.get("status"),
+                        "diagnosis": row.get("diagnosis"),
+                        "finished_at": row.get("finished_at"),
+                        "pytest_aggregate": (
+                            {"covered_by_run": aggregate.get("covered_by_run")}
+                            if isinstance(aggregate, Mapping)
+                            else aggregate
+                        ),
+                    }
         except (OSError, ValueError):
             return {
                 "retained_run_ids": [],
@@ -1141,11 +1187,6 @@ def prune_successful_verify_runs(
                 "history_durable": False,
                 "refused": True,
             }
-        durable: dict[str, dict[str, Any]] = {}
-        for row in history_rows:
-            run_id = row.get("run_id")
-            if isinstance(run_id, str) and row.get("status") != "running":
-                durable[run_id] = row
         if not durable:
             return {
                 "retained_run_ids": [],
@@ -1453,7 +1494,7 @@ def reconcile_abandoned_verify_runs(
         run_id = payload.get("run_id")
         if not isinstance(run_id, str) or run_dir.name != run_id:
             continue
-        if payload.get("status") == "failed" and payload.get("diagnosis") == ABANDONED_DIAGNOSIS:
+        if payload.get("status") in {"success", "failed"} and payload.get("diagnosis") == ABANDONED_DIAGNOSIS:
             current_path = runs_root.parent / CURRENT_RUN_PATH.name
             current = _read_json(current_path)
             if current and current.get("run_id") == run_id and current != payload:
@@ -1534,7 +1575,9 @@ def reconcile_and_record_abandoned_verify_runs(
         if os.environ.get(VERIFY_EVIDENCE_PATH_ENV)
         else cache / VERIFY_EVIDENCE_PATH.name
     )
-    history_ids = {str(row.get("run_id")) for row in _read_history_pinned(history_path)}
+    if not reconciled:
+        return reconciled
+    history_ids = {str(row.get("run_id")) for row in _iter_history_pinned(history_path)}
     evidence_ids = {str(row.get("run_id")) for row in read_verification_evidence(evidence_target)}
     for payload in reconciled:
         with contextlib.suppress(OSError, ValueError):

@@ -64,8 +64,9 @@ def _handle_get_messages(self: Any, conv_id: str, params: dict[str, list[str]]) 
     limit = clamp_query_limit(self._get_int(params, "limit", 50), default=50)
     offset = max(0, self._get_int(params, "offset", 0))
     continuation = self._get_param(params, "continuation")
-    around = self._get_param(params, "around")
-    if not self._accept_message_window_anchor(around, continuation):
+    # A present-but-blank anchor stays "" so the anchor/offset conflict check sees it.
+    around = params["around"][0] if "around" in params else None
+    if not self._accept_message_window_anchor(around, continuation, offset):
         return
 
     archive_root = _web_reader_archive_root()
@@ -152,7 +153,7 @@ def _handle_get_session_cost(self: Any, conv_id: str) -> None:
 
 
 def _handle_get_session_evidence_summary(self: Any, conv_id: str) -> None:
-    """Return bounded structural counts for the reader evidence strip."""
+    """Return structural counts and every lineage reference for the reader evidence strip."""
     from polylogue.archive.query.transaction import archive_read_context
     from polylogue.daemon.http import _cost_panel_payload, _empty_cost_payload, _web_reader_archive_root
     from polylogue.logging import WARNING, emit
@@ -205,7 +206,6 @@ def _handle_get_session_evidence_summary(self: Any, conv_id: str) -> None:
                 for session_id, kind, status in evidence.lineage_refs
             ],
             "lineage_refs_authoritative": not gaps,
-            "lineage_limit": 20,
             "outcome": decide_outcome(
                 matched=evidence.tool_calls + len(evidence.lineage_refs), degraded=gaps
             ).to_dict(),
@@ -293,14 +293,18 @@ def _handle_get_session_topology(
             topology = asyncio.run(
                 read_session_topology(archive, conv_id, node_offset=node_offset, node_limit=node_limit)
             )
-        result = build_topology_envelope(topology, node_limit=node_limit) if topology is not None else None
+        result = (
+            build_topology_envelope(topology, node_limit=node_limit, node_offset=node_offset)
+            if topology is not None
+            else None
+        )
     else:
 
         async def _get(poly: Polylogue) -> object:
             topology = await poly.get_session_topology(conv_id, node_offset=node_offset, node_limit=node_limit)
             if topology is None:
                 return None
-            return build_topology_envelope(topology, node_limit=node_limit)
+            return build_topology_envelope(topology, node_limit=node_limit, node_offset=node_offset)
 
         result = self._sync_run(_get)
     if result is None:
