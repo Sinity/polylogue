@@ -815,9 +815,10 @@ def test_stored_work_events_feed_digest_and_run_projection() -> None:
         "recorded artifact_change",
     ]
     # Stored session evidence has no message coordinate; do not invent one.
-    assert [(event.subject_ref.kind, event.subject_ref.object_id) for event in observed] == [
-        ("session", str(session.id))
-    ] * 4
+    assert len(observed) == 4
+    for event in observed:
+        assert event.subject_ref is not None
+        assert (event.subject_ref.kind, event.subject_ref.object_id) == ("session", str(session.id))
     assert compile_session_run_projection(session) == digest.run_projection
 
 
@@ -1038,5 +1039,6 @@ def test_message_backed_outcomes_keep_message_subjects() -> None:
     assert events
     for event in events:
         assert event.evidence_refs[0].message_id is not None
+        assert event.subject_ref is not None
         assert event.subject_ref.kind == "message"
         assert event.subject_ref.object_id == event.evidence_refs[0].message_id
