@@ -128,6 +128,21 @@ def test_a_sealed_prepared_session_answers_its_timeline_without_decoding(
     assert disk_pair == session_evidence_timestamps(list_session) == (_T0 + 2, _T0 + 90)
 
 
+def test_stored_bounds_read_rows_holding_lone_surrogate_text(tmp_path: Path) -> None:
+    """A row the sink stores with an escaped lone surrogate still answers."""
+    store = SqliteMessageStore(tmp_path / "surrogate.db")
+    sink = store.new_sink()
+    sink.append(ParsedMessage(provider_message_id="s", role=Role.USER, text="bad \ud800 text", occurred_at_ms=_T0))
+    sink.append(ParsedMessage(provider_message_id="t", role=Role.USER, text="fine", occurred_at_ms=_T0 + 3))
+    store.conn.commit()
+    store.close()
+
+    sealed = SqliteMessageSink(store.path, sink.session_ordinal, count=len(sink))
+
+    assert sealed.occurred_at_bounds() == (_T0, _T0 + 3)
+    assert [message.text for message in sealed][0] == "bad \ud800 text"
+
+
 def test_a_changed_timeline_changes_the_derived_pair(tmp_path: Path) -> None:
     """A derived pair is never trusted over the timeline it came from: a
     normalized session whose messages change reports the new extrema."""
