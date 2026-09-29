@@ -165,7 +165,17 @@ async def test_completions_subject_returns_the_shared_python_api_payload(
             )
             shared = await archive.query_completions(kind, incomplete=incomplete, unit=unit)
             assert body.get("budget_exceeded") is not True, f"{kind} no longer fits the response budget"
-            assert body == {"subject": "completions", **cast(dict[str, Any], shared)}
+            expected = cast(dict[str, Any], shared)
+            candidates = expected["candidates"]
+            assert body == {
+                "subject": "completions",
+                **expected,
+                "candidates": candidates[:25],
+                "total": len(candidates),
+                "limit": 25,
+                "offset": 0,
+                "next_offset": 25 if len(candidates) > 25 else None,
+            }
             assert body["candidates"], f"{kind} completions came back empty"
 
 
@@ -209,9 +219,9 @@ async def test_field_pointer_returns_exactly_the_unit_fields_the_catalog_counts(
             expected = {field.name for field in descriptors[unit_name].fields}
             # A budget-bounded first page is a prefix, never a different set.
             assert offered <= expected, f"{unit_name} fields_via offered names that are not its fields"
-            if not body.get("budget_exceeded"):
+            assert page["total"] == unit["field_count"] == len(expected)
+            if not body.get("budget_exceeded") and page["next_offset"] is None:
                 assert offered == expected
-                assert unit["field_count"] == len(expected)
             checked += 1
 
     assert checked or by_unit, "the catalog published no units at all"
@@ -237,3 +247,42 @@ async def test_completions_refuse_an_undeclared_kind_without_a_traceback(
     assert "not-a-kind" in body["message"]
     assert missing_unit["code"] == "invalid_argument"
     assert "unit" in missing_unit["message"]
+
+
+@pytest.mark.asyncio
+async def test_completions_page_against_shared_owner(mcp_server: MCPServerUnderTest, tmp_path: Path) -> None:
+    """Without candidate paging, the registered MCP route repeats the whole owner payload."""
+    from polylogue import Polylogue
+
+    root = _seeded_archive(tmp_path)
+    archive = Polylogue(archive_root=root)
+    explain = mcp_server._tool_manager._tools["explain"].fn
+    shared = await archive.query_completions("field")
+    candidates = shared["candidates"]
+    assert len(candidates) > 4
+    with patch("polylogue.mcp.server._get_polylogue", return_value=archive):
+        first = json.loads(await invoke_surface_async(explain, subject="completions", kind="field", limit=2))
+        second = json.loads(
+            await invoke_surface_async(
+                explain, subject="completions", kind="field", limit=2, offset=first["next_offset"]
+            )
+        )
+    assert first["candidates"] + second["candidates"] == candidates[:4]
+    assert second["offset"] == 2
+    assert second["total"] == len(candidates)
+
+
+@pytest.mark.asyncio
+async def test_capability_discovery_includes_messages(mcp_server: MCPServerUnderTest, tmp_path: Path) -> None:
+    """The older list-only vocabulary omitted the runtime messages view."""
+    from polylogue import Polylogue
+    from polylogue.operations.session_projections import mcp_read_view_names
+
+    root = _seeded_archive(tmp_path)
+    with patch("polylogue.mcp.server._get_polylogue", return_value=Polylogue(archive_root=root)):
+        body = json.loads(
+            await invoke_surface_async(mcp_server._tool_manager._tools["explain"].fn, subject="capability", limit=1)
+        )
+    page = body.get("page") or body
+    assert set(page["read_views"]) == set(mcp_read_view_names())
+    assert "messages" in page["read_views"]

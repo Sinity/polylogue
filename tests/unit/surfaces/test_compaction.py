@@ -193,3 +193,104 @@ def test_compaction_refuses_a_budget_below_its_envelope() -> None:
     with pytest.raises(CompactionBudgetTooSmallError) as refusal:
         compact_sessions([], spec=CompactProjectionSpec(max_tokens=1))
     assert refusal.value.envelope_tokens > 1
+
+
+def test_compaction_does_not_invent_canonical_content_hashes() -> None:
+    """An input without an archive content hash keeps no anchor hash.
+
+    Anti-vacuity: restore the text-only sha256 fallback and the ``missing``
+    anchor carries a hash the archive never computed.
+    """
+    pack = compact_sessions(
+        [
+            {
+                "id": "s",
+                "messages": [
+                    {"id": "missing", "text": "evidence", "material_origin": "human_authored"},
+                    {"id": "known", "text": "evidence", "material_origin": "human_authored", "content_hash": "a" * 64},
+                ],
+            }
+        ]
+    )
+    hashes = {item.anchor.ref.message_id: item.anchor.content_hash for item in pack.items}
+    assert hashes == {"missing": None, "known": "a" * 64}
+
+
+def test_compaction_interprets_archive_integer_tool_flags() -> None:
+    """A stored block's integer 0 is a successful tool result.
+
+    Anti-vacuity: compare with ``is False`` and the archive row's 0 is kept
+    as evidence instead of being dropped as successful tool spam.
+    """
+    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow
+
+    messages = [
+        {
+            "id": str(flag),
+            "text": "tool output",
+            "material_origin": "tool_result",
+            "blocks": (
+                ArchiveBlockRow(
+                    block_id=f"block-{flag}",
+                    message_id=str(flag),
+                    block_type="tool_result",
+                    text="tool output",
+                    tool_result_is_error=flag,
+                ),
+            ),
+        }
+        for flag in (0, 1, None)
+    ]
+    pack = compact_sessions([{"id": "s", "messages": messages}])
+    assert {item.anchor.ref.message_id for item in pack.items} == {"1", "None"}
+    assert pack.manifest.drop_counts["successful_tool_spam"] == 1
+
+
+def test_compaction_identity_commits_to_content_projection_and_provenance() -> None:
+    """Packs that differ in text, projection or provenance get different refs.
+
+    Anti-vacuity: hash only the kept anchor refs and all four packs, which
+    retain the same single anchor, share one ``pack_ref``.
+    """
+
+    def pack(text: str = "evidence", budget: int = 60_000, run: str | None = None) -> CorpusCompactionPack:
+        return compact_sessions(
+            [{"id": "s", "messages": [{"id": "m", "text": text, "material_origin": "human_authored"}]}],
+            spec=CompactProjectionSpec(max_tokens=budget),
+            query_run_ref=run,
+        )
+
+    first = pack()
+    assert first.pack_ref == pack().pack_ref
+    assert first.token_estimate == _wire_tokens(first)
+    refs = {first.pack_ref, pack("changed evidence").pack_ref, pack(budget=59_000).pack_ref}
+    refs.add(pack(run="query-run:other").pack_ref)
+    assert len(refs) == 4
+
+
+def test_compaction_markdown_preserves_fidelity_manifest_and_omission_anchors() -> None:
+    """The Markdown rendering carries the whole manifest and every omission anchor.
+
+    Anti-vacuity: render only the aggregate drop counts and the per-origin and
+    per-session maps, ``unknown`` and the omitted anchors are missing.
+    """
+    pack = compact_sessions(
+        [
+            {
+                "id": "child",
+                "parent_id": "missing-parent",
+                "messages": [
+                    {"id": "omitted", "text": "protocol", "material_origin": "runtime_protocol"},
+                    {"id": "kept", "text": "authored evidence", "material_origin": "human_authored"},
+                ],
+            }
+        ]
+    )
+    markdown = pack.render_markdown()
+    assert "lineage_unresolved" in markdown
+    assert "drop_counts_by_material_origin" in markdown
+    assert "included_tokens_by_session" in markdown
+    assert "dropped_tokens_by_session" in markdown
+    assert pack.omissions
+    for omission in pack.omissions:
+        assert omission.anchor.ref.format() in markdown

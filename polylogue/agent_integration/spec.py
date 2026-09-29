@@ -491,7 +491,12 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
         source_names=_CONTEXT_SOURCES,
         purpose="Compile a bounded, policy-gated context image with receipts and evidence refs for resumption or investigation.",
         arguments=(
-            _arg("intent", "string", True, "Context intent such as resume, postmortem, prior-art, or coordination."),
+            _arg(
+                "intent",
+                "string",
+                True,
+                "Context intent such as resume, precompact, postmortem, prior-art, or coordination.",
+            ),
             _arg("query", "string", False, "Parser-owned cohort expression that constrains source material."),
             _arg(
                 "budget_tokens", "integer", False, "Upper bound for compiled context, not a claim-completeness limit."
@@ -645,6 +650,12 @@ TOOL_CONTRACTS: tuple[ToolContract, ...] = (
             _arg("replacement_kind", "string", False, "Replacement assertion kind."),
             _arg("replacement_body_text", "string", False, "Replacement assertion body."),
             _arg("replacement_value", "object", False, "Structured replacement assertion value."),
+            _arg(
+                "expected_evidence_digest",
+                "string",
+                False,
+                "Expected evidence digest for a single candidate; bulk items carry their own digest.",
+            ),
         ),
         examples=(
             _example(

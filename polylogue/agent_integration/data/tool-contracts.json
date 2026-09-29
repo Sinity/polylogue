@@ -393,7 +393,7 @@
     {
       "arguments": [
         {
-          "description": "Context intent such as resume, postmortem, prior-art, or coordination.",
+          "description": "Context intent such as resume, precompact, postmortem, prior-art, or coordination.",
           "enum_values": [],
           "kind": "string",
           "name": "intent",
@@ -858,6 +858,13 @@
           "enum_values": [],
           "kind": "object",
           "name": "replacement_value",
+          "required_initial": false
+        },
+        {
+          "description": "Expected evidence digest for a single candidate; bulk items carry their own digest.",
+          "enum_values": [],
+          "kind": "string",
+          "name": "expected_evidence_digest",
           "required_initial": false
         }
       ],

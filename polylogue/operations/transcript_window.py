@@ -308,6 +308,8 @@ async def message_transcript_window(api: Any, request: SessionRead) -> Transcrip
     owners.
     """
 
+    from polylogue.operations.archive_mutation import SessionNotFoundError
+
     session_id = request.ref.removeprefix("session:")
 
     async def read(limit: int, offset: int) -> tuple[list[Any], int, Any]:
@@ -316,7 +318,7 @@ async def message_transcript_window(api: Any, request: SessionRead) -> Transcrip
 
             session = await api.get_session(session_id)
             if session is None:
-                raise ValueError(f"session not found: {session_id}")
+                raise SessionNotFoundError(f"session not found: {session_id}")
             messages = [
                 message
                 for message in session.messages
@@ -338,7 +340,7 @@ async def message_transcript_window(api: Any, request: SessionRead) -> Transcrip
             offset=offset,
         )
         if total == 0 and resolved_session_id == session_id and await api.repository.resolve_id(session_id) is None:
-            raise ValueError(f"session not found: {session_id}")
+            raise SessionNotFoundError(f"session not found: {session_id}")
         return list(messages), total, completeness
 
     # The repository's explicit index path is authoritative for compatibility

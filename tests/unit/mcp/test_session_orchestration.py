@@ -449,3 +449,30 @@ def test_all_measured_lanes_report_no_unmeasured_bucket() -> None:
     assert evidence.usage["messages_with_unmeasured_token_lanes"] == 0
     assert evidence.usage["unmeasured_token_lane_messages"] is None
     assert "message_token_lanes_unmeasured" not in evidence.gaps
+
+
+def test_truncated_orchestration_children_belong_to_retained_topology() -> None:
+    """Keeping the pre-truncation child list returns a child with no retained node."""
+    from polylogue.analysis.orchestration_evidence import build_session_orchestration
+    from polylogue.analysis.topology import SessionTopology, TopologyEdge, TopologyEdgeKind, TopologyNode
+    from polylogue.archive.message.messages import MessageCollection
+    from polylogue.archive.session.domain_models import Session
+    from polylogue.core.enums import Origin
+    from polylogue.core.types import SessionId
+
+    root = SessionId("codex-session:root")
+    children = [SessionId(f"codex-session:child-{i:04d}") for i in range(1000)]
+    topology = SessionTopology(
+        target_id=root,
+        root_id=root,
+        nodes=(TopologyNode(session_id=root), *(TopologyNode(session_id=child) for child in children)),
+        edges=tuple(TopologyEdge(parent_id=root, child_id=child, kind=TopologyEdgeKind.SUBAGENT) for child in children),
+    )
+    evidence = build_session_orchestration(
+        Session(id=root, origin=Origin.CODEX_SESSION, messages=MessageCollection.empty()), topology
+    )
+    assert evidence.topology is not None
+    retained = {node["session_id"] for node in evidence.topology["nodes"]}
+    assert evidence.children
+    assert {child["session_id"] for child in evidence.children} <= retained
+    assert "observation_limit" in evidence.gaps

@@ -25,6 +25,7 @@ from polylogue.mcp.payloads import (
     MCPRootPayload,
     session_topology_payload,
 )
+from polylogue.mcp.query_contracts import PERSONAL_STATE_PROJECTIONS
 from polylogue.operations.session_contracts import SessionOperation
 from polylogue.operations.session_projections import (
     SESSION_LIST_PROJECTIONS,
@@ -33,7 +34,7 @@ from polylogue.operations.session_projections import (
     is_mcp_get_session_projection,
     is_mcp_read_view,
     mcp_get_session_projection_names,
-    session_list_projection_names,
+    mcp_read_view_names,
 )
 from polylogue.surfaces.outcome import decide_outcome
 
@@ -164,7 +165,7 @@ def _object_ref(ref: str) -> str:
 
 
 async def _resolve_reference_query_pipeline(
-    hooks: ServerCallbacks, expression: str, *, limit: int | None
+    hooks: ServerCallbacks, expression: str, *, limit: int | None, offset: int | None
 ) -> str | None:
     """Resolve a ``from query:<hash>|result-set:<id>|query-run:<id>|cohort:<id>`` pipeline.
 
@@ -241,20 +242,26 @@ async def _resolve_reference_query_pipeline(
     ) as exc:
         return hooks.error_json(str(exc), code="invalid_argument", tool="query")
 
-    member_refs = resolved.member_refs
-    truncated = False
-    if limit is not None and limit >= 0 and len(member_refs) > limit:
-        member_refs = member_refs[:limit]
-        truncated = True
+    from polylogue.mcp.mutation_support import page_items
+
+    if offset is not None and offset < 0:
+        return hooks.error_json("offset must not be negative", code="invalid_argument", tool="query")
+    page_limit = hooks.clamp_limit(limit)
+    member_refs, total, page_offset, next_offset = page_items(
+        resolved.member_refs, limit=page_limit, offset=offset or 0
+    )
     return hooks.json_payload(
         MCPRootPayload(
             root={
                 "source": pipeline.operand.reference.format(),
                 "grain": resolved.grain,
                 "lineage": [ref.format() for ref in resolved.lineage],
-                "member_count": len(resolved.member_refs),
+                "member_count": total,
                 "members": member_refs,
-                "truncated": truncated,
+                "limit": page_limit,
+                "offset": page_offset,
+                "next_offset": next_offset,
+                "truncated": len(member_refs) < total,
             }
         )
     )
@@ -412,14 +419,12 @@ async def _query_sessions(
             )
 
     cls = SessionSearch if expression else SessionList
+    continuation_request = None
     if continuation:
         from polylogue.archive.query.transaction import QueryContinuation
 
-        cls = (
-            SessionSearch
-            if QueryContinuation.decode(continuation).request.operation == "sessions.search"
-            else SessionList
-        )
+        continuation_request = QueryContinuation.decode(continuation).request
+        cls = SessionSearch if continuation_request.operation == "sessions.search" else SessionList
     values = {
         "expression": expression,
         "origin": origin,
@@ -431,7 +436,7 @@ async def _query_sessions(
         "min_messages": min_messages,
         "max_messages": max_messages,
         "min_words": min_words,
-        "limit": bounded_limit,
+        "limit": bounded_limit if continuation is None or limit is not None else None,
         "offset": offset,
         "continuation": continuation,
     }
@@ -440,14 +445,21 @@ async def _query_sessions(
     if isinstance(request, SessionSearch):
         from polylogue.surfaces.payloads import build_search_envelope
 
+        envelope_request = (
+            SessionSearch.model_validate(
+                {key: value for key, value in continuation_request.arguments.items() if key != "resolved_dates"}
+            )
+            if continuation_request is not None
+            else request
+        )
         envelope = build_search_envelope(
             tuple(payload.items),
             total=payload.total,
             limit=payload.limit,
             offset=payload.offset,
-            query=request.expression or "",
+            query=envelope_request.expression or "",
             retrieval_lane="dialogue",
-            sort=request.sort,
+            sort=envelope_request.sort,
         )
         return hooks.json_payload(
             MCPRootPayload(
@@ -563,16 +575,6 @@ async def _query_advanced_sessions(
         )
 
 
-#: ``query(projection=..., ...)`` values that list a durable personal-state
-#: record kind rather than an archive content unit. Restores read access the
-#: retired per-tool registrars (``server_mutation_tools.py``,
-#: ``server_personal_state_tools.py``, ``server_tools.py``'s
-#: ``blackboard_list``) used to provide -- the underlying facade calls never
-#: moved.
-_PERSONAL_STATE_PROJECTIONS = frozenset(
-    {"marks", "annotations", "saved_views", "recall_packs", "workspaces", "corrections", "blackboard"}
-)
-
 #: ``query(projection=..., ...)`` reports the MCP dispatcher compiles itself
 #: over a matched session scope. These are deliberately NOT insight-registry
 #: descriptors: each is a bundle/report built from a session query, not a
@@ -614,7 +616,7 @@ def mcp_query_projection_names() -> tuple[str, ...]:
                 "session-operations",
                 "timeline",
                 "sessions",
-                *_PERSONAL_STATE_PROJECTIONS,
+                *PERSONAL_STATE_PROJECTIONS,
                 *insight_projections(),
             }
         )
@@ -718,8 +720,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
     """``query(projection=<personal-state kind>, ...)`` -- list durable personal-state records.
 
     Thin dispatch onto the already-live, already-tested ``Polylogue`` list
-    facade methods. Offset pagination is not yet exposed here, mirroring the
-    ``projection="sessions"`` precedent (also fixed at offset 0).
+    facade methods. Decimal offsets page each selected record kind.
     """
     from polylogue.mcp.archive_support import blackboard_note_payload
     from polylogue.mcp.mutation_support import page_items
@@ -737,7 +738,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
     poly = hooks.get_polylogue()
     clamped_limit = hooks.clamp_limit(limit)
 
-    with hooks.response_context("query", {"projection": projection, "limit": clamped_limit}):
+    with hooks.response_context("query", {"projection": projection, "limit": clamped_limit, "offset": offset}):
         if projection == "marks":
             rows = await poly.list_marks()
             mark_items = tuple(
@@ -1076,18 +1077,29 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         session_id: str,
         *,
         tool: Literal["get", "read"],
+        limit: int | None = None,
+        offset: int = 0,
     ) -> str:
         """Run one table-declared session list projection for either read route."""
         rows = await getattr(hooks.get_polylogue(), projection.method)(session_id)
         if rows is None:
             return hooks.error_json(f"object not found: session:{session_id}", code="not_found", tool=tool)
+        from polylogue.mcp.mutation_support import page_items
+
+        total = len(rows)
+        next_offset = None
+        if limit is not None:
+            rows, total, offset, next_offset = page_items(rows, limit=limit, offset=offset)
         return hooks.json_payload(
             MCPRootPayload(
                 root={
                     "session_id": session_id,
-                    "total": len(rows),
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                    "next_offset": next_offset,
                     projection.payload_key: rows,
-                    "outcome": decide_outcome(matched=len(rows)).to_dict(),
+                    "outcome": decide_outcome(matched=total).to_dict(),
                 }
             )
         )
@@ -1198,7 +1210,9 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     )
 
             if expression is not None:
-                reference_result = await _resolve_reference_query_pipeline(hooks, expression, limit=limit)
+                reference_result = await _resolve_reference_query_pipeline(
+                    hooks, expression, limit=limit, offset=offset
+                )
                 if reference_result is not None:
                     return reference_result
 
@@ -1231,7 +1245,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 except ValueError as exc:
                     return hooks.error_json(str(exc), code=str(getattr(exc, "code", "invalid_argument")), tool="query")
 
-            if projection in _PERSONAL_STATE_PROJECTIONS:
+            if projection in PERSONAL_STATE_PROJECTIONS:
                 try:
                     page_offset = int(continuation) if continuation is not None else (offset or 0)
                 except ValueError:
@@ -1387,6 +1401,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 )
 
                 target = session_id or normalized
+                from polylogue.operations.archive_mutation import SessionNotFoundError
                 from polylogue.operations.message_locator import MessageNotInSessionError
 
                 try:
@@ -1397,6 +1412,8 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         continuation=window_continuation,
                         around=around,
                     )
+                except SessionNotFoundError:
+                    return hooks.error_json(f"object not found: {ref}", code="not_found", tool="read")
                 except MessageNotInSessionError as exc:
                     # A resolvable reference this session does not contain is a
                     # refusal, not page zero under the caller's ref.
@@ -1439,7 +1456,12 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     return hooks.error_json(
                         f"read view {view!r} requires a session ref", code="invalid_argument", tool="read"
                     )
-                return await _session_list_projection_payload(list_projection, session_id, tool="read")
+                with hooks.response_context(
+                    "read", {"ref": ref, "view": view, "limit": hooks.clamp_limit(limit), "offset": offset or 0}
+                ):
+                    return await _session_list_projection_payload(
+                        list_projection, session_id, tool="read", limit=hooks.clamp_limit(limit), offset=offset or 0
+                    )
             if not is_mcp_read_view(view):
                 return hooks.error_json(f"unsupported read view: {view}", code="invalid_argument", tool="read")
             payload = await hooks.get_polylogue().resolve_ref(normalized)
@@ -1554,7 +1576,8 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         tool that exists rather than one that does not.
 
         ``offset`` skips this many entries into the ``result``/``recovery``
-        examples catalog or the ``capability`` read-view list before paging;
+        examples catalog, ``completions`` candidates, or the ``capability``
+        read-view list before paging;
         it exists so a budget-exceeded continuation can advance through the
         full catalog instead of repeating the same oversized call
         (polylogue-3k30). It is ignored for ``query``/``ref`` subjects, which
@@ -1583,7 +1606,24 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     )
                 except QueryCompletionError as exc:
                     return hooks.error_json(str(exc), code="invalid_argument", tool="explain")
-                return hooks.json_payload(MCPRootPayload(root={"subject": subject, **payload}))
+                from polylogue.mcp.mutation_support import page_items
+
+                candidates, total, page_offset, next_offset = page_items(
+                    cast(list[Any], payload["candidates"]), limit=hooks.clamp_limit(limit), offset=offset
+                )
+                return hooks.json_payload(
+                    MCPRootPayload(
+                        root={
+                            "subject": subject,
+                            **payload,
+                            "candidates": candidates,
+                            "total": total,
+                            "limit": hooks.clamp_limit(limit),
+                            "offset": page_offset,
+                            "next_offset": next_offset,
+                        }
+                    )
+                )
 
             if subject == "session-operations":
                 from polylogue.operations.session_contracts import session_operation_contracts
@@ -1640,7 +1680,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         root={
                             "subject": subject,
                             **page,
-                            "read_views": list(session_list_projection_names()),
+                            "read_views": list(mcp_read_view_names()),
                         }
                     )
                 )
@@ -1691,7 +1731,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
     ) -> str:
         """Compile a policy-gated bounded context image with receipts.
 
-        ``intent="resume"`` builds the SessionStart preamble (session
+        ``intent="resume"`` or ``intent="precompact"`` builds the preamble (session
         lineage, ranked resume candidates, project git state, and
         provenance-gated assertion guidance) instead of the default
         seed-query/seed-ref context image. ``limit`` bounds the number of
@@ -2881,11 +2921,14 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
             replacement_kind: str | None = None,
             replacement_body_text: str | None = None,
             replacement_value: object | None = None,
+            expected_evidence_digest: str | None = None,
         ) -> str:
             """Accept, reject, defer, or supersede assertion candidates.
 
             Pass ``items`` for bulk judgment (independently reported partial
             success), or ``candidate_ref``+``decision`` for a single one.
+            ``expected_evidence_digest`` guards the single candidate against
+            changed evidence; bulk items carry their own digest.
 
             The recorded actor is always ``_MCP_JUDGE_ACTOR_REF`` -- this
             tool has no authenticated caller identity (37t.11), so it does
@@ -2947,6 +2990,7 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
                             replacement_kind=replacement_kind,
                             replacement_body_text=replacement_body_text,
                             replacement_value=replacement_value,
+                            expected_evidence_digest=expected_evidence_digest,
                         ),
                     )
                 else:

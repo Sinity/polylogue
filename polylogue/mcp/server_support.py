@@ -33,6 +33,7 @@ from polylogue.logging import get_logger
 from polylogue.mcp.archive_support import clip_with_marker
 from polylogue.mcp.declarations.models import MCPCapabilities
 from polylogue.mcp.payloads import MCPErrorPayload, MCPFencedCodeBlock
+from polylogue.mcp.query_contracts import PERSONAL_STATE_PROJECTIONS
 from polylogue.services import RuntimeServices
 from polylogue.surfaces.payloads import serialize_surface_payload
 
@@ -366,7 +367,14 @@ def _budget_envelope(payload: BaseModel, *, original_bytes: int, exclude_none: b
     context = _response_context_var.get()
     page = _bounded_item_page(payload, exclude_none=exclude_none)
     continuation = _narrow_continuation(context, consumed=page[1] if page is not None else None)
-    if context is not None and context.tool in {"query", "query_units"} and page is not None:
+    # Personal-state projections page by decimal offset and carry no framed
+    # transaction; ``_narrow_continuation`` already advanced their offset.
+    if (
+        context is not None
+        and context.tool in {"query", "query_units"}
+        and page is not None
+        and context.arguments.get("projection") not in PERSONAL_STATE_PROJECTIONS
+    ):
         # The executor attaches the framed request outside its serialized
         # payload. Rebase from it rather than a storage continuation: even a
         # final storage page may overflow the smaller MCP byte budget.

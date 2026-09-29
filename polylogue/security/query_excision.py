@@ -224,14 +224,14 @@ def apply_query_excision(
     for query_hash in query_hashes_to_remove:
         ledger_id = f"query-excision:{hashlib.sha256(('query:' + query_hash).encode()).hexdigest()}"
         conn.execute(
-            "INSERT OR IGNORE INTO query_excision_ledger (ledger_id, query_hash, excision_link, reason_digest, actor_ref, prior_revision, excised_at_ms) VALUES (?, ?, ?, ?, ?, 0, ?)",
+            "INSERT INTO query_excision_ledger (ledger_id, query_hash, excision_link, reason_digest, actor_ref, prior_revision, excised_at_ms) VALUES (?, ?, ?, ?, ?, 0, ?) ON CONFLICT(ledger_id) DO NOTHING",
             (ledger_id, query_hash, plan.target_ref, reason_digest, actor, now_ms),
         )
         ledger_ids.append(ledger_id)
     for result_set_id in plan.result_set_ids:
         ledger_id = f"query-excision:{hashlib.sha256(('result-set:' + result_set_id).encode()).hexdigest()}"
         conn.execute(
-            "INSERT OR IGNORE INTO query_excision_ledger (ledger_id, result_set_id, excision_link, reason_digest, actor_ref, prior_revision, excised_at_ms) VALUES (?, ?, ?, ?, ?, 0, ?)",
+            "INSERT INTO query_excision_ledger (ledger_id, result_set_id, excision_link, reason_digest, actor_ref, prior_revision, excised_at_ms) VALUES (?, ?, ?, ?, ?, 0, ?) ON CONFLICT(ledger_id) DO NOTHING",
             (ledger_id, result_set_id, plan.target_ref, reason_digest, actor, now_ms),
         )
         ledger_ids.append(ledger_id)
@@ -268,6 +268,11 @@ def apply_query_excision(
         )
     if plan.result_set_ids:
         marks = ",".join("?" for _ in plan.result_set_ids)
+        conn.execute(
+            f"UPDATE query_names SET watch = 0, updated_at_ms = ? "
+            f"WHERE query_hash IN (SELECT query_hash FROM watched_query_baselines WHERE result_set_id IN ({marks}))",
+            (now_ms, *plan.result_set_ids),
+        )
         conn.execute(f"DELETE FROM watched_query_baselines WHERE result_set_id IN ({marks})", plan.result_set_ids)
         conn.execute(f"DELETE FROM result_set_holdout_policies WHERE result_set_id IN ({marks})", plan.result_set_ids)
         conn.execute(f"DELETE FROM retained_query_runs WHERE result_set_id IN ({marks})", plan.result_set_ids)

@@ -141,6 +141,9 @@ def estimate_serialized_tokens(serialized: str) -> int:
     return max(estimate_tokens(serialized), (len(serialized.encode("utf-8")) + 3) // 4)
 
 
+_PLACEHOLDER_PACK_REF = "compact:" + "0" * 64
+
+
 def _serialized_pack(pack: CorpusCompactionPack) -> str:
     return json.dumps(pack.model_dump(mode="json"), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
 
@@ -180,10 +183,9 @@ def _tool_outcome(message: object) -> tuple[object, object]:
 
 def _anchor(session_id: str, message: object, index: int | None = None) -> CompactAnchor:
     message_id = str(_get(message, "id", _get(message, "message_id", "message")))
-    content = _message_text(message)
+    # A digest of the stripped text is not the archive's canonical content
+    # hash, so an input without one keeps no anchor hash.
     content_hash = cast(str | None, _get(message, "content_hash"))
-    if content_hash is None and content:
-        content_hash = sha256(content.encode("utf-8")).hexdigest()
     return CompactAnchor(ref=EvidenceRef(session_id, message_id, index), content_hash=content_hash)
 
 
@@ -256,7 +258,12 @@ def compact_sessions(
                 reason = "filtered_material_origin"
             if origin == "tool_result":
                 is_error, exit_code = _tool_outcome(message)
-                if is_error is False and (exit_code is None or int(cast(int | str, exit_code)) == 0):
+                # Archive rows store the flag as an integer, so 0 is success.
+                if (
+                    isinstance(is_error, bool | int)
+                    and is_error == 0
+                    and (exit_code is None or int(cast(int | str, exit_code)) == 0)
+                ):
                     reason = "successful_tool_spam"
             message_id = str(_get(message, "id", _get(message, "message_id", "")))
             if branch and message_id == branch:
@@ -340,7 +347,6 @@ def compact_sessions(
         else ()
     )
     while True:
-        pack_id = sha256("\n".join(i.anchor.ref.format() for i in kept).encode()).hexdigest()[:16]
         candidate = CorpusCompactionPack(
             projection=spec,
             items=tuple(kept),
@@ -356,7 +362,7 @@ def compact_sessions(
             token_estimate=0,
             query_run_ref=query_run_ref,
             result_relation_ref=result_relation_ref,
-            pack_ref=f"compact:{pack_id}",
+            pack_ref=_PLACEHOLDER_PACK_REF,
         )
         # The estimate is part of what it measures. Starting from zero it only
         # grows, and it reaches a fixed point once its decimal width is stable.
@@ -365,7 +371,10 @@ def compact_sessions(
             candidate = candidate.model_copy(update={"token_estimate": serialized_tokens})
             serialized_tokens = estimate_serialized_tokens(_serialized_pack(candidate))
         if serialized_tokens <= budget:
-            return candidate
+            # The identity commits to the whole emitted pack. It has a fixed
+            # width, so filling it in does not change the measured size.
+            identity = sha256(_serialized_pack(candidate.model_copy(update={"pack_ref": ""})).encode("utf-8"))
+            return candidate.model_copy(update={"pack_ref": f"compact:{identity.hexdigest()}"})
         if omissions:
             omissions.pop()
             if "omission_rows_truncated" not in unknown:
@@ -402,8 +411,14 @@ def render_compaction_markdown(pack: CorpusCompactionPack) -> str:
         "## Drop manifest",
         "",
     ]
-    for reason, count in pack.manifest.drop_counts.items():
-        lines.append(f"- {reason}: {count}")
+    lines.extend(["```json", json.dumps(pack.manifest.model_dump(mode="json"), sort_keys=True, indent=2), "```"])
+    lines.extend(["", "## Omission evidence", ""])
+    for omission in pack.omissions:
+        lines.append(
+            f"- `{omission.anchor.ref.format()}`: {omission.reason}; "
+            f"{omission.detail}; tokens={omission.token_estimate}; "
+            f"content_hash={omission.anchor.content_hash or 'unavailable'}"
+        )
     for item in pack.items:
         lines.extend(
             ["", f"## {item.anchor.ref.format()}", "", f"_Reasons: {', '.join(item.reasons) or 'none'}_", "", item.text]

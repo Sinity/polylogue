@@ -13,6 +13,10 @@ from polylogue.archive.query.fields import mcp_query_field_names, query_boundary
 from polylogue.archive.query.spec import DEFAULT_SESSION_LIST_LIMIT, QuerySpecError, SessionQuerySpec, split_csv
 from polylogue.operations.origin_filters import public_origin_filter_tokens
 
+PERSONAL_STATE_PROJECTIONS = frozenset(
+    {"marks", "annotations", "saved_views", "recall_packs", "workspaces", "corrections", "blackboard"}
+)
+
 MCPToolLimit: TypeAlias = Annotated[int, Field(ge=1)]
 MCPToolOffset: TypeAlias = Annotated[int, Field(ge=0)]
 MCPCharacterLimit: TypeAlias = Annotated[int, Field(ge=1)] | None

@@ -188,7 +188,7 @@ Arguments:
 
 | Name | Kind | Required initially | Meaning |
 |---|---|---:|---|
-| `intent` | `string` | yes | Context intent such as resume, postmortem, prior-art, or coordination. |
+| `intent` | `string` | yes | Context intent such as resume, precompact, postmortem, prior-art, or coordination. |
 | `query` | `string` | no | Parser-owned cohort expression that constrains source material. |
 | `budget_tokens` | `integer` | no | Upper bound for compiled context, not a claim-completeness limit. |
 | `result_ref` | `string` | no | Existing result set to compile without rerunning discovery. |
@@ -391,6 +391,7 @@ Arguments:
 | `replacement_kind` | `string` | no | Replacement assertion kind. |
 | `replacement_body_text` | `string` | no | Replacement assertion body. |
 | `replacement_value` | `object` | no | Structured replacement assertion value. |
+| `expected_evidence_digest` | `string` | no | Expected evidence digest for a single candidate; bulk items carry their own digest. |
 
 Example — Defer a candidate pending stronger evidence:
 

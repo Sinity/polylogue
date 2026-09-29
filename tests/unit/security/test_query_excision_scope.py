@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import sqlite3
 
+import pytest
+
 from polylogue.security.query_excision import apply_query_excision, plan_query_excision
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -260,3 +262,71 @@ def test_an_unchanged_graph_still_applies() -> None:
     assert receipt.status == "applied"
     assert get_query(conn, query.query_hash) is None
     assert get_result_set(conn, relation.result_set_id) is None
+
+
+def test_relation_excision_disables_only_watches_whose_baseline_was_removed() -> None:
+    """A watch whose baseline snapshot is excised stops being evaluated.
+
+    Anti-vacuity: delete only the baseline row and both watched names keep
+    ``watch=1``, so the standing-query stage recreates the tombstoned result
+    set on every convergence pass.
+    """
+    from polylogue.storage.sqlite.query_objects import put_watched_query_baseline
+
+    conn = _conn()
+    query, _relation = _query_with_relation(conn)
+    watched = put_result_set(
+        conn,
+        result_set_id="watch-baseline",
+        query_hash=query.query_hash,
+        grain="session",
+        corpus_epoch="e1",
+        member_refs=("session:one",),
+        exactness="exact",
+        persistence_class="watch",
+        created_at_ms=2,
+    )
+    put_query_name(conn, name="watch-a", query_hash=query.query_hash, watch=True, updated_at_ms=2)
+    put_query_name(conn, name="watch-b", query_hash=query.query_hash, watch=True, updated_at_ms=2)
+    put_watched_query_baseline(conn, query_hash=query.query_hash, result_set_id=watched.result_set_id, updated_at_ms=2)
+    other = put_query(
+        conn,
+        {"field": "origin", "value": "chatgpt-export"},
+        grain="session",
+        lane="dialogue",
+        rank_policy="mixed",
+        created_at_ms=2,
+    )
+    put_query_name(conn, name="unrelated", query_hash=other.query_hash, watch=True, updated_at_ms=2)
+    receipt = apply_query_excision(
+        conn,
+        plan_query_excision(conn, "result-set:watch-baseline"),
+        reason="remove baseline",
+        actor="user:test",
+        now_ms=3,
+    )
+    assert receipt.status == "applied"
+    assert dict(conn.execute("SELECT name, watch FROM query_names")) == {"watch-a": 0, "watch-b": 0, "unrelated": 1}
+    assert get_query(conn, query.query_hash) is not None
+    assert conn.execute("SELECT COUNT(*) FROM watched_query_baselines").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("target_kind", ["query", "result-set"])
+@pytest.mark.parametrize(("actor", "now_ms"), [(" ", 3), ("user:test", -1)])
+def test_a_refused_tombstone_aborts_before_any_deletion(target_kind: str, actor: str, now_ms: int) -> None:
+    """A ledger row the schema refuses stops the excision before content goes.
+
+    Anti-vacuity: with ``INSERT OR IGNORE`` the CHECK failure inserts nothing,
+    the query and result set are deleted anyway, and an applied receipt comes
+    back with no tombstone to stop their recreation.
+    """
+    conn = _conn()
+    query, relation = _query_with_relation(conn)
+    _insert_assertion(conn, "keep-note", query.ref)
+    target = query.ref if target_kind == "query" else f"result-set:{relation.result_set_id}"
+    with pytest.raises(sqlite3.IntegrityError):
+        apply_query_excision(conn, plan_query_excision(conn, target), reason="privacy", actor=actor, now_ms=now_ms)
+    assert get_query(conn, query.query_hash) is not None
+    assert get_result_set(conn, relation.result_set_id) is not None
+    assert conn.execute("SELECT COUNT(*) FROM query_excision_ledger").fetchone()[0] == 0
+    assert conn.execute("SELECT status FROM assertions WHERE assertion_id='keep-note'").fetchone()[0] == "active"

@@ -4781,24 +4781,19 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         """
         from polylogue.operations.transcript_window import message_transcript_window, window_request
 
-        try:
-            window = await message_transcript_window(
-                self,
-                window_request(
-                    session_id,
-                    limit=limit,
-                    offset=offset,
-                    filters={
-                        "message_role": tuple(message_role),
-                        "message_type": message_type,
-                        "material_origin": tuple(material_origin),
-                    },
-                ),
-            )
-        except ValueError as exc:
-            if str(exc).startswith("session not found:"):
-                raise SessionNotFoundError(session_id) from exc
-            raise
+        window = await message_transcript_window(
+            self,
+            window_request(
+                session_id,
+                limit=limit,
+                offset=offset,
+                filters={
+                    "message_role": tuple(message_role),
+                    "message_type": message_type,
+                    "material_origin": tuple(material_origin),
+                },
+            ),
+        )
         messages = list(window.rows)
         total = window.total
         completeness = LineageCompleteness(
