@@ -70,8 +70,7 @@ The declaration applies only to source-owned blob hashes. It does not excuse
 missing hashes referenced by `index.db` attachments. A `full_evidence` backup
 therefore cannot attest when an index attachment is missing, even if that hash
 also appears in the source declaration. Restore or otherwise resolve every
-missing index attachment before using that profile for audit
-adoption.
+missing index attachment before relying on that profile.
 
 After the source generation migration creates `source_generations` and
 `source_items`, a retained sidecar makes verified backups fail closed. Remove

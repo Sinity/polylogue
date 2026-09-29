@@ -99,3 +99,15 @@ def test_concurrent_cold_reads_hash_a_blob_once(tmp_path: Path, monkeypatch: pyt
 
     assert results == [True] * 6
     assert hashes == [digest]
+
+
+def test_a_cancelled_rehash_stops_instead_of_answering(tmp_path: Path) -> None:
+    """Anti-vacuity: ignore ``stop`` and the scan answers ``True`` for a caller
+    that was cancelled before it started."""
+    from polylogue.storage.blob_store import BlobVerificationCancelledError
+
+    store = BlobStore(tmp_path)
+    digest = _store_blob(store, b"retained raw bytes")
+    with pytest.raises(BlobVerificationCancelledError):
+        store.verify(digest, stop=lambda: True)
+    assert store.verify(digest, stop=lambda: False)

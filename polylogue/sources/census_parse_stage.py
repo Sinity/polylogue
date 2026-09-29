@@ -52,7 +52,7 @@ from polylogue.archive.revision_authority import RawRevisionKind
 from polylogue.config import Config
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.sources import provider_from_origin
-from polylogue.logging import get_logger
+from polylogue.logging import WARNING, emit, get_logger
 from polylogue.operations.raw_observation_derivation import (
     make_raw_observation_derivation,
     raw_observation_frame,
@@ -134,21 +134,11 @@ def _readonly_descriptors(
 _MIN_MAX_INFLIGHT_BYTES = 64 * 1024 * 1024  # 64 MiB
 _MAX_MAX_INFLIGHT_BYTES = 2 * 1024 * 1024 * 1024  # 2 GiB
 
-# CodeRabbit (PR #3168): as_completed()/future.result() had no timeout, so one
-# hung worker (e.g. an unresponsive filesystem read) would block warm()
-# forever -- and warm() is awaited directly ahead of run_sync in the periodic
-# raw-materialization loop, so a stuck warm pass would stall every subsequent
-# drain pass indefinitely, not just this one. 300s (5 min) is generous for
-# the happy path (a bounded batch of already-published local blob reads) and
-# only ever matters on a genuine hang. On timeout, still-pending raws are
-# simply left uncached -- the writer-held pass reparses them normally, the
-# same graceful-degradation guarantee as any other prefetch miss. A
-# ThreadPoolExecutor cannot forcibly kill a running worker thread, so a truly
-# wedged worker keeps occupying one pool slot until it (eventually) returns;
-# that is an inherent limitation of thread-based cancellation, not something
-# this bound can fix -- the bound's job is only to stop the CONVEYOR LOOP
-# from waiting on it forever, which it does.
-_DEFAULT_WARM_TIMEOUT_SECONDS = 300.0
+# Seconds without a completed worker before warm() reports a stall. It is a
+# report, not a deadline (polylogue-slc55): abandoning a slow worker left its
+# raw for the writer-held pass to parse again from scratch, and a large raw
+# never finished. A wedged worker is visible through the repeated stall event.
+_DEFAULT_STALL_REPORT_SECONDS = 300.0
 
 
 class _ProcessBoundedThreadPoolExecutor(ThreadPoolExecutor):
@@ -307,19 +297,18 @@ def daemon_parse_stage_max_cached_tree_bytes() -> int:
     return max(_MIN_MAX_CACHED_TREE_BYTES, min(_MAX_MAX_CACHED_TREE_BYTES, physical // 8))
 
 
-def daemon_parse_stage_warm_timeout_seconds() -> float:
-    """Bound on how long ``warm()`` waits for its dispatched workers.
+def daemon_parse_stage_stall_report_seconds() -> float:
+    """Seconds without a completed worker before ``warm()`` reports a stall.
 
-    Override with ``POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS``. See
-    ``_DEFAULT_WARM_TIMEOUT_SECONDS`` for why this exists and what it does
-    (and does not) guarantee.
+    Not a deadline: ``warm()`` waits for its workers (only a stop request ends
+    it early). Override with ``POLYLOGUE_DAEMON_PARSE_STAGE_STALL_REPORT_SECONDS``.
     """
     from polylogue.config import load_polylogue_config
 
-    configured = load_polylogue_config().daemon_parse_stage_warm_timeout_seconds
+    configured = load_polylogue_config().daemon_parse_stage_stall_report_seconds
     if configured is not None and configured > 0:
         return configured
-    return _DEFAULT_WARM_TIMEOUT_SECONDS
+    return _DEFAULT_STALL_REPORT_SECONDS
 
 
 class CensusParseStage:
@@ -338,7 +327,7 @@ class CensusParseStage:
         *,
         max_workers: int | None = None,
         max_inflight_bytes: int | None = None,
-        warm_timeout_seconds: float | None = None,
+        stall_report_seconds: float | None = None,
         max_cached_tree_bytes: int | None = None,
     ) -> None:
         self._executor = _ProcessBoundedThreadPoolExecutor(
@@ -370,8 +359,8 @@ class CensusParseStage:
         # retries neither duplicate raw ids nor grow an unbounded queue.
         self._pending_payload_by_raw_id: dict[str, int] = {}
         self._pending_payload_bytes = 0
-        self._warm_timeout_seconds = (
-            warm_timeout_seconds if warm_timeout_seconds is not None else daemon_parse_stage_warm_timeout_seconds()
+        self._stall_report_seconds = (
+            stall_report_seconds if stall_report_seconds is not None else daemon_parse_stage_stall_report_seconds()
         )
         # polylogue-xb4i: a SECOND budget tracked alongside ``self.cache``,
         # keyed on the same raw_ids but accounting ESTIMATED PARSED-TREE
@@ -481,9 +470,9 @@ class CensusParseStage:
         return self._warm_idle.wait(timeout)
 
     @property
-    def warm_timeout_seconds(self) -> float:
-        """Return the bounded wait used for worker admission and warm()."""
-        return self._warm_timeout_seconds
+    def stall_report_seconds(self) -> float:
+        """Return the no-completion window after which warm() reports a stall."""
+        return self._stall_report_seconds
 
     def max_inflight_bytes(self) -> int:
         """Return the source-payload admission budget for warm workers."""
@@ -743,16 +732,28 @@ class CensusParseStage:
         completed = 0
         consumed: set[Future[Any]] = set()
         remaining = set(futures)
-        deadline = time.monotonic() + self._warm_timeout_seconds
+        # No deadline: the writer-held fallback would parse the same raw
+        # again from scratch, so an unfinished worker is waited for. The
+        # window only decides when a lack of completions is reported.
+        last_completion = time.monotonic()
         while remaining:
             if self._stop_requested.is_set():
                 break
-            wait_timeout = min(0.1, max(0.0, deadline - time.monotonic()))
-            if wait_timeout <= 0:
-                break
-            done, _ = wait(remaining, timeout=wait_timeout)
+            done, _ = wait(remaining, timeout=0.1)
             if not done:
+                now = time.monotonic()
+                if now - last_completion >= self._stall_report_seconds:
+                    emit(
+                        "daemon.parse_prefetch.preparation_stalled",
+                        level=WARNING,
+                        outcome="degraded",
+                        reason="no_completion_in_window",
+                        raws=len(remaining),
+                        wait_ms=round((now - last_completion) * 1000),
+                    )
+                    last_completion = now
                 continue
+            last_completion = time.monotonic()
             for future in done:
                 remaining.discard(future)
                 completed += 1
@@ -784,11 +785,12 @@ class CensusParseStage:
         if remaining:
             self._retain_cleanup_callbacks({future: futures[future] for future in remaining})
             pending = len(remaining)
-            reason = "stop requested" if self._stop_requested.is_set() else "warm timeout"
-            logger.warning(
-                "parse-stage prefetch: %s; leaving %d unfinished raw(s) uncached",
-                reason,
-                pending,
+            emit(
+                "daemon.parse_prefetch.stopped_with_pending",
+                level=WARNING,
+                outcome="degraded",
+                reason="stop_requested",
+                raws=pending,
             )
         return warmed
 
@@ -811,7 +813,7 @@ __all__ = [
     "DaemonParseStage",
     "daemon_parse_stage_max_cached_tree_bytes",
     "daemon_parse_stage_max_inflight_bytes",
-    "daemon_parse_stage_warm_timeout_seconds",
+    "daemon_parse_stage_stall_report_seconds",
     "daemon_parse_stage_worker_count",
     "estimate_parsed_tree_bytes",
 ]

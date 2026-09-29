@@ -9681,3 +9681,63 @@ def test_deferred_cursor_records_when_the_tail_cannot_be_reopened(
     # nothing could read.
     assert after.tail_hash == before.tail_hash
     assert after.byte_offset == before.byte_offset
+
+
+@pytest.mark.parametrize("halt", ["write_hold_spent", "stop_requested"])
+@pytest.mark.asyncio
+async def test_an_ordering_held_revision_stays_retryable_when_the_unit_ends(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    halt: str,
+) -> None:
+    """A held same-session revision the batch never reaches is deferred, not settled.
+
+    Anti-vacuity: end the unit (spent writer hold, or a stop seen at the held
+    group's halt checks) without accounting for the held group and the later
+    revision is in no outcome collection, so it is neither deferred nor
+    retried.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    first, second = root / "revision-1.json", root / "revision-2.json"
+    for path in (first, second):
+        path.write_text("{}", encoding="utf-8")
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=SimpleNamespace(db_path=cursor._db_path))),
+        (WatchSource(name="sessions", root=root, suffixes=(".json",)),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+    published: list[list[Path]] = []
+    deferred: list[Path] = []
+
+    async def holding_full_ingest(paths: list[Path], **_kwargs: object) -> _FullIngestResult:
+        published.append(list(paths))
+        return _FullIngestResult(
+            succeeded=[first],
+            failed=[],
+            source_payload_read_bytes=0,
+            raw_fingerprints={first: "raw-first"},
+            ordering_held=[second],
+            write_hold_exhausted=halt == "write_hold_spent",
+        )
+
+    def fake_append_plan(_path: Path, **_kwargs: object) -> None:
+        return None
+
+    monkeypatch.setattr(processor, "_append_plan", fake_append_plan)
+    monkeypatch.setattr(processor, "_ingest_full_paths", holding_full_ingest)
+    monkeypatch.setattr(processor, "_converge_paths", lambda paths: (set(paths), 0.0, {}, []))
+    monkeypatch.setattr(processor, "_record_full_cursor", lambda *_args, **_kwargs: 0)
+    monkeypatch.setattr(processor, "_compact_superseded_raw_snapshots", lambda _paths: None)
+    monkeypatch.setattr(processor, "_defer_full_cursor_retry", lambda path, **_kwargs: deferred.append(path))
+    if halt == "stop_requested":
+        monkeypatch.setattr(processor, "_stop_requested", lambda: bool(published))
+
+    metrics = await processor.ingest_files([first, second], emit_event=False)
+
+    assert published == [[first, second]]
+    assert metrics.succeeded_file_count == 1
+    assert str(second) in metrics.deferred_paths
+    assert deferred == [second]
