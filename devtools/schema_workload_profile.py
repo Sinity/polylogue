@@ -201,8 +201,8 @@ class _Stream:
                     # how many of each (zero included), and each one's length.
                     companions = _companion_blocks(record)
                     for companion in ("thinking", "text"):
-                        count = sum(1 for name, _text in companions if name == companion)
-                        self.lengths[f"{kind}:{companion}_blocks"][log2_bucket(count)] += weight
+                        companion_count = sum(1 for name, _text in companions if name == companion)
+                        self.lengths[f"{kind}:{companion}_blocks"][log2_bucket(companion_count)] += weight
                     for companion, companion_text in companions:
                         self.lengths[f"{kind}:{companion}"][log2_bucket(len(companion_text))] += weight
             elif origin == "claude-code" and kind == "user_tool_result":

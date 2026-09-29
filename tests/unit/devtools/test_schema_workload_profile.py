@@ -16,7 +16,7 @@ from devtools.schema_workload_profile import (
     main,
     measure,
 )
-from polylogue.schemas.synthetic.workload import generate_workload_corpus
+from polylogue.schemas.synthetic.workload import generate_workload_corpus, log2_bucket
 from tests.infra.synthetic_workload_bounds import clip_committed_profiles
 
 
@@ -294,11 +294,16 @@ def test_every_result_block_and_companion_count_is_profiled(tmp_path: Path) -> N
             ],
         },
     }
-    (root / "p" / "s1.jsonl").write_text(json.dumps(call) + "\n" + json.dumps(result) + "\n", encoding="utf-8")
+    # Six prompts before the call: a companion tally that reused the
+    # session's record counter would reset it and misstate the session length.
+    prompt = {"type": "user", "message": {"role": "user", "content": "q"}}
+    records = [prompt] * 6 + [call, result]
+    (root / "p" / "s1.jsonl").write_text("".join(json.dumps(record) + "\n" for record in records), encoding="utf-8")
 
     profile = measure("claude-code", root, sample=10, tail=0, seed=1)
 
     main = profile["streams"]["main"]  # type: ignore[index]
+    assert main["records"] == {str(log2_bucket(len(records))): 1.0}
     assert main["lengths"]["assistant_tool_use:text_blocks"] == {"2": 1.0}
     assert set(main["lengths"]["user_tool_result"]) == {"2", "16"}
     assert main["shares"]["tool_error_share"] == 0.5

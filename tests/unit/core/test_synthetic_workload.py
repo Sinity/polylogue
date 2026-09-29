@@ -6,9 +6,10 @@ import dataclasses
 import json
 import random
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -145,6 +146,7 @@ def test_every_tool_result_answers_an_earlier_call_in_its_stream(origin: str) ->
     assert results > 0
 
 
+@pytest.mark.timeout(300)
 @pytest.mark.parametrize("origin", ["claude-code", "codex"])
 def test_record_kind_mix_follows_the_committed_profile(origin: str) -> None:
     """Anti-vacuity: sampling kinds uniformly, or from a fixed role cycle, misses the profile by far more."""
@@ -1029,7 +1031,11 @@ def test_parallel_claude_results_share_one_message(monkeypatch: pytest.MonkeyPat
     call, result = _records(files[0].data)[:2]
     called = [block["id"] for block in call["message"]["content"] if block["type"] == "tool_use"]  # type: ignore[index]
     answered = [block["tool_use_id"] for block in result["message"]["content"] if block["type"] == "tool_result"]  # type: ignore[index]
-    assert len(called) >= 2 and sorted(answered) == sorted(called[: len(answered)]) and len(answered) >= 2
+    # The first blocks answer the parallel calls; any beyond them are
+    # unmatched results of calls that precede the transcript.
+    assert len(called) >= 2 and len(answered) >= 2
+    matched = [tool_use_id for tool_use_id in answered if tool_use_id in called]
+    assert matched == called[: len(matched)] and len(matched) == min(len(called), len(answered))
 
 
 def test_session_bytes_are_merged_in_bounded_segments() -> None:
@@ -1186,6 +1192,25 @@ def test_list_skeletons_keep_every_item_shape() -> None:
     assert skeleton == {"items": [{"message": "str"}, {"message": "str", "range": {"line": "int"}}]}
 
 
+def test_a_fit_is_exact_when_trimmed_characters_are_escaped() -> None:
+    """A body whose characters each measure several units still fits exactly.
+
+    Anti-vacuity: trim once by the overshoot and a trimmed ``\\uXXXX`` escape
+    (six units, one character) leaves the field short of its sampled size.
+    """
+    from polylogue.schemas.synthetic.workload import Plain, _fitted
+
+    def build(body: Plain) -> dict[str, Plain]:
+        return {"text": body}
+
+    def escaped_length(built: dict[str, Plain]) -> int:
+        return len(json.dumps(built))
+
+    rng = random.Random(3)
+    for target in (120, 700, 3_000):
+        assert escaped_length(_fitted(rng, target, non_ascii=True, build=build, measure=escaped_length)) == target
+
+
 def test_codex_arguments_and_claude_inputs_fit_their_sampled_size() -> None:
     """A generated field's whole measured size is the sampled length.
 
@@ -1193,6 +1218,7 @@ def test_codex_arguments_and_claude_inputs_fit_their_sampled_size() -> None:
     the envelope and escaping make every generated field longer.
     """
     from polylogue.schemas.synthetic.workload import (
+        Plain,
         _claude_code_tool_input,
         _codex_arguments,
         _compact_length,
@@ -1200,21 +1226,27 @@ def test_codex_arguments_and_claude_inputs_fit_their_sampled_size() -> None:
         _text_length,
     )
 
+    def envelope(build: Callable[[Plain], object], measure: Callable[[Any], int]) -> int:
+        # The field with an empty body, drawn from the same randomness the fit replays.
+        state = rng.getstate()
+        size = measure(build(""))
+        rng.setstate(state)
+        return size
+
     rng = random.Random(14)
+    # 40 is below both envelopes: the fit is then the envelope alone, never
+    # a field longer than an empty body needs.
     for target in (40, 200, 5_000):
-        arguments = _fitted(
-            rng,
-            target,
-            non_ascii=False,
-            build=lambda body: _codex_arguments(rng, "exec_command", body),
-            measure=_text_length,
-        )
-        assert _text_length(arguments) == target
-        tool_input = _fitted(
-            rng,
-            target,
-            non_ascii=False,
-            build=lambda body: _claude_code_tool_input(rng, "Bash", "/workspace/x", body),
-            measure=_compact_length,
-        )
-        assert _compact_length(tool_input) == target
+
+        def codex(body: Plain) -> object:
+            return _codex_arguments(rng, "exec_command", body)
+
+        def claude(body: Plain) -> object:
+            return _claude_code_tool_input(rng, "Bash", "/workspace/x", body)
+
+        least = envelope(codex, _text_length)
+        arguments = _fitted(rng, target, non_ascii=False, build=codex, measure=_text_length)
+        assert _text_length(arguments) == max(target, least)
+        least = envelope(claude, _compact_length)
+        tool_input = _fitted(rng, target, non_ascii=False, build=claude, measure=_compact_length)
+        assert _compact_length(tool_input) == max(target, least)

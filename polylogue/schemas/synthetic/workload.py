@@ -1186,10 +1186,19 @@ def _fitted(
     state = rng.getstate()
     built = build(body)
     if isinstance(body, str) and body:
-        overshoot = measure(built) - length
-        if overshoot > 0:
+        # Escaping makes a trimmed character worth one or more measured
+        # units, so the trim repeats until the field fits (each pass removes
+        # at least one character), and an escape-sized shortfall is made up
+        # with unescaped characters, one measured unit each.
+        size = measure(built)
+        while size > length and body:
+            body = body[: max(0, len(body) - (size - length))]
             rng.setstate(state)
-            built = build(body[: max(0, len(body) - overshoot)])
+            built = build(body)
+            size = measure(built)
+        if size < length:
+            rng.setstate(state)
+            built = build(body + "a" * (length - size))
     return built
 
 
