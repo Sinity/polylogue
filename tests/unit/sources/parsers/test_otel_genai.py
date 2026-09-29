@@ -739,19 +739,82 @@ def test_every_session_of_a_multi_conversation_document_is_admitted() -> None:
     assert all(session.unit_accounting is not None for session in sessions)
 
 
-def test_a_single_unnamed_resource_keeps_its_legacy_identity() -> None:
-    """A document with one unnamed resource names the session as earlier parses did.
+def test_an_unnamed_resource_keeps_its_id_when_a_second_resource_joins() -> None:
+    """A later export that adds a second unnamed resource keeps the first's session.
 
-    Anti-vacuity (Codex P2, #5711): always hash the stable attributes and a
-    replay of the same bytes keys ``resource-<hash>`` instead of ``resource``,
-    importing a second session.
+    Anti-vacuity (Codex P2, #5711): key the lone unnamed resource as bare
+    ``resource`` and hash it only once a second one appears, and the
+    two-resource export names the original conversation differently,
+    importing it as a second session.
     """
-    payload = _document(([_attr("deployment.environment", "prod")], [_chat("a" * 32, "1" * 16, 1_000, ["Q"], "A")]))
+    original = ([_attr("deployment.environment", "prod")], [_chat("a" * 32, "1" * 16, 1_000, ["Q"], "A")])
+    added = ([_attr("deployment.environment", "staging")], [_chat("b" * 32, "2" * 16, 2_000, ["Q2"], "A2")])
 
-    sessions = otel_genai.parse(payload, "ignored")
+    (alone,) = otel_genai.parse(_document(original), "ignored")
+    together = otel_genai.parse(_document(original, added), "ignored")
 
-    assert len(sessions) == 1
-    assert sessions[0].provider_session_id.startswith("resource:")
+    assert alone.provider_session_id in {session.provider_session_id for session in together}
+    assert len({session.provider_session_id for session in together}) == 2
+
+
+def test_tool_arguments_in_plain_json_attributes_are_not_wire_types() -> None:
+    """A tool argument ``{"type": "unknown"}`` does not mark the document unknown.
+
+    Anti-vacuity (Codex P2, #5711): admit OTel documents with the recursive
+    default scanner and the argument inside the plain-JSON attribute map
+    becomes an ``otel_genai_unknown_input`` event.
+    """
+    chat = _chat("c" * 32, "3" * 16, 1_000, ["Q"], "A")
+    tool = {
+        "traceId": "c" * 32,
+        "spanId": "4" * 16,
+        "name": "execute_tool",
+        "startTimeUnixNano": "2000",
+        "endTimeUnixNano": "2001",
+        "attributes": {
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": "search",
+            "gen_ai.tool.call.id": "call-1",
+            "gen_ai.tool.call.arguments": {"type": "unknown"},
+        },
+    }
+    payload = _document(([_attr("service.name", "agent")], [chat, tool]))
+
+    sessions = parse_payload(Provider.OTEL_GENAI, payload, "ignored-file-stem")
+
+    assert sessions
+    for session in sessions:
+        assert not [event for event in session.session_events if event.event_type.endswith("_unknown_input")]
+
+
+def test_a_multi_conversation_document_is_scanned_once(monkeypatch: Any) -> None:
+    """Every conversation of one document shares a single admission scan.
+
+    Anti-vacuity (Codex P2, #5711): build one observer per emitted session
+    and the document is scanned once per conversation (O(N^2) work).
+    """
+    from polylogue.sources.parsers import base_support
+
+    calls: list[object] = []
+    scan = base_support._ADMISSION_SCANS["otel_genai"]
+
+    def counting(value: object) -> str | None:
+        calls.append(value)
+        return scan(value)
+
+    monkeypatch.setitem(base_support._ADMISSION_SCANS, "otel_genai", counting)
+    payload = _document(
+        *(
+            ([_attr("service.name", f"svc-{index}")], [_chat(f"{index:032x}", "1" * 16, 1_000, ["Q"], "A")])
+            for index in range(1, 5)
+        )
+    )
+
+    sessions = parse_payload(Provider.OTEL_GENAI, payload, "ignored-file-stem")
+
+    assert len(sessions) == 4
+    assert all(session.unit_accounting is not None for session in sessions)
+    assert len(calls) == 1
 
 
 def test_a_conversation_id_in_a_conflicting_copy_names_the_session() -> None:

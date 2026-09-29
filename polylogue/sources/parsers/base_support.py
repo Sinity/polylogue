@@ -187,6 +187,30 @@ def hermes_unknown_wire_type(value: object) -> str | None:
     return None
 
 
+def otel_genai_unknown_wire_type(value: object) -> str | None:
+    """Return an unknown OTLP wire type read only from its structural fields.
+
+    An OTLP document's discriminators are each span's ``kind`` and the
+    wrapper keys naming its resource and scope lists. Attribute values --
+    tool-call arguments, message content, resource attributes -- are user
+    data, so ``{"type": "unknown"}`` inside them is not a provider wire type.
+    """
+    if not isinstance(value, Mapping):
+        return None
+    resource_spans = value.get("resourceSpans", value.get("resource_spans"))
+    for resource in resource_spans if isinstance(resource_spans, list) else ():
+        if not isinstance(resource, Mapping):
+            continue
+        scopes = resource.get("scopeSpans", resource.get("instrumentationLibrarySpans"))
+        for scope in scopes if isinstance(scopes, list) else ():
+            spans = scope.get("spans") if isinstance(scope, Mapping) else None
+            for span in spans if isinstance(spans, list) else ():
+                kind = span.get("kind") if isinstance(span, Mapping) else None
+                if _is_unknown_sentinel(kind):
+                    return cast(str, kind)
+    return None
+
+
 def _unknown_wire_type(value: object) -> str | None:
     """Return a deliberately future-shaped wire type, if one is visible.
 
@@ -233,6 +257,9 @@ class AdmissionObserver:
         #: The first source index of each unknown wire type: one event per
         #: type is emitted, so later occurrences are not retained.
         self._unknowns: dict[str, int] = {}
+        #: The closed proof over every observed record, shared by each
+        #: session drawn from them that carries no ledger of its own.
+        self._proof: ParseAccounting | None = None
 
     def observe(self, item: object, source_index: int | None = None, *, recognized: bool = True) -> None:
         """Classify one record at dense ledger ordinal ``self._count``.
@@ -293,29 +320,23 @@ class AdmissionObserver:
                 from polylogue.sources.parsers.claude.code_parser import order_session_events
 
                 events = cast(list[ParsedSessionEvent], order_session_events(events))
-        accounting = session.unit_accounting
-        if accounting is None:
-            self._ledger.expect(AdmissionUnit.OUTER_RECORD, self._count)
-            accounting = self._ledger.close()
+        accounting = session.unit_accounting or self._closed_proof()
         accounting.assert_conserved()
         return session.model_copy(update={"session_events": events, "unit_accounting": accounting})
 
     def apply_each(self, sessions: Sequence[ParsedSession], provider: str) -> list[ParsedSession]:
-        """``apply`` for every session one observed stream produced.
+        """``apply`` for every session one observed input produced.
 
-        Each session without its parser's own ledger gets the stream's proof,
+        Each session without its parser's own ledger gets the input's proof,
         closed once and shared.
         """
-        accounting: ParseAccounting | None = None
-        admitted: list[ParsedSession] = []
-        for session in sessions:
-            if session.unit_accounting is None:
-                if accounting is None:
-                    self._ledger.expect(AdmissionUnit.OUTER_RECORD, self._count)
-                    accounting = self._ledger.close()
-                session = session.model_copy(update={"unit_accounting": accounting})
-            admitted.append(self.apply(session, provider))
-        return admitted
+        return [self.apply(session, provider) for session in sessions]
+
+    def _closed_proof(self) -> ParseAccounting:
+        if self._proof is None:
+            self._ledger.expect(AdmissionUnit.OUTER_RECORD, self._count)
+            self._proof = self._ledger.close()
+        return self._proof
 
     def _append_unknown_events(
         self, events: MutableSequence[ParsedSessionEvent], existing_types: set[str], provider: str
@@ -340,20 +361,19 @@ def admit_parsed_sessions(provider: str, payload: object, sessions: list[ParsedS
     each of its sessions against its own records). Every other session --
     one of several conversations in an OTLP document, a Hermes parent and its
     materialized subagent trajectories -- is proven against the whole
-    document it was drawn from, so no emitted session reaches the writer
-    without a conservation proof.
+    document it was drawn from -- observed once and the closed proof shared,
+    so an N-session document costs one scan -- and no emitted session
+    reaches the writer without a conservation proof.
     """
+    if all(session.unit_accounting is not None for session in sessions):
+        return sessions
     items = payload if isinstance(payload, Sequence) and not isinstance(payload, (str, bytes)) else [payload]
-    admitted: list[ParsedSession] = []
-    for session in sessions:
-        if session.unit_accounting is not None:
-            admitted.append(session)
-            continue
-        observer = AdmissionObserver(_ADMISSION_SCANS.get(provider))
-        for item in items:
-            observer.observe(item)
-        admitted.append(observer.apply(session, provider))
-    return admitted
+    observer = AdmissionObserver(_ADMISSION_SCANS.get(provider))
+    for item in items:
+        observer.observe(item)
+    return [
+        session if session.unit_accounting is not None else observer.apply(session, provider) for session in sessions
+    ]
 
 
 #: Origins whose outer records have declared discriminators; any other origin
@@ -362,6 +382,7 @@ _ADMISSION_SCANS: dict[str, Callable[[object], str | None]] = {
     "hermes": hermes_unknown_wire_type,
     "codex": codex_unknown_wire_type,
     "claude_code": claude_code_unknown_wire_type,
+    "otel_genai": otel_genai_unknown_wire_type,
 }
 
 
