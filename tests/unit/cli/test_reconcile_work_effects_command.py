@@ -21,6 +21,7 @@ from polylogue.analysis.work_evidence import WorkEvidenceGraph, WorkEvidenceNode
 from polylogue.api.sync.bridge import run_coroutine_sync
 from polylogue.cli import cli
 from polylogue.core.refs import ObjectRef
+from polylogue.maintenance.offline_guard import refuse_writable_tier_opens
 from polylogue.paths import archive_root
 from polylogue.storage.archive_identity import resolve_active_index_path
 from polylogue.storage.repository import SessionRepository
@@ -78,22 +79,28 @@ def test_dry_run_reports_json_summary_without_persisting(
     repo.mkdir()
     _init_git_repo(repo, message="fix: land it (Ref polylogue-1vpm.6.2)")
 
-    result = CliRunner().invoke(
-        cli,
-        [
-            "ops",
-            "reconcile-work-effects",
-            "--graph-id",
-            _seeded_graph.graph_id,
-            "--repo",
-            str(repo),
-            "--output-format",
-            "json",
-        ],
-        catch_exceptions=False,
-    )
+    opened: list[Path] = []
+    with refuse_writable_tier_opens(opened.append):
+        result = CliRunner().invoke(
+            cli,
+            [
+                "ops",
+                "reconcile-work-effects",
+                "--graph-id",
+                _seeded_graph.graph_id,
+                "--repo",
+                str(repo),
+                "--output-format",
+                "json",
+            ],
+            catch_exceptions=False,
+        )
 
     assert result.exit_code == 0
+    # Reconciling is a read: a writable open is refused beside a resident
+    # daemon. Anti-vacuity: load the stored graph through the backend's
+    # writable ``connection()`` again (``get_work_evidence_graph``).
+    assert opened == []
     payload = json.loads(result.output)
     assert payload["mutates"] is False
     assert payload["applied"] is False

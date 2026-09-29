@@ -20,9 +20,9 @@ from polylogue.archive.session_revision_membership import MembershipRevision, cl
 from polylogue.config import Source
 from polylogue.core.enums import Origin
 from polylogue.daemon.convergence import DaemonConverger
+from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
 from polylogue.pipeline.ids import session_revision_projection
-from polylogue.pipeline.services.archive_ingest import parse_sources_archive
 from polylogue.sources.parsers.claude.ai_parser import parse_ai
 from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 from tests.infra.convergence_harness import converge_session_profiles
@@ -149,7 +149,7 @@ def run_claude_vintage_live_proof(archive_root: Path) -> ClaudeVintageReclassifi
     old_path, new_path = write_claude_vintage_live_proof_pair(wire_root)
 
     ingest = asyncio.run(
-        parse_sources_archive(
+        ingest_one_shot_archive(
             archive_root,
             [Source(name="claude-ai", path=wire_root)],
             parse_workers=1,
@@ -217,7 +217,7 @@ def run_claude_vintage_live_proof(archive_root: Path) -> ClaudeVintageReclassifi
         live_export_recovered=False,
         confidence_gap=CONFIDENCE_GAP,
         production_route=(
-            "parse_sources_archive",
+            "ingest_one_shot_archive",
             "backfill_historical_revision_evidence",
             "common FTS derivation + SessionProfileConvergenceOwner",
         ),
