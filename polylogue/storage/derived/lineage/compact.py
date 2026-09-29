@@ -453,15 +453,13 @@ def derive_compact_lineage(
             )
         )
 
-    # Stable order, seed first: the seed occupies one slot of every page, so a
-    # caller paging by depth never loses the session it asked about.
+    # Stable order, seed first. The seed accompanies every page outside the
+    # budget: ``node_limit`` counts the other nodes, so even a one-node page
+    # advances through the family.
     nodes.sort(key=lambda node: (node.depth_from_root, str(node.session_id)))
     seed_node = next(node for node in nodes if node.is_seed)
     remainder = [node for node in nodes if not node.is_seed]
-    node_window = (
-        seed_node,
-        *_window(remainder, node_offset, None if node_limit is None else max(0, node_limit - 1)),
-    )
+    node_window = (seed_node, *_window(remainder, node_offset, node_limit))
     # Accounting is the only per-node work, so it runs for the page the caller
     # asked for, not for the whole family behind it.
     node_window = tuple(
