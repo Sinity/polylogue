@@ -197,6 +197,30 @@ _OWNER_MATCH_FIELDS: dict[str, frozenset[str]] = {
     "ParsedMessage": frozenset({"role", "text", "timestamp", "blocks"}),
 }
 
+# Content identity hashes what JSON distinguishes and folds only prose.
+#
+# Prose is text a person reads, searches and quotes: canonically equivalent
+# Unicode spellings of it ("café" composed or decomposed) are the same content,
+# so these fields hash in NFC. Every other string -- identifiers, timestamps,
+# paths, tool names, tool arguments, block metadata, file edits, event
+# payloads, attachment names, and every mapping key -- hashes exactly as
+# parsed. Those strings can select an operation: two ``read_file`` calls
+# whose paths differ only in normalization form open two different files on
+# a byte-exact filesystem, and the archive stores each payload byte-exact, so
+# folding them would drop the second acquisition as a duplicate of the first
+# (polylogue-aki9t). Mapping keys are exact for the same reason, and because
+# folding two distinct keys into one slot silently discards a field and makes
+# the surviving value depend on insertion order (polylogue-sf7ii).
+#
+# An over-distinction costs a rewrite or a retained revision ambiguity; an
+# over-merge loses admitted content silently. That asymmetry supersedes the
+# earlier choice to NFC every nested payload (polylogue-7zp4).
+_NFC_TEXT_FIELDS: dict[str, frozenset[str]] = {
+    "ParsedContentBlock": frozenset({"text"}),
+    "ParsedMessage": frozenset({"text", "user_context_text"}),
+    "ParsedSession": frozenset({"title", "instructions_text"}),
+}
+
 
 def validate_semantic_hash_partition() -> None:
     """Fail if parsed model fields are missing from the identity decision."""
@@ -219,6 +243,9 @@ def validate_semantic_hash_partition() -> None:
     owner_fields = _OWNER_MATCH_FIELDS["ParsedMessage"]
     if not owner_fields <= _HASHED_FIELDS["ParsedMessage"] or "position" in owner_fields:
         raise AssertionError("ParsedMessage owner partition must be a position-free semantic subset")
+    for name, prose in _NFC_TEXT_FIELDS.items():
+        if not prose <= _HASHED_FIELDS[name]:
+            raise AssertionError(f"{name} prose fields must be hashed fields: {sorted(prose - _HASHED_FIELDS[name])}")
 
 
 def bound_session_content_hash(convo: ParsedSession) -> ContentHash | None:
@@ -242,13 +269,11 @@ def bound_session_content_hash(convo: ParsedSession) -> ContentHash | None:
     return ContentHash(digest.hex())
 
 
-def _hash_field_value(value: object) -> JSONValue:
+def _hash_field_value(value: object, *, prose: bool) -> JSONValue:
     cls = type(value)
     if cls is str:
-        return _EMPTY_SENTINEL if value == "" else nfc(cast(str, value))
-    if value is None:
-        return _NULL_SENTINEL
-    if cls is int or cls is bool or cls is float:
+        return nfc(cast(str, value)) if prose else cast(str, value)
+    if value is None or cls is int or cls is bool or cls is float:
         return cast(JSONValue, value)
     if cls is dict or cls is tuple or isinstance(value, Enum):
         # Neither a pydantic model nor a list to unpack: straight to the plain
@@ -268,14 +293,23 @@ def _sorted_hash_fields(fields: frozenset[str]) -> tuple[str, ...]:
     return tuple(sorted(fields))
 
 
-def _model_hash_payload(model: object, fields: frozenset[str]) -> dict[str, JSONValue]:
-    return {field: _hash_field_value(getattr(model, field)) for field in _sorted_hash_fields(fields)}
+def _model_hash_payload(model: object, fields: frozenset[str], prose: frozenset[str]) -> dict[str, JSONValue]:
+    """Hash payload of ``fields``; only the declared ``prose`` fields are NFC-folded.
+
+    Absence and emptiness are the encoder's own ``null`` and ``""``: disjoint
+    from each other and from every string an input can carry, so no literal
+    can hash like a missing value (polylogue-vp5qk).
+    """
+    return {
+        field: _hash_field_value(getattr(model, field), prose=field in prose) for field in _sorted_hash_fields(fields)
+    }
 
 
-# Sentinel values to distinguish None from empty in hash computations
-_NULL_SENTINEL = "__POLYLOGUE_NULL__"
-_EMPTY_SENTINEL = "__POLYLOGUE_EMPTY__"
-HashScalar: TypeAlias = str | int | float | bool | None
+def _prose_for_hash(value: str | None) -> str | None:
+    """A declared prose scalar outside a parsed model: NFC text, absence as ``null``."""
+    return None if value is None else nfc(value)
+
+
 MessageContent: TypeAlias = tuple[bytes, bytes, int]
 _T = TypeVar("_T")
 
@@ -517,32 +551,24 @@ def _canonical_sort_key(value: object) -> str:
 def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> object:
     """Canonicalize a nested payload for hashing, recursively.
 
-    Two jobs, both required for the declared vocabulary to be *total* over
-    what parsers actually emit into ``ParsedContentBlock.metadata`` /
-    ``.tool_input`` and ``ParsedSessionEvent.payload`` -- all three typed
-    ``object``-valued, so nothing at the parser boundary constrains them to
-    JSON-native shapes.
+    ``ParsedContentBlock.metadata`` / ``.tool_input`` and
+    ``ParsedSessionEvent.payload`` are typed ``object``-valued, so nothing at
+    the parser boundary constrains them to JSON-native shapes. This walk makes
+    the declared vocabulary *total* over what parsers emit, and nothing more:
 
-    ``_normalize_for_hash`` covers scalar fields, but two nested payloads --
-    ``ParsedContentBlock.tool_input`` and ``ParsedSessionEvent.payload`` --
-    were passed straight to ``hash_payload``, which by its own docstring does
-    NOT normalize the strings it serializes. So a tool_use block or session
-    event whose nested content differed only in Unicode normalization form
-    hashed as two distinct logical identities and could never dedupe, while
-    the very same text in ``message.text`` hashed identically.
+    - Strings and mapping keys stay exact. A nested payload is operational
+      data (tool arguments, paths, provider metadata), stored byte-exact by
+      the writer, and two spellings that are canonically equivalent Unicode
+      can still name two files; see ``_NFC_TEXT_FIELDS`` for why only prose
+      is folded (polylogue-aki9t). Exact keys also mean two keys that differ
+      only in normalization form remain two slots, and the encoder's
+      ``sort_keys`` orders them by code point, so neither a field nor the
+      key insertion order can change the result (polylogue-sf7ii).
+    - ``None`` and ``""`` stay the encoder's ``null`` and ``""``, disjoint
+      from every admitted string (polylogue-vp5qk).
 
-    Measured before fixing: 0 of 20,000 sampled ``tool_use.tool_input`` rows
-    in the live archive carry non-NFC content, so no stored hash changes and
-    nothing needs re-hashing -- this closes a latent trap rather than
-    repairing active corruption. Plausible future sources are macOS-originated
-    exports (HFS+ historically stored NFD) and browser-capture DOM extraction.
-
-    Dict keys are normalized as well as values: a key is just as capable of
-    carrying an NFD form, and an un-normalized key would split the hash the
-    same way.
-
-    Second job (polylogue-m706z): lower every non-JSON-native value the
-    vocabulary admits to a declared canonical form. Nothing outside
+    Every non-JSON-native value the vocabulary admits lowers to a declared
+    canonical form (polylogue-m706z). Nothing outside
     ``None``/``bool``/``int``/``float``/``str``/``list``/``tuple``/``dict``
     survives the digest encoder -- so a ``set`` in block metadata made
     :func:`message_content_identity` raise rather than hash, and the
@@ -577,13 +603,6 @@ def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> objec
     would be worse than refusing: ``str(object())`` embeds a memory address,
     which would make an identity that is supposed to be content-derived vary
     per process.
-
-    **No stored identity moves.** Every value type newly admitted here
-    previously raised inside ``hash_payload``, and ``content_identity`` is
-    computed on the write path (``archive_tiers/write.py``) before any row is
-    inserted -- so a message carrying one of these shapes could never have been
-    written to an archive in the first place. ``Decimal`` is the one type that
-    already hashed successfully, and its lowering is unchanged.
     """
     try:
         return _normalize_plain_for_hash(value)
@@ -596,14 +615,13 @@ _DECIMAL_TAG = "$decimal"
 
 
 def _hash_key(key: object) -> object:
-    """NFC a string key and escape any spelling of the reserved ``$decimal`` tag.
+    """Keep a key exact, escaping any spelling of the reserved ``$decimal`` tag.
 
     The escape prepends one ``$`` to ``$decimal``, ``$$decimal``, ... and is
     injective, so a mapping key can never produce the tag itself.
     """
     if not isinstance(key, str):
         return key
-    key = nfc(key)
     if key.endswith(_DECIMAL_TAG) and not key[: -len(_DECIMAL_TAG)].strip("$"):
         return "$" + key
     return key
@@ -623,10 +641,8 @@ def _normalize_plain_for_hash(value: object) -> object:
     its value; every other type is lowered by the declared walk, so the output
     is identical by construction.
     """
-    if value is None:
-        return _NULL_SENTINEL
-    if isinstance(value, str):
-        return _EMPTY_SENTINEL if value == "" else nfc(value)
+    if value is None or isinstance(value, str):
+        return value
     if isinstance(value, dict):
         return {_hash_key(key): _normalize_plain_for_hash(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -641,10 +657,8 @@ def _normalize_plain_for_hash(value: object) -> object:
 
 
 def _normalize_declared_for_hash(value: object, *, path: str) -> object:
-    if value is None:
-        return _NULL_SENTINEL
-    if isinstance(value, str):
-        return _EMPTY_SENTINEL if value == "" else nfc(value)
+    if value is None or isinstance(value, str):
+        return value
     if isinstance(value, Mapping):
         return {_hash_key(key): _normalize_declared_for_hash(item, path=f"{path}.{key}") for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -673,24 +687,6 @@ def _normalize_declared_for_hash(value: object, *, path: str) -> object:
         f"{type(value).__name__} at {path} is outside the declared hash vocabulary "
         f"(polylogue/pipeline/ids.py:_normalize_nested_for_hash); declare its canonical form there"
     )
-
-
-def _normalize_for_hash(value: HashScalar) -> JSONValue:
-    """Normalize a value for hashing, distinguishing None from empty.
-
-    Args:
-        value: Hash-compatible scalar value to normalize.
-
-    Returns:
-        Normalized JSON value with None → _NULL_SENTINEL and "" → _EMPTY_SENTINEL.
-    """
-    if value is None:
-        return _NULL_SENTINEL
-    if value == "":
-        return _EMPTY_SENTINEL
-    if isinstance(value, str):
-        return nfc(value)
-    return value
 
 
 def session_id(source_name: Provider | Origin | str, provider_session_id: str) -> SessionId:
@@ -759,11 +755,9 @@ def idless_session_identity(
     still passes it through :func:`session_id` with its own source.
     """
     payload = {
-        "created_at": _normalize_for_hash(created_at if isinstance(created_at, str) or created_at is None else None),
-        "first_message_provider_id": _normalize_for_hash(
-            first_message_provider_id if isinstance(first_message_provider_id, str) else None
-        ),
-        "first_message_text": _normalize_for_hash(first_message_text if isinstance(first_message_text, str) else None),
+        "created_at": created_at if isinstance(created_at, str) else None,
+        "first_message_provider_id": first_message_provider_id if isinstance(first_message_provider_id, str) else None,
+        "first_message_text": _prose_for_hash(first_message_text if isinstance(first_message_text, str) else None),
     }
     return f"conversation-{hash_item_payload(payload)[:24]}"
 
@@ -774,7 +768,7 @@ def message_id(session_id: SessionId, provider_message_id: str) -> MessageId:
 
 def _content_block_payload(block: ParsedContentBlock) -> dict[str, JSONValue]:
     """Build the declared semantic payload for a single content block."""
-    return _model_hash_payload(block, _HASHED_FIELDS["ParsedContentBlock"])
+    return _model_hash_payload(block, _HASHED_FIELDS["ParsedContentBlock"], _NFC_TEXT_FIELDS["ParsedContentBlock"])
 
 
 def _is_redundant_text_only_block(message: ParsedMessage) -> bool:
@@ -802,7 +796,7 @@ def _is_redundant_text_only_block(message: ParsedMessage) -> bool:
         # Every remaining evidence-bearing field must also be absent. A block
         # carrying citations (``web_constructs``), parser metadata, or a tool
         # outcome is a second content axis, not the parser-shape artifact this
-        # predicate exists to absorb, so collapsing it to the empty sentinel
+        # predicate exists to absorb, so collapsing it to the empty block list
         # would make a richer acquisition hash equal to a bare one.
         # ``signature`` stays excluded on purpose (see ``base_models.py``): it
         # is a provider attestation over content already hashed here.
@@ -825,11 +819,11 @@ def _message_hash_payload(message: ParsedMessage, message_id: str) -> dict[str, 
 
 def _message_payload(message: ParsedMessage, fields: frozenset[str]) -> dict[str, JSONValue]:
     """Build a message payload with the requested semantic field boundary."""
-    payload = _model_hash_payload(message, _message_scalar_fields(fields))
+    payload = _model_hash_payload(message, _message_scalar_fields(fields), _NFC_TEXT_FIELDS["ParsedMessage"])
     if message.blocks and not _is_redundant_text_only_block(message):
         payload["blocks"] = [_content_block_payload(b) for b in message.blocks]
     else:
-        payload["blocks"] = _EMPTY_SENTINEL
+        payload["blocks"] = []
     return payload
 
 
@@ -1009,10 +1003,10 @@ def _message_revision_match_id(message: ParsedMessage) -> str:
         return native_id
     payload: dict[str, JSONValue] = {
         "role": str(message.role),
-        "timestamp": _normalize_for_hash(message.timestamp),
+        "timestamp": message.timestamp,
     }
     if message.timestamp is None:
-        payload["text"] = _normalize_for_hash(message.text)
+        payload["text"] = _prose_for_hash(message.text)
         if message.blocks and not _is_redundant_text_only_block(message):
             payload["content_blocks"] = [_content_block_payload(b) for b in message.blocks]
     return f"{_CONTENT_ANCHOR_PREFIX}:{hash_item_payload(payload)}"
@@ -1411,11 +1405,11 @@ def _attachment_hash_payload(
     """Build the full attachment payload using the shared owner coordinate."""
     owner_id = message_owner_anchor or attachment.message_provider_id
     payload: dict[str, JSONValue] = {
-        "id": _normalize_for_hash(attachment.provider_attachment_id),
-        "message_id": _normalize_for_hash(owner_id),
-        "name": _normalize_for_hash(attachment.name),
-        "mime_type": _normalize_for_hash(attachment.mime_type),
-        "size_bytes": _normalize_for_hash(attachment.size_bytes),
+        "id": attachment.provider_attachment_id,
+        "message_id": owner_id,
+        "name": attachment.name,
+        "mime_type": attachment.mime_type,
+        "size_bytes": attachment.size_bytes,
     }
     if attachment.inline_bytes is not None:
         payload["inline_content_hash"] = hash_bytes(attachment.inline_bytes)
@@ -1523,9 +1517,9 @@ def _event_content_payload(event: ParsedSessionEvent) -> dict[str, JSONValue]:
         # measurement too, not content.
         timestamp = None
     return {
-        "event_type": _normalize_for_hash(event.event_type),
-        "timestamp": _normalize_for_hash(timestamp),
-        "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
+        "event_type": event.event_type,
+        "timestamp": timestamp,
+        "source_message_provider_id": event.source_message_provider_id,
         "payload": hash_item_payload(_hashed_event_payload(event.event_type, payload)),
     }
 
@@ -1588,6 +1582,24 @@ def event_canonical_identity_hash(*, base_identity: bytes, content_hash: bytes) 
     return bytes.fromhex(hash_item_payload({"base_identity": base_identity.hex(), "content": content_hash.hex()}))
 
 
+def _attachment_sort_key(payload: Mapping[str, JSONValue]) -> tuple[str, str, str, str]:
+    """Order attachments by owner, native id and name, then the whole payload.
+
+    Each part is canonical JSON text, so an absent value (``null``) never ties
+    with an empty one (``""``). The final part breaks every remaining tie, so
+    two attachments that share owner, id and name but differ in any other
+    field sort the same way whatever their input order. Only byte-identical
+    payloads can tie, and their order cannot change the hash. Every route
+    sorts by this key.
+    """
+    return (
+        json.dumps(payload.get("message_id")),
+        json.dumps(payload.get("id")),
+        json.dumps(payload.get("name")),
+        json.dumps(payload, sort_keys=True),
+    )
+
+
 def _session_hash_payload(
     *,
     title: str | None,
@@ -1599,19 +1611,12 @@ def _session_hash_payload(
 ) -> dict[str, object]:
     """Build the content-hash payload using the complete declared tree."""
     return {
-        "title": _normalize_for_hash(title),
-        "created_at": _normalize_for_hash(created_at),
-        "updated_at": _normalize_for_hash(updated_at),
+        "title": _prose_for_hash(title),
+        "created_at": created_at,
+        "updated_at": updated_at,
         "messages": messages,
         "session_events": session_events,
-        "attachments": sorted(
-            attachments,
-            key=lambda item: (
-                str(item.get("message_id") or ""),
-                str(item.get("id") or ""),
-                str(item.get("name") or ""),
-            ),
-        ),
+        "attachments": sorted(attachments, key=_attachment_sort_key),
     }
 
 
@@ -1650,12 +1655,12 @@ def _session_hash_components(
                 raise
             owner_anchor = None
         attachments_payload.append(_attachment_hash_payload(attachment, message_owner_anchor=owner_anchor))
-    session_events_payload = [
+    session_events_payload: list[dict[str, JSONValue]] = [
         {
             "event_index": event_index,
-            "event_type": _normalize_for_hash(event.event_type),
-            "timestamp": _normalize_for_hash(event.timestamp),
-            "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
+            "event_type": event.event_type,
+            "timestamp": event.timestamp,
+            "source_message_provider_id": event.source_message_provider_id,
             "payload": hash_item_payload(_hashed_event_payload(event.event_type, event.payload)),
         }
         for event_index, event in enumerate(convo.session_events)
@@ -1685,11 +1690,15 @@ def _session_tree_hash(
 
 
 def _session_semantic_fields(convo: ParsedSession) -> dict[str, JSONValue]:
-    fields = _model_hash_payload(convo, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"})
+    fields = _model_hash_payload(
+        convo,
+        _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"},
+        _NFC_TEXT_FIELDS["ParsedSession"],
+    )
     # Provider aliases can map to the same public source identity. Hash that
     # canonical identity so replay through an alternate supported route does
     # not create a content revision for identical session content.
-    fields["source_name"] = _normalize_for_hash(origin_from_provider(convo.source_name).value)
+    fields["source_name"] = origin_from_provider(convo.source_name).value
     return fields
 
 
@@ -1718,7 +1727,7 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
             ):
                 conn.execute(
                     "CREATE TABLE attachment_hash (ordinal INTEGER PRIMARY KEY, owner TEXT NOT NULL, "
-                    "native_id TEXT NOT NULL, name TEXT NOT NULL, payload TEXT NOT NULL)"
+                    "native_id TEXT NOT NULL, name TEXT NOT NULL, canonical TEXT NOT NULL, payload TEXT NOT NULL)"
                 )
                 with disk_message_owner_resolution(convo.messages) as resolution:
                     for ordinal, attachment in enumerate(convo.attachments):
@@ -1728,17 +1737,17 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
                             owner_anchor = None
                         payload = _attachment_hash_payload(attachment, message_owner_anchor=owner_anchor)
                         conn.execute(
-                            "INSERT INTO attachment_hash VALUES (?, ?, ?, ?, ?)",
+                            "INSERT INTO attachment_hash VALUES (?, ?, ?, ?, ?, ?)",
                             (
                                 ordinal,
-                                str(payload.get("message_id") or ""),
-                                str(payload.get("id") or ""),
-                                str(payload.get("name") or ""),
+                                *_attachment_sort_key(payload),
                                 json.dumps(payload, ensure_ascii=False),
                             ),
                         )
                 for index, (encoded,) in enumerate(
-                    conn.execute("SELECT payload FROM attachment_hash ORDER BY owner, native_id, name, ordinal")
+                    conn.execute(
+                        "SELECT payload FROM attachment_hash ORDER BY owner, native_id, name, canonical, ordinal"
+                    )
                 ):
                     if index:
                         literal(",")
@@ -1752,19 +1761,13 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
                     except MessageOwnerAmbiguityError:
                         owner_anchor = None
                     attachments_payload.append(_attachment_hash_payload(attachment, message_owner_anchor=owner_anchor))
-            attachments_payload.sort(
-                key=lambda item: (
-                    str(item.get("message_id") or ""),
-                    str(item.get("id") or ""),
-                    str(item.get("name") or ""),
-                )
-            )
+            attachments_payload.sort(key=_attachment_sort_key)
             for index, payload in enumerate(attachments_payload):
                 if index:
                     literal(",")
                 write(payload)
     literal('],"created_at":')
-    write(_normalize_for_hash(convo.created_at))
+    write(convo.created_at)
     literal(',"messages":[')
     for index, message in enumerate(convo.messages):
         if index:
@@ -1779,16 +1782,16 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
         write(
             {
                 "event_index": event_index,
-                "event_type": _normalize_for_hash(event.event_type),
-                "timestamp": _normalize_for_hash(event.timestamp),
-                "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
+                "event_type": event.event_type,
+                "timestamp": event.timestamp,
+                "source_message_provider_id": event.source_message_provider_id,
                 "payload": hash_item_payload(_hashed_event_payload(event.event_type, event.payload)),
             }
         )
     literal('],"title":')
-    write(_normalize_for_hash(convo.title))
+    write(_prose_for_hash(convo.title))
     literal(',"updated_at":')
-    write(_normalize_for_hash(convo.updated_at))
+    write(convo.updated_at)
     literal("}")
     return digest.hexdigest()
 
@@ -1859,9 +1862,9 @@ def _disk_session_revision_projection(convo: ParsedSession) -> SessionRevisionPr
         for event_count, event in enumerate(convo.session_events, start=1):
             payload = {
                 "event_index": event_count - 1,
-                "event_type": _normalize_for_hash(event.event_type),
-                "timestamp": _normalize_for_hash(event.timestamp),
-                "source_message_provider_id": _normalize_for_hash(event.source_message_provider_id),
+                "event_type": event.event_type,
+                "timestamp": event.timestamp,
+                "source_message_provider_id": event.source_message_provider_id,
                 "payload": hash_item_payload(_hashed_event_payload(event.event_type, event.payload)),
             }
             conn.execute(

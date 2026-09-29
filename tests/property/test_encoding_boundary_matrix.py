@@ -31,10 +31,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import Provider
 from polylogue.core.hashing import hash_text
-from polylogue.pipeline.ids import (
-    _normalize_for_hash,
-    session_content_hash,
-)
+from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.decoder_json import decode_json_bytes
 from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
 from polylogue.storage.repository import SessionRepository
@@ -214,12 +211,6 @@ class TestContentHashNormalization:
         nfc = session_content_hash(_build(NFC_CAFE, NFC_CAFE))
         nfd = session_content_hash(_build(NFD_CAFE, NFD_CAFE))
         assert nfc == nfd
-
-    def test_normalize_for_hash_applies_nfc(self) -> None:
-        # The pipeline helper used by hash payload assembly. Sanity check
-        # that it matches the documented NFC contract.
-        assert _normalize_for_hash(NFD_CAFE) == NFC_CAFE
-        assert _normalize_for_hash(NFC_CAFE) == NFC_CAFE
 
     def test_hashes_are_distinct_across_edge_cases(self) -> None:
         hashes = {label: hash_text(text) for label, text in ALL_TEXT_EDGE_CASES.items()}

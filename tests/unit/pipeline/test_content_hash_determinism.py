@@ -1,8 +1,9 @@
 """Content hash determinism tests across providers and edge cases.
 
 Covers: NFC normalization invariance, hash_payload determinism, message
-ordering sensitivity, content block contributions, sentinel collision
-resistance, and cross-provider hash stability.
+ordering sensitivity, content block contributions, and cross-provider hash
+stability. Absence-versus-literal disjointness lives in
+``test_content_identity_collisions.py``.
 """
 
 from __future__ import annotations
@@ -12,10 +13,7 @@ import json
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.hashing import hash_payload, hash_text
-from polylogue.pipeline.ids import (
-    _normalize_for_hash,
-    session_content_hash,
-)
+from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.sources.parsers.base_models import ParsedSessionEvent
 
@@ -83,38 +81,6 @@ def test_content_hash_nfc_nfd_message_text_equivalence() -> None:
     h1 = session_content_hash(_one(_msg("m1", "user", nfc)))
     h2 = session_content_hash(_one(_msg("m1", "user", nfd)))
     assert h1 == h2
-
-
-# ── Sentinel collision resistance ─────────────────────────────────────
-
-
-def test_normalize_for_hash_none_sentinel_unique() -> None:
-    """None should normalize to a sentinel distinct from any string."""
-    result = _normalize_for_hash(None)
-    assert result == "__POLYLOGUE_NULL__"
-    # Distinct from the empty-string sentinel, which is the collision that matters.
-    assert result != _normalize_for_hash("")
-
-
-def test_normalize_for_hash_empty_string_sentinel_unique() -> None:
-    """Empty string should normalize to a sentinel distinct from None."""
-    assert _normalize_for_hash("") != _normalize_for_hash(None)
-
-
-def test_sentinel_in_content_does_not_collide() -> None:
-    """If real content contains the sentinel string, it gets NFC-normalized
-    but is still the sentinel — this is an acceptable collision because
-    the sentinel is a long, specific string that won't appear in real data."""
-    content_with_sentinel = "__POLYLOGUE_NULL__"
-    result = _normalize_for_hash(content_with_sentinel)
-    # NFC normalization of ASCII doesn't change anything.
-    assert result == "__POLYLOGUE_NULL__"
-    # The sentinel value itself and None both normalize to the same value.
-    # This is acceptable because no real session will have this exact
-    # content — it's a 19-character ASCII string.
-    assert _normalize_for_hash(None) == _normalize_for_hash("__POLYLOGUE_NULL__")
-    # This documents the intentional collision between None and the sentinel
-    # literal. If this ever matters, the sentinel should be made non-printable.
 
 
 # ── Message ordering ──────────────────────────────────────────────────
