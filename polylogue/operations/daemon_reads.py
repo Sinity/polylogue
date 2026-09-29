@@ -8,7 +8,7 @@ re-open whichever archive generation happens to be current.
 from __future__ import annotations
 
 import sqlite3
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass, replace
 from time import monotonic
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -198,6 +198,8 @@ def execute_read_operation(
 
         cached = get_cached_result(name, cache_key_payload, view=read_view)
         if cached is not None:
+            if name == "cli.query":
+                _refresh_query_relative_times(cached)
             return cached
 
     if name == "cli.query":
@@ -304,8 +306,34 @@ def execute_read_operation(
         assert read_view is not None
         from polylogue.storage.search.cache import put_cached_result
 
+        if name == "cli.query":
+            for row in _query_session_rows(result):
+                row.pop("relative_time", None)
         put_cached_result(name, cache_key_payload, result, view=read_view)
+        if name == "cli.query":
+            _refresh_query_relative_times(result)
     return result
+
+
+def _query_session_rows(payload: Mapping[str, object]) -> Iterator[dict[str, object]]:
+    """Walk the session rows of the two declared CLI query envelopes."""
+    items = payload.get("items")
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict):
+                yield item
+    hits = payload.get("hits")
+    if isinstance(hits, list):
+        for hit in hits:
+            if isinstance(hit, dict) and isinstance(session := hit.get("session"), dict):
+                yield session
+
+
+def _refresh_query_relative_times(payload: Mapping[str, object]) -> None:
+    from polylogue.surfaces.query_rows import session_row
+
+    for row in _query_session_rows(payload):
+        row["relative_time"] = session_row(row).relative_time
 
 
 def _cacheable_read(name: str, payload: Mapping[str, object]) -> bool:
@@ -586,6 +614,7 @@ def _session_list_row(summary: ArchiveSessionSummary) -> dict[str, object]:
     from polylogue.surfaces.query_rows import session_row
 
     domain = archive_summary_to_domain(summary)
+    projection = session_row(domain, message_count=summary.message_count)
     row: dict[str, object] = session_list_envelope_from_summary(
         domain,
         message_count=summary.message_count,
@@ -593,6 +622,8 @@ def _session_list_row(summary: ArchiveSessionSummary) -> dict[str, object]:
         # branch renders ``words`` from the summary, and ``exclude_none`` would
         # otherwise drop the field rather than report it as zero.
         word_count=summary.word_count,
+        repo=projection.repo,
+        cwd_display=projection.cwd_display,
     ).model_dump(mode="json", exclude_none=True)
     for key, stored in (("created_at", summary.created_at), ("updated_at", summary.updated_at)):
         if stored is not None:
@@ -601,7 +632,7 @@ def _session_list_row(summary: ArchiveSessionSummary) -> dict[str, object]:
     # member; the raw summary field is nullable and the shared row projection
     # is what resolves the two. Reporting the null instead would make an
     # unknown outcome indistinguishable from an absent field.
-    row["terminal_state"] = session_row(domain, message_count=summary.message_count).outcome
+    row["terminal_state"] = projection.outcome
     return {key: row[key] for key in _SESSION_LIST_ROW_FIELDS if row.get(key) is not None}
 
 

@@ -139,7 +139,10 @@ async def test_api_and_mcp_preserve_counter_and_native_evidence(tmp_path: Path) 
                 projection="orchestration",
             )
         )
-    assert result == payload
+    from polylogue.surfaces.outcome import decide_outcome
+
+    assert result == {**payload, "outcome": decide_outcome(matched=1, degraded=payload["gaps"]).to_dict()}
+    assert result["outcome"]["state"] == payload["outcome"]
     assert missing["code"] == "not_found"
 
 

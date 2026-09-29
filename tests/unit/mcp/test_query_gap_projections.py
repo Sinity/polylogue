@@ -637,3 +637,22 @@ class TestStatusSourcesAndEmbeddingsScopes:
         assert result["scope"] == "sinex"
         assert result["sinex"]["mode"] == "off"
         assert result["sinex"]["active_lag"] == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_episode_projection_preserves_offset_pagination(tmp_path: Path) -> None:
+    """Dropping offset returns the first episode for every requested page."""
+    archive_root = tmp_path / "archive"
+    _seed_tool_episode_archive(archive_root)
+    query_fn = build_tools()["query"]
+    with installed_runtime_services(archive_root):
+        whole = json.loads(await invoke_surface_async(query_fn, projection="tool-episodes", limit=10))
+        expected = whole["tool_episodes"]
+        assert len(expected) == 3
+        pages = []
+        for offset in range(4):
+            page = json.loads(await invoke_surface_async(query_fn, projection="tool-episodes", limit=1, offset=offset))
+            assert page.get("is_error") is not True, page
+            pages.append(page["tool_episodes"])
+    assert [item for page in pages for item in page] == expected
+    assert [len(page) for page in pages] == [1, 1, 1, 0]

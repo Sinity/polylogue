@@ -387,7 +387,7 @@ def record_manual_continuation_product(config: Config, child_session_id: str, pa
         user.close()
 
 
-def record_context_ledger_product(config: Config, admission: Any, *, observed_at_ms: int = 0) -> None:
+def record_context_ledger_product(config: Config, admission: Any, *, observed_at_ms: int) -> None:
     """Persist scheduler admission in the disposable operations tier."""
     from polylogue.context.scheduler import record_context_ledger
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
@@ -510,6 +510,6 @@ def facade_context_ledger(request: Any, context: Any, audit: Any, snapshot: Any)
     record_context_ledger_product(
         _daemon_config(context.archive_root),
         SimpleNamespace(build_ref=payload["build_ref"], ledger=rows),
-        observed_at_ms=int(payload.get("observed_at_ms", 0)),
+        observed_at_ms=int(payload["observed_at_ms"]),
     )
     return _daemon_writer_result(request, {})

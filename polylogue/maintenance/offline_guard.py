@@ -295,6 +295,20 @@ def refuse_writable_tier_opens(refuse: Callable[[Path], None]) -> Iterator[None]
                 _REFUSE = None
 
 
+def archive_root_for_writable_tier(path: Path, *, configured_root: Path | None) -> Path:
+    """Bind a concrete tier open through the shared archive identity owner."""
+    from polylogue.storage.archive_identity import ArchiveLocation, archive_root_for_index_path
+
+    resolved = path.resolve()
+    if configured_root is not None:
+        location = ArchiveLocation.resolve(configured_root)
+        if resolved == location.active_index.resolved_path or any(
+            resolved == tier.resolved_path for tier in location.configured_tiers
+        ):
+            return configured_root.resolve()
+    return archive_root_for_index_path(resolved)
+
+
 def writable_tier_opens_are_checked() -> bool:
     """Whether a later-arriving writer would be noticed at the next open."""
     return _INTERCEPT_DEPTH > 0
@@ -310,4 +324,5 @@ __all__ = [
     "scoped_offline_archive_writer",
     "hold_daemon_start_exclusion",
     "writable_tier_opens_are_checked",
+    "archive_root_for_writable_tier",
 ]

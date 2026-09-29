@@ -269,7 +269,7 @@ _CUTOVER_TOOL_ROWS: Final[tuple[_ToolRow, ...]] = (
     ),
     _ToolRow(
         "maintenance",
-        "Rebuild session insights. rebuild_insights requires confirm=true and fails closed without it.",
+        "Rebuild session insights. Requires confirm=true. session_ids=null selects all sessions; an empty list selects none.",
         "polylogue.mcp.server_cutover",
         "register_cutover_privileged_tools",
         "maintenance",

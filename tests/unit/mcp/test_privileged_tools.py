@@ -1358,3 +1358,32 @@ async def test_reference_relation_query_advances_requested_offset(tmp_path: Path
     assert [p["offset"] for p in pages] == [0, 2, 4]
     assert [p["next_offset"] for p in pages] == [2, 4, None]
     assert [ref for page in pages for ref in page["members"]] == [f"session:{sid}" for sid in ids]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_ids", [None, [], ["chatgpt:only-this-session"]])
+async def test_maintenance_preserves_exact_session_scope(tmp_path: Path, session_ids: list[str] | None) -> None:
+    """Neither an explicit selection nor an empty selection may become all."""
+    from unittest.mock import AsyncMock
+
+    from polylogue.mcp.server import build_server
+
+    root = tmp_path / "archive"
+    _seed_archive(root)
+    server = cast(MCPServerUnderTest, build_server(capabilities=MCPCapabilities(maintenance=True)))
+    tool = server._tool_manager._tools["maintenance"].fn
+    # The wire boundary is replaced, not the public handler or its scope owner.
+    submit = AsyncMock(return_value='{"submitted": true}')
+    with installed_runtime_services(root), patch("polylogue.mcp.server_cutover._daemon_operation", submit):
+        result = json.loads(
+            await invoke_surface_async(
+                tool,
+                operation="rebuild_insights",
+                confirm=True,
+                session_ids=session_ids,
+            )
+        )
+    assert result == {"submitted": True}
+    submit.assert_awaited_once()
+    assert submit.await_args is not None
+    assert submit.await_args.args[1:] == ("maintenance.insights.rebuild", {"session_ids": session_ids})

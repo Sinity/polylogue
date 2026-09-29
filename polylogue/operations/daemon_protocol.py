@@ -467,7 +467,7 @@ class ContextLedgerRowRequest(_OperationPayload):
 class FacadeContextLedgerRequest(_OperationPayload):
     build_ref: str = Field(min_length=1)
     ledger_rows: list[ContextLedgerRowRequest] = Field(default_factory=list)
-    observed_at_ms: int = Field(default=0, ge=0)
+    observed_at_ms: int = Field(ge=0)
 
 
 class CompletionRequest(_OperationPayload):

@@ -146,44 +146,38 @@ def mission_control_archive_facts(
     archive_root: Path,
     indexed_session_id: str,
 ) -> tuple[_MissionControlCostPayload, _MissionControlAssertionsPayload] | None:
-    """Read cost and judged assertions for one canonical session.
-
-    Returns ``None`` when the archive cannot answer, so the caller degrades to
-    an explicit unknown instead of reporting a fabricated zero-cost success.
-    """
+    """Read cost and judged claims targeting or scoped to one session."""
     try:
         from polylogue import Polylogue
         from polylogue.analysis.archive import SessionCostInsightQuery
         from polylogue.api.sync.bridge import run_coroutine_sync
 
-        poly = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
-        cost: _MissionControlCostPayload = {"status": "unknown", "total_usd": None, "provenance": []}
-        costs = run_coroutine_sync(
-            poly.list_session_cost_insights(SessionCostInsightQuery(session_id=indexed_session_id))
-        )
-        if costs:
-            estimate = costs[0].estimate
-            cost = {
-                "status": estimate.status if estimate.status != "unavailable" else "unknown",
-                "total_usd": None if estimate.total_usd is None else float(estimate.total_usd),
-                "provenance": list(estimate.provenance),
-            }
-        # One bounded read of the session's own judged claims. Message-targeted
-        # claims use message:<message_id>, and a session's message ids are not
-        # a prefix of its session id, so they cannot be read by prefix here.
-        claims = run_coroutine_sync(
-            poly.list_assertion_claim_payloads(
-                target_ref=f"session:{indexed_session_id}", statuses=("active",), limit=5
-            )
-        )
-        assertions: _MissionControlAssertionsPayload = {
-            "status": "available",
-            "items": [claim.model_dump(mode="json") for claim in claims],
-        }
+        async def read() -> tuple[_MissionControlCostPayload, _MissionControlAssertionsPayload]:
+            async with Polylogue(archive_root=archive_root, db_path=archive_root / "index.db") as poly:
+                cost: _MissionControlCostPayload = {"status": "unknown", "total_usd": None, "provenance": []}
+                costs = await poly.list_session_cost_insights(SessionCostInsightQuery(session_id=indexed_session_id))
+                if costs:
+                    estimate = costs[0].estimate
+                    cost = {
+                        "status": estimate.status if estimate.status != "unavailable" else "unknown",
+                        "total_usd": None if estimate.total_usd is None else float(estimate.total_usd),
+                        "provenance": list(estimate.provenance),
+                    }
+                # Selection capture records its session as durable scope, which
+                # candidate promotion preserves independently of the index.
+                claims = await poly.list_assertion_claim_payloads(
+                    target_or_scope_ref=f"session:{indexed_session_id}", statuses=("active",), limit=5
+                )
+                assertions: _MissionControlAssertionsPayload = {
+                    "status": "available",
+                    "items": [claim.model_dump(mode="json") for claim in claims],
+                }
+                return cost, assertions
+
+        return run_coroutine_sync(read())
     except Exception as exc:  # a read projection must degrade, never become success
         logger.warning("browser_capture.mission_control_degraded", error=repr(exc))
         return None
-    return cost, assertions
 
 
 def _json_bytes(payload: object) -> bytes:

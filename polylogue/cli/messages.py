@@ -77,6 +77,7 @@ def read_message_windows(
     forward from the anchor rather than re-resolving it on each page.
     """
 
+    from polylogue.archive.query.transaction import QueryContinuation, QueryContinuationInvalidError
     from polylogue.cli.lowering import lower_session_read
 
     token = continuation
@@ -96,7 +97,12 @@ def read_message_windows(
             else window_ceiling
         )
         if token is not None:
-            request = lower_session_read(session_id, kind="messages", continuation=token)
+            try:
+                bound = QueryContinuation.decode(token).request.page_size
+            except QueryContinuationInvalidError as exc:
+                raise OperationFailedError(exc.code, str(exc)) from exc
+            window_limit = min(window_limit, bound)
+            request = lower_session_read(session_id, kind="messages", limit=window_limit, continuation=token)
         elif anchor is not None:
             request = lower_session_read(session_id, kind="messages", limit=window_limit, around=anchor)
         else:
@@ -104,11 +110,9 @@ def read_message_windows(
         try:
             payload, served_by = dispatch_read(config, request, daemon_disabled=daemon_disabled)
         except OperationFailedError as exc:
-            # A wide initial page can be valid as rows yet exceed the bounded
-            # operation envelope. Retry that same coordinate with a smaller
-            # window; the successful page then mints a continuation for the
-            # smaller bound used by all following windows.
-            if exc.code != "result_too_large" or token is not None or window_limit <= 1:
+            # Retry the same coordinate with a narrower transport window.
+            # A continuation keeps its selection, snapshot and next unread row.
+            if exc.code != "result_too_large" or window_limit <= 1:
                 raise
             reduced = max(1, window_limit // 2)
             if anchor is not None:

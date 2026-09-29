@@ -811,6 +811,12 @@ def test_mission_control_reads_only_judged_session_assertions_in_one_bounded_rea
         def __init__(self, **_kwargs: object) -> None:
             pass
 
+        async def __aenter__(self) -> FakePolylogue:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            pass
+
         async def list_session_cost_insights(self, _query: object) -> list[object]:
             return []
 
@@ -819,9 +825,10 @@ def test_mission_control_reads_only_judged_session_assertions_in_one_bounded_rea
             *,
             statuses: tuple[str, ...],
             limit: int,
-            target_ref: str | None = None,
+            target_or_scope_ref: str | None = None,
         ) -> list[object]:
-            calls.append((str(target_ref), statuses))
+            assert limit == 5
+            calls.append((str(target_or_scope_ref), statuses))
             return []
 
     monkeypatch.setattr(polylogue, "Polylogue", FakePolylogue)
@@ -1493,3 +1500,60 @@ def test_selection_without_native_session_coordinates_is_refused(tmp_path: Path,
         body = json.loads(response.read())
     assert response.status == HTTPStatus.BAD_REQUEST
     assert body["error"] == "exact_message_evidence_required"
+
+
+def test_mission_control_includes_promoted_message_scopes_without_crossing_sessions(
+    empty_archive_template: Path, tmp_path: Path
+) -> None:
+    """The panel's message target remains visible after candidate promotion."""
+    from polylogue.core.enums import AssertionKind, AssertionStatus
+    from polylogue.storage.sqlite.archive_tiers.user_write import judge_assertion_candidate, upsert_assertion
+
+    root = tmp_path / "archive"
+    shutil.copytree(empty_archive_template, root)
+    session_ref = "session:chatgpt:conv-123"
+    message_ref = "message:chatgpt:conv-123:n:message-one"
+    expected: set[str] = set()
+    conn = sqlite3.connect(root / "user.db")
+    try:
+        for key, target, scope, accept in (
+            ("direct", session_ref, None, True),
+            ("selected", message_ref, session_ref, True),
+            ("both", session_ref, session_ref, True),
+            ("pending", message_ref, session_ref, False),
+            ("other", "message:chatgpt:other:n:message-one", "session:chatgpt:other", True),
+        ):
+            candidate = upsert_assertion(
+                conn,
+                assertion_id=f"candidate-{key}",
+                kind=AssertionKind.LESSON,
+                target_ref=target,
+                scope_ref=scope,
+                body_text=f"Synthetic {key} lesson",
+                status=AssertionStatus.CANDIDATE,
+                author_kind="user",
+                author_ref="user:local",
+                context_policy={"inject": False},
+                now_ms=1000,
+            )
+            if accept:
+                judgment = judge_assertion_candidate(
+                    conn,
+                    candidate_ref=f"assertion:{candidate.assertion_id}",
+                    decision="accept",
+                    actor_ref="user:local",
+                    now_ms=2000,
+                )
+                assert judgment.resulting_assertion is not None
+                if key != "other":
+                    expected.add(judgment.resulting_assertion.assertion_id)
+        conn.commit()
+    finally:
+        conn.close()
+    facts = mission_control_archive_facts(root, "chatgpt:conv-123")
+    assert facts is not None
+    claims = facts[1]["items"]
+    assert len(claims) == 3
+    assert {claim["assertion_id"] for claim in claims} == expected
+    assert {claim["target_ref"] for claim in claims} == {session_ref, message_ref}
+    assert {claim["status"] for claim in claims} == {"active"}

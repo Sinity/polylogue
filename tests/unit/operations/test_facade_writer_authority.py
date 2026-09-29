@@ -58,7 +58,7 @@ _WRITERS: dict[str, Callable[[Config], object]] = {
     "manual_continuation": lambda config: facade_writers.record_manual_continuation_product(
         config, "claude-code:child", "claude-code:parent"
     ),
-    "context_ledger": lambda config: facade_writers.record_context_ledger_product(config, object()),
+    "context_ledger": lambda config: facade_writers.record_context_ledger_product(config, object(), observed_at_ms=1),
     "comparative_judgment": lambda config: facade_writers._archive_record_comparative_judgment(
         config, object(), author_kind="human"
     ),

@@ -924,6 +924,7 @@ async def _query_registry_insight(
     descriptor: Any,
     *,
     limit: int | None,
+    offset: int,
     origin: str | None,
     tag: str | None,
     repo: str | None,
@@ -952,7 +953,11 @@ async def _query_registry_insight(
     if "limit" in fields:
         kwargs["limit"] = hooks.clamp_limit(limit if limit is not None else descriptor.mcp_default_limit)
     if "offset" in fields:
-        kwargs["offset"] = 0
+        kwargs["offset"] = offset
+    elif offset:
+        return hooks.error_json(
+            f"insight {descriptor.name!r} does not declare offset pagination", code="invalid_argument", tool="query"
+        )
     for key, value in (("origin", origin), ("tag", tag), ("repo", repo), ("since", since), ("until", until)):
         if value is not None and key in fields:
             kwargs[key] = value
@@ -975,6 +980,7 @@ async def _query_insight_projection(
     projection: str,
     *,
     limit: int | None,
+    offset: int,
     origin: str | None,
     tag: str | None,
     repo: str | None,
@@ -1002,11 +1008,18 @@ async def _query_insight_projection(
             hooks,
             descriptor,
             limit=limit,
+            offset=offset,
             origin=origin,
             tag=tag,
             repo=repo,
             since=since,
             until=until,
+        )
+    if offset:
+        return hooks.error_json(
+            f"query(projection={projection!r}) does not declare offset pagination",
+            code="invalid_argument",
+            tool="query",
         )
     from dataclasses import replace
 
@@ -1366,6 +1379,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     hooks,
                     projection,
                     limit=limit,
+                    offset=offset,
                     origin=origin,
                     tag=tag,
                     repo=repo,
@@ -1662,7 +1676,9 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 evidence = await hooks.get_polylogue().get_session_orchestration(session_id)
                 if evidence is None:
                     return hooks.error_json(f"object not found: {ref}", code="not_found", tool="get")
-                return hooks.json_payload(MCPRootPayload(root=evidence.model_dump(mode="json")))
+                payload = evidence.model_dump(mode="json")
+                payload["outcome"] = decide_outcome(matched=1, degraded=evidence.gaps).to_dict()
+                return hooks.json_payload(MCPRootPayload(root=payload))
             list_projection = SESSION_LIST_PROJECTIONS.get(projection) if projection is not None else None
             if list_projection is not None and session_id is not None:
                 return await _session_list_projection_payload(list_projection, session_id, tool="get")
@@ -2865,7 +2881,7 @@ async def _dispatch_maintenance(hooks: ServerCallbacks, *, operation: str, kwarg
         return await _daemon_operation(
             hooks,
             "maintenance.insights.rebuild",
-            {"session_ids": list(session_ids) if session_ids else None},
+            {"session_ids": list(session_ids) if session_ids is not None else None},
         )
 
     return hooks.error_json(f"unknown maintenance operation: {operation!r}", code="invalid_argument")
@@ -3145,17 +3161,19 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
         async def maintenance(
             operation: Literal["rebuild_insights"],
             confirm: bool = False,
+            session_ids: list[str] | None = None,
         ) -> str:
             """Rebuild session insights.
 
             ``rebuild_insights`` requires ``confirm=True`` and fails closed without it.
+            ``session_ids=None`` selects all sessions; an empty list selects none.
             """
 
             async def run() -> str:
                 return await _dispatch_maintenance(
                     hooks,
                     operation=operation,
-                    kwargs={"confirm": confirm},
+                    kwargs={"confirm": confirm, "session_ids": session_ids},
                 )
 
             return await hooks.async_safe_call("maintenance", run)

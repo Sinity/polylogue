@@ -1011,3 +1011,30 @@ def test_write_messages_file_records_and_exits_on_an_empty_page(tmp_path: Path, 
 
     assert exited.value.code == OUTCOME_EXIT_CODES["empty"]
     assert json.loads(out.read_text(encoding="utf-8"))["outcome"]["state"] == "empty"
+
+
+def test_composed_limit_and_resume_neither_overdeliver_nor_skip_messages(
+    tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A 250-row page narrows its last 200-row transport window to 50."""
+    expected = [f"message {index:04d}" for index in range(401)]
+    session_id = _seed_messages(tmp_path, *[{"text": text} for text in expected])
+    run_messages(_env(), _seeded_request(tmp_path), session_id=session_id, limit=250, output_format="json")
+    first = json.loads(capsys.readouterr().out)
+    assert first["limit"] == 250
+    assert len(first["messages"]) == 250
+    assert first["next_offset"] == 250
+    assert first["continuation"]
+    run_messages(
+        _env(),
+        _seeded_request(tmp_path),
+        session_id=session_id,
+        limit=250,
+        continuation=first["continuation"],
+        output_format="json",
+    )
+    second = json.loads(capsys.readouterr().out)
+    assert second["offset"] == 250
+    assert len(second["messages"]) == 151
+    assert second.get("continuation") is None
+    assert [message["text"] for message in first["messages"] + second["messages"]] == expected

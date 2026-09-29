@@ -761,3 +761,74 @@ def test_declared_query_units_replays_the_http_opaque_continuation(tmp_path: Pat
     first_items = cast("list[dict[str, object]]", first["items"])
     second_items = cast("list[dict[str, object]]", second["items"])
     assert first_items[0]["message_id"] != second_items[0]["message_id"]
+
+
+@pytest.mark.frozen_clock_modules("polylogue.surfaces.query_rows")
+@pytest.mark.parametrize("search", [False, True])
+def test_cached_session_rows_refresh_time_without_requerying(tmp_path: Path, frozen_clock: Any, search: bool) -> None:
+    """Cached list/search rows must age without an archive revision change."""
+    from polylogue.archive.message.roles import Role
+    from polylogue.core.enums import BlockType, Provider
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+    from polylogue.storage.search import cache
+    from tests.infra.live_ingest import write_index_session
+
+    stamp = frozen_clock.now().isoformat()
+    with ArchiveStore(tmp_path) as archive:
+        write_index_session(
+            archive,
+            ParsedSession(
+                source_name=Provider.CHATGPT,
+                provider_session_id="relative-time-row",
+                title="Cache time evidence",
+                created_at=stamp,
+                updated_at=stamp,
+                git_repository_url="https://example.test/team/project.git",
+                working_directories=["/work/team/project"],
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.USER,
+                        text="cachetime evidence",
+                        timestamp=stamp,
+                        blocks=[ParsedContentBlock(type=BlockType.TEXT, text="cachetime evidence")],
+                    )
+                ],
+            ),
+        )
+    cache.invalidate_search_cache()
+    params: dict[str, object] = {"limit": 10}
+    if search:
+        params.update(query="cachetime", lexical=True)
+
+    def read() -> dict[str, object]:
+        with open_operation_read(tmp_path) as pinned:
+            assert pinned.read_view is not None
+            return execute_read_operation(
+                "cli.query",
+                {"params": params},
+                archive=pinned.archive,
+                serving_identity="test",
+                read_view=pinned.read_view,
+            )
+
+    def rows(payload: dict[str, object]) -> list[dict[str, Any]]:
+        if search:
+            return [hit["session"] for hit in cast(list[dict[str, Any]], payload["hits"])]
+        return cast(list[dict[str, Any]], payload["items"])
+
+    first = rows(read())
+    assert len(first) == 1
+    assert first[0]["relative_time"] == "just now"
+    if not search:
+        assert first[0]["repo"] == "project.git"
+        assert first[0]["cwd_display"] == "project"
+    hits_before = cache.get_cache_stats()["result_cache_hits"]
+    frozen_clock.advance(seconds=3600)
+    second = rows(read())
+    assert cache.get_cache_stats()["result_cache_hits"] == hits_before + 1
+    assert len(second) == 1
+    assert second[0]["relative_time"] == "1h ago"
+    assert {key: value for key, value in first[0].items() if key != "relative_time"} == {
+        key: value for key, value in second[0].items() if key != "relative_time"
+    }

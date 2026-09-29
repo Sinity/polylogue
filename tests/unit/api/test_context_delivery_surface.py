@@ -17,7 +17,7 @@ import sqlite3
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 
@@ -258,8 +258,9 @@ async def test_record_context_delivery_requires_initialized_user_tier(tmp_path: 
         )
 
 
+@pytest.mark.frozen_clock_modules("polylogue.api.archive")
 async def test_context_scheduler_ledger_has_a_facade_reader(
-    tmp_path: Path, facade_daemon_writer: Callable[[Path], AbstractContextManager[object]]
+    tmp_path: Path, facade_daemon_writer: Callable[[Path], AbstractContextManager[object]], frozen_clock: Any
 ) -> None:
     archive_root = tmp_path / "archive-ledger-reader"
     _seed(archive_root, provider_session_id="ledger-target", text="scheduler evidence")
@@ -274,3 +275,4 @@ async def test_context_scheduler_ledger_has_a_facade_reader(
     assert records
     assert records[0].row.source == "archive-context"
     assert records[0].row.execution_context_ref.startswith("sha256:")
+    assert {record.observed_at_ms for record in records} == {int(frozen_clock.now().timestamp() * 1000)}

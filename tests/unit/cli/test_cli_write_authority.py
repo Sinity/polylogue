@@ -16,6 +16,7 @@ drives each remaining offline writer through the console-script route.
 from __future__ import annotations
 
 import os
+import sqlite3
 import subprocess
 import sys
 from collections.abc import Callable, Iterator
@@ -110,23 +111,17 @@ def test_refusal_names_the_resident_writer(
     tmp_path: Path,
     resident_daemon: Callable[[Path], int],
 ) -> None:
-    """A refusal that escapes the command names the PID that holds the archive.
-
-    Anti-vacuity: re-raise the original ``UnleasedWriteError`` unchanged and
-    this goes red, because that message names only "the daemon write lease"
-    and never which process is actually holding this archive.
-    """
+    """A refused actual open identifies the archive and its resident owner."""
     root = _archive_root(monkeypatch, tmp_path)
     resident_pid = resident_daemon(root / "daemon.pid")
 
     with pytest.raises(ArchiveWriterOwnershipError) as caught:
         with cli_archive_writer_ownership():
-            raise UnleasedWriteError("open_connection(source.db) requires the daemon write lease")
+            sqlite3.connect(root / "source.db")
 
-    message = str(caught.value)
-    assert str(root) in message
-    assert f"PID {resident_pid}" in message
-    assert isinstance(caught.value.__cause__, UnleasedWriteError)
+    assert caught.value.archive_root == str(root)
+    assert caught.value.resident_writer == f"polylogued PID {resident_pid} is running for this archive"
+    assert not (root / "source.db").exists()
 
 
 def test_unowned_archive_leaves_the_boundary_unarmed(
@@ -150,46 +145,47 @@ def test_unowned_archive_leaves_the_boundary_unarmed(
         assert archive_write_guard_installed() is False
 
 
-def test_resident_archive_writer_arms_the_boundary(
+def test_resident_default_archive_does_not_own_an_explicit_scratch_archive(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     resident_daemon: Callable[[Path], int],
 ) -> None:
-    """A resident daemon arms both halves: the factories and ``sqlite3.connect``."""
-    from polylogue.storage.sqlite.write_guard import archive_write_guard_installed
+    """Global lease arming previously refused the independent scratch root."""
+    from polylogue.maintenance.offline_guard import writable_tier_opens_are_checked
     from polylogue.storage.sqlite.write_lease import write_lease_enforced
 
     root = _archive_root(monkeypatch, tmp_path)
     resident_daemon(root / "daemon.pid")
-
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
     with cli_archive_writer_ownership():
-        assert write_lease_enforced() is True
-        assert archive_write_guard_installed() is True
-    assert write_lease_enforced() is False
-    assert archive_write_guard_installed() is False
+        assert writable_tier_opens_are_checked()
+        assert not write_lease_enforced()
+        with sqlite3.connect(scratch / "index.db") as conn:
+            conn.execute("CREATE TABLE marker (value TEXT)")
+        conn.close()
+        with pytest.raises(ArchiveWriterOwnershipError) as caught:
+            sqlite3.connect(root / "index.db")
+        assert caught.value.archive_root == str(root)
+    assert (scratch / "index.db").exists()
+    assert not (root / "index.db").exists()
 
 
-def test_escaping_refusal_is_translated_through_click(
+def test_concrete_open_refusal_reaches_click(
     cli_runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     resident_daemon: Callable[[Path], int],
 ) -> None:
-    """The translation reaches a real command, not only a direct ``with`` block.
+    """The real root callback must reject an offline command's tier open."""
 
-    Click's ``Context`` forwards the in-flight exception to resources entered
-    with ``ctx.with_resource``, which is what lets the boundary re-label a
-    refusal it did not raise. Anti-vacuity: register the boundary with
-    ``ctx.call_on_close`` instead (teardown only, no exception forwarding) and
-    this goes red with the unlabelled ``UnleasedWriteError``.
-    """
     import polylogue.storage.embeddings.reconcile as reconcile
 
     root = _archive_root(monkeypatch, tmp_path)
     resident_pid = resident_daemon(root / "daemon.pid")
 
     def _refuse(*args: object, **kwargs: object) -> None:
-        raise UnleasedWriteError("open_connection(embeddings.db) requires the daemon write lease")
+        sqlite3.connect(root / "embeddings.db")
 
     monkeypatch.setattr(reconcile, "reconcile_embedding_orphans", _refuse)
 
@@ -368,3 +364,40 @@ def test_bound_write_lease_rejects_a_missing_archive_identity(tmp_path: Path) ->
     with arm_write_lease_enforcement(), write_lease("bound", archive_root=tmp_path):
         with pytest.raises(UnleasedWriteError, match="omitted archive identity"):
             require_write_lease("misrouted archive writer")
+
+
+def test_explicit_live_archive_is_checked_when_the_default_is_offline(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, resident_daemon: Callable[[Path], int]
+) -> None:
+    """Checking only the configured root used to authorize a second live root."""
+    _archive_root(monkeypatch, tmp_path)
+    live = tmp_path / "other-live"
+    live.mkdir()
+    resident_daemon(live / "daemon.pid")
+    with cli_archive_writer_ownership(), pytest.raises(ArchiveWriterOwnershipError) as caught:
+        sqlite3.connect(live / "user.db")
+    assert caught.value.archive_root == str(live)
+    assert not (live / "user.db").exists()
+
+
+@pytest.mark.parametrize("alias", [False, True])
+def test_promoted_index_and_alias_cannot_escape_the_live_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, resident_daemon: Callable[[Path], int], alias: bool
+) -> None:
+    root = _archive_root(monkeypatch, tmp_path)
+    generation = root / ".index-generations" / "generation-one"
+    generation.mkdir(parents=True)
+    physical = generation / "index.db"
+    with sqlite3.connect(physical) as conn:
+        conn.execute("CREATE TABLE marker (value TEXT)")
+    conn.close()
+    pointer = root / "index.db"
+    pointer.symlink_to(physical)
+    resident_daemon(root / "daemon.pid")
+    target = physical
+    if alias:
+        target = tmp_path / "index.db"
+        target.symlink_to(physical)
+    with cli_archive_writer_ownership(), pytest.raises(ArchiveWriterOwnershipError) as caught:
+        sqlite3.connect(target)
+    assert caught.value.archive_root == str(root)

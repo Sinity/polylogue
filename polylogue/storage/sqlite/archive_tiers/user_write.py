@@ -2629,6 +2629,7 @@ def list_assertion_claims(
     schema: str | None = None,
     kinds: Sequence[str | AssertionKind] = ASSERTION_CLAIM_KINDS,
     target_ref: str | None = None,
+    target_or_scope_ref: str | None = None,
     target_refs: Collection[str] | None = None,
     scope_ref: str | None = None,
     statuses: Sequence[str | AssertionStatus] | None = (AssertionStatus.ACTIVE, AssertionStatus.CANDIDATE),
@@ -2658,6 +2659,9 @@ def list_assertion_claims(
     unaffected. Pass ``include_expired=True`` for audit/export reads that
     must still see expired rows.
 
+    ``target_or_scope_ref`` includes claims directly targeting a ref and
+    claims whose declared durable scope is that ref, before sorting/paging.
+
     ``target_refs`` restricts the read to rows targeting any of the given
     refs (an empty collection selects nothing). The set travels as one JSON
     parameter expanded by ``json_each``, so its size never meets SQLite's
@@ -2685,6 +2689,9 @@ def list_assertion_claims(
     if target_ref is not None:
         where.append("target_ref = ?")
         params.append(target_ref)
+    if target_or_scope_ref is not None:
+        where.append("(target_ref = ? OR scope_ref = ?)")
+        params.extend((target_or_scope_ref, target_or_scope_ref))
     if target_refs is not None:
         where.append("target_ref IN (SELECT value FROM json_each(?))")
         params.append(json.dumps(sorted(set(target_refs))))
