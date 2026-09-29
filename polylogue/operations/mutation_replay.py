@@ -65,6 +65,8 @@ def recover_interrupted_operations(archive_root: Path) -> None:
         attempt_owner_id=AuditRepository.current_process_attempt_owner(),
     )
     audit.reconcile_continuity()
+    # No handler can still be appending pages to a paged machine batch.
+    audit.fence_staged_machine_pages()
     # Startup is the single-writer point where a dead ingest cannot still be
     # preparing pages. Continuity has promoted every accepted generation or
     # refused startup, so the remaining unpromoted headers are pre-accept work.

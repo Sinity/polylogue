@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
-from collections.abc import Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence
 from dataclasses import dataclass
+from typing import Protocol
 
 from polylogue.archive.message.artifacts import classify_block_message_type, classify_material_origin
 from polylogue.archive.message.roles import Role
-from polylogue.core.enums import BlockType, MessageType, StopReason, WebConstructType
+from polylogue.core.enums import BlockType, MessageType, Provider, StopReason, WebConstructType
 from polylogue.core.hashing import hash_payload
 from polylogue.core.message_owner import MessageOwnerCoordinate
 from polylogue.core.timestamps import parse_timestamp
@@ -25,6 +26,7 @@ from ..base import (
     human_authored_override,
     synthetic_message_id,
 )
+from ..base_models import upgrade_chat_export_user_authorship
 
 CLAUDE_MISSING_MESSAGE_ID_INGEST_FLAG = "degraded:claude-missing-message-id"
 CLAUDE_DUPLICATE_MESSAGE_ID_INGEST_FLAG = "diagnostic:claude-duplicate-message-id"
@@ -35,11 +37,11 @@ CLAUDE_LINEAGE_CYCLE_INGEST_FLAG = "degraded:claude-lineage-cycle"
 class ClaudeMessageNormalization:
     """Normalized Claude chat-message evidence shared by export and browser routes."""
 
-    messages: list[ParsedMessage]
-    attachments: list[ParsedAttachment]
+    messages: MutableSequence[ParsedMessage]
+    attachments: ClaudeAttachmentRows
     active_leaf_message_provider_id: str | None
     models_used: list[str]
-    session_events: list[ParsedSessionEvent]
+    session_events: MutableSequence[ParsedSessionEvent]
     ingest_flags: list[str]
     reported_duration_ms: int | None
 
@@ -74,6 +76,114 @@ class _ClaudeMessageEvidence:
     @property
     def has_material(self) -> bool:
         return bool(self.text or self.blocks or self.attachments)
+
+
+@dataclass(frozen=True, slots=True)
+class _ClaudeEvidenceNode:
+    """The lineage and ranking fields of one record, without its content.
+
+    The graph phase (duplicates, depth, sibling rank, variants, active path)
+    reads only these fields, so a streamed conversation keeps its text,
+    blocks, attachments and raw record in an evidence store instead.
+    """
+
+    evidence_key: str
+    native_provider_message_id: str
+    original_index: int
+    timestamp: str | None
+    updated_at: str | None
+    parent_message_provider_id: str | None
+    explicit_position: int | None
+    explicit_branch_index: int | None
+    explicit_variant_index: int | None
+    explicit_is_active_path: bool | None
+    explicit_is_active_leaf: bool | None
+    has_material: bool
+    has_attachments: bool
+    has_compaction_summary: bool
+    richness: tuple[int, float]
+
+    @classmethod
+    def of(cls, evidence: _ClaudeMessageEvidence) -> _ClaudeEvidenceNode:
+        return cls(
+            evidence_key=evidence.evidence_key,
+            native_provider_message_id=evidence.native_provider_message_id,
+            original_index=evidence.original_index,
+            timestamp=evidence.timestamp,
+            updated_at=evidence.updated_at,
+            parent_message_provider_id=evidence.parent_message_provider_id,
+            explicit_position=evidence.explicit_position,
+            explicit_branch_index=evidence.explicit_branch_index,
+            explicit_variant_index=evidence.explicit_variant_index,
+            explicit_is_active_path=evidence.explicit_is_active_path,
+            explicit_is_active_leaf=evidence.explicit_is_active_leaf,
+            has_material=evidence.has_material,
+            has_attachments=bool(evidence.attachments),
+            has_compaction_summary=isinstance(evidence.raw.get("compaction_summary"), list),
+            richness=_evidence_richness_score(evidence),
+        )
+
+
+class ClaudeEvidenceStore(Protocol):
+    """Per-record Claude evidence addressed by its 1-based array index."""
+
+    def put(self, evidence: _ClaudeMessageEvidence) -> None: ...
+
+    def raw(self, original_index: int) -> Mapping[str, object]: ...
+
+    def get(
+        self,
+        original_index: int,
+        rebuild: Callable[[dict[str, object]], _ClaudeMessageEvidence],
+    ) -> _ClaudeMessageEvidence: ...
+
+
+class ClaudeAttachmentRows(Protocol):
+    """Merged attachment rows keyed by provider attachment id, in first-seen order."""
+
+    def get(self, provider_attachment_id: str) -> ParsedAttachment | None: ...
+
+    def put(self, attachment: ParsedAttachment) -> None: ...
+
+    def unique_by_descriptor(self, name: str, mime_type: str | None) -> ParsedAttachment | None: ...
+
+    def __iter__(self) -> Iterator[ParsedAttachment]: ...
+
+
+class _ResidentEvidence:
+    def __init__(self) -> None:
+        self._evidence: dict[int, _ClaudeMessageEvidence] = {}
+
+    def put(self, evidence: _ClaudeMessageEvidence) -> None:
+        self._evidence[evidence.original_index] = evidence
+
+    def raw(self, original_index: int) -> Mapping[str, object]:
+        return self._evidence[original_index].raw
+
+    def get(
+        self,
+        original_index: int,
+        rebuild: Callable[[dict[str, object]], _ClaudeMessageEvidence],
+    ) -> _ClaudeMessageEvidence:
+        return self._evidence[original_index]
+
+
+class _ResidentAttachmentRows:
+    def __init__(self) -> None:
+        self._rows: dict[str, ParsedAttachment] = {}
+
+    def get(self, provider_attachment_id: str) -> ParsedAttachment | None:
+        return self._rows.get(provider_attachment_id)
+
+    def put(self, attachment: ParsedAttachment) -> None:
+        self._rows[attachment.provider_attachment_id] = attachment
+
+    def unique_by_descriptor(self, name: str, mime_type: str | None) -> ParsedAttachment | None:
+        matches = [row for row in self._rows.values() if row.name == name and row.mime_type == mime_type]
+        return matches[0] if len(matches) == 1 else None
+
+    def __iter__(self) -> Iterator[ParsedAttachment]:
+        return iter(list(self._rows.values()))
 
 
 def _optional_non_negative_int(value: object) -> int | None:
@@ -680,7 +790,7 @@ def _canonical_record(item: Mapping[str, object]) -> str:
     return json.dumps(dict(item), sort_keys=True, separators=(",", ":"), default=str)
 
 
-def _evidence_richness(evidence: _ClaudeMessageEvidence) -> tuple[int, float, str]:
+def _evidence_richness_score(evidence: _ClaudeMessageEvidence) -> tuple[int, float]:
     parsed_updated = parse_timestamp(evidence.updated_at) if evidence.updated_at is not None else None
     updated = parsed_updated.timestamp() if parsed_updated is not None else float("-inf")
     score = (
@@ -692,7 +802,20 @@ def _evidence_richness(evidence: _ClaudeMessageEvidence) -> tuple[int, float, st
         + (2 if evidence.delivery_status else 0)
         + (2 if evidence.thinking_configuration else 0)
     )
-    return score, updated, _canonical_record(evidence.raw)
+    return score, updated
+
+
+def _is_richer(candidate: _ClaudeEvidenceNode, existing: _ClaudeEvidenceNode, store: ClaudeEvidenceStore) -> bool:
+    """Whether a repeated evidence key replaces the retained record.
+
+    Ties on score and edit time fall back to the canonical record text, read
+    from the store only for those ties.
+    """
+    if candidate.richness != existing.richness:
+        return candidate.richness > existing.richness
+    return _canonical_record(store.raw(candidate.original_index)) > _canonical_record(
+        store.raw(existing.original_index)
+    )
 
 
 def _timestamp_sort_value(timestamp: str | None) -> float:
@@ -702,7 +825,7 @@ def _timestamp_sort_value(timestamp: str | None) -> float:
     return parsed.timestamp() if parsed is not None else float("inf")
 
 
-def _sibling_sort_key(evidence: _ClaudeMessageEvidence) -> tuple[int, int, float, float, str]:
+def _sibling_sort_key(evidence: _ClaudeEvidenceNode) -> tuple[int, int, float, float, str]:
     explicit_variant = evidence.explicit_variant_index
     explicit_branch = evidence.explicit_branch_index
     return (
@@ -716,7 +839,7 @@ def _sibling_sort_key(evidence: _ClaudeMessageEvidence) -> tuple[int, int, float
 
 def _resolve_variant_index(
     start_id: str,
-    evidence_by_id: Mapping[str, _ClaudeMessageEvidence],
+    evidence_by_id: Mapping[str, _ClaudeEvidenceNode],
     branch_index_by_id: Mapping[str, int],
     resolved: dict[str, int],
 ) -> int:
@@ -771,7 +894,7 @@ def _resolve_variant_index(
 
 
 def _deduplicate_variant_collisions(
-    emitted: list[_ClaudeMessageEvidence],
+    emitted: list[_ClaudeEvidenceNode],
     position_by_id: Mapping[str, int],
     variant_index_by_id: dict[str, int],
 ) -> None:
@@ -791,7 +914,7 @@ def _deduplicate_variant_collisions(
     message id) so the result is deterministic regardless of which heuristic
     produced the original assignment.
     """
-    by_position: dict[int, list[_ClaudeMessageEvidence]] = defaultdict(list)
+    by_position: dict[int, list[_ClaudeEvidenceNode]] = defaultdict(list)
     for evidence in emitted:
         by_position[position_by_id[evidence.evidence_key]].append(evidence)
     for group in by_position.values():
@@ -810,40 +933,43 @@ def _deduplicate_variant_collisions(
             variant_index_by_id[evidence.evidence_key] = rank
 
 
-def _merge_attachment_rows(attachments: list[ParsedAttachment]) -> list[ParsedAttachment]:
-    merged: dict[str, ParsedAttachment] = {}
-    for candidate in attachments:
-        existing = merged.get(candidate.provider_attachment_id)
-        if existing is None:
-            merged[candidate.provider_attachment_id] = candidate
-            continue
-        preferred = candidate if candidate.inline_bytes is not None and existing.inline_bytes is None else existing
-        other = existing if preferred is candidate else candidate
-        merged[candidate.provider_attachment_id] = preferred.model_copy(
-            update={
-                "message_provider_id": preferred.message_provider_id or other.message_provider_id,
-                "message_position": preferred.message_position
-                if preferred.message_position is not None
-                else other.message_position,
-                "message_variant_index": preferred.message_variant_index
-                if preferred.message_variant_index is not None
-                else other.message_variant_index,
-                "owner_coordinate": preferred.owner_coordinate or other.owner_coordinate,
-                "name": preferred.name or other.name,
-                "mime_type": preferred.mime_type or other.mime_type,
-                "size_bytes": preferred.size_bytes if preferred.size_bytes is not None else other.size_bytes,
-                "provider_file_id": preferred.provider_file_id or other.provider_file_id,
-                "provider_drive_id": preferred.provider_drive_id or other.provider_drive_id,
-                "direction": preferred.direction or other.direction,
-                "producer_ref": preferred.producer_ref or other.producer_ref,
-                "source_url": preferred.source_url or other.source_url,
-            }
-        )
-    return list(merged.values())
+def _merged_attachment(existing: ParsedAttachment, candidate: ParsedAttachment) -> ParsedAttachment:
+    preferred = candidate if candidate.inline_bytes is not None and existing.inline_bytes is None else existing
+    other = existing if preferred is candidate else candidate
+    return preferred.model_copy(
+        update={
+            "message_provider_id": preferred.message_provider_id or other.message_provider_id,
+            "message_position": preferred.message_position
+            if preferred.message_position is not None
+            else other.message_position,
+            "message_variant_index": preferred.message_variant_index
+            if preferred.message_variant_index is not None
+            else other.message_variant_index,
+            "owner_coordinate": preferred.owner_coordinate or other.owner_coordinate,
+            "name": preferred.name or other.name,
+            "mime_type": preferred.mime_type or other.mime_type,
+            "size_bytes": preferred.size_bytes if preferred.size_bytes is not None else other.size_bytes,
+            "provider_file_id": preferred.provider_file_id or other.provider_file_id,
+            "provider_drive_id": preferred.provider_drive_id or other.provider_drive_id,
+            "direction": preferred.direction or other.direction,
+            "producer_ref": preferred.producer_ref or other.producer_ref,
+            "source_url": preferred.source_url or other.source_url,
+        }
+    )
+
+
+def merge_attachment_row(rows: ClaudeAttachmentRows, candidate: ParsedAttachment) -> None:
+    """Fold one attachment into rows that share its provider attachment id."""
+    existing = rows.get(candidate.provider_attachment_id)
+    rows.put(candidate if existing is None else _merged_attachment(existing, candidate))
+
+
+def resident_attachment_rows() -> ClaudeAttachmentRows:
+    return _ResidentAttachmentRows()
 
 
 def _lineage_depths(
-    evidence_by_id: Mapping[str, _ClaudeMessageEvidence],
+    evidence_by_id: Mapping[str, _ClaudeEvidenceNode],
 ) -> tuple[dict[str, int], bool]:
     """Compute parent depth iteratively and degrade cycles to depth zero."""
 
@@ -881,7 +1007,7 @@ def _lineage_depths(
 
 
 def _active_path_state(
-    evidence_by_id: Mapping[str, _ClaudeMessageEvidence],
+    evidence_by_id: Mapping[str, _ClaudeEvidenceNode],
     emitted_ids: set[str],
     *,
     flat_mode: bool,
@@ -1058,30 +1184,16 @@ def _compaction_summary_event(evidence: _ClaudeMessageEvidence) -> ParsedSession
     )
 
 
-def normalize_chat_messages(
-    chat_messages: list[object],
+def _message_evidence(
+    item: dict[str, object],
+    index: int,
     *,
-    session_model: str | None = None,
-    session_effort: str | None = None,
-    session_thinking_configuration: dict[str, object] | None = None,
-    session_created_at: str | None = None,
-    session_updated_at: str | None = None,
-    active_leaf_message_provider_id: str | None = None,
-) -> ClaudeMessageNormalization:
-    """Normalize Claude web messages without splitting strict and loose shapes.
-
-    Native IDs and parent pointers are authoritative. Array order is used only
-    when flat records lack lineage, explicit positions, and usable timestamps.
-    """
-
-    raw_evidence: list[_ClaudeMessageEvidence] = []
-    evidence_key_counts: dict[str, int] = {}
-    ingest_flags: list[str] = []
-    for index, raw_item in enumerate(chat_messages, start=1):
-        if not isinstance(raw_item, Mapping):
-            continue
-        item = dict(raw_item)
-        native_message_id = _first_identity_field(
+    evidence_key_for: Callable[[str], str],
+    session_model: str | None,
+    session_effort: str | None,
+) -> _ClaudeMessageEvidence:
+    native_message_id = (
+        _first_identity_field(
             item,
             "uuid",
             "id",
@@ -1089,175 +1201,262 @@ def normalize_chat_messages(
             "messageId",
             "provider_message_id",
         )
-        if native_message_id is None:
-            native_message_id = ""
-            ingest_flags.append(CLAUDE_MISSING_MESSAGE_ID_INGEST_FLAG)
+        or ""
+    )
+    raw_role = _raw_role(item)
+    role = Role.normalize(str(raw_role)) if isinstance(raw_role, str) and raw_role else Role.UNKNOWN
+    text = _extract_message_text(item)
+    raw_content = item.get("content")
+    # polylogue-0qfy: do NOT synthesize a content_blocks entry that just
+    # duplicates `text` when `content` itself produced no blocks -- that
+    # made `message.blocks` presence (and therefore the message's
+    # identity hash, `pipeline/ids.py:_message_hash_payload`) depend on
+    # whether a given export vintage's raw record happened to carry a
+    # structured `content` field or only a top-level `text` field, for
+    # the exact same conversation content. The write path
+    # (`storage/sqlite/archive_tiers/write.py:_message_blocks`) already
+    # falls back to a text block for storage whenever `message.blocks`
+    # is empty, so this synthesis was pure redundancy with no storage
+    # benefit and a real comparison-stability cost.
+    content_blocks = _claude_content_blocks(raw_content)
+    role = reclassify_tool_result_envelope(role, content_blocks)
 
-        raw_role = _raw_role(item)
-        role = Role.normalize(str(raw_role)) if isinstance(raw_role, str) and raw_role else Role.UNKNOWN
-        text = _extract_message_text(item)
-        raw_content = item.get("content")
-        # polylogue-0qfy: do NOT synthesize a content_blocks entry that just
-        # duplicates `text` when `content` itself produced no blocks -- that
-        # made `message.blocks` presence (and therefore the message's
-        # identity hash, `pipeline/ids.py:_message_hash_payload`) depend on
-        # whether a given export vintage's raw record happened to carry a
-        # structured `content` field or only a top-level `text` field, for
-        # the exact same conversation content. The write path
-        # (`storage/sqlite/archive_tiers/write.py:_message_blocks`) already
-        # falls back to a text block for storage whenever `message.blocks`
-        # is empty, so this synthesis was pure redundancy with no storage
-        # benefit and a real comparison-stability cost.
-        content_blocks = _claude_content_blocks(raw_content)
-        role = reclassify_tool_result_envelope(role, content_blocks)
-
-        raw_created_at = item.get("created_at") or item.get("create_time") or item.get("timestamp")
-        raw_updated_at = item.get("updated_at") or item.get("update_time") or item.get("edited_at")
-        timestamp = normalize_timestamp(raw_created_at if isinstance(raw_created_at, (int, float, str)) else None)
-        base_evidence_key = native_message_id or synthetic_message_id(
+    raw_created_at = item.get("created_at") or item.get("create_time") or item.get("timestamp")
+    raw_updated_at = item.get("updated_at") or item.get("update_time") or item.get("edited_at")
+    timestamp = normalize_timestamp(raw_created_at if isinstance(raw_created_at, (int, float, str)) else None)
+    evidence_key = evidence_key_for(
+        native_message_id
+        or synthetic_message_id(
             role=role,
             text=text,
             timestamp=timestamp,
             kind="claude-web-evidence",
         )
+    )
+    content_blocks = _pair_idless_tool_blocks(content_blocks, message_key=evidence_key)
+    attachments = _message_attachments(item, native_message_id, role=role)
+    parent_message_provider_id = _message_parent_id(item)
+    explicit_position = _first_non_negative_int_field(item, "position")
+    explicit_branch_index = _first_non_negative_int_field(item, "branch_index", "branchIndex")
+    explicit_variant_index = _first_non_negative_int_field(item, "variant_index", "variantIndex")
+    return _ClaudeMessageEvidence(
+        evidence_key=evidence_key,
+        native_provider_message_id=native_message_id,
+        raw=item,
+        original_index=index,
+        role=role,
+        text=text,
+        timestamp=timestamp,
+        updated_at=normalize_timestamp(raw_updated_at if isinstance(raw_updated_at, (int, float, str)) else None),
+        blocks=content_blocks,
+        attachments=attachments,
+        parent_message_provider_id=parent_message_provider_id,
+        explicit_position=explicit_position,
+        explicit_branch_index=explicit_branch_index,
+        explicit_variant_index=explicit_variant_index,
+        explicit_is_active_path=_first_bool_field(item, "is_active_path", "isActivePath", "active_path"),
+        explicit_is_active_leaf=_first_bool_field(item, "is_active_leaf", "isActiveLeaf", "active_leaf"),
+        model_name=_message_model_name(item) or session_model,
+        model_effort=_message_model_effort(item) or session_effort,
+        duration_ms=_message_duration_ms(item),
+        delivery_status=_message_delivery_status(item),
+        end_turn=_message_end_turn(item),
+        stop_reason=_message_stop_reason(item),
+        thinking_configuration=_thinking_configuration(item),
+        owner_stable_key=_owner_stable_key(
+            item,
+            parent_message_provider_id=parent_message_provider_id,
+            explicit_position=explicit_position,
+            explicit_branch_index=explicit_branch_index,
+            explicit_variant_index=explicit_variant_index,
+            blocks=content_blocks,
+            attachments=attachments,
+        ),
+    )
+
+
+def _message_update_event(evidence: _ClaudeMessageEvidence) -> ParsedSessionEvent | None:
+    if not evidence.updated_at or evidence.updated_at == evidence.timestamp:
+        return None
+    update_payload: dict[str, object] = {"updated_at": evidence.updated_at}
+    if evidence.timestamp:
+        update_payload["created_at"] = evidence.timestamp
+    if evidence.delivery_status:
+        update_payload["status"] = evidence.delivery_status
+    revision_id = _first_identity_field(evidence.raw, "version_uuid", "revision_id", "revisionId")
+    explicitly_edited = _first_bool_field(evidence.raw, "is_edited", "isEdited", "edited") is True
+    has_edited_timestamp = _first_string_field(evidence.raw, "edited_at", "editedAt") is not None
+    if revision_id:
+        update_payload["revision_id"] = revision_id
+    # A changed provider timestamp is observable update evidence, but it
+    # is not necessarily a user edit. Only claim a revision when Claude
+    # supplied an explicit revision/edit marker; otherwise keep the
+    # event neutral and preserve the timestamps/status verbatim.
+    return ParsedSessionEvent(
+        event_type=(
+            "message_revision"
+            if revision_id or explicitly_edited or has_edited_timestamp
+            else "provider_message_update"
+        ),
+        timestamp=evidence.updated_at,
+        source_message_provider_id=evidence.native_provider_message_id,
+        payload=update_payload,
+    )
+
+
+def normalize_chat_messages(
+    chat_messages: Iterable[object],
+    *,
+    session_model: str | None = None,
+    session_effort: str | None = None,
+    session_thinking_configuration: dict[str, object] | None = None,
+    session_created_at: str | None = None,
+    session_updated_at: str | None = None,
+    active_leaf_message_provider_id: str | None = None,
+    evidence_store: ClaudeEvidenceStore | None = None,
+    messages: MutableSequence[ParsedMessage] | None = None,
+    session_events: MutableSequence[ParsedSessionEvent] | None = None,
+    attachment_rows: ClaudeAttachmentRows | None = None,
+) -> ClaudeMessageNormalization:
+    """Normalize Claude web messages without splitting strict and loose shapes.
+
+    Native IDs and parent pointers are authoritative. Array order is used only
+    when flat records lack lineage, explicit positions, and usable timestamps.
+
+    ``chat_messages`` is read once. Each record's content goes to
+    ``evidence_store`` while the lineage graph keeps only its identity and
+    ranking fields; messages, events and merged attachments are written in
+    canonical order to the supplied sequences. The defaults are resident, so
+    the object-returning parser and a disk-backed preparation share one
+    normalization.
+    """
+
+    store: ClaudeEvidenceStore = evidence_store if evidence_store is not None else _ResidentEvidence()
+    message_rows: MutableSequence[ParsedMessage] = messages if messages is not None else []
+    event_rows: MutableSequence[ParsedSessionEvent] = session_events if session_events is not None else []
+    attachments: ClaudeAttachmentRows = attachment_rows if attachment_rows is not None else _ResidentAttachmentRows()
+
+    evidence_key_counts: dict[str, int] = {}
+    native_id_counts: Counter[str] = Counter()
+    evidence_by_id: dict[str, _ClaudeEvidenceNode] = {}
+    ingest_flags: list[str] = []
+
+    def occurrence_key(base_evidence_key: str) -> str:
         occurrence = evidence_key_counts.get(base_evidence_key, 0)
         evidence_key_counts[base_evidence_key] = occurrence + 1
-        evidence_key = base_evidence_key if occurrence == 0 else f"{base_evidence_key}:occurrence:{occurrence}"
-        content_blocks = _pair_idless_tool_blocks(content_blocks, message_key=evidence_key)
-        attachments = _message_attachments(item, native_message_id, role=role)
-        parent_message_provider_id = _message_parent_id(item)
-        explicit_position = _first_non_negative_int_field(item, "position")
-        explicit_branch_index = _first_non_negative_int_field(item, "branch_index", "branchIndex")
-        explicit_variant_index = _first_non_negative_int_field(item, "variant_index", "variantIndex")
-        raw_evidence.append(
-            _ClaudeMessageEvidence(
-                evidence_key=evidence_key,
-                native_provider_message_id=native_message_id,
-                raw=item,
-                original_index=index,
-                role=role,
-                text=text,
-                timestamp=timestamp,
-                updated_at=normalize_timestamp(
-                    raw_updated_at if isinstance(raw_updated_at, (int, float, str)) else None
-                ),
-                blocks=content_blocks,
-                attachments=attachments,
-                parent_message_provider_id=parent_message_provider_id,
-                explicit_position=explicit_position,
-                explicit_branch_index=explicit_branch_index,
-                explicit_variant_index=explicit_variant_index,
-                explicit_is_active_path=_first_bool_field(item, "is_active_path", "isActivePath", "active_path"),
-                explicit_is_active_leaf=_first_bool_field(item, "is_active_leaf", "isActiveLeaf", "active_leaf"),
-                model_name=_message_model_name(item) or session_model,
-                model_effort=_message_model_effort(item) or session_effort,
-                duration_ms=_message_duration_ms(item),
-                delivery_status=_message_delivery_status(item),
-                end_turn=_message_end_turn(item),
-                stop_reason=_message_stop_reason(item),
-                thinking_configuration=_thinking_configuration(item),
-                owner_stable_key=_owner_stable_key(
-                    item,
-                    parent_message_provider_id=parent_message_provider_id,
-                    explicit_position=explicit_position,
-                    explicit_branch_index=explicit_branch_index,
-                    explicit_variant_index=explicit_variant_index,
-                    blocks=content_blocks,
-                    attachments=attachments,
-                ),
-            )
+        return base_evidence_key if occurrence == 0 else f"{base_evidence_key}:occurrence:{occurrence}"
+
+    for index, raw_item in enumerate(chat_messages, start=1):
+        if not isinstance(raw_item, Mapping):
+            continue
+        evidence = _message_evidence(
+            dict(raw_item),
+            index,
+            evidence_key_for=occurrence_key,
+            session_model=session_model,
+            session_effort=session_effort,
+        )
+        if not evidence.native_provider_message_id:
+            ingest_flags.append(CLAUDE_MISSING_MESSAGE_ID_INGEST_FLAG)
+        else:
+            native_id_counts[evidence.native_provider_message_id] += 1
+        store.put(evidence)
+        node = _ClaudeEvidenceNode.of(evidence)
+        existing = evidence_by_id.get(node.evidence_key)
+        if existing is None or _is_richer(node, existing, store):
+            evidence_by_id[node.evidence_key] = node
+
+    def load(node: _ClaudeEvidenceNode) -> _ClaudeMessageEvidence:
+        return store.get(
+            node.original_index,
+            lambda item: _message_evidence(
+                item,
+                node.original_index,
+                evidence_key_for=lambda _base: node.evidence_key,
+                session_model=session_model,
+                session_effort=session_effort,
+            ),
         )
 
-    evidence_by_id: dict[str, _ClaudeMessageEvidence] = {}
-    native_id_counts = Counter(
-        evidence.native_provider_message_id for evidence in raw_evidence if evidence.native_provider_message_id
-    )
     duplicate_ids: set[str] = {native_id for native_id, count in native_id_counts.items() if count > 1}
-    for evidence in raw_evidence:
-        evidence_id = evidence.evidence_key
-        existing = evidence_by_id.get(evidence_id)
-        if existing is None:
-            evidence_by_id[evidence_id] = evidence
-            continue
-        evidence_by_id[evidence_id] = max((existing, evidence), key=_evidence_richness)
     if duplicate_ids:
         ingest_flags.append(CLAUDE_DUPLICATE_MESSAGE_ID_INGEST_FLAG)
 
-    emitted = [evidence for evidence in evidence_by_id.values() if evidence.has_material]
-    emitted_ids = {evidence.evidence_key for evidence in emitted}
-    flat_mode = not any(evidence.parent_message_provider_id for evidence in evidence_by_id.values())
+    emitted = [node for node in evidence_by_id.values() if node.has_material]
+    emitted_ids = {node.evidence_key for node in emitted}
+    flat_mode = not any(node.parent_message_provider_id for node in evidence_by_id.values())
 
     branch_index_by_id: dict[str, int] = {}
     if flat_mode:
         ordered_flat = sorted(
             emitted,
-            key=lambda evidence: (
-                evidence.explicit_position if evidence.explicit_position is not None else 2**31,
-                0 if evidence.timestamp is not None else 1,
-                _timestamp_sort_value(evidence.timestamp),
-                evidence.evidence_key if evidence.timestamp is not None else "",
-                evidence.original_index,
+            key=lambda node: (
+                node.explicit_position if node.explicit_position is not None else 2**31,
+                0 if node.timestamp is not None else 1,
+                _timestamp_sort_value(node.timestamp),
+                node.evidence_key if node.timestamp is not None else "",
+                node.original_index,
             ),
         )
         position_by_id = {
-            evidence.evidence_key: (evidence.explicit_position if evidence.explicit_position is not None else position)
-            for position, evidence in enumerate(ordered_flat)
+            node.evidence_key: (node.explicit_position if node.explicit_position is not None else position)
+            for position, node in enumerate(ordered_flat)
         }
-        for evidence in emitted:
-            branch_index_by_id[evidence.evidence_key] = evidence.explicit_branch_index or 0
+        for node in emitted:
+            branch_index_by_id[node.evidence_key] = node.explicit_branch_index or 0
     else:
         depths, cycle_detected = _lineage_depths(evidence_by_id)
         if cycle_detected:
             ingest_flags.append(CLAUDE_LINEAGE_CYCLE_INGEST_FLAG)
-        minimum_emitted_depth = min((depths[evidence.evidence_key] for evidence in emitted), default=0)
+        minimum_emitted_depth = min((depths[node.evidence_key] for node in emitted), default=0)
         position_by_id = {
-            evidence.evidence_key: (
-                evidence.explicit_position
-                if evidence.explicit_position is not None
-                else max(0, depths[evidence.evidence_key] - minimum_emitted_depth)
+            node.evidence_key: (
+                node.explicit_position
+                if node.explicit_position is not None
+                else max(0, depths[node.evidence_key] - minimum_emitted_depth)
             )
-            for evidence in emitted
+            for node in emitted
         }
-        siblings_by_parent: dict[str | None, list[_ClaudeMessageEvidence]] = defaultdict(list)
-        for evidence in evidence_by_id.values():
-            siblings_by_parent[evidence.parent_message_provider_id].append(evidence)
+        siblings_by_parent: dict[str | None, list[_ClaudeEvidenceNode]] = defaultdict(list)
+        for node in evidence_by_id.values():
+            siblings_by_parent[node.parent_message_provider_id].append(node)
         for siblings in siblings_by_parent.values():
-            for rank, evidence in enumerate(sorted(siblings, key=_sibling_sort_key)):
-                branch_index_by_id[evidence.evidence_key] = (
-                    evidence.explicit_branch_index if evidence.explicit_branch_index is not None else rank
+            for rank, node in enumerate(sorted(siblings, key=_sibling_sort_key)):
+                branch_index_by_id[node.evidence_key] = (
+                    node.explicit_branch_index if node.explicit_branch_index is not None else rank
                 )
 
     if flat_mode:
         variant_index_by_id = {
-            evidence.evidence_key: (
-                evidence.explicit_variant_index
-                if evidence.explicit_variant_index is not None
-                else branch_index_by_id.get(evidence.evidence_key, 0)
+            node.evidence_key: (
+                node.explicit_variant_index
+                if node.explicit_variant_index is not None
+                else branch_index_by_id.get(node.evidence_key, 0)
             )
-            for evidence in emitted
+            for node in emitted
         }
     else:
         resolved_variants: dict[str, int] = {}
         variant_index_by_id = {
-            evidence.evidence_key: _resolve_variant_index(
-                evidence.evidence_key,
+            node.evidence_key: _resolve_variant_index(
+                node.evidence_key,
                 evidence_by_id,
                 branch_index_by_id,
                 resolved_variants,
             )
-            for evidence in emitted
+            for node in emitted
         }
     # Safety net regardless of mode: no input tree shape may leave two emitted
     # messages sharing (position, variant_index) -- see
     # `_deduplicate_variant_collisions` docstring.
     _deduplicate_variant_collisions(emitted, position_by_id, variant_index_by_id)
     order_key_by_id = {
-        evidence.evidence_key: (
-            position_by_id[evidence.evidence_key],
-            variant_index_by_id[evidence.evidence_key],
-            evidence.evidence_key,
+        node.evidence_key: (
+            position_by_id[node.evidence_key],
+            variant_index_by_id[node.evidence_key],
+            node.evidence_key,
         )
-        for evidence in emitted
+        for node in emitted
     }
     path_values, leaf_values, normalized_active_leaf = _active_path_state(
         evidence_by_id,
@@ -1267,76 +1466,6 @@ def normalize_chat_messages(
         order_key_by_id=order_key_by_id,
     )
 
-    def _evidence_message_type(evidence: _ClaudeMessageEvidence) -> MessageType:
-        block_message_type = classify_block_message_type(tuple(block.type for block in evidence.blocks))
-        return block_message_type if block_message_type is not None else MessageType.MESSAGE
-
-    messages = [
-        ParsedMessage(
-            provider_message_id=evidence.native_provider_message_id,
-            role=evidence.role,
-            text=evidence.text,
-            timestamp=evidence.timestamp,
-            blocks=evidence.blocks,
-            parent_message_provider_id=evidence.parent_message_provider_id,
-            owner_coordinate=MessageOwnerCoordinate(
-                stable_key=evidence.owner_stable_key,
-                position=position_by_id[evidence.evidence_key],
-                variant_index=variant_index_by_id[evidence.evidence_key],
-            ),
-            position=position_by_id[evidence.evidence_key],
-            branch_index=branch_index_by_id.get(evidence.evidence_key, 0),
-            variant_index=variant_index_by_id[evidence.evidence_key],
-            is_active_path=path_values.get(evidence.evidence_key),
-            is_active_leaf=leaf_values.get(evidence.evidence_key),
-            model_name=evidence.model_name,
-            model_effort=evidence.model_effort,
-            duration_ms=evidence.duration_ms,
-            delivery_status=evidence.delivery_status,
-            end_turn=evidence.end_turn,
-            stop_reason=evidence.stop_reason,
-            message_type=(message_type := _evidence_message_type(evidence)),
-            # polylogue-gzgyl: ordinary claude.ai chat_messages carries no
-            # agent/subagent ambiguity -- a plain role=user message here IS
-            # positive human evidence, mirroring the Codex/ChatGPT override
-            # for the shared classify_material_origin no-fallthrough (#2502).
-            material_origin=human_authored_override(
-                evidence.role,
-                message_type,
-                classify_material_origin(
-                    role=evidence.role,
-                    message_type=message_type,
-                    text=evidence.text,
-                    block_types=tuple(block.type for block in evidence.blocks),
-                ),
-            ),
-        )
-        for evidence in sorted(emitted, key=lambda row: order_key_by_id[row.evidence_key])
-    ]
-
-    attachments = _merge_attachment_rows(
-        [
-            attachment.model_copy(
-                update={
-                    "message_position": position_by_id[evidence.evidence_key],
-                    "message_variant_index": variant_index_by_id[evidence.evidence_key],
-                    "owner_coordinate": MessageOwnerCoordinate(
-                        stable_key=evidence.owner_stable_key,
-                        position=position_by_id[evidence.evidence_key],
-                        variant_index=variant_index_by_id[evidence.evidence_key],
-                    ),
-                }
-            )
-            for evidence in emitted
-            for attachment in evidence.attachments
-        ]
-    )
-    models_used: list[str] = []
-    for model_name in [session_model, *(message.model_name for message in messages)]:
-        if model_name and model_name not in models_used:
-            models_used.append(model_name)
-
-    session_events: list[ParsedSessionEvent] = []
     if session_model or session_effort or session_thinking_configuration:
         configuration_payload: dict[str, object] = {}
         if session_model:
@@ -1345,7 +1474,7 @@ def normalize_chat_messages(
             configuration_payload["effort"] = session_effort
         if session_thinking_configuration:
             configuration_payload["thinking"] = session_thinking_configuration
-        session_events.append(
+        event_rows.append(
             ParsedSessionEvent(
                 event_type="model_configuration",
                 timestamp=session_updated_at or session_created_at,
@@ -1353,12 +1482,69 @@ def normalize_chat_messages(
             )
         )
 
+    models_used: list[str] = [session_model] if session_model else []
+    duration_total: int | None = None
     positioned_summaries: list[tuple[str, int, ParsedSessionEvent]] = []
-    for evidence in sorted(emitted, key=lambda row: order_key_by_id[row.evidence_key]):
-        session_events.extend(_web_tool_evidence_events(evidence))
+    for node in sorted(emitted, key=lambda row: order_key_by_id[row.evidence_key]):
+        evidence = load(node)
+        block_types = tuple(block.type for block in evidence.blocks)
+        block_message_type = classify_block_message_type(block_types)
+        message_type = block_message_type if block_message_type is not None else MessageType.MESSAGE
+        message_rows.append(
+            # The session validator applies this to resident rows; a disk
+            # sink is written before its session exists.
+            upgrade_chat_export_user_authorship(
+                Provider.CLAUDE_AI,
+                ParsedMessage(
+                    provider_message_id=evidence.native_provider_message_id,
+                    role=evidence.role,
+                    text=evidence.text,
+                    timestamp=evidence.timestamp,
+                    blocks=evidence.blocks,
+                    parent_message_provider_id=evidence.parent_message_provider_id,
+                    owner_coordinate=MessageOwnerCoordinate(
+                        stable_key=evidence.owner_stable_key,
+                        position=position_by_id[node.evidence_key],
+                        variant_index=variant_index_by_id[node.evidence_key],
+                    ),
+                    position=position_by_id[node.evidence_key],
+                    branch_index=branch_index_by_id.get(node.evidence_key, 0),
+                    variant_index=variant_index_by_id[node.evidence_key],
+                    is_active_path=path_values.get(node.evidence_key),
+                    is_active_leaf=leaf_values.get(node.evidence_key),
+                    model_name=evidence.model_name,
+                    model_effort=evidence.model_effort,
+                    duration_ms=evidence.duration_ms,
+                    delivery_status=evidence.delivery_status,
+                    end_turn=evidence.end_turn,
+                    stop_reason=evidence.stop_reason,
+                    message_type=message_type,
+                    # polylogue-gzgyl: ordinary claude.ai chat_messages carries no
+                    # agent/subagent ambiguity -- a plain role=user message here IS
+                    # positive human evidence, mirroring the Codex/ChatGPT override
+                    # for the shared classify_material_origin no-fallthrough (#2502).
+                    material_origin=human_authored_override(
+                        evidence.role,
+                        message_type,
+                        classify_material_origin(
+                            role=evidence.role,
+                            message_type=message_type,
+                            text=evidence.text,
+                            block_types=block_types,
+                        ),
+                    ),
+                ),
+            )
+        )
+        if evidence.model_name and evidence.model_name not in models_used:
+            models_used.append(evidence.model_name)
+        if evidence.duration_ms is not None:
+            duration_total = (duration_total or 0) + evidence.duration_ms
+
+        event_rows.extend(_web_tool_evidence_events(evidence))
         if (compaction_summary := _compaction_summary_event(evidence)) is not None:
             positioned_summaries.append(
-                (_occurrence_base(evidence.evidence_key), position_by_id[evidence.evidence_key], compaction_summary)
+                (_occurrence_base(node.evidence_key), position_by_id[node.evidence_key], compaction_summary)
             )
         if evidence.thinking_configuration:
             payload: dict[str, object] = {"thinking": evidence.thinking_configuration}
@@ -1366,7 +1552,7 @@ def normalize_chat_messages(
                 payload["model"] = evidence.model_name
             if evidence.model_effort:
                 payload["effort"] = evidence.model_effort
-            session_events.append(
+            event_rows.append(
                 ParsedSessionEvent(
                     event_type="model_configuration",
                     timestamp=evidence.updated_at or evidence.timestamp,
@@ -1374,33 +1560,8 @@ def normalize_chat_messages(
                     payload=payload,
                 )
             )
-        if evidence.updated_at and evidence.updated_at != evidence.timestamp:
-            update_payload: dict[str, object] = {"updated_at": evidence.updated_at}
-            if evidence.timestamp:
-                update_payload["created_at"] = evidence.timestamp
-            if evidence.delivery_status:
-                update_payload["status"] = evidence.delivery_status
-            revision_id = _first_identity_field(evidence.raw, "version_uuid", "revision_id", "revisionId")
-            explicitly_edited = _first_bool_field(evidence.raw, "is_edited", "isEdited", "edited") is True
-            has_edited_timestamp = _first_string_field(evidence.raw, "edited_at", "editedAt") is not None
-            if revision_id:
-                update_payload["revision_id"] = revision_id
-            # A changed provider timestamp is observable update evidence, but it
-            # is not necessarily a user edit. Only claim a revision when Claude
-            # supplied an explicit revision/edit marker; otherwise keep the
-            # event neutral and preserve the timestamps/status verbatim.
-            session_events.append(
-                ParsedSessionEvent(
-                    event_type=(
-                        "message_revision"
-                        if revision_id or explicitly_edited or has_edited_timestamp
-                        else "provider_message_update"
-                    ),
-                    timestamp=evidence.updated_at,
-                    source_message_provider_id=evidence.native_provider_message_id,
-                    payload=update_payload,
-                )
-            )
+        if (update_event := _message_update_event(evidence)) is not None:
+            event_rows.append(update_event)
     # Compaction summaries follow the messages. The occurrences of one
     # repeated identity (a native id, or an ID-less record's synthetic key)
     # get their suffixes, and so their positions and variants, in array
@@ -1408,15 +1569,15 @@ def normalize_chat_messages(
     # by their own content. A summary on a record with no other material, and
     # so no message of its own, comes after them.
     positioned_summaries.extend(
-        (_occurrence_base(evidence.evidence_key), 2**31, event)
-        for evidence in evidence_by_id.values()
-        if evidence.evidence_key not in emitted_ids
-        if (event := _compaction_summary_event(evidence)) is not None
+        (_occurrence_base(node.evidence_key), 2**31, event)
+        for node in evidence_by_id.values()
+        if node.evidence_key not in emitted_ids and node.has_compaction_summary
+        if (event := _compaction_summary_event(load(node))) is not None
     )
     first_position: dict[str, int] = {}
     for base, position, _event in positioned_summaries:
         first_position[base] = min(position, first_position.get(base, position))
-    session_events.extend(
+    event_rows.extend(
         event
         for _base, _position, event in sorted(
             positioned_summaries,
@@ -1430,7 +1591,7 @@ def normalize_chat_messages(
     )
 
     if duplicate_ids:
-        session_events.append(
+        event_rows.append(
             ParsedSessionEvent(
                 event_type="normalization_diagnostic",
                 timestamp=session_updated_at or session_created_at,
@@ -1442,9 +1603,30 @@ def normalize_chat_messages(
             )
         )
 
-    duration_values = [message.duration_ms for message in messages if message.duration_ms is not None]
+    # Attachment merging keeps first-seen order over records, not canonical
+    # message order, so it is a separate pass over the records that carry any.
+    for node in emitted:
+        if not node.has_attachments:
+            continue
+        evidence = load(node)
+        for attachment in evidence.attachments:
+            merge_attachment_row(
+                attachments,
+                attachment.model_copy(
+                    update={
+                        "message_position": position_by_id[node.evidence_key],
+                        "message_variant_index": variant_index_by_id[node.evidence_key],
+                        "owner_coordinate": MessageOwnerCoordinate(
+                            stable_key=evidence.owner_stable_key,
+                            position=position_by_id[node.evidence_key],
+                            variant_index=variant_index_by_id[node.evidence_key],
+                        ),
+                    }
+                ),
+            )
+
     return ClaudeMessageNormalization(
-        messages=messages,
+        messages=message_rows,
         attachments=attachments,
         active_leaf_message_provider_id=(
             evidence_by_id[normalized_active_leaf].native_provider_message_id
@@ -1452,9 +1634,9 @@ def normalize_chat_messages(
             else None
         ),
         models_used=models_used,
-        session_events=session_events,
+        session_events=event_rows,
         ingest_flags=list(dict.fromkeys(ingest_flags)),
-        reported_duration_ms=sum(duration_values) if duration_values else None,
+        reported_duration_ms=duration_total,
     )
 
 
@@ -1462,7 +1644,7 @@ def extract_messages_from_chat_messages(
     chat_messages: list[object],
 ) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
     normalized = normalize_chat_messages(chat_messages)
-    return normalized.messages, normalized.attachments
+    return list(normalized.messages), list(normalized.attachments)
 
 
 def extract_message_text(message_content: object) -> str | None:
@@ -1484,10 +1666,14 @@ __all__ = [
     "CLAUDE_DUPLICATE_MESSAGE_ID_INGEST_FLAG",
     "CLAUDE_LINEAGE_CYCLE_INGEST_FLAG",
     "CLAUDE_MISSING_MESSAGE_ID_INGEST_FLAG",
+    "ClaudeAttachmentRows",
+    "ClaudeEvidenceStore",
     "ClaudeMessageNormalization",
     "extract_message_text",
     "extract_messages_from_chat_messages",
     "extract_text_from_segments",
+    "merge_attachment_row",
     "normalize_chat_messages",
     "normalize_timestamp",
+    "resident_attachment_rows",
 ]
