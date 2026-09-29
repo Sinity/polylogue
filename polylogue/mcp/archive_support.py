@@ -335,7 +335,18 @@ def archive_session_list_payload(
     filters = archive_query_filters(spec)
     text_query = _archive_text_query(spec)
     match_counts_are_exact = True
-    if text_query is None:
+    if spec.exclude_text_terms:
+        # A text exclusion is a content post-filter the index filters above
+        # cannot express; the generic ``cli.query`` listing owns it.
+        from polylogue.api.archive import _archive_count_sessions_for_spec, _archive_list_summaries_for_spec
+
+        summaries = tuple(
+            _archive_list_summaries_for_spec(archive, spec, default_limit=default_limit, limit=limit, offset=offset)
+        )
+        total = _archive_count_sessions_for_spec(archive, spec)
+        match_counts = {summary.session_id: 1 for summary in summaries}
+        page = summaries
+    elif text_query is None:
         summaries = tuple(
             archive.list_summaries(
                 limit=limit,

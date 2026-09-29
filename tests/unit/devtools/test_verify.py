@@ -865,7 +865,7 @@ def _stub_affected_graph(
     monkeypatch.setattr(
         testmon.testmon_core.TestmonData, "for_local_run", _StubTestmonData.factory(selected, recorded), raising=False
     )
-    monkeypatch.setattr(verify, "unrecorded_test_files", lambda _root, **_kwargs: unrecorded_files)
+    monkeypatch.setattr(verify, "unrecorded_test_files", lambda _root: unrecorded_files)
     monkeypatch.setattr(verify, "count_collected", lambda _paths, **_kwargs: unrecorded_tests)
 
 
@@ -981,7 +981,7 @@ def test_an_unpriceable_unknown_set_refuses(
     bounded plan it did not measure -- a silent truncation of the answer,
     which is the one thing this admission is not allowed to do.
     """
-    monkeypatch.setattr(verify, "unrecorded_test_files", lambda _root, **_kwargs: unrecorded_files)
+    monkeypatch.setattr(verify, "unrecorded_test_files", lambda _root: unrecorded_files)
     monkeypatch.setattr(verify, "count_collected", lambda _paths, **_kwargs: unrecorded_tests)
 
     counted, reason = verify._unrecorded_selection_term(tmp_path)

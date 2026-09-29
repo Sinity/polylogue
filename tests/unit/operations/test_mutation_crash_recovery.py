@@ -610,6 +610,54 @@ def test_committed_view_delete_is_not_replayed_over_a_new_watched_view(tmp_path:
         assert conn.execute("SELECT watch FROM query_names WHERE name = 'Crash'").fetchone() == (1,)
 
 
+def test_watched_save_interrupted_before_its_baseline_is_measured_on_recovery(tmp_path: Path) -> None:
+    """A watched save whose view committed but whose baseline did not is not complete.
+
+    The kill lands between ``save_view`` and ``establish_watch_baselines``
+    inside ``SavedViewSaveActuator.apply``. Anti-vacuity: drop the baseline
+    check from ``SavedViewSaveActuator.already_applied`` and recovery reports
+    the run complete with no baseline, so the next evaluation absorbs the
+    first changed session instead of reporting it.
+    """
+    root = tmp_path / "archive"
+    root.mkdir()
+    _seed_archive_session(root, native_id="bootstrap")
+    query_json = '{"query": "sessions where origin:codex-session"}'
+    actuator = actuators.SavedViewSaveActuator()
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        args = actuators.SavedViewSaveArgs(archive, "view-watch", "Watched", query_json, watch=True)
+        executor = OperationExecutor.for_archive_root(root)
+        binding = runtime_operation_binding(actuator)
+        principal = _principal(binding)
+        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
+        authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
+        assert executor._audit is not None
+        operation_id = executor._audit.consume_authorization_and_start(preview, authorization)
+        archive.save_view("view-watch", "Watched", query_json, watch=True)
+    with sqlite3.connect(root / "audit.db") as conn:
+        conn.execute(
+            "UPDATE operation_attempts SET worker_id = 'pid:999999999:0' WHERE operation_id = ?", (operation_id,)
+        )
+        conn.commit()
+    with sqlite3.connect(root / "user.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM watched_query_baselines").fetchone() == (0,)
+
+    recover_interrupted_operations(root)
+
+    with sqlite3.connect(root / "user.db") as conn:
+        baselined = conn.execute(
+            "SELECT rs.member_count FROM query_names AS n "
+            "JOIN watched_query_baselines AS b ON b.query_hash = n.query_hash "
+            "JOIN result_sets AS rs ON rs.result_set_id = b.result_set_id "
+            "WHERE n.name = 'Watched' AND n.watch = 1"
+        ).fetchall()
+    assert baselined == [(1,)]
+    with sqlite3.connect(root / "audit.db") as conn:
+        assert conn.execute(
+            "SELECT terminal_reason FROM operation_runs WHERE operation_id = ?", (operation_id,)
+        ).fetchone() == ("recovered_complete",)
+
+
 def _execute(root: Path, actuator: Any, build_args: Callable[[Path, ArchiveStore], Any]) -> None:
     with ArchiveStore.open_existing(root, read_only=False) as archive:
         args = build_args(root, archive)

@@ -104,6 +104,10 @@ class EffectiveContextReadRequest(_OperationPayload):
     at_position: int | None = None
 
 
+class OrchestrationReadRequest(_OperationPayload):
+    session_id: str = Field(min_length=1)
+
+
 class LineageReadRequest(_OperationPayload):
     session_id: str = Field(min_length=1)
     node_offset: int = Field(default=0, ge=0)
@@ -981,6 +985,11 @@ class EffectiveContextReadResult(_OperationResult):
     payload: dict[str, object]
 
 
+class OrchestrationReadResult(_OperationResult):
+    view: Literal["orchestration"]
+    payload: dict[str, object]
+
+
 class LineageReadResult(_OperationResult):
     view: Literal["lineage"]
     payload: dict[str, object]
@@ -1506,6 +1515,14 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         result_contract="read.effective_context.result/v1",
         request_model=EffectiveContextReadRequest,
         result_model=EffectiveContextReadResult,
+    ),
+    DaemonOperationSpec(
+        "read.orchestration",
+        DaemonAuthority.READ,
+        DaemonFallback.NEVER,
+        result_contract="read.orchestration.result/v1",
+        request_model=OrchestrationReadRequest,
+        result_model=OrchestrationReadResult,
     ),
     DaemonOperationSpec(
         "read.lineage",

@@ -72,6 +72,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also cluster observed samples by structural fingerprint.",
     )
+    parser.add_argument(
+        "--retain-clusters",
+        action="store_true",
+        help="Save the --cluster manifest to the schema registry so `devtools schema promote` can promote a cluster.",
+    )
     parser.add_argument("--max-samples", type=int, default=None, help="Limit samples for generation.")
     parser.add_argument("--json", action="store_true", help="Output as JSON.")
     parser.add_argument(
@@ -100,6 +105,8 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.retain_clusters and not args.cluster:
+        parser.error("--retain-clusters requires --cluster")
     progress_events: list[JSONDocument] = []
 
     def on_progress(_phase: str, payload: JSONDocument) -> None:
@@ -129,7 +136,9 @@ def main(argv: list[str] | None = None) -> int:
                 source_inputs=source_inputs,
                 source_cache_path=args.source_cache,
                 source_workers=args.source_workers,
-                persist_cluster_manifest=False,
+                # A plain generation is a preview with no registry effect;
+                # retaining the manifest is the explicit producer for promote.
+                persist_cluster_manifest=bool(args.retain_clusters),
             )
         )
     except ValueError as exc:

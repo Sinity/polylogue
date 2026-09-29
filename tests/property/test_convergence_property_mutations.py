@@ -110,26 +110,49 @@ def test_convergence_harness_binds_raw_receipt_before_equal_attachment(
         assert conn.execute("SELECT COUNT(*) FROM blob_publication_reservations").fetchone() == (0,)
 
 
+def _profiles_disagreeing_with_canonical_titles(root: Path) -> list[str]:
+    """Session profiles whose title is not the canonical session title."""
+    with closing(sqlite3.connect(root / "index.db")) as conn:
+        rows = conn.execute(
+            """
+            SELECT profile.session_id
+            FROM session_profiles AS profile
+            JOIN sessions AS session ON session.session_id = profile.session_id
+            WHERE profile.title IS NOT session.title
+            ORDER BY profile.session_id
+            """
+        ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
 def test_convergence_property_materialized_content_mutation_red_twin(tmp_path: Path) -> None:
-    """The mutation changes the owned materialized semantic field."""
+    """A corrupted materialized profile is rejected by the canonical-row oracle.
+
+    The profile title is derived from the canonical ``sessions`` row, so the
+    oracle compares the two tiers rather than confirming the corruption.
+    Anti-vacuity: the converged archive must agree before the mutation, and
+    the mutated session is the one the oracle reports; an oracle that stopped
+    reading ``session_profiles`` would report nothing after it.
+    """
     composed = rich_convergence_sources()
     mutated = build_converged_archive(tmp_path / "mutated", composed)
+    assert _profiles_disagreeing_with_canonical_titles(mutated.root) == []
 
-    with sqlite3.connect(mutated.root / "index.db") as conn:
+    with closing(sqlite3.connect(mutated.root / "index.db")) as conn, conn:
+        target = conn.execute("SELECT session_id FROM session_profiles ORDER BY session_id LIMIT 1").fetchone()
+        assert target is not None
         cursor = conn.execute(
             """
             UPDATE session_profiles
             SET title = COALESCE(title, '') || ' [materialized-content-mutation]'
-            WHERE session_id = (SELECT session_id FROM session_profiles ORDER BY session_id LIMIT 1)
-            """
+            WHERE session_id = ?
+            """,
+            (target[0],),
         )
         if cursor.rowcount != 1:
             raise AssertionError("materialized-content mutation did not change one profile row")
-        conn.commit()
 
-    with sqlite3.connect(mutated.root / "index.db") as conn:
-        observed = conn.execute("SELECT title FROM session_profiles ORDER BY session_id LIMIT 1").fetchone()
-    assert observed is not None and "materialized-content-mutation" in str(observed[0])
+    assert _profiles_disagreeing_with_canonical_titles(mutated.root) == [str(target[0])]
 
 
 @pytest.mark.parametrize("mutated", [False, True], ids=["green", "mutant"])

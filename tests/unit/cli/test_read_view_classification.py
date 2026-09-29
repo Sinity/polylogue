@@ -74,6 +74,7 @@ def test_the_decided_classification_partitions_every_view() -> None:
         "events",
         "file-edits",
         "hooks",
+        "materials",
         "messages",
         "raw",
         "web-content",
@@ -89,6 +90,7 @@ def test_the_decided_classification_partitions_every_view() -> None:
         "effective_context",
         "lineage",
         "neighbors",
+        "orchestration",
         "temporal",
         "topology",
     )

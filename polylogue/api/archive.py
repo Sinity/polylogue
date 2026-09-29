@@ -7,7 +7,7 @@ import itertools
 import json
 import random
 import sqlite3
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -2811,12 +2811,17 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         kinds: Sequence[str | AssertionKind] | None = None,
         target_ref: str | None = None,
+        target_refs: Collection[str] | None = None,
         scope_ref: str | None = None,
         statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
         context_inject: bool | None = None,
         limit: int | None = None,
     ) -> list[ArchiveAssertionEnvelope]:
-        """List assertion-backed lifecycle claims for read-surface consumers."""
+        """List assertion-backed lifecycle claims for read-surface consumers.
+
+        ``target_refs`` narrows the read to any of several targets inside the
+        storage query.
+        """
 
         from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CLAIM_KINDS, list_assertion_claims
 
@@ -2830,6 +2835,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                     schema="user_tier",
                     kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
                     target_ref=target_ref,
+                    target_refs=target_refs,
                     scope_ref=scope_ref,
                     statuses=statuses,
                     context_inject=context_inject,
@@ -2851,6 +2857,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             arguments={
                 "kinds": tuple(str(kind) for kind in kinds) if kinds is not None else None,
                 "target_ref": target_ref,
+                "target_refs": tuple(sorted(target_refs)) if target_refs is not None else None,
                 "scope_ref": scope_ref,
                 "statuses": tuple(str(status) for status in statuses) if statuses is not None else None,
                 "context_inject": context_inject,
@@ -5026,57 +5033,13 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         The session's own messages, events and usage rows are streamed page by
         page into the bounded projection; the full session is never hydrated.
         """
-        from polylogue.analysis.orchestration_evidence import build_session_orchestration
-        from polylogue.operations.orchestration import (
-            iter_orchestration_events,
-            iter_orchestration_messages,
-            iter_orchestration_usage,
-        )
+        from polylogue.operations.orchestration import read_session_orchestration
 
-        resolved = await self.repository.resolve_id(session_id)
-        candidate = str(resolved) if resolved is not None else session_id
-
-        def resolve_existing(archive: ArchiveStore) -> str | None:
-            try:
-                archive.read_summary(candidate)
-            except KeyError:
-                return None
-            return candidate
-
-        root = _active_archive_root(self.config)
-        resolved_id = await run_archive_read(
-            root,
-            operation="archive.session.exists",
-            arguments={"session_id": candidate},
-            work=resolve_existing,
-            projection="session-id",
-        )
-        if resolved_id is None:
-            return None
-        topology = await cast("Polylogue", self).get_session_topology(resolved_id)
-        artifacts, _ = await self.get_raw_artifacts_for_session(resolved_id, limit=1)
-        acquisition = artifacts[0] if artifacts else None
-        delegations = await run_archive_read(
-            root,
-            operation="archive.orchestration.delegations",
-            arguments={"session_id": resolved_id},
-            work=lambda archive: archive.query_delegations(_archive_context_session_predicate(resolved_id), limit=1001),
-            projection="orchestration-delegations",
-            stable_order="parent_session_id,instruction_tool_use_block_id,child_session_id",
-        )
         return await run_archive_read(
-            root,
+            _active_archive_root(self.config),
             operation="archive.orchestration.evidence",
-            arguments={"session_id": resolved_id},
-            work=lambda archive: build_session_orchestration(
-                resolved_id,
-                topology,
-                messages=iter_orchestration_messages(archive._conn, resolved_id),
-                events=iter_orchestration_events(archive._conn, resolved_id),
-                acquisition=acquisition,
-                delegations=delegations,
-                usage_rows=iter_orchestration_usage(archive._conn, resolved_id),
-            ),
+            arguments={"session_id": session_id},
+            work=lambda archive: read_session_orchestration(archive, session_id),
             projection="orchestration-evidence",
             stable_order="position",
         )
@@ -5272,6 +5235,77 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             }
             for construct in constructs
         ]
+
+    async def get_session_materials(self, session_id: str) -> list[dict[str, object]] | None:
+        """Return the source-tier materials retained for one session, with their content.
+
+        Codex goals and memories are admitted only as materials, so this is
+        where their objective, status and memory text are read back. Rows are
+        the ones ``read --view materials`` pages, in the same order.
+
+        Returns ``None`` when the session does not exist (distinct from an
+        empty list, meaning it exists with no retained materials).
+        """
+        from polylogue.operations.session_evidence import read_session_materials
+
+        def work(archive: ArchiveStore) -> list[dict[str, object]] | None:
+            try:
+                resolved = archive.resolve_session_id(session_id)
+            except KeyError:
+                return None
+            return read_session_materials(archive, resolved)
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session.materials",
+            arguments={"session_id": session_id},
+            work=work,
+            projection="session-materials",
+            stable_order="created_at_ms,material_id",
+        )
+
+    async def read_session_evidence_window(
+        self,
+        session_id: str,
+        kind: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        continuation: str | None = None,
+    ) -> dict[str, object] | None:
+        """Read one bounded page of a per-session evidence relation.
+
+        ``kind`` names a windowed ``session.read`` evidence kind (``events``,
+        ``raw``, ``file-edits``, ``web-content``, ``materials``). The page is
+        the ``EvidenceWindowBody`` ``session.read`` returns: ``rows``, the
+        relation's own ``total``, the page coordinates, and a ``continuation``
+        that resumes it on any surface until ``complete``. A continuation
+        whose archive frame or source relation has moved raises
+        ``QueryContinuationStaleError``.
+
+        Returns ``None`` when the session does not exist.
+        """
+        from polylogue.operations.session_evidence import SESSION_EVIDENCE_PAGE_READERS, read_session_evidence_window
+
+        if kind not in SESSION_EVIDENCE_PAGE_READERS:
+            raise ValueError(f"not a windowed session evidence kind: {kind!r}")
+        ref = session_id if session_id.startswith("session:") else f"session:{session_id}"
+
+        def work(archive: ArchiveStore) -> dict[str, object] | None:
+            window = read_session_evidence_window(
+                archive, kind, ref=ref, limit=limit, offset=offset, continuation=continuation
+            )
+            return None if window is None else dict(window)
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session.evidence_window",
+            arguments={"session_id": session_id, "kind": kind},
+            work=work,
+            page_size=limit,
+            offset=offset,
+            projection=f"session-evidence:{kind}",
+        )
 
     async def get_agent_policies(self, session_id: str) -> list[dict[str, object]] | None:
         """Return sandbox/approval/network policy facts recorded for one session.

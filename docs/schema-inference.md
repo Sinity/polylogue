@@ -13,7 +13,18 @@ Repeat `--source provider=path` for additional roots or individual files. The
 provider token selects the observation contract; select roots belonging to that
 provider. `--output-dir` selects the package destination. `--dry-run` produces a
 preview and still updates the private evidence cache. `devtools schema generate`
-provides the non-persisting generation surface.
+provides the generation preview: it never writes committed package files.
+
+To promote a single evidence cluster instead of committing a full regeneration,
+generate with `--cluster --retain-clusters`. `--retain-clusters` saves the
+cluster manifest to the schema registry; without it the clusters are only
+reported, and `devtools schema promote` then refuses with `No cluster manifest
+found`:
+
+```bash
+devtools schema generate --provider chatgpt --cluster --retain-clusters
+devtools schema promote --provider chatgpt --cluster <cluster-id>
+```
 
 Source inputs use whole members; `--max-samples` and `--no-full-corpus` are
 incompatible with source-backed commits. Without `--source`, generation uses the

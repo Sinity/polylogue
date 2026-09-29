@@ -31,6 +31,7 @@ SESSION_LIST_PROJECTIONS: dict[str, SessionListProjection] = {
         SessionListProjection(
             "web-content", "get_web_content_constructs", "web_content_constructs", cli_handler="web-content"
         ),
+        SessionListProjection("materials", "get_session_materials", "materials", cli_handler="materials"),
     )
 }
 
