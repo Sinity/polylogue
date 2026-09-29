@@ -5,13 +5,14 @@ from __future__ import annotations
 import multiprocessing
 import os
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
+from polylogue.logging import current_context
 from polylogue.runtime import available_cpus
 
 _UNREAPED_PROCESS_HANDLES_ATTR = "_polylogue_unreaped_processes"
@@ -21,15 +22,27 @@ class _BlobSized(Protocol):
     blob_size: int
 
 
-def _initialize_worker_logging() -> None:
-    """Apply the normal CLI log filter inside pool workers.
+def _initialize_worker_logging(run_context: Mapping[str, object] | None = None) -> None:
+    """Give each pool worker the parent's log filter and event sink.
 
-    Without this, subprocess workers keep structlog's default "notset"
+    Without the filter, subprocess workers keep structlog's default "notset"
     filtering and can leak debug parser messages into ordinary operator runs.
+    Without the sink, a worker's ``emit`` reaches no sink and is lost
+    uncounted. ``spawn`` children inherit the environment, so
+    ``configure_events`` resolves the same format, level and
+    ``POLYLOGUE_LOG_FILE`` as the parent; ``run_context`` restores the
+    parent's correlation floor. Multiprocessing workers leave through
+    ``os._exit``, which skips ``atexit``, so the bounded drain is registered as
+    a multiprocessing finalizer instead.
     """
-    from polylogue.logging import configure_logging
+    from multiprocessing.util import Finalize
+
+    from polylogue.logging import configure_events, configure_logging, set_run_context, shutdown_events
 
     configure_logging(verbose=False)
+    configure_events()
+    set_run_context(**dict(run_context or {}))
+    Finalize(None, shutdown_events, exitpriority=0)
 
 
 def process_pool_context() -> multiprocessing.context.BaseContext:
@@ -280,6 +293,7 @@ def process_pool_executor(*, max_workers: int) -> ProcessPoolExecutor:
     return ProcessPoolExecutor(
         max_workers=max_workers,
         initializer=_initialize_worker_logging,
+        initargs=(dict(current_context()),),
         mp_context=process_pool_context(),
     )
 

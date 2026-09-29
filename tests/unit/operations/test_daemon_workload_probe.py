@@ -738,8 +738,10 @@ def test_daemon_workload_probe_does_not_claim_derived_ready_on_schema_mismatch(t
     db = tmp_path / "index.db"
     for tier in ArchiveTier:
         initialize_archive_database(tmp_path / f"{tier.value}.db", tier)
+    # The fresh format (#5551) starts every tier at user_version 1, so a
+    # mismatch needs a version other than the current one.
     with sqlite3.connect(db) as conn:
-        conn.execute("PRAGMA user_version = 1")
+        conn.execute("PRAGMA user_version = 2")
 
     payload = probe(db, exact_table_counts=True)
 
@@ -1276,6 +1278,9 @@ def test_compare_computes_structured_delta(tmp_path: Path) -> None:
 def test_compare_reports_archive_derived_readiness_deltas(tmp_path: Path) -> None:
     db = tmp_path / "index.db"
     initialize_archive_database(tmp_path / "index.db", ArchiveTier.INDEX)
+    # Since #5727 a comparison is not ok when either side's convergence-debt
+    # ledger is unavailable, and a missing ops.db is unavailable.
+    initialize_archive_database(tmp_path / "ops.db", ArchiveTier.OPS)
 
     before_payload = probe(db, exact_table_counts=True, exact_derived_counts=True)
     with sqlite3.connect(tmp_path / "index.db") as conn:
@@ -1489,7 +1494,11 @@ def test_unavailable_debt_is_rendered_unknown_and_cli_fails_closed(
     assert workload_probe.main([]) == 1
     output = capsys.readouterr().out
     assert "convergence debt: unavailable" in output
-    assert "0 failed" not in output
+    # The attempt-count line legitimately prints "0 failed"; only the debt
+    # line must not turn the unreadable ledger into numbers.
+    debt_lines = [line for line in output.splitlines() if "convergence debt" in line]
+    assert debt_lines
+    assert not any("failed" in line for line in debt_lines), debt_lines
 
 
 def test_two_available_debt_ledgers_still_diff() -> None:

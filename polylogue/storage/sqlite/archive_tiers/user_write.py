@@ -1796,6 +1796,14 @@ def _format_transform_raw_ref(ref: TransformRawRef) -> str:
     return ref.to_evidence_ref().format()
 
 
+def record_retired_marker_assertion(conn: sqlite3.Connection, assertion_id: str, *, now_ms: int) -> None:
+    """Record, idempotently, that an accepted carrier re-owned one marker assertion id."""
+    conn.execute(
+        "INSERT OR IGNORE INTO retired_marker_assertions(assertion_id, retired_at_ms) VALUES (?, ?)",
+        (assertion_id, now_ms),
+    )
+
+
 def mark_assertion_status(
     conn: sqlite3.Connection,
     assertion_id: str,

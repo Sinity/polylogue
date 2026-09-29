@@ -167,6 +167,43 @@ def test_one_scopes_snapshot_does_not_supersede_another_scope(index_conn: sqlite
     )
 
 
+def test_one_thread_id_in_two_scopes_keeps_each_scopes_title(index_conn: sqlite3.Connection) -> None:
+    """One thread ID under two install roots is one session with two scoped titles.
+
+    A session reads the scope of the rollout that produced it, so each root's
+    rollout resolves its own root's title and neither write overwrites the
+    other.
+
+    Anti-vacuity: drop ``source_path`` from the Codex title read, or key the
+    thread on its ID alone, and both rollouts resolve the newer root's title.
+    """
+    from polylogue.sources import codex_state_projection
+
+    for order, root in enumerate(("/roots/a/.codex", "/roots/b/.codex"), start=1):
+        _write(
+            index_conn,
+            source_scope=root,
+            threads=[ThreadRecord("shared-thread", f"title from {root}", 2_000)],
+            spawn_edges=[],
+            raw_id=f"raw-{order}",
+            blob_hash=f"blob-{order}",
+            observed_at_ms=order * 1_000,
+            observation_order=order,
+        )
+
+    for root in ("/roots/a/.codex", "/roots/b/.codex"):
+        rollout = f"{root}/sessions/2026/01/01/rollout-shared-thread.jsonl"
+        assert codex_state_projection.read_thread_titles(
+            index_conn, thread_ids=["shared-thread"], source_path=rollout
+        ) == {"shared-thread": f"title from {root}"}
+    assert (
+        index_conn.execute(
+            "SELECT COUNT(*) FROM work_evidence_nodes WHERE association_state = 'superseded'"
+        ).fetchone()[0]
+        == 0
+    )
+
+
 def test_index_tier_carries_no_provider_named_relation() -> None:
     """The DDL rule the fold is worth keeping. Anti-vacuity: append a
     provider-named table to the index DDL and this must fail."""

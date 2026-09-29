@@ -285,10 +285,46 @@ def _dotted_name(node: ast.AST) -> str | None:
     return ".".join(reversed(parts))
 
 
+#: One reference site, reduced to what resolution reads: its kind (``name``,
+#: ``self`` or ``dotted``), the referenced text, the enclosing scope path, and
+#: the enclosing class.
+ReferenceSite = tuple[str, str, tuple[str, ...], str | None]
+
+
+def _reference_sites(tree: ast.Module) -> set[ReferenceSite]:
+    """Every loaded name or attribute chain in *tree*, as a resolvable site.
+
+    The graph needs only these strings, not the tree, so a module's parse is
+    released as soon as it has been reduced. Holding every module's tree until
+    the whole package had been read made this gate hold the parse of the
+    entire package at once. Edges are sets, so duplicate sites collapse.
+    """
+    sites: set[ReferenceSite] = set()
+    for node, stack, enclosing_class in _scope_walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+            sites.add(("name", node.id, stack, enclosing_class))
+        elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
+            if isinstance(node.value, ast.Name) and node.value.id == "self" and enclosing_class is not None:
+                sites.add(("self", node.attr, stack, enclosing_class))
+            else:
+                # ``polylogue.pipeline.services.indexing.rebuild_index(...)``
+                # after ``import polylogue.pipeline.services.indexing`` is
+                # ordinary syntax, and a chain of ``ast.Attribute`` nodes.
+                # Reading only the one whose value is an ``ast.Name`` saw
+                # the intermediate module and never the function, so a new
+                # non-daemon rebuild route written this way left the
+                # blocking gate green.
+                dotted = _dotted_name(node)
+                if dotted is not None:
+                    sites.add(("dotted", dotted, stack, enclosing_class))
+    return sites
+
+
 def build_call_graph(package_root: Path, *, repo_root: Path) -> CallGraph:
     """Build the function-grain reference graph for one package tree."""
     graph = CallGraph()
-    trees: dict[str, tuple[Path, ast.Module]] = {}
+    scoped_aliases: dict[str, dict[tuple[str, ...], ScopeImports]] = {}
+    module_sites: dict[str, set[ReferenceSite]] = {}
     for path in sorted(package_root.rglob("*.py")):
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -296,16 +332,13 @@ def build_call_graph(package_root: Path, *, repo_root: Path) -> CallGraph:
             continue
         module = _module_name(path, repo_root=repo_root)
         relative = path.relative_to(repo_root).as_posix()
-        trees[module] = (path, tree)
         graph.modules[module] = relative
         for name in _definitions(tree, module):
             graph.defined.add(name)
             graph.files[name] = relative
-
-    scoped_aliases: dict[str, dict[tuple[str, ...], ScopeImports]] = {
-        module: _import_maps(tree, module=module, is_package_init=path.name == "__init__.py")
-        for module, (path, tree) in trees.items()
-    }
+        scoped_aliases[module] = _import_maps(tree, module=module, is_package_init=path.name == "__init__.py")
+        module_sites[module] = _reference_sites(tree)
+        del tree
     aliases: dict[str, ScopeImports] = {module: _merged_imports(scopes) for module, scopes in scoped_aliases.items()}
 
     def resolve(qualname: str) -> str:
@@ -325,37 +358,27 @@ def build_call_graph(package_root: Path, *, repo_root: Path) -> CallGraph:
             qualname = symbols[leaf]
         return qualname
 
-    for module, (_path, tree) in trees.items():
+    for module, sites in module_sites.items():
         scopes = scoped_aliases[module]
         visible: dict[tuple[str, ...], ScopeImports] = {}
-        for node, stack, enclosing_class in _scope_walk(tree):
+        for kind, text, stack, enclosing_class in sites:
             if stack not in visible:
                 visible[stack] = _visible_imports(scopes, stack)
             symbols, module_aliases = visible[stack]
             target: str | None = None
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
-                if node.id in symbols:
-                    target = symbols[node.id]
-                elif f"{module}.{node.id}" in graph.defined:
-                    target = f"{module}.{node.id}"
-            elif isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
-                if isinstance(node.value, ast.Name) and node.value.id == "self" and enclosing_class is not None:
-                    target = f"{module}.{enclosing_class}.{node.attr}"
-                else:
-                    # ``polylogue.pipeline.services.indexing.rebuild_index(...)``
-                    # after ``import polylogue.pipeline.services.indexing`` is
-                    # ordinary syntax, and a chain of ``ast.Attribute`` nodes.
-                    # Reading only the one whose value is an ``ast.Name`` saw
-                    # the intermediate module and never the function, so a new
-                    # non-daemon rebuild route written this way left the
-                    # blocking gate green.
-                    dotted = _dotted_name(node)
-                    if dotted is not None:
-                        head, _, rest = dotted.partition(".")
-                        if head in module_aliases:
-                            target = f"{module_aliases[head]}.{rest}" if rest else module_aliases[head]
-                        elif head in symbols:
-                            target = f"{symbols[head]}.{rest}" if rest else symbols[head]
+            if kind == "name":
+                if text in symbols:
+                    target = symbols[text]
+                elif f"{module}.{text}" in graph.defined:
+                    target = f"{module}.{text}"
+            elif kind == "self":
+                target = f"{module}.{enclosing_class}.{text}"
+            else:
+                head, _, rest = text.partition(".")
+                if head in module_aliases:
+                    target = f"{module_aliases[head]}.{rest}" if rest else module_aliases[head]
+                elif head in symbols:
+                    target = f"{symbols[head]}.{rest}" if rest else symbols[head]
             if target is None:
                 continue
             target = resolve(target)

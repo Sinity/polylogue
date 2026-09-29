@@ -178,7 +178,13 @@ def _scan(root: Path, rule: Rule) -> Counter[Anchor]:
 
 
 def _trusted_baseline(root: Path, path: Path) -> Counter[tuple[str, str]] | None:
-    """Read the parent revision's exemption set; synthetic roots have none."""
+    """Read the parent revisions' exemption set; synthetic roots have none.
+
+    A merge commit has several parents: an exemption any parent already
+    carried is trusted, at the largest count any parent carried it. Reading
+    only the first parent would count the base branch's own baseline additions,
+    brought in by merging it, as growth.
+    """
     try:
         repository = subprocess.run(
             ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
@@ -187,17 +193,40 @@ def _trusted_baseline(root: Path, path: Path) -> Counter[tuple[str, str]] | None
             check=True,
         ).stdout.strip()
         relative = path.resolve().relative_to(Path(repository).resolve()).as_posix()
-        content = subprocess.run(
-            ["git", "-C", repository, "show", f"HEAD^:{relative}"],
+        parents = subprocess.run(
+            ["git", "-C", repository, "rev-parse", "HEAD^@"],
             capture_output=True,
             text=True,
             check=True,
-        ).stdout
+        ).stdout.split()
+        if not parents:
+            raise ValueError("HEAD has no parent revision")
+        # A parent that predates the baseline file (a base branch merged into
+        # the feature that introduced it) contributes nothing; a file no
+        # parent carries has no trusted revision at all.
+        contents = [
+            completed.stdout
+            for parent in parents
+            if (
+                completed := subprocess.run(
+                    ["git", "-C", repository, "show", f"{parent}:{relative}"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+            ).returncode
+            == 0
+        ]
+        if not contents:
+            raise ValueError(f"no parent revision carries {relative}")
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         if not (root / ".git").exists():
             return None
         raise ValueError(f"cannot load trusted parent baseline for {path}") from exc
-    return _baseline_text(content)
+    trusted: Counter[tuple[str, str]] = Counter()
+    for content in contents:
+        trusted |= _baseline_text(content)
+    return trusted
 
 
 def _baseline_text(content: str) -> Counter[tuple[str, str]]:

@@ -174,7 +174,8 @@ describe('ObservabilityIsland', () => {
       },
     };
     const view = render(<ObservabilityIsland initial={{ ...payload, insights: [], insights_loaded: false }} client={new PolylogueClient(transport)} ensureCredential={async () => undefined} />);
-    await act(async () => { await Promise.resolve(); });
+    // Drain the credential bootstrap and retry wrapper, not one microtask.
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
     expect(screen.getByText('Phase: parse · source: claude')).toBeInTheDocument();
     await act(async () => {
       await vi.advanceTimersByTimeAsync(2_000);

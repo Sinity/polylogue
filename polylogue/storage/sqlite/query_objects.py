@@ -585,35 +585,6 @@ def put_query_edge(
     )
 
 
-def migrate_saved_query_assertions(conn: sqlite3.Connection) -> int:
-    """Repoint legacy saved-query assertions at immutable ``query:<hash>`` refs.
-
-    Legacy saved view payloads are already parsed JSON request specifications.
-    They have no macro reference, so their dynamic request shape is the typed
-    plan supplied to the shared canonicalization boundary.
-    """
-    rows = tuple(
-        conn.execute("SELECT assertion_id, value_json, created_at_ms FROM assertions WHERE kind = 'saved_query'")
-    )
-    for assertion_id, value_json, created_at_ms in rows:
-        try:
-            value = json.loads(str(value_json or "{}"))
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"saved query assertion {assertion_id} has invalid JSON") from exc
-        if not isinstance(value, dict):
-            raise ValueError(f"saved query assertion {assertion_id} must contain an object query")
-        query = put_query(
-            conn,
-            value,
-            grain="session",
-            lane="dialogue",
-            rank_policy="mixed-bm25-rrf-vector",
-            created_at_ms=int(created_at_ms),
-        )
-        conn.execute("UPDATE assertions SET target_ref = ? WHERE assertion_id = ?", (query.ref, assertion_id))
-    return len(rows)
-
-
 def membership_merkle_root(member_refs: tuple[str, ...]) -> str:
     if not member_refs:
         return hash_payload([])
@@ -671,7 +642,6 @@ __all__ = [
     "get_watched_query_baseline",
     "list_watched_queries",
     "membership_merkle_root",
-    "migrate_saved_query_assertions",
     "put_evaluation_receipt",
     "put_query",
     "promote_query",

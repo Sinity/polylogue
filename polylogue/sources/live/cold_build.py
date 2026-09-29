@@ -307,6 +307,10 @@ class ColdBuildGeneration:
     #: Open for the build's lifetime so one-shot ``ops.db`` writers stop
     #: checkpointing on every close. See :func:`_hold_ops_checkpoints`.
     _ops_checkpoint_holder: sqlite3.Connection | None = None
+    #: Open intake pages (:meth:`begin_ops_page`). While one is open, closing
+    #: an archive pass keeps the holder, because the page's cursor,
+    #: convergence and attempt writes still follow it.
+    _ops_page_depth: int = 0
     # Disposable, generation-scoped projection over the candidate application
     # receipts. The candidate index and durable source rows remain authority.
     _accepted_progress_weights: dict[tuple[str, int, str], int] = field(init=False, repr=False)
@@ -932,24 +936,43 @@ class ColdBuildGeneration:
             self._release_ops_checkpoint_holder()
             raise
 
-        # The dispatcher owns one ArchiveStore for one intake page.  Tie the
-        # checkpoint holder to that same lifetime: retaining it across pages
-        # would silently widen the ops power-loss window to the whole build.
-        # ``ArchiveStore`` is intentionally not changed for this cold-build
-        # concern; binding the existing close method preserves its public
-        # type and all normal close/rollback behavior.
+        # Tie the checkpoint holder to the intake page: retaining it across
+        # pages would silently widen the ops power-loss window to the whole
+        # build. Inside an open page (:meth:`begin_ops_page`) the archive pass
+        # ends before the page's cursor, convergence and attempt writes, so
+        # the page end releases it; a pass outside any page releases it on
+        # close. ``ArchiveStore`` is intentionally not changed for this
+        # cold-build concern; binding the existing close method preserves its
+        # public type and all normal close/rollback behavior.
         close = archive.close
 
         def close_page(_archive: ArchiveStore) -> None:
             try:
                 close()
             finally:
-                self._release_ops_checkpoint_holder()
+                if self._ops_page_depth == 0:
+                    self._release_ops_checkpoint_holder()
 
         # Rebinding close on the instance (not the class) so the ops checkpoint
-        # holder is released on whichever path closes this page.
+        # holder is released on whichever path closes this pass.
         archive.close = types.MethodType(close_page, archive)  # type: ignore[method-assign]
         return archive
+
+    def begin_ops_page(self) -> None:
+        """Keep the ops checkpoint holder until :meth:`end_ops_page`.
+
+        The holder is still acquired by the page's first :meth:`open_writer`;
+        this only moves its release from that pass's close to the page end.
+        """
+        self._ops_page_depth += 1
+
+    def end_ops_page(self) -> None:
+        """Close one intake page; the outermost one releases the holder."""
+        if self._ops_page_depth <= 0:
+            raise RuntimeError("cold-build ops page ended without a matching begin")
+        self._ops_page_depth -= 1
+        if self._ops_page_depth == 0:
+            self._release_ops_checkpoint_holder()
 
     def session_count(self) -> int:
         """How many sessions the build has materialized so far."""
