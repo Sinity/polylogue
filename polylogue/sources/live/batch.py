@@ -4783,7 +4783,8 @@ class LiveBatchProcessor:
                     # zero-message sessions is treated exactly like a parse
                     # that produced none: a recorded, bounded
                     # mark_raw_parse_failed outcome below, never a silently
-                    # written phantom session.
+                    # written phantom session. A sealed path preparation was
+                    # admitted by ``prepare_jsonl_blob`` itself.
                     if path_preparation is None:
                         sessions = require_positive_conversational_evidence(
                             cast(list[ParsedSession], sessions),

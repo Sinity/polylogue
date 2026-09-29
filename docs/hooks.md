@@ -174,34 +174,13 @@ install` after changing the archive root to rebake the path.
 
 ## Configuration
 
-### polylogue.toml
-
-Only set this if the hook carriers genuinely need to live somewhere other than
-`<archive_root>/hooks`; the default already tracks the archive root:
-
-```toml
-[sources]
-hook_sidecar_dir = "/home/user/.local/share/polylogue/hooks"
-```
-
-### Environment Variables
+Hook carriers live at `<archive_root>/hooks`; no key relocates them. Each
+installed command names its harness with `--provider`, and a carrier file is
+written under `carriers/<provider>/`, so no setting forces provider detection.
 
 | Variable | Description |
 |----------|-------------|
 | `POLYLOGUE_ARCHIVE_ROOT` | Overrides the archive root, and therefore the hook carriers (`<archive_root>/hooks/carriers`) along with every other archive-scoped path |
-| `POLYLOGUE_HOOK_PROVIDER` | Force provider detection to `claude-code` or `codex` |
-
-There is no separate `POLYLOGUE_HOOK_SIDECAR_DIR` producer/daemon override
-env var: it was a manual escape hatch that had to be remembered on top of
-`POLYLOGUE_ARCHIVE_ROOT` and repeatedly wasn't (polylogue-o7hx). Use the
-`hook_sidecar_dir` config key below only if the hook carriers genuinely need
-to live somewhere other than `<archive_root>/hooks`.
-
-### PolylogueConfig Properties
-
-| Property | Type | Default |
-|----------|------|---------|
-| `hook_sidecar_dir` | `str` | `<archive_root>/hooks` |
 
 ## Installation
 
@@ -426,8 +405,8 @@ payload must contain a `session_id`, `sessionId`, or `session` field.
 (`polylogued run`) and that the hooks sidecar directory exists. The daemon
 watcher creates it on startup if needed.
 
-**Provider detection fails:** Set `POLYLOGUE_HOOK_PROVIDER=claude-code` or
-`POLYLOGUE_HOOK_PROVIDER=codex` in the hook command environment.
+**Provider detection fails:** Pass `--provider claude-code|codex` in the hook
+command, as `polylogue hooks install` does.
 
 ---
 

@@ -6,11 +6,13 @@ The sidecar tests drive production acquisition (``LiveBatchProcessor``) for
 two such sessions, A and B, where A also overflowed a second output nobody
 else has, then excise A through ``apply_session_excision``.
 
-Excision does not yet reach a session's sidecar raws at all
-(polylogue-8j9rh), so the shared-sidecar test guards B's side of that future
-reach -- a reach that marks every hash A's sidecars named refuses a later
-session's sidecar with the same bytes -- and the forgets-its-own test is a
-strict xfail that flips when the reach lands.
+Excision reaches the sidecar raws a session owns (polylogue-8j9rh): the
+forgets-its-own test removes and marks A's own sidecar while naming the one it
+shares with B, and the shared-sidecar test guards B's side -- a reach that
+marked every hash A's sidecars named would refuse a later session's sidecar
+with the same bytes. The subagent and gemini-cli tests pin ownership inside a
+shared scope directory: excising one transcript's session leaves the files
+another transcript owns, and files nobody claimed, where they are.
 
 ``test_excising_a_keeps_the_attachment_it_shares_with_b`` covers the
 attachment class on the ingest batch's writer (``_write_session``) and the
@@ -38,7 +40,7 @@ from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.services.ingest_batch._core import _write_session
 from polylogue.pipeline.services.ingest_worker import SessionWritePayload
-from polylogue.security.excision import apply_session_excision
+from polylogue.security.excision import apply_session_excision, plan_session_excision
 from polylogue.sources.live import WatchSource
 from polylogue.sources.live.batch import LiveBatchProcessor
 from polylogue.sources.live.cursor import CursorStore
@@ -207,18 +209,203 @@ async def _ingest_a_and_b(workspace_env: dict[str, Path]) -> tuple[Path, dict[st
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(strict=True, reason="polylogue-8j9rh: excision does not reach a session's sidecar raws")
 async def test_excising_a_forgets_the_tool_output_only_it_had(workspace_env: dict[str, Path]) -> None:
+    """A's sidecar raws go; the hash only A had is marked, the one B shares is named.
+
+    Anti-vacuity: dropping the sidecar seed from
+    ``_resolve_session_excision_target`` leaves both of A's sidecar raws
+    retained and the A-only hash unmarked.
+    """
     archive_root = workspace_env["archive_root"]
-    _root, tree_a, _tree_b = await _ingest_a_and_b(workspace_env)
+    _root, tree_a, tree_b = await _ingest_a_and_b(workspace_env)
     session_a = _session_row(archive_root, _SESSION_A)
     assert session_a is not None
 
+    plan = plan_session_excision(archive_root, session_a[0])
+    assert plan.source_sidecar_rows == 2
     receipt = apply_session_excision(archive_root, session_a[0], reason="synthetic secret", actor="user:local")
 
+    assert receipt.counts["source_sidecar_rows"] == 2
     assert _excised(archive_root, _sha(_A_ONLY_TEXT))
+    assert _sha(_A_ONLY_TEXT).hex() in receipt.removed_blob_hashes
     assert _raw_hash(archive_root, tree_a["toolu_a_only"]) is None
+    assert _raw_hash(archive_root, tree_a["toolu_a_shared"]) is None
     assert _sha(_SHARED_TEXT).hex() in receipt.shared_blob_hashes
+    assert not _excised(archive_root, _sha(_SHARED_TEXT))
+    assert _raw_hash(archive_root, tree_b["toolu_b_shared"]) == _sha(_SHARED_TEXT)
+
+
+_PARENT_TEXT = "zz_parent_overflowed_output\n" * 400
+_SUBAGENT_TEXT = "zz_subagent_overflowed_output\n" * 400
+_ORPHAN_TEXT = "zz_sidecar_no_transcript_claims\n" * 40
+
+
+def _write_jsonl(path: Path, records: list[dict[str, object]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(record) for record in records) + "\n", encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_excising_a_parent_keeps_its_subagents_sidecar(workspace_env: dict[str, Path]) -> None:
+    """A parent and its subagent share one ``tool-results/`` directory.
+
+    Excising the parent removes the sidecar the parent's own tool result
+    owns, and leaves the subagent's sidecar and a file no transcript claims.
+    The parent's sidecar is named by its preview's pointer, not by its
+    ``tool_use_id``, so only the parent's matched sidecar event names it.
+
+    Anti-vacuity: treating every file of the scope directory as the excised
+    session's (``_SidecarOwnership.owns`` returning true) removes the
+    subagent's sidecar raw and marks its hash; ignoring the session's sidecar
+    events leaves the parent's pointer-named sidecar retained.
+    """
+    archive_root = workspace_env["archive_root"]
+    root = workspace_env["data_root"] / "projects"
+    project = root / "-realm-project-sub"
+    session_dir = project / _SESSION_A
+    tool_results = session_dir / "tool-results"
+    tool_results.mkdir(parents=True)
+    parent_sidecar = tool_results / "b7x3kq.txt"
+    parent_sidecar.write_text(_PARENT_TEXT, encoding="utf-8")
+    subagent_sidecar = tool_results / "toolu_subagent.txt"
+    subagent_sidecar.write_text(_SUBAGENT_TEXT, encoding="utf-8")
+    orphan_sidecar = tool_results / "orphan999.txt"
+    orphan_sidecar.write_text(_ORPHAN_TEXT, encoding="utf-8")
+    parent = project / f"{_SESSION_A}.jsonl"
+    _write_jsonl(
+        parent, _exchange("p", _SESSION_A, "toolu_parent", _overflow_envelope(parent_sidecar), parent=None, minute=0)
+    )
+    subagent = session_dir / "subagents" / "agent-a.jsonl"
+    _write_jsonl(
+        subagent,
+        _exchange(
+            "s", f"{_SESSION_A}-sub", "toolu_subagent", _overflow_envelope(subagent_sidecar), parent=None, minute=1
+        ),
+    )
+    await _ingest(
+        workspace_env,
+        root,
+        [parent_sidecar, subagent_sidecar, orphan_sidecar, parent, subagent],
+        cursor_name="cursor.db",
+    )
+    session = _session_row(archive_root, _SESSION_A)
+    assert session is not None
+    assert _raw_hash(archive_root, subagent_sidecar) == _sha(_SUBAGENT_TEXT)
+
+    receipt = apply_session_excision(archive_root, session[0], reason="synthetic secret", actor="user:local")
+
+    assert receipt.counts["source_sidecar_rows"] == 1
+    assert _raw_hash(archive_root, parent_sidecar) is None
+    assert _excised(archive_root, _sha(_PARENT_TEXT))
+    assert _raw_hash(archive_root, subagent_sidecar) == _sha(_SUBAGENT_TEXT)
+    assert not _excised(archive_root, _sha(_SUBAGENT_TEXT))
+    assert _raw_hash(archive_root, orphan_sidecar) == _sha(_ORPHAN_TEXT)
+    assert not _excised(archive_root, _sha(_ORPHAN_TEXT))
+
+
+_GEMINI_WIRE_SESSION = "gem-excise-1"
+_GEMINI_TOOL_ID = "run_shell_command_1773524726450_0"
+_GEMINI_TEXT = "zz_gemini_overflowed_output\n" * 400
+
+
+def _gemini_snapshot(sidecar: Path) -> dict[str, object]:
+    mask = (
+        "<tool_output_masked>\n"
+        "Output too large. Showing first 8,000 and last 32,000 characters. "
+        f"For full output see: {sidecar}\n"
+        "Output: HEAD-EXCERPT\n...\nTAIL-EXCERPT\n</tool_output_masked>"
+    )
+    return {
+        "sessionId": _GEMINI_WIRE_SESSION,
+        "projectHash": "hash-1",
+        "kind": "main",
+        "startTime": "2026-03-14T21:41:00.000Z",
+        "lastUpdated": "2026-03-14T21:45:00.000Z",
+        "messages": [
+            {"id": "u1", "type": "user", "timestamp": "2026-03-14T21:41:00.000Z", "content": "run it"},
+            {
+                "id": "a1",
+                "type": "gemini",
+                "timestamp": "2026-03-14T21:41:02.000Z",
+                "content": "ran it",
+                "toolCalls": [
+                    {
+                        "id": _GEMINI_TOOL_ID,
+                        "name": "run_shell_command",
+                        "displayName": "Shell",
+                        "description": "run a command",
+                        "args": {"command": "echo hi"},
+                        "renderOutputAsMarkdown": True,
+                        "status": "success",
+                        "timestamp": "2026-03-14T21:41:00.000Z",
+                        "result": [
+                            {
+                                "functionResponse": {
+                                    "id": _GEMINI_TOOL_ID,
+                                    "name": "run_shell_command",
+                                    "response": {"output": mask},
+                                }
+                            }
+                        ],
+                        "resultDisplay": "short display",
+                    }
+                ],
+            },
+        ],
+    }
+
+
+@pytest.mark.asyncio
+async def test_excising_a_gemini_chat_forgets_its_tool_output_sidecar(workspace_env: dict[str, Path]) -> None:
+    """A gemini-cli chat's ``tool-outputs/session-<id>/`` sidecar goes with it.
+
+    The directory is named for the wire ``sessionId`` and shared by every chat
+    of that process, so a file no chat claimed stays.
+
+    The sidecar is named ``<tool id>_<slug>``, so the chat's sidecar event,
+    not the exact-stem rule, is what names it as the chat's.
+
+    Anti-vacuity: dropping the gemini branch of ``_session_sidecar_raw_ids``
+    leaves the sidecar raw retained and its hash unmarked.
+    """
+    archive_root = workspace_env["archive_root"]
+    root = workspace_env["data_root"] / "gemini"
+    project = root / "project-hash"
+    outputs = project / "tool-outputs" / f"session-{_GEMINI_WIRE_SESSION}"
+    outputs.mkdir(parents=True)
+    sidecar = outputs / f"{_GEMINI_TOOL_ID}_stdout.txt"
+    sidecar.write_text(_GEMINI_TEXT, encoding="utf-8")
+    unclaimed = outputs / "read_file_1773524799999_0.txt"
+    unclaimed.write_text(_ORPHAN_TEXT, encoding="utf-8")
+    snapshot = project / "chats" / f"session-{_GEMINI_WIRE_SESSION}.json"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text(json.dumps(_gemini_snapshot(sidecar)), encoding="utf-8")
+
+    archive = Polylogue(archive_root=archive_root, db_path=workspace_env["data_root"] / "index.db")
+    processor = LiveBatchProcessor(
+        archive,
+        (WatchSource(name="gemini-cli", root=root, suffixes=(".json",)),),
+        cursor=CursorStore(workspace_env["data_root"] / "cursor.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    try:
+        await processor.ingest_files([sidecar, unclaimed, snapshot], emit_event=False)
+    finally:
+        await archive.close()
+    with sqlite3.connect(f"file:{archive_root / 'index.db'}?mode=ro", uri=True) as conn:
+        [(session_id,)] = conn.execute(
+            "SELECT session_id FROM sessions WHERE origin = ?", (Origin.GEMINI_CLI_SESSION.value,)
+        ).fetchall()
+    assert _raw_hash(archive_root, sidecar) == _sha(_GEMINI_TEXT)
+    assert _raw_hash(archive_root, unclaimed) == _sha(_ORPHAN_TEXT)
+
+    receipt = apply_session_excision(archive_root, str(session_id), reason="synthetic secret", actor="user:local")
+
+    assert receipt.counts["source_sidecar_rows"] == 1
+    assert _raw_hash(archive_root, sidecar) is None
+    assert _excised(archive_root, _sha(_GEMINI_TEXT))
+    assert _raw_hash(archive_root, unclaimed) == _sha(_ORPHAN_TEXT)
+    assert not _excised(archive_root, _sha(_ORPHAN_TEXT))
 
 
 @pytest.mark.asyncio

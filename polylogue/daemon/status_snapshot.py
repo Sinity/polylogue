@@ -45,7 +45,6 @@ class RuntimeComponentState:
     watcher_enabled: bool | None = None
     watcher_roots: tuple[str, ...] = ()
     browser_capture_enabled: bool | None = None
-    browser_capture_spool_path: Path | None = None
 
 
 _RUNTIME_COMPONENT_STATE = RuntimeComponentState()
@@ -225,7 +224,6 @@ def configure_runtime_components(
     watcher_enabled: bool | None = None,
     watcher_roots: tuple[str, ...] = (),
     browser_capture_enabled: bool | None = None,
-    browser_capture_spool_path: Path | None = None,
 ) -> None:
     """Record daemon component switches for request-safe status snapshots."""
     global _RUNTIME_COMPONENT_STATE
@@ -235,7 +233,6 @@ def configure_runtime_components(
             watcher_enabled=watcher_enabled,
             watcher_roots=tuple(watcher_roots),
             browser_capture_enabled=browser_capture_enabled,
-            browser_capture_spool_path=browser_capture_spool_path,
         )
 
 
@@ -291,7 +288,7 @@ def _minimal_status_payload(*, refresh_in_progress: bool = False, refresh_error:
             refresh_error = refresh_error or str(exc)
     now = datetime.now(UTC).isoformat()
     runtime = _runtime_component_state()
-    browser_capture = dict(browser_capture_status_public_payload(runtime.browser_capture_spool_path))
+    browser_capture = dict(browser_capture_status_public_payload())
     browser_capture_enabled = runtime.browser_capture_enabled is True
     browser_capture["active"] = browser_capture_enabled
     frontier_reason = refresh_error or "rich status snapshot unavailable"

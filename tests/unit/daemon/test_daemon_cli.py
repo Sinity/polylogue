@@ -147,13 +147,7 @@ def test_polylogued_status_json_reports_daemon_components(
     with patch("polylogue.daemon.status.default_sources", return_value=sources):
         result = CliRunner().invoke(
             main,
-            [
-                "status",
-                "--spool",
-                str(tmp_path / "captures"),
-                "--format",
-                "json",
-            ],
+            ["status", "--format", "json"],
         )
 
     assert result.exit_code == 1
@@ -165,7 +159,7 @@ def test_polylogued_status_json_reports_daemon_components(
     assert live["source_count"] == 2
     assert live["existing_source_count"] == 1
     assert browser_capture["spool_ready"] is True
-    assert browser_capture["spool_path"] == str(tmp_path / "captures")
+    assert "spool_path" not in browser_capture
 
 
 def test_polylogued_status_plain_reports_daemon_components(tmp_path: Path) -> None:
@@ -748,7 +742,6 @@ class TestBrowserCaptureReceiverTokenAutoMint:
                     enable_browser_capture=True,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                     service_profile=ServiceProfile.SURFACES,
                     **run_kwargs,
                 )
@@ -801,25 +794,6 @@ def test_polylogued_run_rejects_retired_debounce_option() -> None:
 
     assert result.exit_code != 0
     assert "No such option '--debounce-s'" in result.output
-
-
-def test_spool_override_replaces_default_browser_capture_source() -> None:
-    from polylogue.daemon import cli as daemon_cli
-
-    default_spool = Path("/tmp/default-browser-capture")
-    override_spool = Path("/tmp/override-browser-capture")
-    sources = (
-        WatchSource(name="codex", root=Path("/tmp/codex")),
-        WatchSource(name="browser-capture", root=default_spool, suffixes=(".json",)),
-    )
-
-    with patch("polylogue.sources.live.watcher.default_sources", return_value=sources):
-        resolved = daemon_cli._watch_sources(browser_capture_spool_path=override_spool)
-
-    assert resolved == (
-        WatchSource(name="codex", root=Path("/tmp/codex")),
-        WatchSource(name="browser-capture", root=override_spool, suffixes=(".json",)),
-    )
 
 
 def test_polylogued_run_can_skip_configured_source_catchup() -> None:
@@ -1410,7 +1384,6 @@ def test_daemon_rebuild_lease_refusal_precedes_startup_blob_reconciliation(
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                 )
             )
         assert archive_digest() == before
@@ -1458,7 +1431,6 @@ def test_run_daemon_services_stops_live_watcher_on_failure() -> None:
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -1525,7 +1497,6 @@ def test_run_daemon_services_parks_operation_recovery_on_audit_schema_mismatch(
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                 ),
                 timeout=5.0,
             )
@@ -1630,7 +1601,6 @@ def test_forward_versioned_durable_tier_is_a_typed_startup_refusal(
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                 ),
                 timeout=5.0,
             )
@@ -1708,7 +1678,6 @@ def test_daemon_cleanup_failure_retains_rebuild_exclusion_until_process_exit(
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -1786,7 +1755,6 @@ def test_lifecycle_start_failure_releases_pidfile(tmp_path: Path, monkeypatch: p
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -1847,7 +1815,6 @@ def test_daemon_startup_reconciles_trains_before_schema_probe(tmp_path: Path, mo
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -1885,7 +1852,6 @@ def test_daemon_startup_creates_missing_archive_root_before_ownership(
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                 )
             )
     finally:
@@ -1916,7 +1882,6 @@ def test_run_daemon_services_checks_archive_identity_before_component_startup(tm
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -2237,7 +2202,6 @@ def test_run_daemon_services_waits_for_fts_startup_before_watcher(tmp_path: Path
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=True,
             )
         )
@@ -2401,7 +2365,6 @@ async def test_daemon_startup_catch_up_and_restart_repair_session_profiles(tmp_p
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=False,
                 service_profile=ServiceProfile.REPLAY,
             )
@@ -2645,7 +2608,6 @@ async def test_daemon_watcher_hints_wake_fair_intake_and_canonical_derivation(
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                     enable_api=False,
                     enable_source_catchup=False,
                     service_profile=ServiceProfile.INTAKE,
@@ -2813,7 +2775,6 @@ def test_run_daemon_services_closes_browser_capture_server_on_failure() -> None:
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 service_profile=ServiceProfile.SURFACES,
             )
         )
@@ -2878,7 +2839,6 @@ def test_run_daemon_services_shutdowns_running_server_on_watcher_failure() -> No
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -3032,7 +2992,6 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=True,
                 api_host="127.0.0.1",
                 api_port=8766,
@@ -3171,7 +3130,6 @@ def test_run_daemon_services_schema_block_skips_write_but_starts_health_check() 
                 enable_browser_capture=True,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
@@ -3231,13 +3189,6 @@ def test_periodic_raw_materialization_wakes_fair_intake_without_discovery(
     from polylogue.daemon import cli as daemon_cli
 
     wakeup = asyncio.Event()
-    drains = 0
-
-    async def drain_receipts() -> None:
-        nonlocal drains
-        drains += 1
-
-    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", drain_receipts)
 
     async def stop_after_one_tick(seconds: float) -> None:
         assert (
@@ -3250,7 +3201,6 @@ def test_periodic_raw_materialization_wakes_fair_intake_without_discovery(
 
     with patch("asyncio.sleep", side_effect=stop_after_one_tick), pytest.raises(asyncio.CancelledError):
         asyncio.run(daemon_cli._periodic_raw_materialization_convergence(raw_intake_wakeup=wakeup))
-    assert drains == 1
 
 
 @pytest.mark.parametrize("watcher_initially_registered", [False, True])
@@ -3260,11 +3210,6 @@ def test_periodic_raw_materialization_respects_watcher_registration_gate(
 ) -> None:
     """Periodic raw maintenance starts only after watcher registration."""
     from polylogue.daemon import cli as daemon_cli
-
-    async def drain_receipts() -> None:
-        return None
-
-    monkeypatch.setattr(daemon_cli, "_drain_whale_receipt_outbox", drain_receipts)
 
     async def exercise() -> bool:
         watcher_registered = asyncio.Event()
@@ -3573,166 +3518,6 @@ def test_raw_source_refusal_is_retryable_and_does_not_starve_sibling(
     assert admitted == ["healthy-raw"]
 
 
-def test_startup_drain_recovers_valid_recovery_receipt_and_acknowledges_after_publish(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Startup recovery delivers a readable quarantine receipt before removing it."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon import whale_outbox
-
-    tmp_path.chmod(0o700)
-    target = whale_outbox.enqueue(
-        kind="whale.recovery",
-        idempotency_key="recovery-receipt",
-        operation_id="operation-recovery",
-        payload={"status": "completed"},
-        root=tmp_path,
-    )
-    recovery = target.with_name(f"{target.name}.recovery.0123456789abcdef0123456789abcdef.json")
-    target.rename(recovery)
-    assert whale_outbox.list_pending(root=tmp_path)[0]["_name"] == recovery.name
-
-    published: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        "polylogue.daemon.events.emit_daemon_event",
-        lambda kind, *, payload: published.append((str(kind), cast(dict[str, object], payload))),
-    )
-
-    async def run_sync(_label: str, callback: object, *args: object, **kwargs: object) -> None:
-        callback_result = callback(*args, **kwargs)  # type: ignore[operator]
-        assert callback_result is None
-
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=run_sync))
-    delivered = asyncio.run(daemon_cli._drain_whale_receipt_outbox(root=tmp_path))
-
-    assert delivered == 1
-    assert published == [("whale.recovery", {"status": "completed"})]
-    assert not recovery.exists()
-    assert whale_outbox.list_pending(root=tmp_path) == []
-
-
-def test_second_order_recovery_race_remains_startup_drainable(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    """A recovery receipt acknowledged during a second race remains recoverable."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon import whale_outbox
-
-    tmp_path.chmod(0o700)
-    canonical = whale_outbox.enqueue(
-        kind="whale.recovery",
-        idempotency_key="second-order",
-        operation_id="operation-second-order",
-        payload={"status": "completed"},
-        root=tmp_path,
-    )
-    target = canonical.with_name(f"{canonical.name}.recovery.0123456789abcdef0123456789abcdef.json")
-    canonical.rename(target)
-    record = whale_outbox.list_pending(root=tmp_path)[0]
-    real_move = whale_outbox._rename_noreplace
-    real_rename = os.rename
-    replaced = False
-    inserted = False
-
-    def replace_before_move(source: str, destination: str, *, src_dir_fd: int = -1, dst_dir_fd: int = -1) -> None:
-        nonlocal replaced
-        if not replaced and source == target.name:
-            target.unlink()
-            target.write_bytes(
-                b'{"kind":"whale.recovery","idempotency_key":"second-order",'
-                b'"operation_id":"operation-second-order","payload":{"status":"replacement"}}'
-            )
-            target.chmod(0o600)
-            replaced = True
-        real_rename(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-
-    def insert_before_restore(source: str, destination: str, *, directory_fd: int) -> None:
-        nonlocal inserted
-        if not inserted and source.endswith(".ack"):
-            target.write_bytes(b"replacement-at-restore")
-            target.chmod(0o600)
-            inserted = True
-        real_move(source, destination, directory_fd=directory_fd)
-
-    monkeypatch.setattr(os, "rename", replace_before_move)
-    monkeypatch.setattr(whale_outbox, "_rename_noreplace", insert_before_restore)
-    whale_outbox.acknowledge(record)
-    pending = whale_outbox.list_pending(root=tmp_path)
-    assert len(pending) == 1
-    assert pending[0]["_name"].startswith("second-order.json.recovery.")
-
-    published: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        "polylogue.daemon.events.emit_daemon_event",
-        lambda kind, *, payload: published.append((str(kind), cast(dict[str, object], payload))),
-    )
-
-    async def run_sync(_label: str, callback: object, *args: object, **kwargs: object) -> None:
-        callback_result = callback(*args, **kwargs)  # type: ignore[operator]
-        assert callback_result is None
-
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=run_sync))
-    assert asyncio.run(daemon_cli._drain_whale_receipt_outbox(root=tmp_path)) == 1
-    assert published == [("whale.recovery", {"status": "replacement"})]
-    assert whale_outbox.list_pending(root=tmp_path) == []
-
-
-def test_recovery_name_exhaustion_leaves_fallback_receipt_startup_drainable(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    """Forced recovery-name exhaustion keeps a valid fallback drainable."""
-    from polylogue.daemon import cli as daemon_cli
-    from polylogue.daemon import whale_outbox
-
-    tmp_path.chmod(0o700)
-    target = whale_outbox.enqueue(
-        kind="whale.recovery",
-        idempotency_key="exhaustion",
-        operation_id="operation-exhaustion",
-        payload={"status": "completed"},
-        root=tmp_path,
-    )
-    replacement = (
-        b'{"kind":"whale.recovery","idempotency_key":"exhaustion",'
-        b'"operation_id":"operation-exhaustion","payload":{"status":"fallback"}}'
-    )
-    real_rename = os.rename
-    replaced = False
-
-    def replace_before_move(source: str, destination: str, *, src_dir_fd: int = -1, dst_dir_fd: int = -1) -> None:
-        nonlocal replaced
-        if not replaced and source == target.name:
-            target.unlink()
-            target.write_bytes(replacement)
-            target.chmod(0o600)
-            replaced = True
-        real_rename(source, destination, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
-
-    def exhausted(_source: str, _destination: str, *, directory_fd: int) -> None:
-        raise FileExistsError("forced recovery allocation exhaustion")
-
-    monkeypatch.setattr(os, "rename", replace_before_move)
-    monkeypatch.setattr(whale_outbox, "_rename_noreplace", exhausted)
-    record = whale_outbox.list_pending(root=tmp_path)[0]
-    whale_outbox.acknowledge(record)
-    pending = whale_outbox.list_pending(root=tmp_path)
-    assert len(pending) == 1
-    assert pending[0]["_name"].endswith(".ack")
-
-    published: list[tuple[str, dict[str, object]]] = []
-    monkeypatch.setattr(
-        "polylogue.daemon.events.emit_daemon_event",
-        lambda kind, *, payload: published.append((str(kind), cast(dict[str, object], payload))),
-    )
-
-    async def run_sync(_label: str, callback: object, *args: object, **kwargs: object) -> None:
-        callback_result = callback(*args, **kwargs)  # type: ignore[operator]
-        assert callback_result is None
-
-    monkeypatch.setattr(daemon_cli, "daemon_write_coordinator", lambda: SimpleNamespace(run_sync=run_sync))
-    assert asyncio.run(daemon_cli._drain_whale_receipt_outbox(root=tmp_path)) == 1
-    assert published == [("whale.recovery", {"status": "fallback"})]
-    assert whale_outbox.list_pending(root=tmp_path) == []
-
-
 def _daemon_startup_stubs(
     stack: contextlib.ExitStack,
     daemon_cli: Any,
@@ -3885,7 +3670,6 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                     enable_api=False,
                     enable_source_catchup=False,
                     service_profile=ServiceProfile.INTAKE,
@@ -3935,6 +3719,7 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
     from polylogue.core.durable_fs import DurableFilesystemError
     from polylogue.daemon.intake_adapters import classify_cold_build_settlement_failure
     from polylogue.maintenance.candidate_capacity import ArchiveCapacityError
+    from polylogue.operations.cold_build_coverage import ColdBuildCoverageError
     from polylogue.sources.live.production_baseline import (
         ProductionBaselineError,
         ProductionBaselineReadUnavailableError,
@@ -3949,6 +3734,9 @@ def test_cold_build_settlement_classifies_typed_faults(tmp_path: Path) -> None:
         "source_integrity",
         True,
     )
+    assert classify_cold_build_settlement_failure(
+        ColdBuildCoverageError(missing_count=1, first_missing_session_id="codex:synthetic")
+    ) == ("active_coverage_incomplete", False)
     assert classify_cold_build_settlement_failure(RuntimeError("database is locked")) is None
     assert classify_cold_build_settlement_failure(OSError(errno.EIO, "transient pointer I/O")) == (
         "storage_io_unavailable",
@@ -4033,7 +3821,6 @@ async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_pa
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                     enable_api=False,
                     enable_source_catchup=False,
                     service_profile=ServiceProfile.INTAKE,
@@ -4063,6 +3850,147 @@ async def test_cold_build_integrity_fault_stays_blocked_in_running_daemon(tmp_pa
                     await asyncio.wait_for(task, timeout=10)
             assert candidate.discarded
             assert not candidate.generation_root.exists()
+    finally:
+        reset_daemon_compute_adapter()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("imported_source_kept", [False, True])
+async def test_explicit_cold_build_keeps_sessions_the_active_index_serves(
+    tmp_path: Path, imported_source_kept: bool
+) -> None:
+    """``--cold-build-index`` never promotes a candidate that drops a served session.
+
+    The active index serves two sessions ingested from two roots. When the
+    imported file is deleted and the daemon runs ``--cold-build-index`` over
+    only the first root, the imported session's raw is retained in
+    ``source.db`` but outside the build's source baseline, so the candidate
+    never sees it: promotion refuses as ``active_coverage_incomplete`` and the
+    active index keeps serving both sessions. When the daemon watches both
+    roots the candidate covers every served session and promotes.
+
+    Anti-vacuity: deleting the ``require_active_coverage`` call from
+    ``promote_cold_build_covering_active_index`` (or settling through
+    ``generation.promote`` directly) promotes the one-session candidate, and
+    the active index loses ``codex-session:cold-imported``.
+    """
+    from polylogue import Polylogue as RealPolylogue
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.daemon.catchup_status import _cold_build_settlement
+    from polylogue.daemon.execution import reset_daemon_compute_adapter
+    from polylogue.daemon.intake_adapters import DaemonIntakeService
+    from polylogue.daemon.services import ServiceProfile
+    from polylogue.sources.live.batch import LiveBatchProcessor
+    from polylogue.sources.live.cold_build import active_cold_build_generation, active_index_generation_is_empty
+    from polylogue.sources.live.watcher import _PARSER_FINGERPRINT
+    from polylogue.storage.archive_identity import resolve_active_index_path
+
+    def codex_session(native_id: str) -> str:
+        return (
+            f'{{"type":"session_meta","payload":{{"id":"{native_id}","timestamp":"2026-06-02T00:00:00Z"}}}}\n'
+            '{"type":"response_item","payload":{"type":"message","id":"message-0",'
+            '"role":"user","content":[{"type":"input_text","text":"Synthetic"}]}}\n'
+        )
+
+    def session_ids(index_path: Path) -> set[str]:
+        with contextlib.closing(sqlite3.connect(f"file:{index_path}?mode=ro", uri=True)) as db:
+            return {str(row[0]) for row in db.execute("SELECT session_id FROM sessions")}
+
+    archive_root = tmp_path / "archive"
+    archive_root.mkdir()
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    imports_root = tmp_path / "imports"
+    imports_root.mkdir()
+    watched_file = source_root / "watched.jsonl"
+    watched_file.write_text(codex_session("cold-watched"), encoding="utf-8")
+    os.utime(watched_file, (1.0, 1.0))
+    imported_file = imports_root / "imported.jsonl"
+    imported_file.write_text(codex_session("cold-imported"), encoding="utf-8")
+    os.utime(imported_file, (1.0, 1.0))
+    served = {"codex-session:cold-watched", "codex-session:cold-imported"}
+
+    assert active_index_generation_is_empty(archive_root)
+    for root, path in ((source_root, watched_file), (imports_root, imported_file)):
+        processor = LiveBatchProcessor(
+            cast(
+                Any,
+                SimpleNamespace(archive_root=archive_root, backend=SimpleNamespace(db_path=archive_root / "index.db")),
+            ),
+            (WatchSource("codex", root, suffixes=(".jsonl",)),),
+            cursor=CursorStore(archive_root / "index.db"),
+            parser_fingerprint=_PARSER_FINGERPRINT,
+        )
+        metrics = await processor.ingest_files([path], emit_event=False)
+        assert metrics.succeeded_file_count == 1, metrics
+    assert session_ids(resolve_active_index_path(archive_root)) == served
+
+    daemon_sources: tuple[WatchSource, ...] = (WatchSource("codex", source_root, suffixes=(".jsonl",)),)
+    if imported_source_kept:
+        daemon_sources += (WatchSource("imports", imports_root, suffixes=(".jsonl",)),)
+    else:
+        imported_file.unlink()
+
+    reset_daemon_compute_adapter()
+    try:
+        with contextlib.ExitStack() as stack:
+            _daemon_startup_stubs(stack, daemon_cli, archive_root)
+            stack.enter_context(patch.object(daemon_cli, "Polylogue", lambda: RealPolylogue(archive_root=archive_root)))
+            stack.enter_context(
+                patch(
+                    "polylogue.daemon.intake_adapters.DaemonIntakeService",
+                    lambda dispatcher, **kwargs: DaemonIntakeService(dispatcher, idle_delay_s=0.05, **kwargs),
+                )
+            )
+            task = asyncio.create_task(
+                daemon_cli.run_daemon_services(
+                    sources=daemon_sources,
+                    enable_watch=True,
+                    enable_browser_capture=False,
+                    browser_capture_host="127.0.0.1",
+                    browser_capture_port=8765,
+                    enable_api=False,
+                    enable_source_catchup=False,
+                    service_profile=ServiceProfile.INTAKE,
+                    cold_build_index=True,
+                )
+            )
+            try:
+                try:
+                    async with asyncio.timeout(45):
+                        while _cold_build_settlement().get("cold_build_settlement_state") not in (
+                            "complete",
+                            "blocked",
+                        ):
+                            if task.done():
+                                await task
+                            await asyncio.sleep(0.05)
+                except TimeoutError as exc:
+                    raise AssertionError(f"settlement={_cold_build_settlement()}") from exc
+                status = _cold_build_settlement()
+                candidate = active_cold_build_generation(archive_root)
+                assert session_ids(resolve_active_index_path(archive_root)) == served
+                if imported_source_kept:
+                    assert status["cold_build_settlement_state"] == "complete"
+                    assert status["cold_build_settlement_reason"] is None
+                    assert candidate is None
+                    assert (
+                        resolve_active_index_path(archive_root).resolve().parent.name
+                        == status["cold_build_candidate_id"]
+                    )
+                else:
+                    assert status["cold_build_settlement_state"] == "blocked"
+                    assert status["cold_build_settlement_reason"] == "active_coverage_incomplete"
+                    assert status["cold_build_settlement_retry_due_in_s"] is None
+                    assert candidate is not None
+                    assert candidate.generation_id == status["cold_build_candidate_id"]
+                    assert not candidate.promoted
+                    assert session_ids(Path(candidate.generation.index_path)) == {"codex-session:cold-watched"}
+                    assert resolve_active_index_path(archive_root).resolve().parent.name != candidate.generation_id
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await asyncio.wait_for(task, timeout=10)
     finally:
         reset_daemon_compute_adapter()
 
@@ -4182,7 +4110,6 @@ async def test_cold_build_repairs_faulted_baseline_in_running_daemon(tmp_path: P
                     enable_browser_capture=False,
                     browser_capture_host="127.0.0.1",
                     browser_capture_port=8765,
-                    browser_capture_spool_path=None,
                     enable_api=False,
                     enable_source_catchup=False,
                     service_profile=ServiceProfile.INTAKE,
@@ -4455,7 +4382,6 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             ),
             into=created,
             orphans=orphans,
@@ -4591,7 +4517,6 @@ def test_a_watcher_with_no_roots_is_unavailable_on_the_production_route(tmp_path
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             ),
             into=created,
         )
@@ -4709,7 +4634,6 @@ def test_unconfigured_embeddings_skip_the_backlog_service_on_the_production_rout
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             ),
             into=created,
         )
@@ -4809,7 +4733,6 @@ def _run_focused_profile_iteration(tmp_path: Path) -> dict[str, float | int]:
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=False,
                 service_profile=ServiceProfile.RESIDENT_CORE,
             )
@@ -4941,7 +4864,6 @@ async def test_full_profile_names_missing_source_tier_without_starting_raw_servi
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=False,
                 service_profile=ServiceProfile.PRODUCTION,
             )
@@ -5121,7 +5043,6 @@ async def test_an_orphaned_service_retains_archive_ownership_on_the_production_r
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=False,
                 service_profile=ServiceProfile.RESIDENT_CORE,
             )

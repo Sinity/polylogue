@@ -70,7 +70,6 @@ By default `polylogued run` enables every component (watch, browser capture, HTT
 |------|---------|-------------|
 | `--host` | `127.0.0.1` | Browser-capture receiver host |
 | `--port` | `8765` | Browser-capture receiver port |
-| `--spool` | (auto) | Browser-capture artifact spool path |
 | `--browser-capture-auth-token` | auto | Receiver bearer token; auto-minted/loaded from a 0600 file if not given |
 | `--browser-capture-allow-no-auth` | off | Explicit opt-out: serve with no bearer token at all |
 | `--browser-capture-origin` | none | Additional allowed origin (repeatable) |
@@ -624,8 +623,7 @@ The current composition has one scheduling edge for each long-lived owner:
 is an optional supervised process that depends on the API server. Fair intake
 owns file, remote, and raw admission; its completed passes feed the cold-build
 readiness decision. Periodic raw convergence wakes that same intake owner;
-prepared retained input admits oversized raw components through this route.
-The periodic loop also retries historical durable whale receipts.
+prepared retained input admits raw components of every size through this route.
 Status reads the services' observations and does not schedule replacement work.
 
 | Edge changed in this lifecycle pass | Previous behavior | Current behavior |

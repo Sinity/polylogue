@@ -24,7 +24,6 @@
 #   POLYLOGUE_ARCHIVE_ROOT  Overrides the archive root (and therefore the
 #                           default sidecar directory) when --sidecar-dir
 #                           is not given
-#   POLYLOGUE_HOOK_PROVIDER Force provider (claude-code | codex | hermes)
 #
 # Supported events:
 #   Claude Code (16): SessionStart, Setup, UserPromptSubmit, PreToolUse,
@@ -174,7 +173,7 @@ if not session_id:
     sys.exit(1)
 
 # Detect provider
-provider = provider_arg or os.environ.get("POLYLOGUE_HOOK_PROVIDER")
+provider = provider_arg
 if not provider:
     if event_type in HERMES_EVENTS and event_type not in (CC_EVENTS | CODEX_EVENTS):
         provider = "hermes"

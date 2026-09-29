@@ -192,22 +192,18 @@ async def evaluate_raw_artifacts(
             # A small batch validates in-process: constructing a spawn-based
             # pool here costs a fresh interpreter per worker (polylogue-oa9w8).
             return [_validate_record_sync(r, mode, blob_root_str) for r in raw_artifacts]
-        try:
-            with process_pool_executor(max_workers=worker_count) as executor:
-                return list(
-                    executor.map(
-                        _validate_record_sync,
-                        raw_artifacts,
-                        [mode] * len(raw_artifacts),
-                        [blob_root_str] * len(raw_artifacts),
-                        chunksize=max(1, len(raw_artifacts) // worker_count),
-                    )
+        # The plan chose process isolation; a pool failure is raised, never
+        # replayed in-process under a different execution mode.
+        with process_pool_executor(max_workers=worker_count) as executor:
+            return list(
+                executor.map(
+                    _validate_record_sync,
+                    raw_artifacts,
+                    [mode] * len(raw_artifacts),
+                    [blob_root_str] * len(raw_artifacts),
+                    chunksize=max(1, len(raw_artifacts) // worker_count),
                 )
-        except (TypeError, _pickle.PicklingError):
-            # Fallback for unpicklable records (e.g. MagicMock in tests)
-            return [_validate_record_sync(r, mode, blob_root_str) for r in raw_artifacts]
-
-    import pickle as _pickle
+            )
 
     outcomes: list[_ValidationOutcome] = await asyncio.to_thread(_run_batch)
     batch_elapsed = _time.perf_counter() - t_batch

@@ -166,6 +166,7 @@ _EXCLUDED_FIELDS: dict[str, dict[str, str]] = {
         "variant_index": "parser-only duplicate occurrence coordinate resolved by owner evidence",
         "is_active_path": "parser-derived path marker owned by lineage materialization",
         "is_active_leaf": "parser-derived leaf marker owned by lineage materialization",
+        "active_leaf_fallback": "lowering-internal marker of a storage-default leaf, never provider evidence",
         "input_tokens": "provider usage measurement is owned by usage/cost derivation",
         "output_tokens": "provider usage measurement is owned by usage/cost derivation",
         "cache_read_tokens": "provider usage measurement is owned by usage/cost derivation",

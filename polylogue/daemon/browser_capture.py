@@ -47,11 +47,10 @@ def browser_capture_command() -> None:
 
 
 @browser_capture_command.command("status")
-@click.option("--spool", "spool_path", type=click.Path(path_type=Path), default=None)
 @click.option("--format", "output_format", type=click.Choice(["json"]), default=None, help="Output format.")
-def status_command(spool_path: Path | None, output_format: str | None) -> None:
+def status_command(output_format: str | None) -> None:
     """Show receiver configuration and capture-spool target."""
-    payload = browser_capture_status_payload(spool_path, include_spool_path=True)
+    payload = browser_capture_status_payload(include_spool_path=True)
     if output_format == "json":
         click.echo(dumps(payload))
         return
@@ -65,7 +64,6 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
 @browser_capture_command.command("serve")
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=8765, show_default=True, type=int)
-@click.option("--spool", "spool_path", type=click.Path(path_type=Path), default=None)
 @click.option("--auth-token", "auth_token", default=None, help="Bearer token; auto-minted/loaded if not given.")
 @click.option(
     "--allow-no-auth",
@@ -77,7 +75,7 @@ def status_command(spool_path: Path | None, output_format: str | None) -> None:
         "Any local process can then read/post to the receiver -- default OFF."
     ),
 )
-def serve_command(host: str, port: int, spool_path: Path | None, auth_token: str | None, allow_no_auth: bool) -> None:
+def serve_command(host: str, port: int, auth_token: str | None, allow_no_auth: bool) -> None:
     """Run the local browser-capture receiver.
 
     Requires a bearer token by default: an explicit ``--auth-token`` wins,
@@ -85,7 +83,7 @@ def serve_command(host: str, port: int, spool_path: Path | None, auth_token: str
     ``browser-capture token show``). Pass ``--allow-no-auth`` to opt out.
     """
     resolved_token = resolve_receiver_auth_token(auth_token, allow_no_auth=allow_no_auth)
-    server = make_server(host, port, spool_path=spool_path, auth_token=resolved_token)
+    server = make_server(host, port, auth_token=resolved_token)
     click.echo(f"Listening on http://{host}:{port}")
     click.echo(f"Writing captures to {server.config.spool_path}")
     if resolved_token is None:
@@ -243,7 +241,6 @@ def capture_health_command(limit: int, output_format: str | None) -> None:
     show_default=True,
     help="Submit once or only stage a verified provider draft.",
 )
-@click.option("--spool", "spool_path", type=click.Path(path_type=Path), default=None)
 @click.option("--auth-token", "auth_token", default=None, help="Bearer token used by the active receiver.")
 @click.option(
     "--allow-no-auth",
@@ -268,7 +265,6 @@ def action_command(
     action_id: str | None,
     idempotency_key: str | None,
     submit: bool,
-    spool_path: Path | None,
     auth_token: str | None,
     allow_no_auth: bool,
     output_format: str | None,
@@ -319,14 +315,10 @@ def action_command(
             submit_policy="submit_once" if submit else "stage_only",
         )
         receiver_config = BrowserCaptureReceiverConfig(
-            spool_path=spool_path or BrowserCaptureReceiverConfig.default().spool_path,
+            spool_path=BrowserCaptureReceiverConfig.default().spool_path,
             auth_token=resolve_receiver_auth_token(auth_token, allow_no_auth=allow_no_auth),
         )
-        action = enqueue_action(
-            request,
-            receiver_id=receiver_identity(receiver_config),
-            spool_path=spool_path,
-        )
+        action = enqueue_action(request, receiver_id=receiver_identity(receiver_config))
     except (OSError, ValueError, ValidationError, BrowserActionConflictError, BrowserActionQuotaError) as exc:
         raise click.ClickException(str(exc)) from None
     payload = action.model_dump(mode="json", exclude_none=True)

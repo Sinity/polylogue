@@ -52,7 +52,6 @@ def test_non_loopback_bind_without_allow_remote_refuses(api_host: str) -> None:
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 browser_capture_allow_remote=False,
                 browser_capture_auth_token=None,
                 browser_capture_extra_origins=(),
@@ -79,7 +78,6 @@ def test_non_loopback_bind_with_allow_remote_and_allow_no_auth_refuses(
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 browser_capture_allow_remote=True,
                 browser_capture_auth_token=None,
                 browser_capture_extra_origins=(),
@@ -141,7 +139,6 @@ def test_api_and_browser_capture_same_socket_refuses(api_host: str, receiver_hos
                 enable_browser_capture=True,
                 browser_capture_host=receiver_host,
                 browser_capture_port=8766,
-                browser_capture_spool_path=None,
                 browser_capture_allow_remote=True,
                 browser_capture_auth_token="receiver-token",
                 browser_capture_extra_origins=(),
@@ -162,7 +159,6 @@ def test_browser_host_requires_api_and_distinct_port() -> None:
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 browser_port=8767,
                 enable_api=False,
             )
@@ -175,7 +171,6 @@ def test_browser_host_requires_api_and_distinct_port() -> None:
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 browser_port=8767,
                 enable_api=True,
                 api_port=8767,
@@ -193,7 +188,6 @@ def test_browser_host_requires_loopback_reachable_api_bind() -> None:
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
                 enable_api=True,
                 api_host="192.0.2.1",
                 api_port=8766,
@@ -269,9 +263,8 @@ def test_run_command_passes_effective_config_to_daemon_services(
 ) -> None:
     """Startup-bound TOML/env values are honored without requiring duplicate CLI flags."""
     cfg = tmp_path / "polylogue.toml"
-    spool = tmp_path / "capture-spool"
     cfg.write_text(
-        f"""
+        """
 [daemon.api]
 host = "0.0.0.0"
 port = 9901
@@ -283,7 +276,6 @@ port = 9902
 allow_remote = true
 auth_token = "browser-secret"
 allowed_origins = "https://workbench.example"
-spool_path = "{spool}"
 
 """.strip(),
         encoding="utf-8",
@@ -309,7 +301,6 @@ spool_path = "{spool}"
     assert recorded["browser_capture_allow_remote"] is True
     assert recorded["browser_capture_auth_token"] == "browser-secret"
     assert recorded["browser_capture_extra_origins"] == ("https://workbench.example",)
-    assert recorded["browser_capture_spool_path"] == spool
 
 
 def test_browser_port_is_opt_in_and_reaches_the_service_composition() -> None:

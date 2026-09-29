@@ -483,7 +483,6 @@ def test_status_snapshot_uses_runtime_browser_capture_state(
 ) -> None:
     db = tmp_path / "index.db"
     db.touch()
-    spool = tmp_path / "browser-capture"
     monkeypatch.setattr("polylogue.daemon.status_snapshot.resolve_active_index_path", lambda *_a, **_k: db)
 
     configure_runtime_components(
@@ -491,7 +490,6 @@ def test_status_snapshot_uses_runtime_browser_capture_state(
         watcher_enabled=True,
         watcher_roots=("/watch/a", "/watch/b"),
         browser_capture_enabled=True,
-        browser_capture_spool_path=spool,
     )
 
     snapshot = refresh_status_snapshot(rich=False)

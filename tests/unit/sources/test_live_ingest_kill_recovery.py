@@ -28,12 +28,14 @@ from typing import Any
 import pytest
 
 import polylogue.sources.live.cursor as cursor_module
+import polylogue.sources.live.parse_prefetch as parse_prefetch
 from polylogue import Polylogue
 from polylogue.daemon.intake import AdmissionOutcome
 from polylogue.operations.intake_adapters import DaemonIntakeContext, FileIntakeAdapter
 from polylogue.operations.operation_context import open_operation_read
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.cursor import CursorStore
+from polylogue.sources.live.parse_prefetch import LiveParseStage
 
 _SESSION_ID = "kill-recovery"
 _MAX_DEFERRED_PAGES = 20
@@ -134,14 +136,24 @@ async def _admit(archive_root: Path, source_root: Path) -> dict[str, Any]:
 
 
 async def _admit_pages(
-    archive_root: Path, source_root: Path, *, pages: int, stop_on_verdict: bool = False
+    archive_root: Path,
+    source_root: Path,
+    *,
+    pages: int,
+    stop_on_verdict: bool = False,
+    parse_stage: LiveParseStage | None = None,
 ) -> list[dict[str, Any]]:
-    """Offer ``pages`` fresh pages through the production intake route."""
+    """Offer ``pages`` fresh pages through the production intake route.
+
+    ``parse_stage`` replaces the watcher's own process-pool stage; the caller
+    owns its shutdown.
+    """
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     watcher = LiveWatcher(
         archive,
         (WatchSource(name="claude-code", root=source_root),),
         cursor=CursorStore(archive_root / "index.db"),
+        parse_stage=parse_stage,
         read_snapshot=open_operation_read,
     )
     try:
@@ -244,6 +256,10 @@ async def test_sigkill_inside_an_append_index_write_recovers_exactly(
 ) -> None:
     """A kill inside the append's index write loses no appended message.
 
+    While the restart's tail preparation is deferred, no page acknowledges it
+    as DUPLICATE; once the retry is due the tail is admitted exactly, and
+    later pages find nothing owed.
+
     Anti-vacuity (polylogue-b8of0): recovery that trusts the retained,
     never-parsed append raws as already admitted reports the restart page
     DUPLICATE and leaves the index at 3 messages; one that re-applies the
@@ -265,25 +281,43 @@ async def test_sigkill_inside_an_append_index_write_recovers_exactly(
     _kill_child_during_write(archive_root, source_root, kill_at=1, log_dir=log_dir)
     assert _message_rows(archive_root) == (3, 3, 1)
 
-    # Force the restart's first page to defer the tail's preparation: the
-    # worker cannot finish inside a 1 ms warm window. The deferral schedules a
-    # retry, and until that retry is due the tail is owed work, so no page may
-    # acknowledge it as DUPLICATE. Before the fix the second page did, and the
-    # appended messages were never materialized.
-    monkeypatch.setenv("POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS", "0.001")
-    restart_pages = await _admit_pages(archive_root, source_root, pages=3)
+    # Make the restart's first page defer the tail's preparation. Preparation
+    # is never abandoned on a deadline, so the deferral comes from the event
+    # that still produces one: the preparation worker fails (a retryable
+    # worker loss). The deferral schedules a retry, and until that retry is
+    # due the tail is owed work, so no page may acknowledge it as DUPLICATE.
+    # Before the fix the second page did, and the appended messages were
+    # never materialized. A thread stage keeps the failing worker in this
+    # process, where the patch reaches it.
+    original_worker = parse_prefetch.live_parse_path_worker
+
+    def failing_worker(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("synthetic preparation worker failure")
+
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", failing_worker)
+    stage = LiveParseStage(max_workers=1, shard_directory=log_dir / "parse-shards")
+    try:
+        restart_pages = await _admit_pages(archive_root, source_root, pages=3, parse_stage=stage)
+    finally:
+        stage.shutdown()
     assert all(result.outcome is AdmissionOutcome.DEFERRED for page in restart_pages for result in page.values()), (
         restart_pages
     )
     assert _message_rows(archive_root) == (3, 3, 1)
 
-    # Make the scheduled retry due at once so the next pages reach it.
-    monkeypatch.delenv("POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS")
+    # Restore the worker and make the scheduled retry due at once so the next
+    # pages reach it through the watcher's own stage.
+    monkeypatch.setattr(parse_prefetch, "live_parse_path_worker", original_worker)
     monkeypatch.setattr(cursor_module, "_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S", 0)
     CursorStore(archive_root / "index.db").defer_full_cursor_reconciliation(source_path)
 
     outcomes = await _admit(archive_root, source_root)
     assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.ADMITTED}, outcomes
-
     assert _message_rows(archive_root) == (6, 6, 1)
     assert _raw_parse_errors(archive_root, source_path) == []
+
+    # A reconciliation retry left owed by the deferral may admit the unchanged
+    # file once more; that admission is idempotent, and then nothing is owed.
+    settled = await _admit_pages(archive_root, source_root, pages=2)
+    assert _message_rows(archive_root) == (6, 6, 1)
+    assert {result.outcome for result in settled[-1].values()} <= {AdmissionOutcome.DUPLICATE}, settled

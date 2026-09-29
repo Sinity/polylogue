@@ -125,9 +125,6 @@ def _sidecar_dir_arg(args: list[str]) -> Path | None:
 
 
 def _detect_provider(payload: dict[str, object], *, event_type: str | None = None) -> str | None:
-    forced = os.environ.get("POLYLOGUE_HOOK_PROVIDER")
-    if forced:
-        return forced
     if event_type in _HERMES_EVENTS and event_type not in (_CLAUDE_CODE_EVENTS | _CODEX_EVENTS):
         return "hermes"
     if "turn_id" in payload:

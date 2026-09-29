@@ -505,8 +505,6 @@ def test_browser_action_uses_the_selected_receiver_auth_identity(
             "GPT-5.6 Sol",
             "--effort-label",
             "Pro",
-            "--spool",
-            str(tmp_path),
             "--format",
             "json",
             *auth_args,

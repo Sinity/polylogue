@@ -283,12 +283,6 @@ class TestDirectEnvBypassCallersRouteThroughResolver:
     the test then fails because no environment variable is set (TOML-only
     configuration) and the scratch parent falls back to ``/realm/tmp``
     instead of the configured directory.
-
-    Reverted-mutation witness (antigravity): restore
-    ``env_path = os.environ.get("POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER")`` in
-    ``polylogue/sources/parsers/antigravity.py::discover_language_server`` --
-    the test then fails because the TOML-only fixture path is never found and
-    discovery falls through to the ``shutil.which``/glob probes.
     """
 
     def test_backup_verify_tmpdir_toml_only_reaches_scratch_parent_resolution(
@@ -316,28 +310,6 @@ class TestDirectEnvBypassCallersRouteThroughResolver:
         assert result == configured_scratch
         assert configured_scratch.is_dir()
 
-    def test_antigravity_language_server_toml_only_reaches_discovery(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        workspace_env: dict[str, Path],
-    ) -> None:
-        from polylogue.sources.parsers.antigravity import discover_language_server
-
-        _disable_site(monkeypatch)
-        monkeypatch.delenv("POLYLOGUE_ANTIGRAVITY_LANGUAGE_SERVER", raising=False)
-        configured_binary = tmp_path / "fixture-language-server"
-        configured_binary.write_text("#!/bin/sh\n", encoding="utf-8")
-        user = tmp_path / "user.toml"
-        user.write_text(
-            f'[sources.antigravity]\nlanguage_server = "{configured_binary.as_posix()}"\n', encoding="utf-8"
-        )
-        monkeypatch.setenv("POLYLOGUE_CONFIG", str(user))
-
-        result = discover_language_server()
-
-        assert result == configured_binary
-
 
 class TestNewlyInventoriedSettingsRouteThroughResolver:
     """polylogue-uu8r: settings that had NO config-inventory entry at all
@@ -345,34 +317,6 @@ class TestNewlyInventoriedSettingsRouteThroughResolver:
     already-inventoried key, unlike the class above) -- each test pins one
     setting family against its real runtime consumer.
     """
-
-    def test_hook_provider_toml_only_forces_detection(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-        workspace_env: dict[str, Path],
-    ) -> None:
-        """Reverted-mutation witness: restore
-        ``forced = os.environ.get("POLYLOGUE_HOOK_PROVIDER")`` in
-        ``polylogue/sources/hook_producer.py::_configured_provider`` -- the test
-        then fails because no environment variable is set (TOML-only
-        configuration) and detection falls through to the payload-shape
-        sniffing branches below, which do not match this ambiguous payload.
-        """
-        from polylogue.sources.hook_producer import detect_provider
-
-        _disable_site(monkeypatch)
-        monkeypatch.delenv("POLYLOGUE_HOOK_PROVIDER", raising=False)
-        user = tmp_path / "user.toml"
-        user.write_text('[sources]\nhook_provider = "codex"\n', encoding="utf-8")
-        monkeypatch.setenv("POLYLOGUE_CONFIG", str(user))
-
-        # Ambiguous payload: none of the shape-sniffing branches (turn_id,
-        # permission_mode/model, source) match, so an unforced detection
-        # would return None.
-        result = detect_provider({})
-
-        assert result == "codex"
 
     def test_daemon_parse_stage_knobs_toml_only_reach_prefetch_resolution(
         self,
