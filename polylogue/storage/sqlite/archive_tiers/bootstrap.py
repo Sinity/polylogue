@@ -432,6 +432,8 @@ def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> No
     overwrite existing content.
     """
     spec = archive_tier_spec(tier)
+    # Foreign-key enforcement belongs to the connection, not the cached DDL.
+    conn.execute("PRAGMA foreign_keys = ON")
     if tier is ArchiveTier.OPS and int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]) > 0:
         digest = _tier_prototype_key(conn, tier, spec.version)[2]
         state = conn.execute(
@@ -957,8 +959,14 @@ def _initialize_active_archive_root(root: Path) -> None:
         # with respect to continuity, including their steady-state path.
         if recovering_fresh_durable_bootstrap:
             assert_owned_root()
+            # Keep the pending intent until both completed markers exist.
+            # Publication may have succeeded just before a crash: validate that
+            # same fresh bootstrap's marker instead of attempting to replace it.
+            if format_marker.exists():
+                assert_archive_format_lineage(root)
+            else:
+                record_fresh_archive_format(root)
             _record_fresh_durable_bootstrap(root)
-            record_fresh_archive_format(root)
         elif has_pending_bootstrap:
             # A crash after publishing the completed marker but before
             # removing the intent is harmless. Keep the intent until the
@@ -1172,6 +1180,13 @@ def open_initialized_tier_connection(
         # initialization. Version 0 is the create-it case and keeps the DDL
         # route, which is what stamps the version this branch reads.
         if stored_version == required_version:
+            if tier is ArchiveTier.OPS:
+                # OPS convergence stamps after materialization. Admit the
+                # existing identity first so that convergence cannot erase
+                # missing or stale identity evidence on this writable route.
+                from polylogue.storage.sqlite.schema_bootstrap import assert_derived_schema_identity
+
+                assert_derived_schema_identity(conn, tier.value)
             # Performance only: the redundant whole-tier DDL goes, the identity
             # policy this route has always applied stays. See
             # converge_same_version_tier on why the two are separable.

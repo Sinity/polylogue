@@ -92,26 +92,36 @@ def _material_id(source_uri: str, referrer_ref: str, payload: bytes | None) -> s
 
 
 def extraction_manifest(payload: bytes, media_type: str | None) -> dict[str, object]:
-    """Return bounded, type-aware metadata without treating parsing as required."""
-    manifest: dict[str, object] = {"bytes": len(payload), "extractor": "materials-v1", "entries": []}
-    kind = (media_type or mimetypes.guess_type("material")[0] or "").lower()
-    if kind in {"application/json", "application/ndjson", "text/json"}:
+    """Describe retained bytes without copying unbounded content into metadata."""
+    manifest: dict[str, object] = {"bytes": len(payload), "extractor": "materials-v1"}
+    kind = (media_type or "").lower()
+    if kind in {"application/json", "text/json", "application/ndjson", "application/x-ndjson"}:
         try:
-            value = json.loads(payload[:2_000_000].decode("utf-8"))
-            manifest["json_type"] = type(value).__name__
+            if kind in {"application/ndjson", "application/x-ndjson"}:
+                record_count = 0
+                for line in BytesIO(payload):
+                    if line.strip():
+                        json.loads(line.decode("utf-8"))
+                        record_count += 1
+                manifest["json_type"] = "ndjson"
+                manifest["record_count"] = record_count
+            else:
+                # A prefix is not a JSON document. Validate all retained bytes;
+                # an extraction budget must never turn valid evidence malformed.
+                value = json.loads(payload.decode("utf-8"))
+                manifest["json_type"] = type(value).__name__
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             manifest["diagnostic"] = f"json extraction failed: {type(exc).__name__}: {exc}"
     elif kind in {"application/zip", "application/x-zip-compressed"}:
         try:
             with zipfile.ZipFile(BytesIO(payload)) as archive:
-                manifest["entries"] = [info.filename for info in archive.infolist()[:1000]]
+                # Names are retained in the CAS archive, not in this queryable
+                # summary. Even one legal ZIP name can dwarf a whole manifest.
                 manifest["entry_count"] = len(archive.infolist())
+                manifest["uncompressed_bytes"] = sum(info.file_size for info in archive.infolist())
         except (OSError, zipfile.BadZipFile) as exc:
             manifest["diagnostic"] = f"zip extraction failed: {type(exc).__name__}: {exc}"
     elif kind.startswith("text/") or not kind:
-        # Keep the manifest safe to expose through query surfaces. Raw text is
-        # available from the CAS blob; it must not be copied into indexable
-        # metadata or synthetic/public fixtures by default.
         manifest["text"] = {"available": True, "encoding": media_type or "unknown"}
     return manifest
 
@@ -263,6 +273,10 @@ def _declared_content_length(response: object) -> int | None:
     headers = getattr(response, "headers", None)
     if headers is None:
         return None
+    # Transfer coding determines HTTP framing when present; a stale length
+    # must not downgrade a completely decoded response to partial evidence.
+    if getattr(response, "chunked", False) or (hasattr(headers, "get") and headers.get("Transfer-Encoding")):
+        return None
     get_all = getattr(headers, "get_all", None)
     values = get_all("Content-Length") if callable(get_all) else None
     if values is None:
@@ -349,12 +363,12 @@ def admit_material(
     if blob_hash is not None:
         duplicate = (
             conn.execute(
-                "SELECT 1 FROM material_observations WHERE blob_hash = ? LIMIT 1",
-                (bytes.fromhex(blob_hash),),
+                "SELECT 1 FROM material_observations WHERE blob_hash = ? AND material_id != ? LIMIT 1",
+                (bytes.fromhex(blob_hash), material_id),
             ).fetchone()
             is not None
         )
-        if duplicate and state is None:
+        if duplicate and state is None and material_state == "acquired":
             material_state = "duplicate"
     now = observed_at_ms
     conn.execute(
@@ -368,7 +382,10 @@ def admit_material(
           acquisition_state=excluded.acquisition_state, diagnostic=excluded.diagnostic,
           retryable=excluded.retryable, blob_hash=excluded.blob_hash,
           byte_size=excluded.byte_size, extraction_manifest_json=excluded.extraction_manifest_json,
-          custody=excluded.custody, acquired_at_ms=excluded.acquired_at_ms""",
+          custody=excluded.custody, acquired_at_ms=excluded.acquired_at_ms,
+          media_type=excluded.media_type, media_charset=excluded.media_charset,
+          filename=excluded.filename, privacy_classification=excluded.privacy_classification,
+          supersedes_material_id=excluded.supersedes_material_id""",
         (
             material_id,
             referrer_ref,
@@ -389,26 +406,12 @@ def admit_material(
             now,
         ),
     )
+    observation = get_material(conn, material_id)
+    if observation is None:
+        raise RuntimeError(f"material admission did not persist {material_id}")
     if commit:
         conn.commit()
-    return MaterialObservation(
-        material_id,
-        referrer_ref,
-        source_uri,
-        material_state,
-        diagnostic[:4096],
-        retryable,
-        blob_hash,
-        byte_size,
-        media_type,
-        media_charset,
-        filename,
-        manifest,
-        custody,
-        privacy_classification,
-        observed_at_ms,
-        now,
-    )
+    return observation
 
 
 def acquire_material(
@@ -440,21 +443,27 @@ def acquire_material(
         raise ValueError("max_bytes must be positive")
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
-    parsed = urllib.parse.urlparse(source_uri)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        return admit_material(
-            conn,
-            blob_store=blob_store,
-            source_uri=source_uri,
-            referrer_ref=referrer_ref,
-            observed_at_ms=observed_at_ms,
-            filename=filename,
-            state="malformed",
-            diagnostic=f"unsupported material URI scheme or missing host: {parsed.scheme or '<none>'}",
-            privacy_classification=privacy_classification,
-        )
     try:
-        opened, final_uri = _acquire_response(source_uri, timeout_seconds)
+        try:
+            parsed = urllib.parse.urlparse(source_uri)
+            if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+                raise ValueError(f"unsupported material URI scheme or missing host: {parsed.scheme or '<none>'}")
+            opened, final_uri = _acquire_response(source_uri, timeout_seconds)
+        except (ValueError, http.client.InvalidURL) as exc:
+            # URL parsing/connection construction (including redirect targets)
+            # can fail before any response exists. Preserve the failed claim.
+            return admit_material(
+                conn,
+                blob_store=blob_store,
+                source_uri=source_uri,
+                referrer_ref=referrer_ref,
+                observed_at_ms=observed_at_ms,
+                filename=filename,
+                state="malformed",
+                diagnostic=f"invalid material URI: {type(exc).__name__}: {exc}",
+                retryable=False,
+                privacy_classification=privacy_classification,
+            )
         with opened as response:
             response_media_type = response.headers.get_content_type()
             response_charset = response.headers.get_content_charset()
@@ -555,7 +564,10 @@ def acquire_material(
             observed_at_ms=observed_at_ms,
             filename=filename,
             state=state,
-            diagnostic=f"HTTP {status} {exc.reason}",
+            diagnostic=(
+                f"HTTP {status} {exc.reason}"
+                + (f"; redirected to {exc.geturl()}" if exc.geturl() and exc.geturl() != source_uri else "")
+            ),
             retryable=state == "unavailable",
             privacy_classification=privacy_classification,
         )
@@ -585,7 +597,7 @@ def admit_material_file(
     privacy_classification: MaterialPrivacy = "private",
 ) -> MaterialObservation:
     """Admit a pasted/downloaded local file through the same material route."""
-    file_path = Path(path)
+    file_path = Path(path).absolute()
     source_uri = file_path.as_uri()
     try:
         payload = file_path.read_bytes()
@@ -704,8 +716,10 @@ def list_materials(conn: sqlite3.Connection, *, evidence_ref: str | None = None)
         rows = conn.execute("SELECT * FROM material_observations ORDER BY created_at_ms, material_id").fetchall()
     else:
         rows = conn.execute(
-            "SELECT m.* FROM material_observations m JOIN material_evidence_links l USING(material_id) "
-            "WHERE l.evidence_ref = ? ORDER BY m.created_at_ms, m.material_id",
+            "SELECT m.* FROM material_observations m WHERE EXISTS ("
+            "SELECT 1 FROM material_evidence_links l "
+            "WHERE l.material_id = m.material_id AND l.evidence_ref = ?) "
+            "ORDER BY m.created_at_ms, m.material_id",
             (evidence_ref,),
         ).fetchall()
     observations: list[MaterialObservation] = []

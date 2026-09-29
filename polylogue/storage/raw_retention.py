@@ -1029,8 +1029,8 @@ def raw_frontier_integrity_projection(
         try:
             from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-            conn = open_readonly_connection(source_db_path, validate_schema=False)
-        except (OSError, sqlite3.Error) as exc:
+            conn = open_readonly_connection(source_db_path)
+        except (OSError, sqlite3.Error, SchemaSkew) as exc:
             logger.warning("raw frontier integrity: source tier is unreadable: %s", exc)
             snapshot = _unavailable_frontier_integrity_snapshot(f"source tier is unreadable: {exc}")
         else:
@@ -1629,13 +1629,18 @@ def raw_frontier_integrity_snapshot_from_connections(
             cursor_gap_samples,
             cursor_deferred_count,
             cursor_reason,
-        ) = _check_cursor_ahead_of_accepted(
-            source_conn,
-            ops_db_path,
-            heads,
-            sample_limit=sample_limit,
-            ops_conn=ops_conn,
-            ops_schema=ops_schema,
+        ) = (
+            ("unknown", 0, 0, 0, 0, (), 0, (), 0,
+             f"ops tier is unavailable in supplied read snapshot: {ops_db_path}")
+            if ops_conn is None
+            else _check_cursor_ahead_of_accepted(
+                source_conn,
+                None,
+                heads,
+                sample_limit=sample_limit,
+                ops_conn=ops_conn,
+                ops_schema=ops_schema,
+            )
         )
         return RawFrontierIntegritySnapshot(
             broken_head_status=broken_status,

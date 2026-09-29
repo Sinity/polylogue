@@ -15,7 +15,6 @@ from polylogue.core.enums import (
     IngestOutcome,
     OperationStatus,
     Origin,
-    require_operation_lifecycle_status,
 )
 from polylogue.core.types import (
     ConvergenceDebtStatus,
@@ -1294,7 +1293,7 @@ def upsert_embedding_catchup_run(
 def list_embedding_catchup_runs(
     conn: sqlite3.Connection,
     *,
-    status: OperationStatus | str | None = None,
+    status: OperationStatus | OperationRunStatus | str | None = None,
     schema: str = "main",
 ) -> tuple[ArchiveEmbeddingCatchupRun, ...]:
     """Return embedding catchup runs ordered by newest start first."""
@@ -1311,7 +1310,7 @@ def list_embedding_catchup_runs(
     params: tuple[object, ...] = ()
     if status is not None:
         query += " WHERE status = ?"
-        params = (require_operation_lifecycle_status(status).value,)
+        params = (require_literal(status, OperationRunStatus, name="embedding catchup status"),)
     query += " ORDER BY started_at_ms DESC, run_id DESC"
 
     return tuple(ArchiveEmbeddingCatchupRun(*row) for row in conn.execute(query, params).fetchall())
