@@ -1558,7 +1558,6 @@ def test_run_daemon_services_applies_staged_resets_before_any_tier_opens(
                 enable_browser_capture=False,
                 browser_capture_host="127.0.0.1",
                 browser_capture_port=8765,
-                browser_capture_spool_path=None,
             )
         )
 
