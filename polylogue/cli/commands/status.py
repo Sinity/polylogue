@@ -108,8 +108,13 @@ def _status_operation_result(
     *,
     daemon_url: str | None = None,
     include_archive_readiness: bool = False,
+    probe_timeout_s: float | None = None,
 ) -> Any:
-    """Use the configured machine endpoint or the same pinned direct reader."""
+    """Use the configured machine endpoint or the same pinned direct reader.
+
+    An ordinary status read waits for its endpoint and is cancelled by the
+    caller; only the bare-invocation probe passes ``probe_timeout_s``.
+    """
     from polylogue.cli.operation_kernel import configured_read_operation
     from polylogue.cli.shared.helpers import load_effective_config
     from polylogue.config import load_polylogue_config
@@ -130,7 +135,7 @@ def _status_operation_result(
         headers = {"Authorization": f"Bearer {token}"} if token else {}
         request = urllib.request.Request(url.rstrip("/") + "/api/status", headers=headers)
         try:
-            with urllib.request.urlopen(request, timeout=0.5) as response:
+            with urllib.request.urlopen(request, timeout=probe_timeout_s) as response:
                 status = json.loads(response.read())
         except (OSError, ValueError, json.JSONDecodeError) as exc:
             from polylogue.cli.operation_kernel import OperationFailedError
@@ -322,6 +327,10 @@ def status_command(
     return
 
 
+#: The bare invocation is a liveness probe with a latency budget, not a read.
+_FAST_STATUS_PROBE_TIMEOUT_S = 0.5
+
+
 def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
     """Fast bare-invocation status: try daemon, fall back to local SQLite.
 
@@ -332,7 +341,7 @@ def show_fast_status(env: AppEnv, *, daemon_url: str | None = None) -> None:
     from polylogue.cli.operation_kernel import OperationKernelError
 
     try:
-        result = _status_operation_result(env)
+        result = _status_operation_result(env, probe_timeout_s=_FAST_STATUS_PROBE_TIMEOUT_S)
     except OperationKernelError:
         _show_daemon_status_unavailable(env, compact=True)
         return

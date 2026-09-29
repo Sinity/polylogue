@@ -2887,7 +2887,12 @@ def test_async_execute_query_archive_deletes_session_by_id(
     def _daemon_delete(_config: object, operation: str, payload: dict[str, object]) -> dict[str, object]:
         if operation.endswith(".preview"):
             assert payload["session_ids"] == ["codex-session:native-1"]
-            return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": ["codex-session:native-1"]}
+            return {
+                "status": "prepared",
+                "preview_ref": "preview:delete",
+                "session_count": 1,
+                "session_ids_sample": ["codex-session:native-1"],
+            }
         if operation.endswith(".authorize"):
             # The daemon issues one durable authorization reference per preview
             # reference; ``_delete_authorization_refs`` refuses a count mismatch.

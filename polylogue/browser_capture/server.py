@@ -692,6 +692,10 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
             or not isinstance(observation, dict)
             or observation.get("fidelity") != "native"
             or not observation.get("provider_message_id")
+            or not isinstance(observation.get("origin"), str)
+            or not str(observation.get("origin")).strip()
+            or not isinstance(observation.get("provider_conversation_id"), str)
+            or not str(observation.get("provider_conversation_id")).strip()
             or not payload.get("target_ref")
         ):
             self._safe_error(HTTPStatus.BAD_REQUEST, "exact_message_evidence_required")
@@ -704,9 +708,9 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
 
             root = self.server.config.archive_root or default_archive_root()
             provider_message_id = str(observation["provider_message_id"])
-            expected_message_ref = (
-                f"{observation.get('origin')}:{observation.get('provider_conversation_id')}:n:{provider_message_id}"
-            )
+            origin = str(observation["origin"])
+            conversation_id = str(observation["provider_conversation_id"])
+            expected_message_ref = f"{origin}:{conversation_id}:n:{provider_message_id}"
             if payload["target_ref"] != expected_message_ref:
                 raise ValueError("selected message target does not match its native observation")
             config = self.server.config
@@ -716,19 +720,32 @@ class BrowserCaptureHandler(BaseHTTPRequestHandler):
                     getattr(config, "api_auth_token", None),
                     allow_no_auth=getattr(config, "api_allow_no_auth", False),
                 ),
-            ).operation(
+            ).operation_to_completion(
+                # A mutation is accepted before it completes; follow it to the
+                # terminal receipt rather than reading "accepted" as failure.
                 "mutation.assertion.candidate.capture",
                 {
                     "body_text": payload["body_text"],
                     "kind": candidate_capture_kind(payload["kind"]).value,
-                    "refs": [f"message:{provider_message_id}"],
-                    "scope_refs": [evidence_refs[0]],
+                    "refs": [f"message:{expected_message_ref}"],
+                    # An assertion's scope is an object ref, so the candidate is
+                    # scoped to the selected message's session; the capture
+                    # artifact travels as source evidence.
+                    "scope_refs": [f"session:{origin}:{conversation_id}"],
+                    "evidence_refs": [evidence_refs[0]],
                     "author_ref": str(payload.get("author_ref") or "user:browser-extension"),
                     "author_kind": str(payload.get("author_kind") or "user"),
                     "idempotency_key": payload.get("idempotency_key"),
                 },
                 archive_root=str(root),
             )
+            if response is not None and response.get("outcome") == "rejected":
+                # The daemon refused this request's content; that is the
+                # caller's error to fix, not an unavailable daemon.
+                error = response.get("error")
+                code = error.get("code") if isinstance(error, dict) else None
+                self._safe_error(HTTPStatus.BAD_REQUEST, str(code or "daemon_candidate_capture_rejected"))
+                return
             if response is None or response.get("outcome") not in {"completed", "no-effect"}:
                 self._safe_error(HTTPStatus.SERVICE_UNAVAILABLE, "daemon_candidate_capture_unavailable")
                 return

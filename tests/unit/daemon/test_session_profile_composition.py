@@ -8,11 +8,12 @@ import sqlite3
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import cast
 
 import aiosqlite
 import pytest
 
-from polylogue.daemon.derivation import DerivationReport, Outcome
+from polylogue.daemon.derivation import DerivationFrame, DerivationReport, Outcome
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.session_profile_composition import compose_session_profile_callback
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
@@ -209,7 +210,22 @@ async def test_composed_callback_repairs_summary_before_counter_dependent_profil
 
 
 @pytest.mark.asyncio
-async def test_promoted_generation_starts_a_bounded_profile_pass_from_new_demand(tmp_path: Path) -> None:
+async def test_promoted_generation_starts_a_bounded_profile_pass_from_new_demand(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from polylogue.daemon.convergence import SessionProfileConvergenceOwner
+
+    # The promoted pass visits every audit domain, and its return value is the
+    # last domain's report; keep each pass's report to find the profile's.
+    passes: list[DerivationReport] = []
+    real_converge = SessionProfileConvergenceOwner.converge
+
+    async def recording_converge(self: object, *args: object, **kwargs: object) -> DerivationReport:
+        report = await real_converge(self, *args, **kwargs)  # type: ignore[arg-type]
+        passes.append(report)
+        return report
+
+    monkeypatch.setattr(SessionProfileConvergenceOwner, "converge", recording_converge)
     recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
     compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
     coordinator = DaemonWriteCoordinator()
@@ -228,15 +244,16 @@ async def test_promoted_generation_starts_a_bounded_profile_pass_from_new_demand
                 "SELECT 1 FROM session_profile_demand WHERE session_id = ?", (recovered.target_session_id,)
             ).fetchone()
 
-        report = await composed.converge_promoted()
+        passes.clear()
+        await composed.converge_promoted()
         assert any(
             item.key.domain == SESSION_PROFILE_DOMAIN
             and item.key.key == recovered.target_session_id
             and item.outcome is Outcome.DONE
+            for report in passes
             for item in report.outcomes
         )
-        assert report.work.discovered <= 128
-        assert report.work.published <= 64
+        assert all(report.work.discovered <= 128 and report.work.published <= 64 for report in passes)
         with sqlite3.connect(recovered.index_db) as conn:
             assert conn.execute(
                 "SELECT 1 FROM session_profiles WHERE session_id = ?", (recovered.target_session_id,)
@@ -478,6 +495,76 @@ async def test_backlog_call_sweeps_every_domain_in_bounded_passes(tmp_path: Path
         assert not composed.audit_pending()
         with sqlite3.connect(recovered.index_db) as conn:
             assert conn.execute("SELECT COUNT(*) FROM session_profiles").fetchone()[0] == expected
+    finally:
+        compute.shutdown(wait=True)
+        await coordinator.shutdown(timeout=1.0)
+
+
+# An absolute monotonic instant no test run reaches; the fake owner ignores it.
+_FAR_DEADLINE = 1e18
+
+
+@pytest.mark.asyncio
+async def test_a_persistently_pending_domain_does_not_starve_later_audit_domains(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A summary key that stays blocked leaves usage, profile and markers their turns.
+
+    Anti-vacuity: restart the pending domain in place instead of rotating and
+    every pass re-runs the summary domain, so the marker domain is never
+    visited; drop the re-owe step and the domains after a late-completing
+    summary are not revisited.
+    """
+    from polylogue.daemon.convergence import SessionProfileConvergenceOwner
+    from polylogue.daemon.derivation import DiscoveryPhase, DomainCursor, PassCursor
+
+    recovered = seed_partial_convergence_archive(tmp_path / "archive", target_hot=False)
+    visited: list[str] = []
+    summary_blocked = True
+
+    async def fake_converge(self: object, frame: object, **kwargs: object) -> DerivationReport:
+        (domain,) = cast(tuple[str, ...], kwargs["domains"])
+        visited.append(domain)
+        pending = domain == SESSION_SUMMARY_DOMAIN and summary_blocked
+        return DerivationReport(
+            frame=cast(DerivationFrame, frame),
+            counts={Outcome.PENDING: 1} if pending else {Outcome.DONE: 1},
+            cursor=PassCursor({domain: DomainCursor(phase=DiscoveryPhase.DONE)}),
+        )
+
+    monkeypatch.setattr(SessionProfileConvergenceOwner, "converge", fake_converge)
+    compute = BoundedComputeAdapter(max_workers=1, queue_units=1)
+    coordinator = DaemonWriteCoordinator()
+    try:
+        composed = compose_session_profile_callback(
+            recovered.root,
+            compute_adapter=compute,
+            write_bridge=DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop()),
+            now=lambda: 0.0,
+        )
+        assert composed.audit_pass is not None
+        for _ in range(6):
+            await composed.audit_pass(_FAR_DEADLINE)
+        assert visited == [
+            SESSION_SUMMARY_DOMAIN,
+            SESSION_USAGE_ROLLUP_DOMAIN,
+            SESSION_PROFILE_DOMAIN,
+            SESSION_MARKER_DOMAIN,
+            SESSION_SUMMARY_DOMAIN,
+            SESSION_SUMMARY_DOMAIN,
+        ]
+        assert composed.audit_pending()
+
+        summary_blocked = False
+        visited.clear()
+        while composed.audit_pending():
+            await composed.audit_pass(_FAR_DEADLINE)
+        assert visited == [
+            SESSION_SUMMARY_DOMAIN,
+            SESSION_USAGE_ROLLUP_DOMAIN,
+            SESSION_PROFILE_DOMAIN,
+            SESSION_MARKER_DOMAIN,
+        ]
     finally:
         compute.shutdown(wait=True)
         await coordinator.shutdown(timeout=1.0)
