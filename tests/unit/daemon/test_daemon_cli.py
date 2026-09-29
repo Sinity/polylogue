@@ -5148,7 +5148,10 @@ def test_session_profile_audit_resumes_the_promoted_audit_each_tick(monkeypatch:
     async def unused(_scope: object) -> Any:
         raise AssertionError("the audit service drives converge_backlog, not a bare demand call")
 
-    profiles = _Profiles(unused, unused, cast(Any, None))
+    async def unused_promoted() -> Any:
+        raise AssertionError("the audit service never promotes")
+
+    profiles = _Profiles(unused, unused_promoted, cast(Any, None))
 
     async def exercise() -> None:
         task = asyncio.create_task(daemon_cli._periodic_session_profile_audit(profiles))
