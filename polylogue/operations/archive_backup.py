@@ -876,8 +876,10 @@ def _source_recoverability_proofs(
         for row in rows:
             historical_snapshot_candidate = False
             historical_append_candidate = False
-            historical_append_start: int | None = None
-            historical_append_end: int | None = None
+            # The window a proof's bytes span, when it is not the row's own
+            # recorded window; verification rebuilds exactly this window.
+            proof_append_start: int | None = None
+            proof_append_end: int | None = None
             source_path = row.get("source_path")
             if not isinstance(source_path, str) or not source_path:
                 errors.append("no_source_path")
@@ -923,8 +925,9 @@ def _source_recoverability_proofs(
                                 and _payload_matches_reference(row, snapshot_payload, blob_hash)
                             ):
                                 payload, error = snapshot_payload, None
+                                proof_append_start, proof_append_end = 0, end
                 elif _legacy_append_without_window(row):
-                    payload, error, historical_append_start, historical_append_end = _legacy_append_replay(
+                    payload, error, proof_append_start, proof_append_end = _legacy_append_replay(
                         row, resolved, prior_full_sizes
                     )
                     historical_append_candidate = payload is not None and error is None
@@ -995,15 +998,15 @@ def _source_recoverability_proofs(
                         "content_identity": str(row.get("content_identity") or ""),
                         "revision_kind": str(row.get("revision_kind") or ""),
                         "append_start_offset": (
-                            str(historical_append_start)
-                            if historical_append_candidate and historical_append_start is not None
+                            str(proof_append_start)
+                            if proof_append_start is not None
                             else str(row.get("append_start_offset"))
                             if row.get("append_start_offset") is not None
                             else ""
                         ),
                         "append_end_offset": (
-                            str(historical_append_end)
-                            if historical_append_candidate and historical_append_end is not None
+                            str(proof_append_end)
+                            if proof_append_end is not None
                             else str(row.get("append_end_offset"))
                             if row.get("append_end_offset") is not None
                             else ""
