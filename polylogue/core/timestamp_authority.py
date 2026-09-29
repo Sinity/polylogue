@@ -14,8 +14,8 @@ clock value.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Iterable
+from typing import Any, Protocol, cast
 
 from polylogue.core.timestamps import parse_timestamp
 
@@ -23,6 +23,45 @@ from polylogue.core.timestamps import parse_timestamp
 def timestamp_millis(value: Any) -> int | None:
     parsed = parse_timestamp(value)
     return int(parsed.timestamp() * 1000) if parsed is not None else None
+
+
+class OccurredAtBounds(Protocol):
+    """A message collection that already knows its ``occurred_at_ms`` extrema.
+
+    A disk-backed prepared session answers from its stored rows instead of
+    decoding every message into a model only to read one field.
+    """
+
+    def occurred_at_bounds(self) -> tuple[int | None, int | None]: ...
+
+
+def _message_bounds(messages: Iterable[Any]) -> tuple[int | None, int | None]:
+    # Looked up on the type: the method is part of the collection's class
+    # contract, not an attribute a test double happens to answer.
+    if callable(getattr(type(messages), "occurred_at_bounds", None)):
+        return cast(OccurredAtBounds, messages).occurred_at_bounds()
+    derived_created: int | None = None
+    derived_updated: int | None = None
+    for message in messages:
+        value = getattr(message, "occurred_at_ms", None)
+        if value is None:
+            continue
+        point = int(value)
+        derived_created = point if derived_created is None else min(derived_created, point)
+        derived_updated = point if derived_updated is None else max(derived_updated, point)
+    return derived_created, derived_updated
+
+
+def _event_bounds(events: Iterable[Any]) -> tuple[int | None, int | None]:
+    derived_created: int | None = None
+    derived_updated: int | None = None
+    for event in events:
+        event_point = timestamp_millis(getattr(event, "timestamp", None))
+        if event_point is None:
+            continue
+        derived_created = event_point if derived_created is None else min(derived_created, event_point)
+        derived_updated = event_point if derived_updated is None else max(derived_updated, event_point)
+    return derived_created, derived_updated
 
 
 def session_evidence_timestamps(
@@ -37,26 +76,10 @@ def session_evidence_timestamps(
     timeline, and vice versa.  Message evidence precedes event evidence because
     authored content is the stronger timeline signal.  Event timestamps are
     still valid evidence for event-only sources such as Hermes ATIF.
-    """
-    messages: Sequence[Any] = getattr(session, "messages", ()) or ()
-    events: Sequence[Any] = getattr(session, "session_events", ()) or ()
-    derived_created: int | None = None
-    derived_updated: int | None = None
-    for message in messages:
-        value = getattr(message, "occurred_at_ms", None)
-        if value is None:
-            continue
-        point = int(value)
-        derived_created = point if derived_created is None else min(derived_created, point)
-        derived_updated = point if derived_updated is None else max(derived_updated, point)
-    if derived_created is None:
-        for event in events:
-            event_point = timestamp_millis(getattr(event, "timestamp", None))
-            if event_point is None:
-                continue
-            derived_created = event_point if derived_created is None else min(derived_created, event_point)
-            derived_updated = event_point if derived_updated is None else max(derived_updated, event_point)
 
+    The timeline is read only when a side needs it: two valid producer
+    endpoints decide the pair on their own, so the messages are not visited.
+    """
     raw_created = timestamp_millis(getattr(session, "created_at", None))
     raw_updated = timestamp_millis(getattr(session, "updated_at", None))
     created_provenance = getattr(session, "created_at_provenance", "unknown")
@@ -66,6 +89,12 @@ def session_evidence_timestamps(
     # timeline is available at all.
     producer_created = raw_created if created_provenance not in {"derived", "fallback"} else None
     producer_updated = raw_updated if updated_provenance not in {"derived", "fallback"} else None
+    derived_created: int | None = None
+    derived_updated: int | None = None
+    if producer_created is None or producer_updated is None:
+        derived_created, derived_updated = _message_bounds(getattr(session, "messages", ()) or ())
+        if derived_created is None:
+            derived_created, derived_updated = _event_bounds(getattr(session, "session_events", ()) or ())
     created = (
         producer_created
         if producer_created is not None
@@ -157,6 +186,7 @@ def _iso_from_millis(value: int) -> str:
 
 
 __all__ = [
+    "OccurredAtBounds",
     "normalize_session_timestamps",
     "producer_timestamp_flags",
     "session_evidence_timestamps",

@@ -104,7 +104,7 @@ from polylogue.sources.parsers.claude.orchestration import (
     parse_claude_orchestration_artifact,
 )
 from polylogue.sources.parsers.hermes_identity import split_qualified_session_id
-from polylogue.sources.prepared_message_sink import SqliteMessageSink
+from polylogue.sources.prepared_message_sink import SqliteMessageSink, normalize_active_branch
 from polylogue.sources.tool_outcomes import derive_tool_outcomes as _derive_tool_outcomes
 from polylogue.storage.archive_identity import archive_root_for_index_path
 from polylogue.storage.attachment_reasons import AttachmentOwnerResolutionReason
@@ -1653,7 +1653,9 @@ def _prepared_message_context(
         # require mutating the immutable artifact inside the writer hold.
         messages: Sequence[ParsedMessage] = session.messages
     else:
-        messages = _derive_tool_outcomes(_normalized_messages(session.messages), session.session_events, origin=origin)
+        messages = _derive_tool_outcomes(
+            normalize_active_branch(session.messages), session.session_events, origin=origin
+        )
     event_duplicate_native_ids = _duplicate_message_native_ids(messages)
     effective_session = session
     hook_parent_claim = _authoritative_parent_claim(
@@ -1961,7 +1963,7 @@ def prepare_session_rows(
 
     Pure function: normalizes messages exactly as ``write_parsed_session_to_
     archive`` does for a non-merge-append, non-lineage-sliced write (see
-    ``_normalized_messages``), then reuses the same row-tuple builders the
+    ``normalize_active_branch``), then reuses the same row-tuple builders the
     writer itself calls (``_build_message_rows``/``_build_block_rows``) at
     ``position_offset=0`` -- the offset every full-replace write uses. A
     byte-replay preparation can supply its pinned append offset, so the
@@ -1973,7 +1975,7 @@ def prepare_session_rows(
     """
     origin = origin_from_provider(session.source_name)
     session_id = archive_session_id(origin.value, session.provider_session_id)
-    messages = _derive_tool_outcomes(_normalized_messages(session.messages), session.session_events, origin=origin)
+    messages = _derive_tool_outcomes(normalize_active_branch(session.messages), session.session_events, origin=origin)
     duplicate_native_ids = _duplicate_message_native_ids(messages)
     content_identities = message_content_identities(messages, occurrence_offsets=content_occurrence_offsets)
     message_rows = _build_message_rows(
@@ -10454,49 +10456,6 @@ def _write_repo_edges(
                     observed_at_ms or 0,
                 ),
             )
-
-
-def _normalized_messages(messages: list[ParsedMessage]) -> list[ParsedMessage]:
-    active_leaf_count = sum(1 for message in messages if message.is_active_leaf)
-    if not messages:
-        return messages
-
-    normalized = messages
-    if active_leaf_count != 1:
-        normalized = [
-            message.model_copy(update={"is_active_leaf": position == len(messages) - 1})
-            for position, message in enumerate(messages)
-        ]
-
-    # A provider may identify the active leaf without repeating the active-path
-    # bit on every inherited message. Resolve that evidence while lowering the
-    # parsed session, where the parent ids are still available. Unknown path
-    # values are filled only on the leaf's parent chain. The leaf evidence is
-    # authoritative for that chain; an explicit False sibling remains provider
-    # evidence and is never inferred at read time.
-    # The fallback leaf above is only a storage default. It is not provider
-    # evidence and must not override explicit active-path values.
-    if active_leaf_count != 1:
-        return normalized
-
-    active_leaf = next((message for message in normalized if message.is_active_leaf), None)
-    if active_leaf is None or not active_leaf.provider_message_id:
-        return normalized
-    by_provider_id = {message.provider_message_id: message for message in normalized if message.provider_message_id}
-    active_path_ids: set[str] = set()
-    cursor: ParsedMessage | None = active_leaf
-    while cursor is not None and cursor.provider_message_id not in active_path_ids:
-        active_path_ids.add(cursor.provider_message_id)
-        parent_id = cursor.parent_message_provider_id
-        cursor = by_provider_id.get(parent_id) if parent_id is not None else None
-    if not active_path_ids:
-        return normalized
-    return [
-        message.model_copy(update={"is_active_path": True})
-        if message.provider_message_id in active_path_ids
-        else message
-        for message in normalized
-    ]
 
 
 def _duplicate_message_coordinates(
