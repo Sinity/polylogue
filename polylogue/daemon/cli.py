@@ -3068,6 +3068,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         else None,
                         raw_callback=admit_raw_intake if raw_materialization_available else None,
                         raw_discover=discover_raw_intake if raw_materialization_available else None,
+                        raw_discovery_pending=lambda: raw_intake_discovery.discovery_pending,
                         raw_suspended=lambda: cold_build is not None and not cold_build.settled,
                         hook_events_callback=admit_hook_events if raw_materialization_available else None,
                         hook_events_discover=discover_hook_events if raw_materialization_available else None,

@@ -3732,7 +3732,12 @@ def _daemon_startup_stubs(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("fault", "expected_reason"),
-    (("busy", "sqlite_busy"), ("cantopen", "sqlite_open_unavailable")),
+    (
+        ("busy", "sqlite_busy"),
+        ("cantopen", "sqlite_open_unavailable"),
+        ("ioerr", "candidate_storage_unavailable"),
+        ("ioerr_read", "candidate_storage_unavailable"),
+    ),
 )
 async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
     tmp_path: Path, fault: str, expected_reason: str
@@ -3777,6 +3782,8 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
         sqlite3.connect(f"file:{missing_database}?mode=ro", uri=True)
     assert cantopen.value.sqlite_errorcode & 0xFF == sqlite3.SQLITE_CANTOPEN
 
+    ioerr = sqlite3.OperationalError("synthetic transient candidate read failure")
+    ioerr.sqlite_errorcode = sqlite3.SQLITE_IOERR_READ if fault == "ioerr_read" else sqlite3.SQLITE_IOERR
     real_readiness = ArchiveStore.run_generation_readiness_pass
     real_verify = ProductionSourceBaseline.verify
     calls = 0
@@ -3784,8 +3791,8 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
     def busy_once(self: ArchiveStore) -> None:
         nonlocal calls
         calls += 1
-        if fault == "busy" and calls == 1:
-            raise busy.value
+        if fault != "cantopen" and calls == 1:
+            raise busy.value if fault == "busy" else ioerr
         real_readiness(self)
 
     verify_calls = 0
@@ -3848,7 +3855,7 @@ async def test_cold_build_transient_sqlite_settlement_retries_in_running_daemon(
                         if task.done():
                             await task
                         await asyncio.sleep(0.05)
-                assert (calls if fault == "busy" else verify_calls) == 2
+                assert (verify_calls if fault == "cantopen" else calls) == 2
                 assert candidate.publication_complete
                 assert _cold_build_settlement()["cold_build_candidate_id"] == candidate_id
                 with contextlib.closing(
