@@ -18,7 +18,6 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
-from json import JSONDecodeError as StdlibJSONDecodeError
 from json import dumps as json_dumps
 from json import loads as json_loads
 from pathlib import Path
@@ -97,14 +96,13 @@ from polylogue.pipeline.services.ingest_batch._models import _IngestBatchSummary
 from polylogue.sources.acquisition_boundary import admit_bound_bytes, capture_bound_path
 from polylogue.sources.artifact_observations import record_session_artifact_observation
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
-from polylogue.sources.decoder_json import PartialJsonStreamError
 from polylogue.sources.decoder_zip import (
     ZipBombError,
     declared_artifact_provider,
     is_declared_artifact_path,
     provider_detection_path,
 )
-from polylogue.sources.decoders import JsonlDecodeError, _iter_json_stream, _ZipEntryValidator
+from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
     BUNDLE_PROVIDERS,
     ForeignOriginContentError,
@@ -206,7 +204,13 @@ from polylogue.sources.origin_specs import (
 )
 from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.prepared_jsonl import PreparedJsonl, PreparedSessionSequence
+from polylogue.sources.prepared_jsonl import (
+    DecodeFailure,
+    PreparedDecodeError,
+    PreparedJsonl,
+    PreparedSessionSequence,
+    classify_decode_failure,
+)
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.sources.revision_backfill import (
     _declared_non_session_artifact_classification,
@@ -371,8 +375,23 @@ def _hot_capture_prefix_is_proven(
     return fingerprint == expected_fingerprint and _file_observation(proof_start) == _file_observation(proof_end)
 
 
-def _is_json_stream_decode_error(error: BaseException) -> bool:
-    return isinstance(error, (StdlibJSONDecodeError, UnicodeDecodeError, PartialJsonStreamError, JsonlDecodeError))
+def _terminal_decode_evidence(error: BaseException, *, provider: Provider) -> RawFailureEvidenceKind | None:
+    """The terminal evidence a decode failure of retained bytes earns, if any.
+
+    Any decode failure of an unknown-provider capture is terminal. A complete
+    JSONL record that does not decode is terminal for every provider: the
+    producer finished that record, so no later observation of these bytes
+    can repair it, and a frontier past it without evidence would drop it
+    silently.
+    """
+    failure = classify_decode_failure(error)
+    if failure is None:
+        return None
+    if provider is Provider.UNKNOWN:
+        return RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE
+    if failure is DecodeFailure.JSONL_RECORD:
+        return RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT
+    return None
 
 
 def _disposition_delta(before: Mapping[str, int], after: Mapping[str, int]) -> dict[str, int]:
@@ -3203,6 +3222,7 @@ class LiveBatchProcessor:
         shard_paths_by_raw_id: dict[str, Path] = {}
         path_preparations_by_source_path: dict[str, PreparedJsonl] = {}
         retained_preparations_by_raw_id: dict[str, PreparedLiveRetainedRaw] = {}
+        replay_owned_paths: set[str] = set()
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
         raw_source_fingerprints: dict[Path, str] = {}
@@ -3867,19 +3887,32 @@ class LiveBatchProcessor:
                                 retained_preparations_by_raw_id[retained_id] = member
                 if json_document:
                     # The captured blob, rather than the pre-copy path, owns
-                    # provider identity when the source changes after prewarm.
+                    # provider identity when the source changes after prewarm:
+                    # a carrier names a provider only for the bytes it hashed.
                     # A declared raw-only document (a prompt log, a sidecar)
                     # is retained evidence by location; its shape is never
                     # consulted.
                     prepared_provider = (
                         preparation.resolved_provider
-                        if preparation is not None and not preparation.deferred and preparation.error is None
+                        if preparation is not None and not preparation.deferred and preparation.blob_hash == raw_id
                         else None
                     )
                     if path_declaration_refuses_session(fallback_provider, path):
                         provider = fallback_provider
                     elif prepared_provider is not None:
                         provider = prepared_provider
+                    elif str(path) in prepared_json_paths:
+                        # The parse stage owns this document's decoding, and
+                        # classifying the capture here would decode the whole
+                        # document under the writer hold. Without a carrier
+                        # for these bytes (the source moved after its
+                        # preparation, or the preparation was deferred), the
+                        # bytes are retained under the source's provider and
+                        # raw materialization interprets them off the writer,
+                        # detecting an unknown provider from the retained blob.
+                        provider = fallback_provider
+                        if preparation is None or preparation.deferred:
+                            replay_owned_paths.add(str(path))
                     else:
                         provider, detection_crash = detect_provider_from_path_sample_evidence(
                             blob_store.blob_path(raw_id), fallback_provider, json_document=True
@@ -4007,6 +4040,7 @@ class LiveBatchProcessor:
                     retained_preparations_by_raw_id,
                     max_pass_seconds=max_pass_seconds,
                     pass_started=pass_clock_started,
+                    replay_owned_paths=frozenset(replay_owned_paths),
                 )
             except Exception as exc:
                 if storage_fault_kind(exc) is not None:
@@ -4229,7 +4263,13 @@ class LiveBatchProcessor:
         *,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
+        replay_owned_paths: frozenset[str] = frozenset(),
     ) -> _ArchiveFullWriteResult:
+        """Admit each record's raw bytes, then parse and publish its sessions.
+
+        A record whose source path is in ``replay_owned_paths`` is admitted
+        and left to raw materialization, which interprets it off the writer.
+        """
 
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         result = _ArchiveFullWriteResult()
@@ -4517,6 +4557,12 @@ class LiveBatchProcessor:
                         result.preparation_deferred_raw_ids[_full_record_key(record)] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
+                    if record.source_path in replay_owned_paths:
+                        # Admitted and pending: raw materialization parses it
+                        # off the writer, as it does any admitted raw.
+                        result.raw_ids[_full_record_key(record)] = source_raw_id
+                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
+                        continue
                     degraded = degraded_reason()
                     if degraded is not None and degraded.derived_only:
                         # polylogue-gbs02: the derived tier (index.db/
@@ -4629,6 +4675,11 @@ class LiveBatchProcessor:
                             _accumulate_stage_timings(result.stage_timings_s, record_timings)
                             continue
                         if path_preparation.error is not None:
+                            if path_preparation.decode_failure is not None:
+                                raise PreparedDecodeError(
+                                    path_preparation.decode_failure,
+                                    f"off-writer preparation failed: {path_preparation.error}",
+                                )
                             raise RuntimeError(f"off-writer preparation failed: {path_preparation.error}")
                         if not path_preparation.positive_evidence_filtered:
                             raise RuntimeError("off-writer preparation did not filter conversational evidence")
@@ -4729,7 +4780,7 @@ class LiveBatchProcessor:
                                     _iter_json_stream(
                                         payload_handle,
                                         source_name,
-                                        fail_on_decode_error=provider is Provider.UNKNOWN,
+                                        fail_on_decode_error=True,
                                     ),
                                     fallback_id,
                                     source_path=record.source_path,
@@ -4740,7 +4791,7 @@ class LiveBatchProcessor:
                                 _iter_json_stream(
                                     BytesIO(parse_payload_bytes or b""),
                                     source_name,
-                                    fail_on_decode_error=provider is Provider.UNKNOWN,
+                                    fail_on_decode_error=True,
                                 ),
                                 fallback_id,
                                 source_path=record.source_path,
@@ -4752,7 +4803,7 @@ class LiveBatchProcessor:
                                     _iter_json_stream(
                                         payload_handle,
                                         source_name,
-                                        fail_on_decode_error=provider is Provider.UNKNOWN,
+                                        fail_on_decode_error=True,
                                     )
                                 )
                         else:
@@ -4760,7 +4811,7 @@ class LiveBatchProcessor:
                                 _iter_json_stream(
                                     BytesIO(parse_payload_bytes or b""),
                                     source_name,
-                                    fail_on_decode_error=provider is Provider.UNKNOWN,
+                                    fail_on_decode_error=True,
                                 )
                             )
                         sessions = parse_payload(
@@ -5206,14 +5257,15 @@ class LiveBatchProcessor:
                         raise_if_storage_fault(exc)
                     if provider is not None and source_raw_id is not None:
                         preserve_existing_failure_evidence = False
-                        if provider is Provider.UNKNOWN and _is_json_stream_decode_error(exc):
+                        terminal_evidence = _terminal_decode_evidence(exc, provider=provider)
+                        if terminal_evidence is not None:
                             archive.record_raw_failure_evidence(
                                 source_raw_id,
                                 provider=provider,
                                 source_path=record.source_path,
                                 source_index=record.source_index or 0,
                                 acquired_at_ms=acquired_at_ms,
-                                kind=RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE,
+                                kind=terminal_evidence,
                             )
                             result.terminal_raw_ids[_full_record_key(record)] = source_raw_id
                             preserve_existing_failure_evidence = True
