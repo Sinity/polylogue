@@ -725,11 +725,6 @@ class _ShardRowSequence(Sequence[tuple[object, ...]]):
                 yield tuple(row)
 
 
-#: ``evidence_json`` key of the identity scope a materialized prefix records on
-#: its child's edge (polylogue-5gg3u).
-IDENTITY_SCOPE_EVIDENCE_KEY = "identity_scope"
-
-
 @dataclass(frozen=True, slots=True)
 class _IdentityScope:
     """How a materialized child's stored message IDs were computed.
@@ -784,12 +779,9 @@ class _IdentityScope:
 
 def _record_identity_scope(conn: sqlite3.Connection, session_id: str, scope: _IdentityScope) -> None:
     conn.execute(
-        f"""UPDATE session_links
-            SET evidence_json = json_set(
-                CASE WHEN json_type(evidence_json) = 'object' THEN evidence_json ELSE '{{}}' END,
-                '$.{IDENTITY_SCOPE_EVIDENCE_KEY}', json(?))
-            WHERE src_session_id = ? AND COALESCE(inheritance, '') != 'prefix-sharing'""",
-        (scope.to_json(), session_id),
+        """INSERT INTO session_identity_scopes (session_id, scope_json) VALUES (?, ?)
+           ON CONFLICT(session_id) DO UPDATE SET scope_json = excluded.scope_json""",
+        (session_id, scope.to_json()),
     )
 
 
@@ -801,16 +793,16 @@ def _identity_sequence_digest(identities: Iterable[str]) -> str:
 
 
 def _materialized_identity_scope(conn: sqlite3.Connection, session_id: str) -> _IdentityScope | None:
-    """The identity scope recorded on this child's composing edge, if any."""
+    """The identity scope this child's stored IDs follow, if its prefix was materialized.
+
+    Kept per session, not on an edge: a later revision that no longer declares
+    the parent deletes the edge, and the IDs must still not move.
+    """
     row = conn.execute(
-        f"""SELECT evidence_json -> '$.{IDENTITY_SCOPE_EVIDENCE_KEY}' FROM session_links
-            WHERE src_session_id = ? AND json_valid(evidence_json)
-              AND json_type(evidence_json, '$.{IDENTITY_SCOPE_EVIDENCE_KEY}') = 'object'
-            ORDER BY link_type, dst_origin, dst_native_id
-            LIMIT 1""",
+        "SELECT scope_json FROM session_identity_scopes WHERE session_id = ?",
         (session_id,),
     ).fetchone()
-    return _IdentityScope.from_json(str(row[0])) if row is not None and row[0] is not None else None
+    return _IdentityScope.from_json(str(row[0])) if row is not None else None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1318,8 +1310,7 @@ def _prepared_message_context(
     # A child whose prefix was materialized owns its whole transcript and the
     # IDs recorded for it; a replay keeps it spawned-fresh rather than slicing
     # it against whatever the parent holds now, which would move those IDs.
-    # Loaded for an append too: the append rewrites the edge, and the scope
-    # must be carried onto it; only a full write re-applies it to IDs.
+    # Only a full write re-applies it to IDs; an append keeps stored IDs.
     identity_scope = _materialized_identity_scope(conn, session_id)
     if not merge_append:
         lineage_session = session
@@ -2490,10 +2481,6 @@ def write_parsed_session_to_archive(
                 inheritance=lineage_inheritance,
                 source_conn=source_conn,
             )
-            if context.identity_scope is not None:
-                # The replace above rewrote this child's edge; the scope its
-                # stored IDs follow must survive every later replay too.
-                _record_identity_scope(conn, session_id, context.identity_scope)
             add_timing("index.session_link", t0)
             t0 = time.perf_counter()
             event_position_offset = _next_session_event_position(conn, session_id)
@@ -7194,7 +7181,7 @@ def _refill_inbound_asserted_branch_points(conn: sqlite3.Connection, parent_sess
            AND json_extract(evidence_json, '$.{ASSERTED_BRANCH_POINT_EVIDENCE_KEY}') IS NOT NULL
            -- A materialized child owns its prefix: re-binding its assertion
            -- would compose the parent's prefix in front of its own copy.
-           AND json_type(evidence_json, '$.{IDENTITY_SCOPE_EVIDENCE_KEY}') IS NULL
+           AND src_session_id NOT IN (SELECT session_id FROM session_identity_scopes)
         """,
         (parent_session_id,),
     ).fetchall()
@@ -11224,11 +11211,11 @@ def _materialize_inherited_prefix(
            SET inheritance = 'spawned-fresh', branch_point_message_id = NULL, branch_point_content_address = NULL,
                evidence_json = json_set(
                    CASE WHEN json_type(evidence_json) = 'object' THEN evidence_json ELSE '{}' END,
-                   '$.inherited_prefix', 'materialized-after-parent-rewrite',
-                   '$.identity_scope', json(?))
+                   '$.inherited_prefix', 'materialized-after-parent-rewrite')
            WHERE src_session_id = ? AND resolved_dst_session_id = ? AND inheritance = 'prefix-sharing'""",
-        (identity_scope.to_json(), child, parent_session_id),
+        (child, parent_session_id),
     )
+    _record_identity_scope(conn, child, identity_scope)
     refresh_action_pairs(conn, child)
     refresh_session_summary(conn, child)
     conn.execute("DELETE FROM session_model_usage WHERE session_id = ?", (child,))

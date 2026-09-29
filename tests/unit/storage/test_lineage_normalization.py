@@ -4505,3 +4505,28 @@ def test_an_append_keeps_the_materialized_identity_scope(tmp_path: Path) -> None
     conn.close()
     replayed = _replay_child(tmp_path, [*child, appended])
     assert set(materialized) <= set(replayed)
+
+
+def test_a_materialized_child_keeps_its_ids_after_a_replay_drops_its_parent(tmp_path: Path) -> None:
+    """The identity scope belongs to the child, not to its parent edge.
+
+    A revision that no longer declares the parent deletes the edge. Anti-vacuity:
+    keep the scope on that edge and the second parentless replay numbers the
+    identical ID-less prefix and tail rows over the whole transcript, swapping
+    their IDs.
+    """
+    parent = [_msg("", Role.USER, "hi", 0), _msg("", Role.ASSISTANT, "answer", 1)]
+    child = [*parent, _msg("", Role.USER, "hi", 2)]
+    rewritten = [_msg("", Role.USER, "hi", 0), _msg("", Role.ASSISTANT, "another answer", 1)]
+    _inheriting, materialized, _replayed = _materialize_then_replay(tmp_path, parent, child, rewritten)
+
+    conn = _connect(tmp_path / "index.db")
+    orphaned = ParsedSession(source_name=Provider.CODEX, provider_session_id="child", title="child", messages=child)
+    for _replay in range(2):
+        write_parsed_session_to_archive(conn, orphaned, force_replace=True)
+        conn.commit()
+        assert not conn.execute(
+            "SELECT 1 FROM session_links WHERE src_session_id = ?", ("codex-session:child",)
+        ).fetchall()
+        assert _child_ids(conn, "codex-session:child") == materialized
+    conn.close()
