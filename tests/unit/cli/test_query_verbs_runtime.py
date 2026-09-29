@@ -1271,6 +1271,40 @@ def test_continue_verb_rejects_ambiguous_ranked_results() -> None:
             wrapped(child, **_continue_verb_kwargs())
 
 
+def test_continue_verb_json_on_a_terminal_refuses_instead_of_prompting() -> None:
+    """``continue --format json`` is a program's call even on a TTY.
+
+    The verb's own format reaches the resolver as machine-output intent, so an
+    ambiguous ranked selection is the typed refusal, never the chooser.
+
+    Anti-vacuity: stop passing ``machine_output`` from ``continue_verb`` and the
+    exploding chooser runs.
+    """
+    from polylogue.cli import select as select_module
+    from polylogue.cli.contextual_errors import AmbiguousSelectionError
+    from polylogue.cli.select import SelectSessionRow
+
+    _, child = _context_pair(query_terms=("needle",))
+    child.obj = SimpleNamespace(config=SimpleNamespace(), ui=SimpleNamespace(plain=False))
+    wrapped = getattr(query_verbs.continue_verb.callback, "__wrapped__", None)
+    assert callable(wrapped)
+    rows = [
+        SelectSessionRow(session_id=session_id, origin="claude-code-session", title=session_id, date=None)
+        for session_id in ("session-1", "session-2")
+    ]
+
+    def _explode(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("the chooser ran for machine output")
+
+    with (
+        patch("polylogue.cli.session_rows.query_session_rows", return_value=rows),
+        patch.object(select_module, "interactive_selection_available", lambda _env: True),
+        patch.object(select_module, "choose_select_row", _explode),
+        pytest.raises(AmbiguousSelectionError),
+    ):
+        wrapped(child, **_continue_verb_kwargs(output_format="json"))
+
+
 def test_continue_verb_emits_successor_context_json() -> None:
     """JSON mode preserves the successor-context contract beside resume routing."""
     _, child = _context_pair(query_terms=("id:codex-session:abc123",))

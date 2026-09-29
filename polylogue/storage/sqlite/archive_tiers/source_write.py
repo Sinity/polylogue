@@ -38,16 +38,18 @@ class ContentExcisedError(ExcisionPolicyError):
     recorded in ``excised_content``, ordinary re-ingest of unmodified source
     bytes must not resurrect it, even across an ``index.db`` rebuild. There
     are two acquire-time raw-session write functions that gate on this --
-    ``write_source_raw_session`` (payload held in memory; used by the CLI
-    import path via ``ArchiveStore.write_raw_and_parsed_result`` /
-    ``operations.canonical_archive_ingest.ingest_one_shot_archive``) and
+    ``write_source_raw_session`` (payload held in memory) and
     ``write_source_raw_session_blob_ref`` (payload already published as a
-    blob, not held in memory; used by the daemon's memory-bounded streaming
-    path for multi-GiB files -- ``ArchiveStore.write_raw_blob_ref`` /
-    ``sources.live.batch.LiveBatchProcessor._ingest_full_records_archive``).
-    Both must gate identically or the blob-ref route silently resurrects
+    blob, not held in memory; the memory-bounded path for multi-GiB files).
+    The daemon reaches both: ``polylogue import`` submits the ``ingest``
+    operation, which admits through ``raw_admission``, and the live watcher
+    picks one per record in
+    ``sources.live.batch.LiveBatchProcessor._ingest_full_records_archive``.
+    ``operations.canonical_archive_ingest.ingest_one_shot_archive`` drives that
+    batch in-process for tooling (demo seeding, probes, tests), not as an
+    import route. Both must gate identically or the blob-ref route silently resurrects
     excised content that arrives via the streaming path (polylogue-27m fix
-    round). Callers at the batch orchestration layer catch this and skip the
+    round). Callers at the live batch orchestration layer catch this and skip the
     one file (count it, continue the batch) rather than aborting the whole
     run.
     """

@@ -158,6 +158,21 @@ def interactive_selection_available(env: AppEnv) -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty() and not env.ui.plain
 
 
+def machine_output_requested(*output_formats: object) -> bool:
+    """Return whether any requested output format is for a program, not a person.
+
+    A terminal on both ends does not mean a person is reading: ``--format
+    json`` on a TTY is a script's or an agent's call, and a chooser there would
+    wait on an answer its consumer cannot give.
+    """
+    from polylogue.cli.query_output import MACHINE_OUTPUT_FORMATS
+
+    return any(
+        isinstance(fmt, str) and (fmt in MACHINE_OUTPUT_FORMATS or fmt in {"jsonl", "json-lines"})
+        for fmt in output_formats
+    )
+
+
 def choose_select_row(env: AppEnv, rows: list[SelectSessionRow]) -> SelectSessionRow | None:
     """Choose one row, using fzf/prompt only when the terminal can support it."""
     if not rows:
@@ -185,6 +200,7 @@ def resolve_ambiguous_selection(
     operation: str,
     multi_match_hint: str | None = None,
     rows_loader: Callable[[], Sequence[SelectSessionRow]] | None = None,
+    machine_output: bool = False,
 ) -> str:
     """Resolve several matched refs to one, or refuse deterministically.
 
@@ -195,7 +211,9 @@ def resolve_ambiguous_selection(
     ``rows_loader`` supplies the richer labels the chooser displays and is
     called only once a chooser will actually run, so the refusal path costs the
     same read it did before.  A caller with no ``env`` has no terminal to ask,
-    so it always gets the refusal.
+    and a caller whose output is for a program (``machine_output``, see
+    :func:`machine_output_requested`) has no person to ask, so both always get
+    the refusal.
     """
     from polylogue.cli.contextual_errors import (
         AMBIGUITY_CANDIDATE_LIMIT,
@@ -206,7 +224,7 @@ def resolve_ambiguous_selection(
     refs = tuple(str(candidate) for candidate in candidates)
     if len(refs) == 1:
         return refs[0]
-    if refs and env is not None and interactive_selection_available(env):
+    if refs and env is not None and not machine_output and interactive_selection_available(env):
         rows = list(rows_loader() if rows_loader is not None else ()) or [
             SelectSessionRow(session_id=ref, origin="unknown", title=ref, date=None) for ref in refs
         ]
@@ -270,6 +288,7 @@ __all__ = [
     "SelectPrintField",
     "choose_select_row",
     "interactive_selection_available",
+    "machine_output_requested",
     "resolve_ambiguous_selection",
     "render_select_row",
     "render_select_rows",

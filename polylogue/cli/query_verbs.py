@@ -18,7 +18,7 @@ from click.shell_completion import CompletionItem
 
 if TYPE_CHECKING:
     from polylogue.cli.root_request import RootModeRequest
-    from polylogue.cli.select import SelectPrintField
+    from polylogue.cli.select import SelectPrintField, SelectSessionRow
     from polylogue.surfaces.payloads import FacetsResponse
     from polylogue.surfaces.projection_spec import QueryProjectionSpec
 
@@ -1460,7 +1460,15 @@ def read_verb(
         or exact_session_ref
         or not handler_metadata.accepts_query_set
     ):
-        session_id = _resolve_query_action_session_id(env, request, operation="read", first_only=first_only)
+        from polylogue.cli.select import machine_output_requested
+
+        session_id = _resolve_query_action_session_id(
+            env,
+            request,
+            operation="read",
+            first_only=first_only,
+            machine_output=machine_output_requested(output_format),
+        )
     effective_format = _effective_read_output_format(request, view=primary_view, output_format=output_format)
     projection_spec = _build_read_projection_spec(
         request,
@@ -1634,7 +1642,11 @@ def continue_verb(
         raise click.UsageError("--repo, --cwd, and --recent are only valid with continue --candidates.")
     if candidate_limit != _CONTINUE_CANDIDATE_DEFAULT_LIMIT:
         raise click.UsageError("--limit is only valid with continue --candidates.")
-    session_id = _resolve_query_action_session_id(env, request, operation="continue")
+    from polylogue.cli.select import machine_output_requested
+
+    session_id = _resolve_query_action_session_id(
+        env, request, operation="continue", machine_output=machine_output_requested(output_format)
+    )
     if session_id is None:
         raise click.UsageError("continue requires one matched session (use --id, --latest, or a narrowing query).")
     session = run_coroutine_sync(env.polylogue.get_session(session_id))
@@ -2609,6 +2621,7 @@ def _resolve_target_session_id(
     env: AppEnv | None = None,
     operation: str = "read",
     first_only: bool = False,
+    machine_output: bool = False,
 ) -> str | None:
     """Verb-tree adapter for the shared latest-resolver helper (#1626, #1642)."""
     from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params, resolve_single_session_id
@@ -2620,10 +2633,12 @@ def _resolve_target_session_id(
         spec = request.query_spec()
         if _spec_is_exact_session_ref(spec):
             return cast("str", spec.session_id)
-        return resolve_single_session_id(request, env=env, operation=operation, first_only=first_only)
+        return resolve_single_session_id(
+            request, env=env, operation=operation, first_only=first_only, machine_output=machine_output
+        )
 
     return resolve_session_id_from_root_params(
-        dict(request.params), env=env, operation=operation, first_only=first_only
+        dict(request.params), env=env, operation=operation, first_only=first_only, machine_output=machine_output
     )
 
 
@@ -2633,8 +2648,13 @@ def _resolve_query_action_session_id(
     *,
     operation: str,
     first_only: bool = False,
+    machine_output: bool = False,
 ) -> str | None:
-    """Resolve one query-action session with explicit ranked-result cardinality."""
+    """Resolve one query-action session with explicit ranked-result cardinality.
+
+    ``machine_output`` is the verb's own output contract: a JSON/JSONL format
+    refuses an ambiguous selection with its candidates even on a terminal.
+    """
     if request.query_terms:
         from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
         from polylogue.cli.session_rows import query_session_rows
@@ -2654,16 +2674,22 @@ def _resolve_query_action_session_id(
         session_ids = [row.session_id for row in rows]
         multi_match_hint = "Narrow the query to one session or run select first." if operation == "continue" else None
         if len(session_ids) > 1 and not first_only:
-            from polylogue.cli.select import resolve_ambiguous_selection
+            from polylogue.cli.select import machine_output_requested, resolve_ambiguous_selection
+
+            def every_row() -> list[SelectSessionRow]:
+                # The probe bounds only the refusal's candidate display; the
+                # chooser offers the whole selection.
+                if len(rows) <= AMBIGUITY_CANDIDATE_LIMIT:
+                    return list(rows)
+                return query_session_rows(env.config, request, limit=None)
 
             return resolve_ambiguous_selection(
                 env,
                 session_ids,
                 operation=operation,
                 multi_match_hint=multi_match_hint,
-                # The rows the chooser labels are the rows the ids came from, so
-                # the second read the facade route needed is gone.
-                rows_loader=lambda: rows,
+                rows_loader=every_row,
+                machine_output=machine_output or machine_output_requested(request.params.get("output_format")),
             )
         check_cardinality(
             len(session_ids),
@@ -2675,7 +2701,9 @@ def _resolve_query_action_session_id(
         )
         return session_ids[0] if session_ids else None
 
-    return _resolve_target_session_id(request, env=env, operation=operation, first_only=first_only)
+    return _resolve_target_session_id(
+        request, env=env, operation=operation, first_only=first_only, machine_output=machine_output
+    )
 
 
 def _resolve_query_action_session_ids(

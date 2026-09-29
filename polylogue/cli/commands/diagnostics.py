@@ -309,6 +309,7 @@ def usage_command(
     """
     import json
 
+    from polylogue.cli.select import machine_output_requested
     from polylogue.cli.shared.insight_command_contracts import find_root_params
     from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
 
@@ -319,7 +320,10 @@ def usage_command(
         # own `--origin` audit filter must never be misread as the root
         # query `--origin` session-narrowing filter.
         session_id = resolve_session_id_from_root_params(
-            dict(find_root_params(ctx)), env=env, operation="analyze usage"
+            dict(find_root_params(ctx)),
+            env=env,
+            operation="analyze usage",
+            machine_output=machine_output_requested(output_format),
         )
     if session_id is not None:
         reconciliation = run_coroutine_sync(env.polylogue.session_usage_reconciliation(session_id))
@@ -578,12 +582,18 @@ def tools_command(
     every call unconditionally joined/materialized the whole archive
     (polylogue-zumd).
     """
+    from polylogue.cli.select import machine_output_requested
     from polylogue.cli.shared.insight_command_contracts import find_root_params
     from polylogue.cli.shared.latest_resolver import resolve_session_id_from_root_params
 
     env: AppEnv = ctx.obj
     session_id = (
-        resolve_session_id_from_root_params(dict(find_root_params(ctx)), env=env, operation="analyze tools")
+        resolve_session_id_from_root_params(
+            dict(find_root_params(ctx)),
+            env=env,
+            operation="analyze tools",
+            machine_output=machine_output_requested(output_format),
+        )
         if ctx.parent is not None
         else None
     )

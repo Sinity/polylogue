@@ -33,25 +33,25 @@ if TYPE_CHECKING:
     from polylogue.config import Config
 
 
-_CHOOSER_PAGE_SIZE = 500
-
-
 def resolve_single_session_id(
     request: RootModeRequest,
     *,
     env: AppEnv | None = None,
     operation: str = "read",
     first_only: bool = False,
+    machine_output: bool = False,
 ) -> str | None:
     """Resolve the one session ``request``'s filters select.
 
     Returns ``None`` when nothing narrows the selection or nothing matched.
     ``--latest`` and ``first_only`` take the top row by request. Otherwise
     several matches go through :func:`resolve_ambiguous_selection`, which runs
-    the chooser only on a terminal and raises a typed refusal elsewhere.
+    the chooser only on a terminal read by a person and raises a typed refusal
+    elsewhere, including when ``machine_output`` says the output is for a
+    program.
     """
     from polylogue.cli.contextual_errors import AMBIGUITY_CANDIDATE_LIMIT
-    from polylogue.cli.select import resolve_ambiguous_selection
+    from polylogue.cli.select import machine_output_requested, resolve_ambiguous_selection
     from polylogue.cli.session_rows import query_session_ids, query_session_rows
 
     spec = request.query_spec()
@@ -69,21 +69,19 @@ def resolve_single_session_id(
 
     def every_row() -> list[SelectSessionRow]:
         # The probe bounds only the refusal's candidate display. A chooser
-        # must offer the whole selection, so it pages through all of it.
+        # must offer the whole selection, so it walks all of it.
         if len(rows) <= AMBIGUITY_CANDIDATE_LIMIT:
             return list(rows)
-        loaded: list[SelectSessionRow] = []
-        while True:
-            page = query_session_rows(config, request, limit=_CHOOSER_PAGE_SIZE, offset=len(loaded))
-            loaded.extend(page)
-            if len(page) < _CHOOSER_PAGE_SIZE:
-                return loaded
+        return query_session_rows(config, request, limit=None)
 
     return resolve_ambiguous_selection(
         env,
         [row.session_id for row in rows],
         operation=operation,
         rows_loader=every_row,
+        # The root ``--format`` is the query's own output contract; a verb's
+        # local format arrives through ``machine_output``.
+        machine_output=machine_output or machine_output_requested(request.params.get("output_format")),
     )
 
 
@@ -93,6 +91,7 @@ def resolve_session_id_from_root_params(
     env: AppEnv | None = None,
     operation: str = "read",
     first_only: bool = False,
+    machine_output: bool = False,
 ) -> str | None:
     """Resolve to one conv id by consulting an explicit id, then filters.
 
@@ -116,7 +115,11 @@ def resolve_session_id_from_root_params(
 
     try:
         return resolve_single_session_id(
-            RootModeRequest.from_params(dict(root_params)), env=env, operation=operation, first_only=first_only
+            RootModeRequest.from_params(dict(root_params)),
+            env=env,
+            operation=operation,
+            first_only=first_only,
+            machine_output=machine_output,
         )
     except OperationUnavailableError as exc:
         raise mutation_refusal(exc, exc.operation or "cli.query") from None
