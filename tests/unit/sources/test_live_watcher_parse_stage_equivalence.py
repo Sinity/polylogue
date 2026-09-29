@@ -620,21 +620,21 @@ def _chatgpt_document(conversation_id: str) -> bytes:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("malformed_initial", [False, True])
-async def test_changed_json_after_preparation_is_retained_without_writer_decode(
+async def test_changed_json_after_preparation_defers_without_writer_decode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, malformed_initial: bool
 ) -> None:
     """A stale worker's provider or parse error cannot label captured bytes.
 
-    Without a carrier for the captured bytes, the writer neither decodes the
-    document to classify it nor drops it: the raw is retained under the
-    source's provider and raw materialization resolves the unknown provider
-    from the retained blob. Anti-vacuity: detecting the provider from the
+    Without a carrier for the captured bytes, the writer does not decode the
+    document to classify it: the capture is released, the path is deferred
+    with its debt recorded, and the next pass retains the bytes once, under
+    the provider its own preparation detected. Anti-vacuity: classifying the
     captured blob in the writer calls the patched detector and fails here;
-    deferring without retention leaves no raw row.
+    retaining the capture under the source's provider admits a second raw
+    identity for the same bytes on the next pass.
     """
     import polylogue.sources.live.batch as batch
     import polylogue.sources.live.cursor as cursor_module
-    from polylogue.sources.revision_backfill import backfill_historical_revision_evidence
 
     monkeypatch.setattr(cursor_module, "_FULL_CURSOR_RECONCILIATION_RETRY_DELAY_S", 0)
 
@@ -675,25 +675,29 @@ async def test_changed_json_after_preparation_is_retained_without_writer_decode(
         read_snapshot=open_operation_read,
     )
     try:
-        first = await processor.ingest_files([source], emit_event=False)
+        with plog.capture() as records:
+            first = await processor.ingest_files([source], emit_event=False)
         assert changed
-        assert first.succeeded_file_count == 1 and first.failed_file_count == 0
-        assert str(source) not in first.deferred_paths
+        assert str(source) in first.deferred_paths
+        assert first.failed_file_count == 0
+        assert [record for record in records if record["event"] == "live.ingest.json_capture_deferred"]
         with _connect(archive_root / "source.db") as conn:
-            rows = conn.execute("SELECT origin, hex(blob_hash), parsed_at_ms, parse_error FROM raw_sessions").fetchall()
-        assert [tuple(row) for row in rows] == [
-            ("unknown-export", hashlib.sha256(chatgpt).hexdigest().upper(), None, None)
-        ]
+            assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 0
+        with _connect(archive_root / "ops.db") as conn:
+            debt = conn.execute(
+                "SELECT stage, status FROM convergence_debt WHERE target_type = 'source_path'"
+            ).fetchone()
+        assert debt is not None and tuple(debt) == ("live_ingest_deferred", "deferred")
+
         second = await processor.ingest_files([source], emit_event=False)
-        assert second.failed_file_count == 0
+        assert second.ingested_session_count == 1
     finally:
         stage.shutdown()
-
-    backfill_historical_revision_evidence(archive_root)
     with _connect(archive_root / "source.db") as conn:
-        assert conn.execute("SELECT COUNT(*) FROM raw_sessions").fetchone()[0] == 1
-    with _connect(archive_root / "index.db") as conn:
-        assert [row[0] for row in conn.execute("SELECT native_id FROM sessions")] == ["chatgpt-after-copy"]
+        rows = conn.execute("SELECT origin, hex(blob_hash) FROM raw_sessions").fetchall()
+    assert [tuple(row) for row in rows] == [
+        (origin_from_provider(Provider.CHATGPT).value, hashlib.sha256(chatgpt).hexdigest().upper())
+    ]
 
 
 def test_path_worker_binds_provider_parse_and_seal_to_one_snapshot(
@@ -2171,10 +2175,10 @@ async def test_path_worker_decode_failure_reaches_terminal_unknown_evidence(
     )
     try:
         first = await processor.ingest_files([path], emit_event=False)
+        assert prepared == 1
         second = await processor.ingest_files([path], emit_event=False)
     finally:
         stage.shutdown()
-    assert prepared == 1
     assert first.failed_file_count == 0 and first.succeeded_file_count == 1
     assert second.failed_file_count == 0
     with _connect(archive_root / "source.db") as conn:

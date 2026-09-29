@@ -3222,7 +3222,6 @@ class LiveBatchProcessor:
         shard_paths_by_raw_id: dict[str, Path] = {}
         path_preparations_by_source_path: dict[str, PreparedJsonl] = {}
         retained_preparations_by_raw_id: dict[str, PreparedLiveRetainedRaw] = {}
-        replay_owned_paths: set[str] = set()
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
         raw_source_fingerprints: dict[Path, str] = {}
@@ -3902,17 +3901,38 @@ class LiveBatchProcessor:
                     elif prepared_provider is not None:
                         provider = prepared_provider
                     elif str(path) in prepared_json_paths:
-                        # The parse stage owns this document's decoding, and
-                        # classifying the capture here would decode the whole
-                        # document under the writer hold. Without a carrier
-                        # for these bytes (the source moved after its
-                        # preparation, or the preparation was deferred), the
-                        # bytes are retained under the source's provider and
-                        # raw materialization interprets them off the writer,
-                        # detecting an unknown provider from the retained blob.
-                        provider = fallback_provider
                         if preparation is None or preparation.deferred:
-                            replay_owned_paths.add(str(path))
+                            # The parse stage owns this document's decoding:
+                            # classifying the capture here would decode the
+                            # whole document under the writer hold. Its raw
+                            # identity needs the provider those bytes select,
+                            # and any other provider would admit the same
+                            # bytes under a second raw id when they are
+                            # observed again. So this capture is released,
+                            # the source keeps its bytes, and the path is
+                            # deferred to a pass whose preparation matches
+                            # what it captures.
+                            if blob_publication_receipt_id is not None:
+                                blob_store.discard_pending_receipt(blob_publication_receipt_id)
+                            unusable = path_preparations_by_source_path.pop(str(path), None)
+                            if unusable is not None:
+                                unusable.discard()
+                            emit(
+                                "live.ingest.json_capture_deferred",
+                                level=INFO,
+                                outcome="degraded",
+                                source_path=str(path),
+                                reason=(
+                                    unusable.error
+                                    if unusable is not None and unusable.error is not None
+                                    else "no preparation for the captured bytes"
+                                ),
+                            )
+                            preparation_deferred_paths.append(path)
+                            continue
+                        # A terminal failure no hash binds (a worker lost on
+                        # this file) is recorded under the source's provider.
+                        provider = fallback_provider
                     else:
                         provider, detection_crash = detect_provider_from_path_sample_evidence(
                             blob_store.blob_path(raw_id), fallback_provider, json_document=True
@@ -4040,7 +4060,6 @@ class LiveBatchProcessor:
                     retained_preparations_by_raw_id,
                     max_pass_seconds=max_pass_seconds,
                     pass_started=pass_clock_started,
-                    replay_owned_paths=frozenset(replay_owned_paths),
                 )
             except Exception as exc:
                 if storage_fault_kind(exc) is not None:
@@ -4069,7 +4088,7 @@ class LiveBatchProcessor:
             # then also excluded from ``succeeded`` below (unlike
             # deferred_raw_ids, whose raw row IS durably written this pass).
             skipped_paths = {raw_by_record[key] for key in archive_write.skipped_raw_ids if key in raw_by_record}
-            preparation_deferred_paths = [
+            preparation_deferred_paths += [
                 raw_by_record[key] for key in archive_write.preparation_deferred_raw_ids if key in raw_by_record
             ]
             raw_deferred_paths = [raw_by_record[key] for key in archive_write.deferred_raw_ids if key in raw_by_record]
@@ -4263,13 +4282,7 @@ class LiveBatchProcessor:
         *,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
-        replay_owned_paths: frozenset[str] = frozenset(),
     ) -> _ArchiveFullWriteResult:
-        """Admit each record's raw bytes, then parse and publish its sessions.
-
-        A record whose source path is in ``replay_owned_paths`` is admitted
-        and left to raw materialization, which interprets it off the writer.
-        """
 
         archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
         result = _ArchiveFullWriteResult()
@@ -4555,12 +4568,6 @@ class LiveBatchProcessor:
                         and self._parse_stage is not None
                     ):
                         result.preparation_deferred_raw_ids[_full_record_key(record)] = source_raw_id
-                        _accumulate_stage_timings(result.stage_timings_s, record_timings)
-                        continue
-                    if record.source_path in replay_owned_paths:
-                        # Admitted and pending: raw materialization parses it
-                        # off the writer, as it does any admitted raw.
-                        result.raw_ids[_full_record_key(record)] = source_raw_id
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     degraded = degraded_reason()
