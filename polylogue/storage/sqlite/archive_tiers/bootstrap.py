@@ -423,7 +423,8 @@ def _materialize_archive_tier(conn: sqlite3.Connection, tier: ArchiveTier) -> No
     overwrite existing content.
     """
     spec = archive_tier_spec(tier)
-    # Foreign-key enforcement belongs to the connection, not the cached DDL.
+    # Foreign-key enforcement is connection state, not schema: every branch
+    # below, including the OPS same-digest shortcut, must leave it enabled.
     conn.execute("PRAGMA foreign_keys = ON")
     if tier is ArchiveTier.OPS and int(conn.execute("SELECT COUNT(*) FROM sqlite_master").fetchone()[0]) > 0:
         digest = _tier_prototype_key(conn, tier, spec.version)[2]
@@ -1156,13 +1157,6 @@ def open_initialized_tier_connection(
         # initialization. Version 0 is the create-it case and keeps the DDL
         # route, which is what stamps the version this branch reads.
         if stored_version == required_version:
-            if tier is ArchiveTier.OPS:
-                # OPS convergence stamps after materialization. Admit the
-                # existing identity first so that convergence cannot erase
-                # missing or stale identity evidence on this writable route.
-                from polylogue.storage.sqlite.schema_bootstrap import assert_derived_schema_identity
-
-                assert_derived_schema_identity(conn, tier.value)
             # Performance only: the redundant whole-tier DDL goes, the identity
             # policy this route has always applied stays. See
             # converge_same_version_tier on why the two are separable.

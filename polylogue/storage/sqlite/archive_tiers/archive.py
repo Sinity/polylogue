@@ -4596,12 +4596,7 @@ class ArchiveStore:
             "ELSE COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') "
             "END"
         )
-        status_expr = (
-            "CASE r.tool_outcome "
-            "WHEN 'ok' THEN 'ok' "
-            "WHEN 'error' THEN 'failed' "
-            "ELSE 'unknown' END"
-        )
+        status_expr = "CASE r.tool_outcome WHEN 'ok' THEN 'ok' WHEN 'error' THEN 'failed' ELSE 'unknown' END"
         where.append("r.rowid IS NOT NULL")
         if request.tool:
             where.append(f"{tool_expr} = LOWER(?)")
@@ -5324,7 +5319,8 @@ class ArchiveStore:
             with user_conn:
                 previous_owner = (
                     _active_assertion_by_kind_key(user_conn, AssertionKind.SAVED_QUERY, previous_name)
-                    if previous_name is not None else None
+                    if previous_name is not None
+                    else None
                 )
                 owns_previous_name = previous_owner is not None and previous_owner.assertion_id == assertion_id
                 if name_assertion is not None and name_assertion.assertion_id != assertion_id:
@@ -5400,7 +5396,8 @@ class ArchiveStore:
             with user_conn:
                 name_owner = (
                     _active_assertion_by_kind_key(user_conn, AssertionKind.SAVED_QUERY, watched_name)
-                    if watched_name is not None else None
+                    if watched_name is not None
+                    else None
                 )
                 owns_name = name_owner is not None and name_owner.assertion_id == assertion_id
                 deleted = mark_assertion_status(user_conn, assertion_id, "deleted", now_ms=deleted_at_ms)

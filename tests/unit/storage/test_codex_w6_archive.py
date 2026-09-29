@@ -48,41 +48,65 @@ def test_action_pairs_follow_paired_result_updates_and_deletes(tmp_path: Path) -
             ParsedSession(
                 source_name=Provider.CODEX,
                 provider_session_id="w6-actions",
-                messages=[ParsedMessage(
-                    provider_message_id="message", role=Role.ASSISTANT,
-                    blocks=[
-                        ParsedContentBlock(type=BlockType.TOOL_USE, tool_name="Bash", tool_id="run", tool_input={"command": "true"}),
-                        ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="run", text="ok", is_error=False, exit_code=0),
-                    ],
-                )],
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="message",
+                        role=Role.ASSISTANT,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE, tool_name="Bash", tool_id="run", tool_input={"command": "true"}
+                            ),
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT, tool_id="run", text="ok", is_error=False, exit_code=0
+                            ),
+                        ],
+                    )
+                ],
             ),
         )
         conn = archive._conn
-        conn.execute("UPDATE blocks SET tool_outcome = 'error' WHERE session_id = ? AND block_type = 'tool_use'", (session_id,))
-        assert conn.execute("SELECT result_state FROM actions WHERE session_id = ?", (session_id,)).fetchone()[0] == "outcome_success"
+        conn.execute(
+            "UPDATE blocks SET tool_outcome = 'error' WHERE session_id = ? AND block_type = 'tool_use'", (session_id,)
+        )
+        assert (
+            conn.execute("SELECT result_state FROM actions WHERE session_id = ?", (session_id,)).fetchone()[0]
+            == "outcome_success"
+        )
         conn.execute(
             "UPDATE blocks SET tool_outcome = 'unknown', tool_result_outcome_unknown_reason = 'not_reported' "
-            "WHERE session_id = ? AND block_type = 'tool_result'", (session_id,),
+            "WHERE session_id = ? AND block_type = 'tool_result'",
+            (session_id,),
         )
-        assert conn.execute("SELECT result_state, outcome_unknown_reason FROM actions WHERE session_id = ?", (session_id,)).fetchone()[:] == ("outcome_unknown", "not_reported")
+        assert conn.execute(
+            "SELECT result_state, outcome_unknown_reason FROM actions WHERE session_id = ?", (session_id,)
+        ).fetchone()[:] == ("outcome_unknown", "not_reported")
         conn.execute("DELETE FROM blocks WHERE session_id = ? AND block_type = 'tool_result'", (session_id,))
-        assert conn.execute("SELECT result_state FROM actions WHERE session_id = ?", (session_id,)).fetchone()[0] == "no_result"
+        assert (
+            conn.execute("SELECT result_state FROM actions WHERE session_id = ?", (session_id,)).fetchone()[0]
+            == "no_result"
+        )
 
 
 def test_work_event_payload_cannot_override_validated_identity(tmp_path: Path) -> None:
     with ArchiveStore(tmp_path) as archive:
         session_id = _seed_session(archive)
         result = archive.append_work_event(
-            session_id=session_id, event_type="tool_run", event_id="  event-1  ", summary="declared summary",
+            session_id=session_id,
+            event_type="tool_run",
+            event_id="  event-1  ",
+            summary="declared summary",
             payload={"event_id": "", "summary": "payload override", "tool_name": "Bash"},
         )
         assert result["event_id"] == "event-1"
         stored = archive._conn.execute(
-            "SELECT payload_json FROM session_events WHERE session_id = ? AND event_type = 'tool_run'", (session_id,),
+            "SELECT payload_json FROM session_events WHERE session_id = ? AND event_type = 'tool_run'",
+            (session_id,),
         ).fetchone()
         payload = json.loads(stored[0])
         assert (payload["event_id"], payload["summary"]) == ("event-1", "declared summary")
-        raw_id = archive._conn.execute("SELECT raw_id FROM raw_sessions WHERE source_path LIKE 'agent-work-event:%'").fetchone()[0]
+        raw_id = archive._conn.execute(
+            "SELECT raw_id FROM raw_sessions WHERE source_path LIKE 'agent-work-event:%'"
+        ).fetchone()[0]
         replayed = parse_retained_raw_sessions(archive, raw_id)
         assert replayed[0].session_events[0].payload["event_id"] == "event-1"
 
@@ -134,7 +158,12 @@ def test_empty_aggregate_page_preserves_total_group_count(tmp_path: Path, limit:
         complete = archive.query_unit_agg_metrics("message", source.predicate, group_by=("role",), metrics=metrics)
         assert len(complete.rows) == complete.total_groups == 2
         page = archive.query_unit_agg_metrics(
-            "message", source.predicate, group_by=("role",), metrics=metrics, limit=limit, offset=offset,
+            "message",
+            source.predicate,
+            group_by=("role",),
+            metrics=metrics,
+            limit=limit,
+            offset=offset,
         )
         assert page.rows == ()
         assert page.total_groups == 2
@@ -147,8 +176,13 @@ async def test_session_record_reads_preserve_milliseconds(tmp_path: Path) -> Non
     with ArchiveStore(tmp_path) as archive:
         session_id = write_index_session(
             archive,
-            ParsedSession(source_name=Provider.CODEX, provider_session_id="w6-time", created_at=created, updated_at=updated,
-                          messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")]),
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id="w6-time",
+                created_at=created,
+                updated_at=updated,
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="hello")],
+            ),
         )
         index_path = archive.index_db_path
     async with aiosqlite.connect(index_path) as conn:
@@ -164,46 +198,92 @@ async def test_session_record_reads_preserve_milliseconds(tmp_path: Path) -> Non
 
 
 @pytest.mark.parametrize("column,value", [("attachment_id", "replacement"), ("position", 1)])
-def test_attachment_reference_identity_and_order_invalidate_profile_binding(tmp_path: Path, column: str, value: object) -> None:
+def test_attachment_reference_identity_and_order_invalidate_profile_binding(
+    tmp_path: Path, column: str, value: object
+) -> None:
     """A native reference UPDATE invalidates the binding and queues its owner."""
     with ArchiveStore(tmp_path) as archive:
         session_id = _seed_session(archive)
         conn = archive._conn
-        message_id = conn.execute("SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1", (session_id,)).fetchone()[0]
+        message_id = conn.execute(
+            "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position LIMIT 1", (session_id,)
+        ).fetchone()[0]
         conn.executemany(
             "INSERT INTO attachments(attachment_id, display_name, media_type, byte_count) VALUES (?, ?, 'text/plain', 1)",
             [("original", "a.txt"), ("replacement", "b.txt")],
         )
-        conn.execute("INSERT INTO attachment_refs(attachment_id, session_id, message_id, position) VALUES ('original', ?, ?, 0)", (session_id, message_id))
+        conn.execute(
+            "INSERT INTO attachment_refs(attachment_id, session_id, message_id, position) VALUES ('original', ?, ?, 0)",
+            (session_id, message_id),
+        )
         conn.execute(
             "INSERT INTO session_profiles(session_id, input_content_hash) VALUES (?, 'published-binding') "
-            "ON CONFLICT(session_id) DO UPDATE SET input_content_hash = excluded.input_content_hash", (session_id,),
+            "ON CONFLICT(session_id) DO UPDATE SET input_content_hash = excluded.input_content_hash",
+            (session_id,),
         )
         conn.execute("DELETE FROM session_profile_demand WHERE session_id = ?", (session_id,))
         conn.execute(f"UPDATE attachment_refs SET {column} = ? WHERE session_id = ?", (value, session_id))
-        assert conn.execute("SELECT input_content_hash FROM session_profiles WHERE session_id = ?", (session_id,)).fetchone()[0] is None
-        assert conn.execute("SELECT revision FROM session_profile_demand WHERE session_id = ?", (session_id,)).fetchone()[0] > 0
+        assert (
+            conn.execute(
+                "SELECT input_content_hash FROM session_profiles WHERE session_id = ?", (session_id,)
+            ).fetchone()[0]
+            is None
+        )
+        assert (
+            conn.execute("SELECT revision FROM session_profile_demand WHERE session_id = ?", (session_id,)).fetchone()[
+                0
+            ]
+            > 0
+        )
 
 
 @pytest.mark.parametrize("outcome,reason,expected", [("unknown", "not_reported", "unknown"), ("error", None, "failed")])
 def test_observed_tool_rollup_respects_canonical_outcome_over_exit_code(
-    tmp_path: Path, outcome: str, reason: str | None, expected: str,
+    tmp_path: Path,
+    outcome: str,
+    reason: str | None,
+    expected: str,
 ) -> None:
     with ArchiveStore(tmp_path) as archive:
         session_id = write_index_session(
             archive,
             ParsedSession(
-                source_name=Provider.CODEX, provider_session_id="w6-observed-outcome",
-                messages=[ParsedMessage(provider_message_id="m1", role=Role.ASSISTANT, blocks=[
-                    ParsedContentBlock(type=BlockType.TOOL_USE, tool_name="Bash", tool_id="tool", tool_input={"command": "true"}),
-                    ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="tool", text="provider signal", is_error=False, exit_code=0),
-                ])],
+                source_name=Provider.CODEX,
+                provider_session_id="w6-observed-outcome",
+                messages=[
+                    ParsedMessage(
+                        provider_message_id="m1",
+                        role=Role.ASSISTANT,
+                        blocks=[
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_USE,
+                                tool_name="Bash",
+                                tool_id="tool",
+                                tool_input={"command": "true"},
+                            ),
+                            ParsedContentBlock(
+                                type=BlockType.TOOL_RESULT,
+                                tool_id="tool",
+                                text="provider signal",
+                                is_error=False,
+                                exit_code=0,
+                            ),
+                        ],
+                    )
+                ],
             ),
         )
         archive._conn.execute(
             "UPDATE blocks SET tool_outcome = ?, tool_result_outcome_unknown_reason = ? "
-            "WHERE session_id = ? AND block_type = 'tool_result'", (outcome, reason, session_id),
+            "WHERE session_id = ? AND block_type = 'tool_result'",
+            (outcome, reason, session_id),
         )
         rows = archive.list_tool_observed_event_count_rows()
         assert len(rows) == 1
         assert (rows[0]["status"], rows[0]["event_count"]) == (expected, 1)
+        # The observed-event relation projects and filters (through its
+        # source pushdown) on the same canonical outcome.
+        source = parse_unit_source_expression(f"observed-events where kind:tool_finished status:{expected}")
+        assert source is not None
+        counts = archive.query_unit_counts("observed-event", source.predicate, group_by="status")
+        assert [(row.group_key, row.count) for row in counts] == [(expected, 1)]

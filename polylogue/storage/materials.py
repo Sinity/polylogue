@@ -24,6 +24,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
 
+import ijson
+
 from polylogue.storage.blob_store import BlobStore, get_blob_store
 
 MaterialState = Literal[
@@ -91,13 +93,42 @@ def _material_id(source_uri: str, referrer_ref: str, payload: bytes | None) -> s
     return "material:" + digest.hexdigest()
 
 
+_JSON_MEDIA_TYPES = frozenset({"application/json", "text/json"})
+_NDJSON_MEDIA_TYPES = frozenset({"application/ndjson", "application/x-ndjson"})
+_JSON_SCALAR_TYPE_NAMES = {"string": "str", "boolean": "bool", "null": "NoneType"}
+
+
+def _json_document_type(payload: bytes) -> str:
+    """Validate one complete JSON document and name its top-level type.
+
+    The whole document is validated as a stream: a prefix of a large document
+    is not a JSON value, and a budgeted slice would turn valid retained bytes
+    into a false ``malformed`` verdict.
+    """
+    top_level: str | None = None
+    for event, value in ijson.basic_parse(BytesIO(payload), use_float=True):
+        if top_level is None:
+            if event == "start_map":
+                top_level = "dict"
+            elif event == "start_array":
+                top_level = "list"
+            elif event == "number":
+                top_level = type(value).__name__
+            else:
+                top_level = _JSON_SCALAR_TYPE_NAMES.get(event, event)
+    if top_level is None:
+        raise ijson.IncompleteJSONError("empty JSON document")
+    return top_level
+
+
 def extraction_manifest(payload: bytes, media_type: str | None) -> dict[str, object]:
     """Describe retained bytes without copying unbounded content into metadata."""
     manifest: dict[str, object] = {"bytes": len(payload), "extractor": "materials-v1"}
     kind = (media_type or "").lower()
-    if kind in {"application/json", "text/json", "application/ndjson", "application/x-ndjson"}:
+    if kind in _JSON_MEDIA_TYPES or kind in _NDJSON_MEDIA_TYPES:
         try:
-            if kind in {"application/ndjson", "application/x-ndjson"}:
+            if kind in _NDJSON_MEDIA_TYPES:
+                # NDJSON is a record stream, not one JSON value.
                 record_count = 0
                 for line in BytesIO(payload):
                     if line.strip():
@@ -106,22 +137,23 @@ def extraction_manifest(payload: bytes, media_type: str | None) -> dict[str, obj
                 manifest["json_type"] = "ndjson"
                 manifest["record_count"] = record_count
             else:
-                # A prefix is not a JSON document. Validate all retained bytes;
-                # an extraction budget must never turn valid evidence malformed.
-                value = json.loads(payload.decode("utf-8"))
-                manifest["json_type"] = type(value).__name__
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                manifest["json_type"] = _json_document_type(payload)
+        except (UnicodeDecodeError, json.JSONDecodeError, ijson.JSONError) as exc:
             manifest["diagnostic"] = f"json extraction failed: {type(exc).__name__}: {exc}"
     elif kind in {"application/zip", "application/x-zip-compressed"}:
         try:
             with zipfile.ZipFile(BytesIO(payload)) as archive:
-                # Names are retained in the CAS archive, not in this queryable
-                # summary. Even one legal ZIP name can dwarf a whole manifest.
-                manifest["entry_count"] = len(archive.infolist())
-                manifest["uncompressed_bytes"] = sum(info.file_size for info in archive.infolist())
+                # Entry names stay in the retained CAS bytes, not in this
+                # queryable summary: one legal ZIP name can dwarf the manifest.
+                entries = archive.infolist()
+                manifest["entry_count"] = len(entries)
+                manifest["uncompressed_bytes"] = sum(info.file_size for info in entries)
         except (OSError, zipfile.BadZipFile) as exc:
             manifest["diagnostic"] = f"zip extraction failed: {type(exc).__name__}: {exc}"
     elif kind.startswith("text/") or not kind:
+        # Keep the manifest safe to expose through query surfaces. Raw text is
+        # available from the CAS blob; it must not be copied into indexable
+        # metadata or synthetic/public fixtures by default.
         manifest["text"] = {"available": True, "encoding": media_type or "unknown"}
     return manifest
 
@@ -368,7 +400,7 @@ def admit_material(
             ).fetchone()
             is not None
         )
-        if duplicate and state is None and material_state == "acquired":
+        if duplicate and state is None:
             material_state = "duplicate"
     now = observed_at_ms
     conn.execute(
@@ -382,10 +414,7 @@ def admit_material(
           acquisition_state=excluded.acquisition_state, diagnostic=excluded.diagnostic,
           retryable=excluded.retryable, blob_hash=excluded.blob_hash,
           byte_size=excluded.byte_size, extraction_manifest_json=excluded.extraction_manifest_json,
-          custody=excluded.custody, acquired_at_ms=excluded.acquired_at_ms,
-          media_type=excluded.media_type, media_charset=excluded.media_charset,
-          filename=excluded.filename, privacy_classification=excluded.privacy_classification,
-          supersedes_material_id=excluded.supersedes_material_id""",
+          custody=excluded.custody, acquired_at_ms=excluded.acquired_at_ms""",
         (
             material_id,
             referrer_ref,
@@ -406,6 +435,8 @@ def admit_material(
             now,
         ),
     )
+    # A readmission keeps the stored identity metadata and creation time, so
+    # report the row that persisted rather than this call's arguments.
     observation = get_material(conn, material_id)
     if observation is None:
         raise RuntimeError(f"material admission did not persist {material_id}")

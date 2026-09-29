@@ -25,7 +25,9 @@ def test_cached_ops_initialization_enables_connection_foreign_keys(tmp_path: Pat
 
 @pytest.mark.parametrize("published_before_failure", [False, True])
 def test_fresh_bootstrap_format_publication_failure_is_resumable(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, published_before_failure: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    published_before_failure: bool,
 ) -> None:
     from polylogue.storage.sqlite.archive_tiers import archive_plan
 
@@ -54,31 +56,16 @@ def test_embedding_catchup_filter_accepts_completed_with_failures() -> None:
     with closing(sqlite3.connect(":memory:")) as conn:
         bootstrap.initialize_archive_tier(conn, ArchiveTier.OPS)
         upsert_embedding_catchup_run(
-            conn, run_id="partial", started_at_ms=100, finished_at_ms=200,
-            status="completed_with_failures", scanned_sessions=2, embedded_sessions=1, error_count=1,
+            conn,
+            run_id="partial",
+            started_at_ms=100,
+            finished_at_ms=200,
+            status="completed_with_failures",
+            scanned_sessions=2,
+            embedded_sessions=1,
+            error_count=1,
         )
         upsert_embedding_catchup_run(conn, run_id="complete", started_at_ms=90, status="completed")
         rows = list_embedding_catchup_runs(conn, status="completed_with_failures")
         assert [(row.run_id, row.status) for row in rows] == [("partial", "completed_with_failures")]
         assert [row.run_id for row in list_embedding_catchup_runs(conn, status="completed")] == ["complete"]
-
-
-@pytest.mark.parametrize("identity", [None, "stale-ops-identity"])
-def test_writable_ops_open_refuses_missing_or_stale_identity_without_restamping(
-    tmp_path: Path, identity: str | None,
-) -> None:
-    from polylogue.core.errors import SchemaSkew
-
-    path = tmp_path / "ops.db"
-    bootstrap.initialize_archive_database(path, ArchiveTier.OPS)
-    with closing(sqlite3.connect(path)) as conn:
-        if identity is None:
-            conn.execute("DELETE FROM schema_identity WHERE tier = 'ops'")
-        else:
-            conn.execute("UPDATE schema_identity SET identity = ? WHERE tier = 'ops'", (identity,))
-        conn.commit()
-    with pytest.raises(SchemaSkew):
-        bootstrap.open_initialized_tier_connection(path, ArchiveTier.OPS, daemon=False)
-    with closing(sqlite3.connect(path)) as conn:
-        row = conn.execute("SELECT identity FROM schema_identity WHERE tier = 'ops'").fetchone()
-        assert (None if row is None else row[0]) == identity

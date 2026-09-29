@@ -3942,8 +3942,8 @@ def query_unit_agg_metrics(
             normalized_offset + normalized_limit,
         ],
     ).fetchall()
-    if not rows:
-        return ArchiveQueryUnitAggMetricPage(rows=(), total_groups=0)
+    # The count row is always present: an empty page (offset past the last
+    # group, or limit zero) still reports the exact size of the full result.
     return ArchiveQueryUnitAggMetricPage(
         rows=tuple(
             ArchiveQueryUnitAggMetricRow(

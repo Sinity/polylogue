@@ -1121,7 +1121,7 @@ def _raw_frontier_blocked_selected_paths(archive_root: Path, selected_paths: Seq
             return RawFrontierBlockedPaths(frozenset(), "required frontier authority tier is unavailable")
         spellings = {str(path) for path in selected_paths}
         spellings.update(str(path.resolve()) for path in selected_paths)
-        with closing(open_readonly_connection(source_path, validate_schema=False)) as conn:
+        with closing(open_readonly_connection(source_path)) as conn:
             conn.row_factory = sqlite3.Row
             attach_readonly_database(conn, index_path, alias="index_tier")
             conn.execute("BEGIN")
@@ -1286,6 +1286,8 @@ def _raw_frontier_blocked_selected_paths(archive_root: Path, selected_paths: Seq
                     refused
                 ),
             )
+    except SchemaSkew as exc:
+        return RawFrontierBlockedPaths(frozenset(), f"source tier schema is not admitted: {exc}")
     except sqlite3.Error as exc:
         raise RawRetentionSafetyError(f"selected source frontier query failed: {exc}") from exc
 
@@ -1307,7 +1309,7 @@ def raw_frontier_blocked_raw_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
         return RawFrontierBlockedPaths(frozenset(), None)
 
     def read_selected() -> RawFrontierBlockedPaths:
-        with closing(open_readonly_connection(archive_root / "source.db", validate_schema=False)) as conn:
+        with closing(open_readonly_connection(archive_root / "source.db")) as conn:
             conn.row_factory = sqlite3.Row
             attach_readonly_database(conn, resolve_active_index_path(archive_root), alias="index_tier")
             conn.execute("BEGIN")
@@ -1362,7 +1364,7 @@ def raw_frontier_blocked_raw_ids(archive_root: Path, raw_ids: Sequence[str]) -> 
 
     try:
         evidence = capture_sqlite_read(read_selected)
-    except (OSError, RawRetentionSafetyError) as exc:
+    except (OSError, RawRetentionSafetyError, SchemaSkew) as exc:
         return RawFrontierBlockedPaths(frozenset(), f"selected source frontier is unreadable: {exc}")
     if isinstance(evidence, Measured):
         return evidence.value
@@ -1421,8 +1423,8 @@ def raw_frontier_blocked_source_paths(
         try:
             from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
-            conn = open_readonly_connection(source_db_path, validate_schema=False)
-        except (OSError, sqlite3.Error) as exc:
+            conn = open_readonly_connection(source_db_path)
+        except (OSError, sqlite3.Error, SchemaSkew) as exc:
             unattributed.append(f"source tier is unreadable: {exc}")
         else:
             try:
@@ -1618,6 +1620,30 @@ def raw_frontier_integrity_snapshot_from_connections(
             heads,
             sample_limit=sample_limit,
         )
+        if ops_conn is None:
+            # The pinned read has no ops generation. Opening ``ops_db_path``
+            # now would compare this snapshot with a later, unpinned tier.
+            cursor_result: tuple[
+                RawFrontierIntegrityStatus,
+                int,
+                int,
+                int,
+                int,
+                tuple[CursorAheadSample, ...],
+                int,
+                tuple[CursorAuthorityGapSample, ...],
+                int,
+                str,
+            ] = ("unknown", 0, 0, 0, 0, (), 0, (), 0, f"ops tier is unavailable in the pinned read: {ops_db_path}")
+        else:
+            cursor_result = _check_cursor_ahead_of_accepted(
+                source_conn,
+                None,
+                heads,
+                sample_limit=sample_limit,
+                ops_conn=ops_conn,
+                ops_schema=ops_schema,
+            )
         (
             cursor_status,
             cursor_count,
@@ -1629,19 +1655,7 @@ def raw_frontier_integrity_snapshot_from_connections(
             cursor_gap_samples,
             cursor_deferred_count,
             cursor_reason,
-        ) = (
-            ("unknown", 0, 0, 0, 0, (), 0, (), 0,
-             f"ops tier is unavailable in supplied read snapshot: {ops_db_path}")
-            if ops_conn is None
-            else _check_cursor_ahead_of_accepted(
-                source_conn,
-                None,
-                heads,
-                sample_limit=sample_limit,
-                ops_conn=ops_conn,
-                ops_schema=ops_schema,
-            )
-        )
+        ) = cursor_result
         return RawFrontierIntegritySnapshot(
             broken_head_status=broken_status,
             broken_head_count=broken_count,
