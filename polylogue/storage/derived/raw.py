@@ -28,7 +28,7 @@ from polylogue.archive.revision_authority import (
     parser_census_is_complete,
 )
 from polylogue.core.compute_cancel import compute_cancel, compute_cancel_requested
-from polylogue.core.enums import Origin
+from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
     RAW_FAILURE_REPLAY_AUTHORITY_EVIDENCE_KINDS,
@@ -62,6 +62,13 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.write import PreparedSessionWrite
 
 RAW_OBSERVATION_DOMAIN = "raw_observation"
+
+#: Origins whose enrichment reads session-scoped retained evidence. Both
+#: origins map to exactly one provider, so the reverse lookup is not a guess.
+_EVIDENCE_PROVIDER_BY_ORIGIN: Mapping[str, Provider] = {
+    Origin.CLAUDE_CODE_SESSION.value: Provider.CLAUDE_CODE,
+    Origin.CODEX_SESSION.value: Provider.CODEX,
+}
 
 
 def raw_replay_error_is_retryable(error: object, durable_retryable: bool = False) -> bool:
@@ -435,10 +442,13 @@ class RawObservationDerivation:
             if application is None:
                 return "missing"
             output = conn.execute(
-                """SELECT s.origin, s.parser_fingerprint, s.lowering_fingerprint
+                """SELECT s.origin, s.parser_fingerprint, s.lowering_fingerprint, s.session_id, s.native_id,
+                       b.evidence_key, accepted.source_path AS accepted_source_path
                 FROM index_tier.raw_revision_heads h JOIN index_tier.sessions s
                   ON s.session_id = h.session_id AND s.raw_id = h.accepted_raw_id
                  AND s.content_hash = h.accepted_content_hash
+                LEFT JOIN index_tier.session_enrichment_bindings b ON b.session_id = s.session_id
+                LEFT JOIN raw_sessions accepted ON accepted.raw_id = h.accepted_raw_id
                 WHERE h.logical_source_key = ?""",
                 (logical_key,),
             ).fetchone()
@@ -448,6 +458,12 @@ class RawObservationDerivation:
                 output["parser_fingerprint"] != parser_fingerprint_for_origin(Origin(output["origin"]))
                 or output["lowering_fingerprint"] != lowering_fingerprint()
             ):
+                return "stale"
+            # The binding was written from the accepted head's raw; a
+            # superseded sibling from another directory reads different
+            # evidence and could never match it, so compare the head's own.
+            evidence_path = output["accepted_source_path"] or raw["source_path"]
+            if self._enrichment_evidence_moved(conn, evidence_path, output):
                 return "stale"
         from polylogue.storage.sqlite.archive_tiers.revision_governance import expand_raw_membership_selection_sync
 
@@ -471,6 +487,43 @@ class RawObservationDerivation:
         )
         exact, _problems = validate_raw_replay_application_receipt(plan, receipt)
         return "valid" if exact else "stale"
+
+    def _enrichment_evidence_moved(self, conn: sqlite3.Connection, source_path: object, output: sqlite3.Row) -> bool:
+        """Whether the evidence this output was enriched from is no longer current.
+
+        A session index, prompt history or thread-state export can be admitted
+        after the session it describes, in any order. The writer binds each
+        output to the evidence it read; here the evidence the archive holds now
+        is compared with that binding. An absent binding cannot certify the
+        output, so it is derived again on the retained route -- ordinary
+        derivation from durable evidence, whatever order the bytes arrived in.
+        """
+        from polylogue.sources.revision_backfill import session_enrichment_evidence_key
+
+        provider = _EVIDENCE_PROVIDER_BY_ORIGIN.get(str(output["origin"]))
+        if provider is None or not isinstance(source_path, str):
+            return False
+        # ``session_enrichment_evidence_key`` (and ``read_thread_titles``
+        # beneath it) queries ``work_evidence_*`` unqualified, expecting
+        # ``index_conn``'s own ``main`` schema to be index.db. ``conn`` here
+        # has source.db as ``main`` and the index attached only as
+        # ``index_tier``, so passing it as ``index_conn`` resolved those
+        # tables against the wrong schema (silently empty, not an error the
+        # caller sees), and Codex evidence never registered as moved. Open a
+        # real index connection for this specific read.
+        index_path = ArchiveLocation.resolve(self.archive_root).active_index_path
+        with closing(
+            open_readonly_connection(index_path, timeout_class="background-read", validate_schema=False)
+        ) as index_conn:
+            current = session_enrichment_evidence_key(
+                provider=provider,
+                source_path=source_path,
+                native_id=str(output["native_id"]),
+                index_conn=index_conn,
+                source_conn=conn,
+                blob_root=self.archive_root / "blob",
+            )
+        return current is not None and output["evidence_key"] != current
 
     def _binding(self, raw_ids: tuple[str, ...]) -> str:
         with self._read() as conn:
