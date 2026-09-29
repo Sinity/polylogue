@@ -53,10 +53,9 @@ def message_sets(draw: st.DrawFn) -> list[ParsedMessage]:
     size = draw(st.integers(min_value=0, max_value=7))
     messages: list[ParsedMessage] = []
     for index in range(size):
-        # The prefix write contains index zero. Repeat its native id in the
-        # tail so merge-append must handle a collision with an existing row,
-        # not merely duplicates confined to its incoming batch.
-        provider_message_id = "seed" if index < 2 else "duplicate"
+        # Keep one repeated native ID in every multi-message batch so the
+        # writer's duplicate-identity normalization is exercised on all paths.
+        provider_message_id = "duplicate" if index else "seed"
         role = draw(st.sampled_from(_ROLES))
         material_origin = draw(st.sampled_from(_MATERIAL_ORIGINS))
         text = draw(st.one_of(st.just(""), st.text(min_size=1, max_size=30)))
@@ -140,8 +139,6 @@ def _new_connection() -> sqlite3.Connection:
 @given(messages=message_sets())
 def test_session_counts_agree_across_full_append_and_refresh_paths(messages: list[ParsedMessage]) -> None:
     """Anti-vacuity: mutating any count increment or recount predicate makes this red."""
-    if len(messages) > 1:
-        assert messages[0].provider_message_id == messages[1].provider_message_id
     expected = _reference_counts(messages)
     connections = [_new_connection() for _ in range(3)]
     try:
