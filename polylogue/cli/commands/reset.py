@@ -526,6 +526,8 @@ def reset_command(
 
     # The resident daemon re-resolves and deletes these targets. The CLI only
     # displays its read-only preview and lowers the confirmed intent.
+    from polylogue.operations.daemon_mutations import reset_confirmation_paths
+
     result = _submit(
         env,
         "maintenance.reset",
@@ -540,7 +542,7 @@ def reset_command(
             "auth": auth,
             "reset_all": reset_all,
             "confirm": True,
-            "expected_targets": [str(path.resolve()) for _name, path in targets],
+            "expected_targets": list(reset_confirmation_paths(targets)),
         },
     )
     deleted_value = result.get("affected_count", 0)
