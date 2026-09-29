@@ -776,3 +776,28 @@ def test_a_404_claiming_the_operation_protocol_is_validated_strictly(_short_uds_
     with _raw_unix_http_responder(socket_path, status=404, payload={"protocol": DAEMON_OPERATION_PROTOCOL}):
         with pytest.raises(DaemonOperationProtocolError):
             DaemonClient(socket_path, timeout_s=5).operation("status", {}, archive_root="/archive")
+
+
+def test_a_read_waits_on_the_socket_for_its_own_deadline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A default-timeout client reading a scan-shaped request waits out its deadline.
+
+    Anti-vacuity (Codex P2, #5695): pass the derived deadline to the transport
+    for writes only and the read socket keeps the client's 0.1-second default,
+    failing while a valid 120-second scan is still running.
+    """
+    import polylogue.daemon_client as daemon_client_module
+    from polylogue.daemon_client import DaemonClient
+
+    client = DaemonClient(tmp_path / "daemon.sock")
+    captured: list[object] = []
+
+    def request(*args: object, **kwargs: object) -> None:
+        captured.append(kwargs["timeout_s"])
+        return None
+
+    monkeypatch.setattr(daemon_client_module, "_request_deadline_s", lambda *_args: 120.0)
+    monkeypatch.setattr(client, "_request_json_response", request)
+
+    assert client.operation("read.chronicle", {}, archive_root=str(tmp_path)) is None
+    assert captured == [121.0]
+    assert client.timeout_s == 0.1
