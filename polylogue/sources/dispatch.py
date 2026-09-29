@@ -1940,8 +1940,8 @@ def require_positive_conversational_evidence(
     own OriginSpec/``classify_artifact`` path-and-shape gate from
     polylogue-6mpy -- this filter catches the sibling case where the shape
     is recognized but the parsed *content* still carries no message), and
-    ``pipeline/services/archive_ingest.py`` (the one-shot importer behind
-    ``Polylogue.parse_file``/``parse_sources`` and the demo seeder).
+    ``operations/canonical_archive_ingest.py`` (the one-shot importer behind
+    the demo seeder).
 
     Measured against the live archive (2026-07-31, read-only query against
     ``index.db``/``source.db``): every verified zero-message

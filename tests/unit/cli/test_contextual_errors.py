@@ -227,6 +227,8 @@ _COVERED_REFUSALS: tuple[tuple[str, list[str]], ...] = (
     ("mark-ambiguous", ["find", "repo:polylogue", "then", "mark", "--star"]),
     ("mark-exclusive-flags", ["find", "repo:polylogue", "then", "mark", "--star", "--all", "--first"]),
     ("mark-empty", ["find", "repo:no-such-repository", "then", "mark", "--star"]),
+    ("read-ambiguous-root-filter", ["--title", "Ambiguous session", "read", "--view", "messages"]),
+    ("analyze-turns-ambiguous-root-filter", ["--title", "Ambiguous session", "analyze", "turns"]),
 )
 
 
@@ -253,6 +255,30 @@ def test_an_ambiguous_refusal_lists_the_candidate_refs(refusal_archive: Path, mo
     assert result.exit_code != 0
     assert "Candidates:" in result.output
     assert "ambiguous-0" in result.output
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--title", "Ambiguous session", "read", "--view", "messages"],
+        ["--title", "Ambiguous session", "analyze", "turns"],
+    ],
+    ids=["read", "analyze-turns"],
+)
+def test_a_root_filter_matching_several_sessions_is_not_resolved_to_the_first(
+    refusal_archive: Path, argv: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A single-session route refuses an ambiguous root filter with its candidates.
+
+    Anti-vacuity: resolve the filter with ``limit=1`` and take the top row
+    again and the command succeeds against one arbitrary session, so the
+    ambiguity assertions go red.
+    """
+    with cli_daemon_archive(refusal_archive, monkeypatch):
+        result = CliRunner().invoke(cli, argv)
+    assert result.exit_code != 0, result.output
+    assert "Candidates:" in result.output
+    assert all(f"ambiguous-{index}" in result.output for index in range(3)), result.output
 
 
 def test_a_next_action_command_quotes_the_provider_supplied_ref() -> None:

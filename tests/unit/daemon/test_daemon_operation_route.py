@@ -577,6 +577,44 @@ def test_changed_intent_cannot_reuse_a_durable_request_id(tmp_path: Path) -> Non
         assert all(stack.session_exists(session_id) for session_id in ids)
 
 
+def test_identical_intent_replays_the_recorded_mutation_without_a_second_effect(tmp_path: Path) -> None:
+    """A duplicate submission of one intent is the same operation, not a second write.
+
+    The replay answers from the durable request record: its receipt names the
+    first execution and still reports the one tag it added. A fresh request id
+    with the same intent executes again and finds nothing to add, which is
+    what a replay that re-executed would have reported.
+
+    Mutation: re-dispatch a completed durable request and the replay reports
+    ``affected_count == 0`` under a new receipt.
+    """
+    ids: tuple[str, ...] = ()
+
+    def seed(root: Path) -> None:
+        nonlocal ids
+        ids = _seed_sessions(root, count=1)
+
+    with running_daemon_operations(tmp_path / "archive", seed_archive=seed) as stack:
+        payload: dict[str, object] = {"session_ids": [ids[0]], "tags": ["replayed-intent"]}
+        first = stack.client.operation_to_completion(
+            "mutation.session.tag", dict(payload), archive_root=str(stack.archive_root), request_id="stable-tag-intent"
+        )
+        again = stack.client.operation_to_completion(
+            "mutation.session.tag", dict(payload), archive_root=str(stack.archive_root), request_id="stable-tag-intent"
+        )
+        fresh = stack.client.operation_to_completion(
+            "mutation.session.tag", dict(payload), archive_root=str(stack.archive_root), request_id="fresh-tag-intent"
+        )
+
+    assert first is not None and again is not None and fresh is not None
+    assert [first["outcome"], again["outcome"], fresh["outcome"]] == ["completed"] * 3
+    assert first["result"]["affected_count"] == 1
+    assert again["result"]["affected_count"] == 1
+    assert again["result"]["receipt_ref"] == first["result"]["receipt_ref"]
+    assert fresh["result"]["affected_count"] == 0
+    assert fresh["result"]["receipt_ref"] != first["result"]["receipt_ref"]
+
+
 def test_operation_route_bounds_the_real_canonical_envelope(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Mutation: bypass the UDS response bound and the oversized canonical rows escape."""
 

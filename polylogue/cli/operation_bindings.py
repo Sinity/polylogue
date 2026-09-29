@@ -203,6 +203,10 @@ CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
         lowering="polylogue.cli.commands.scan_secrets:scan_secrets_command",
         renderers=("polylogue.cli.commands.scan_secrets:scan_secrets_command",),
     ),
+    "maintenance.embeddings.backfill": CliOperationBinding(
+        lowering="polylogue.cli.commands.embed:backfill_subcommand",
+        renderers=("polylogue.cli.commands.embed:backfill_subcommand",),
+    ),
     "maintenance.embeddings.failure.resolve": CliOperationBinding(
         lowering="polylogue.cli.commands.embed:resolve_failure_subcommand",
         renderers=("polylogue.cli.commands.embed:resolve_failure_subcommand",),
@@ -248,7 +252,6 @@ CLI_EXTERNAL_OPERATIONS: Mapping[str, str] = {
     "operation.cancel": "transport-owned: DaemonClient cancels a submitted operation, not a CLI route",
     "operation.status": "no consumer on any surface; retained for receipt recovery tooling",
     "maintenance.insights.rebuild": "daemon-internal derivation; no CLI verb requests it",
-    "maintenance.embeddings.backfill": "daemon-owned embedding convergence; CLI submits it directly",
     "user.assertions.list": "HTTP durable user-overlay read; no CLI route",
     "user.marks.list": "HTTP durable user-overlay read; no CLI route",
     "user.annotations.list": "HTTP durable user-overlay read; no CLI route",
@@ -289,7 +292,10 @@ CLI_EXTERNAL_OPERATIONS: Mapping[str, str] = {
     "mutation.facade.record_context_delivery": "Python archive facade mutation; no direct CLI route",
     "mutation.facade.judge_assertion_candidate": "Python archive facade mutation; no direct CLI route",
     "mutation.facade.record_comparative_judgment": "Python archive facade mutation; no direct CLI route",
-    "mutation.facade.context_ledger": "internal best-effort context telemetry; no CLI route",
+    "mutation.facade.context_ledger": (
+        "best-effort context-delivery receipt the `read context` views submit after the read; "
+        "no verb requests it and a refusal is dropped"
+    ),
 }
 
 

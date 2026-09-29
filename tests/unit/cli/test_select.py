@@ -390,3 +390,83 @@ def test_complete_selection_walks_every_page(tmp_path: Path) -> None:
         assert query_complete_session_ids(config, RootModeRequest.from_params({})) == ["a", "b"]
 
     assert seen == [0, 1]
+
+
+def test_ranked_selection_rows_are_distinct_sessions(tmp_path: Path) -> None:
+    """Ranked hits are block-grain; selector rows are sessions.
+
+    One page of hits can name a single session many times, so the walk
+    deduplicates by session id and follows ``next_offset`` until it has the
+    requested number of sessions or the selection ends.
+
+    Anti-vacuity: return the first hit page as rows and this yields
+    ``["a", "a"]``.
+    """
+    from polylogue.cli.session_rows import query_session_rows
+
+    config = Config(
+        archive_root=tmp_path,
+        db_path=tmp_path / "index.db",
+        render_root=tmp_path / "render",
+        sources=[],
+    )
+    hits = ["a", "a", "a", "b", "a", "c"]
+
+    def _dispatch(_config: Config, operation_request: OperationRequest, **_kwargs: object) -> object:
+        params = cast("dict[str, object]", operation_request.payload["params"])
+        offset, limit = cast("int", params["offset"]), cast("int", params["limit"])
+        page = hits[offset : offset + limit]
+        value = {
+            "hits": [{"session": {"id": ref}} for ref in page],
+            "total": 3,
+            "next_offset": offset + len(page) if offset + len(page) < len(hits) else None,
+        }
+        return SimpleNamespace(value=value, authority={}, envelope=None)
+
+    with patch("polylogue.cli.operation_kernel.dispatch", _dispatch):
+        assert [row.session_id for row in query_session_rows(config, RootModeRequest.from_params({}), limit=2)] == [
+            "a",
+            "b",
+        ]
+        assert [row.session_id for row in query_session_rows(config, RootModeRequest.from_params({}), limit=None)] == [
+            "a",
+            "b",
+            "c",
+        ]
+
+
+def test_complete_ranked_selection_admits_repeated_hits(tmp_path: Path) -> None:
+    """``delete --all`` over a ranked filter resolves sessions, not hits.
+
+    A session-grain list page repeating an id is a broken continuation and
+    refuses; a ranked page repeating a session across block hits is normal.
+
+    Anti-vacuity: refuse every repeat and the ranked walk fails closed.
+    """
+    import click
+
+    from polylogue.cli.session_rows import query_complete_session_ids
+
+    config = Config(
+        archive_root=tmp_path,
+        db_path=tmp_path / "index.db",
+        render_root=tmp_path / "render",
+        sources=[],
+    )
+    ranked = [
+        {"hits": [{"session": {"id": "a"}}, {"session": {"id": "a"}}], "total": 2, "next_offset": 2},
+        {"hits": [{"session": {"id": "a"}}, {"session": {"id": "b"}}], "total": 2, "next_offset": 4},
+        {"hits": [{"session": {"id": "b"}}], "total": 2, "next_offset": None},
+    ]
+    listed = [{"items": [{"id": "a"}, {"id": "a"}], "total": 2, "next_offset": None}]
+    pages: list[dict[str, object]] = []
+
+    def _dispatch(_config: Config, operation_request: OperationRequest, **_kwargs: object) -> object:
+        return SimpleNamespace(value=pages.pop(0), authority={}, envelope=None)
+
+    with patch("polylogue.cli.operation_kernel.dispatch", _dispatch):
+        pages.extend(ranked)
+        assert query_complete_session_ids(config, RootModeRequest.from_params({})) == ["a", "b"]
+        pages.extend(listed)
+        with pytest.raises(click.ClickException, match="repeated a session id"):
+            query_complete_session_ids(config, RootModeRequest.from_params({}))
