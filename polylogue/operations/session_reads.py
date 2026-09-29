@@ -317,6 +317,11 @@ def _provider(origin: str) -> str:
     return {"codex-session": "codex", "claude-code-session": "claude-code"}[origin]
 
 
+#: The SessionLogService messages that mean the configured root itself is
+#: unreachable, as opposed to a cursor or reference problem.
+_SOURCE_UNAVAILABLE_MESSAGES = frozenset({"session source is unavailable", "session source directory is unavailable"})
+
+
 @overload
 def raw_operation(request: RawRead, *, sources: Any = None, max_result_bytes: int = 256_000) -> RawContent: ...
 
@@ -400,8 +405,11 @@ def raw_operation(
     else:
         provider = _provider(request.origin)
         configured = next((source for source in service.sources if source.provider == provider), None)
-        if configured is None:
-            result = {
+
+        def unavailable(reason: str) -> dict[str, Any]:
+            # One shape for every raw per-source verb: search and list both
+            # degrade to a typed unavailable source instead of raising.
+            return {
                 "matches": [],
                 "entries": [],
                 "scanned_bytes": 0,
@@ -412,30 +420,19 @@ def raw_operation(
                     {
                         "source": provider,
                         "availability": "unavailable",
-                        "reason": "session source is not configured",
+                        "reason": reason,
                         "coverage": {"scanned_bytes": 0, "truncated": False},
                     }
                 ],
             }
-            rows = []
-        elif isinstance(request, RawSearch):
-            if not configured.root.is_dir():
-                result = {
-                    "matches": [],
-                    "sources": [
-                        {
-                            "source": provider,
-                            "availability": "unavailable",
-                            "reason": "source root unavailable",
-                            "coverage": {"scanned_bytes": 0, "truncated": False},
-                        }
-                    ],
-                    "scanned_bytes": 0,
-                    "truncated": False,
-                }
-                rows = []
-            else:
-                try:
+
+        if configured is None:
+            result = unavailable("session source is not configured")
+        elif not configured.root.is_dir():
+            result = unavailable("source root unavailable")
+        else:
+            try:
+                if isinstance(request, RawSearch):
                     result = service.search(
                         provider,
                         request.query,
@@ -445,28 +442,23 @@ def raw_operation(
                         cursor_key=key,
                         scan_bytes=request.scan_bytes,
                     )
-                except SessionError as exc:
-                    if request.reference is None or "unavailable" not in str(exc):
-                        raise
-                    result = {
-                        "matches": [],
-                        "sources": [
-                            {
-                                "source": provider,
-                                "availability": "unavailable",
-                                "reason": "referenced session source unavailable",
-                                "coverage": {"scanned_bytes": 0, "truncated": False},
-                            }
-                        ],
-                        "scanned_bytes": 0,
-                        "truncated": False,
-                    }
-                rows = result["matches"]
-        else:
-            result = service.timeline(
-                provider, None, None, None, request.limit, cursor=request.continuation, cursor_key=key
-            )
-            rows = result["entries"]
+                else:
+                    result = service.timeline(
+                        provider, None, None, None, request.limit, cursor=request.continuation, cursor_key=key
+                    )
+            except SessionError as exc:
+                # The root can vanish between the check above and the scan,
+                # and a reference can name a session in an unavailable root.
+                # Only the source-root conditions degrade; a stale or changed
+                # continuation is the caller's error and must still raise.
+                if str(exc) not in _SOURCE_UNAVAILABLE_MESSAGES:
+                    raise
+                result = unavailable(
+                    "referenced session source unavailable"
+                    if isinstance(request, RawSearch) and request.reference is not None
+                    else "source root unavailable"
+                )
+        rows = result["matches"] if isinstance(request, RawSearch) else result["entries"]
         if "sources" not in result:
             result["sources"] = [
                 {

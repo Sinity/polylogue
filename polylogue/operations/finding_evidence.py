@@ -138,6 +138,7 @@ def build_finding_evidence_adapter(
     frame_hash: str | None,
     definition_hash: str | None,
     max_nodes: int = FINDING_ANCESTRY_MAX_NODES,
+    index_conn: sqlite3.Connection | None = None,
 ) -> FindingEvidenceAdapter:
     """Project one finding and its transitive assertion ancestry into a graph.
 
@@ -220,12 +221,12 @@ def build_finding_evidence_adapter(
                 # half of polylogue-rxdo.4 this change does not reach.
                 public=True,
             )
-            pending.append((ref, (_cited(conn, str(child)) for child in envelope.evidence_refs)))
+            pending.append((ref, (_cited(conn, str(child), index_conn) for child in envelope.evidence_refs)))
 
     return FindingEvidenceAdapter(graph_nodes=tuple(nodes.values()), graph_edges=tuple(edges))
 
 
-def _cited(conn: sqlite3.Connection, ref: str) -> FindingEvidenceResolution:
+def _cited(conn: sqlite3.Connection, ref: str, index_conn: sqlite3.Connection | None) -> FindingEvidenceResolution:
     """One ref discovered during ancestry expansion.
 
     Every transitive ref goes through the same fail-closed resolver as a
@@ -234,7 +235,7 @@ def _cited(conn: sqlite3.Connection, ref: str) -> FindingEvidenceResolution:
     """
     from polylogue.storage.sqlite.finding_provenance import resolve_evidence_ref
 
-    return resolve_evidence_ref(conn, ref)
+    return resolve_evidence_ref(conn, ref, index_conn=index_conn)
 
 
 def _ref_kind(ref: str) -> str:
@@ -249,6 +250,7 @@ def evaluate_finding_evidence(
     provenance: FindingProvenance,
     *,
     max_nodes: int = FINDING_ANCESTRY_MAX_NODES,
+    index_conn: sqlite3.Connection | None = None,
 ) -> EvidenceIntegrityVerdict:
     """Return the shared evaluator's verdict for one finding's ancestry."""
     frame_hash, definition_hash = _frame_and_definition(conn, provenance)
@@ -258,6 +260,7 @@ def evaluate_finding_evidence(
         frame_hash=frame_hash,
         definition_hash=definition_hash,
         max_nodes=max_nodes,
+        index_conn=index_conn,
     )
     detector_ref = provenance.detector_ref
     return evaluate_adapter(

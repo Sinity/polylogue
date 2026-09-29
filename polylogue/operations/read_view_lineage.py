@@ -44,16 +44,18 @@ def execute_lineage_read(payload: Mapping[str, object], *, archive: ArchiveStore
 
 
 class _TopologySnapshot:
-    def __init__(self, archive: ArchiveStore, should_abort: object = None) -> None:
+    def __init__(self, archive: ArchiveStore, raise_if_aborted: object = None) -> None:
         connection = archive.index_connection
         if connection is None:
             raise ValueError("topology requires an index snapshot")
         self.connection = connection
-        self.should_abort = should_abort
+        self.raise_if_aborted = raise_if_aborted
 
     def check_cancelled(self) -> None:
-        if callable(self.should_abort) and self.should_abort():
-            raise TimeoutError("topology read cancelled")
+        # Raises the shared controller's typed QueryCancelledError /
+        # QueryTimeoutError so the operation envelope reports the real reason.
+        if callable(self.raise_if_aborted):
+            self.raise_if_aborted()
 
     async def get_session(self, session_id: str) -> SessionRecord | None:
         self.check_cancelled()
@@ -101,7 +103,7 @@ def execute_topology_read(payload: Mapping[str, object], *, archive: ArchiveStor
         resolved = archive.resolve_session_id(session_id)
     except KeyError as exc:
         raise KeyError(f"Session not found: {session_id}") from exc
-    snapshot = _TopologySnapshot(archive, getattr(archive, "operation_should_abort", None))
+    snapshot = _TopologySnapshot(archive, getattr(archive, "operation_raise_if_aborted", None))
     topology = asyncio.run(
         derive_session_topology_async(
             snapshot,

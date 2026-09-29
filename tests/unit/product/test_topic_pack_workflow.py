@@ -234,3 +234,19 @@ async def test_topic_pack_pages_within_the_transcript_window_limit() -> None:
 
     await build_topic_pack(cast(Any, WindowStore()), TopicPackRequest("topic", max_messages=5000))
     assert requested and max(requested) <= 2000
+
+
+@pytest.mark.asyncio
+async def test_topic_pack_records_a_gap_when_a_continuation_goes_stale() -> None:
+    """Anti-vacuity: swallowing the stale continuation without a gap makes truncation look like exhaustion."""
+    from polylogue.archive.query.transaction import QueryContinuationStaleError
+
+    class StaleStore(FakeStore):
+        async def read_transcript_window(self, session_id: str, *, continuation: Any = None, **_kwargs: Any) -> Any:
+            if continuation is not None:
+                raise QueryContinuationStaleError(issued_epoch="archive:v1:a", current_epoch="archive:v1:b")
+            return SimpleNamespace(rows=list(self.session.messages[:1]), continuation="next")
+
+    result = await build_topic_pack(cast(Any, StaleStore()), TopicPackRequest("topic", max_messages=10))
+    assert [item["message_id"] for item in result.context_pack] == ["m1"]
+    assert any("transcript truncated" in gap for gap in result.gaps)

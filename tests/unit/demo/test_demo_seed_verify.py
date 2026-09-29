@@ -260,6 +260,25 @@ async def test_demo_verify_preserves_hermes_identity_after_archive_relocation(tm
 
 
 @pytest.mark.asyncio
+async def test_demo_verify_reports_an_unreadable_source_tier_as_a_problem(tmp_path: Path) -> None:
+    """A source tier without ``raw_sessions`` fails verification, it does not crash it.
+
+    Anti-vacuity: running the retained Hermes path lookup outside the
+    archive-read error boundary raises ``sqlite3.OperationalError`` here even
+    though only index semantics were requested.
+    """
+    archive_root = tmp_path / "archive"
+    await seed_demo_archive(archive_root, force=True, with_overlays=False)
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        conn.execute("ALTER TABLE raw_sessions RENAME TO raw_sessions_moved")
+
+    result = verify_demo_archive(archive_root, check_source_path_leaks=False, check_constructs=False)
+
+    assert result.ok is False
+    assert any(problem.startswith("archive unreadable") for problem in result.problems)
+
+
+@pytest.mark.asyncio
 async def test_demo_verify_can_skip_daemon_source_path_leak_posture(tmp_path: Path) -> None:
     archive_root = tmp_path / "archive"
 

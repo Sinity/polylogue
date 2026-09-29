@@ -276,6 +276,21 @@ def test_single_source_search_missing_root_is_degraded(tmp_path: Path) -> None:
     assert page.sources[0].availability == "unavailable"
 
 
+def test_single_source_list_missing_root_is_degraded(tmp_path: Path) -> None:
+    """List degrades on an absent root exactly as search does.
+
+    Anti-vacuity: red if the list branch reaches ``service.timeline`` and
+    raises ``SessionError("session source directory is unavailable")``.
+    """
+    page = raw_operation(
+        RawList(origin="codex-session", limit=5),
+        sources=(SessionSource("codex", tmp_path / "absent"),),
+    )
+    assert not page.items
+    assert page.outcome == "degraded"
+    assert page.sources[0].availability == "unavailable"
+
+
 def test_operation_contracts_validate_real_results(tmp_path: Path) -> None:
     """Generating declarations from unrelated tool signatures loses per-operation bounds."""
     contracts = session_operation_contracts()["operations"]

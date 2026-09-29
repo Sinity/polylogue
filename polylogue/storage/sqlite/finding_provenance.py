@@ -64,16 +64,25 @@ class FindingProvenance:
     updated_at_ms: int
 
 
-def compute_finding_provenance(conn: sqlite3.Connection, assertion_id: str) -> FindingProvenance | None:
-    """Return the provenance projection for one finding, or ``None`` if absent/not-a-finding."""
+def compute_finding_provenance(
+    conn: sqlite3.Connection, assertion_id: str, *, index_conn: sqlite3.Connection | None = None
+) -> FindingProvenance | None:
+    """Return the provenance projection for one finding, or ``None`` if absent/not-a-finding.
+
+    ``index_conn`` is the index tier, which alone can prove that a cited
+    session, message, block or action exists; without it those refs stay
+    unresolvable rather than being assumed present.
+    """
 
     envelope = read_assertion_envelope(conn, assertion_id)
     if envelope is None or envelope.kind != AssertionKind.FINDING.value:
         return None
-    return _provenance_from_envelope(conn, envelope)
+    return _provenance_from_envelope(conn, envelope, index_conn=index_conn)
 
 
-def _provenance_from_envelope(conn: sqlite3.Connection, envelope: ArchiveAssertionEnvelope) -> FindingProvenance:
+def _provenance_from_envelope(
+    conn: sqlite3.Connection, envelope: ArchiveAssertionEnvelope, *, index_conn: sqlite3.Connection | None
+) -> FindingProvenance:
     value = envelope.value if isinstance(envelope.value, dict) else {}
     query_ref = _str_or_none(value.get("query_ref"))
     result_set_ref = _str_or_none(value.get("result_set_ref"))
@@ -83,7 +92,7 @@ def _provenance_from_envelope(conn: sqlite3.Connection, envelope: ArchiveAsserti
 
     declared_refs = [ref for ref in (query_ref, result_set_ref, baseline_ref, current_ref) if ref is not None]
     all_refs = list(dict.fromkeys([*declared_refs, *envelope.evidence_refs]))
-    resolutions = tuple(resolve_evidence_ref(conn, ref) for ref in all_refs)
+    resolutions = tuple(resolve_evidence_ref(conn, ref, index_conn=index_conn) for ref in all_refs)
     resolved_by_ref = {resolution.ref: resolution.resolvable for resolution in resolutions}
 
     if not declared_refs:
@@ -113,8 +122,24 @@ def _provenance_from_envelope(conn: sqlite3.Connection, envelope: ArchiveAsserti
     )
 
 
-def resolve_evidence_ref(conn: sqlite3.Connection, ref: str) -> FindingEvidenceResolution:
-    """Resolve one evidence ref fail-closed: unknown kinds are unresolvable."""
+#: Index-tier existence probes for the raw evidence kinds. ``action`` is a
+#: block viewed as a tool action, so it resolves against ``blocks``.
+_INDEX_EXISTENCE_QUERIES: dict[str, str] = {
+    "session": "SELECT 1 FROM sessions WHERE session_id = ?",
+    "message": "SELECT 1 FROM messages WHERE message_id = ?",
+    "block": "SELECT 1 FROM blocks WHERE block_id = ?",
+    "action": "SELECT 1 FROM blocks WHERE block_id = ?",
+}
+
+
+def resolve_evidence_ref(
+    conn: sqlite3.Connection, ref: str, *, index_conn: sqlite3.Connection | None = None
+) -> FindingEvidenceResolution:
+    """Resolve one evidence ref fail-closed: unknown kinds are unresolvable.
+
+    ``conn`` is the user tier (queries, result sets, assertions); raw archive
+    kinds are proven against ``index_conn``, and are unresolvable without it.
+    """
     try:
         parsed = ObjectRef.parse(ref)
     except ValueError:
@@ -125,9 +150,19 @@ def resolve_evidence_ref(conn: sqlite3.Connection, ref: str) -> FindingEvidenceR
     if parsed.kind == "result-set":
         found = get_result_set(conn, parsed.object_id) is not None
         return FindingEvidenceResolution(ref=ref, resolvable=found, reason=None if found else "result set not found")
-    if parsed.kind == "assertion":
+    if parsed.kind in {"assertion", "finding"}:
         found = read_assertion_envelope(conn, parsed.object_id) is not None
-        return FindingEvidenceResolution(ref=ref, resolvable=found, reason=None if found else "assertion not found")
+        return FindingEvidenceResolution(
+            ref=ref, resolvable=found, reason=None if found else f"{parsed.kind} not found"
+        )
+    existence = _INDEX_EXISTENCE_QUERIES.get(parsed.kind)
+    if existence is not None:
+        if index_conn is None:
+            return FindingEvidenceResolution(ref=ref, resolvable=False, reason="index tier unavailable")
+        found = index_conn.execute(existence, (parsed.object_id,)).fetchone() is not None
+        return FindingEvidenceResolution(
+            ref=ref, resolvable=found, reason=None if found else f"{parsed.kind} not found"
+        )
     return FindingEvidenceResolution(
         ref=ref,
         resolvable=False,

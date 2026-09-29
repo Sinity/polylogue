@@ -1505,6 +1505,12 @@ def _write_session(
         write_outcome=writer_outcomes,
         manage_transaction=manage_transaction,
     )
+    if pending_attachment_receipts is not None:
+        # Receipts are consumed with the batch commit whether or not the writer
+        # published this session: a skipped write (stale revision, tombstone
+        # suppression) never creates the referent, and an unconsumed
+        # reservation would pin its blob against GC as permanent debt.
+        pending_attachment_receipts.extend(publication_receipts)
     if writer_outcomes and (writer_outcomes[0].stale_skipped or writer_outcomes[0].suppression_skipped):
         if prepared_writes is not None and prepared_write is not None:
             prepared_writes.remove(prepared_write)
@@ -1517,8 +1523,6 @@ def _write_session(
         counts["skipped_attachments"] = payload.attachment_count
         counts["skipped_session_events"] = len(payload.parsed_session.session_events)
         return False, counts
-    if pending_attachment_receipts is not None:
-        pending_attachment_receipts.extend(publication_receipts)
     if attachment_owner_resolutions is not None and writer_outcomes:
         for attachment_id, reason in writer_outcomes[0].unresolved_attachment_owners:
             attachment_owner_resolutions.append(

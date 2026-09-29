@@ -143,6 +143,13 @@ def verify_demo_archive(
         )
         session_ids = {row.session_id for row in rows}
         query_hits = tuple(sorted(dict.fromkeys(hit.session_id for hit in hits)))
+        # Every archive read -- including the retained-path oracle, overlays
+        # and raw source paths -- stays inside this boundary so a corrupt or
+        # partial tier is a structured failure, never a crash.
+        expected_ids = _expected_demo_session_ids(archive_root)
+        overlay_count = _overlay_count(archive_root)
+        raw_source_paths = _raw_source_paths(archive_root) if check_source_path_leaks else ()
+        construct_coverage = evaluate_demo_constructs(archive_root) if check_constructs else ()
     except (OSError, sqlite3.Error) as exc:
         return DemoVerifyResult(
             archive_root=archive_root,
@@ -156,7 +163,6 @@ def verify_demo_archive(
             problems=(f"archive unreadable: {exc}",),
         )
 
-    expected_ids = _expected_demo_session_ids(archive_root)
     if session_ids != expected_ids:
         problems.append(f"expected demo sessions {sorted(expected_ids)}, found {sorted(session_ids)}")
     expected_session_count = len(DEMO_SESSION_IDS)
@@ -167,18 +173,16 @@ def verify_demo_archive(
     if DEMO_CLAUDE_CODE_SESSION_ID not in query_hits:
         problems.append(f"expected pytest query to include {DEMO_CLAUDE_CODE_SESSION_ID}, found {list(query_hits)}")
 
-    overlay_count = _overlay_count(archive_root)
     overlays_present = overlay_count >= 4
     if require_overlays and not overlays_present:
         problems.append("expected demo overlays, found none")
 
-    construct_coverage = evaluate_demo_constructs(archive_root) if check_constructs else ()
     if check_constructs:
         problems.extend(construct_problem_messages(construct_coverage))
 
     if check_source_path_leaks:
         demo_source_root = (archive_root / DEMO_SOURCE_DIRNAME).resolve()
-        for raw_path in _raw_source_paths(archive_root):
+        for raw_path in raw_source_paths:
             path = Path(raw_path)
             if path.is_absolute() and not path.resolve().is_relative_to(demo_source_root):
                 leaks.append(raw_path)

@@ -139,3 +139,27 @@ def test_unseeded_audit_continuity_degrades_an_operation_read(tmp_path: Path) ->
     snapshot = observe_control_authority(tmp_path)
     assert snapshot.degraded_components == ("audit_continuity_unavailable",)
     assert snapshot.schema_versions == {}
+
+
+def test_topology_checkpoint_raises_the_typed_abort_for_its_reason(tmp_path: Path) -> None:
+    """Anti-vacuity: the topology checkpoint used to raise a bare TimeoutError for every reason,
+    which the operation envelope does not map to ``cancelled`` or ``timed-out``."""
+    from polylogue.archive.query.execution_control import QueryTimeoutError
+    from polylogue.operations.operation_context import _abort_checkpoint
+    from polylogue.operations.read_view_lineage import _TopologySnapshot
+
+    bootstrap_archive_root(tmp_path)
+    context = QueryExecutionContext(call_id="topology-read", query_ref="synthetic-topology")
+    reached: list[str] = []
+    with pytest.raises(QueryCancelledError):
+        with open_operation_read(tmp_path, execution_context=context) as pinned:
+            snapshot = _TopologySnapshot(pinned.archive, getattr(pinned.archive, "operation_raise_if_aborted", None))
+            snapshot.check_cancelled()
+            reached.append("live")
+            context.cancel()
+            snapshot.check_cancelled()
+    assert reached == ["live"]
+
+    expired = QueryExecutionContext(call_id="topology-deadline", query_ref="synthetic-topology", deadline_monotonic=0.0)
+    with pytest.raises(QueryTimeoutError):
+        _abort_checkpoint(expired)()

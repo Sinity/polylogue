@@ -128,14 +128,15 @@ def _max_window_rows() -> int:
     return 2000
 
 
-async def _session_messages(store: Any, session_id: str, page_size: int) -> AsyncIterator[Any] | None:
+async def _session_messages(store: Any, session_id: str, page_size: int, gaps: list[str]) -> AsyncIterator[Any] | None:
     """Stream one session's messages in bounded pages until the caller stops.
 
     The caller's bound counts text-bearing output, not raw rows, so paging
     continues past rows it discards; each page stays within the transcript
     window's own limit. ``None`` means the session is gone before its first
     page; a session that disappears or is rewritten mid-stream ends the stream
-    rather than failing the whole topic pack or mixing snapshots.
+    rather than failing the whole topic pack or mixing snapshots, and records a
+    gap so the truncation is distinguishable from normal exhaustion.
     """
     from polylogue.archive.query.transaction import QueryContinuationStaleError
     from polylogue.operations.archive_mutation import SessionNotFoundError
@@ -162,7 +163,11 @@ async def _session_messages(store: Any, session_id: str, page_size: int) -> Asyn
                     return
                 try:
                     window = await windowed(session_id, continuation=window.continuation)
-                except (SessionNotFoundError, QueryContinuationStaleError):
+                except SessionNotFoundError:
+                    gaps.append(f"session disappeared mid-read; transcript truncated: {session_id}")
+                    return
+                except QueryContinuationStaleError:
+                    gaps.append(f"session rewritten mid-read; transcript truncated: {session_id}")
                     return
 
         return continued()
@@ -185,6 +190,7 @@ async def _session_messages(store: Any, session_id: str, page_size: int) -> Asyn
                 try:
                     page = await pager(session_id, limit=page_size, offset=offset)
                 except SessionNotFoundError:
+                    gaps.append(f"session disappeared mid-read; transcript truncated: {session_id}")
                     return
 
         return paged()
@@ -328,7 +334,7 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
     message_count = 0
     for summary in ordered:
         sid = _session_id(summary)
-        messages = await _session_messages(store, sid, max(1, request.max_messages - message_count))
+        messages = await _session_messages(store, sid, max(1, request.max_messages - message_count), gaps)
         if messages is None:
             gaps.append(f"session disappeared during read: {_session_id(summary)}")
             continue

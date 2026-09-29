@@ -2522,6 +2522,13 @@ async def test_get_messages_paginated_applies_content_projection(tmp_path: Path)
                 ],
             ),
         )
+
+    async def _no_hydration(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("a bounded window must not hydrate the whole session")
+
+    # Anti-vacuity: the material-origin filter previously hydrated the whole
+    # composed session through get_session before slicing the window.
+    archive.get_session = _no_hydration  # type: ignore[method-assign,assignment]
     try:
         messages, total, _completeness = await archive.get_messages_paginated(
             session_id,
