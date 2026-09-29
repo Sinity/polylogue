@@ -3371,6 +3371,7 @@ def test_unknown_inbox_zip_does_not_sniff_entries_rejected_by_security_admission
     monkeypatch.setattr(zip_admission, "MAX_UNCOMPRESSED_SIZE", 512)
     processor = LiveBatchProcessor.__new__(LiveBatchProcessor)
     processor._cursor = CursorStore(tmp_path / "index.db")
+    processor._zip_member_refusals_this_pass = {}
     sniffed_paths: list[str] = []
 
     def sniff_provider(_archive: zipfile.ZipFile, entries: list[zipfile.ZipInfo]) -> Provider:
@@ -3398,6 +3399,7 @@ def test_unknown_zip_live_route_retains_declared_binary_and_markdown_artifacts(t
         archive.writestr("brain/one.md", b"# note\n")
     processor = LiveBatchProcessor.__new__(LiveBatchProcessor)
     processor._cursor = CursorStore(tmp_path / "index.db")
+    processor._zip_member_refusals_this_pass = {}
     records, _total_bytes = processor._extract_zip_member_records(
         bundle,
         blob_store=BlobStore(tmp_path / "blob"),
@@ -5962,9 +5964,11 @@ def test_captured_incomplete_jsonl_is_rejected_after_source_disappears(
 
     # The acquired bytes were durably retained with a terminal classification;
     # source disappearance cannot turn that completed archive write into a
-    # retryable transport failure.
-    assert result.succeeded_file_count == 1
+    # retryable transport failure. Nothing of the file was admitted, so it is
+    # a settled corrupt-input exclusion, not a success (polylogue-xf8qp).
+    assert result.succeeded_file_count == 0
     assert result.failed_file_count == 0
+    assert result.excluded_paths == {str(path): "corrupt_input"}
     with sqlite3.connect(index_db) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
         assert conn.execute("SELECT COUNT(*) FROM raw_revision_heads").fetchone() == (0,)

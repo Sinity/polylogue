@@ -8,9 +8,7 @@ integrity classes with bounded default cost.
 
 from __future__ import annotations
 
-import hashlib
 import sqlite3
-import zipfile
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from contextlib import closing
@@ -19,20 +17,8 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Literal
 
-from polylogue.archive.zip_admission import (
-    MAX_UNCOMPRESSED_SIZE,
-    ZIP_JSON_SUFFIXES,
-    ZipAdmission,
-    ZipBombError,
-    open_bounded_zip_entry,
-)
-from polylogue.core.enums import Provider
-from polylogue.core.json import JSONDecodeError as CoreJSONDecodeError
-from polylogue.core.json import dumps_bytes as json_dumps_bytes
-from polylogue.core.json import loads as json_loads
-from polylogue.core.raw_coordinates import zip_member_coordinate, zip_member_identity_coordinate
+from polylogue.core.raw_coordinates import split_zip_member_text
 from polylogue.logging import get_logger
-from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.storage.blob_liveness import (
     BlobLivenessProjection,
     acquired_attachment_missing_ref_predicate,
@@ -397,9 +383,11 @@ def _source_path_availability(path: str | None, archive_root: Path | None = None
     direct = Path(path)
     if direct.exists():
         return True, str(direct)
-    if ":" in path:
-        outer, _inner = path.split(":", 1)
-        outer_path = Path(outer)
+    # Only a ``<container>:<member>`` coordinate names its container; a
+    # missing loose file whose name holds a colon names nothing else.
+    split = split_zip_member_text(path)
+    if split is not None:
+        outer_path = Path(split[0])
         if outer_path.exists():
             return True, str(outer_path)
         reanchored_outer = _reanchored_archive_path(outer_path, archive_root)
@@ -612,213 +600,6 @@ def classify_blob_reference_debt(
         top_groups=tuple(top_groups),
         samples=tuple(samples),
     )
-
-
-def _path_is_container_member(path: str) -> bool:
-    return ":" in path
-
-
-def _split_container_source_path(source_path: str) -> tuple[Path, str] | None:
-    outer, sep, member = source_path.partition(":")
-    if not sep or not outer or not member:
-        return None
-    # A container path may itself hold a colon; prefer the prefix that is a real ZIP.
-    return zip_member_coordinate(source_path) or (Path(outer), member)
-
-
-def _jsonl_payloads(raw_bytes: bytes) -> list[object]:
-    return [json_loads(line) for line in raw_bytes.splitlines() if line.strip()]
-
-
-def _member_payload_by_content(
-    decoded_payload: object,
-    *,
-    split_index: int,
-    blob_hash: str | None,
-    content_identity: str | None = None,
-    addressing_mode: str | None = None,
-    positional_when_content_is_gone: bool = False,
-) -> bytes:
-    """Return the member value the recorded reference names.
-
-    ``split_index`` chooses which value is checked first and never which value
-    is returned: an export that reorders or inserts elements leaves a valid but
-    unrelated conversation at the recorded position.
-
-    ``positional_when_content_is_gone`` belongs to the one caller whose
-    contract is that the recorded content is stale by construction --
-    recanonicalizing a row onto whatever its source holds now. Every caller
-    that is proving a recorded reference leaves it false.
-    """
-    if addressing_mode == "whole_member":
-        elements = [decoded_payload]
-    elif isinstance(decoded_payload, list):
-        elements = list(decoded_payload)
-    elif split_index == 0:
-        elements = [decoded_payload]
-    else:
-        raise IndexError("non-array JSON payload only supports source_index 0")
-    hinted: bytes | None = None
-    if 0 <= split_index < len(elements):
-        hinted = json_dumps_bytes(elements[split_index])
-        if _payload_matches(hinted, blob_hash=blob_hash, content_identity=content_identity):
-            return hinted
-    elif blob_hash is None:
-        raise IndexError(f"source_index {split_index} outside member array")
-    for element in elements:
-        encoded = json_dumps_bytes(element)
-        if _payload_matches(encoded, blob_hash=blob_hash, content_identity=content_identity):
-            return encoded
-    if positional_when_content_is_gone and hinted is not None:
-        return hinted
-    raise IndexError(f"no member value matches the content identity of {blob_hash}")
-
-
-def _payload_matches(payload: bytes, *, blob_hash: str | None, content_identity: str | None) -> bool:
-    if content_identity is not None:
-        from polylogue.core.content_identity import ContentIdentityRefusal, payload_content_identity
-
-        try:
-            return payload_content_identity(payload) == content_identity
-        except ContentIdentityRefusal:
-            # Acquisition refuses such a value, so no recorded identity names
-            # it: this candidate is not the referenced one.
-            return False
-    return blob_hash is None or hashlib.sha256(payload).hexdigest() == blob_hash
-
-
-def _current_raw_payload_bytes(
-    source_path: str,
-    source_index: int | None,
-    *,
-    raw_id: str | None = None,
-    blob_hash: str | None = None,
-    content_identity: str | None = None,
-    addressing_mode: str | None = None,
-    zip_coordinate: tuple[int, int] | None = None,
-    source_bytes_cache: dict[str, bytes] | None = None,
-    decoded_payload_cache: dict[str, object] | None = None,
-    provider_hint: str | None = None,
-    positional_when_content_is_gone: bool = False,
-) -> tuple[bytes | None, str | None]:
-    if _path_is_container_member(source_path):
-        split = _split_container_source_path(source_path)
-        if split is None:
-            return None, "unsupported_container_path"
-        zip_path, member = split
-        if not zip_path.exists():
-            return None, "source_missing"
-        entry_ordinal: int | None = zip_coordinate[0] if zip_coordinate is not None else None
-        split_index = zip_coordinate[1] if zip_coordinate is not None else source_index
-        if zip_coordinate is None and raw_id is not None and blob_hash is not None and source_index is not None:
-            coordinate = zip_member_identity_coordinate(
-                raw_id=raw_id,
-                source_path=source_path,
-                source_index=source_index,
-                blob_hash=blob_hash,
-            )
-            if coordinate is not None:
-                entry_ordinal, split_index = coordinate
-        cache_key = source_path if entry_ordinal is None else f"{source_path}\0{entry_ordinal}"
-        provider = None
-        declared_rule = None
-        if provider_hint is not None:
-            try:
-                provider = Provider.from_string(provider_hint)
-            except ValueError:
-                provider = None
-            if provider is not None:
-                declared_rule = artifact_rule_for_path(provider, member)
-        try:
-            if source_bytes_cache is not None and cache_key in source_bytes_cache:
-                member_bytes = source_bytes_cache[cache_key]
-            else:
-                with zipfile.ZipFile(zip_path) as archive:
-                    central_directory = archive.infolist()
-                    if entry_ordinal is None:
-                        matching = [info for info in central_directory if info.filename == member]
-                    elif entry_ordinal >= len(central_directory):
-                        return None, "container_coordinate_mismatch"
-                    else:
-                        coordinated = central_directory[entry_ordinal]
-                        matching = [coordinated] if coordinated.filename == member else []
-                    if len(matching) != 1:
-                        reason = (
-                            "ambiguous_container_member" if entry_ordinal is None else "container_coordinate_mismatch"
-                        )
-                        return None, reason
-                    allowed_path = (
-                        (lambda name: artifact_rule_for_path(provider, name) is not None) if provider else None
-                    )
-                    # Admission is cumulative over the whole central
-                    # directory (the aggregate budget counts every admitted
-                    # entry before this one), so it is replayed in directory
-                    # order rather than over the matching entry alone.
-                    target = matching[0]
-                    admitted = any(
-                        info is target
-                        for info in ZipAdmission(zip_path=zip_path).filter_entries(
-                            central_directory,
-                            allowed_suffixes=ZIP_JSON_SUFFIXES,
-                            allowed_path=allowed_path,
-                        )
-                    )
-                    if not admitted:
-                        return None, "container_member_rejected"
-                    with open_bounded_zip_entry(archive, target) as handle:
-                        member_bytes = handle.read(MAX_UNCOMPRESSED_SIZE + 1)
-                if source_bytes_cache is not None:
-                    source_bytes_cache[cache_key] = member_bytes
-        except KeyError:
-            return None, "source_missing"
-        except (OSError, zipfile.BadZipFile) as exc:
-            return None, f"error:{exc}"
-        except ZipBombError:
-            return None, "container_member_rejected"
-        if split_index is None:
-            return None, "source_index_missing"
-        if blob_hash is not None and hashlib.sha256(member_bytes).hexdigest() == blob_hash:
-            return member_bytes, None
-        if declared_rule is not None and declared_rule.parse_policy == "raw-only":
-            return member_bytes, None
-        try:
-            if decoded_payload_cache is not None and cache_key in decoded_payload_cache:
-                decoded_payload = decoded_payload_cache[cache_key]
-            elif member.endswith(".jsonl"):
-                decoded_payload = _jsonl_payloads(member_bytes)
-            else:
-                decoded_payload = json_loads(member_bytes)
-            if decoded_payload_cache is not None:
-                decoded_payload_cache[cache_key] = decoded_payload
-            payload_bytes = _member_payload_by_content(
-                decoded_payload,
-                split_index=int(split_index),
-                blob_hash=blob_hash,
-                content_identity=content_identity,
-                addressing_mode=addressing_mode,
-                positional_when_content_is_gone=positional_when_content_is_gone,
-            )
-        except (IndexError, CoreJSONDecodeError, UnicodeDecodeError) as exc:
-            return None, f"source_index:{exc}"
-        return payload_bytes, None
-
-    path = Path(source_path)
-    if not path.exists():
-        return None, "source_missing"
-    try:
-        # The recorded blob size is not a bound on the file that is here now:
-        # a source can have grown arbitrarily since acquisition, and this
-        # fallback runs on every prefix mismatch. Read one byte past the same
-        # ceiling the container branch above applies and refuse an oversized
-        # source by name, so the caller reports a bounded refusal rather than
-        # silently hashing a truncated prefix.
-        with path.open("rb") as handle:
-            payload = handle.read(MAX_UNCOMPRESSED_SIZE + 1)
-    except OSError as exc:
-        return None, f"error:{exc}"
-    if len(payload) > MAX_UNCOMPRESSED_SIZE:
-        return None, "source_too_large"
-    return payload, None
 
 
 def _sample(values: list[str], *, full: bool, sample_size: int) -> list[str]:

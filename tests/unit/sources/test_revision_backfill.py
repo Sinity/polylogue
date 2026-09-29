@@ -26,6 +26,7 @@ from polylogue.sources import revision_backfill
 from polylogue.sources.decoders import _iter_json_stream
 from polylogue.sources.dispatch import parse_payload
 from polylogue.sources.parsers.base import ParsedSession
+from polylogue.sources.prepared_jsonl import terminal_decode_evidence
 from polylogue.sources.revision_backfill import (
     LEGACY_PAGE_IMAGE_CENSUS_DETAIL,
     RawParsePrefetchCache,
@@ -4133,7 +4134,7 @@ def test_thread_parse_never_touches_shared_archive_connection(monkeypatch: pytes
         source_db_path_str: str,
         kind_token: str,
         native_id: str | None,
-    ) -> tuple[str, list[ParsedSession] | None, str | None]:
+    ) -> tuple[str, list[ParsedSession] | None, revision_backfill.RetainedParseFailure | None]:
         return raw_id, [], None
 
     monkeypatch.setattr(revision_backfill, "census_parse_worker", fake_worker)
@@ -4180,7 +4181,7 @@ def test_thread_parse_propagates_per_raw_exception_without_poisoning_batch(
         source_db_path_str: str,
         kind_token: str,
         native_id: str | None,
-    ) -> tuple[str, list[ParsedSession] | None, str | None]:
+    ) -> tuple[str, list[ParsedSession] | None, revision_backfill.RetainedParseFailure | None]:
         if raw_id == "bad-1":
             raise RuntimeError(f"boom {raw_id}")
         return raw_id, [], None
@@ -4234,7 +4235,7 @@ def test_thread_parse_results_keyed_by_raw_id_not_completion_order(monkeypatch: 
         source_db_path_str: str,
         kind_token: str,
         native_id: str | None,
-    ) -> tuple[str, list[ParsedSession] | None, str | None]:
+    ) -> tuple[str, list[ParsedSession] | None, revision_backfill.RetainedParseFailure | None]:
         time.sleep(delay_by_raw_id[raw_id])
         return raw_id, [], None
 
@@ -5386,3 +5387,114 @@ def test_cold_build_rebuilds_a_session_that_retains_an_agent_work_event(tmp_path
 
     assert result.replayed_logical_sources == 2
     assert session_state(Path(generation.index_path)) == active
+
+
+_CLAUDE_USER_RECORD = (
+    b'{"parentUuid":null,"type":"user","sessionId":"strict-replay","message":{"role":"user","content":"kept"},'
+    b'"uuid":"user-1","timestamp":"2025-01-01T00:00:00Z"}\n'
+)
+_CLAUDE_ASSISTANT_RECORD = (
+    b'{"parentUuid":"user-1","type":"assistant","sessionId":"strict-replay","message":{"role":"assistant",'
+    b'"content":[{"type":"text","text":"reply"}]},"uuid":"assistant-1","timestamp":"2025-01-01T00:00:01Z"}\n'
+)
+
+
+def _retain_claude_code_jsonl(root: Path, payload: bytes) -> str:
+    with ArchiveStore.open_existing(root, read_only=False) as archive:
+        return archive.write_raw_payload(
+            provider=Provider.CLAUDE_CODE,
+            payload=payload,
+            source_path=str(root / "projects" / "proj" / "strict-replay.jsonl"),
+            acquired_at_ms=1,
+        )
+
+
+def test_retained_replay_refuses_a_malformed_middle_record_with_a_terminal_census(tmp_path: Path) -> None:
+    """A complete JSONL record that does not decode settles the raw as terminal corrupt input.
+
+    Live intake refuses these bytes with ``terminal_corrupt_input`` evidence
+    and no session (polylogue-ez5b9); replay of the same retained bytes must
+    reach the same outcome, and its census receipt must be complete so the
+    raw is never re-selected (polylogue-3p8p7).
+
+    Anti-vacuity: lenient replay decoding skips the malformed record and
+    publishes a session missing it; strict decoding without the terminal
+    census outcome leaves a ``failed`` receipt that
+    ``uncensused_historical_revision_raw_ids`` re-selects on every pass.
+    """
+    bootstrap_archive_root(tmp_path)
+    raw_id = _retain_claude_code_jsonl(
+        tmp_path, _CLAUDE_USER_RECORD + b'{"type": "user", "message": oops}\n' + _CLAUDE_ASSISTANT_RECORD
+    )
+
+    census_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+
+    assert uncensused_historical_revision_raw_ids(tmp_path, [raw_id]) == ()
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        status, keys = conn.execute(
+            "SELECT status, logical_keys_json FROM raw_authority_parser_census WHERE raw_id = ?", (raw_id,)
+        ).fetchone()
+        artifact_kinds = {
+            str(row[0]) for row in conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (raw_id,))
+        }
+        (parse_error,) = conn.execute("SELECT parse_error FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+    assert status == "complete"
+    assert parser_census_logical_keys(keys) == ()
+    assert RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT.value in artifact_kinds
+    assert parse_error is not None
+    with ArchiveStore.open_existing(tmp_path, read_only=True) as archive:
+        ((_raw, _index, terminal, _rowid),) = archive.raw_membership_census_rows([raw_id])
+    assert terminal is True
+
+    backfill_historical_revision_evidence(tmp_path, selected_raw_ids=[raw_id])
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("route", ["bytes", "stream"])
+def test_retained_replay_parses_the_complete_prefix_before_an_unterminated_tail(tmp_path: Path, route: str) -> None:
+    """An unterminated final line is an append in progress, not a corrupt record.
+
+    Strict replay parses the same complete-record prefix the live path
+    worker parses (``jsonl_parse_prefix_size``), so a capture taken mid-write
+    keeps every complete record. A newline-terminated malformed final line
+    is a finished record and is refused.
+
+    Anti-vacuity: decoding the whole payload strictly raises on the
+    unterminated tail and loses the session; excluding a terminated
+    malformed final line silently publishes a session without it.
+    """
+    source_path = str(tmp_path / "projects" / "proj" / "strict-replay.jsonl")
+    complete = _CLAUDE_USER_RECORD + _CLAUDE_ASSISTANT_RECORD
+
+    def replay(payload: bytes) -> list[ParsedSession]:
+        if route == "bytes":
+            return revision_backfill._parse_one(Provider.CLAUDE_CODE, payload, source_path)
+        return revision_backfill._parse_stream(Provider.CLAUDE_CODE, BytesIO(payload), source_path)
+
+    (session,) = replay(complete + b'{"parentUuid":"assistant-1","type":"user","mess')
+    assert [message.text for message in session.messages] == ["kept", "reply"]
+
+    with pytest.raises(ValueError) as refused:
+        replay(complete + b'{"type": "user", "message": oops}\n')
+    assert terminal_decode_evidence(refused.value, provider=Provider.CLAUDE_CODE) is (
+        RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT
+    )
+
+
+def test_a_worker_decode_refusal_keeps_its_kind_across_the_worker_boundary() -> None:
+    """A census worker's decode failure is rebuilt as a typed decode refusal.
+
+    Anti-vacuity: the former string carrier rebuilt every worker failure as
+    ``RuntimeError``, which no decode classifier recognizes, so a refusal
+    parsed off the writer became an endlessly retried ``failed`` receipt.
+    """
+    from polylogue.sources.decoders import JsonlDecodeError
+
+    failure = revision_backfill.RetainedParseFailure.of(
+        JsonlDecodeError("x.jsonl", line_number=2, cause=ValueError("malformed JSONL record"))
+    )
+    assert terminal_decode_evidence(failure.as_exception(), provider=Provider.CODEX) is (
+        RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT
+    )
+    assert revision_backfill.RetainedParseFailure.of(RuntimeError("boom")).as_exception().__class__ is RuntimeError

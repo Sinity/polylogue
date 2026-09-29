@@ -88,6 +88,7 @@ from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
     IngestAttemptDisposition,
     classify_archive_write_exception,
+    corrupt_input_disposition,
     downstream_failure_disposition,
     non_session_artifact_disposition,
     success_disposition,
@@ -185,10 +186,12 @@ from polylogue.sources.live.cursor import (
 from polylogue.sources.live.dedup import handle_schema_version_mismatch, handle_structural_database_error
 from polylogue.sources.live.deferred_cursor import record_deferred_append_cursor
 from polylogue.sources.live.metrics import (
+    REFUSED_CORRUPT_INPUT,
     REFUSED_DAEMON_DEGRADED,
     REFUSED_NO_SESSIONS,
     REFUSED_UNATTEMPTED,
     REFUSED_UNATTEMPTED_TIME_BUDGET,
+    SETTLED_EXCLUSION_REASONS,
     LiveBatchMetrics,
     LiveFullIngestAggregate,
     split_offered_bytes,
@@ -206,11 +209,10 @@ from polylogue.sources.origin_specs import (
 from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.prepared_jsonl import (
-    DecodeFailure,
     PreparedDecodeError,
     PreparedJsonl,
     PreparedSessionSequence,
-    classify_decode_failure,
+    terminal_decode_evidence,
 )
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.sources.revision_backfill import (
@@ -374,25 +376,6 @@ def _hot_capture_prefix_is_proven(
     except (EOFError, OSError):
         return False
     return fingerprint == expected_fingerprint and _file_observation(proof_start) == _file_observation(proof_end)
-
-
-def _terminal_decode_evidence(error: BaseException, *, provider: Provider) -> RawFailureEvidenceKind | None:
-    """The terminal evidence a decode failure of retained bytes earns, if any.
-
-    Any decode failure of an unknown-provider capture is terminal. A complete
-    JSONL record that does not decode is terminal for every provider: the
-    producer finished that record, so no later observation of these bytes
-    can repair it, and a frontier past it without evidence would drop it
-    silently.
-    """
-    failure = classify_decode_failure(error)
-    if failure is None:
-        return None
-    if provider is Provider.UNKNOWN:
-        return RawFailureEvidenceKind.TERMINAL_UNKNOWN_JSON_DECODE
-    if failure is DecodeFailure.JSONL_RECORD:
-        return RawFailureEvidenceKind.TERMINAL_CORRUPT_INPUT
-    return None
 
 
 def _disposition_delta(before: Mapping[str, int], after: Mapping[str, int]) -> dict[str, int]:
@@ -758,9 +741,11 @@ class _ArchiveFullWriteResult:
     # observation. Keep them separate from accepted raw ids so deferred
     # authority failures remain retryable.
     terminal_raw_ids: dict[_FullRecordKey, str] = field(default_factory=dict)
-    # Accepted raws whose parse produced no session (a recorded terminal
-    # shape outcome). Their paths still advance the cursor as successes.
-    no_session_raw_ids: set[_FullRecordKey] = field(default_factory=set)
+    # Accepted raws that settled to a terminal outcome with nothing
+    # admissible -- no session (a recorded terminal shape outcome) or corrupt
+    # input -- keyed to the settled exclusion reason. Their paths still
+    # advance the cursor as successes; intake reports them excluded.
+    settled_exclusions: dict[_FullRecordKey, str] = field(default_factory=dict)
     # A raw whose membership census does not produce an accepted session is
     # still a durably acquired, successfully parsed source observation. The
     # decision can be pending for the materialization conveyor or already
@@ -866,6 +851,10 @@ class _OpenIngestAttempt:
     def opened(self, attempt_id: str) -> None:
         self.attempt_id = attempt_id
         self.scope.enter_context(bind(attempt_id=attempt_id))
+
+
+#: Typed reason of a ZIP member whose value no archive content identity can hold.
+_CONTENT_IDENTITY_REFUSED = "content_identity_refused"
 
 
 def _zip_member_debt_prefix(path: Path) -> str:
@@ -1335,7 +1324,7 @@ class LiveBatchProcessor:
         failed_paths: list[str] = []
         excluded_by_path: dict[Path, str] = {}
         detection_fallbacks_by_path: dict[Path, str] = {}
-        no_session_paths: set[Path] = set()
+        settled_exclusions: dict[Path, str] = {}
         succeeded_paths: set[Path] = set()
         # polylogue-cnu3: the most severe structural disposition this batch
         # hit, if any. Set at each terminal except-clause below by
@@ -1372,7 +1361,7 @@ class LiveBatchProcessor:
             await self._record_attempt_progress_admitted(
                 attempt_id,
                 phase="append_parse",
-                succeeded_file_count=len(succeeded_paths - no_session_paths),
+                succeeded_file_count=len(succeeded_paths - settled_exclusions.keys()),
                 failed_file_count=len(failed_paths),
                 source_payload_read_bytes=source_payload_read_bytes,
                 cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1412,7 +1401,7 @@ class LiveBatchProcessor:
             await self._record_attempt_progress_admitted(
                 attempt_id,
                 phase="convergence",
-                succeeded_file_count=len(succeeded_paths - no_session_paths),
+                succeeded_file_count=len(succeeded_paths - settled_exclusions.keys()),
                 failed_file_count=len(failed_paths),
                 source_payload_read_bytes=source_payload_read_bytes,
                 cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1596,7 +1585,7 @@ class LiveBatchProcessor:
                     await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse",
-                        succeeded_file_count=len(succeeded_paths - no_session_paths),
+                        succeeded_file_count=len(succeeded_paths - settled_exclusions.keys()),
                         failed_file_count=len(failed_paths),
                         source_payload_read_bytes=source_payload_read_bytes,
                         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1615,7 +1604,7 @@ class LiveBatchProcessor:
                             attempt_id,
                             source_name=source_name,
                             current_path=current_path,
-                            succeeded_file_count=len(succeeded_paths - no_session_paths),
+                            succeeded_file_count=len(succeeded_paths - settled_exclusions.keys()),
                             failed_file_count=len(failed_paths),
                             source_payload_read_bytes=source_payload_read_bytes,
                             cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1646,7 +1635,7 @@ class LiveBatchProcessor:
                     await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse_failed",
-                        succeeded_file_count=len(succeeded_paths - no_session_paths),
+                        succeeded_file_count=len(succeeded_paths - settled_exclusions.keys()),
                         failed_file_count=len(failed_paths),
                         source_payload_read_bytes=source_payload_read_bytes,
                         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1666,7 +1655,7 @@ class LiveBatchProcessor:
                     await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse_failed",
-                        succeeded_file_count=len(succeeded_paths - no_session_paths),
+                        succeeded_file_count=len(succeeded_paths - settled_exclusions.keys()),
                         failed_file_count=len(failed_paths),
                         source_payload_read_bytes=source_payload_read_bytes,
                         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1701,7 +1690,7 @@ class LiveBatchProcessor:
                     await self._record_attempt_progress_admitted(
                         attempt_id,
                         phase="full_parse_failed",
-                        succeeded_file_count=len(succeeded_paths - no_session_paths),
+                        succeeded_file_count=len(succeeded_paths - settled_exclusions.keys()),
                         failed_file_count=len(failed_paths),
                         source_payload_read_bytes=source_payload_read_bytes,
                         cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1719,7 +1708,7 @@ class LiveBatchProcessor:
                 await self._record_attempt_progress_admitted(
                     attempt_id,
                     phase="convergence",
-                    succeeded_file_count=len(succeeded_paths - no_session_paths),
+                    succeeded_file_count=len(succeeded_paths - settled_exclusions.keys()),
                     failed_file_count=len(failed_paths),
                     source_payload_read_bytes=source_payload_read_bytes,
                     cursor_fingerprint_read_bytes=cursor_fingerprint_read_bytes,
@@ -1821,7 +1810,7 @@ class LiveBatchProcessor:
                     )
                 excluded_by_path.update(full_result.excluded)
                 detection_fallbacks_by_path.update(full_result.detection_fallbacks)
-                no_session_paths.update(full_result.no_session)
+                settled_exclusions.update(full_result.settled_exclusions)
                 emit(
                     "live.ingest.source_group",
                     source_name=source_name,
@@ -1874,7 +1863,7 @@ class LiveBatchProcessor:
             }
         summary_stage_payload = {
             **(summary_stage_payload or {}),
-            "excluded_file_count": len(excluded_by_path) + len(no_session_paths),
+            "excluded_file_count": len(excluded_by_path) + len(settled_exclusions),
         }
         # The ingest-attempt receipt has separate units for parsed raw files
         # and materialized sessions.  Count the actual session identities
@@ -1887,7 +1876,7 @@ class LiveBatchProcessor:
         await self._record_attempt_progress_admitted(
             attempt_id,
             phase="cursor_update",
-            succeeded_file_count=len(succeeded_paths - no_session_paths),
+            succeeded_file_count=len(succeeded_paths - settled_exclusions.keys()),
             failed_file_count=len(failed_paths),
             materialized_count=materialized_session_count,
             source_payload_read_bytes=source_payload_read_bytes,
@@ -1942,10 +1931,10 @@ class LiveBatchProcessor:
         # ``succeeded_paths`` stays the cursor-completed set this method
         # advances. Public accounting moves a path that produced no session
         # to the exclusions, matching the intake outcome for the same path.
-        admitted_paths = succeeded_paths - no_session_paths
+        admitted_paths = succeeded_paths - settled_exclusions.keys()
         reported_excluded = {
             **excluded_by_path,
-            **dict.fromkeys(no_session_paths, REFUSED_NO_SESSIONS),
+            **settled_exclusions,
         }
         excluded_reasons: dict[str, int] = {}
         for reason in reported_excluded.values():
@@ -1965,7 +1954,7 @@ class LiveBatchProcessor:
             queued_file_count=queued_file_count if queued_file_count is not None else len(paths),
             needed_file_count=len(paths),
             skipped_file_count=skipped_file_count,
-            succeeded_file_count=len(succeeded_paths - no_session_paths),
+            succeeded_file_count=len(succeeded_paths - settled_exclusions.keys()),
             failed_file_count=len(failed_paths),
             excluded_file_count=sum(excluded_reasons.values()),
             excluded_reasons=dict(excluded_reasons),
@@ -2001,7 +1990,7 @@ class LiveBatchProcessor:
             stage_timings_s={name: round(elapsed, 6) for name, elapsed in stage_timings.items()},
             failed_paths=retry_paths,
             succeeded_paths=tuple(sorted(admitted_paths)),
-            no_session_paths=tuple(sorted(str(path) for path in no_session_paths)),
+            settled_exclusion_paths={str(path): reason for path, reason in sorted(settled_exclusions.items())},
             new_sessions=tuple(new_session_touches),
             updated_sessions=tuple(updated_session_touches),
             time_budget_exceeded=full_ingest_time_budget_exceeded,
@@ -2027,7 +2016,7 @@ class LiveBatchProcessor:
             queued_file_count=metrics.queued_file_count,
             needed_file_count=metrics.needed_file_count,
             skipped_file_count=metrics.skipped_file_count,
-            succeeded_file_count=len(succeeded_paths - no_session_paths),
+            succeeded_file_count=len(succeeded_paths - settled_exclusions.keys()),
             failed_file_count=len(failed_paths),
             materialized_count=materialized_session_count,
             input_bytes=input_bytes,
@@ -2050,16 +2039,25 @@ class LiveBatchProcessor:
         elif (
             not retry_paths
             and not full_ingest_time_budget_exceeded
-            and no_session_paths
+            and settled_exclusions
             and set(reported_excluded) == set(paths)
-            and set(reported_excluded.values()) == {REFUSED_NO_SESSIONS}
+            and set(reported_excluded.values()) <= SETTLED_EXCLUSION_REASONS
         ):
-            # Every settled source parsed to no session: the durable attempt
+            # Every source settled to nothing admissible: the durable attempt
             # agrees with the intake's EXCLUDED outcome instead of SUCCESS.
-            final_disposition = non_session_artifact_disposition(
-                evidence_ref="batch:no_session_sources",
-                diagnostic=f"{len(no_session_paths)} source item(s) parsed to no session",
-            )
+            if REFUSED_CORRUPT_INPUT in reported_excluded.values():
+                final_disposition = corrupt_input_disposition(
+                    evidence_ref="batch:corrupt_input_sources",
+                    diagnostic=(
+                        f"{sum(reason == REFUSED_CORRUPT_INPUT for reason in reported_excluded.values())} "
+                        "source item(s) are corrupt input"
+                    ),
+                )
+            else:
+                final_disposition = non_session_artifact_disposition(
+                    evidence_ref="batch:no_session_sources",
+                    diagnostic=f"{len(settled_exclusions)} source item(s) parsed to no session",
+                )
         elif not retry_paths:
             final_disposition = success_disposition()
         else:
@@ -2467,13 +2465,19 @@ class LiveBatchProcessor:
             semantic_authority = claude_semantic_frontier_for_prefix(
                 path, frontier_byte_size if frontier_byte_size is not None else byte_size
             )
-            if semantic_authority is None:
+            if semantic_authority is not None:
+                last_nl = frontier_byte_size if frontier_byte_size is not None else byte_size
+                tail_hash = semantic_authority
+                bytes_read += last_nl
+            elif raw_fingerprint is None or not self._raw_failure_requires_full_replay(path, raw_fingerprint):
                 self._last_cursor_write_stale = True
                 self._invalidate_cursor_for_full_retry(path, source_name=resolved_source_name, stat=stat)
                 return bytes_read
-            last_nl = frontier_byte_size if frontier_byte_size is not None else byte_size
-            tail_hash = semantic_authority
-            bytes_read += last_nl
+            # Otherwise the retained raw is settled with terminal failure
+            # evidence (a malformed complete record has no semantic frontier):
+            # the cursor keeps its byte-prefix authority, and that evidence
+            # forces a full replay when the file changes. Refusing here left
+            # the unchanged capture retried on every pass (polylogue-xf8qp).
         final_prefix_proof = self._full_capture_still_matches(
             path,
             stat=stat,
@@ -4169,16 +4173,21 @@ class LiveBatchProcessor:
             for path in ingested
             if path not in failed_set and path not in skipped_paths and path not in preparation_deferred_paths
         ]
-        no_session_paths: list[Path] = []
-        if archive_write is not None and archive_write.no_session_raw_ids:
+        settled_exclusions: dict[Path, str] = {}
+        if archive_write is not None and archive_write.settled_exclusions:
             keys_by_path: dict[Path, list[_FullRecordKey]] = {}
             for key, path in raw_by_record.items():
                 keys_by_path.setdefault(path, []).append(key)
-            no_session_paths = [
-                path
-                for path in succeeded_paths
-                if (keys := keys_by_path.get(path)) and all(key in archive_write.no_session_raw_ids for key in keys)
-            ]
+            for path in succeeded_paths:
+                keys = keys_by_path.get(path)
+                if not keys or any(key not in archive_write.settled_exclusions for key in keys):
+                    continue
+                reasons = {archive_write.settled_exclusions[key] for key in keys}
+                # Corrupt input is the stronger outcome: one corrupt record
+                # of a path is the reason nothing of it was admitted.
+                settled_exclusions[path] = (
+                    REFUSED_CORRUPT_INPUT if REFUSED_CORRUPT_INPUT in reasons else REFUSED_NO_SESSIONS
+                )
         for path in skipped_paths:
             # The archive-write checkpoint did not reach these records. They
             # have no raw row or cursor and must stay eligible on the next
@@ -4205,7 +4214,7 @@ class LiveBatchProcessor:
             detection_fallbacks={
                 path: reason for path, reason in detection_fallbacks.items() if path in succeeded_paths
             },
-            no_session=no_session_paths,
+            settled_exclusions=settled_exclusions,
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
             raw_frontier_sizes=raw_frontier_sizes,
@@ -4679,6 +4688,7 @@ class LiveBatchProcessor:
                             preserve_existing_failure_evidence=True,
                         )
                         result.raw_ids[_full_record_key(record)] = source_raw_id
+                        result.settled_exclusions[_full_record_key(record)] = REFUSED_CORRUPT_INPUT
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     t0 = time.perf_counter()
@@ -4888,7 +4898,7 @@ class LiveBatchProcessor:
                             preserve_existing_failure_evidence=True,
                         )
                         result.raw_ids[_full_record_key(record)] = source_raw_id
-                        result.no_session_raw_ids.add(_full_record_key(record))
+                        result.settled_exclusions[_full_record_key(record)] = REFUSED_NO_SESSIONS
                         _accumulate_stage_timings(result.stage_timings_s, record_timings)
                         continue
                     record_session_artifact_observation(
@@ -5284,7 +5294,7 @@ class LiveBatchProcessor:
                         raise_if_storage_fault(exc)
                     if provider is not None and source_raw_id is not None:
                         preserve_existing_failure_evidence = False
-                        terminal_evidence = _terminal_decode_evidence(exc, provider=provider)
+                        terminal_evidence = terminal_decode_evidence(exc, provider=provider)
                         if terminal_evidence is not None:
                             archive.record_raw_failure_evidence(
                                 source_raw_id,
@@ -5295,6 +5305,7 @@ class LiveBatchProcessor:
                                 kind=terminal_evidence,
                             )
                             result.terminal_raw_ids[_full_record_key(record)] = source_raw_id
+                            result.settled_exclusions[_full_record_key(record)] = REFUSED_CORRUPT_INPUT
                             preserve_existing_failure_evidence = True
                         archive.mark_raw_parse_failed(
                             source_raw_id,
@@ -5720,7 +5731,6 @@ class LiveBatchProcessor:
         source = Source(name=fallback_provider.value, path=path.parent)
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
-        refusals: list[str] = []
         total_bytes = 0
         try:
             with zipfile.ZipFile(path) as zf:
@@ -5829,9 +5839,21 @@ class LiveBatchProcessor:
                         # siblings in the archive are still acquired. The
                         # member yields no split before it validated whole,
                         # and its captures are released with the refusal.
-                        self._record_zip_member_refusal(path, entry_ordinals[id(info)], info.filename, exc)
+                        self._record_zip_member_refusal(
+                            path,
+                            entry_ordinals[id(info)],
+                            info.filename,
+                            reason=foreign_origin_exclusion(exc),
+                            error=f"{exc.code}: {exc}",
+                        )
                     except ContentIdentityRefusal as exc:
-                        refusals.append(f"{info.filename}: {exc}")
+                        self._record_zip_member_refusal(
+                            path,
+                            entry_ordinals[id(info)],
+                            info.filename,
+                            reason=_CONTENT_IDENTITY_REFUSED,
+                            error=f"{_CONTENT_IDENTITY_REFUSED}: {exc}",
+                        )
         except (zipfile.BadZipFile, OSError) as exc:
             # An aborted scan reconciles nothing; drop its partial refusal set
             # so a later pass starts clean.
@@ -5842,16 +5864,7 @@ class LiveBatchProcessor:
             raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             return [], 0
-        if bound_location_provider(fallback_provider) is not None:
-            # Members a later archive revision removed keep no refusal gap:
-            # clear every member debt this pass did not re-record.
-            self._cursor.clear_convergence_debt_under_prefix(
-                stage="live_ingest_admission",
-                subject_type="source_path",
-                prefix=_zip_member_debt_prefix(path),
-                keep=frozenset(self._zip_member_refusals_this_pass.pop(str(path), ())),
-            )
-        self._settle_zip_member_refusals(path, refusals)
+        self._reconcile_zip_member_refusals(path)
         return records, total_bytes
 
     def _extract_source_only_zip_member_records(
@@ -5872,7 +5885,6 @@ class LiveBatchProcessor:
         source = Source(name=fallback_provider.value, path=path.parent)
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
-        refusals: list[str] = []
         total_bytes = 0
         validator = _ZipEntryValidator(fallback_provider, cursor_state=None, zip_path=path)
         try:
@@ -5914,10 +5926,22 @@ class LiveBatchProcessor:
                         )
                         continue
                     except ForeignOriginContentError as exc:
-                        self._record_zip_member_refusal(path, entry_ordinal, info.filename, exc)
+                        self._record_zip_member_refusal(
+                            path,
+                            entry_ordinal,
+                            info.filename,
+                            reason=foreign_origin_exclusion(exc),
+                            error=f"{exc.code}: {exc}",
+                        )
                         continue
                     except ContentIdentityRefusal as exc:
-                        refusals.append(f"{info.filename}: {exc}")
+                        self._record_zip_member_refusal(
+                            path,
+                            entry_ordinal,
+                            info.filename,
+                            reason=_CONTENT_IDENTITY_REFUSED,
+                            error=f"{_CONTENT_IDENTITY_REFUSED}: {exc}",
+                        )
                         continue
                     if raw_data.blob_hash is None:
                         continue
@@ -5959,46 +5983,20 @@ class LiveBatchProcessor:
             # extraction so the caller records retryable failure state instead
             # of permanently acknowledging this source coordinate as excluded.
             return None
-        if bound_location_provider(fallback_provider) is not None:
-            self._cursor.clear_convergence_debt_under_prefix(
-                stage="live_ingest_admission",
-                subject_type="source_path",
-                prefix=_zip_member_debt_prefix(path),
-                keep=frozenset(self._zip_member_refusals_this_pass.pop(str(path), ())),
-            )
-        self._settle_zip_member_refusals(path, refusals)
+        self._reconcile_zip_member_refusals(path)
         return records, total_bytes
 
-    def _settle_zip_member_refusals(self, path: Path, refusals: list[str]) -> None:
-        """Name every member of ``path`` refused a content identity, or clear the gap.
+    def _reconcile_zip_member_refusals(self, path: Path) -> None:
+        """Clear every member refusal of ``path`` this completed scan did not re-record.
 
-        A refused member holds a token no archive value can store, so it is a
-        permanent property of these bytes: the ZIP's other members are still
-        ingested and its cursor still advances, and the refusal is recorded as
-        durable ``live_ingest_admission`` debt on the ZIP so the missing member
-        is a typed, visible gap rather than a log line. A later expansion of
-        the same path with no refusal clears it.
+        Members a later archive revision removed or now admits keep no gap.
+        An aborted scan never reaches here, so it reconciles nothing.
         """
-        if not refusals:
-            self._cursor.clear_convergence_debt(
-                stage="live_ingest_admission",
-                subject_type="source_path",
-                subject_id=str(path),
-            )
-            return
-        reason = "content_identity_refused: " + "; ".join(refusals)
-        emit(
-            "live.ingest.zip_member_refused",
-            level=WARNING,
-            outcome="refused",
-            source_path=str(path),
-            reason=reason,
-        )
-        self._cursor.record_convergence_debt(
+        self._cursor.clear_convergence_debt_under_prefix(
             stage="live_ingest_admission",
             subject_type="source_path",
-            subject_id=str(path),
-            error=reason,
+            prefix=_zip_member_debt_prefix(path),
+            keep=frozenset(self._zip_member_refusals_this_pass.pop(str(path), ())),
         )
 
     def _mark_excluded_cursor(
@@ -6033,12 +6031,16 @@ class LiveBatchProcessor:
             excluded=True,
         )
 
-    def _record_zip_member_refusal(self, path: Path, ordinal: int, member: str, exc: ForeignOriginContentError) -> None:
-        """Keep a durable, retryable gap for one refused ZIP member.
+    def _record_zip_member_refusal(self, path: Path, ordinal: int, member: str, *, reason: str, error: str) -> None:
+        """Keep one durable gap for one refused ZIP member.
 
-        The archive cursor advances with its admissible siblings, so the
-        refused member carries its own ``live_ingest_admission`` debt; a later
-        pass that admits the member clears it.
+        The single record for every member refusal (a foreign-origin record,
+        or a value no archive identity can hold): the archive cursor advances
+        with its admissible siblings, so the refused member carries its own
+        ``live_ingest_admission`` debt under ``<zip>:#<ordinal>:<member>``
+        whose error starts with the typed ``reason``. A later completed scan
+        that admits the member, or no longer holds it, clears it
+        (:meth:`_reconcile_zip_member_refusals`).
         """
         member_path = _zip_member_debt_subject(path, ordinal, member)
         self._zip_member_refusals_this_pass.setdefault(str(path), set()).add(member_path)
@@ -6047,13 +6049,13 @@ class LiveBatchProcessor:
             level=WARNING,
             outcome="refused",
             source_path=member_path,
-            reason=foreign_origin_exclusion(exc),
+            reason=reason,
         )
         self._cursor.record_convergence_debt(
             stage="live_ingest_admission",
             subject_type="source_path",
             subject_id=member_path,
-            error=f"{exc.code}: {exc}",
+            error=error,
         )
 
     def _mark_refused_cursor(

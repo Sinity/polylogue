@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
-import zipfile
 from contextlib import closing
 from pathlib import Path
 
 import pytest
 
-from polylogue.archive import zip_admission
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedContentBlock, ParsedMessage, ParsedSession
@@ -635,67 +633,6 @@ def test_classify_blob_reference_debt_groups_recovery_evidence(tmp_path: Path) -
     assert first_sample["sample_source_available"] is True
 
 
-def test_blob_recovery_rejects_duplicate_container_member_before_open(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    zip_source = tmp_path / "duplicate.zip"
-    with zipfile.ZipFile(zip_source, "w") as archive:
-        archive.writestr("conversations.json", b'{"first": true}')
-        archive.writestr("conversations.json", b'{"second": true}')
-
-    def fail_open(*args: object, **kwargs: object) -> object:
-        raise AssertionError("rejected duplicate member must not be opened")
-
-    monkeypatch.setattr(zipfile.ZipFile, "open", fail_open)
-    payload, reason = blob_integrity._current_raw_payload_bytes(
-        f"{zip_source}:conversations.json",
-        0,
-    )
-
-    assert payload is None
-    assert reason == "ambiguous_container_member"
-
-
-def test_blob_recovery_admits_declared_non_json_sidecar(tmp_path: Path) -> None:
-    zip_source = tmp_path / "claude.zip"
-    payload = b"opaque tool result"
-    with zipfile.ZipFile(zip_source, "w") as archive:
-        archive.writestr("session/tool-results/toolu.txt", payload)
-
-    recovered, reason = blob_integrity._current_raw_payload_bytes(
-        f"{zip_source}:session/tool-results/toolu.txt",
-        0,
-        provider_hint="claude-code",
-    )
-
-    assert reason is None
-    assert recovered == payload
-
-
-def test_blob_recovery_rejects_oversized_container_member_before_open(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    zip_source = tmp_path / "oversized.zip"
-    with zipfile.ZipFile(zip_source, "w") as archive:
-        archive.writestr("conversations.json", b"{}")
-
-    monkeypatch.setattr(zip_admission, "MAX_UNCOMPRESSED_SIZE", 1)
-    monkeypatch.setattr(blob_integrity, "MAX_UNCOMPRESSED_SIZE", 1)
-
-    def fail_open(*args: object, **kwargs: object) -> object:
-        raise AssertionError("rejected oversized member must not be opened")
-
-    monkeypatch.setattr(zipfile.ZipFile, "open", fail_open)
-    payload, reason = blob_integrity._current_raw_payload_bytes(
-        f"{zip_source}:conversations.json",
-        0,
-    )
-
-    assert payload is None
-    assert reason == "container_member_rejected"
-
-
 def test_scan_blob_integrity_uses_sibling_archive_source_from_index_db(tmp_path: Path) -> None:
     index_db = tmp_path / "index.db"
     store = BlobStore(tmp_path / "blob")
@@ -769,36 +706,6 @@ class TestSourcePathSurvivesAnArchiveRootMove:
         assert available is False
 
 
-def test_oversized_non_container_source_is_refused_by_name(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A grown source is refused, never read whole or hashed as a prefix.
-
-    Anti-vacuity: with the unbounded ``path.read_bytes()`` restored, the call
-    returns the full payload and ``reason is None``, so both assertions fail.
-    The fixture must exceed the ceiling, or the bounded and unbounded reads
-    agree and the test proves nothing.
-    """
-    monkeypatch.setattr(blob_integrity, "MAX_UNCOMPRESSED_SIZE", 64)
-    source = tmp_path / "grown.jsonl"
-    source.write_bytes(b"x" * 65)
-
-    payload, reason = blob_integrity._current_raw_payload_bytes(str(source), None)
-
-    assert payload is None
-    assert reason == "source_too_large"
-
-
-def test_source_at_the_ceiling_is_still_returned_whole(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The refusal is a ceiling, not an off-by-one that drops valid sources."""
-    monkeypatch.setattr(blob_integrity, "MAX_UNCOMPRESSED_SIZE", 64)
-    source = tmp_path / "exact.jsonl"
-    source.write_bytes(b"y" * 64)
-
-    payload, reason = blob_integrity._current_raw_payload_bytes(str(source), None)
-
-    assert reason is None
-    assert payload == b"y" * 64
-
-
 def test_generation_resolved_index_scans_the_configured_blob_root(tmp_path: Path) -> None:
     """Blob debt is scanned under ``configured_root``, not the index generation.
 
@@ -831,19 +738,21 @@ def test_generation_resolved_index_scans_the_configured_blob_root(tmp_path: Path
 def test_a_candidate_whose_identity_is_refused_is_not_a_match(monkeypatch: pytest.MonkeyPatch) -> None:
     """A member value past the physical value limit has no recorded identity.
 
-    Anti-vacuity: let the refusal escape ``_payload_matches`` or the replay
-    candidate's identity and one such value aborts the whole integrity or
-    replay pass instead of failing only its own reference.
+    Anti-vacuity: let the refusal escape the recoverability match
+    (``_payload_matches_reference``) or the replay candidate's identity and
+    one such value aborts the whole backup or replay pass instead of failing
+    only its own reference.
     """
     from polylogue.core import content_identity
     from polylogue.core.raw_coordinates import MemberAddressingMode
+    from polylogue.operations.archive_backup import _payload_matches_reference
     from polylogue.operations.zip_acquisition_replay import MemberCandidate, resolve_member_candidate
 
     monkeypatch.setattr(content_identity, "physical_value_limit", lambda: 32)
     refused = b'{"n": 1.' + b"2" * 64 + b"}"
     with pytest.raises(content_identity.ContentIdentityRefusal):
         content_identity.payload_content_identity(refused)
-    assert not blob_integrity._payload_matches(refused, blob_hash=None, content_identity="0" * 64)
+    assert not _payload_matches_reference({"content_identity": "0" * 64}, refused, "0" * 64)
     candidate = MemberCandidate(MemberAddressingMode.ELEMENT_OF_CONTAINER, 0, refused)
     resolution = resolve_member_candidate(
         [candidate], expected_digest="0" * 64, hint_mode=None, hint_index=None, expected_is_structural=True

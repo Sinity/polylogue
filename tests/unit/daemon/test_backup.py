@@ -930,7 +930,13 @@ def test_backup_retains_prefix_mismatch_when_grown_source_fallback_fails(
     workspace_env: dict[str, Path],
     tmp_path: Path,
 ) -> None:
-    """A grown file cannot replace a mismatching historical prefix proof."""
+    """A grown file cannot replace a mismatching historical prefix proof.
+
+    The only candidate window of a full observation is its recorded-size
+    prefix (``retained_blob_source_candidates``); a prefix that hashes
+    differently is a typed ``hash_mismatch``, and no whole-file read proves
+    the blob instead.
+    """
     archive_root = workspace_env["archive_root"]
     source_path = tmp_path / "grown.jsonl"
     historical = b'{"id":"stale"}\n'
@@ -958,8 +964,8 @@ def test_backup_retains_prefix_mismatch_when_grown_source_fallback_fails(
     assert unproven == [
         {
             "blob_hash": blob_hash.hex(),
-            "kind": "historical_snapshot_prefix_mismatch",
-            "reason": "historical_snapshot:prefix_mismatch",
+            "kind": "hash_mismatch",
+            "reason": "hash_mismatch",
             "raw_id": "decoder-fallback",
             "source_path": str(source_path),
         }

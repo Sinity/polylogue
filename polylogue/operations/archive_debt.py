@@ -880,8 +880,9 @@ def _raw_blob_path(archive_root: Path, row: sqlite3.Row) -> Path:
 def _source_artifact_exists(source_path: str) -> bool:
     if not source_path:
         return False
-    outer_path = source_path.split(":", 1)[0]
-    return os.path.exists(source_path) or os.path.exists(outer_path) or zip_member_coordinate(source_path) is not None
+    # A member coordinate exists only while its real ZIP container does; a
+    # colon in a loose file's name, or a non-ZIP prefix, names no container.
+    return os.path.exists(source_path) or zip_member_coordinate(source_path) is not None
 
 
 def _count_values(values: Iterable[Any]) -> dict[str, int]:

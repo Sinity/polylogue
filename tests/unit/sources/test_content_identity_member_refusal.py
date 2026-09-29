@@ -75,7 +75,8 @@ def test_a_live_zip_refusal_is_recorded_debt_until_the_zip_is_clean(
 ) -> None:
     """Anti-vacuity: log and drop the refused member (the previous handling)
     and no ``live_ingest_admission`` debt names the gap once the ZIP's cursor
-    advances past it."""
+    advances past it; record it on the ZIP path instead of the member and the
+    subject no longer names the member."""
     from types import SimpleNamespace
     from typing import Any, cast
 
@@ -112,7 +113,11 @@ def test_a_live_zip_refusal_is_recorded_debt_until_the_zip_is_clean(
 
     assert extract() == {f"{zip_path}:b.json"}
     debt = cursor.list_convergence_debt(stage="live_ingest_admission")
-    assert [(row.subject_id, "a.json" in (row.last_error or "")) for row in debt] == [(str(zip_path), True)]
+    # One record per refused member, the same shape a foreign-origin member
+    # refusal takes (polylogue-ltj6c): its ordinal and name, a typed reason.
+    assert [(row.subject_id, (row.last_error or "").split(":", 1)[0]) for row in debt] == [
+        (f"{zip_path}:#0:a.json", "content_identity_refused")
+    ]
 
     with zipfile.ZipFile(zip_path, "w") as archive:
         archive.writestr("b.json", kept)

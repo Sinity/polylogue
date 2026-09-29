@@ -84,10 +84,23 @@ from polylogue.sources.dispatch import (
     parse_stream_payload,
     require_positive_conversational_evidence,
 )
+from polylogue.sources.live.batch_support import (
+    jsonl_complete_prefix,
+    jsonl_parse_prefix_size,
+    jsonl_parse_prefix_size_of_handle,
+)
 from polylogue.sources.origin_specs import artifact_rule_for_path
 from polylogue.sources.parsers import antigravity, codex_state, hermes_identity, hermes_state, hermes_verification
 from polylogue.sources.parsers.base import ParsedSession
-from polylogue.sources.prepared_jsonl import PreparedJsonl, prepare_jsonl_blob
+from polylogue.sources.prepared_jsonl import (
+    DecodeFailure,
+    PreparedDecodeError,
+    PreparedJsonl,
+    _iter_prefix_lines,
+    classify_decode_failure,
+    prepare_jsonl_blob,
+    terminal_decode_evidence,
+)
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.sources.sidecar_evidence import SidecarResolver
 from polylogue.sources.sqlite_export import looks_like_logical_source_bytes
@@ -108,12 +121,14 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.revision_governance import (
     FrozenSourceRemediationRequiredError,
     PreparedRawRevisionClassification,
+    _raw_parse_failure_state,
     _raw_parse_success_state,
     apply_prepared_raw_revision_classification,
     membership_key_has_pending_envelope_member,
     pending_raw_envelope_has_membership_authority,
     raw_has_membership_governed_pending_envelope,
     record_current_parser_source_census,
+    record_raw_failure_evidence,
 )
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     PENDING_RAW_LOGICAL_SOURCE_PREFIX,
@@ -898,6 +913,56 @@ class UnsupportedRetainedJsonShapeError(ValueError):
     """Bounded retained detection found no supported provider for textual JSON."""
 
 
+@dataclass(frozen=True, slots=True)
+class RetainedParseFailure:
+    """One retained parse failure, carried across a worker boundary with its decode kind.
+
+    A decode exception does not survive the boundary with its type (a
+    ``JsonlDecodeError`` cannot be rebuilt from its message), so the carrier
+    names the decode kind and the consumer rebuilds a typed exception.
+    """
+
+    detail: str
+    decode_failure: DecodeFailure | None = None
+
+    @classmethod
+    def of(cls, error: BaseException) -> RetainedParseFailure:
+        return cls(str(error), classify_decode_failure(error))
+
+    def as_exception(self) -> Exception:
+        return retained_parse_exception(self.detail, self.decode_failure)
+
+
+def retained_parse_exception(detail: str, decode_failure: DecodeFailure | None) -> Exception:
+    """The typed exception a carried retained parse failure stands for."""
+    if decode_failure is not None:
+        return PreparedDecodeError(decode_failure, detail)
+    return RuntimeError(detail)
+
+
+def _retained_jsonl_records(payload: bytes, source_name: str, source_path: str) -> list[JSONValue]:
+    """Decode retained bytes as live intake decodes the same capture.
+
+    Every complete JSONL record must decode (``fail_on_decode_error``); only
+    an unterminated tail -- an append in progress -- is left out, by the same
+    rule the live path worker applies (``jsonl_parse_prefix_size``).
+    """
+    if is_jsonl_source_path(source_path):
+        prefix_size = jsonl_parse_prefix_size(jsonl_complete_prefix(payload), len(payload))
+        if prefix_size is not None:
+            payload = payload[:prefix_size]
+    return list(_iter_json_stream(BytesIO(payload), source_name, fail_on_decode_error=True))
+
+
+def _retained_jsonl_stream(payload: BinaryIO, source_name: str, source_path: str) -> Iterable[JSONValue]:
+    """Stream retained records under :func:`_retained_jsonl_records`' rule."""
+    if not is_jsonl_source_path(source_path):
+        return _iter_json_stream(payload, source_name, fail_on_decode_error=True)
+    prefix_size = jsonl_parse_prefix_size_of_handle(payload)
+    record_input = _iter_prefix_lines(payload, prefix_size) if prefix_size is not None else payload
+    return _iter_json_stream(record_input, source_name, fail_on_decode_error=True)  # type: ignore[arg-type]
+
+
 @dataclass(slots=True)
 class PreparedRetainedInput:
     raw_id: str
@@ -911,6 +976,9 @@ class PreparedRetainedInput:
     fallback_timestamp: str | None
     sessions_path: Path | None
     parser_error: str | None = None
+    #: Which decode boundary refused the bytes when ``parser_error`` is a
+    #: decode refusal; the census turns that into a terminal outcome.
+    parser_decode_failure: DecodeFailure | None = None
     enriched: bool = False
     # The disk-backed carrier is the retained worker's publication boundary.
     # Legacy sessions_path remains accepted for old direct callers until their
@@ -1331,6 +1399,10 @@ def prepare_retained_jsonl_artifact(
                 witness: JSONValue = {**envelope, "messages": list(messages)}
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
 
+            parse_prefix_size: int | None = None
+            if is_jsonl_source_path(source_path):
+                with blob_path.open("rb") as tail_handle:
+                    parse_prefix_size = jsonl_parse_prefix_size_of_handle(tail_handle)
             artifact = prepare_jsonl_blob(
                 str(blob_path),
                 source_path,
@@ -1338,6 +1410,10 @@ def prepare_retained_jsonl_artifact(
                 fallback_id,
                 is_stream=is_stream_record_provider(source_path, provider),
                 shard_directory=directory,
+                # Live intake refuses a complete JSONL record that does not
+                # decode; replay of the same bytes must refuse it too.
+                strict_jsonl_records=True,
+                parse_prefix_size=parse_prefix_size,
                 sidecar_resolver=RetainedSidecarResolver(
                     Path(blob_root).parent,
                     blob_root=Path(blob_root),
@@ -1496,49 +1572,6 @@ def prepare_retained_non_json_artifact(
                 discard_session_shard(shard_path)
 
 
-def prepare_retained_jsonl_carrier(
-    raw_id: str,
-    provider_token: str,
-    blob_hash: str,
-    source_path: str,
-    kind_token: str,
-    native_id: str | None,
-    blob_root: str,
-    source_db_path: str,
-    directory: str,
-) -> tuple[str | None, str | None]:
-    """Decode retained JSONL in a worker, returning only a private carrier path."""
-    from polylogue.storage.blob_publication import ArchiveBlobPublisher
-
-    provider = Provider(provider_token)
-    if not is_stream_record_provider(source_path, str(provider)):
-        raise RetainedPreparationRetryableError(f"retained JSONL worker cannot parse {raw_id}")
-    kind = RawRevisionKind(kind_token)
-    fallback_id = native_id if kind is RawRevisionKind.APPEND else None
-    path = Path(directory) / f"retained-{uuid.uuid4().hex}.pickle"
-    try:
-        publisher = ArchiveBlobPublisher(Path(source_db_path), Path(blob_root))
-        with publisher.open(blob_hash) as stream:
-            sessions = _parse_stream(
-                provider,
-                stream,
-                source_path,
-                fallback_id_override=fallback_id,
-                archive_root=Path(blob_root).parent,
-            )
-    except (OSError, sqlite3.OperationalError) as exc:
-        raise RetainedPreparationRetryableError(f"retained JSONL read failed for raw {raw_id}") from exc
-    except Exception as exc:
-        return None, str(exc)
-    try:
-        with path.open("xb") as handle:
-            pickle.dump(sessions, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        return str(path), None
-    except Exception as exc:
-        path.unlink(missing_ok=True)
-        raise RetainedPreparationRetryableError(f"retained JSONL carrier write failed for raw {raw_id}") from exc
-
-
 def _prepared_retained_outcome(
     archive: ArchiveStore,
     raw_id: str,
@@ -1583,7 +1616,7 @@ def _prepared_retained_outcome(
     if not BlobStore(Path(archive.archive_root) / "blob").verify(blob_hash, stop=stop):
         raise RetainedPreparationRetryableError(f"prepared retained blob changed for raw {raw_id}")
     if prepared.parser_error is not None:
-        return RuntimeError(prepared.parser_error)
+        return retained_parse_exception(prepared.parser_error, prepared.parser_decode_failure)
     if prepared.prepared_artifact is not None:
         artifact = prepared.prepared_artifact
         if artifact.blob_hash != blob_hash or artifact.error is not None:
@@ -2173,6 +2206,17 @@ def _census_historical_revision_evidence(
             commit_unit()
             return
         outcome = outcomes[raw_id]
+        if isinstance(outcome, Exception) and _settle_terminal_decode_refusal(
+            archive, raw_id, outcome, source_index=source_index, manage_transaction=not batched
+        ):
+            # A complete record that does not decode is a permanent property
+            # of these bytes, so the census settles it as live intake does:
+            # terminal evidence on the raw and a complete receipt with no
+            # identity. A failed receipt would be re-selected on every pass.
+            state.scanned += 1
+            state.censused.add(raw_id)
+            commit_unit()
+            return
         if isinstance(outcome, Exception):
             archive.replace_raw_membership_census(
                 raw_id,
@@ -4568,7 +4612,7 @@ def census_parse_worker(
     source_db_path_str: str,
     kind_token: str,
     native_id: str | None,
-) -> tuple[str, list[ParsedSession] | None, str | None]:
+) -> tuple[str, list[ParsedSession] | None, RetainedParseFailure | None]:
     """Parse one retained raw's already-published blob bytes.
 
     Pure read-only blob->ParsedSession decode; the caller already knows this
@@ -4668,7 +4712,7 @@ def census_parse_worker(
             )
         return raw_id, sessions, None
     except Exception as exc:
-        return raw_id, None, str(exc)
+        return raw_id, None, RetainedParseFailure.of(exc)
 
 
 #: Providers whose parsed session identity is derived purely from payload
@@ -4809,7 +4853,7 @@ class _OrderedUniqueParse:
         self._archive = archive
         self._order = list(order)
         self._descriptors = descriptors
-        self._futures: dict[str, Future[tuple[str, list[ParsedSession] | None, str | None]]] = {}
+        self._futures: dict[str, Future[tuple[str, list[ParsedSession] | None, RetainedParseFailure | None]]] = {}
         self._pool: ThreadPoolExecutor | None = None
         self._dispatched = 0
         self._peak_inflight = 0
@@ -4886,7 +4930,7 @@ class _OrderedUniqueParse:
         except Exception as exc:
             return exc
         if error is not None:
-            return RuntimeError(error)
+            return error.as_exception()
         _provider, _blob_hash, _source_path, kind, payload_size, _native_id = self._descriptors[raw_id]
         return (sessions or [], payload_size, kind)
 
@@ -5628,7 +5672,7 @@ def _parse_unique_retained_raws_via_threads(
                 results[raw_id] = exc
                 continue
             if error is not None:
-                results[raw_id] = RuntimeError(error)
+                results[raw_id] = error.as_exception()
                 continue
             _provider, _blob_hash, _source_path, kind, payload_size, _native_id = descriptors[raw_id]
             results[raw_id] = (sessions or [], payload_size, kind)
@@ -6826,6 +6870,50 @@ def _retained_page_image_raw(archive: ArchiveStore, raw_id: str) -> bool:
     return blob_path is not None and is_sqlite_page_image(blob_path)
 
 
+def _settle_terminal_decode_refusal(
+    archive: ArchiveStore,
+    raw_id: str,
+    error: Exception,
+    *,
+    source_index: int,
+    manage_transaction: bool,
+) -> bool:
+    """Record a retained decode refusal as the terminal outcome live intake records.
+
+    Returns ``False`` when ``error`` is not a decode refusal that earns
+    terminal evidence (``terminal_decode_evidence``). Otherwise the raw
+    carries ``terminal_corrupt_input`` (or the unknown-provider decode
+    kind), is marked parse-failed, and gets a complete current-parser
+    receipt with no identity. The failure artifact is not session-parsable,
+    so ``raw_membership_census_rows`` reports the raw as terminal and later
+    passes settle it without parsing it again.
+    """
+    provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+    evidence = terminal_decode_evidence(error, provider=provider)
+    if evidence is None:
+        return False
+    conn = archive._ensure_source_conn()
+    with conn if manage_transaction else nullcontext():
+        record_raw_failure_evidence(
+            archive,
+            raw_id,
+            provider=provider,
+            source_path=source_path,
+            source_index=source_index,
+            acquired_at_ms=archive.raw_revision_observed_at_ms(raw_id),
+            kind=evidence,
+            manage_transaction=False,
+        )
+        apply_source_raw_state_update(
+            conn,
+            raw_id,
+            state=_raw_parse_failure_state(provider, error),
+            manage_transaction=False,
+        )
+        record_current_parser_source_census(conn, raw_id)
+    return True
+
+
 def _persist_terminal_non_session_artifact(
     archive: ArchiveStore,
     raw_id: str,
@@ -7018,7 +7106,7 @@ def _parse_one_raw(
         declared_path_session_evidence = jsonl_session_artifact(payload, provider=provider) is not None
     sidecar_resolver = _retained_sidecar_resolver(archive_root)
     if is_stream_record_provider(source_path, str(provider)):
-        records = list(_iter_json_stream(BytesIO(payload), source_name))
+        records = _retained_jsonl_records(payload, source_name, source_path)
         if not declared_path_session_evidence and _is_declared_non_session_artifact(
             provider, source_path, sample=records[:64]
         ):
@@ -7030,7 +7118,7 @@ def _parse_one_raw(
             source_path=source_path,
             sidecar_resolver=sidecar_resolver,
         )
-    records = list(_iter_json_stream(BytesIO(payload), source_name))
+    records = _retained_jsonl_records(payload, source_name, source_path)
     if not declared_path_session_evidence and _is_declared_non_session_artifact(
         provider, source_path, sample=records[:64]
     ):
@@ -7120,7 +7208,7 @@ def _parse_stream_raw(
 ) -> list[ParsedSession]:
     source_name = Path(source_path).name
     fallback_id = fallback_id_override or Path(source_path).stem
-    stream = _iter_json_stream(payload, source_name)
+    stream = _retained_jsonl_stream(payload, source_name, source_path)
     return parse_stream_payload(
         provider,
         stream,

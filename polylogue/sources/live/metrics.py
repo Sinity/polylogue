@@ -19,6 +19,14 @@ REFUSED_UNATTEMPTED = "unattempted"
 #: Acquired and parsed, but the source yielded no session. Terminal and
 #: settled: the raw carries the typed outcome and the cursor advances.
 REFUSED_NO_SESSIONS = "no_sessions"
+#: Acquired, but its bytes are corrupt input (a complete JSONL record that
+#: does not decode, or a truncated capture that is no longer growing).
+#: Terminal and settled like ``REFUSED_NO_SESSIONS``: the raw carries
+#: ``terminal_corrupt_input`` evidence and the cursor advances.
+REFUSED_CORRUPT_INPUT = "corrupt_input"
+#: Exclusions that are terminal outcomes of acquired bytes, not retryable
+#: refusals: the source is settled, and nothing of it is admitted.
+SETTLED_EXCLUSION_REASONS = frozenset({REFUSED_NO_SESSIONS, REFUSED_CORRUPT_INPUT})
 
 #: Declared cap on the identity lists embedded in one ``ingestion_batch``
 #: payload. The batching controls bound file count and aggregate bytes, not
@@ -160,9 +168,10 @@ class LiveBatchMetrics:
     # operator telemetry, but the watcher needs the exact durable subset so a
     # deferred pass never widens to failed or refused input.
     succeeded_paths: tuple[Path, ...] = ()
-    #: Cursor-completed paths that produced no session. They are counted and
-    #: listed as excluded under ``REFUSED_NO_SESSIONS``, never as succeeded.
-    no_session_paths: tuple[str, ...] = ()
+    #: Cursor-completed paths whose acquired bytes settled to nothing
+    #: admissible, with their ``SETTLED_EXCLUSION_REASONS`` reason. They are
+    #: counted and listed as excluded, never as succeeded.
+    settled_exclusion_paths: dict[str, str] = field(default_factory=dict)
     # Identity-scoped session touches for this batch (polylogue-20d.13):
     # ``new_sessions`` are session ids materialized for the first time via
     # the full-ingest route; ``updated_sessions`` are session ids that grew

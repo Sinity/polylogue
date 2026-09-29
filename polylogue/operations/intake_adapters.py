@@ -954,7 +954,7 @@ class FileIntakeAdapter(IntakeAdapter):
         # failure here.
         failed -= deferred
         excluded_by_path = dict(getattr(metrics, "excluded_paths", {}) or {})
-        no_session = set(getattr(metrics, "no_session_paths", ()) or ())
+        settled = dict(getattr(metrics, "settled_exclusion_paths", {}) or {})
         if not succeeded:
             # This route calls ``_ingest_files`` directly, so the watcher's
             # own ``_log_ingest_metrics`` never runs for it and the
@@ -977,13 +977,14 @@ class FileIntakeAdapter(IntakeAdapter):
             key = str(Path(cast(Any, item.payload)))
             item_estimate = max(1, int(item.estimated_cost))
             actual_cost = max(1, round(read_bytes * item_estimate / estimated_total)) if read_bytes else item_estimate
-            if key in no_session:
-                # Acquired and parsed, but no session came of it: the raw
-                # carries the typed terminal outcome, and reporting ADMITTED
-                # counted a file that produced nothing (polylogue-xf8qp).
+            if key in settled:
+                # Acquired, but nothing admissible came of it (no session, or
+                # corrupt input): the raw carries the typed terminal outcome,
+                # and reporting ADMITTED counted a file that produced nothing
+                # (polylogue-xf8qp).
                 outcomes[item.item_id] = AdmissionResult(
                     AdmissionOutcome.EXCLUDED,
-                    reason=f"source produced no sessions: {key}",
+                    reason=f"{settled[key]}: {key}",
                     actual_cost=actual_cost,
                 )
             elif key in succeeded:
@@ -1049,7 +1050,7 @@ class FileIntakeAdapter(IntakeAdapter):
                     for offered in offered_local_retries:
                         if offered in self._fresh_retry_debt:
                             self._fresh_retry_debt[offered] = now
-        admitted_paths = [path for path in paths if str(path) in succeeded and str(path) not in no_session]
+        admitted_paths = [path for path in paths if str(path) in succeeded and str(path) not in settled]
         if admitted_paths and not is_fully_degraded():
             # A later file in this batch may have degraded the daemon; derived
             # follow-up converges from durable evidence once it recovers.

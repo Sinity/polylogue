@@ -18,7 +18,7 @@ from pathlib import Path
 from polylogue.config import Source
 from polylogue.core.content_identity import ContentIdentityRefusal, payload_content_identity
 from polylogue.core.enums import Origin, Provider
-from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_coordinate
+from polylogue.core.raw_coordinates import MemberAddressingMode, split_zip_member_text, zip_member_coordinate
 from polylogue.core.sources import origin_provider_fiber
 from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.source_acquisition_components import (
@@ -183,13 +183,14 @@ def zip_reacquisition_payload(
     coordinate = _zip_coordinate(row)
     hint_index = coordinate[1] if coordinate is not None else None
     hint_mode = _recorded_addressing_mode(row)
-    zip_path_text, _separator, member = source_path.partition(":")
-    if not zip_path_text or not member:
+    if split_zip_member_text(source_path) is None:
         return None, "container_coordinate_missing"
-    # A container path may itself hold a colon; prefer the prefix that is a real ZIP.
-    zip_path, member = zip_member_coordinate(source_path) or (Path(zip_path_text), member)
-    if not zip_path.exists():
+    # Only a prefix that is a real ZIP here is the container; a missing
+    # container or a non-ZIP prefix leaves the member unrecoverable.
+    located = zip_member_coordinate(source_path)
+    if located is None:
         return None, "source_missing"
+    zip_path, member = located
     try:
         with zipfile.ZipFile(zip_path) as archive:
             central_directory = archive.infolist()

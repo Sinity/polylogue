@@ -8,6 +8,7 @@ per-logical-key transactions. This is not an observation-wide atomic publisher.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import sqlite3
 import tempfile
@@ -45,7 +46,14 @@ from polylogue.storage.raw_authority import (
     raw_replay_application_receipt_from_connection,
     validate_raw_replay_application_receipt,
 )
-from polylogue.storage.source_blob_restoration import stage_exact_direct_source_blob
+from polylogue.storage.source_blob_restoration import (
+    is_legacy_append_without_window,
+    is_recorded_container_member,
+    read_raw_source_evidence,
+    retained_blob_source_candidates,
+    stage_exact_blob,
+    stage_exact_source_window_blob,
+)
 from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
 from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
@@ -804,6 +812,7 @@ class RawObservationDerivation:
                                 fallback_timestamp,
                                 None,
                                 artifact.error,
+                                parser_decode_failure=artifact.decode_failure,
                                 prepared_artifact=artifact if artifact.error is None else None,
                             )
                         if needs_source_census and not planned_accepted_raw_ids:
@@ -1005,13 +1014,15 @@ class RawObservationDerivation:
         """Stage exact source bytes for every retained blob the component lacks.
 
         Preparation cannot read an absent blob, and retrying it cannot make
-        the bytes reappear. When the raw's recorded direct source still holds
-        a window whose SHA-256 and size equal the raw's, those bytes are
-        staged here and published by the writer in ``publish``; the next pass
-        then prepares over present bytes. Otherwise the retryable refusal
-        names why (``source_missing``, ``hash_mismatch``, ``container_member``
-        ...) instead of reporting a vanished file; it stays retryable because
-        the source or a restored backup can still bring the bytes back.
+        the bytes reappear. When a recorded source window of the raw -- a
+        direct file window or its ZIP member -- still holds bytes whose
+        SHA-256 and size equal the raw's, those bytes are staged here and
+        published by the writer in ``publish``; the next pass then prepares
+        over present bytes. Otherwise the retryable refusal names why
+        (``source_missing``, ``hash_mismatch``, ``container_member_rejected``,
+        ``inexact_payload`` ...) instead of reporting a vanished file; it
+        stays retryable because the source or a restored backup can still
+        bring the bytes back.
         """
         from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
 
@@ -1020,7 +1031,7 @@ class RawObservationDerivation:
         staged_hashes: set[str] = set()
         try:
             for raw_id in raw_ids:
-                _provider, blob_hash, path, _kind, size = descriptors[raw_id]
+                _provider, blob_hash, path, _kind, _size = descriptors[raw_id]
                 if blob_hash in staged_hashes:
                     continue
                 try:
@@ -1032,27 +1043,9 @@ class RawObservationDerivation:
                     # Present but unreadable: preparation reports it as a
                     # retryable disappearance, not as lost bytes.
                     continue
-                row = archive.source_connection.execute(
-                    "SELECT append_start_offset, append_end_offset, "
-                    "EXISTS (SELECT 1 FROM raw_container_coordinates WHERE raw_id = ?) "
-                    "FROM raw_sessions WHERE raw_id = ?",
-                    (raw_id, raw_id),
-                ).fetchone()
-                if row is None:
-                    raise KeyError(raw_id)
-                if row[2]:
-                    reason: str | None = "container_member"
-                    prepared: PreparedBlob | None = None
-                else:
-                    prepared, reason = stage_exact_direct_source_blob(
-                        blob_store,
-                        source_path=Path(path),
-                        blob_hash=blob_hash,
-                        size_bytes=int(size),
-                        append_start_offset=None if row[0] is None else int(row[0]),
-                        append_end_offset=None if row[1] is None else int(row[1]),
-                        stop=compute_cancel_requested,
-                    )
+                prepared, reason = self._stage_blob_from_recorded_source(
+                    archive, blob_store, raw_id, blob_hash=blob_hash, source_path=path
+                )
                 if prepared is None:
                     raise RetainedPreparationRetryableError(
                         f"retained raw blob absent and not restorable from its source ({reason}): {raw_id}"
@@ -1066,6 +1059,74 @@ class RawObservationDerivation:
             _discard_staged_blobs(blob_store, tuple(prepared for _raw_id, prepared in staged))
             raise
         return StagedBlobRestorations(blob_store, staged) if staged else None
+
+    def _stage_blob_from_recorded_source(
+        self,
+        archive: ArchiveStore,
+        blob_store: BlobStore,
+        raw_id: str,
+        *,
+        blob_hash: str,
+        source_path: str,
+    ) -> tuple[PreparedBlob | None, str | None]:
+        """Stage one absent blob from the first recorded source window holding its exact bytes.
+
+        The candidate windows come from ``retained_blob_source_candidates``,
+        the owner backup recoverability reads too. A ZIP member is replayed
+        through acquisition's ZIP admission (``zip_reacquisition_payload``)
+        and staged only when the replayed value is byte-identical to the
+        blob; a structural-only match is ``inexact_payload``. Returns the
+        staged blob, or ``None`` with the last candidate's refusal reason.
+        """
+        conn = archive.source_connection
+        row = read_raw_source_evidence(conn, raw_id)
+        if row is None:
+            raise KeyError(raw_id)
+        prior_full_observations: list[tuple[int, int]] = []
+        if is_legacy_append_without_window(row):
+            prior_full_observations = [
+                (int(acquired_at_ms), int(size))
+                for acquired_at_ms, size in conn.execute(
+                    "SELECT acquired_at_ms, blob_size FROM raw_sessions "
+                    "WHERE source_path = ? AND source_index = 0 AND revision_kind IN ('full', 'unknown') "
+                    "AND acquired_at_ms IS NOT NULL AND blob_size IS NOT NULL",
+                    (source_path,),
+                )
+            ]
+        candidates = retained_blob_source_candidates(
+            row,
+            container_member=is_recorded_container_member(row),
+            prior_full_observations=prior_full_observations,
+        )
+        if not candidates:
+            return None, "no_source_window"
+        reason: str | None = None
+        for candidate in candidates:
+            if candidate.window is not None:
+                prepared, reason = stage_exact_source_window_blob(
+                    blob_store,
+                    source_path=Path(source_path),
+                    window=candidate.window,
+                    blob_hash=blob_hash,
+                    stop=compute_cancel_requested,
+                )
+            else:
+                from polylogue.operations.zip_acquisition_replay import zip_reacquisition_payload
+
+                payload, reason = zip_reacquisition_payload(row, source_path=source_path, zip_payload_cache={})
+                prepared = None
+                if payload is not None:
+                    prepared = stage_exact_blob(
+                        blob_store,
+                        io.BytesIO(payload),
+                        blob_hash=blob_hash,
+                        size_bytes=len(payload),
+                        stop=compute_cancel_requested,
+                    )
+                    reason = None if prepared is not None else "inexact_payload"
+            if prepared is not None:
+                return prepared, None
+        return None, reason
 
     def _publish_blob_restorations(self, restorations: StagedBlobRestorations) -> None:
         """Reserve and publish staged restorations, then consume their receipts."""
