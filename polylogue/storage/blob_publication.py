@@ -234,6 +234,23 @@ class ArchiveBlobPublisher(BlobStore):
         self._pending_by_hash.clear()
         return receipts
 
+    def discard_queued(self, blob_hash: str) -> None:
+        """Drop the most recent queued write of ``blob_hash``; earlier writes stay queued."""
+        receipt_id = self._latest_receipt_by_hash.get(blob_hash)
+        for index in range(len(self._pending) - 1, -1, -1):
+            receipt, prepared = self._pending[index]
+            if receipt.publication_id == receipt_id:
+                del self._pending[index]
+                self._store.discard_prepared(prepared)
+                break
+        earlier = [(receipt, prepared) for receipt, prepared in self._pending if receipt.blob_hash == blob_hash]
+        if earlier:
+            self._latest_receipt_by_hash[blob_hash] = earlier[-1][0].publication_id
+            self._pending_by_hash[blob_hash] = earlier[-1][1]
+        else:
+            self._latest_receipt_by_hash.pop(blob_hash, None)
+            self._pending_by_hash.pop(blob_hash, None)
+
     def discard_pending(self) -> None:
         for _receipt, prepared in self._pending:
             self._store.discard_prepared(prepared)

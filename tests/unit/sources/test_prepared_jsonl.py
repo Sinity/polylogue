@@ -1704,17 +1704,29 @@ def test_grok_single_object_changed_during_stream_defers_and_discards(
     assert list(directory.glob("*.db")) == []
 
 
-def test_grok_future_wire_type_keeps_parser_admission_event(tmp_path: Path) -> None:
+def test_grok_future_wire_type_keeps_parser_admission_event(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     record = {
+        "type": "future_export",
         "conversations": [
             {
-                "conversation": {"title": "T"},
+                "conversation": {"title": "T", "kind": "unknown_conversation"},
                 "responses": [{"sender": "human", "message": "Hi", "type": "future_response"}],
-            }
-        ]
+            },
+            {
+                "conversation": {"title": "Known"},
+                "responses": [{"sender": "human", "message": "Hello"}],
+            },
+        ],
     }
     source = tmp_path / "future-grok.json"
     source.write_text(json.dumps(record), encoding="utf-8")
+    expected = parse_payload(Provider.GROK, record, "fallback")
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("future-typed Grok export decoded as a whole document")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -1724,10 +1736,13 @@ def test_grok_future_wire_type_keeps_parser_admission_event(tmp_path: Path) -> N
         shard_directory=str(tmp_path / "prepared"),
     )
     assert artifact.error is None
-    [actual] = artifact.iter_sessions()
-    [expected] = parse_payload(Provider.GROK, record, "fallback")
-    assert list(actual.session_events) == expected.session_events
-    assert [event.event_type for event in actual.session_events] == ["grok_unknown_input"]
+    actual = list(artifact.iter_sessions())
+    assert [list(session.session_events) for session in actual] == [session.session_events for session in expected]
+    assert [session.unit_accounting for session in actual] == [session.unit_accounting for session in expected]
+    assert [[event.payload for event in session.session_events] for session in actual] == [
+        [{"source_index": 1, "wire_type": "unknown_conversation"}],
+        [],
+    ]
     artifact.discard()
 
 
@@ -1991,8 +2006,11 @@ def test_retained_grok_future_wire_keeps_parser_admission_event(tmp_path: Path) 
         None,
     )
     assert artifact.error is None
-    assert artifact.positive_evidence_filtered is False
+    assert artifact.positive_evidence_filtered
     [session] = artifact.iter_sessions()
+    [expected] = parse_payload(Provider.GROK, record, "fallback")
+    assert list(session.session_events) == expected.session_events
+    assert session.unit_accounting == expected.unit_accounting
     assert [event.event_type for event in session.session_events] == ["grok_unknown_input"]
     artifact.discard()
 

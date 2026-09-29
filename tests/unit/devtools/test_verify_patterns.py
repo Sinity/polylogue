@@ -114,7 +114,7 @@ def test_displacing_a_baselined_match_does_not_trip_the_gate(monkeypatch: pytest
     rule = _rule(tmp_path)
     matched_file = tmp_path / "polylogue/existing.py"
     matched_file.parent.mkdir()
-    matched_file.write_text("# inserted line\n" * 9 + "    return None\n", encoding="utf-8")
+    matched_file.write_text("# inserted line\n" * 8 + "def existing():\n    return None\n", encoding="utf-8")
     anchor = verify_patterns._match_anchor(
         tmp_path,
         {"file": "polylogue/existing.py", "range": {"start": {"line": 9}}},
@@ -223,6 +223,42 @@ def test_committed_baseline_cannot_grow_with_a_new_match(monkeypatch: pytest.Mon
 
     assert payload["blocking"] is True
     assert any("committed baseline grew" in error for error in payload["required_gate"]["details"])
+
+
+def test_rewriting_a_baseline_entry_into_a_new_ast_context_is_growth(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Moving a match to a new context and re-pointing its exemption is caught.
+
+    Anti-vacuity: reduce trusted anchors to ``(file, digest)`` and the parent
+    count equals the candidate count, so the gate passes although context
+    ``b`` was never exempted by the trusted revision.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.email", "test@example.invalid"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "config", "user.name", "Pattern Test"], check=True)
+    rule = _rule(tmp_path)
+    digest = hashlib.sha1(b"return None").hexdigest()
+    rule.baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    rule.baseline_path.write_text(f"polylogue/existing.py:{digest}:{'a' * 40}\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "-qm", "seed trusted baseline"], check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "commit", "--allow-empty", "-qm", "candidate parent"], check=True)
+    rule.baseline_path.write_text(f"polylogue/existing.py:{digest}:{'b' * 40}\n", encoding="utf-8")
+    monkeypatch.setattr(verify_patterns, "_rules", lambda _root: (rule,))
+    monkeypatch.setattr(
+        verify_patterns,
+        "_scan",
+        lambda _root, _rule: Counter({("polylogue/existing.py", digest, "b" * 40): 1}),
+    )
+
+    payload = verify_patterns._payload(tmp_path)
+
+    assert payload["new_matches"] == []
+    assert payload["blocking"] is True
+    assert any(
+        "committed baseline grew" in error and "b" * 40 in error for error in payload["required_gate"]["details"]
+    )
 
 
 def test_merging_the_base_branch_does_not_count_its_exemptions_as_growth(

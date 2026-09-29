@@ -122,7 +122,7 @@ def test_query_spec_param_builder_collects_repeated_csv_fields() -> None:
 def test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field() -> None:
     """polylogue-4p1.1: the split-archive fast path must not drop a filter.
 
-    ``ArchiveStore.list_summaries``/``search_summaries``/``count_sessions``/
+    ``ArchiveStore.iter_summaries``/``iter_search_summaries``/``count_sessions``/
     ``count_search_sessions`` accept an identical filter-kwarg surface (proven
     below). ``_archive_filter_kwargs_from_spec`` is what
     ``_do_archive_session_list`` calls to build that kwarg dict from the
@@ -141,7 +141,9 @@ def test_archive_filter_kwargs_cover_every_storage_lowerable_spec_field() -> Non
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     non_filter_params = {"self", "limit", "offset", "session_id", "sample", "sort", "reverse", "query"}
-    storage_methods = ("list_summaries", "search_summaries", "count_sessions", "count_search_sessions")
+    # ``list_summaries``/``search_summaries`` forward ``**filters`` to the
+    # ``iter_*`` generators, which declare the surface.
+    storage_methods = ("iter_summaries", "iter_search_summaries", "count_sessions", "count_search_sessions")
     storage_filter_params = {
         frozenset(inspect.signature(getattr(ArchiveStore, name)).parameters) - non_filter_params
         for name in storage_methods

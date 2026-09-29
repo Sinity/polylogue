@@ -1528,16 +1528,16 @@ def _emit_delete(env: AppEnv, session_ids: tuple[str, ...], *, params: dict[str,
     except OperationKernelError as exc:
         raise _delete_refusal(exc, "prepare") from exc
 
-    prepared_session_ids = _prepared_delete_session_ids(daemon_preview)
+    prepared_count, prepared_sample = _prepared_delete_selection(daemon_preview)
     daemon_preview_refs = _daemon_preview_refs(daemon_preview)
     if daemon_preview_refs is None:
         raise click.ClickException("daemon returned an invalid delete preview")
     if not force:
-        click.echo(f"About to delete {len(prepared_session_ids)} session(s):", err=True)
-        for session_id in prepared_session_ids[:5]:
+        click.echo(f"About to delete {prepared_count} session(s):", err=True)
+        for session_id in prepared_sample[:5]:
             click.echo(f"  - {session_id}", err=True)
-        if len(prepared_session_ids) > 5:
-            click.echo(f"  ... and {len(prepared_session_ids) - 5} more", err=True)
+        if prepared_count > 5:
+            click.echo(f"  ... and {prepared_count - 5} more", err=True)
         try:
             proceed = env.ui.confirm("Proceed?", default=False)
         except (KeyboardInterrupt, click.Abort):
@@ -1698,20 +1698,29 @@ def _cancel_delete_preview(
         raise click.exceptions.Exit(_CANCELLED_EXIT_CODE)
 
 
-def _prepared_delete_session_ids(
+def _prepared_delete_selection(
     daemon_preview: dict[str, object],
-) -> tuple[str, ...]:
-    """Use the daemon's canonical preview, never a client-side substitution."""
+) -> tuple[int, tuple[str, ...]]:
+    """Use the daemon's canonical preview, never a client-side substitution.
 
-    raw_session_ids = daemon_preview.get("session_ids")
-    if not isinstance(raw_session_ids, list) or any(
-        not isinstance(value, str) or not value for value in raw_session_ids
+    The daemon reports the canonical selection's size and its leading IDs; the
+    whole selection lives in the durable preview chunks, so a selection of any
+    size stays within the operation result bound. The protocol validates that
+    the sample is the canonical leading slice; this checks what it can see.
+    """
+    count = daemon_preview.get("session_count")
+    raw_sample = daemon_preview.get("session_ids_sample")
+    if (
+        not isinstance(count, int)
+        or isinstance(count, bool)
+        or not isinstance(raw_sample, list)
+        or any(not isinstance(value, str) or not value for value in raw_sample)
     ):
         raise click.ClickException("daemon returned an invalid delete preview")
-    session_ids = tuple(raw_session_ids)
-    if not session_ids or len(set(session_ids)) != len(session_ids):
+    sample = tuple(raw_sample)
+    if count < 1 or not sample or len(set(sample)) != len(sample) or len(sample) > count:
         raise click.ClickException("daemon returned a non-canonical delete preview")
-    return session_ids
+    return count, sample
 
 
 def _search_miss_diagnostics(

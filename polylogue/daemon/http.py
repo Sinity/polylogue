@@ -3585,7 +3585,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                             limit=limit,
                             offset=offset,
                             session_id=resolved_session_id,
-                            **_filter_kw,  # type: ignore[arg-type]
+                            **_filter_kw,
                         ),
                     )
                 except (DatabaseError, sqlite3.Error) as exc:
@@ -3689,7 +3689,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     limit=limit,
                     offset=offset,
                     session_id=resolved_session_id,
-                    **_filter_kw,  # type: ignore[arg-type]
+                    **_filter_kw,
                 ),
             )
             # count_sessions has no session_id param, so when the page is scoped to

@@ -735,6 +735,34 @@ class TestCanonicalStatusOperation:
         assert request.full_url == "http://daemon.example:9000/api/status"
         assert result.authority["mode"] == "daemon"
 
+    def test_ordinary_custom_status_read_has_no_elapsed_time_cutoff(self) -> None:
+        """Only the bare-invocation probe bounds a custom endpoint's latency.
+
+        Anti-vacuity: a fixed 0.5 s ``urlopen`` timeout on the ordinary read
+        turns a slow but valid endpoint into ``daemon_transport_error``.
+        """
+        from polylogue.cli.commands import status as status_module
+
+        env = _make_app_env()
+        config = SimpleNamespace(daemon_url="http://daemon.example:9000", api_auth_token=None, api_allow_no_auth=True)
+        response = MagicMock()
+        response.read.return_value = b'{"ok":true,"daemon_liveness":false}'
+        response.__enter__.return_value = response
+        with (
+            patch("polylogue.cli.shared.helpers.load_effective_config", return_value=config),
+            patch("urllib.request.urlopen", return_value=response) as urlopen,
+        ):
+            status_module._status_operation_result(env, daemon_url="http://daemon.example:9000")
+            ordinary_timeout = urlopen.call_args.kwargs["timeout"]
+            status_module._status_operation_result(
+                env,
+                daemon_url="http://daemon.example:9000",
+                probe_timeout_s=status_module._FAST_STATUS_PROBE_TIMEOUT_S,
+            )
+            probe_timeout = urlopen.call_args.kwargs["timeout"]
+        assert ordinary_timeout is None
+        assert probe_timeout == status_module._FAST_STATUS_PROBE_TIMEOUT_S
+
     def test_sinex_status_reads_the_active_archive_file_set(self, tmp_path: Path) -> None:
         """Sinex debt follows the explicitly selected index archive root.
 

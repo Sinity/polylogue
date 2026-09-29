@@ -114,6 +114,12 @@ def compose_session_profile_callback(
     # Marker delivery is an independent durable cursor. Keep it in the bounded
     # startup audit so a long profile scan cannot starve accepted markers.
     audit_domains = (summary.domain, usage_rollup.domain, profile.domain, markers.domain)
+    # A swept domain that retained quiet or blocked keys stays owed, but the
+    # audit rotates past it so it cannot starve the independent domains behind
+    # it. When an owed domain later completes, the domains after it read its
+    # new output and are owed again.
+    owed_domains = set(audit_domains)
+    retried_domains: set[str] = set()
     audit_budget = Budget(discovery=128, inspection=128, compute=64, publication=64, retained_outcomes=64)
     audit_lock = asyncio.Lock()
     audit_index = 0
@@ -131,13 +137,23 @@ def compose_session_profile_callback(
             resume=not audit_reset,
         )
         audit_reset = False
-        if report.cursor.position(domain).swept and report.pending:
-            # Quiet and blocked keys are retryable. Do not mark this audit
-            # domain complete while a full scan retained any such outcome.
-            audit_reset = True
-        elif report.cursor.position(domain).swept:
-            audit_index += 1
-            if audit_index == len(audit_domains):
+        if report.cursor.position(domain).swept:
+            if report.pending:
+                retried_domains.add(domain)
+            else:
+                owed_domains.discard(domain)
+                if domain in retried_domains:
+                    retried_domains.discard(domain)
+                    owed_domains.update(audit_domains[audit_index + 1 :])
+            if owed_domains:
+                audit_index = next(
+                    index
+                    for step in range(1, len(audit_domains) + 1)
+                    if audit_domains[index := (audit_index + step) % len(audit_domains)] in owed_domains
+                )
+                audit_reset = True
+            else:
+                audit_index = len(audit_domains)
                 demand_reset = True
         return report
 
@@ -177,6 +193,9 @@ def compose_session_profile_callback(
     async def converge_promoted() -> DerivationReport:
         nonlocal audit_index, audit_reset, demand_reset
         async with audit_lock:
+            owed_domains.clear()
+            owed_domains.update(audit_domains)
+            retried_domains.clear()
             audit_index = 0
             audit_reset = True
             demand_reset = False
