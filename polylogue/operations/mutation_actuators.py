@@ -693,6 +693,17 @@ def _view_watched(handles: ReplayHandles, name: str) -> bool:
     return row is not None and bool(row[0])
 
 
+def _view_watch_baselined(handles: ReplayHandles, name: str) -> bool:
+    """Whether the definition this name watches has a measured baseline."""
+    with closing(open_readonly_connection(handles.archive_root / "user.db", timeout_class="background-read")) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM query_names AS n JOIN watched_query_baselines AS b ON b.query_hash = n.query_hash "
+            "WHERE n.name = ? AND n.watch = 1",
+            (name,),
+        ).fetchone()
+    return row is not None
+
+
 def _path_identity(path: Path) -> list[int] | None:
     try:
         stat = path.lstat()
@@ -2158,12 +2169,19 @@ class SavedViewSaveActuator(ConvergentReplay):
         )
 
     def already_applied(self, handles: ReplayHandles, plan: MutationPlan) -> bool:
+        # The baseline is part of a watched save's effect: apply commits the
+        # view first and measures after, so a crash between the two leaves a
+        # durable watch with no baseline, and the next evaluation would absorb
+        # the first changed session into it instead of reporting the delta.
         stored = handles.archive.get_view(str(plan.context["view_id"]))
+        name = str(plan.context["name"])
+        watch = bool(plan.context.get("watch"))
         return (
             stored is not None
-            and stored["name"] == plan.context["name"]
+            and stored["name"] == name
             and json.loads(stored["query_json"]) == json.loads(str(plan.context["query_json"]))
-            and _view_watched(handles, str(plan.context["name"])) == bool(plan.context.get("watch"))
+            and _view_watched(handles, name) == watch
+            and (not watch or _view_watch_baselined(handles, name))
         )
 
     def replay_refusal(self, handles: ReplayHandles, plan: MutationPlan) -> str | None:
