@@ -412,3 +412,52 @@ def test_coverage_options_stay_with_the_first_attempt() -> None:
     # A separate value goes with its option, never read as a path operand.
     command = ["python", "-m", "pytest", "--cov", "polylogue", "tests/test_w.py", "-l"]
     assert pytest_rerun.semantic_rerun_options(command) == ["-l"]
+
+
+def test_an_unpublishable_rerun_result_leaves_a_typed_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rerun whose result cannot be written is not mistaken for no rerun at all.
+
+    Anti-vacuity (Codex P2, #5708): write the record only after the rerun and
+    a failed write leaves nothing, so the client runs the failures a third
+    time and can call a twice-failed test flaky.
+    """
+    step = tmp_path / "step"
+    step.mkdir()
+    report = step / "pytest-report.json"
+    _failed_report(report, "tests/test_x.py::test_twice")
+    monkeypatch.setattr(
+        pytest_rerun,
+        "build_rerun",
+        lambda **_kwargs: (
+            ["tests/test_x.py::test_twice"],
+            [sys.executable, "-c", "raise SystemExit(1)"],
+            step / "r.json",
+        ),
+    )
+    real_write_text = Path.write_text
+    writes: list[str] = []
+
+    def failing_after_the_rerun(self: Path, data: str, *args: Any, **kwargs: Any) -> int:
+        if self.name == RERUN_IN_SLOT_RESULT:
+            writes.append(data)
+            if len(writes) > 1:
+                raise OSError("device full")
+        return real_write_text(self, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", failing_after_the_rerun)
+    environment = {
+        RERUN_IN_SLOT_ENV: json.dumps({"report_path": str(report), "step_dir": str(step), "root": str(tmp_path)}),
+        "PATH": "/usr/bin:/bin",
+    }
+    started: list[object] = []
+    with (tmp_path / "slot.log").open("wb") as log:
+        pytest_slot._rerun_failures_in_slot(environment, cwd=str(tmp_path), log=log, on_start=started.append)
+
+    assert len(started) == 1
+    record = json.loads(real_read(step / RERUN_IN_SLOT_RESULT))
+    assert record["rerun_exit"] == 125 and record["result_unpublished"] is True
+
+
+def real_read(path: Path) -> str:
+    with path.open(encoding="utf-8") as handle:
+        return handle.read()

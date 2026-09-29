@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ast
 import functools
+import itertools
 import json
 import os
 import platform
@@ -226,9 +227,6 @@ def _parse_outliers(selection: list[str]) -> tuple[int | None, list[str]]:
     return limit, remaining
 
 
-#: How many recent run directories a reuse lookup reads. Successful detail is
-#: already pruned to a small bound, so this only caps a pathological backlog.
-REUSE_LOOKUP_LIMIT = 50
 #: Set to ``0`` to always run, even when an identical green run exists.
 REUSE_ENV = "POLYLOGUE_TEST_REUSE"
 
@@ -353,8 +351,9 @@ def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
 
     The digest a receipt is keyed on covers the checkout's Git-visible tree,
     so a path outside it (``/tmp/test_x.py``) could change without changing
-    the key; it is never reused. A reused run must also have fixed its test
-    order (see :func:`_explicit_order`) and measure no real clock.
+    the key; it is never reused. A reused run must also name at least one
+    test file, have fixed its test order (see :func:`_explicit_order`) and
+    measure no real clock.
     """
     if _selection_targets_benchmarks(selection):
         # Benchmarks measure current wall-clock timing, an input no receipt
@@ -362,6 +361,7 @@ def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
         return False
     resolved_root = root.resolve()
     order_fixed = False
+    named = 0
     index = 0
     while index < len(selection):
         argument = selection[index]
@@ -389,8 +389,11 @@ def _reuse_eligible(selection: list[str], *, root: Path) -> bool:
             return False
         if _real_clock_module(target):
             return False
+        named += 1
         index += 1
-    return order_fixed
+    # A pathless ``-m``/``-k`` selection collects from the whole suite, whose
+    # modules this check cannot inspect (a ``-m uses_real_clock`` run, say).
+    return order_fixed and named > 0
 
 
 def _ignored_python_sources(root: Path) -> bool:
@@ -492,46 +495,46 @@ def reusable_green_receipt(
         return None
     runs_root = root / ".cache" / "verify" / "runs"
     try:
-        # Run ids carry time to the second only, so the name bounds the
-        # lookup and the recorded start orders the runs within it.
-        entries = sorted(
-            (entry for entry in runs_root.iterdir() if "-focused-test-" in entry.name),
-            reverse=True,
-        )[:REUSE_LOOKUP_LIMIT]
+        names = sorted((entry.name for entry in runs_root.iterdir() if "-focused-test-" in entry.name), reverse=True)
     except OSError:
         return None
-    loaded: list[tuple[str, Path, dict[str, Any]]] = []
-    for entry in entries:
-        try:
-            payload = json.loads((entry / "run.json").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if isinstance(payload, dict):
-            loaded.append((_run_order(entry.name, payload), entry, payload))
-    loaded.sort(key=lambda item: item[0], reverse=True)
     interpreter = (sys.executable, platform.python_version())
-    for _order, entry, payload in loaded:
-        receipt = entry / "run.json"
-        fingerprint = payload.get("environment_fingerprint") or {}
-        same_inputs = (
-            payload.get("argv") == selection
-            and payload.get("execution_environment_key") == environment_key
-            and payload.get("git_worktree_content_sha256") == content_sha256
-            and (str(Path(fingerprint.get("python_executable", "")).resolve()), fingerprint.get("python_version"))
-            == (str(Path(interpreter[0]).resolve()), interpreter[1])
-        )
-        if not same_inputs:
-            continue
-        # The newest run of these exact inputs decides: an older green never
-        # outranks a later red of the same selection on the same tree.
-        green = (
-            payload.get("status") == "success"
-            and payload.get("exit_code") == 0
-            and (payload.get("pytest_aggregate") or {}).get("terminal_green") is True
-        )
-        if not green or _later_failure_pruned(root, after=_order):
-            return None
-        return receipt
+    # Run ids carry time to the second only: runs are read one second at a
+    # time, newest first, and ordered within the second by their recorded
+    # start. The newest run of these exact inputs decides, however many runs
+    # share its second; there is no count cap that could skip a later red.
+    for _second, group in itertools.groupby(names, key=lambda name: name[:16]):
+        loaded: list[tuple[str, Path, dict[str, Any]]] = []
+        for name in group:
+            entry = runs_root / name
+            try:
+                payload = json.loads((entry / "run.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(payload, dict):
+                loaded.append((_run_order(entry.name, payload), entry, payload))
+        loaded.sort(key=lambda item: item[0], reverse=True)
+        for order, entry, payload in loaded:
+            fingerprint = payload.get("environment_fingerprint") or {}
+            same_inputs = (
+                payload.get("argv") == selection
+                and payload.get("execution_environment_key") == environment_key
+                and payload.get("git_worktree_content_sha256") == content_sha256
+                and (str(Path(fingerprint.get("python_executable", "")).resolve()), fingerprint.get("python_version"))
+                == (str(Path(interpreter[0]).resolve()), interpreter[1])
+            )
+            if not same_inputs:
+                continue
+            # An older green never outranks a later red of the same
+            # selection on the same tree.
+            green = (
+                payload.get("status") == "success"
+                and payload.get("exit_code") == 0
+                and (payload.get("pytest_aggregate") or {}).get("terminal_green") is True
+            )
+            if not green or _later_failure_pruned(root, after=order):
+                return None
+            return entry / "run.json"
     return None
 
 

@@ -2024,3 +2024,46 @@ def test_the_option_probe_ignores_ambient_pytest_plugins(monkeypatch: pytest.Mon
 
     assert "PYTEST_PLUGINS" not in seen
     assert "PYTEST_XDIST_WORKER" not in seen
+
+
+def test_the_newest_matching_run_decides_however_many_share_its_second(tmp_path: Path) -> None:
+    """A later red in a crowded second is never skipped for an earlier green.
+
+    Anti-vacuity (Codex P1, #5708): cut the candidates at 50 by name before
+    ordering by recorded start and the red, whose name sorts low, is dropped.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
+    _green_receipt(
+        runs, "20260101T000000Z-focused-test-9-zzzz", argv=selection, digest="d1", started_at="2026-01-01T00:00:00.100"
+    )
+    for index in range(60):
+        _green_receipt(
+            runs,
+            f"20260101T000000Z-focused-test-5-m{index:03d}",
+            argv=["tests/unit/test_other.py"],
+            digest="d1",
+            started_at="2026-01-01T00:00:00.200",
+        )
+    _green_receipt(
+        runs,
+        "20260101T000000Z-focused-test-1-aaaa",
+        argv=selection,
+        digest="d1",
+        started_at="2026-01-01T00:00:00.900",
+        status="failed",
+        exit_code=1,
+    )
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_a_pathless_selection_is_never_reused(tmp_path: Path) -> None:
+    """A ``-m``/``-k`` selection without files names modules this check cannot read.
+
+    Anti-vacuity (Codex P2, #5708): accept a fixed-order selection with no path
+    and ``-m uses_real_clock`` is answered from a receipt.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+
+    assert run_tests._reuse_eligible(["-m", "uses_real_clock", "-p", "no:randomly"], root=tmp_path) is False

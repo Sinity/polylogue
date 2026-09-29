@@ -1442,6 +1442,25 @@ def _rerun_failures_in_slot(
                 )
             return
         rerun_env.update({"TMPDIR": fresh, "TMP": fresh, "TEMP": fresh})
+    # Published before the rerun starts: if its result cannot be written
+    # afterwards, this typed record (the rerun ran, its outcome is unknown)
+    # stands, and the client neither clears the failures nor runs them a third
+    # time. When even this record cannot be written, no rerun happens.
+    try:
+        (step_dir / RERUN_IN_SLOT_RESULT).write_text(
+            json.dumps(
+                {
+                    "attempted": failed,
+                    "rerun_exit": 125,
+                    "result_unpublished": True,
+                    "worktree_provenance": provenance,
+                }
+            ),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        log.write(f"\n  rerun skipped: its result could not be recorded ({exc})\n".encode())
+        return
     try:
         process = subprocess.Popen(
             command,
