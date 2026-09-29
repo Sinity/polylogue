@@ -1153,7 +1153,8 @@ def test_undeclared_toml_keys_are_refused(tmp_path: Path, workspace_env: dict[st
     with pytest.raises(ConfigError) as refusal:
         load_polylogue_config(config_path=config)
 
-    assert "daemon.watch, sources.roots" in str(refusal.value)
+    # Nothing under ``[sources]`` is declared, so the refusal names the table.
+    assert "daemon.watch, sources;" in str(refusal.value)
 
 
 def test_declared_nested_tables_still_load(tmp_path: Path, workspace_env: dict[str, Path]) -> None:

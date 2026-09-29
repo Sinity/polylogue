@@ -271,21 +271,20 @@ class TestDiagnoseNoSources:
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "no_daemon"
 
-    def test_a_configured_capture_spool_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        """``polylogued run`` watches a configured spool in place of the default one.
+    def test_a_pending_capture_in_the_archive_spool_is_a_source(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``polylogued run`` watches the capture spool under the archive root.
 
-        Anti-vacuity: probe only the default spool and a pending capture in
-        the configured spool reports ``no_sources``.
+        Anti-vacuity: drop the browser-capture spool from the probed watch set
+        and a machine whose only source is a pending capture reports
+        ``no_sources``.
         """
-        data_home, config_home = _set_xdg(monkeypatch, tmp_path)
+        data_home, _ = _set_xdg(monkeypatch, tmp_path)
         _create_index_db(data_home)
-        spool = tmp_path / "custom-spool"
-        spool.mkdir()
+        spool = data_home / "browser-capture"
+        spool.mkdir(parents=True)
         (spool / "capture.json").write_text("{}", encoding="utf-8")
-        config_home.mkdir(parents=True, exist_ok=True)
-        (config_home / "polylogue.toml").write_text(
-            f'[daemon.browser_capture]\nspool_path = "{spool}"\n', encoding="utf-8"
-        )
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "no_daemon"
 

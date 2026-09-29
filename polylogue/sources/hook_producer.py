@@ -16,10 +16,10 @@ It is also the single implementation of the carrier line:
 write rather than keeping a second copy that could drift from what the drain
 reads back.
 
-Package-backed resolution (the configured archive root) is consulted only through :func:`_import_optional`, which
-returns ``None`` when the polylogue package is not importable. The installed
-command bakes ``--provider`` and ``--sidecar-dir``, so the fast path never
-reaches for it.
+Package-backed resolution (the configured archive root) is consulted only
+through :func:`_import_optional`, which returns ``None`` when the polylogue
+package is not importable. The installed command bakes ``--provider`` and
+``--sidecar-dir``, so the fast path never reaches for it.
 """
 
 from __future__ import annotations
