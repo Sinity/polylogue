@@ -204,7 +204,7 @@ IN_PROCESS_READ_VIEWS: frozenset[str] = frozenset()
 # moved onto ``session.read`` as whole-evidence kinds
 # (``daemon_reads._SESSION_EVIDENCE_READERS``), ``messages`` as the
 # message-row window kind, and ``events``/``raw`` as the *windowed*-evidence
-# kinds (``daemon_reads._WINDOWED_EVIDENCE_READERS``).  The last two needed a
+# kinds (``session_evidence.SESSION_EVIDENCE_PAGE_READERS``).  The last two needed a
 # contract before they could move at all: ``events`` accepted ``--limit`` and
 # reported the *truncated* row count as its ``total``, so a whole-evidence
 # lowering would have reported ``complete`` for a clipped body; and ``raw``,

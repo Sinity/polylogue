@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections import Counter
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePath
@@ -407,7 +407,7 @@ class ResumeOperations(Protocol):
         self,
         *,
         kinds: Sequence[str | AssertionKind] | None = None,
-        target_ref: str | None = None,
+        target_refs: Collection[str] | None = None,
         statuses: Sequence[str | AssertionStatus] | None = None,
     ) -> list[ArchiveAssertionEnvelope]: ...
 
@@ -423,7 +423,7 @@ class ObjectivePostureOperations(Protocol):
         self,
         *,
         kinds: Sequence[str | AssertionKind] | None = None,
-        target_ref: str | None = None,
+        target_refs: Collection[str] | None = None,
         statuses: Sequence[str | AssertionStatus] | None = None,
     ) -> list[ArchiveAssertionEnvelope]: ...
 
@@ -443,20 +443,19 @@ async def resolve_session_objective_posture(
     the supplied ``message_ids``. Authored markers (``::blocker:`` and
     friends) lower onto the ``message:`` ref of the block that carried them,
     and accepting the candidate keeps that target, so a session-only read
-    would never see them. The tier kinds are few, operator-judged claims, so
-    one kind/status read filtered here replaces a per-message query.
+    would never see them. The whole target set goes into one storage read,
+    so the cost follows this session's size, not the archive's assertion
+    history.
     """
 
     target_refs = {ObjectRef(kind="session", object_id=session_id).format()}
     target_refs.update(ObjectRef(kind="message", object_id=message_id).format() for message_id in message_ids)
     assertions = await operations.list_assertion_claims(
         kinds=ASSERTION_TIER_KINDS,
+        target_refs=target_refs,
         statuses=(AssertionStatus.ACTIVE,),
     )
-    return derive_objective_posture(
-        structural,
-        [assertion for assertion in assertions if assertion.target_ref in target_refs],
-    )
+    return derive_objective_posture(structural, assertions)
 
 
 def _iso(value: object) -> str | None:

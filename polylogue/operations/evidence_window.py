@@ -36,6 +36,7 @@ from typing import Any
 from polylogue.archive.query.transaction import (
     QueryContinuation,
     QueryContinuationInvalidError,
+    QueryContinuationStaleError,
     QueryTransactionRequest,
 )
 from polylogue.operations.transcript_window import bind_snapshot, window_result
@@ -119,6 +120,10 @@ EVIDENCE_WINDOW_FAMILIES: dict[str, EvidenceWindowFamily] = {
 }
 
 
+#: The transaction argument that carries a source-tier relation's epoch.
+_SOURCE_EPOCH_ARGUMENT = "source_epoch"
+
+
 def _window_arguments(family: EvidenceWindowFamily, ref: str) -> dict[str, object]:
     """The request identity a resume must match, minus the coordinates.
 
@@ -137,6 +142,7 @@ def frame_evidence_window(
     limit: int,
     offset: int,
     continuation: str | None,
+    source_epoch: str | None = None,
 ) -> QueryTransactionRequest:
     """Resolve one evidence page request, honouring a continuation over coordinates.
 
@@ -145,12 +151,21 @@ def frame_evidence_window(
     relation all page ``session.read``, so an operation-name check alone would
     accept a transcript token here and compose artifacts against a window the
     caller minted for messages.
+
+    ``source_epoch`` is the current epoch of a relation outside the archive
+    frame (``source.db``), for families that page one. It is stamped into a
+    new window's arguments -- which the token's result identity covers -- and
+    a resumed token whose stamped epoch differs is stale, exactly as a moved
+    archive frame is.
     """
 
     if continuation is None:
+        arguments = _window_arguments(family, ref)
+        if source_epoch is not None:
+            arguments[_SOURCE_EPOCH_ARGUMENT] = source_epoch
         return QueryTransactionRequest(
             operation="session.read",
-            arguments=_window_arguments(family, ref),
+            arguments=arguments,
             page_size=limit,
             offset=offset,
             projection=family.projection,
@@ -166,8 +181,12 @@ def frame_evidence_window(
             f"continuation belongs to the {transaction.projection!r} read family, "
             f"not the {family.projection!r} window this request asks for"
         )
-    if dict(transaction.arguments) != _window_arguments(family, ref):
+    arguments = dict(transaction.arguments)
+    issued_source_epoch = arguments.pop(_SOURCE_EPOCH_ARGUMENT, None)
+    if arguments != _window_arguments(family, ref):
         raise QueryContinuationInvalidError(f"continuation belongs to another {family.kind} read")
+    if issued_source_epoch != source_epoch:
+        raise QueryContinuationStaleError(issued_epoch=str(issued_source_epoch), current_epoch=str(source_epoch))
     return transaction
 
 
@@ -180,6 +199,7 @@ def read_evidence_window(
     offset: int,
     continuation: str | None,
     read: EvidenceReader,
+    source_epoch: Callable[[], str] | None = None,
 ) -> Mapping[str, object]:
     """Answer one evidence page against an already-pinned archive reader.
 
@@ -190,19 +210,25 @@ def read_evidence_window(
 
     Like the message route, the epoch is bound before the storage read and
     revalidated after it, so a continuation is only minted for a page that was
-    composed against one snapshot.
+    composed against one snapshot. ``source_epoch`` reads the epoch of a
+    relation the archive frame does not cover; it is bracketed around the
+    storage read the same way.
     """
 
+    issued_source_epoch = source_epoch() if source_epoch is not None else None
     transaction = frame_evidence_window(
         family,
         ref=ref,
         limit=limit,
         offset=offset,
         continuation=continuation,
+        source_epoch=issued_source_epoch,
     )
     framed = bind_snapshot(archive, transaction)
     rows, total = read(framed.page_size, framed.offset)
     bind_snapshot(archive, framed)
+    if source_epoch is not None and (current := source_epoch()) != issued_source_epoch:
+        raise QueryContinuationStaleError(issued_epoch=str(issued_source_epoch), current_epoch=current)
     # ``window_result`` is the shared arithmetic, not the message vocabulary:
     # it decides ``next_offset``/``complete`` and mints the token from the
     # transaction it is handed -- which carries *this* family's projection.

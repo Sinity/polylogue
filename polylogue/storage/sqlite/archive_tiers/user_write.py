@@ -12,7 +12,7 @@ import hashlib
 import itertools
 import json
 import sqlite3
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -2628,6 +2628,7 @@ def list_assertion_claims(
     *,
     kinds: Sequence[str | AssertionKind] = ASSERTION_CLAIM_KINDS,
     target_ref: str | None = None,
+    target_refs: Collection[str] | None = None,
     scope_ref: str | None = None,
     statuses: Sequence[str | AssertionStatus] | None = (AssertionStatus.ACTIVE, AssertionStatus.CANDIDATE),
     context_inject: bool | None = None,
@@ -2655,9 +2656,16 @@ def list_assertion_claims(
     no ``expires_at_ms`` (the default -- most rows never carry one) are
     unaffected. Pass ``include_expired=True`` for audit/export reads that
     must still see expired rows.
+
+    ``target_refs`` restricts the read to rows targeting any of the given
+    refs (an empty collection selects nothing). The set travels as one JSON
+    parameter expanded by ``json_each``, so its size never meets SQLite's
+    bound-variable limit and the ``target_ref`` index still drives the scan.
     """
 
     if not _table_exists(conn, "assertions"):
+        return []
+    if target_refs is not None and not target_refs:
         return []
 
     where: list[str] = []
@@ -2674,6 +2682,9 @@ def list_assertion_claims(
     if target_ref is not None:
         where.append("target_ref = ?")
         params.append(target_ref)
+    if target_refs is not None:
+        where.append("target_ref IN (SELECT value FROM json_each(?))")
+        params.append(json.dumps(sorted(set(target_refs))))
     if scope_ref is not None:
         where.append("scope_ref = ?")
         params.append(scope_ref)

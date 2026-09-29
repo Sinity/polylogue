@@ -357,6 +357,7 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
             "get_siblings",
             "get_thread",
             "get_web_content_constructs",
+            "read_session_evidence_window",
             "read_transcript_window",
             "list_sessions",
             "list_summaries",

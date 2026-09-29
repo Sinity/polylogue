@@ -7,7 +7,7 @@ import itertools
 import json
 import random
 import sqlite3
-from collections.abc import AsyncIterator, Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import AsyncIterator, Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -1275,6 +1275,7 @@ def _archive_list_assertion_claims(
     *,
     kinds: Sequence[str | AssertionKind] | None = None,
     target_ref: str | None = None,
+    target_refs: Collection[str] | None = None,
     scope_ref: str | None = None,
     statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
     context_inject: bool | None = None,
@@ -1289,6 +1290,7 @@ def _archive_list_assertion_claims(
             conn,
             kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
             target_ref=target_ref,
+            target_refs=target_refs,
             scope_ref=scope_ref,
             statuses=statuses,
             context_inject=context_inject,
@@ -2835,12 +2837,17 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         *,
         kinds: Sequence[str | AssertionKind] | None = None,
         target_ref: str | None = None,
+        target_refs: Collection[str] | None = None,
         scope_ref: str | None = None,
         statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
         context_inject: bool | None = None,
         limit: int | None = None,
     ) -> list[ArchiveAssertionEnvelope]:
-        """List assertion-backed lifecycle claims for read-surface consumers."""
+        """List assertion-backed lifecycle claims for read-surface consumers.
+
+        ``target_refs`` narrows the read to any of several targets inside the
+        storage query.
+        """
 
         return cast(
             list["ArchiveAssertionEnvelope"],
@@ -2848,6 +2855,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 self.config,
                 kinds=kinds,
                 target_ref=target_ref,
+                target_refs=target_refs,
                 scope_ref=scope_ref,
                 statuses=statuses,
                 context_inject=context_inject,
@@ -5239,6 +5247,49 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             work=work,
             projection="session-materials",
             stable_order="created_at_ms,material_id",
+        )
+
+    async def read_session_evidence_window(
+        self,
+        session_id: str,
+        kind: str,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        continuation: str | None = None,
+    ) -> dict[str, object] | None:
+        """Read one bounded page of a per-session evidence relation.
+
+        ``kind`` names a windowed ``session.read`` evidence kind (``events``,
+        ``raw``, ``file-edits``, ``web-content``, ``materials``). The page is
+        the ``EvidenceWindowBody`` ``session.read`` returns: ``rows``, the
+        relation's own ``total``, the page coordinates, and a ``continuation``
+        that resumes it on any surface until ``complete``. A continuation
+        whose archive frame or source relation has moved raises
+        ``QueryContinuationStaleError``.
+
+        Returns ``None`` when the session does not exist.
+        """
+        from polylogue.operations.session_evidence import SESSION_EVIDENCE_PAGE_READERS, read_session_evidence_window
+
+        if kind not in SESSION_EVIDENCE_PAGE_READERS:
+            raise ValueError(f"not a windowed session evidence kind: {kind!r}")
+        ref = session_id if session_id.startswith("session:") else f"session:{session_id}"
+
+        def work(archive: ArchiveStore) -> dict[str, object] | None:
+            window = read_session_evidence_window(
+                archive, kind, ref=ref, limit=limit, offset=offset, continuation=continuation
+            )
+            return None if window is None else dict(window)
+
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session.evidence_window",
+            arguments={"session_id": session_id, "kind": kind},
+            work=work,
+            page_size=limit,
+            offset=offset,
+            projection=f"session-evidence:{kind}",
         )
 
     async def get_agent_policies(self, session_id: str) -> list[dict[str, object]] | None:

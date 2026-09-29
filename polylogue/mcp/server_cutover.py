@@ -153,6 +153,13 @@ async def _daemon_operation(hooks: ServerCallbacks, operation: str, payload: dic
     return json.dumps(result if isinstance(result, dict) else response, indent=2, ensure_ascii=False, default=str)
 
 
+def _windowed_list_projection_names() -> tuple[str, ...]:
+    """Session list projections paged through an evidence window, not answered whole."""
+    from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES
+
+    return tuple(name for name in SESSION_LIST_PROJECTIONS if name in EVIDENCE_WINDOW_FAMILIES)
+
+
 def _object_ref(ref: str) -> str:
     """Lower a stable Polylogue URI to the public ref accepted by the API."""
     if not ref.startswith("polylogue://"):
@@ -1097,8 +1104,55 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         session_id: str,
         *,
         tool: Literal["get", "read"],
+        limit: int | None = None,
+        offset: int | None = None,
+        continuation: str | None = None,
     ) -> str:
-        """Run one table-declared session list projection for either read route."""
+        """Run one table-declared session list projection for either read route.
+
+        A projection over a windowed evidence relation is paged through the
+        same window ``session.read`` serves the CLI: one bounded page, its
+        coordinates, and a continuation while rows remain. Answering such a
+        relation whole would return every row however large, whatever
+        ``limit`` the caller named.
+        """
+        from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES
+
+        if projection.name in EVIDENCE_WINDOW_FAMILIES:
+            from polylogue.archive.query.transaction import (
+                QueryContinuationInvalidError,
+                QueryContinuationStaleError,
+            )
+
+            try:
+                window = await hooks.get_polylogue().read_session_evidence_window(
+                    session_id,
+                    projection.name,
+                    limit=hooks.clamp_limit(limit),
+                    offset=offset or 0,
+                    continuation=continuation,
+                )
+            except (QueryContinuationStaleError, QueryContinuationInvalidError) as exc:
+                return hooks.error_json(str(exc), code=exc.code, tool=tool)
+            if window is None:
+                return hooks.error_json(f"object not found: session:{session_id}", code="not_found", tool=tool)
+            total = int(cast(int, window["total"]))
+            return hooks.json_payload(
+                MCPRootPayload(
+                    root={
+                        "session_id": session_id,
+                        "total": total,
+                        projection.payload_key: window["rows"],
+                        "returned": window["returned"],
+                        "limit": window["limit"],
+                        "offset": window["offset"],
+                        "next_offset": window["next_offset"],
+                        "continuation": window["continuation"],
+                        "complete": window["complete"],
+                        "outcome": decide_outcome(matched=total).to_dict(),
+                    }
+                )
+            )
         rows = await getattr(hooks.get_polylogue(), projection.method)(session_id)
         if rows is None:
             return hooks.error_json(f"object not found: session:{session_id}", code="not_found", tool=tool)
@@ -1336,8 +1390,13 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         coordinate naming it (polylogue-idrej).  It is sugar over ``offset``:
         the resolved coordinate comes back in the payload's ``offset``, and the
         window is the one the same caller reaches by asking for it.
+
+        The evidence views ``events``, ``file-edits``, ``web-content`` and
+        ``materials`` are paged the same way ``session.read`` pages them for
+        the CLI: ``limit``/``offset`` bound the page, and the payload's
+        opaque ``continuation`` resumes it until ``complete``.
         """
-        if continuation is not None and view not in ("topology", "messages"):
+        if continuation is not None and view not in ("topology", "messages", *_windowed_list_projection_names()):
             return hooks.error_json(
                 "read continuations are not implemented for this view; use query for exhaustive rows",
                 code="invalid_continuation",
@@ -1460,7 +1519,14 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                     return hooks.error_json(
                         f"read view {view!r} requires a session ref", code="invalid_argument", tool="read"
                     )
-                return await _session_list_projection_payload(list_projection, session_id, tool="read")
+                return await _session_list_projection_payload(
+                    list_projection,
+                    session_id,
+                    tool="read",
+                    limit=limit,
+                    offset=offset,
+                    continuation=continuation,
+                )
             if not is_mcp_read_view(view):
                 return hooks.error_json(f"unsupported read view: {view}", code="invalid_argument", tool="read")
             payload = await hooks.get_polylogue().resolve_ref(normalized)
@@ -1504,6 +1570,10 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         ``projection="materials"`` returns the source-tier materials retained
         for the session with their content -- Codex goals (objective, status,
         budget) and memories, which are stored nowhere else.
+
+        ``events``, ``file-edits``, ``web-content`` and ``materials`` answer
+        their first bounded page; ``read`` with the same view and the returned
+        ``continuation`` walks the rest.
 
         ``ref="cost-outlook:<plan_name>"`` projects the current billing cycle
         for a configured subscription plan (the standalone ``cost_outlook``

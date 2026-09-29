@@ -121,6 +121,7 @@ READ_BY_ID_NONE_METHODS: frozenset[str] = frozenset(
         "get_agent_policies",
         "get_web_content_constructs",
         "get_session_materials",
+        "read_session_evidence_window",  # the bounded window over those relations; same None
         "compact_lineage",
     }
 )

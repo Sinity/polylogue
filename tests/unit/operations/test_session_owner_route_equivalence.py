@@ -201,10 +201,11 @@ async def test_lexical_search_selects_the_same_sessions_on_both_read_routes(tmp_
     assert owner_page.next_offset == envelope["next_offset"]
 
 
-def _seed_exclusion(root: Path) -> dict[str, str]:
+def _seed_exclusion(root: Path, texts: dict[str, str] | None = None) -> dict[str, str]:
     """Seed sessions whose text makes a ``-secret`` exclusion observable."""
 
-    texts = {"plain": "needle alpha", "secret": "needle secret", "other": "unrelated beta"}
+    if texts is None:
+        texts = {"plain": "needle alpha", "secret": "needle secret", "other": "unrelated beta"}
     ids: dict[str, str] = {}
     with ArchiveStore(root) as archive:
         for name, text in texts.items():
@@ -227,7 +228,7 @@ def _seed_exclusion(root: Path) -> dict[str, str]:
     return ids
 
 
-async def _mcp_sessions(root: Path, expression: str) -> dict[str, object]:
+async def _mcp_sessions(root: Path, expression: str, *, limit: int = 50, offset: int = 0) -> dict[str, object]:
     import json
     from typing import cast
 
@@ -238,7 +239,9 @@ async def _mcp_sessions(root: Path, expression: str) -> dict[str, object]:
     query_fn = server._tool_manager._tools["query"].fn
     with installed_runtime_services(root):
         result = json.loads(
-            await invoke_surface_async(query_fn, expression=expression, projection="sessions", limit=50)
+            await invoke_surface_async(
+                query_fn, expression=expression, projection="sessions", limit=limit, offset=offset
+            )
         )
     assert isinstance(result, dict)
     return result
@@ -291,6 +294,57 @@ async def test_text_exclusion_listing_agrees_between_mcp_and_generic_routes(tmp_
     assert set(generic[0]) == {ids["plain"], ids["other"]}
     assert mcp_ids == generic[0]
     assert result["total"] == generic[1] == 2
+
+
+@pytest.mark.asyncio
+async def test_text_exclusion_listing_pages_a_scope_larger_than_one_hydration_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """MCP pages a ``-secret`` listing whose candidates span many hydration chunks.
+
+    The exclusion is valid at any archive size, so the MCP listing must page
+    it with an exact total rather than refuse a large candidate scope. The
+    chunk is shrunk to two so seven candidates cross four chunks.
+
+    Mutation: reinstate a candidate-count refusal (the removed
+    ``POST_FILTER_HYDRATION_CAP``) at or below seven in
+    ``_archive_list_summaries_with_post_filters`` or
+    ``_archive_count_sessions_for_spec``, stop the candidate stream after the
+    first chunk, or estimate the total from one page, and the MCP call errors,
+    loses the last-chunk survivor, or reports a total other than five.
+    """
+
+    from polylogue.api import archive as archive_api
+
+    monkeypatch.setattr(archive_api, "POST_FILTER_HYDRATION_CHUNK", 2)
+    root = tmp_path / "archive"
+    texts = {f"s{index}": ("needle secret" if index in (1, 4) else f"needle plain {index}") for index in range(7)}
+    ids = _seed_exclusion(root, texts)
+    survivors = {ids[name] for name in texts if "secret" not in texts[name]}
+
+    generic = _generic_list(root, query="-secret", limit=50)
+    assert set(generic[0]) == survivors
+    assert generic[1] == len(survivors) == 5
+
+    walked: list[str] = []
+    offset: int | None = 0
+    pages = 0
+    while offset is not None:
+        result = await _mcp_sessions(root, "-secret", limit=2, offset=offset)
+        assert result.get("is_error") is not True, result
+        assert result["total"] == 5, "the exclusion total must be exact, not a page estimate"
+        items = result["items"]
+        assert isinstance(items, list)
+        assert len(items) == min(2, 5 - offset)
+        walked.extend(str(item["id"]) for item in items)
+        next_offset = result.get("next_offset")
+        assert next_offset is None or isinstance(next_offset, int)
+        offset = next_offset
+        pages += 1
+        assert pages <= 3, "paging must terminate after the last survivor"
+
+    assert pages == 3
+    assert walked == generic[0], "MCP pages must walk the generic route's order without gaps or repeats"
 
 
 @pytest.mark.asyncio

@@ -38,20 +38,26 @@ refuses a clipped page that claims to be whole.
 
 from __future__ import annotations
 
+import hashlib
 import json
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 __all__ = [
+    "SESSION_EVIDENCE_PAGE_READERS",
+    "EvidencePageReader",
     "read_agent_policies_evidence",
     "read_file_edits_page",
     "read_raw_artifacts_page",
     "read_session_events_page",
+    "read_session_evidence_window",
     "read_session_materials",
     "read_session_materials_page",
     "read_web_content_constructs_page",
+    "session_materials_source_epoch",
 ]
 
 
@@ -283,6 +289,53 @@ def read_raw_artifacts_page(
     return rows, total
 
 
+#: The session-scoped material relation, reached through its indexed link.
+#: The material route (``sources/codex_state_evidence.py``) records every
+#: admission's ``referrer_ref`` together with a ``refers_to`` link to that same
+#: ref, in one transaction, and ``material_evidence_links`` is indexed on
+#: ``(evidence_ref, relation)``. Joining back on ``referrer_ref`` keeps the
+#: relation exactly "materials whose referrer is this session" -- the rows
+#: ``excise --session`` follows -- while every page, count and epoch costs the
+#: session's own materials rather than a scan of the archive-wide table.
+_SESSION_MATERIALS_FROM = (
+    "FROM material_evidence_links AS l "
+    "JOIN material_observations AS m ON m.material_id = l.material_id AND m.referrer_ref = l.evidence_ref "
+    "WHERE l.evidence_ref IN (?, ?) AND l.relation = 'refers_to'"
+)
+_SESSION_MATERIALS_ORDER = " ORDER BY m.created_at_ms, m.material_id"
+
+
+def _session_material_refs(session_id: str) -> tuple[str, str]:
+    """Codex goals and memories name the session id itself; other admissions use ``session:``."""
+
+    return (session_id, f"session:{session_id}")
+
+
+def _material_content(media_type: str | None, charset: str | None, payload: bytes) -> tuple[object, str]:
+    """Decode retained bytes for display, returning ``(content, content_form)``.
+
+    A material is admitted whatever its bytes turn out to be:
+    ``admit_material`` keeps an ``application/json`` payload that failed
+    extraction as ``acquisition_state="malformed"``. Such a row is a valid
+    observation, so a decoding failure never aborts the page; the row is
+    returned with the text it has (``"text"``) or none (``"undecodable"``) and
+    the caller reads its typed ``acquisition_state``.
+    """
+
+    media = (media_type or "").split(";", 1)[0].strip().lower()
+    if media == "application/json":
+        try:
+            return json.loads(payload), "json"
+        except ValueError:
+            pass
+    elif not media.startswith("text/"):
+        return None, "bytes"
+    try:
+        return payload.decode(charset or "utf-8"), "text"
+    except (LookupError, UnicodeDecodeError):
+        return None, "undecodable"
+
+
 def _session_material_rows(
     archive: ArchiveStore,
     session_id: str,
@@ -290,30 +343,19 @@ def _session_material_rows(
     limit: int | None,
     offset: int,
 ) -> tuple[list[dict[str, object]], int]:
-    """Read source-tier materials whose referrer is this session, with their content.
-
-    ``material_observations.referrer_ref`` is the durable session-scoped key
-    (the one ``excise --session`` follows). Codex goals and memories name the
-    session id itself; other admissions use the ``session:`` ref form.
-    """
+    """Read source-tier materials whose referrer is this session, with their content."""
 
     from polylogue.storage.materials import get_material, read_material
 
     conn = archive.source_connection
-    refs = (session_id, f"session:{session_id}")
-    total = int(
-        conn.execute(
-            "SELECT COUNT(*) FROM material_observations WHERE referrer_ref IN (?, ?)",
-            refs,
-        ).fetchone()[0]
-    )
+    refs = _session_material_refs(session_id)
+    total = int(conn.execute("SELECT COUNT(*) " + _SESSION_MATERIALS_FROM, refs).fetchone()[0])
     bound = "" if limit is None else " LIMIT ? OFFSET ?"
     params: tuple[object, ...] = refs if limit is None else (*refs, max(limit, 0), max(offset, 0))
     ids = [
         str(row[0])
         for row in conn.execute(
-            "SELECT material_id FROM material_observations WHERE referrer_ref IN (?, ?) "
-            "ORDER BY created_at_ms, material_id" + bound,
+            "SELECT m.material_id " + _SESSION_MATERIALS_FROM + _SESSION_MATERIALS_ORDER + bound,
             params,
         ).fetchall()
     ]
@@ -323,13 +365,11 @@ def _session_material_rows(
         if material is None:
             continue
         content: object = None
+        content_form = "absent"
         if material.blob_hash is not None:
-            payload = read_material(conn, material_id)
-            media_type = (material.media_type or "").split(";", 1)[0].strip().lower()
-            if media_type == "application/json":
-                content = json.loads(payload)
-            elif media_type.startswith("text/"):
-                content = payload.decode(material.media_charset or "utf-8")
+            content, content_form = _material_content(
+                material.media_type, material.media_charset, read_material(conn, material_id)
+            )
         rows.append(
             {
                 "material_id": material.material_id,
@@ -343,9 +383,29 @@ def _session_material_rows(
                 "acquired_at_ms": material.acquired_at_ms,
                 "created_at_ms": material.created_at_ms,
                 "content": content,
+                "content_form": content_form,
             }
         )
     return rows, total
+
+
+def session_materials_source_epoch(archive: ArchiveStore, session_id: str) -> str:
+    """Fingerprint the ordered membership of the session's material relation.
+
+    The relation lives in ``source.db``, which the index/user archive frame
+    does not cover, so a material admitted ahead of a continuation's offset
+    would shift the next page without making the token stale. The window
+    binds this fingerprint instead: it moves exactly when the ordered
+    ``(created_at_ms, material_id)`` sequence the offsets index into moves.
+    """
+
+    digest = hashlib.sha256()
+    for created_at_ms, material_id in archive.source_connection.execute(
+        "SELECT m.created_at_ms, m.material_id " + _SESSION_MATERIALS_FROM + _SESSION_MATERIALS_ORDER,
+        _session_material_refs(session_id),
+    ):
+        digest.update(f"{int(created_at_ms)}\0{material_id}\n".encode())
+    return f"source:materials:{digest.hexdigest()}"
 
 
 def read_session_materials_page(
@@ -375,3 +435,73 @@ def read_session_materials(archive: ArchiveStore, session_id: str) -> list[dict[
     """Every retained material for one session, in the windowed read's order."""
 
     return _session_material_rows(archive, session_id, limit=None, offset=0)[0]
+
+
+#: One page of a per-session evidence relation: ``(archive, session_id, limit,
+#: offset)`` in, the page's rows and the relation's own total out.
+EvidencePageReader = Callable[["ArchiveStore", str, int, int], tuple[list[dict[str, object]], int]]
+
+#: Per-session evidence relations that are *paged* rather than answered whole,
+#: keyed by the ``session.read`` kind that names them.  Every surface that
+#: pages one of them -- ``session.read`` on the daemon and CLI, MCP ``read`` and
+#: ``get`` through the Python API -- reads it through this table.
+SESSION_EVIDENCE_PAGE_READERS: dict[str, EvidencePageReader] = {
+    "events": lambda archive, session_id, limit, offset: read_session_events_page(
+        archive, session_id, limit=limit, offset=offset
+    ),
+    "raw": lambda archive, session_id, limit, offset: read_raw_artifacts_page(
+        archive, session_id, limit=limit, offset=offset
+    ),
+    "file-edits": lambda archive, session_id, limit, offset: read_file_edits_page(
+        archive, session_id, limit=limit, offset=offset
+    ),
+    "web-content": lambda archive, session_id, limit, offset: read_web_content_constructs_page(
+        archive, session_id, limit=limit, offset=offset
+    ),
+    "materials": lambda archive, session_id, limit, offset: read_session_materials_page(
+        archive, session_id, limit=limit, offset=offset
+    ),
+}
+
+#: Windowed kinds whose rows live outside the archive frame's tiers. ``raw``
+#: is absent because its relation is keyed by the session's own ``raw_id``,
+#: the ``raw_sessions`` primary key, so it holds at most one row and has no
+#: offset to shift.
+_SOURCE_RELATION_EPOCHS: dict[str, Callable[[ArchiveStore, str], str]] = {
+    "materials": session_materials_source_epoch,
+}
+
+
+def read_session_evidence_window(
+    archive: ArchiveStore,
+    kind: str,
+    *,
+    ref: str,
+    limit: int,
+    offset: int,
+    continuation: str | None,
+) -> Mapping[str, object] | None:
+    """Answer one page of a windowed per-session relation, or ``None`` for an unknown session.
+
+    ``ref`` is the caller's session reference; it is the request identity the
+    continuation is bound to, so a token resumes only the read that minted it.
+    """
+
+    from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES, read_evidence_window
+
+    try:
+        session_id = archive.resolve_session_id(ref.removeprefix("session:"))
+    except KeyError:
+        return None
+    reader = SESSION_EVIDENCE_PAGE_READERS[kind]
+    source_epoch = _SOURCE_RELATION_EPOCHS.get(kind)
+    return read_evidence_window(
+        archive,
+        EVIDENCE_WINDOW_FAMILIES[kind],
+        ref=ref,
+        limit=limit,
+        offset=offset,
+        continuation=continuation,
+        read=lambda page_limit, page_offset: reader(archive, session_id, page_limit, page_offset),
+        source_epoch=None if source_epoch is None else (lambda: source_epoch(archive, session_id)),
+    )

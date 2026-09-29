@@ -299,7 +299,7 @@ async def test_retained_codex_goals_are_readable_through_every_public_session_ro
     The ``read --view materials`` CLI view lowers to ``session.read`` with
     ``kind="materials"``, executed here on the pinned archive; the facade and
     MCP ``get(projection="materials")`` must answer with the same rows.
-    Anti-vacuity: drop ``"materials"`` from ``_WINDOWED_EVIDENCE_READERS`` and
+    Anti-vacuity: drop ``"materials"`` from ``SESSION_EVIDENCE_PAGE_READERS`` and
     ``session.read`` refuses the kind; drop the ``referrer_ref`` filter from
     ``_session_material_rows`` and thread B's objective leaks into thread A;
     stop decoding the retained bytes and the objective text is absent.
@@ -382,3 +382,190 @@ async def test_retained_codex_goals_are_readable_through_every_public_session_ro
         )
     assert result["materials"] == walked
     assert result["total"] == len(walked)
+
+
+def _archive_with_goals(tmp_path: Path, goal_count: int) -> Path:
+    """One ingested thread-A session plus ``goal_count`` retained goals naming it."""
+    from polylogue.core.enums import Provider, Role
+    from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+
+    root = tmp_path / "archive"
+    root.mkdir()
+    with ArchiveStore(root) as archive:
+        archive.write_raw_and_parsed(
+            ParsedSession(
+                source_name=Provider.CODEX,
+                provider_session_id=_THREAD_A,
+                messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="start")],
+            ),
+            payload=b"{}",
+            source_path="/synthetic/codex/rollout.jsonl",
+            acquired_at_ms=1_000,
+        )
+    goals_path = tmp_path / "goals_1.sqlite"
+    _write_goals_db(
+        goals_path,
+        [(_THREAD_A, f"goal-{index}", f"synthetic objective {index}") for index in range(goal_count)],
+    )
+    _materialize(root, goals_path)
+    return root
+
+
+def _admit_session_material(root: Path, *, source_uri: str, payload: bytes, observed_at_ms: int) -> str:
+    """Admit one JSON material for thread A the way the material route records it."""
+    from polylogue.storage.blob_store import BlobStore
+    from polylogue.storage.materials import admit_material, link_material
+
+    with sqlite3.connect(root / "source.db") as conn:
+        material = admit_material(
+            conn,
+            blob_store=BlobStore(root / "blob"),
+            source_uri=source_uri,
+            referrer_ref=_SESSION_A,
+            observed_at_ms=observed_at_ms,
+            payload=payload,
+            media_type="application/json",
+            commit=False,
+        )
+        link_material(
+            conn,
+            material.material_id,
+            _SESSION_A,
+            relation="refers_to",
+            authority="provider",
+            observed_at_ms=observed_at_ms,
+            commit=False,
+        )
+        conn.commit()
+    return material.material_id
+
+
+@pytest.mark.asyncio
+async def test_mcp_materials_view_is_paged_by_the_evidence_window(tmp_path: Path) -> None:
+    """MCP ``read(view="materials", limit=1)`` returns one row and a continuation.
+
+    Anti-vacuity: route the ``materials`` projection back through the whole
+    ``get_session_materials`` list and the first call returns every retained
+    material with no continuation, whatever ``limit`` says.
+    """
+    from types import SimpleNamespace
+    from typing import cast
+    from unittest.mock import patch
+
+    from polylogue import Polylogue
+    from polylogue.mcp.server import build_server
+    from tests.infra.mcp import MCPServerUnderTest, invoke_surface_async
+
+    root = _archive_with_goals(tmp_path, 3)
+    owner = Polylogue(archive_root=root)
+    whole = await owner.get_session_materials(_SESSION_A)
+    assert whole is not None and len(whole) >= 3
+
+    server = cast(MCPServerUnderTest, build_server())
+    read = server._tool_manager._tools["read"].fn
+    walked: list[dict[str, Any]] = []
+    with (
+        patch("polylogue.mcp.server._get_config", return_value=SimpleNamespace(archive_root=root)),
+        patch("polylogue.mcp.server._get_polylogue", return_value=owner),
+    ):
+        page = json.loads(await invoke_surface_async(read, ref=f"session:{_SESSION_A}", view="materials", limit=1))
+        while True:
+            assert page.get("is_error") is not True, page
+            assert page["total"] == len(whole)
+            assert len(page["materials"]) == 1
+            walked.extend(page["materials"])
+            if page["continuation"] is None:
+                assert page["complete"] is True
+                break
+            assert page["complete"] is False
+            page = json.loads(
+                await invoke_surface_async(
+                    read,
+                    ref=f"session:{_SESSION_A}",
+                    view="materials",
+                    limit=1,
+                    continuation=page["continuation"],
+                )
+            )
+    assert walked == whole
+
+
+def test_a_malformed_json_material_is_returned_with_its_state(tmp_path: Path) -> None:
+    """Retained JSON bytes that do not parse are a row, not a failed page.
+
+    Anti-vacuity: decode ``application/json`` with an unguarded
+    ``json.loads`` and the page read raises ``JSONDecodeError`` instead of
+    returning the ``malformed`` observation.
+    """
+    from polylogue.operations.session_evidence import read_session_materials_page
+
+    root = _archive_with_goals(tmp_path, 1)
+    material_id = _admit_session_material(
+        root, source_uri="codex://state/goals/broken", payload=b'{"objective": ', observed_at_ms=9_000
+    )
+
+    with ArchiveStore.open_existing(root) as archive:
+        rows, total = read_session_materials_page(archive, _SESSION_A, limit=50, offset=0)
+
+    assert total == len(rows)
+    broken = next(row for row in rows if row["material_id"] == material_id)
+    assert broken["acquisition_state"] == "malformed"
+    assert broken["content_form"] == "text"
+    assert broken["content"] == '{"objective": '
+    assert all(row["content_form"] == "json" for row in rows if row["material_id"] != material_id)
+
+
+def test_session_materials_page_never_scans_the_archive_wide_table(tmp_path: Path) -> None:
+    """Every statement a materials page issues is an indexed search.
+
+    Anti-vacuity: select the page by ``material_observations.referrer_ref``
+    again -- a column no index covers -- and the plan for the count and page
+    statements reads ``SCAN``.
+    """
+    from polylogue.operations.session_evidence import read_session_materials_page, session_materials_source_epoch
+
+    root = _archive_with_goals(tmp_path, 2)
+    statements: list[str] = []
+    with ArchiveStore.open_existing(root) as archive:
+        conn = archive.source_connection
+        conn.set_trace_callback(statements.append)
+        try:
+            read_session_materials_page(archive, _SESSION_A, limit=1, offset=1)
+            session_materials_source_epoch(archive, _SESSION_A)
+        finally:
+            conn.set_trace_callback(None)
+        selects = [sql for sql in statements if sql.lstrip().upper().startswith("SELECT") and "material_" in sql]
+        assert selects
+        for sql in selects:
+            plan = [str(row[3]) for row in conn.execute("EXPLAIN QUERY PLAN " + sql)]
+            assert not any(step.startswith("SCAN") for step in plan), (sql, plan)
+
+
+def test_a_materials_continuation_is_stale_after_an_earlier_admission(tmp_path: Path) -> None:
+    """A material admitted ahead of the offset makes the continuation stale.
+
+    The relation lives in ``source.db``, outside the index/user frame the
+    token also carries. Anti-vacuity: drop the ``source_epoch`` binding from
+    ``read_session_evidence_window`` and the resume is accepted, returning
+    the row page one already delivered.
+    """
+    from polylogue.archive.query.transaction import QueryContinuationStaleError
+    from polylogue.operations.session_evidence import read_session_evidence_window
+
+    root = _archive_with_goals(tmp_path, 2)
+    ref = f"session:{_SESSION_A}"
+    with ArchiveStore.open_existing(root) as archive:
+        first = read_session_evidence_window(archive, "materials", ref=ref, limit=1, offset=0, continuation=None)
+        assert first is not None and first["continuation"] is not None
+        unchanged = read_session_evidence_window(
+            archive, "materials", ref=ref, limit=1, offset=0, continuation=str(first["continuation"])
+        )
+        assert unchanged is not None and unchanged["offset"] == 1
+
+    _admit_session_material(root, source_uri="codex://state/goals/earlier", payload=b"{}", observed_at_ms=1)
+
+    with ArchiveStore.open_existing(root) as archive:
+        with pytest.raises(QueryContinuationStaleError):
+            read_session_evidence_window(
+                archive, "materials", ref=ref, limit=1, offset=0, continuation=str(first["continuation"])
+            )

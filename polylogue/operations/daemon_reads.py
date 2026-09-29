@@ -16,12 +16,9 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from polylogue.operations.authority import authority_for_reader
 from polylogue.operations.query_lowering import cli_query_spec, cli_read_request, lower_cli_query_params
 from polylogue.operations.session_evidence import (
+    SESSION_EVIDENCE_PAGE_READERS,
     read_agent_policies_evidence,
-    read_file_edits_page,
-    read_raw_artifacts_page,
-    read_session_events_page,
-    read_session_materials_page,
-    read_web_content_constructs_page,
+    read_session_evidence_window,
 )
 
 if TYPE_CHECKING:
@@ -1296,7 +1293,7 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
     kind = str(payload.get("kind") or "transcript")
     if kind == "messages":
         return _session_messages_payload(payload, ref=ref, archive=archive)
-    if kind in _WINDOWED_EVIDENCE_READERS:
+    if kind in SESSION_EVIDENCE_PAGE_READERS:
         return _session_evidence_window_payload(payload, ref=ref, kind=kind, archive=archive)
     if kind != "transcript":
         return _session_evidence_payload(ref, kind=kind, archive=archive)
@@ -1555,33 +1552,6 @@ def _session_evidence_payload(ref: str, *, kind: str, archive: ArchiveStore) -> 
     return result
 
 
-#: Per-session evidence relations that are *paged* rather than answered whole,
-#: keyed by the ``session.read`` kind that names them.  Each answers
-#: ``(rows, total)`` where ``total`` is the relation's own row count; the page
-#: and its continuation are decided by ``operations/evidence_window.py``.
-#:
-#: Separate from ``_SESSION_EVIDENCE_READERS`` because the two answer different
-#: contracts, not because they read different tables: a whole-evidence kind may
-#: never report a partial body, and a windowed one must report its bound.
-_WINDOWED_EVIDENCE_READERS: dict[str, Callable[[ArchiveStore, str, int, int], tuple[list[dict[str, object]], int]]] = {
-    "events": lambda archive, session_id, limit, offset: read_session_events_page(
-        archive, session_id, limit=limit, offset=offset
-    ),
-    "raw": lambda archive, session_id, limit, offset: read_raw_artifacts_page(
-        archive, session_id, limit=limit, offset=offset
-    ),
-    "file-edits": lambda archive, session_id, limit, offset: read_file_edits_page(
-        archive, session_id, limit=limit, offset=offset
-    ),
-    "web-content": lambda archive, session_id, limit, offset: read_web_content_constructs_page(
-        archive, session_id, limit=limit, offset=offset
-    ),
-    "materials": lambda archive, session_id, limit, offset: read_session_materials_page(
-        archive, session_id, limit=limit, offset=offset
-    ),
-}
-
-
 def _session_evidence_window_payload(
     payload: Mapping[str, object],
     *,
@@ -1603,21 +1573,13 @@ def _session_evidence_window_payload(
     message window's, so the two families refuse each other's tokens by name.
     """
 
-    from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES, read_evidence_window
     from polylogue.surfaces.outcome import decide_outcome
-
-    family = EVIDENCE_WINDOW_FAMILIES[kind]
-    reader = _WINDOWED_EVIDENCE_READERS[kind]
-    try:
-        session_id = archive.resolve_session_id(ref.removeprefix("session:"))
-    except KeyError as exc:
-        raise ValueError(f"session not found: {ref}") from exc
 
     continuation_token = payload.get("continuation")
 
-    window = read_evidence_window(
+    window = read_session_evidence_window(
         archive,
-        family,
+        kind,
         ref=ref,
         # The declared request default (``SessionReadRequest.limit``) is the
         # bound when the caller names none, exactly as it is for a transcript
@@ -1625,8 +1587,10 @@ def _session_evidence_window_payload(
         limit=_non_negative_int(payload.get("limit"), default=_SESSION_READ_WINDOW) or _SESSION_READ_WINDOW,
         offset=_non_negative_int(payload.get("offset"), default=0),
         continuation=str(continuation_token) if continuation_token else None,
-        read=lambda page_limit, page_offset: reader(archive, session_id, page_limit, page_offset),
     )
+    if window is None:
+        raise ValueError(f"session not found: {ref}")
+    session_id = archive.resolve_session_id(ref.removeprefix("session:"))
 
     summary = archive.read_summary(session_id)
     result: dict[str, object] = {
