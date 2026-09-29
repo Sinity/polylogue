@@ -161,7 +161,7 @@ def test_excision_scrubs_every_content_bearing_assertion_field() -> None:
     assert visibility == "private"
     # The operation ledger retains accountability; caller-controlled author
     # identity must not survive in the scrubbed assertion itself.
-    assert (author, author_kind) == ("system:excision", "system")
+    assert (author, author_kind) == ("actor:query-excision", "system")
 
 
 def test_accessed_holdout_is_held_instead_of_failing_mid_transaction() -> None:

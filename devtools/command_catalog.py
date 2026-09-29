@@ -166,7 +166,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
                 "Run in a checkout on the default branch deliberately; without it the verifier refuses there.",
             ),
         ),
-        use_when="Run the gates and bounded affected tests locally before pushing. --quick stops at static gates; --all runs the complete corpus at the explicit master/corpus boundary. Unknown or oversized affected plans are refused before pytest and name the count, reason, and next boundary. Pattern baselines use path:sha1[:count] content anchors, not source line numbers.",
+        use_when="Run the gates and bounded affected tests locally before pushing. --quick stops at static gates; --all runs the complete corpus at the explicit master/corpus boundary. Unknown or oversized affected plans are refused before pytest and name the count, reason, and next boundary. Pattern baselines use path:sha1:context_sha1[:count] content anchors, not source line numbers.",
         examples=("devtools verify", "devtools verify --quick", "devtools verify --all"),
         featured=True,
     ),
@@ -293,6 +293,20 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         examples=(
             "devtools schema closure polylogue/daemon/write_coordinator.py",
             "devtools schema closure",
+        ),
+    ),
+    CommandSpec(
+        "schema workload-profile",
+        "schema",
+        "Measure the aggregate-only synthetic workload profile of an origin from its real sources.",
+        "devtools.schema_workload_profile",
+        use_when=(
+            "After provider formats or usage patterns drift, re-measure the committed "
+            "workload-corpus.json that fixtures and benchmarks generate from."
+        ),
+        examples=(
+            "devtools schema workload-profile --origin claude-code",
+            "devtools schema workload-profile --origin codex --write",
         ),
     ),
     CommandSpec(

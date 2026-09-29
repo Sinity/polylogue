@@ -244,3 +244,106 @@ async def test_topology_api_pages_a_stable_bounded_bfs_envelope(workspace_env: d
     assert first.continuation == "node-offset:2"
     assert [str(node.session_id) for node in second.nodes] == [_native("sidechain"), _native("subagent")]
     assert {str(node.session_id) for node in first.nodes}.isdisjoint(str(node.session_id) for node in second.nodes)
+
+
+@pytest.mark.asyncio
+async def test_topology_read_pins_parent_replacement_to_one_snapshot(
+    workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F290/F291: a committed reparent between BFS reads cannot invent two parents."""
+    import aiosqlite
+
+    from polylogue.storage.sqlite.connection_profile import open_connection
+    from polylogue.storage.sqlite.queries import session_links as links_q
+
+    db_path = db_setup(workspace_env)
+    for token in ("old-parent", "new-parent"):
+        SessionBuilder(db_path, token).provider("claude-code").add_message(role="user", text=token).save()
+    SessionBuilder(db_path, "moving-child").provider("claude-code").parent_session("ext-old-parent").branch_type(
+        "continuation"
+    ).add_message(role="user", text="child").save()
+    original = links_q.list_session_links_to_session
+    replaced = False
+
+    async def reparent_after_inbound_read(
+        conn: aiosqlite.Connection, session_id: str, *, limit: int
+    ) -> list[dict[str, object]]:
+        nonlocal replaced
+        rows = await original(conn, session_id, limit=limit)
+        if session_id == _native("old-parent") and not replaced:
+            assert any(row["src_session_id"] == _native("moving-child") for row in rows)
+            # Mutate a real second SQLite connection after the root's old
+            # inbound edge was read, before BFS revisits the child's edge.
+            with open_connection(db_path) as writer:
+                changed = writer.execute(
+                    """UPDATE session_links SET dst_native_id = ?, resolved_dst_session_id = ?
+                       WHERE src_session_id = ? AND dst_native_id = ?""",
+                    ("ext-new-parent", _native("new-parent"), _native("moving-child"), "ext-old-parent"),
+                )
+                assert changed.rowcount == 1
+                writer.commit()
+            replaced = True
+        return rows
+
+    monkeypatch.setattr(links_q, "list_session_links_to_session", reparent_after_inbound_read)
+    polylogue = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    try:
+        first = await polylogue.get_session_topology(_native("moving-child"))
+        second = await polylogue.get_session_topology(_native("moving-child"))
+    finally:
+        await polylogue.close()
+
+    assert replaced
+    assert first is not None and second is not None
+    assert str(first.root_id) == _native("old-parent")
+    assert str(second.root_id) == _native("new-parent")
+    assert not first.conflicting_parent_detected
+    assert not second.conflicting_parent_detected
+    assert len(first.edges) == len(second.edges) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("borrowed_transaction", [False, True])
+@pytest.mark.parametrize("fail_read", [False, True])
+async def test_topology_snapshot_releases_only_its_own_transaction(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    borrowed_transaction: bool,
+    fail_read: bool,
+) -> None:
+    """The production snapshot owner must clean up failures without ending caller transactions."""
+    from collections.abc import AsyncIterator
+    from contextlib import asynccontextmanager
+
+    import aiosqlite
+
+    from polylogue.storage.sqlite.queries import sessions as sessions_q
+    from polylogue.storage.sqlite.query_store import SQLiteQueryStore
+
+    db_path = db_setup(workspace_env)
+    SessionBuilder(db_path, "present").provider("claude-code").add_message(role="user", text="present").save()
+    if fail_read:
+
+        async def fail(conn: aiosqlite.Connection, session_id: str) -> None:
+            raise RuntimeError("synthetic read interruption")
+
+        monkeypatch.setattr(sessions_q, "get_session", fail)
+
+    async with aiosqlite.connect(db_path) as conn:
+        conn.row_factory = aiosqlite.Row
+        if borrowed_transaction:
+            await conn.execute("BEGIN")
+
+        @asynccontextmanager
+        async def connection() -> AsyncIterator[aiosqlite.Connection]:
+            yield conn
+
+        queries = SQLiteQueryStore(connection_factory=connection)
+        if fail_read:
+            with pytest.raises(RuntimeError):
+                await queries.get_session_topology("absent")
+        else:
+            assert await queries.get_session_topology("absent") is None
+        assert conn.in_transaction is borrowed_transaction
+        if borrowed_transaction:
+            await conn.rollback()

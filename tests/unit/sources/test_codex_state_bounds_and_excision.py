@@ -290,3 +290,19 @@ def test_excising_a_thread_removes_its_codex_state_materials(tmp_path: Path) -> 
         # The bytes are durably refused on re-acquisition, not merely unlinked.
         excised = {bytes(row[0]) for row in conn.execute("SELECT removed_hash FROM excised_content")}
         assert hash_a in excised
+
+
+def test_an_unresolvable_index_does_not_read_as_a_current_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity (polylogue-hu24g): a failed index resolution returned
+    ``True`` ("already current"), so the Codex thread-state projection was
+    skipped as done instead of running and failing visibly."""
+    import polylogue.storage.archive_identity as archive_identity
+    from polylogue.sources.codex_state_evidence import _thread_state_projection_is_current
+
+    def unresolvable(_root: Path) -> Path:
+        raise OSError("active generation pointer unreadable")
+
+    monkeypatch.setattr(archive_identity, "resolve_active_index_path", unresolvable)
+    assert _thread_state_projection_is_current(tmp_path) is False

@@ -225,17 +225,34 @@ runs AS (
 """
 
 
-def observed_event_relation_sql(*, source_where: str, include_materialized: bool = False) -> str:
+def observed_event_relation_sql(
+    *,
+    source_where: str,
+    session_scoped: bool = False,
+    include_materialized: bool = False,
+) -> str:
     """Construct observed-event projection relation SQL.
 
     The materialized cache tables (session_observed_events) are no longer populated
     after polylogue-dab. Always use source-derived.
+
+    ``session_scoped`` bounds both tool-pairing rank windows to one session.
+    The windows project only ``block_id``, so an outer ``session_id`` filter
+    cannot reach them and each would otherwise rank every tool block in the
+    archive. A scoped relation takes two leading parameters, the session id
+    for each window, ahead of any ``source_where`` parameters.
     """
     if include_materialized:
         raise ValueError(
             "session_observed_events materialized table is no longer written to (polylogue-dab). "
             "Pass include_materialized=False or omit the argument."
         )
+    # The unary ``+`` keeps SQLite from answering a scoped window through the
+    # archive-wide ``block_type`` index when the session index is the bound.
+    use_type = "+u.block_type" if session_scoped else "u.block_type"
+    result_type = "+r.block_type" if session_scoped else "r.block_type"
+    use_scope = "AND u.session_id = ?" if session_scoped else ""
+    result_scope = "AND r.session_id = ?" if session_scoped else ""
     return f"""
 WITH session_started_base AS (
     SELECT
@@ -281,9 +298,10 @@ ranked_tool_uses AS (
            ) AS pair_rank
     FROM blocks u
     JOIN messages um ON um.message_id = u.message_id
-    WHERE u.block_type = 'tool_use'
+    WHERE {use_type} = 'tool_use'
       AND u.tool_id IS NOT NULL
       AND u.tool_id <> ''
+      {use_scope}
 ),
 ranked_tool_results AS (
     SELECT r.block_id AS block_id,
@@ -295,9 +313,10 @@ ranked_tool_results AS (
            ) AS pair_rank
     FROM blocks r
     JOIN messages rm ON rm.message_id = r.message_id
-    WHERE r.block_type = 'tool_result'
+    WHERE {result_type} = 'tool_result'
       AND r.tool_id IS NOT NULL
       AND r.tool_id <> ''
+      {result_scope}
 ),
 tool_finished_base AS (
     SELECT
@@ -457,7 +476,7 @@ source_compaction_snapshots AS (
         'context-snapshot:' || se.event_id || ':compaction' AS snapshot_ref,
         se.session_id AS session_id,
         'run:' || se.session_id AS run_ref,
-        se.position AS position,
+        se.position + 1 AS position,
         printf('%016d', COALESCE(se.occurred_at_ms, 0)) AS source_updated_at,
         'compaction' AS boundary,
         'summary' AS inheritance_mode,

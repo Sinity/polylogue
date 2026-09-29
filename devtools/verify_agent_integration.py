@@ -467,9 +467,9 @@ def _packaging_home_manager_lane() -> LaneResult:
         flake_text = (REPO_ROOT / "flake.nix").read_text(encoding="utf-8")
         required = (
             "programs.polylogueAgent",
-            'lib.optionals (roleWrite || cfg.mcpEnableWrite) [ "--enable-write" ]',
-            'lib.optionals (roleJudge || cfg.mcpEnableJudge) [ "--enable-judge" ]',
-            'lib.optionals (roleMaintenance || cfg.mcpEnableMaintenance) [ "--enable-maintenance" ]',
+            'lib.optionals cfg.mcpEnableWrite [ "--enable-write" ]',
+            'lib.optionals cfg.mcpEnableJudge [ "--enable-judge" ]',
+            'lib.optionals cfg.mcpEnableMaintenance [ "--enable-maintenance" ]',
             '"agent"',
             '"install"',
             '"${cfg.package}/bin/polylogue"',

@@ -48,7 +48,7 @@ These are the commands worth remembering during normal repo work:
   Common forms: `devtools test tests/unit/pipeline`, `devtools test -k hybrid`, `devtools test tests/unit/storage -x`, `devtools test --outliers 20`.
 - `devtools why`: A verify failed, bootstrapped unexpectedly, or refused to run, and you want the cause without reading receipt JSON by hand.
   Common forms: `devtools why`, `devtools why --history 24`, `devtools why --run 20260817T213631Z-2709409-d5c6e72c`.
-- `devtools verify`: Run the gates and bounded affected tests locally before pushing. --quick stops at static gates; --all runs the complete corpus at the explicit master/corpus boundary. Unknown or oversized affected plans are refused before pytest and name the count, reason, and next boundary. Pattern baselines use path:sha1[:count] content anchors, not source line numbers.
+- `devtools verify`: Run the gates and bounded affected tests locally before pushing. --quick stops at static gates; --all runs the complete corpus at the explicit master/corpus boundary. Unknown or oversized affected plans are refused before pytest and name the count, reason, and next boundary. Pattern baselines use path:sha1:context_sha1[:count] content anchors, not source line numbers.
   Common forms: `devtools verify`, `devtools verify --quick`, `devtools verify --all`.
 - `devtools gate`: Run a single gate in isolation, or list the declared gates and which of them verify --quick runs.
   Common forms: `devtools gate --list`, `devtools gate layering`, `devtools gate mypy`.
@@ -97,6 +97,7 @@ These are the commands worth remembering during normal repo work:
 | `devtools schema parser-diff` | List observed provider wire keys that no parser references. |
 | `devtools schema promote` | Promote a schema evidence cluster into a registered package version. |
 | `devtools schema reconcile` | Account for every declared schema subject after a generation pass. |
+| `devtools schema workload-profile` | Measure the aggregate-only synthetic workload profile of an origin from its real sources. |
 
 ### Benchmarking
 
@@ -125,7 +126,7 @@ These are the commands worth remembering during normal repo work:
 
 ## Pattern Ratchet
 
-Pattern baselines use `path:sha1` content anchors, where the digest is computed from the matched line's trimmed first line, so inserting or removing lines does not churn the baseline. Duplicate normalized lines are represented with a count suffix such as `path:sha1:2`; matches beyond the baselined multiset are new blocking debt, while anchors no longer matched remain shrink-only stale debt.
+Pattern baselines use `path:sha1:context_sha1` content anchors, where the digest is computed from the matched line's trimmed first line, so inserting or removing lines does not churn the baseline. Duplicate normalized lines are represented with a count suffix such as `path:sha1:context_sha1:2`; matches beyond the baselined multiset are new blocking debt, while anchors no longer matched remain shrink-only stale debt.
 
 ## Validation and Evidence
 

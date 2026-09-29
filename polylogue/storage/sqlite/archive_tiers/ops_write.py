@@ -1604,8 +1604,13 @@ def record_route_observation(
     attributes: dict[str, object] | None = None,
     sampled: bool = True,
     observation_id: str | None = None,
+    pruned: list[tuple[str, str]] | None = None,
 ) -> str:
     """Record one bounded route-latency observation and return its id.
+
+    When ``pruned`` is given, the ``(surface, route)`` of every row the
+    retention and row-cap prunes removed is appended to it, read from the
+    deletes themselves so attribution costs nothing beyond the prune.
 
     Best-effort telemetry, not audit evidence: unlike ``record_mcp_call``
     (durable, conflict-checked, delivered via an outbox so a dropped
@@ -1647,22 +1652,27 @@ def record_route_observation(
                 1 if sampled else 0,
             ),
         )
-        conn.execute(
-            "DELETE FROM route_observations WHERE started_at_ms < ?",
+        removed = conn.execute(
+            "DELETE FROM route_observations WHERE started_at_ms < ? RETURNING surface, route",
             (started_at_ms - ROUTE_OBSERVATION_RETENTION_MS,),
-        )
+        ).fetchall()
         row_count = int(conn.execute("SELECT COUNT(*) FROM route_observations").fetchone()[0])
         if row_count > ROUTE_OBSERVATION_ROW_CAP:
             excess = row_count - ROUTE_OBSERVATION_ROW_CAP
-            conn.execute(
-                """
-                DELETE FROM route_observations WHERE observation_id IN (
-                    SELECT observation_id FROM route_observations
-                    ORDER BY started_at_ms ASC LIMIT ?
-                )
-                """,
-                (excess,),
+            removed.extend(
+                conn.execute(
+                    """
+                    DELETE FROM route_observations WHERE observation_id IN (
+                        SELECT observation_id FROM route_observations
+                        ORDER BY started_at_ms ASC LIMIT ?
+                    )
+                    RETURNING surface, route
+                    """,
+                    (excess,),
+                ).fetchall()
             )
+        if pruned is not None:
+            pruned.extend((str(row[0]), str(row[1])) for row in removed)
     return observation_id
 
 

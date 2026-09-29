@@ -12,11 +12,43 @@ from typing import cast
 
 import pytest
 
-from polylogue.daemon.catchup_status import _cumulative_attempts, catchup_status_info
+from polylogue.daemon.catchup_status import (
+    _archive_catchup_stage_event_from_row,
+    _cumulative_attempts,
+    _halted_sources,
+    catchup_status_info,
+)
+from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
 from polylogue.sources.live.cold_build import ColdBuildGeneration
 from polylogue.sources.live.production_baseline import ProductionSourceBaseline, SourceDecision
 from polylogue.storage.index_generation import IndexGeneration, IndexGenerationStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+
+def test_legacy_stage_receipt_does_not_claim_zero_ingested_bytes() -> None:
+    """Anti-vacuity: defaulting an absent legacy field to zero fabricates a measurement."""
+    event = _archive_catchup_stage_event_from_row(
+        (1, "attempt", 1000, "completed", "ok", json.dumps({"succeeded_file_count": 3}))
+    )
+    assert event.succeeded_file_count == 3
+    assert event.ingested_bytes is None
+
+
+def test_catchup_reads_source_halts_from_the_scheduler_authority(tmp_path: Path) -> None:
+    """Anti-vacuity: an absent or timestamp-reversed event receipt cannot hide a durable halt."""
+    root = tmp_path / "archive"
+    root.mkdir()
+    registry = HaltRegistry(root)
+    registry.halt(
+        unit_id(UnitKind.SOURCE, "drive-primary"),
+        reason=HaltReason.TERMINAL_REFUSAL,
+        message="provider refused the source",
+        frame="daemon:run-a",
+    )
+    halted = _halted_sources(root / "ops.db")
+    assert [(entry.source_name, entry.message) for entry in halted] == [
+        ("drive-primary", "provider refused the source")
+    ]
 
 
 def test_cumulative_progress_uses_latest_attempt_snapshots_and_no_guessed_eta(tmp_path: Path) -> None:

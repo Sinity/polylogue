@@ -223,7 +223,6 @@ SESSION_EVENT_EXCLUDED_COLUMNS: Mapping[str, str] = {
 SESSION_PROVIDER_USAGE_EVENT_EXCLUDED_COLUMNS: Mapping[str, str] = {
     "usage_event_id": "generated from session_id and position, both already bound",
     "session_id": "the partition key: the projection selects on it and orders by it",
-    "occurred_at_ms": "provider event timestamp; the usage rollup aggregates token lanes by model and does not read event time",
     # Retained provider evidence the usage reconciliation does not read: the
     # rollup derives ``session_model_usage`` from the model and
     # token lanes alone, so none of these can move the profile's output.

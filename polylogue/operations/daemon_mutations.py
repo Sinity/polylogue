@@ -212,6 +212,10 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
         path = root / "user.db"
         if path.exists():
             targets.append(("user database", path))
+        for suffix in ("-wal", "-shm"):
+            sidecar = path.with_name(f"{path.name}{suffix}")
+            if sidecar.exists():
+                targets.append((f"user database {suffix}", sidecar))
     if flags["blob"]:
         path = blob_store_root()
         if path.exists():
@@ -1244,8 +1248,8 @@ def mutation_annotation_import_batch(
         "operation": request.operation,
         "outcome": "completed",
         "sequence": 1,
-        "effect": "committed" if result.valid_count else "no-effect",
-        "affected_count": result.valid_count,
+        "effect": "committed",
+        "affected_count": result.valid_count + 1,
         "result": result.model_dump(mode="json"),
     }
 

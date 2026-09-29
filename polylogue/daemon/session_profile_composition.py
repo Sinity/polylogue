@@ -12,7 +12,7 @@ from polylogue.daemon.convergence import (
     DaemonConverger,
     SessionProfileConvergenceOwner,
 )
-from polylogue.daemon.derivation import Budget, DerivationReport
+from polylogue.daemon.derivation import Budget, DerivationReport, Outcome, WorkCounters
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.session_insight_maintenance import SessionInsightMaintenance, make_session_insight_maintenance
 from polylogue.daemon.write_coordinator import DaemonWriteThreadBridge
@@ -205,7 +205,7 @@ def compose_session_profile_callback(
             for _ in range(len(audit_domains) - 1):
                 if audit_index == len(audit_domains):
                     break
-                report = await audit_tick()
+                report = _merge_reports(report, await audit_tick())
             return report
 
     return ComposedSessionProfiles(
@@ -214,4 +214,29 @@ def compose_session_profile_callback(
         make_session_insight_maintenance(owner, index_db_path=index_path, archive_root=archive_root),
         audit_pending=lambda: audit_index < len(audit_domains),
         audit_pass=audit_pass,
+    )
+
+
+def _merge_reports(first: DerivationReport, second: DerivationReport) -> DerivationReport:
+    """Retain bounded outcomes from every domain pass of one promotion."""
+    counts = {
+        outcome: first.count(outcome) + second.count(outcome)
+        for outcome in Outcome
+        if first.count(outcome) + second.count(outcome)
+    }
+    first_work, second_work = first.work, second.work
+    work = WorkCounters(
+        pages=first_work.pages + second_work.pages,
+        discovered=first_work.discovered + second_work.discovered,
+        inspected=first_work.inspected + second_work.inspected,
+        prerequisites_inspected=first_work.prerequisites_inspected + second_work.prerequisites_inspected,
+        computed=first_work.computed + second_work.computed,
+        published=first_work.published + second_work.published,
+    )
+    return replace(
+        second,
+        outcomes=first.outcomes + second.outcomes,
+        counts=counts,
+        work=work,
+        truncated=first.truncated or second.truncated,
     )

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+import sqlite3
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass
 from typing import Literal, get_args
 
@@ -17,11 +18,9 @@ from polylogue.logging import get_logger
 from polylogue.storage.runtime import (
     LINEAGE_TRUNCATION_CYCLE,
     LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT,
-    LINEAGE_TRUNCATION_DEPTH_LIMIT,
     LineageCompleteness,
     MessageRecord,
 )
-from polylogue.storage.runtime.store_constants import LINEAGE_ITERATIVE_DEPTH_LIMIT
 from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import MESSAGES_SPEC
 from polylogue.storage.sqlite.queries.mappers_archive import bind_message_row_mapper
 
@@ -47,12 +46,6 @@ async def _resolve_session_id(conn: aiosqlite.Connection, session_id: str) -> st
     )
     row = await cursor.fetchone()
     return str(row["session_id"]) if row is not None else session_id
-
-
-# Cycle/runaway guard only. Composition is iterative (not recursive), so this is
-# NOT a Python-stack limit — a deep acompact/fork chain composes fine. Kept large
-# so realistic lineages never truncate; a `visited` set is the real cycle guard.
-_MAX_LINEAGE_DEPTH = LINEAGE_ITERATIVE_DEPTH_LIMIT
 
 
 async def _prefix_sharing_edge(conn: aiosqlite.Connection, session_id: str) -> tuple[str, str] | None:
@@ -164,10 +157,9 @@ async def _lineage_segments(
     visited = {session_id}
     cursor_session = session_id
     reason = None
-    for _ in range(_MAX_LINEAGE_DEPTH):
-        edge = await _prefix_sharing_edge(conn, cursor_session)
-        if edge is None:
-            break
+    # ``visited`` is the whole termination argument: every step adds a new
+    # session, and an archive holds finitely many.
+    while (edge := await _prefix_sharing_edge(conn, cursor_session)) is not None:
         parent, branch_point = edge
         parent = await _resolve_session_id(conn, parent)
         if parent in visited:
@@ -176,9 +168,6 @@ async def _lineage_segments(
         chain.append((cursor_session, parent, branch_point))
         visited.add(parent)
         cursor_session = parent
-    else:
-        if await _prefix_sharing_edge(conn, cursor_session) is not None:
-            reason = LINEAGE_TRUNCATION_DEPTH_LIMIT
 
     segments: tuple[_Segment, ...] = (_Segment(cursor_session),)
     for child, parent, branch_point in reversed(chain):
@@ -217,47 +206,106 @@ async def get_messages(conn: aiosqlite.Connection, session_id: str) -> list[Mess
     return messages
 
 
+#: The newest compaction that ends before ``at_position``. A row with no
+#: recorded end is still the newest boundary: it is selected so that its
+#: incompleteness refuses the summary, rather than being filtered out so an
+#: older, complete boundary silently stands in for it.
+_EFFECTIVE_CONTEXT_BOUNDARY_SQL = """
+    SELECT boundary_start_position, boundary_end_position, boundary_message_id
+    FROM session_events
+    WHERE session_id = ? AND event_type = 'compaction'
+      AND (boundary_end_position IS NULL OR boundary_end_position < ?)
+    ORDER BY position DESC
+    LIMIT 1
+"""
+
+
+def effective_context_window(
+    messages: Sequence[MessageRecord],
+    boundary: Sequence[object] | None,
+    at_position: int | None,
+) -> list[MessageRecord]:
+    """Decide the messages visible to the model at ``at_position``.
+
+    The one owner of this decision for every effective-context route.
+    ``messages`` is the lineage-composed transcript and ``at_position`` an
+    index into it: a prefix-sharing child's own rows restart at position zero,
+    while a compaction's recorded range counts the whole replayed transcript.
+    ``boundary`` is the row :data:`_EFFECTIVE_CONTEXT_BOUNDARY_SQL` selected.
+    Any incomplete or inconsistent boundary yields the plain prefix.
+    """
+    position = len(messages) - 1 if at_position is None else at_position
+    prefix = list(messages[: max(0, position + 1)])
+    if boundary is None:
+        return prefix
+    start, end, summary_id = boundary[0], boundary[1], boundary[2]
+    if not isinstance(start, int) or not isinstance(end, int) or summary_id is None:
+        return prefix
+    if not 0 <= start <= end < len(prefix):
+        return prefix
+    summary_index = next(
+        (index for index, message in enumerate(prefix) if str(message.message_id) == str(summary_id)),
+        None,
+    )
+    if summary_index is None or summary_index <= end:
+        return prefix
+    summary = prefix[summary_index]
+    return [summary] + [message for message in prefix[end + 1 :] if message is not summary]
+
+
 async def get_effective_context(
     conn: aiosqlite.Connection,
     session_id: str,
     at_position: int | None = None,
 ) -> list[MessageRecord]:
-    """Return the messages visible to the model at a session position.
+    """Apply a local compaction to the lineage-composed transcript prefix.
 
-    A compaction boundary replaces its recorded range with the materialized
-    summary. This intentionally reads the session's own rows, rather than the
-    full lineage-composed prefix used by ordinary transcript reads.
+    Messages and the boundary are read in one snapshot; see
+    :func:`effective_context_window` for the decision.
     """
+    if not conn.in_transaction:
+        await conn.execute("BEGIN DEFERRED")
+        try:
+            return await get_effective_context(conn, session_id, at_position)
+        finally:
+            await conn.execute("ROLLBACK")
     resolved = await _resolve_session_id(conn, session_id)
-    messages = await _own_messages(conn, resolved)
-    if at_position is None:
-        at_position = max((message.position for message in messages), default=-1)
-    boundary = await (
-        await conn.execute(
-            """
-            SELECT boundary_start_position, boundary_end_position, boundary_message_id
-            FROM session_events
-            WHERE session_id = ? AND event_type = 'compaction'
-              AND boundary_start_position IS NOT NULL
-              AND boundary_end_position IS NOT NULL
-              AND boundary_message_id IS NOT NULL
-              AND boundary_end_position < ?
-            ORDER BY boundary_end_position DESC, position DESC
-            LIMIT 1
-            """,
-            (resolved, at_position),
+    messages = await get_messages(conn, resolved)
+    position = len(messages) - 1 if at_position is None else at_position
+    cursor = await conn.execute(_EFFECTIVE_CONTEXT_BOUNDARY_SQL, (resolved, position))
+    boundary = await cursor.fetchone()
+    return effective_context_window(messages, None if boundary is None else tuple(boundary), position)
+
+
+def get_effective_context_sync(
+    conn: sqlite3.Connection,
+    session_id: str,
+    at_position: int | None = None,
+) -> list[MessageRecord]:
+    """Synchronous twin of :func:`get_effective_context` over a pinned snapshot.
+
+    Composes the transcript from the same plan the envelope reads use, then
+    applies the shared :func:`effective_context_window` decision.
+    """
+    from polylogue.storage.sqlite.archive_tiers.write import _composed_transcript_plan
+
+    messages: list[MessageRecord] = []
+    for segment in _composed_transcript_plan(conn, session_id).segments:
+        bound = ""
+        params: tuple[object, ...] = (segment.session_id,)
+        if segment.upto_position is not None and segment.upto_variant_index is not None:
+            bound = " AND (m.position, m.variant_index) <= (?, ?)"
+            params = (segment.session_id, segment.upto_position, segment.upto_variant_index)
+        cursor = conn.execute(
+            f"SELECT {_MESSAGE_RECORD_SELECT} FROM messages m JOIN sessions s ON s.session_id = m.session_id "
+            f"WHERE m.session_id = ?{bound} ORDER BY {_TRANSCRIPT_ORDER}",
+            params,
         )
-    ).fetchone()
-    if boundary is None:
-        return [message for message in messages if message.position <= at_position]
-    summary_id = boundary["boundary_message_id"]
-    summary = next((message for message in messages if str(message.message_id) == str(summary_id)), None)
-    if summary is None:
-        return [message for message in messages if message.position <= at_position]
-    end_position = int(boundary["boundary_end_position"])
-    return [summary] + [
-        message for message in messages if end_position < message.position <= at_position and message is not summary
-    ]
+        decode = bind_message_row_mapper(tuple(column[0] for column in cursor.description or ()))
+        messages.extend(decode(row) for row in cursor.fetchall())
+    position = len(messages) - 1 if at_position is None else at_position
+    boundary = conn.execute(_EFFECTIVE_CONTEXT_BOUNDARY_SQL, (session_id, position)).fetchone()
+    return effective_context_window(messages, None if boundary is None else tuple(boundary), position)
 
 
 async def get_messages_with_lineage_completeness(
@@ -274,10 +322,9 @@ async def get_messages_with_lineage_completeness(
     (e.g. a caller-held write transaction), this wraps the whole composition
     in one deferred read transaction so every SELECT sees the same snapshot.
 
-    Three paths can silently return an INCOMPLETE transcript: a chain deeper
-    than ``_MAX_LINEAGE_DEPTH`` (ancestors beyond the cutoff are dropped), or
-    a cycle, or a dangling branch point (the parent message was hard-deleted, so only
-    this session's own divergent tail is returned starting mid-conversation).
+    Two paths return an INCOMPLETE transcript: a cycle, or a dangling branch
+    point (the parent message was hard-deleted, so only this session's own
+    divergent tail is returned starting mid-conversation).
     Consumers that care (MCP get_messages, context-image) can distinguish a
     complete logical transcript from a truncated one via the returned
     ``LineageCompleteness``.
@@ -293,18 +340,14 @@ async def get_messages_with_lineage_completeness(
     # Lineage composition (#2467): a prefix-sharing child stores only its own
     # divergent tail. Walk UP the parent chain collecting (child, branch_point)
     # links to the root, then compose DOWN. This is ITERATIVE (not recursive) so
-    # deep acompact/fork chains cannot hit Python's recursion limit. A `visited`
-    # set stops a cyclic session_link; _MAX_LINEAGE_DEPTH is only a runaway
-    # backstop.
+    # deep acompact/fork chains cannot hit Python's recursion limit. The
+    # `visited` set stops a cyclic session_link and bounds the walk: every step
+    # adds a new session. No depth cap drops a valid ancestor.
     chain: list[tuple[str, str]] = []  # (child_session_id, branch_point_message_id), leaf-first
     visited: set[str] = {session_id}
     cursor_session = session_id
-    depth_limited = False
     cycle = False
-    for _ in range(_MAX_LINEAGE_DEPTH):
-        edge = await _prefix_sharing_edge(conn, cursor_session)
-        if edge is None:
-            break
+    while (edge := await _prefix_sharing_edge(conn, cursor_session)) is not None:
         parent_session_id, branch_point_message_id = edge
         parent_session_id = await _resolve_session_id(conn, parent_session_id)
         if parent_session_id in visited:  # cyclic lineage: stop and compose what we have
@@ -313,16 +356,6 @@ async def get_messages_with_lineage_completeness(
         chain.append((cursor_session, branch_point_message_id))
         visited.add(parent_session_id)
         cursor_session = parent_session_id
-    else:
-        # Loop exhausted _MAX_LINEAGE_DEPTH iterations without a break: there
-        # may be more ancestors beyond the cutoff we never walked to.
-        if await _prefix_sharing_edge(conn, cursor_session) is not None:
-            depth_limited = True
-            logger.warning(
-                "lineage composition hit depth limit (%d) for session %s; ancestors beyond this depth are dropped",
-                _MAX_LINEAGE_DEPTH,
-                session_id,
-            )
 
     if not chain:
         # A self-parent cycle also leaves the chain empty.
@@ -333,37 +366,36 @@ async def get_messages_with_lineage_completeness(
 
     # Compose from the root down: root's full transcript, then splice each
     # descendant's own tail at its branch point in the running composed view.
+    # One list is cut at each branch point and extended by each tail, with a
+    # first-position index, so a deep chain composes in linear time rather
+    # than rebuilding every intermediate transcript.
     composed = await _own_messages(conn, cursor_session)
+    position: dict[str, int] = {}
+    for index, record in enumerate(composed):
+        position.setdefault(record.message_id, index)
     dangling = False
     for child_session_id, branch_point_message_id in reversed(chain):
         own = await _own_messages(conn, child_session_id)
-        prefix: list[MessageRecord] = []
         edge = await _prefix_sharing_edge(conn, child_session_id)
         witness_matches = edge is None or await _branch_point_content_address_matches(
             conn, child_session_id, edge[0], branch_point_message_id
         )
-        found = False
-        for record in composed:
-            prefix.append(record)
-            if record.message_id == branch_point_message_id:
-                found = witness_matches
-                break
-        # Dangling branch point (e.g. the parent message was hard-deleted): return
-        # this child's own tail rather than an over-long transcript (#2467 audit).
-        if found:
-            composed = prefix + own
+        at = position.get(branch_point_message_id)
+        if at is not None and witness_matches:
+            for record in composed[at + 1 :]:
+                if position.get(record.message_id, -1) > at:
+                    del position[record.message_id]
+            del composed[at + 1 :]
         else:
-            composed = own
+            # Dangling branch point (e.g. the parent message was hard-deleted):
+            # return this child's own tail rather than an over-long transcript
+            # (#2467 audit).
+            composed, position = [], {}
             dangling = True
-    reason = (
-        LINEAGE_TRUNCATION_CYCLE
-        if cycle
-        else LINEAGE_TRUNCATION_DEPTH_LIMIT
-        if depth_limited
-        else LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT
-        if dangling
-        else None
-    )
+        for record in own:
+            position.setdefault(record.message_id, len(composed))
+            composed.append(record)
+    reason = LINEAGE_TRUNCATION_CYCLE if cycle else LINEAGE_TRUNCATION_DANGLING_BRANCH_POINT if dangling else None
     return composed, LineageCompleteness(complete=reason is None, truncation_reason=reason)
 
 
@@ -813,6 +845,9 @@ async def iter_messages(
 
 
 __all__ = [
+    "effective_context_window",
+    "get_effective_context",
+    "get_effective_context_sync",
     "get_lineage_completeness",
     "get_messages",
     "get_messages_batch",

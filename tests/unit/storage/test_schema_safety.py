@@ -731,3 +731,24 @@ class TestContentlessFTSDeclaresOnlyIndexedColumns:
             # -- which is why every one of those readers selects
             # `b.search_text AS fallback_text` beside it.
             assert hits[0]["snippet"] is None
+
+
+def test_canonical_ddl_runtime_failure_requests_runtime_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failure to build canonical DDL is not a transient archive read failure."""
+    from polylogue.core.errors import SchemaVersionMismatchError
+    from polylogue.storage.sqlite import schema
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
+
+        def unsupported_runtime(_tier: ArchiveTier) -> object:
+            raise sqlite3.OperationalError("no such module: fts5")
+
+        monkeypatch.setattr(schema, "canonical_schema_manifest", unsupported_runtime)
+        with pytest.raises(SchemaVersionMismatchError) as raised:
+            schema.assert_readable_archive_layout(conn)
+        assert raised.value.lifecycle_action == "upgrade_runtime"

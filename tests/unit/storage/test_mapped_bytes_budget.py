@@ -327,8 +327,9 @@ def test_mapped_bytes_budget_reflects_documented_worst_case() -> None:
     expected = (
         BULK_BUILD_MMAP_SIZE_BYTES
         + BULK_BUILD_CACHE_SIZE_KIB * 1024
-        + WRITE_MMAP_SIZE_BYTES
-        + WRITE_CACHE_SIZE_KIB * 1024
+        # Three ordinary writers can be resident at once: index, source, and
+        # a publication reservation. Counting one understates by two profiles.
+        + 3 * (WRITE_MMAP_SIZE_BYTES + WRITE_CACHE_SIZE_KIB * 1024)
         + DAEMON_WRITE_MMAP_SIZE_BYTES
         + DAEMON_WRITE_CACHE_SIZE_KIB * 1024
         + 4 * (READ_MMAP_SIZE_BYTES + READ_CACHE_SIZE_KIB * 1024)

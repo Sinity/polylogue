@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from polylogue.api.archive import PolylogueArchiveMixin
 from polylogue.api.archive_reads import ArchiveReadCapability
@@ -43,12 +43,30 @@ def select_pending_embedding_session_window(
     )
 
 
+class _TopicPackStore:
+    """The repository route plus the facade's snapshot-bound transcript windows.
+
+    The topic pack pages session messages through continuations so a rewrite
+    between pages is refused as stale; the repository alone offers only
+    numeric-offset pages.
+    """
+
+    def __init__(self, facade: Polylogue) -> None:
+        self._facade = facade
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._facade.repository, name)
+
+    async def read_transcript_window(self, session_id: str, **kwargs: Any) -> Any:
+        return await self._facade.read_transcript_window(session_id, **kwargs)
+
+
 class Polylogue(PolylogueArchiveMixin, PolylogueEmbeddingsMixin, PolylogueInsightsMixin, PolylogueIngestMixin):
     """High-level async facade for the Polylogue library."""
 
     async def topic_pack(self, request: TopicPackRequest) -> TopicPackResult:
         """Run the bounded staged topic-lineage read workflow."""
-        return await build_topic_pack(self.repository, request)
+        return await build_topic_pack(_TopicPackStore(self), request)
 
     def __init__(
         self,

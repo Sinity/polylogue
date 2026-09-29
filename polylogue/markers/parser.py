@@ -21,8 +21,9 @@ from polylogue.markers.registry import MARKER_REGISTRY, MarkerRegistry, marker_s
 
 _LINE = re.compile(r"^(?P<indent>[ \t]*)::(?P<kind>[a-z][a-z0-9_-]*)(?:\((?P<args>[^)]*)\))?:[ \t]*(?P<body>.*)$")
 _INLINE = re.compile(r"\[\[(?P<kind>[a-z][a-z0-9_-]*):[ \t]*(?P<body>[^\]]*?)\]\]")
-_INLINE_OPEN = re.compile(r"\[\[(?P<kind>[a-z][a-z0-9_-]*):(?P<body>[^\n]*)$")
+_INLINE_OPEN = re.compile(r"\[\[(?P<kind>[a-z][a-z0-9_-]*):[ \t]*")
 _MALFORMED = re.compile(r"^[ \t]*::")
+_FENCE = re.compile(r"^[ ]{0,3}(?P<delimiter>`{3,}|~{3,})")
 
 
 def _args(raw: str | None) -> dict[str, str]:
@@ -42,14 +43,22 @@ def parse_markers(text: str, *, registry: MarkerRegistry = MARKER_REGISTRY) -> t
     """Extract declared and malformed markers, preserving offsets and raw text."""
     matches: list[MarkerMatch] = []
     offset = 0
-    fenced = False
+    fence: tuple[str, int] | None = None
     for line in text.splitlines(keepends=True):
-        stripped = line.strip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            fenced = not fenced
+        fence_match = _FENCE.match(line.rstrip("\r\n"))
+        if fence_match:
+            delimiter = fence_match.group("delimiter")
+            if fence is None:
+                fence = (delimiter[0], len(delimiter))
+            elif (
+                delimiter[0] == fence[0]
+                and len(delimiter) >= fence[1]
+                and not line.rstrip("\r\n")[fence_match.end() :].strip()
+            ):
+                fence = None
             offset += len(line)
             continue
-        if not fenced and not line.lstrip().startswith(r"\::"):
+        if fence is None and not line.lstrip().startswith(r"\::"):
             line_match = _LINE.match(line.rstrip("\r\n"))
             if line_match:
                 kind = line_match.group("kind")
@@ -77,8 +86,10 @@ def parse_markers(text: str, *, registry: MarkerRegistry = MARKER_REGISTRY) -> t
                         malformed=True,
                     )
                 )
+            accepted_spans: list[tuple[int, int]] = []
             for inline in _INLINE.finditer(line):
                 kind = inline.group("kind")
+                accepted_spans.append((inline.start(), inline.end()))
                 matches.append(
                     MarkerMatch(
                         kind if kind in registry else "malformed",
@@ -91,17 +102,26 @@ def parse_markers(text: str, *, registry: MarkerRegistry = MARKER_REGISTRY) -> t
                         malformed=kind not in registry,
                     )
                 )
-            for inline in _INLINE_OPEN.finditer(line.rstrip("\r\n")):
-                if "]]" in line[inline.start() :]:
+            raw_line = line.rstrip("\r\n")
+            for inline in _INLINE_OPEN.finditer(raw_line):
+                if any(start <= inline.start() < end for start, end in accepted_spans):
+                    # Already covered by an accepted inline span; a second,
+                    # overlapping malformed marker would contradict it.
                     continue
+                body_start = inline.end()
+                next_open = raw_line.find("[[", body_start)
+                close = raw_line.find("]]", body_start)
+                if close >= 0 and (next_open < 0 or close < next_open):
+                    continue
+                end = next_open if next_open >= 0 else len(raw_line)
                 matches.append(
                     MarkerMatch(
                         "malformed",
-                        inline.group("body"),
+                        raw_line[body_start:end],
                         {"unregistered_kind": inline.group("kind")},
-                        inline.group(0),
+                        raw_line[inline.start() : end],
                         offset + inline.start(),
-                        offset + inline.end(),
+                        offset + end,
                         inline=True,
                         malformed=True,
                     )
@@ -116,6 +136,22 @@ class MarkerStreamParser:
     def __init__(self, *, registry: MarkerRegistry = MARKER_REGISTRY) -> None:
         self.registry = registry
         self._buffer = ""
+        self._consumed = 0
+
+    def _absolute(self, matches: tuple[MarkerMatch, ...], base: int) -> tuple[MarkerMatch, ...]:
+        return tuple(
+            MarkerMatch(
+                m.kind,
+                m.body,
+                m.arguments,
+                m.raw_text,
+                m.start + base,
+                m.end + base,
+                inline=m.inline,
+                malformed=m.malformed,
+            )
+            for m in matches
+        )
 
     def feed(self, chunk: str) -> tuple[MarkerMatch, ...]:
         self._buffer += chunk
@@ -123,9 +159,15 @@ class MarkerStreamParser:
         if not sep:
             return ()
         self._buffer = remainder
-        return parse_markers(complete + "\n", registry=self.registry)
+        emitted = parse_markers(complete + "\n", registry=self.registry)
+        result = self._absolute(emitted, self._consumed)
+        self._consumed += len(complete) + 1
+        return result
 
     def finish(self) -> tuple[MarkerMatch, ...]:
-        result = parse_markers(self._buffer, registry=self.registry) if self._buffer else ()
+        result = (
+            self._absolute(parse_markers(self._buffer, registry=self.registry), self._consumed) if self._buffer else ()
+        )
+        self._consumed += len(self._buffer)
         self._buffer = ""
         return result

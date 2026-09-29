@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -67,7 +68,12 @@ class TopicPackResult:
     def to_dict(self) -> dict[str, object]:
         def dump(item: Any) -> Any:
             model_dump = getattr(item, "model_dump", None)
-            return model_dump() if callable(model_dump) else item
+            if not callable(model_dump):
+                return item
+            try:
+                return model_dump(mode="json")
+            except TypeError:
+                return model_dump()
 
         return {
             "status": self.status,
@@ -106,17 +112,132 @@ def _session_id(value: Any) -> str:
     return str(getattr(value, "id", getattr(value, "session_id", value)))
 
 
+async def _iter_messages(messages: Iterable[Any]) -> AsyncIterator[Any]:
+    for message in messages:
+        yield message
+
+
+def _max_window_rows() -> int:
+    """The largest page the transcript window accepts (``SessionRead.limit``)."""
+    from polylogue.operations.session_contracts import SessionRead
+
+    for item in SessionRead.model_fields["limit"].metadata:
+        bound = getattr(item, "le", None)
+        if isinstance(bound, int):
+            return bound
+    return 2000
+
+
+async def _session_messages(store: Any, session_id: str, page_size: int, gaps: list[str]) -> AsyncIterator[Any] | None:
+    """Stream one session's messages in bounded pages until the caller stops.
+
+    The caller's bound counts text-bearing output, not raw rows, so paging
+    continues past rows it discards; each page stays within the transcript
+    window's own limit. ``None`` means the session is gone before its first
+    page; a session that disappears or is rewritten mid-stream ends the stream
+    rather than failing the whole topic pack or mixing snapshots, and records a
+    gap so the truncation is distinguishable from normal exhaustion.
+    """
+    from polylogue.archive.query.transaction import QueryContinuationStaleError
+    from polylogue.operations.archive_mutation import SessionNotFoundError
+
+    page_size = max(1, min(page_size, _max_window_rows()))
+    windowed = getattr(store, "read_transcript_window", None)
+    pager = getattr(store, "get_messages_paginated", None)
+    iterator = getattr(store, "iter_messages", None)
+    if callable(windowed):
+        # Snapshot-bound pages: each continuation resumes the archive snapshot
+        # its first page read, so a concurrent rewrite is refused as stale
+        # instead of shifting a numeric offset onto a different transcript.
+        try:
+            first = await windowed(session_id, limit=page_size)
+        except SessionNotFoundError:
+            return None
+
+        async def continued() -> AsyncIterator[Any]:
+            window = first
+            while True:
+                for row in window.rows:
+                    yield row
+                if window.continuation is None:
+                    return
+                try:
+                    window = await windowed(session_id, continuation=window.continuation)
+                except SessionNotFoundError:
+                    gaps.append(f"session disappeared mid-read; transcript truncated: {session_id}")
+                    return
+                except QueryContinuationStaleError:
+                    gaps.append(f"session rewritten mid-read; transcript truncated: {session_id}")
+                    return
+
+        return continued()
+    if callable(pager):
+        try:
+            first_page = await pager(session_id, limit=page_size, offset=0)
+        except SessionNotFoundError:
+            return None
+
+        async def paged() -> AsyncIterator[Any]:
+            page = first_page
+            offset = 0
+            while True:
+                rows = tuple(page[0])
+                for row in rows:
+                    yield row
+                if len(rows) < page_size:
+                    return
+                offset += len(rows)
+                try:
+                    page = await pager(session_id, limit=page_size, offset=offset)
+                except SessionNotFoundError:
+                    gaps.append(f"session disappeared mid-read; transcript truncated: {session_id}")
+                    return
+
+        return paged()
+    if callable(iterator):
+        streamed: AsyncIterator[Any] = iterator(session_id)
+        return streamed
+    session = await store.get(session_id)
+    if session is None:
+        return None
+    return _iter_messages(getattr(session, "messages", ()))
+
+
+def _summary_hit(value: Any) -> Any:
+    from polylogue.archive.session.domain_models import SessionSummary
+
+    if isinstance(value, SessionSummary):
+        return value
+    # A hit wrapper nests its SessionSummary; a full Session's ``summary`` is
+    # metadata prose, so only a model (or a wrapper exposing an id) unwraps.
+    summary = getattr(value, "summary", None)
+    if isinstance(summary, SessionSummary) or (summary is not None and hasattr(summary, "id")):
+        return summary
+
+    fields = SessionSummary.model_fields
+    payload = {name: getattr(value, name) for name in fields if hasattr(value, name)}
+    return SessionSummary.model_validate(payload)
+
+
 def _signals(context_pack: list[dict[str, object]]) -> dict[str, list[str]]:
     """Extract bounded, non-semantic hints for later workflow stages."""
-    text = "\n".join(str(item["text"]) for item in context_pack)
     patterns = {
         "files": r"(?<![\w/])(?:[\w.-]+/)+[\w.-]+|\b[\w.-]+\.(?:py|ts|tsx|js|json|md|nix)\b",
         "branches": r"\b(?:feature|bugfix|hotfix|release)/[\w./-]+\b",
-        "issues": r"(?<!\w)#\d+\b|\b(?:issue|bead)[ -]?[\w.-]+\b",
+        "issues": r"(?<!\w)#\d+\b|\b(?:issue|bead)[ -]?(?:[\w]+-[\w]+(?:\.[\w]+)?|\d+)\b",
     }
-    return {
-        name: sorted(set(re.findall(pattern, text, flags=re.IGNORECASE)))[:16] for name, pattern in patterns.items()
-    }
+    result: dict[str, list[str]] = {}
+    for name, pattern in patterns.items():
+        found: set[str] = set()
+        for item in context_pack:
+            for match in re.finditer(pattern, str(item["text"]), flags=re.IGNORECASE):
+                found.add(match.group(0))
+                if len(found) >= 16:
+                    break
+            if len(found) >= 16:
+                break
+        result[name] = sorted(found)
+    return result
 
 
 async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> TopicPackResult:
@@ -128,18 +249,20 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
 
     seeds = await store.search_summary_hits(query, limit=min(request.seed_limit, request.max_sessions))
     for hit in seeds:
-        summary = getattr(hit, "summary", hit)
+        summary = _summary_hit(hit)
         sid = _session_id(summary)
         sessions[sid] = summary
         evidence[sid] = TopicPackEvidence(sid, "fts", {"rank": getattr(hit, "rank", None), "lane": "text"})
 
     vector_status = "disabled" if request.vector_provider is None else "ready"
+    vector_attempted = False
     retrieval_lanes = {"fts": len(seeds), "embedding": 0, "time": 0, "topology": 0, "content": 0}
     if request.vector_provider is not None and len(sessions) < request.max_sessions:
+        vector_attempted = True
         try:
             vector_hits = await store.search_similar(
                 query,
-                limit=min(request.expansion_limit, request.max_sessions - len(sessions)),
+                limit=min(request.expansion_limit, request.max_sessions),
                 vector_provider=request.vector_provider,
             )
         except Exception as exc:
@@ -147,15 +270,25 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
             gaps.append(f"vector expansion failed: {type(exc).__name__}")
         else:
             for item in vector_hits:
-                sid = _session_id(item)
+                summary = _summary_hit(item)
+                sid = _session_id(summary)
                 if sid not in sessions and len(sessions) >= request.max_sessions:
                     break
-                sessions[sid] = item
-                evidence[sid] = TopicPackEvidence(sid, "embedding", {"lane": "vector"})
-                retrieval_lanes["embedding"] += 1
+                if sid in sessions:
+                    current = evidence[sid]
+                    reasons = {current.reason, "embedding"}
+                    evidence[sid] = TopicPackEvidence(
+                        sid, "/".join(sorted(reasons)), {**current.evidence, "vector_lane": True}, current.citations
+                    )
+                    retrieval_lanes["embedding"] += 1
+                else:
+                    sessions[sid] = summary
+                    evidence[sid] = TopicPackEvidence(sid, "embedding", {"lane": "vector"})
+                    retrieval_lanes["embedding"] += 1
     elif request.vector_provider is None:
         gaps.append("vector expansion disabled; FTS, time, and topology lanes still ran")
 
+    neighbor_attempted = bool(sessions)
     for sid in tuple(sessions)[: request.max_sessions]:
         try:
             neighbors = await discover_neighbor_candidates(
@@ -187,6 +320,7 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
     # A seed-free query still gets an independent recovery pass. This keeps an
     # empty FTS result from being treated as proof that the topic is absent.
     if not sessions:
+        neighbor_attempted = True
         try:
             recovery = await discover_neighbor_candidates(
                 store,
@@ -216,35 +350,42 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
     context_pack: list[dict[str, object]] = []
     message_count = 0
     for summary in ordered:
-        session = await store.get(_session_id(summary))
-        if session is None:
+        sid = _session_id(summary)
+        messages = await _session_messages(store, sid, max(1, request.max_messages - message_count), gaps)
+        if messages is None:
             gaps.append(f"session disappeared during read: {_session_id(summary)}")
             continue
-        for message in getattr(session, "messages", ()):
-            if message_count >= request.max_messages:
-                break
+        async for message in messages:
             if not getattr(message, "text", None):
                 continue
-            citation = _citation(message, _session_id(session))
+            citation = _citation(message, sid)
             context_item: dict[str, object] = {
-                "session_id": _session_id(session),
+                "session_id": sid,
                 "message_id": str(message.id),
                 "text": message.text,
             }
             if citation:
                 context_item["citation"] = citation
-                current = evidence.get(_session_id(session))
-                if current is not None and citation not in current.citations:
-                    evidence[_session_id(session)] = TopicPackEvidence(
-                        current.session_id, current.reason, current.evidence, (*current.citations, citation)
+                cited = evidence.get(sid)
+                if cited is not None and citation not in cited.citations:
+                    evidence[sid] = TopicPackEvidence(
+                        cited.session_id, cited.reason, cited.evidence, (*cited.citations, citation)
                     )
             context_pack.append(context_item)
             message_count += 1
+            if message_count >= request.max_messages:
+                break
         if message_count >= request.max_messages:
             break
 
+    attempted = ["fts"]
+    if vector_attempted:
+        attempted.append("embedding")
+    if neighbor_attempted:
+        attempted.extend(("time", "content"))
     topology_reader = getattr(store, "get_session_topology", None)
-    if callable(topology_reader):
+    if ordered and callable(topology_reader):
+        attempted.append("topology")
         for summary in ordered:
             try:
                 topology = await topology_reader(_session_id(summary))
@@ -254,9 +395,9 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
             if topology is None:
                 continue
             retrieval_lanes["topology"] += len(getattr(topology, "nodes", ()))
-            current = evidence.get(_session_id(summary))
-            if current is not None:
-                details = dict(current.evidence)
+            expanded = evidence.get(_session_id(summary))
+            if expanded is not None:
+                details = dict(expanded.evidence)
                 details["topology"] = {
                     "root_id": str(getattr(topology, "root_id", "")),
                     "node_count": len(getattr(topology, "nodes", ())),
@@ -264,7 +405,7 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
                     "cycle_detected": bool(getattr(topology, "cycle_detected", False)),
                 }
                 evidence[_session_id(summary)] = TopicPackEvidence(
-                    current.session_id, current.reason, details, current.citations
+                    expanded.session_id, expanded.reason, details, expanded.citations
                 )
 
     return TopicPackResult(
@@ -282,7 +423,7 @@ async def build_topic_pack(store: TopicPackStore, request: TopicPackRequest) -> 
             "bounds": {"max_sessions": request.max_sessions, "max_messages": request.max_messages},
             "content_hash_citations": sum(len(item.citations) for item in evidence.values()),
             "retrieval_lanes": retrieval_lanes,
-            "retrieval_channels_attempted": ["fts", "embedding", "time", "topology", "content"],
+            "retrieval_channels_attempted": attempted,
             "signals": _signals(context_pack),
             "quality_baseline": {
                 "kind": "no-vector-fts",

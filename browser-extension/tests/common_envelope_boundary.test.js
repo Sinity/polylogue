@@ -128,6 +128,17 @@ function maximalTurn() {
 }
 
 describe("common.js buildEnvelope boundary contract (real source, not a copy)", () => {
+  it("anti-vacuity: emits a full SHA-256 fingerprint matching the canonical digest", () => {
+    const dom = installCommon();
+    const observation = dom.window.polylogueCapture.identityObservation({
+      provider: "chatgpt", conversationId: "c-1", messageId: "m-1", text: "abc",
+      adapterName: "fixture", fidelity: "native",
+    });
+    expect(observation.content_fingerprint)
+      .toBe("sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    dom.window.close();
+  });
+
   it("types provider, page, and session-id title evidence", () => {
     const providerDom = installCommon();
     const providerEnvelope = providerDom.window.polylogueCapture.buildEnvelope({
@@ -212,5 +223,19 @@ describe("common.js buildEnvelope boundary contract (real source, not a copy)", 
     const [turn] = envelope.session.turns;
     expect(turn.blocks).toEqual([]);
     expect(turn.attachments).toEqual([]);
+  });
+
+  it("anti-vacuity: fallback turn ids survive an inserted turn that differs only by timestamp", () => {
+    // A digest over role and text alone puts both tool-only turns in one bucket,
+    // so inserting the earlier one shifts the occurrence counter onto the later one.
+    const dom = installCommon();
+    const later = { role: "assistant", text: "", timestamp: "2026-01-01T00:00:02Z", blocks: [maximalBlock()] };
+    const earlier = { ...later, timestamp: "2026-01-01T00:00:01Z" };
+    const build = (turns) => dom.window.polylogueCapture.buildEnvelope({ provider: "chatgpt", adapterName: "chatgpt-dom-v1", turns })
+      .session.turns.map((turn) => turn.provider_turn_id);
+    const [laterAlone] = build([later]);
+    const [earlierId, laterId] = build([earlier, later]);
+    expect(laterId).toBe(laterAlone);
+    expect(earlierId).not.toBe(laterId);
   });
 });

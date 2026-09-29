@@ -170,21 +170,6 @@ Polylogue has two schema-evolution regimes, keyed by tier durability. Numbered s
   the `embeddings` tier's vectors.
 - **Disposable tiers** (`ops.db`) may keep narrow bootstrap-time `ALTER TABLE`
   helpers for daemon telemetry because the tier is disposable.
-- **Index-tier benign-DDL convergence** (polylogue-jc1b): a registered set of
-  idempotent, data-non-transforming DDL statements (`CREATE TABLE IF NOT
-  EXISTS` / `CREATE INDEX IF NOT EXISTS` / `DROP TABLE IF EXISTS` only —
-  `storage/sqlite/archive_tiers/index_convergence.py`) is applied on every
-  same-version `index.db` open, fresh init and existing archives alike. This
-  is for changes with **zero consumers** under any current-version contract
-  (e.g. dropping a zero-consumer table, adding an index/table nothing reads
-  yet) — not a general escape hatch. `INDEX_SCHEMA_VERSION` stays reserved for
-  semantic changes: consumer-visible column/behavior changes or
-  reparse-required content. `devtools verify schema-manifest` validates
-  every registry entry against the allowed idempotent-DDL shapes and rejects
-  anything else (ALTER/INSERT/UPDATE/DELETE, or a `CREATE`/`DROP` missing its
-  `IF NOT EXISTS`/`IF EXISTS` guard). First application: dropped the
-  zero-consumer `model_prices` and `session_reported_costs` tables
-  (polylogue-v2mg).
 - **Index schema version 81** (polylogue-avlt5) replaces the redundant thread
   and tag-rollup tables with query-time views over canonical index evidence.
   `action_pairs` and `delegation_facts` remain compact indexed relations because

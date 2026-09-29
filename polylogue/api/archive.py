@@ -37,7 +37,7 @@ from polylogue.archive.query.spec import (
     resolve_default_root_filter,
 )
 from polylogue.archive.query.transaction import archive_read_context, run_archive_read
-from polylogue.archive.semantic.content_projection import ContentProjectionSpec, project_message_content
+from polylogue.archive.semantic.content_projection import ContentProjectionSpec
 from polylogue.archive.session.domain_models import Session, SessionSummary
 from polylogue.config import active_archive_root as _active_archive_root
 from polylogue.context.compiler import (
@@ -49,7 +49,7 @@ from polylogue.context.scheduler import (
     read_context_ledger,
 )
 from polylogue.core.enums import AssertionKind, AssertionStatus, MaterialOrigin, Origin
-from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError
+from polylogue.core.errors import ArchiveTierUnavailableError, DatabaseError, SchemaRefusalError
 from polylogue.core.json import JSONDocument
 from polylogue.core.timestamps import parse_archive_datetime
 from polylogue.core.types import SessionId
@@ -118,7 +118,7 @@ if TYPE_CHECKING:
     from polylogue.archive.filter.filters import SessionFilter
     from polylogue.archive.message.models import Message
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics
-    from polylogue.archive.query.search_hits import SessionSearchHit
+    from polylogue.archive.query.search_hits import SearchHitResults, SessionSearchHit
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
@@ -1253,12 +1253,16 @@ def _archive_tier_readiness_check(tier: ArchiveTier, path: Any) -> Any:
     if not path.exists():
         return ReadinessCheck(name, VerifyStatus.WARNING, summary=f"missing: {path}")
     try:
-        conn = open_readonly_connection(path, timeout_class="interactive-read")
+        conn = open_readonly_connection(path, tier=tier, timeout_class="interactive-read")
         try:
             row = conn.execute("PRAGMA user_version").fetchone()
             version = int(row[0] or 0) if row is not None else 0
         finally:
             conn.close()
+    except SchemaRefusalError as exc:
+        # The open's own admission check is the diagnosis: it covers both a
+        # version skew and a derived-identity mismatch at the same version.
+        return ReadinessCheck(name, VerifyStatus.ERROR, summary=f"{exc}: {path}")
     except (OSError, sqlite3.Error) as exc:
         return ReadinessCheck(name, VerifyStatus.ERROR, summary=str(exc))
 
@@ -1268,32 +1272,6 @@ def _archive_tier_readiness_check(tier: ArchiveTier, path: Any) -> Any:
         VerifyStatus.OK if version == expected else VerifyStatus.ERROR,
         summary=f"v{version}/{expected}: {path}",
     )
-
-
-def _archive_list_assertion_claims(
-    config: Config,
-    *,
-    kinds: Sequence[str | AssertionKind] | None = None,
-    target_ref: str | None = None,
-    scope_ref: str | None = None,
-    statuses: Sequence[str | AssertionStatus] | None = ("active", "candidate"),
-    context_inject: bool | None = None,
-    limit: int | None = None,
-) -> list[Any]:
-    """Return assertion-backed lifecycle claims from ``user.db``."""
-
-    from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CLAIM_KINDS, list_assertion_claims
-
-    with _readable_user_tier(config) as conn:
-        return list_assertion_claims(
-            conn,
-            kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
-            target_ref=target_ref,
-            scope_ref=scope_ref,
-            statuses=statuses,
-            context_inject=context_inject,
-            limit=limit,
-        )
 
 
 def _archive_get_context_delivery(
@@ -1648,6 +1626,8 @@ def _archive_hermes_integration_health(config: Config) -> HermesIntegrationHealt
     return build_hermes_integration_health(
         archive_root,
         hermes_root=hermes_root,
+        convergence_debt_available=debt.available,
+        convergence_debt_error=debt.error,
         convergence_debt_failed_count=convergence_debt_failed_count,
         convergence_debt_deferred_count=convergence_debt_deferred_count,
         convergence_debt_retry_due_count=convergence_debt_retry_due_count,
@@ -1688,19 +1668,34 @@ def _archive_list_assertion_candidate_reviews(
     kinds: Sequence[str | AssertionKind] | None = None,
     statuses: Sequence[str | AssertionStatus] | None = None,
     limit: int | None = None,
-) -> list[Any]:
-    """Return candidate-review rows from ``user.db`` without active claims."""
+) -> tuple[list[ArchiveAssertionCandidateReviewEnvelope], int]:
+    """Read one review page and its unpaginated count from the same snapshot."""
 
-    from polylogue.storage.sqlite.archive_tiers.user_write import list_assertion_candidate_reviews
+    from polylogue.storage.sqlite.archive_tiers.user_write import (
+        ASSERTION_CANDIDATE_JUDGMENT_KINDS,
+        count_assertion_claims,
+        list_assertion_candidate_reviews,
+    )
 
     with _readable_user_tier(config) as conn:
-        return list_assertion_candidate_reviews(
+        conn.execute("BEGIN")
+        # Reviews deliberately include expired claims; this scalar count has
+        # the same kind, status and target selection without hydrating every
+        # claim or fetching every claim's latest judgment.
+        matched = count_assertion_claims(
+            conn,
+            kinds=ASSERTION_CANDIDATE_JUDGMENT_KINDS if kinds is None else kinds,
+            target_ref=target_ref,
+            statuses=statuses,
+        )
+        rows = list_assertion_candidate_reviews(
             conn,
             target_ref=target_ref,
             kinds=kinds,
             statuses=statuses,
             limit=limit,
         )
+        return rows, matched
 
 
 def _archive_list_assertion_candidates(
@@ -2842,17 +2837,47 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
     ) -> list[ArchiveAssertionEnvelope]:
         """List assertion-backed lifecycle claims for read-surface consumers."""
 
-        return cast(
-            list["ArchiveAssertionEnvelope"],
-            _archive_list_assertion_claims(
-                self.config,
-                kinds=kinds,
-                target_ref=target_ref,
-                scope_ref=scope_ref,
-                statuses=statuses,
-                context_inject=context_inject,
-                limit=limit,
-            ),
+        from polylogue.storage.sqlite.archive_tiers.user_write import ASSERTION_CLAIM_KINDS, list_assertion_claims
+
+        root = _active_archive_root(self.config)
+
+        def read(archive: ArchiveStore) -> list[ArchiveAssertionEnvelope]:
+            archive.require_user_tier()
+            try:
+                return list_assertion_claims(
+                    archive._conn,
+                    schema="user_tier",
+                    kinds=ASSERTION_CLAIM_KINDS if kinds is None else kinds,
+                    target_ref=target_ref,
+                    scope_ref=scope_ref,
+                    statuses=statuses,
+                    context_inject=context_inject,
+                    limit=limit,
+                )
+            except sqlite3.Error as exc:
+                # A durable read failure is a typed refusal, never an empty
+                # (and therefore clean-looking) claim list.
+                raise ArchiveTierUnavailableError(
+                    tier="user.db",
+                    path=str(archive.user_db_path.resolve(strict=False)),
+                    reason=f"cannot read assertions ({exc})",
+                    guidance="restore the durable user tier at this path, then retry",
+                ) from exc
+
+        return await run_archive_read(
+            root,
+            operation="archive.assertion.claims",
+            arguments={
+                "kinds": tuple(str(kind) for kind in kinds) if kinds is not None else None,
+                "target_ref": target_ref,
+                "scope_ref": scope_ref,
+                "statuses": tuple(str(status) for status in statuses) if statuses is not None else None,
+                "context_inject": context_inject,
+                "limit": limit,
+            },
+            work=read,
+            projection="assertion-claims",
+            stable_order="updated_at_ms,assertion_id",
         )
 
     async def get_context_delivery(
@@ -2967,6 +2992,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         include_assertions: bool = True,
         redact_paths: bool = True,
         seed_session_id: str | None = None,
+        segment_profile: Literal["default", "prose_with_refs"] = "default",
         run_ref: str | None = None,
         inheritance_mode: str = "explicit",
     ) -> ArchiveContextDeliveryEnvelope:
@@ -2988,6 +3014,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             include_assertions=include_assertions,
             redact_paths=redact_paths,
             seed_session_id=seed_session_id,
+            segment_profile=segment_profile,
         )
         return await self.record_context_delivery(
             image=image,
@@ -3150,20 +3177,12 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         )
 
         candidate_statuses = ASSERTION_CANDIDATE_REVIEW_STATUSES if statuses is None else statuses
-        review_rows = cast(
-            list["ArchiveAssertionCandidateReviewEnvelope"],
-            _archive_list_assertion_candidate_reviews(
-                self.config,
-                target_ref=target_ref,
-                kinds=kinds,
-                statuses=candidate_statuses,
-                limit=limit,
-            ),
-        )
-        matched = len(
-            _archive_list_assertion_candidate_reviews(
-                self.config, target_ref=target_ref, kinds=kinds, statuses=candidate_statuses, limit=None
-            )
+        review_rows, matched = _archive_list_assertion_candidate_reviews(
+            self.config,
+            target_ref=target_ref,
+            kinds=kinds,
+            statuses=candidate_statuses,
+            limit=limit,
         )
         evidence_previews: dict[str, tuple[AssertionEvidencePreviewPayload, ...]] = {}
         for review in review_rows:
@@ -3521,6 +3540,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         include_assertions: bool = True,
         redact_paths: bool = True,
         seed_session_id: str | None = None,
+        segment_profile: Literal["default", "prose_with_refs"] = "default",
     ) -> ContextImage:
         """Compile a multi-session context image through ``compile_context``.
 
@@ -3555,6 +3575,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             max_chars_per_message=max_chars_per_message,
             include_assertions=include_assertions,
             redaction_policy=redaction,
+            segment_profile=segment_profile,
         )
         image = await self.compile_context(spec)
         projection_spec = projection_from_views(
@@ -3999,7 +4020,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             return sessions
         return [session.with_content_projection(content_projection) for session in sessions]
 
-    async def search_session_hits(self, spec: SessionQuerySpec) -> builtins.list[SessionSearchHit]:
+    async def search_session_hits(self, spec: SessionQuerySpec) -> SearchHitResults:
         """Return archive FTS/hybrid search-hit projections for a query spec.
 
         The hit projection carries match snippets and ranking metadata the
@@ -4793,6 +4814,7 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                     "material_origin": tuple(material_origin),
                 },
             ),
+            content_projection=content_projection,
         )
         messages = list(window.rows)
         total = window.total
@@ -4803,8 +4825,8 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
                 window.lineage_truncation_reason,
             ),
         )
-        if content_projection is not None and content_projection.filters_content():
-            messages = project_message_content(messages, content_projection)
+        # message_transcript_window already applied content_projection before
+        # pagination; projecting again would reclassify projected code as prose.
         return messages, total, completeness
 
     async def read_transcript_window(
@@ -5005,40 +5027,64 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
         return [message.model_dump(mode="json", exclude_none=True) for message in messages]
 
     async def get_session_orchestration(self, session_id: str) -> SessionOrchestrationEvidence | None:
-        """Return versioned orchestration evidence from the archive's stored records."""
+        """Return versioned orchestration evidence from the archive's stored records.
+
+        The session's own messages, events and usage rows are streamed page by
+        page into the bounded projection; the full session is never hydrated.
+        """
         from polylogue.analysis.orchestration_evidence import build_session_orchestration
-        from polylogue.operations.orchestration import read_orchestration_usage
+        from polylogue.operations.orchestration import (
+            iter_orchestration_events,
+            iter_orchestration_messages,
+            iter_orchestration_usage,
+        )
 
         resolved = await self.repository.resolve_id(session_id)
-        session = await self.repository.get(str(resolved) if resolved is not None else session_id)
-        if session is None:
+        candidate = str(resolved) if resolved is not None else session_id
+
+        def resolve_existing(archive: ArchiveStore) -> str | None:
+            try:
+                archive.read_summary(candidate)
+            except KeyError:
+                return None
+            return candidate
+
+        root = _active_archive_root(self.config)
+        resolved_id = await run_archive_read(
+            root,
+            operation="archive.session.exists",
+            arguments={"session_id": candidate},
+            work=resolve_existing,
+            projection="session-id",
+        )
+        if resolved_id is None:
             return None
-        resolved_id = str(session.id)
         topology = await cast("Polylogue", self).get_session_topology(resolved_id)
         artifacts, _ = await self.get_raw_artifacts_for_session(resolved_id, limit=1)
         acquisition = artifacts[0] if artifacts else None
-        usage_rows = await run_archive_read(
-            _active_archive_root(self.config),
-            operation="archive.orchestration.usage",
-            arguments={"session_id": resolved_id},
-            work=lambda archive: read_orchestration_usage(archive._conn, resolved_id),
-            projection="orchestration-usage",
-            stable_order="position",
-        )
         delegations = await run_archive_read(
-            _active_archive_root(self.config),
+            root,
             operation="archive.orchestration.delegations",
             arguments={"session_id": resolved_id},
             work=lambda archive: archive.query_delegations(_archive_context_session_predicate(resolved_id), limit=1001),
             projection="orchestration-delegations",
             stable_order="parent_session_id,instruction_tool_use_block_id,child_session_id",
         )
-        return build_session_orchestration(
-            session,
-            topology,
-            acquisition=acquisition,
-            delegations=delegations,
-            usage_rows=usage_rows,
+        return await run_archive_read(
+            root,
+            operation="archive.orchestration.evidence",
+            arguments={"session_id": resolved_id},
+            work=lambda archive: build_session_orchestration(
+                resolved_id,
+                topology,
+                messages=iter_orchestration_messages(archive._conn, resolved_id),
+                events=iter_orchestration_events(archive._conn, resolved_id),
+                acquisition=acquisition,
+                delegations=delegations,
+                usage_rows=iter_orchestration_usage(archive._conn, resolved_id),
+            ),
+            projection="orchestration-evidence",
+            stable_order="position",
         )
 
     async def get_session_events(
@@ -5405,6 +5451,33 @@ class PolylogueArchiveMixin(ArchiveReadCapability):
             _active_archive_root(self.config),
             operation="archive.session_summary.get",
             arguments={"session_id": session_id},
+            work=read,
+            projection="session-summary",
+        )
+
+    async def get_session_summaries(self, session_ids: Sequence[str]) -> dict[str, SessionSummary]:
+        """Return summaries for a bounded set of sessions in one archive read.
+
+        Keys are the requested ids; ids that do not resolve are omitted.
+        """
+        requested = tuple(dict.fromkeys(session_ids))
+
+        def read(archive: ArchiveStore) -> dict[str, SessionSummary]:
+            summaries: dict[str, SessionSummary] = {}
+            for session_id in requested:
+                try:
+                    resolved_id = archive.resolve_session_id(session_id)
+                    summaries[session_id] = archive_summary_to_domain(archive.read_summary(resolved_id))
+                except KeyError:
+                    continue
+            return summaries
+
+        if not requested:
+            return {}
+        return await run_archive_read(
+            _active_archive_root(self.config),
+            operation="archive.session_summary.get_many",
+            arguments={"session_ids": list(requested)},
             work=read,
             projection="session-summary",
         )

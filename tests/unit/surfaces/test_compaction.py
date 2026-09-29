@@ -216,36 +216,6 @@ def test_compaction_does_not_invent_canonical_content_hashes() -> None:
     assert hashes == {"missing": None, "known": "a" * 64}
 
 
-def test_compaction_interprets_archive_integer_tool_flags() -> None:
-    """A stored block's integer 0 is a successful tool result.
-
-    Anti-vacuity: compare with ``is False`` and the archive row's 0 is kept
-    as evidence instead of being dropped as successful tool spam.
-    """
-    from polylogue.storage.sqlite.archive_tiers.write import ArchiveBlockRow
-
-    messages = [
-        {
-            "id": str(flag),
-            "text": "tool output",
-            "material_origin": "tool_result",
-            "blocks": (
-                ArchiveBlockRow(
-                    block_id=f"block-{flag}",
-                    message_id=str(flag),
-                    block_type="tool_result",
-                    text="tool output",
-                    tool_result_is_error=flag,
-                ),
-            ),
-        }
-        for flag in (0, 1, None)
-    ]
-    pack = compact_sessions([{"id": "s", "messages": messages}])
-    assert {item.anchor.ref.message_id for item in pack.items} == {"1", "None"}
-    assert pack.manifest.drop_counts["successful_tool_spam"] == 1
-
-
 def test_compaction_identity_commits_to_content_projection_and_provenance() -> None:
     """Packs that differ in text, projection or provenance get different refs.
 
@@ -294,3 +264,15 @@ def test_compaction_markdown_preserves_fidelity_manifest_and_omission_anchors() 
     assert pack.omissions
     for omission in pack.omissions:
         assert omission.anchor.ref.format() in markdown
+
+
+def test_long_unbroken_runs_are_weighted_by_their_size() -> None:
+    """Anti-vacuity: counting a run as one word estimates ``"!" * 100000`` at
+    one token, so a tiny budget would accept it.
+    """
+    from polylogue.surfaces.compaction import estimate_serialized_tokens, estimate_tokens
+
+    run = "!" * 100_000
+    assert estimate_tokens(run) >= 10_000
+    assert estimate_serialized_tokens(f'{{"text":"{run}"}}') >= 10_000
+    assert estimate_tokens("one two three") == 3

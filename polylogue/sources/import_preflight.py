@@ -26,7 +26,7 @@ from polylogue.sources.decoder_zip import (
     open_bounded_zip_entry,
 )
 from polylogue.sources.decoders import _decode_json_bytes, _iter_json_stream
-from polylogue.sources.dispatch import detect_provider
+from polylogue.sources.dispatch import detect_provider, require_positive_conversational_evidence
 from polylogue.sources.parsers import antigravity
 
 _JSON_SUFFIXES = frozenset({".json", ".jsonl", ".ndjson"})
@@ -155,7 +155,7 @@ class _PreflightAccumulator:
         )
 
     def _status(self) -> ImportPreflightStatus:
-        if self.supported_count > 0 and (self.unsupported_count > 0 or self.malformed_count > 0):
+        if self.supported_count > 0 and (self.unsupported_count > 0 or self.malformed_count > 0 or self.caveats):
             return ImportPreflightStatus.DEGRADED
         if self.supported_count > 0:
             return ImportPreflightStatus.SUPPORTED
@@ -229,10 +229,17 @@ def _preflight_sqlite(path: Path, acc: _PreflightAccumulator, *, label: str) -> 
                     f"{label}: classified from the first {_MAX_SQLITE_PROBE_SESSIONS} trajectories; "
                     "the remainder was not inspected"
                 )
-            if sessions and any(session.messages for session in sessions):
+            # Preflight promises what production import does, so the probed
+            # sessions pass the same evidence gate every production write path
+            # applies. An empty trajectory, or one of only unsupported step
+            # formats, is refused there, and so it is refused here.
+            admitted = require_positive_conversational_evidence(
+                sessions, provider=Provider.ANTIGRAVITY, source_path=str(path)
+            )
+            if admitted:
                 acc.supported(label, Provider.ANTIGRAVITY)
-                if any(session.ingest_flags for session in sessions):
-                    acc._caveat(f"{label}: trajectory contains unsupported or degraded steps")
+                if any(session.ingest_flags for session in sessions) or len(admitted) < len(sessions):
+                    acc._caveat(f"{label}: trajectory contains unsupported, degraded or empty steps")
             else:
                 acc.unsupported(label, "Antigravity trajectory schema contains no materialized messages")
             return

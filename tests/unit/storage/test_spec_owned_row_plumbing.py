@@ -367,8 +367,15 @@ async def test_declared_semantics_round_trip_through_the_sync_and_async_routes(t
         sync_row = connection.execute(
             f"SELECT {', '.join(ARCHIVE_BLOCK_ROW_COLUMNS)} FROM blocks WHERE session_id = ?", (session_id,)
         ).fetchone()
+        digest_row = connection.execute(
+            "SELECT content_hash FROM blocks WHERE session_id = ?", (session_id,)
+        ).fetchone()
     finally:
         connection.close()
+    # Production block reads retain the stored digest through hydration, so
+    # callers can issue citations without inventing a digest from message text.
+    assert block_record.content_hash == bytes(digest_row["content_hash"]).hex()
+    assert hydrated.blocks[0]["content_hash"] == block_record.content_hash
     sync_block = archive_block_row(sync_row)
     assert sync_block.block_id == str(block_record.block_id)
     assert sync_block.block_type == "tool_use"

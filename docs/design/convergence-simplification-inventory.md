@@ -49,19 +49,20 @@ and it is true that the *one* call site this row explicitly names —
 docstring now speaks of "the retired process-pool alternative" in past tense.
 But `process_pool_context()`/`process_pool_executor()`/`terminate_process_pool()`
 remain live, **unconditional** (not gated on `parallel_threads_effective()`)
-call sites in three other places: `polylogue/pipeline/services/ingest_batch/_core.py:1053`
-(initial ingest-record decode/validate/transform),
-`polylogue/pipeline/services/validation_flow.py:185` (schema validation — its
+call sites in two other places: `polylogue/pipeline/services/ingest_batch/_core.py`
+(initial ingest-record decode/validate/transform) and
+`polylogue/pipeline/services/validation_flow.py` (schema validation — its
 own code comment cites a measured `Threads(24)=160MB/s` vs `Process(8)=605MB/s`,
 a 3.7x win independent of the GIL/free-threaded-build argument this row
-originally used to justify deletion), and
-`polylogue/pipeline/services/archive_ingest.py:279` (source file-walk ingest).
-None of the three is conditioned on the free-threaded build, so the 3.14t
-deploy does not collapse them the way this row predicted. Deleting
-`process_pool.py` today would break all three. The text below is the
+originally used to justify deletion). The third former caller,
+`pipeline/services/archive_ingest.py` (source file-walk ingest), was deleted
+with its dispatcher when CLI ingest moved onto the canonical daemon route.
+Neither remaining caller is conditioned on the free-threaded build, so the
+3.14t deploy does not collapse them the way this row predicted. Deleting
+`process_pool.py` today would break both. The text below is the
 original design-time reasoning and is retained for history; treat its
 "what makes it deletable" / "which phase deletes it" claims as superseded by
-this status line until each of the three remaining call sites is itself
+this status line until each of the remaining call sites is itself
 re-justified or migrated.
 
 **What it is:** `polylogue/pipeline/services/process_pool.py` — the shared

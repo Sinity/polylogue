@@ -112,7 +112,13 @@ class ReadRequest:
         selection = (
             supplied_selection
             if isinstance(supplied_selection, SessionQuerySpec)
-            else SessionQuerySpec.from_params(raw)
+            else SessionQuerySpec.from_params(
+                {
+                    **raw,
+                    "cwd_prefix": raw.get("cwd_prefix", raw.get("project_path")),
+                    "repo": raw.get("repo", raw.get("project_repo")),
+                }
+            )
         )
         return cls(
             selection=selection,

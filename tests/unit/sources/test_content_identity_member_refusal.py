@@ -329,6 +329,6 @@ def test_member_revision_hashes_through_the_identity_reader(tmp_path: Path, monk
 
     monkeypatch.setattr(tempfile, "TemporaryFile", no_scratch)
     with zipfile.ZipFile(archive) as zf:
-        revision = _stream_member_revision(zf, zf.getinfo("conversations.json"), None)
+        revision = _stream_member_revision(zf, zf.getinfo("conversations.json"), None, None)
     assert revision.revision == hashlib.sha256(payload).hexdigest()
     assert revision.size_bytes == len(payload)

@@ -26,11 +26,14 @@ import json
 import secrets
 import threading
 import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict, TypeVar, cast
+
+if TYPE_CHECKING:
+    from polylogue.config import PolylogueConfig
 
 from polylogue.core.enums import OperationStatus
 from polylogue.daemon.execution import BoundedComputeAdapter
@@ -53,7 +56,7 @@ from polylogue.operations.operation_context import OperationContext, PinnedOpera
 if TYPE_CHECKING:
     from typing import SupportsFloat, SupportsInt
 
-    from polylogue.daemon.derivation import DerivationReport
+    from polylogue.daemon.derivation import DerivationReport, KeyOutcome
 
 T = TypeVar("T")
 
@@ -209,6 +212,10 @@ class _EmbeddingBackfillExecution:
                 return binding, scope, scope_limited, existing
 
         binding, scope, scope_limited, existing = await self.runtime.compute_phase(prepare)
+        if existing is not None and str(existing.get("archive_identity")) != binding.archive_identity:
+            # A rebuilt index changes the live archive identity digest while
+            # the durable request and parts remain keyed by the prior digest.
+            binding = replace(binding, archive_identity=str(existing["archive_identity"]))
         self.binding, self.scope, self.scope_limited, self.record = binding, scope, scope_limited, existing
         if existing is not None:
             self.operation_id = str(self.audit.machine_parts(binding)[0]["operation_id"])
@@ -321,6 +328,45 @@ class _EmbeddingBackfillExecution:
         return await self.runtime.compute_phase(read)
 
 
+def _message_ids(outcomes: Iterable[KeyOutcome], domain: str) -> tuple[str, ...]:
+    """Message ids of the embedding keys a pass reached, required and orphan alike.
+
+    An orphan key retires a ref whose message left the membership; when that
+    message is still indexed its session counts as scanned like any other.
+    """
+    return tuple(
+        key.split(":", 1)[1]
+        for item in outcomes
+        if item.key.domain == domain and (key := item.key.key).startswith(("message:", "orphan:"))
+    )
+
+
+#: Bound parameters per session lookup, below SQLite's default host-parameter limit.
+_SESSION_LOOKUP_CHUNK = 900
+
+
+def _distinct_message_sessions(index_db_path: Path, message_ids: Sequence[str]) -> int:
+    """How many sessions own ``message_ids``; zero when the pass reached none."""
+    if not message_ids:
+        return 0
+    from polylogue.daemon.status import open_readonly_connection
+
+    sessions: set[str] = set()
+    ids = tuple(dict.fromkeys(message_ids))
+    with open_readonly_connection(index_db_path, validate_schema=False) as conn:
+        # One statement per chunk keeps each under SQLite's host-parameter limit.
+        for start in range(0, len(ids), _SESSION_LOOKUP_CHUNK):
+            chunk = ids[start : start + _SESSION_LOOKUP_CHUNK]
+            sessions.update(
+                str(row[0])
+                for row in conn.execute(
+                    f"SELECT DISTINCT session_id FROM messages WHERE message_id IN ({', '.join('?' for _ in chunk)})",
+                    chunk,
+                )
+            )
+    return len(sessions)
+
+
 def compose_embedding_convergence(
     index_db_path: Path,
     *,
@@ -333,6 +379,7 @@ def compose_embedding_convergence(
     max_errors: int | None = None,
     scope_limited: bool = False,
     progress_callback: Callable[[Mapping[str, object]], None] | None = None,
+    config: PolylogueConfig | None = None,
 ) -> ComposedEmbeddingConvergence:
     """Compose the common-kernel embedding owner once for a daemon process.
 
@@ -355,7 +402,7 @@ def compose_embedding_convergence(
     archive_root = index_db_path.parent
     loop = asyncio.get_running_loop()
     admission = DaemonEmbeddingAdmission(write_bridge, loop)
-    cfg = load_polylogue_config()
+    cfg = config if config is not None else load_polylogue_config()
     if not bool(cfg.embedding_enabled):
 
         async def disabled(_scope: Sequence[str] | None, **_limits: object) -> EmbeddingConvergenceResult:
@@ -470,6 +517,10 @@ def compose_embedding_convergence(
                 from polylogue.daemon.embedding_backlog import _archive_embedding_catchup_estimated_cost_this_month
 
                 spent = _archive_embedding_catchup_estimated_cost_this_month(archive_root / "ops.db")
+                if spent is None:
+                    # Fail closed: an unmeasured spend cannot be checked
+                    # against the monthly cap, so this pass calls no provider.
+                    return EmbeddingConvergenceResult(None, "spend_unmeasured")
                 remaining = monthly_cap - spent
                 compute_budget = min(compute_budget, max(0, int(remaining / estimated_cost_per_message)))
                 if compute_budget <= 0:
@@ -477,7 +528,9 @@ def compose_embedding_convergence(
             receipt: _PassReceipt = {
                 "run_id": None,
                 "started_at_ms": int(time.time() * 1000),
-                "scanned_sessions": len(tuple(scope or ())),
+                # Replaced by the sessions the pass actually reached once it
+                # returns; an interrupted pass has reached none it can prove.
+                "scanned_sessions": 0,
                 # An interrupted pass keeps this conservative reserve, so a
                 # restart cannot spend beyond the configured monthly cap.
                 "reserved_cost_usd": compute_budget * estimated_cost_per_message,
@@ -512,6 +565,14 @@ def compose_embedding_convergence(
                 # bound only on the receipt path raised NameError whenever a
                 # pass ran without a receipt run id.
                 failures = report.count(Outcome.FAILED)
+                embedded_sessions = _distinct_message_sessions(
+                    index_db_path,
+                    _message_ids(report.by_outcome(Outcome.DONE), adapter.domain),
+                )
+                receipt["scanned_sessions"] = _distinct_message_sessions(
+                    index_db_path,
+                    _message_ids(report.outcomes, adapter.domain),
+                )
                 if run_id is not None:
                     # Attempt rows are telemetry only.  This final estimate is
                     # deliberately conservative: a failed provider call can
@@ -542,6 +603,7 @@ def compose_embedding_convergence(
                             started_at_ms=int(receipt["started_at_ms"]),
                             finished_at_ms=int(time.time() * 1000),
                             scanned_sessions=int(receipt["scanned_sessions"]),
+                            embedded_sessions=embedded_sessions,
                             error_count=failures,
                             embedded_messages=computed,
                             estimated_cost_usd=computed * estimated_cost_per_message,

@@ -4,6 +4,7 @@ import sqlite3
 
 import pytest
 
+from polylogue.core.query_identity import JsonValue
 from polylogue.security.query_excision import apply_query_excision, plan_query_excision
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -553,3 +554,24 @@ def test_watch_baseline_and_receipt_ids_reject_cross_query_or_conflicting_state(
             "INSERT INTO watched_query_baselines (query_hash, result_set_id, updated_at_ms) VALUES (?, ?, ?)",
             (first.query_hash, second_result.result_set_id, 4),
         )
+
+
+def test_put_query_returns_existing_promotion_contract() -> None:
+    """A repeat put must not replace durable promotion metadata with defaults."""
+    conn = _conn()
+    try:
+        plan: dict[str, JsonValue] = {"field": "origin", "value": "codex-session"}
+        original = put_query(conn, plan, grain="session", lane="dialogue", rank_policy="mixed", created_at_ms=1)
+        promoted = promote_query(
+            conn,
+            query_hash=original.query_hash,
+            privacy_class="private",
+            retention_policy={"basis": "explicit"},
+            excision_link="excision:query-contract",
+            promoted_at_ms=2,
+        )
+        repeated = put_query(conn, plan, grain="session", lane="dialogue", rank_policy="mixed", created_at_ms=3)
+        assert repeated == promoted
+        assert repeated.privacy_class == "private"
+    finally:
+        conn.close()

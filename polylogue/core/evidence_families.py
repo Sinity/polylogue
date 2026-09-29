@@ -279,8 +279,8 @@ def _family(
 _DOMAIN_FAMILY_DECLARATIONS: Final[tuple[FactFamilySpec, ...]] = (
     _family(
         "temporal.value",
-        owner="polylogue.core.temporal",
-        field="temporal",
+        owner="polylogue.core.evidence_value",
+        field="TemporalProvenance",
         schema="string",
         unit="time",
         grain="event",
@@ -319,8 +319,8 @@ _DOMAIN_FAMILY_DECLARATIONS: Final[tuple[FactFamilySpec, ...]] = (
     ),
     _family(
         "inference.profile_phase",
-        owner="polylogue.analysis.profile",
-        field="profile_phase",
+        owner="polylogue.analysis.archive",
+        field="SessionProfileInsight",
         schema="object",
         unit="classification",
         grain="session",
@@ -329,8 +329,8 @@ _DOMAIN_FAMILY_DECLARATIONS: Final[tuple[FactFamilySpec, ...]] = (
     ),
     _family(
         "quota.observation",
-        owner="polylogue.operations.quota",
-        field="quota",
+        owner="polylogue.analysis.orchestration_evidence",
+        field="build_session_orchestration",
         schema="object",
         unit="quota",
         grain="quota_window",

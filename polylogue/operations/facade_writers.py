@@ -6,7 +6,7 @@ import hashlib
 import json
 import sqlite3
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -124,6 +124,7 @@ def _archive_capture_assertion_candidate(
     author_kind: str = "user",
     idempotency_key: str | None = None,
     ttl_seconds: int | None = None,
+    capture_provenance: Mapping[str, object] | None = None,
 ) -> Any:
     """Write one terminal-captured assertion through the user-tier gate.
 
@@ -232,9 +233,10 @@ def _archive_capture_assertion_candidate(
                 kind=kind,
                 key="terminal-note",
                 value={
-                    "capture_surface": "terminal",
+                    "capture_surface": "browser" if capture_provenance is not None else "terminal",
                     "scope_refs": normalized_scope_refs,
                     "unanchored": not bool(resolved_refs),
+                    **({"source_observation": dict(capture_provenance)} if capture_provenance is not None else {}),
                 },
                 body_text=normalized_body,
                 author_ref=normalized_author_ref,

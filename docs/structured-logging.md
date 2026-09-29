@@ -280,7 +280,8 @@ Two properties of the ratchet are worth knowing before you read a verdict:
 - The rule matches the AST, so a `logging.getLogger` mentioned in a docstring
   or comment is not a match. A `grep -c` will therefore read higher than the
   gate's match count; reconcile against the gate, not against grep.
-- A baseline entry is `path:sha1(stripped source line)`. Editing a *baselined*
+- A baseline entry is `path:sha1(stripped source line):sha1(enclosing AST path)`,
+  with an optional `:count` for duplicates. Editing a *baselined*
   line — even cosmetically — retires the old anchor and presents a new one,
   which the ratchet reads as a new violation. Convert such a line rather than
   reformatting it.

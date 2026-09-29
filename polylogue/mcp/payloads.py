@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 
     from polylogue.archive.models import Session
     from polylogue.archive.query.miss_diagnostics import QueryMissDiagnostics, QueryMissReason
-    from polylogue.archive.query.search_hits import SessionSearchHit
+    from polylogue.archive.query.search_hits import SearchHitResults, SessionSearchHit
     from polylogue.archive.session.neighbor_candidates import SessionNeighborCandidate
     from polylogue.archive.stats import ArchiveStats
     from polylogue.readiness import ReadinessCheck, ReadinessReport
@@ -132,6 +132,7 @@ class MCPBlackboardNoteListPayload(SurfacePayloadModel):
 
     items: tuple[MCPBlackboardNotePayload, ...]
     total: int
+    outcome: OutcomeEnvelope
     limit: int | None = None
     offset: int = 0
     next_offset: int | None = None
@@ -706,9 +707,9 @@ def neighbor_candidates_payload(
 
 
 def session_search_result_payload(
-    hits: Sequence[SessionSearchHit],
+    hits: SearchHitResults,
     *,
-    total: int,
+    total: int | None,
     limit: int,
     offset: int,
     diagnostics: QueryMissDiagnostics | None = None,
@@ -748,6 +749,7 @@ def session_search_result_payload(
         sort=sort,
         diagnostics=diag_payload,
         cursor=cursor,
+        execution=hits.execution,
     )
 
 
@@ -880,6 +882,7 @@ class MCPUserMarkListPayload(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    outcome: OutcomeEnvelope
 
 
 class MCPUserAnnotationPayload(SurfacePayloadModel):
@@ -899,6 +902,7 @@ class MCPUserAnnotationListPayload(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    outcome: OutcomeEnvelope
 
 
 class MCPSavedViewPayload(SurfacePayloadModel):
@@ -914,6 +918,7 @@ class MCPSavedViewListPayload(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    outcome: OutcomeEnvelope
 
 
 class MCPRecallPackPayload(SurfacePayloadModel):
@@ -930,6 +935,7 @@ class MCPRecallPackListPayload(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    outcome: OutcomeEnvelope
 
 
 class MCPReaderWorkspacePayload(SurfacePayloadModel):
@@ -949,6 +955,7 @@ class MCPReaderWorkspaceListPayload(SurfacePayloadModel):
     limit: int
     offset: int
     next_offset: int | None = None
+    outcome: OutcomeEnvelope
 
 
 class MCPStatsByPayload(MCPRootPayload[dict[str, int]]):
