@@ -18,7 +18,6 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from polylogue.storage.blob_store import BlobStore
 from tests.infra.daemon_operations import cli_daemon_archive, running_daemon_operations
 
 
@@ -141,11 +140,12 @@ def test_reimporting_an_excised_file_is_a_typed_permanent_refusal(tmp_path: Path
     Every input of the request is excised, so the publication flush refuses
     its bytes and the request accepts nothing: it settles ``failed`` with the
     non-retryable ``ContentExcisedError``, never ``indeterminate``, and the
-    excised bytes are not back on disk (polylogue-u6jyu).
+    excised bytes gain no reservation and no retained source item that would
+    keep them from blob GC (polylogue-u6jyu).
 
     Anti-vacuity: let the ingest input route reserve excised bytes again (drop
     the excision read in ``BlobPublicationReservationStore.reserve_many``) and
-    the file's blob is published again and the request completes.
+    the request completes with a new source item retaining the excised file.
     """
     first, _second = _two_sessions(tmp_path / "capture-files")
     with running_daemon_operations(tmp_path / "archive", session_derivation=True) as stack:
@@ -159,6 +159,8 @@ def test_reimporting_an_excised_file_is_a_typed_permanent_refusal(tmp_path: Path
             archive_root=root,
         )
         assert excised is not None and excised["outcome"] == "completed", excised
+        file_hash = bytes.fromhex(hashlib.sha256(first.read_bytes()).hexdigest())
+        retained_before = _blob_retention(stack.archive_root, file_hash)
 
         again = stack.client.operation_to_completion(
             "ingest", {"path": str(first)}, archive_root=root, request_id="reimport-excised"
@@ -169,8 +171,17 @@ def test_reimporting_an_excised_file_is_a_typed_permanent_refusal(tmp_path: Path
         assert again["error"]["retryable"] is False, again
         assert again["accepted_reference"] is None, again
         assert _session_ids(stack.archive_root) == []
-        file_hash = hashlib.sha256(first.read_bytes()).hexdigest()
-        assert not BlobStore(stack.archive_root / "blob").blob_path(file_hash).exists()
+        assert _blob_retention(stack.archive_root, file_hash) == retained_before
+
+
+def _blob_retention(archive_root: Path, blob_hash: bytes) -> tuple[int, int]:
+    """Source items and publication reservations that keep ``blob_hash`` from GC."""
+    with sqlite3.connect(f"file:{archive_root / 'source.db'}?mode=ro", uri=True) as conn:
+        items = conn.execute("SELECT COUNT(*) FROM source_items WHERE blob_hash = ?", (blob_hash,)).fetchone()[0]
+        reservations = conn.execute(
+            "SELECT COUNT(*) FROM blob_publication_reservations WHERE blob_hash = ?", (blob_hash,)
+        ).fetchone()[0]
+    return int(items), int(reservations)
 
 
 def test_confirmation_bound_mutation_refuses_an_unconfirmed_request(tmp_path: Path) -> None:
