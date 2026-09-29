@@ -254,6 +254,7 @@
         "read_view_ids": [
           "agent-policies",
           "chronicle",
+          "compact",
           "context",
           "context-image",
           "correlation",
