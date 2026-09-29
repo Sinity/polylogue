@@ -582,7 +582,12 @@ def _validate_session_indexes(composed: ComposedSources, indexes: Sequence[int])
     return selected
 
 
-def _replayed_parent_prefix(composed: ComposedSources, session: object) -> tuple[ParsedMessage, ...]:
+def _replayed_parent_prefix(
+    composed: ComposedSources,
+    session: object,
+    *,
+    _lineage: frozenset[str] = frozenset(),
+) -> tuple[ParsedMessage, ...]:
     """The parent's parsed messages a fork replays, exactly as the parent wrote them.
 
     A fork replays its parent's prefix byte for byte: the same timestamps,
@@ -595,11 +600,22 @@ def _replayed_parent_prefix(composed: ComposedSources, session: object) -> tuple
 
     if not isinstance(session, Session) or session.parent_id is None:
         return ()
-    parent_index = next(
-        (index for index, candidate in enumerate(composed.sessions) if candidate.id == session.parent_id), None
-    )
-    if parent_index is None:
+    # A declared cycle (``compose_fork_prefix_tail_lineage(cycle_candidate=True)``)
+    # has no first writer to replay from.
+    lineage = _lineage | {str(session.id)}
+    if str(session.parent_id) in lineage:
         return ()
+    # The parent revision the archive keeps: the highest declared revision,
+    # the later entry on a tie, as ``convergence_laws.authoritative_sessions``
+    # selects it.
+    candidates = [
+        (revision if isinstance(revision := candidate.metadata.get("revision_index", 0), int) else 0, index)
+        for index, candidate in enumerate(composed.sessions)
+        if candidate.id == session.parent_id
+    ]
+    if not candidates:
+        return ()
+    _revision, parent_index = max(candidates)
     parent = composed.sessions[parent_index]
     shared = 0
     for own, replayed in zip(session.messages, parent.messages, strict=False):
@@ -611,7 +627,7 @@ def _replayed_parent_prefix(composed: ComposedSources, session: object) -> tuple
     parent_parsed = _parsed_session(
         parent,
         corpus_index=parent_index,
-        replayed=_replayed_parent_prefix(composed, parent),
+        replayed=_replayed_parent_prefix(composed, parent, _lineage=lineage),
     )
     return tuple(parent_parsed.messages[:shared])
 
