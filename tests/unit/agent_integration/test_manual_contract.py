@@ -180,6 +180,23 @@ def test_generated_contract_arguments_match_the_live_mcp_signatures() -> None:
     assert not problems, problems
 
 
+def _literal_vocabulary(annotation: object) -> set[object]:
+    """Every Literal member of an annotation, through ``| None`` unions.
+
+    ``typing.get_args`` on ``Literal[...] | None`` yields the Literal itself
+    and ``NoneType``, not the members, so a flat read of an optional view
+    compared the example against two type objects.
+    """
+    import typing
+
+    if typing.get_origin(annotation) is typing.Literal:
+        return set(typing.get_args(annotation))
+    members: set[object] = set()
+    for arg in typing.get_args(annotation):
+        members |= _literal_vocabulary(arg)
+    return members
+
+
 def test_published_examples_use_live_operation_vocabularies_and_preconditions() -> None:
     """Anti-vacuity: restoring any rejected projection, view, write op, or ref form fails here."""
     import typing
@@ -197,7 +214,8 @@ def test_published_examples_use_live_operation_vocabularies_and_preconditions() 
 
     read = TOOL_CONTRACT_BY_NAME["read"]
     read_example = read.examples[0].arguments_dict()
-    read_views = set(typing.get_args(typing.get_type_hints(live_tools["read"].fn)["view"]))
+    read_views = _literal_vocabulary(typing.get_type_hints(live_tools["read"].fn)["view"])
+    assert "messages" in read_views
     assert read_example["view"] in read_views
     around_description = next(arg.description for arg in read.arguments if arg.name == "around")
     assert "Raw message ID" in around_description
@@ -205,7 +223,7 @@ def test_published_examples_use_live_operation_vocabularies_and_preconditions() 
     assert "without offset or continuation" in around_description
 
     for name, argument in (("explain", "subject"), ("write", "operation")):
-        vocabulary = set(typing.get_args(typing.get_type_hints(live_tools[name].fn)[argument]))
+        vocabulary = _literal_vocabulary(typing.get_type_hints(live_tools[name].fn)[argument])
         for example in TOOL_CONTRACT_BY_NAME[name].examples:
             assert example.arguments_dict()[argument] in vocabulary
 
