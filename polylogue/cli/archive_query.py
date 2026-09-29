@@ -271,9 +271,9 @@ def _read_session_windows(
     bounded read at ``_SESSION_READ_WINDOW``: ``--stream --limit 500`` read one
     200-message window and rendered it as the 500 the caller asked for, with
     nothing in the output to say the rest had been dropped (polylogue-vbsc0).
-    The remaining-count guard at the top of the loop is what ends a bounded
-    read, so a continuation window may overshoot the request by less than one
-    window; the final slice trims it.
+    Every continuation carries the remaining bound as well: fetching past
+    it can exceed the result-byte budget before a final slice can trim it.
+    A resumed window may narrow, but never widen, its predecessor's bound.
 
     A window that adds no messages also ends the loop.  It cannot advance the
     composition — the next request would repeat it — so continuing on one is
@@ -285,25 +285,20 @@ def _read_session_windows(
     messages: list[dict[str, object]] = []
     session: dict[str, object] = {}
     continuation: str | None = None
+    window_ceiling = _SESSION_READ_WINDOW
     while True:
-        window_limit: int | None = None
+        window_limit = window_ceiling
         if message_limit is not None:
             remaining = message_limit - len(messages)
             if remaining <= 0:
                 break
-            window_limit = min(remaining, _SESSION_READ_WINDOW)
+            window_limit = min(remaining, window_ceiling)
         payload: Mapping[str, object]
         while True:
             try:
                 payload, _ = dispatch_read(
                     config,
-                    (
-                        lower_session_read(ref, continuation=continuation)
-                        if continuation is not None
-                        else lower_session_read(
-                            ref, limit=window_limit if window_limit is not None else _SESSION_READ_WINDOW
-                        )
-                    ),
+                    lower_session_read(ref, limit=window_limit, continuation=continuation),
                     daemon_disabled=daemon_disabled,
                 )
                 break
@@ -311,14 +306,13 @@ def _read_session_windows(
                 from polylogue.cli.operation_kernel import OperationFailedError
 
                 if (
-                    continuation is not None
-                    or not isinstance(exc, OperationFailedError)
+                    not isinstance(exc, OperationFailedError)
                     or exc.code != "result_too_large"
-                    or (window_limit if window_limit is not None else _SESSION_READ_WINDOW) <= 1
+                    or window_limit <= 1
                 ):
                     raise
-                current = window_limit if window_limit is not None else _SESSION_READ_WINDOW
-                window_limit = max(1, current // 2)
+                window_limit = max(1, window_limit // 2)
+        window_ceiling = window_limit
         window = payload.get("session")
         if not isinstance(window, Mapping):
             raise click.ClickException("session.read returned no session body")

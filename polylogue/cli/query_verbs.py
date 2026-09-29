@@ -2144,6 +2144,7 @@ def analyze_verb(
     effective_output_format = output_format or (
         request.params.get("output_format") if isinstance(request.params.get("output_format"), str) else None
     )
+    output_format = effective_output_format
     if _explain_terminal_action(
         request,
         action="analyze",

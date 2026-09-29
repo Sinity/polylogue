@@ -76,7 +76,7 @@ _COMPLETION_DEADLINE_MS = 1000
 DAEMON_REQUIRED_COMPLETION_MESSAGE = (
     "polylogue: no cached values — run `polylogued run` to populate shell completion suggestions"
 )
-_COMPLETION_CACHE_VERSION = 3
+_COMPLETION_CACHE_VERSION = 4
 _COMPLETION_CACHE_MAX_VALUES = 256
 _COMPLETION_CACHE_TTL_SECONDS = 24 * 60 * 60
 _COMPLETION_CACHE_MAX_BYTES = 1024 * 1024
@@ -97,24 +97,38 @@ def _cached_value_matches(source: str, value: str, help_text: object, incomplete
     return value.casefold().startswith(prefix)
 
 
-def _read_completion_cache(source: str, incomplete: str, *, limit: int, archive_root: str) -> list[CompletionItem]:
-    """Read recent daemon answers without opening the archive."""
+def _read_completion_cache(
+    source: str, incomplete: str, *, limit: int, archive_root: str
+) -> list[CompletionItem] | None:
+    """Return cached candidates, an observed empty answer, or None for a miss."""
     try:
         with _completion_cache_path().open("r", encoding="utf-8") as stream:
             raw = stream.read(_COMPLETION_CACHE_MAX_BYTES + 1)
-        if len(raw) > _COMPLETION_CACHE_MAX_BYTES:
-            return []
+        if len(raw.encode("utf-8")) > _COMPLETION_CACHE_MAX_BYTES:
+            return None
         payload = json.loads(raw)
         if not isinstance(payload, dict) or payload.get("version") != _COMPLETION_CACHE_VERSION:
-            return []
+            return None
         archives = payload.get("archives")
         archive = archives.get(archive_root) if isinstance(archives, dict) else None
-        values_by_source = archive.get("values") if isinstance(archive, dict) else None
+        if not isinstance(archive, dict):
+            return None
+        now = time.time()
+        empty_queries = archive.get("empty_queries")
+        observations = empty_queries.get(source, []) if isinstance(empty_queries, dict) else []
+        if isinstance(observations, list) and any(
+            isinstance(row, dict)
+            and row.get("prefix") == incomplete.casefold()
+            and isinstance(row.get("seen_at"), (int, float))
+            and 0 <= now - row["seen_at"] <= _COMPLETION_CACHE_TTL_SECONDS
+            for row in observations
+        ):
+            return []
+        values_by_source = archive.get("values")
         values = values_by_source.get(source) if isinstance(values_by_source, dict) else None
         if not isinstance(values, list):
-            return []
-        now = time.time()
-        return [
+            return None
+        items = [
             CompletionItem(row["value"], help=row.get("help") if isinstance(row.get("help"), str) else None)
             for row in values
             if isinstance(row, dict)
@@ -123,17 +137,25 @@ def _read_completion_cache(source: str, incomplete: str, *, limit: int, archive_
             and 0 <= now - row["seen_at"] <= _COMPLETION_CACHE_TTL_SECONDS
             and _cached_value_matches(source, row["value"], row.get("help"), incomplete)
         ][:limit]
+        return items or None
     except (OSError, ValueError, TypeError):
-        return []
+        return None
 
 
 def _remember_completion_values(source: str, value: object, *, archive_root: str, incomplete: str = "") -> None:
     """Merge daemon-returned candidates into the small, disposable XDG cache."""
+    body = value.get("value_completions") if isinstance(value, Mapping) else None
+    rows = body.get("values") if isinstance(body, Mapping) else None
+    if not isinstance(rows, list):
+        # A missing or malformed result is not proof of an empty vocabulary.
+        return
+    observed_empty = not rows
     items = render_completion_values(value)
     path = _completion_cache_path()
     now = time.time()
     lock_path = path.with_suffix(path.suffix + ".lock")
     values: dict[str, list[dict[str, object]]] = {}
+    empty_queries: dict[str, list[dict[str, object]]] = {}
     temporary: str | None = None
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -147,7 +169,11 @@ def _remember_completion_values(source: str, value: object, *, archive_root: str
                 prior = json.loads(raw) if len(raw.encode("utf-8")) <= _COMPLETION_CACHE_MAX_BYTES else None
             except (OSError, ValueError):
                 pass
-            archives = prior.get("archives") if isinstance(prior, dict) else None
+            archives = (
+                prior.get("archives")
+                if isinstance(prior, dict) and prior.get("version") == _COMPLETION_CACHE_VERSION
+                else None
+            )
             archive_map = dict(archives) if isinstance(archives, dict) else {}
             old = archive_map.get(archive_root)
             raw_values = old.get("values") if isinstance(old, dict) else None
@@ -164,6 +190,30 @@ def _remember_completion_values(source: str, value: object, *, archive_root: str
                     for key, rows in raw_values.items()
                     if key in {"session_id", "tag", "repo", "tool"} and isinstance(rows, list)
                 }
+            raw_empty_queries = old.get("empty_queries") if isinstance(old, dict) else None
+            if isinstance(raw_empty_queries, dict):
+                empty_queries = {
+                    key: [
+                        row
+                        for row in observations
+                        if isinstance(row, dict)
+                        and isinstance(row.get("prefix"), str)
+                        and isinstance(row.get("seen_at"), (int, float))
+                        and 0 <= now - row["seen_at"] <= _COMPLETION_CACHE_TTL_SECONDS
+                    ]
+                    for key, observations in raw_empty_queries.items()
+                    if key in {"session_id", "tag", "repo", "tool"} and isinstance(observations, list)
+                }
+            # A later nonempty answer also disproves earlier empty answers
+            # for other queries that match one of its returned candidates.
+            empty_queries[source] = [
+                row
+                for row in empty_queries.get(source, [])
+                if row["prefix"] != incomplete.casefold()
+                and not any(_cached_value_matches(source, item.value, item.help, str(row["prefix"])) for item in items)
+            ]
+            if observed_empty:
+                empty_queries[source].append({"prefix": incomplete.casefold(), "seen_at": now})
             values[source] = [
                 row
                 for row in values.get(source, [])
@@ -179,21 +229,22 @@ def _remember_completion_values(source: str, value: object, *, archive_root: str
                         "seen_at": now,
                     }
             values[source] = list(merged.values())[-_COMPLETION_CACHE_MAX_VALUES:]
-            archive_map[archive_root] = {"values": values, "seen_at": now}
+            archive_map[archive_root] = {"values": values, "empty_queries": empty_queries, "seen_at": now}
             payload = {"version": _COMPLETION_CACHE_VERSION, "archives": archive_map}
             encoded = json.dumps(payload, ensure_ascii=True, separators=(",", ":"))
             while len(encoded.encode("utf-8")) > _COMPLETION_CACHE_MAX_BYTES:
                 oldest_root = min(archive_map, key=lambda root: archive_map[root].get("seen_at", 0))
-                rows_by_source = archive_map[oldest_root].get("values", {})
                 candidates = [
-                    (row.get("seen_at", 0), oldest_root, key, i)
-                    for key, rows in rows_by_source.items()
+                    (row.get("seen_at", 0), bucket, key, i)
+                    for bucket in ("values", "empty_queries")
+                    for key, rows in archive_map[oldest_root].get(bucket, {}).items()
                     for i, row in enumerate(rows)
                 ]
                 if not candidates:
                     archive_map.pop(oldest_root)
                 else:
-                    _, root, key, index = min(candidates)
+                    _, bucket, key, index = min(candidates)
+                    rows_by_source = archive_map[oldest_root][bucket]
                     rows_by_source[key].pop(index)
                     if not rows_by_source[key]:
                         rows_by_source.pop(key)
@@ -286,7 +337,7 @@ def completion_values(source: str, incomplete: str, *, limit: int) -> list[Compl
         )
     except OperationUnavailableError:
         cached = _read_completion_cache(source, incomplete, limit=limit, archive_root=archive_root)
-        return cached or [completion_message(DAEMON_REQUIRED_COMPLETION_MESSAGE)]
+        return cached if cached is not None else [completion_message(DAEMON_REQUIRED_COMPLETION_MESSAGE)]
     except Exception:
         # Deliberately broad: see the docstring. Any other typed refusal or
         # transport failure is rendered as no completion rather than a
