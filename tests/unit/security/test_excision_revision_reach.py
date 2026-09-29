@@ -28,7 +28,7 @@ from polylogue.security.excision import (
     plan_session_excision,
     resolve_session_excision_target,
 )
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ArchiveHookEvent,
     ContentExcisedError,
@@ -44,6 +44,9 @@ def _seed_two_revisions(archive_root: Path) -> tuple[str, str, str, bytes, bytes
     """Two live raw revisions of one logical source, plus its index session."""
     source_db = archive_root / "source.db"
     index_db = archive_root / "index.db"
+    # Excision opens the archive to drop the index session; that needs the
+    # archive format marker a real root carries.
+    initialize_active_archive_root(archive_root)
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
 
