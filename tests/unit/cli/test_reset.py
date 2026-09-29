@@ -327,6 +327,48 @@ class TestResetCommandDeletion:
             assert applied is not None and applied["outcome"] == "completed", applied
             assert not cache.exists()
 
+    def test_confirmation_names_databases_not_their_transient_sidecars(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A WAL sidecar appearing after the preview does not refuse the reset.
+
+        Anti-vacuity: compare sidecars as part of the confirmed identity and the
+        index preview taken before ``index.db-wal`` exists is refused as a
+        changed target set; the added cache directory must still be refused.
+        """
+        from polylogue.daemon_client import DaemonOperationRejectedError
+
+        with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):
+            from polylogue.paths import cache_home
+
+            index_db = stack.archive_root / "index.db"
+            for suffix in ("-wal", "-shm"):
+                index_db.with_name(index_db.name + suffix).unlink(missing_ok=True)
+            preview = [str(index_db.resolve())]
+            index_db.with_name("index.db-wal").write_bytes(b"")
+
+            cache = cache_home()
+            cache.mkdir(parents=True, exist_ok=True)
+            try:
+                refused = stack.client.operation_to_completion(
+                    "maintenance.reset",
+                    {"index": True, "cache": True, "confirm": True, "expected_targets": preview},
+                    archive_root=str(stack.archive_root),
+                )
+            except DaemonOperationRejectedError:
+                refused = None
+            assert refused is None or refused["outcome"] != "completed"
+            assert index_db.exists()
+
+            applied = stack.client.operation_to_completion(
+                "maintenance.reset",
+                {"index": True, "confirm": True, "expected_targets": preview},
+                archive_root=str(stack.archive_root),
+            )
+            assert applied is not None and applied["outcome"] == "completed", applied
+            assert not index_db.exists()
+            assert not index_db.with_name("index.db-wal").exists()
+
     def test_multiple_flags(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         """(b) daemon route: several flags in one request are all applied."""
         with _daemon_reset(tmp_path, monkeypatch) as (stack, _seeded):

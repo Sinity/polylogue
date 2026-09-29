@@ -155,6 +155,31 @@ def mutation_raw_authority_blocker_resolve(
     return _execute_named_mutation(request, context, audit, snapshot, BlockerResolveActuator(), args)
 
 
+_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm")
+
+
+def reset_confirmation_paths(targets: list[tuple[str, Path]]) -> tuple[str, ...]:
+    """The resolved targets an operator's reset confirmation names.
+
+    A SQLite ``-wal``/``-shm`` sidecar exists exactly while some connection
+    has its database open -- the daemon's own pinned read creates the index
+    sidecars between the CLI preview and this resolution. A sidecar is
+    therefore deleted with its confirmed database but is never part of the
+    confirmed identity; comparing it would refuse every reset of an open tier.
+    """
+
+    resolved = {path.resolve() for _name, path in targets}
+    primaries = {
+        path
+        for path in resolved
+        if not (
+            path.name.endswith(_SQLITE_SIDECAR_SUFFIXES)
+            and path.with_name(path.name.removesuffix("-wal").removesuffix("-shm")) in resolved
+        )
+    }
+    return tuple(sorted(str(path) for path in primaries))
+
+
 def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Path]]:
     """Resolve reset targets in the daemon before any deletion is attempted."""
     from polylogue.paths import blob_store_root, cache_home, data_home, drive_cache_path, drive_token_path, state_home
@@ -237,8 +262,7 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
         if not isinstance(expected, list) or any(not isinstance(path, str) for path in expected):
             raise ValueError("reset expected_targets must be a list of absolute paths")
         resolved_expected = tuple(sorted(str(Path(path).resolve()) for path in expected))
-        resolved_actual = tuple(sorted(str(path.resolve()) for _name, path in targets))
-        if resolved_expected != resolved_actual:
+        if resolved_expected != reset_confirmation_paths(targets):
             raise ValueError("reset targets changed since confirmation; preview the targets again")
     return targets
 
