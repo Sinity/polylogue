@@ -86,7 +86,7 @@ from polylogue.operations.embedding_lifecycle import (
 )
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
-from polylogue.sources.live.watcher import daemon_watch_sources, default_sources
+from polylogue.sources.live.watcher import POLYLOGUE_OWNED_SOURCE_NAMES, daemon_watch_sources, default_sources
 
 # The daemon ring's seam onto the storage checkpoint and one-tier writer
 # factories: daemon modules take them from here rather than each reaching
@@ -403,10 +403,6 @@ def _watch_sources(
     return daemon_watch_sources(browser_capture_spool_path=browser_capture_spool_path, hermes_root=hermes_root)
 
 
-#: Watch sources whose directory Polylogue itself creates and writes.
-_POLYLOGUE_OWNED_SOURCE_NAMES = frozenset({"browser-capture", "inbox"})
-
-
 def _is_polylogue_owned_source(source: WatchSource) -> bool:
     """Whether Polylogue owns *source*'s directory, decided by role.
 
@@ -415,7 +411,7 @@ def _is_polylogue_owned_source(source: WatchSource) -> bool:
     read-only legacy spool and every provider directory belong to someone
     else and are never created here.
     """
-    return source.name in _POLYLOGUE_OWNED_SOURCE_NAMES or source.role == "primary-writable"
+    return source.name in POLYLOGUE_OWNED_SOURCE_NAMES or source.role == "primary-writable"
 
 
 def _active_index_db_path() -> Path:

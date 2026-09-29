@@ -114,6 +114,43 @@ def test_validator_refuses_a_foreign_record_wherever_it_sits(name: str, document
         _validate(name, document())
 
 
+def test_a_record_of_many_values_is_classified_from_a_bounded_view() -> None:
+    """A record's classification view stays bounded however many values it holds.
+
+    The Codex discriminator (``payload``) follows an array far longer than
+    any container budget, so the record is still refused, while the view
+    built for it keeps at most the record budget of values.
+
+    Anti-vacuity: a builder that copies every value retains the whole
+    array; one that stops reading at a budget never sees ``payload``.
+    """
+    import ijson
+
+    from polylogue.sources import acquisition_boundary
+
+    record = {"type": "session_meta", "pad": list(range(1 << 19)), "payload": _CODEX[0]["payload"]}
+    line = json.dumps(record).encode()
+    with pytest.raises(ForeignOriginContentError):
+        _validate("big.jsonl", line + b"\n")
+
+    builder = acquisition_boundary._EvidenceBuilder()
+    for event, value in ijson.basic_parse(line, use_float=True):
+        builder.event(event, value)
+
+    def retained(value: object) -> int:
+        if isinstance(value, dict):
+            return 1 + sum(retained(item) for item in value.values())
+        if isinstance(value, list):
+            return 1 + sum(retained(item) for item in value)
+        return 1
+
+    view = builder.value
+    assert isinstance(view, dict)
+    assert view["payload"] == _CODEX[0]["payload"]
+    assert retained(view) <= acquisition_boundary._RECORD_KEEP_VALUES
+    assert len(view["pad"]) == acquisition_boundary._CONTAINER_KEEP_ENTRIES
+
+
 def test_validator_admits_own_origin_material_of_any_size() -> None:
     """The same shapes of Claude Code's own records pass, however large.
 

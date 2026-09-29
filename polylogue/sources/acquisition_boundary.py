@@ -31,7 +31,6 @@ from pathlib import Path
 from typing import IO, BinaryIO
 
 import ijson
-from ijson.common import ObjectBuilder
 
 from polylogue.archive.zip_admission import open_bounded_zip_entry
 from polylogue.core.enums import Provider
@@ -78,11 +77,10 @@ class BoundRecordValidator:
 
     A record (a JSONL line or an array element) is classified both as a
     single record and as a one-record sequence, because some origins declare
-    only record detectors and others only sequence detectors. A string value
-    longer than :data:`_STRING_KEEP_CHARS` is kept as its prefix: origin
-    discriminators are short keys and values, and a multi-gigabyte embedded
-    tool result must not be copied to decide an origin. No window truncates
-    a record, so a discriminator anywhere in it is seen. A malformed or
+    only record detectors and others only sequence detectors. Each record is
+    classified from a bounded view (:class:`_EvidenceBuilder`), so memory
+    does not grow with a record's size. No byte window truncates the stream:
+    every record is parsed to its end and classified. A malformed or
     truncated record is validated from the structure that completed before
     the fault; malformed JSON itself is the parser's typed concern, not a
     foreign-origin claim. Inactive for unbound locations, declared
@@ -138,15 +136,89 @@ class BoundRecordValidator:
 
 #: Characters of a string value kept for origin classification.
 _STRING_KEEP_CHARS = 4096
+#: Entries of one object or array kept for origin classification.
+_CONTAINER_KEEP_ENTRIES = 4096
+#: Values (containers and scalars) of one record kept for classification.
+_RECORD_KEEP_VALUES = 1 << 18
+#: String characters of one record kept for classification.
+_RECORD_KEEP_CHARS = 1 << 23
 
 
-class _PrefixObjectBuilder(ObjectBuilder):
-    """Build a JSON value keeping only a prefix of each long string."""
+class _EvidenceBuilder:
+    """Build the classification view of one record from parser events, in bounded memory.
+
+    Every event is consumed, but only a bounded view is kept: a long string
+    keeps its prefix, a container its first entries, and the record as a
+    whole a fixed number of values and string characters. Origin
+    discriminators are shallow keys and short values that appear early in a
+    record; a multi-gigabyte embedded tool result, or a record with millions
+    of small values, must not be copied to decide its origin. What is
+    dropped is only evidence; the bytes themselves still pass through.
+    """
+
+    def __init__(self) -> None:
+        self.value: object = None
+        self._stack: list[dict[str, object] | list[object]] = []
+        self._key: str | None = None
+        #: Depth of a dropped container still being consumed.
+        self._skip = 0
+        self._skip_next = False
+        self._values = 0
+        self._chars = 0
 
     def event(self, event: str, value: object) -> None:
-        if event == "string" and isinstance(value, str) and len(value) > _STRING_KEEP_CHARS:
-            value = value[:_STRING_KEEP_CHARS]
-        super().event(event, value)
+        if self._skip:
+            if event in ("start_map", "start_array"):
+                self._skip += 1
+            elif event in ("end_map", "end_array"):
+                self._skip -= 1
+            return
+        if event == "map_key":
+            container = self._stack[-1]
+            self._skip_next = len(container) >= _CONTAINER_KEEP_ENTRIES or self._values >= _RECORD_KEEP_VALUES
+            self._key = str(value)
+            return
+        if event in ("end_map", "end_array"):
+            self._stack.pop()
+            return
+        if self._skip_next or self._full():
+            self._skip_next = False
+            if event in ("start_map", "start_array"):
+                self._skip = 1
+            return
+        self._values += 1
+        item: object
+        if event == "start_map":
+            item = {}
+        elif event == "start_array":
+            item = []
+        elif event == "string" and isinstance(value, str):
+            keep = max(0, min(_STRING_KEEP_CHARS, _RECORD_KEEP_CHARS - self._chars))
+            item = value[:keep]
+            self._chars += len(item)
+        else:
+            item = value
+        self._attach(item)
+        if isinstance(item, (dict, list)):
+            self._stack.append(item)
+
+    def _full(self) -> bool:
+        if self._values >= _RECORD_KEEP_VALUES:
+            return bool(self._stack)
+        container = self._stack[-1] if self._stack else None
+        return isinstance(container, list) and len(container) >= _CONTAINER_KEEP_ENTRIES
+
+    def _attach(self, item: object) -> None:
+        if not self._stack:
+            self.value = item
+            return
+        container = self._stack[-1]
+        if isinstance(container, dict):
+            assert self._key is not None
+            container[self._key] = item
+            self._key = None
+        else:
+            container.append(item)
 
 
 class _DocumentValidator:
@@ -162,7 +234,7 @@ class _DocumentValidator:
         self._parser = ijson.basic_parse_coro(self._events, use_float=True)
         self._depth = 0
         self._top: str | None = None
-        self._builder: ObjectBuilder | None = None
+        self._builder: _EvidenceBuilder | None = None
         self._failed = False
         self._seen = False
 
@@ -201,7 +273,7 @@ class _DocumentValidator:
             if opening:
                 self._top = event
                 if event == "start_map":
-                    self._builder = _PrefixObjectBuilder()
+                    self._builder = _EvidenceBuilder()
                     self._builder.event(event, value)
                 self._depth = 1
             return
@@ -211,7 +283,7 @@ class _DocumentValidator:
                 return
             if not opening:
                 return  # a scalar array element carries no record shape
-            self._builder = _PrefixObjectBuilder()
+            self._builder = _EvidenceBuilder()
         assert self._builder is not None
         self._builder.event(event, value)
         if opening:

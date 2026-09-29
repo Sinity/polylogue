@@ -6,11 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.sources.live.discovery import _bounded_source_paths
-from polylogue.sources.live.watcher import WatchSource, daemon_watch_sources
+from polylogue.sources.live.watcher import POLYLOGUE_OWNED_SOURCE_NAMES, WatchSource, daemon_watch_sources
 from polylogue.sources.walk_faults import WalkRefusedError
-
-#: Directories Polylogue creates itself; their existence proves nothing.
-_POLYLOGUE_OWNED_SOURCES = frozenset({"inbox", "browser-capture"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,12 +40,12 @@ def watched_source_presence(
     )
     return WatchedSourcePresence(
         present=any(_would_acquire(source, sources) for source in sources),
-        tool_roots=tuple(source.root for source in sources if source.name not in _POLYLOGUE_OWNED_SOURCES),
+        tool_roots=tuple(source.root for source in sources if source.name not in POLYLOGUE_OWNED_SOURCE_NAMES),
     )
 
 
 def _would_acquire(source: WatchSource, sources: tuple[WatchSource, ...]) -> bool:
-    if source.name not in _POLYLOGUE_OWNED_SOURCES:
+    if source.name not in POLYLOGUE_OWNED_SOURCE_NAMES:
         if source.exact_paths is not None:
             return any(path.exists() for path in source.exact_paths)
         return source.exists()

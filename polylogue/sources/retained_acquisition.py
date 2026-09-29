@@ -163,40 +163,38 @@ def iter_retained_source_records(
                 bound_provider=location_binding,
             )
             try:
-                # The member is released whole: a refusal releases its splits.
-                member_records = list(iter_zip_entry_raw_data(archive, context))
+                # A member's splits leave only once the whole member validated;
+                # a foreign member raises before any is yielded.
+                for data in iter_zip_entry_raw_data(archive, context):
+                    split = data.source_index or 0
+                    mode = data.addressing_mode
+                    if mode not in {MemberAddressingMode.WHOLE_MEMBER, MemberAddressingMode.ELEMENT_OF_CONTAINER}:
+                        raise ValueError("retained ZIP record has no exact addressing mode")
+                    if data.blob_hash is None:
+                        raise ValueError("retained ZIP decoder did not retain its raw bytes")
+                    yield RetainedRawRecord(
+                        json.dumps(["zip-v2", ordinal, split, mode.value], separators=(",", ":")),
+                        data.model_copy(
+                            update={"source_index": zip_member_source_index(entry_ordinal=ordinal, split_index=split)}
+                        ),
+                        zip_member_raw_id(
+                            source_path=data.source_path,
+                            entry_ordinal=ordinal,
+                            split_index=split,
+                            blob_hash=data.blob_hash,
+                        ),
+                        ordinal,
+                        split,
+                        member_count=len(entries),
+                    )
             except ForeignOriginContentError as exc:
                 # The declared source binds; a foreign member is a typed
                 # refusal in the member denominator, never a retained raw.
                 record_rejected(entry, f"{exc.code}: {exc}")
-                continue
             except ContentIdentityRefusal as exc:
                 # The member cannot be stored: a recorded refusal, not an
                 # aborted acquisition of the whole ZIP.
                 record_rejected(entry, f"content_identity_refused: {exc}")
-                continue
-            for data in member_records:
-                split = data.source_index or 0
-                mode = data.addressing_mode
-                if mode not in {MemberAddressingMode.WHOLE_MEMBER, MemberAddressingMode.ELEMENT_OF_CONTAINER}:
-                    raise ValueError("retained ZIP record has no exact addressing mode")
-                if data.blob_hash is None:
-                    raise ValueError("retained ZIP decoder did not retain its raw bytes")
-                yield RetainedRawRecord(
-                    json.dumps(["zip-v2", ordinal, split, mode.value], separators=(",", ":")),
-                    data.model_copy(
-                        update={"source_index": zip_member_source_index(entry_ordinal=ordinal, split_index=split)}
-                    ),
-                    zip_member_raw_id(
-                        source_path=data.source_path,
-                        entry_ordinal=ordinal,
-                        split_index=split,
-                        blob_hash=data.blob_hash,
-                    ),
-                    ordinal,
-                    split,
-                    member_count=len(entries),
-                )
     for ordinal, member_name, disposition, diagnostic in dispositions:
         if on_member_disposition is None:
             continue

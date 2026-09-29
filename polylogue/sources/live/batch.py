@@ -797,9 +797,14 @@ class _OpenIngestAttempt:
         self.scope.enter_context(bind(attempt_id=attempt_id))
 
 
+def _zip_member_debt_prefix(path: Path) -> str:
+    """The prefix every member debt coordinate of ``path`` starts with, and only those."""
+    return f"{path}:#"
+
+
 def _zip_member_debt_subject(path: Path, ordinal: int, member: str) -> str:
     """Debt coordinate for one ZIP member; the ordinal keeps duplicate names apart."""
-    return f"{path}:#{ordinal}:{member}"
+    return f"{_zip_member_debt_prefix(path)}{ordinal}:{member}"
 
 
 class LiveBatchProcessor:
@@ -5578,7 +5583,7 @@ class LiveBatchProcessor:
             self._cursor.clear_convergence_debt_under_prefix(
                 stage="live_ingest_admission",
                 subject_type="source_path",
-                prefix=f"{path}:",
+                prefix=_zip_member_debt_prefix(path),
                 keep=frozenset(self._zip_member_refusals_this_pass.pop(str(path), ())),
             )
         self._settle_zip_member_refusals(path, refusals)
@@ -5693,7 +5698,7 @@ class LiveBatchProcessor:
             self._cursor.clear_convergence_debt_under_prefix(
                 stage="live_ingest_admission",
                 subject_type="source_path",
-                prefix=f"{path}:",
+                prefix=_zip_member_debt_prefix(path),
                 keep=frozenset(self._zip_member_refusals_this_pass.pop(str(path), ())),
             )
         self._settle_zip_member_refusals(path, refusals)

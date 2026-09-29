@@ -1519,6 +1519,11 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
     )
 
 
+#: Watch sources whose directory Polylogue itself creates and writes; their
+#: existence proves nothing about any tool's material.
+POLYLOGUE_OWNED_SOURCE_NAMES = frozenset({"browser-capture", "inbox"})
+
+
 def daemon_watch_sources(
     *,
     browser_capture_spool_path: Path | None = None,
