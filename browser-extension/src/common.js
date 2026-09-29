@@ -12,13 +12,21 @@
     return (hash >>> 0).toString(16).padStart(8, "0");
   }
 
-  // A turn without a provider-native id is named by its own semantic fields
-  // plus an occurrence counter, never its position: a DOM that inserts an
-  // earlier turn must not move an existing durable message id onto other content.
+  // A turn without a provider-native id is named by a SHA-256 digest of every
+  // semantic field it carries plus an occurrence counter, never its position:
+  // a DOM that inserts an earlier turn must not move an existing durable
+  // message id onto other content, and tool-only turns with the same role and
+  // empty text still differ by timestamp, blocks or attachments.
   function semanticTurnIdFactory(sessionId) {
     const occurrences = new Map();
     return (turn) => {
-      const digest = fnv1a(`${turn.role}:${turn.text || ""}`);
+      const digest = sha256Hex(JSON.stringify([
+        turn.role ?? null,
+        turn.text ?? null,
+        turn.timestamp ?? null,
+        Array.isArray(turn.blocks) ? turn.blocks : [],
+        Array.isArray(turn.attachments) ? turn.attachments : [],
+      ]));
       const occurrence = occurrences.get(digest) || 0;
       occurrences.set(digest, occurrence + 1);
       return `${sessionId}:turn:${digest}:${occurrence}`;

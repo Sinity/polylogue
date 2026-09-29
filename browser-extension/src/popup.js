@@ -119,8 +119,11 @@ function tabState(tab, ledger) {
       const parts = url.pathname.split("/").filter(Boolean);
       if (provider === "chatgpt") return parts[parts.indexOf("c") + 1] || null;
       if (provider === "claude-ai") return parts[0] === "chat" ? parts[1] || null : null;
-      if (provider === "gemini") return parts[0] === "app" ? parts[1] || null : url.searchParams.get("conversation") || url.searchParams.get("id");
+      // Same precedence as gemini.js conversationIdFromUrl and runtime.js conversationIdForUrl.
+      if (provider === "gemini") return url.searchParams.get("conversation") || url.searchParams.get("id") || (parts[0] === "app" ? parts[1] || null : null);
       if (provider === "grok") {
+        const marker = parts.indexOf("c");
+        if (marker >= 0 && parts[marker + 1]) return parts[marker + 1];
         const pathId = parts.find((part, index) => parts[index - 1] === "chat" || parts[index - 1] === "grok");
         if (pathId) return pathId;
         const queryId = url.searchParams.get("conversation") || url.searchParams.get("conversationId");

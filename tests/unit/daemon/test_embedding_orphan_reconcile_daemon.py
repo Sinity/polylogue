@@ -12,8 +12,10 @@ substrate reconciliation logic already covered directly in
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import sqlite3
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import patch
 
@@ -206,3 +208,26 @@ def test_scanned_message_ids_include_orphan_keys() -> None:
         KeyOutcome(key=DerivationKey(domain="other", key="message:m-3"), outcome=Outcome.DONE),
     ]
     assert _message_ids(outcomes, "embeddings") == ("m-1", "m-2")
+
+
+def test_scanned_session_count_pages_past_the_host_parameter_limit(tmp_path: Path) -> None:
+    """Anti-vacuity: one ``IN (...)`` over 2,500 ids exceeds a 999-parameter build and raises."""
+    from polylogue.daemon import embedding_owner
+
+    index_db = tmp_path / "index.db"
+    with sqlite3.connect(index_db) as conn:
+        conn.execute("CREATE TABLE messages (message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL)")
+        conn.executemany("INSERT INTO messages VALUES (?, ?)", [(f"m-{i}", f"s-{i % 3}") for i in range(2_500)])
+    ids = tuple(f"m-{i}" for i in range(2_500))
+
+    @contextlib.contextmanager
+    def limited_reader(path: Path, **_kwargs: object) -> Iterator[sqlite3.Connection]:
+        conn = sqlite3.connect(path)
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        try:
+            yield conn
+        finally:
+            conn.close()
+
+    with patch("polylogue.daemon.status.open_readonly_connection", limited_reader):
+        assert embedding_owner._distinct_message_sessions(index_db, ids) == 3

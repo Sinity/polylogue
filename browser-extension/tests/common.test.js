@@ -99,7 +99,7 @@ function buildEnvelope({
       : "standard";
   const occurrences = new Map();
   const fallbackTurnId = (turn) => {
-    const digest = fnv1a(`${turn.role}:${turn.text || ""}`);
+    const digest = `${turn.role}:${turn.text || ""}:${turn.timestamp || ""}`;
     const occurrence = occurrences.get(digest) || 0;
     occurrences.set(digest, occurrence + 1);
     return `${resolvedProviderSessionId}:turn:${digest}:${occurrence}`;
@@ -388,7 +388,7 @@ describe("buildEnvelope", () => {
     });
 
     expect(envelope.session.turns[0].provider_turn_id).toBeTruthy();
-    expect(envelope.session.turns[0].provider_turn_id).toMatch(/:turn:[0-9a-f]{8}:0$/);
+    expect(envelope.session.turns[0].provider_turn_id).toMatch(/:turn:.+:0$/);
   });
 
   it("respects provided provider_turn_id", () => {

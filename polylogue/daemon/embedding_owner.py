@@ -341,20 +341,30 @@ def _message_ids(outcomes: Iterable[KeyOutcome], domain: str) -> tuple[str, ...]
     )
 
 
+#: Bound parameters per session lookup, below SQLite's default host-parameter limit.
+_SESSION_LOOKUP_CHUNK = 900
+
+
 def _distinct_message_sessions(index_db_path: Path, message_ids: Sequence[str]) -> int:
     """How many sessions own ``message_ids``; zero when the pass reached none."""
     if not message_ids:
         return 0
     from polylogue.daemon.status import open_readonly_connection
 
-    placeholders = ", ".join("?" for _ in message_ids)
+    sessions: set[str] = set()
+    ids = tuple(dict.fromkeys(message_ids))
     with open_readonly_connection(index_db_path, validate_schema=False) as conn:
-        return int(
-            conn.execute(
-                f"SELECT COUNT(DISTINCT session_id) FROM messages WHERE message_id IN ({placeholders})",
-                tuple(message_ids),
-            ).fetchone()[0]
-        )
+        # One statement per chunk keeps each under SQLite's host-parameter limit.
+        for start in range(0, len(ids), _SESSION_LOOKUP_CHUNK):
+            chunk = ids[start : start + _SESSION_LOOKUP_CHUNK]
+            sessions.update(
+                str(row[0])
+                for row in conn.execute(
+                    f"SELECT DISTINCT session_id FROM messages WHERE message_id IN ({', '.join('?' for _ in chunk)})",
+                    chunk,
+                )
+            )
+    return len(sessions)
 
 
 def compose_embedding_convergence(

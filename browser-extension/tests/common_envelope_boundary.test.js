@@ -224,4 +224,18 @@ describe("common.js buildEnvelope boundary contract (real source, not a copy)", 
     expect(turn.blocks).toEqual([]);
     expect(turn.attachments).toEqual([]);
   });
+
+  it("anti-vacuity: fallback turn ids survive an inserted turn that differs only by timestamp", () => {
+    // A digest over role and text alone puts both tool-only turns in one bucket,
+    // so inserting the earlier one shifts the occurrence counter onto the later one.
+    const dom = installCommon();
+    const later = { role: "assistant", text: "", timestamp: "2026-01-01T00:00:02Z", blocks: [maximalBlock()] };
+    const earlier = { ...later, timestamp: "2026-01-01T00:00:01Z" };
+    const build = (turns) => dom.window.polylogueCapture.buildEnvelope({ provider: "chatgpt", adapterName: "chatgpt-dom-v1", turns })
+      .session.turns.map((turn) => turn.provider_turn_id);
+    const [laterAlone] = build([later]);
+    const [earlierId, laterId] = build([earlier, later]);
+    expect(laterId).toBe(laterAlone);
+    expect(earlierId).not.toBe(laterId);
+  });
 });
