@@ -2070,54 +2070,22 @@ def require_positive_conversational_evidence(
     """polylogue-9ykn: a session requires authored content or, for OTel GenAI,
     retained span evidence. Other empty sessions are refused before writing.
 
-    Deliberately NOT folded into ``parse_payload``/``parse_stream_payload``
-    themselves: those two functions are pure provider-routing dispatch, and
-    a large "law" test surface (``tests/unit/sources/test_source_laws.py``
-    and friends) monkeypatches the underlying provider parsers with
-    zero-message stubs specifically to pin *routing* behavior (which parser
-    got called, with what arguments, how many times) independent of parsed
-    content -- folding a content gate into the dispatch functions silently
-    broke 20+ of those tests by deleting the stubbed sessions before the
-    test could observe them. Instead, every real production write path
-    calls this filter explicitly right after it gets a ``parse_payload``/
-    ``parse_stream_payload`` result back: ``pipeline/services/
-    ingest_worker.py`` (subprocess decode/parse worker),
-    ``sources/live/batch.py`` (in-process daemon full-ingest convergence,
-    which already treats an empty session list as a recorded, bounded
-    ``mark_raw_parse_failed`` outcome -- this filter reuses that existing
-    "refused loudly" mechanism rather than inventing a new one),
-    ``sources/live/append_ingest.py`` (incremental append),
-    ``sources/revision_backfill.py`` (offline replay/rebuild, alongside its
-    own OriginSpec/``classify_artifact`` path-and-shape gate from
-    polylogue-6mpy -- this filter catches the sibling case where the shape
-    is recognized but the parsed *content* still carries no message), and
-    ``operations/canonical_archive_ingest.py`` (the one-shot importer behind
-    the demo seeder).
+    This is the admission rule; it is not folded into ``parse_payload`` or
+    ``parse_stream_payload``, which stay pure provider routing so routing
+    tests can stub parsers with zero-message sessions. Its owners are:
 
-    Measured against the live archive (2026-07-31, read-only query against
-    ``index.db``/``source.db``): every verified zero-message
-    ``claude-code-session`` row was one of a handful of artifact classes --
-    ``agent-*.meta`` sidecars (4,945, already refused by
-    ``classify_artifact``'s path rule but pre-dating it), JSONL files
-    containing only non-conversational envelope records
-    (file-history-snapshot/progress/bridge-session/custom-title/agent-name,
-    228+ rows), and ``tool-results/*.json`` sidecars mis-dispatched as
-    sessions -- plus 47 ``claude-ai-export`` conversations with a real title
-    but ``chat_messages: []``. polylogue-ne6k's own investigation concluded
-    no "genuinely empty but legitimate" session construct exists in this
-    corpus: every zero-message row was retained only because the prior
-    repair predicate could not distinguish it from one, not because it was
-    verified worth keeping. This filter stops the population from growing;
-    the existing rows are purged by the already-planned index rebuild
-    (polylogue-x1gd), not by this change.
+    - ``prepared_jsonl.prepare_jsonl_blob``, the preparation owner for sealed
+      carriers, which admits every session on every provider branch before
+      any finalizer runs. Consumers of a sealed artifact do not re-apply it.
+    - Each route that still parses in-process instead of through a sealed
+      carrier, right after its parse. Find them with
+      ``git grep require_positive_conversational_evidence``; a checked-in
+      list of them goes stale. Moving those routes onto sealed preparation
+      removes their call.
 
-    Checking message *content*, not just message *count*, also closes a
-    narrower sibling gap found while testing this bead: an unrecognized
-    single-record document (no ``mapping``/``messages``/envelope markers at
-    all) previously fell through Claude Code's generic single-document
-    lowering into a one-message session whose sole message had an empty
-    ``text`` and no blocks -- structurally "has a message" but zero actual
-    conversational evidence.
+    Checking message *content*, not only message *count*, also refuses an
+    unrecognized single-record document that Claude Code's generic lowering
+    turns into one message with empty text and no blocks.
     """
     kept: list[ParsedSession] = []
     for session in sessions:
