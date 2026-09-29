@@ -11,7 +11,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, BinaryIO, Protocol, cast
+from typing import IO, Protocol, cast
 
 import ijson
 
@@ -536,26 +536,32 @@ _JSONL_TAIL_READ_BYTES = 1 << 20
 
 
 def jsonl_complete_prefix_path(path: Path) -> JsonlFrontier:
-    """Find the same JSONL frontier as :func:`jsonl_complete_prefix` from a file's tail.
+    """Find the same JSONL frontier as :func:`jsonl_complete_prefix` from a file's tail."""
+    with path.open("rb") as handle:
+        return jsonl_frontier_of_handle(handle, path.stat().st_size)
+
+
+def jsonl_frontier_of_handle(handle: IO[bytes], size: int) -> JsonlFrontier:
+    """The JSONL frontier of the first ``size`` bytes of a seekable handle, read from the tail.
 
     A physical newline cannot occur inside a valid JSON string, so the last
     non-blank line decides the frontier; it is located by reading backwards
     from the end and is the only record decoded. Earlier bytes are never
     read -- the whole-file line walk this replaces read a 440 MB rollout in
-    full, under the writer hold, to count records no caller used.
+    full, under the writer hold, to count records no caller used. This is
+    the one file-side owner of the rule; :func:`jsonl_complete_prefix` is
+    its in-memory twin, and the two are held equal by a differential test.
     """
-    size = path.stat().st_size
-    with path.open("rb") as handle:
-        last_newline = _last_newline_before(handle, size)
-        complete_end = last_newline + 1
-        last_content = _last_content_byte_before(handle, size)
-        if last_content < 0:
-            return JsonlFrontier(complete_end, complete_end != size)
-        candidate_start = _last_newline_before(handle, last_content) + 1
-        candidate_end = _next_newline_at_or_after(handle, last_content + 1, size)
-        candidate_terminated = candidate_end < size
-        handle.seek(candidate_start)
-        candidate = handle.read(candidate_end - candidate_start).strip()
+    last_newline = _last_newline_before(handle, size)
+    complete_end = last_newline + 1
+    last_content = _last_content_byte_before(handle, size)
+    if last_content < 0:
+        return JsonlFrontier(complete_end, complete_end != size)
+    candidate_start = _last_newline_before(handle, last_content) + 1
+    candidate_end = _next_newline_at_or_after(handle, last_content + 1, size)
+    candidate_terminated = candidate_end < size
+    handle.seek(candidate_start)
+    candidate = handle.read(candidate_end - candidate_start).strip()
     try:
         json.loads(candidate)
     except (UnicodeDecodeError, json.JSONDecodeError):
@@ -565,7 +571,7 @@ def jsonl_complete_prefix_path(path: Path) -> JsonlFrontier:
     return JsonlFrontier(size, False)
 
 
-def _last_newline_before(handle: BinaryIO, end: int) -> int:
+def _last_newline_before(handle: IO[bytes], end: int) -> int:
     """Offset of the last ``\\n`` before ``end``, or ``-1``."""
     while end > 0:
         start = max(0, end - _JSONL_TAIL_READ_BYTES)
@@ -577,7 +583,7 @@ def _last_newline_before(handle: BinaryIO, end: int) -> int:
     return -1
 
 
-def _last_content_byte_before(handle: BinaryIO, end: int) -> int:
+def _last_content_byte_before(handle: IO[bytes], end: int) -> int:
     """Offset of the last byte before ``end`` that ``bytes.strip`` keeps, or ``-1``."""
     while end > 0:
         start = max(0, end - _JSONL_TAIL_READ_BYTES)
@@ -589,7 +595,7 @@ def _last_content_byte_before(handle: BinaryIO, end: int) -> int:
     return -1
 
 
-def _next_newline_at_or_after(handle: BinaryIO, start: int, size: int) -> int:
+def _next_newline_at_or_after(handle: IO[bytes], start: int, size: int) -> int:
     """Offset of the first ``\\n`` at or after ``start``, or ``size``."""
     offset = start
     while offset < size:
@@ -604,7 +610,7 @@ def _next_newline_at_or_after(handle: BinaryIO, start: int, size: int) -> int:
     return size
 
 
-def jsonl_parse_prefix_size(boundary: JsonlBoundary, size: int) -> int | None:
+def jsonl_parse_prefix_size(boundary: JsonlBoundary | JsonlFrontier, size: int) -> int | None:
     """The complete-record prefix a strict JSONL parse reads, or ``None`` for all of it.
 
     Only an unterminated tail -- an append in progress -- is left out, even
@@ -619,45 +625,17 @@ def jsonl_parse_prefix_size(boundary: JsonlBoundary, size: int) -> int | None:
     return boundary.prefix_size if 0 <= boundary.prefix_size < size and not boundary.malformed_record else None
 
 
-def jsonl_parse_prefix_size_of_handle(handle: IO[bytes], *, chunk_size: int = 64 * 1024) -> int | None:
+def jsonl_parse_prefix_size_of_handle(handle: IO[bytes]) -> int | None:
     """:func:`jsonl_parse_prefix_size` of a whole seekable handle, reading only its tail.
 
-    Only the final non-blank physical line decides the prefix, so this
-    seeks backward from the end until that line is whole instead of reading
-    every record twice; it holds at most that line plus one chunk. The
-    handle is left at offset 0 for the decoder.
+    The frontier comes from :func:`jsonl_frontier_of_handle`, the same
+    tail-first rule every file route uses. The handle is left at offset 0
+    for the decoder.
     """
-    position = handle.seek(0, 2)
-    tail = b""
-    newline_after = False
-    candidate_end = 0
-    line_start = 0
-    while True:
-        candidate_end = len(tail.rstrip())
-        if candidate_end:
-            line_start = tail.rfind(b"\n", 0, candidate_end) + 1
-            if line_start or position == 0:
-                break
-        else:
-            # Trailing whitespace only: keep whether it ended a line, not its bytes.
-            newline_after = newline_after or b"\n" in tail
-            tail = b""
-        if position == 0:
-            break
-        read = min(chunk_size, position)
-        position -= read
-        handle.seek(position)
-        tail = handle.read(read) + tail
+    size = handle.seek(0, 2)
+    frontier = jsonl_frontier_of_handle(handle, size)
     handle.seek(0)
-    if not candidate_end:
-        return None
-    candidate = tail[line_start:candidate_end].strip()
-    terminated = newline_after or b"\n" in tail[candidate_end:]
-    try:
-        json.loads(candidate)
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return None if terminated else position + line_start
-    return None
+    return jsonl_parse_prefix_size(frontier, size)
 
 
 def fingerprint_file(path: Path, *, chunk_size: int = _FINGERPRINT_STREAM_CHUNK) -> tuple[str, int]:

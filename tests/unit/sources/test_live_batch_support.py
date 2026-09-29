@@ -60,6 +60,8 @@ from polylogue.sources.live.batch_support import (
     encode_cursor_hash_authority,
     jsonl_complete_prefix,
     jsonl_complete_prefix_path,
+    jsonl_parse_prefix_size,
+    jsonl_parse_prefix_size_of_handle,
     sha256_range_from_path,
     tail_hash_from_path,
 )
@@ -10076,9 +10078,10 @@ _FRONTIER_PIECES = (
 
 @pytest.mark.parametrize("window", [1, 2, 3, 7, 1 << 20])
 def test_file_frontier_matches_the_bytes_frontier(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, window: int) -> None:
-    """The tail-first file route decides every frontier exactly as the bytes route does.
+    """The tail-first file routes decide every frontier exactly as the bytes route does.
 
-    Payloads mix records, blank and whitespace-only lines, CRLF, malformed
+    Both the path frontier and the handle parse prefix are held to the bytes
+    route. Payloads mix records, blank and whitespace-only lines, CRLF, malformed
     and unterminated tails; small read windows put every boundary across a
     window edge. Anti-vacuity: take the candidate from the last physical line
     instead of the last non-blank one, and blank-tail payloads disagree.
@@ -10102,6 +10105,9 @@ def test_file_frontier_matches_the_bytes_frontier(tmp_path: Path, monkeypatch: p
             expected.incomplete_tail,
             expected.malformed_record,
         ), payload
+        with path.open("rb") as handle:
+            assert jsonl_parse_prefix_size_of_handle(handle) == jsonl_parse_prefix_size(expected, len(payload)), payload
+            assert handle.tell() == 0
 
 
 def test_file_frontier_reads_only_the_tail(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
