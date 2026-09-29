@@ -2373,12 +2373,24 @@ async def _run_daemon_services_under_active_writer_lease(
         for src in sources:
             try:
                 src.root.mkdir(parents=True, exist_ok=True)
-            except OSError:
-                # Optional provider roots are allowed to be absent (and may
-                # live below a read-only home). Explicit roots and other
-                # required sources remain startup requirements.
+            except OSError as exc:
+                # Optional provider roots may be unusable (for example below a
+                # read-only home) without stopping startup; explicit roots and
+                # other required sources remain startup requirements. The
+                # fault is reported, never silently treated as an absent
+                # installation, and the source's health check still flags it.
                 if src.required:
                     raise
+                emit(
+                    "daemon.startup.optional_source_root_unavailable",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="optional_source_root_unavailable",
+                    source=src.name,
+                    path=src.root,
+                    error_type=type(exc).__name__,
+                    error_detail=str(exc),
+                )
 
         if lifecycle_events_enabled:
             await _emit_daemon_lifecycle_event(

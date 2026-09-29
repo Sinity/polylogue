@@ -209,28 +209,6 @@ class CaptureJobRegistry:
             )
         if "retention_declared" not in job_columns:
             connection.execute("ALTER TABLE capture_jobs ADD COLUMN retention_declared INTEGER NOT NULL DEFAULT 0")
-        # Databases predating the event stream still have durable jobs. Seed
-        # their deterministic baseline once so later revisions have a start.
-        rows = connection.execute(
-            "SELECT job_id, revision, provider, intent_key, created_at FROM capture_jobs "
-            "WHERE NOT EXISTS (SELECT 1 FROM capture_job_events e WHERE e.job_id=capture_jobs.job_id)"
-        ).fetchall()
-        for row in rows:
-            payload = {"provider": row["provider"], "intent_key": row["intent_key"]}
-            digest = canonical_digest({"kind": "created", "refs": {}, "payload": payload})
-            connection.execute(
-                "INSERT INTO capture_job_events "
-                "(event_id, job_id, event_revision, job_revision, kind, refs_json, payload_json, request_id, occurred_at) "
-                "VALUES (?, ?, 0, ?, 'created', '{}', ?, ?, ?)",
-                (
-                    "legacy-created:" + row["job_id"],
-                    row["job_id"],
-                    row["revision"],
-                    canonical_json({"digest": digest, "value": payload}),
-                    "migration:create:" + row["job_id"],
-                    row["created_at"],
-                ),
-            )
 
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:

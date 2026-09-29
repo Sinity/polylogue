@@ -3206,9 +3206,10 @@ async function missionControlSnapshot(tab = null, { refresh = true, includeIntel
   if (includeIntelligence && receiverOnline) {
     try {
       const capabilities = await getJson("/v1/browser-captures/capabilities", PROVIDER_REQUEST_TIMEOUT_MS);
-      assertionCapability = capabilities?.assertion_candidates === true
-        || capabilities?.capabilities?.assertion_candidates === true;
-    } catch { /* Old receivers fail closed and leave Save unavailable. */ }
+      // Only the declared top-level field is authoritative; any other shape
+      // fails closed and leaves Save unavailable.
+      assertionCapability = capabilities?.assertion_candidates === true;
+    } catch { /* An unreachable capability probe fails closed. */ }
   }
   const acceptedIdentityMap = await runtimeChrome.storage.local.get({ [ACCEPTED_MESSAGE_IDENTITIES_KEY]: {} });
   const acceptedIdentities = state.provider && state.provider_session_id

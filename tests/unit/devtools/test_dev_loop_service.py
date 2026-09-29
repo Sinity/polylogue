@@ -442,12 +442,22 @@ try {
     assert payload["calls"][-1] == ["close", "B" * 32]
 
 
-def test_anti_vacuity_owned_target_cleanup_timeout_rejects_normal_completion() -> None:
+def test_anti_vacuity_owned_target_cleanup_waits_for_a_slow_close() -> None:
+    """A slow close that is still progressing completes instead of being abandoned.
+
+    Anti-vacuity: racing the close against a fixed deadline rejects ``finish()``
+    while the close command is still running and leaves the owned target open.
+    The control subprocess carries its own bounded timeout.
+    """
     program = """
 import { createOwnedTargetCleanup } from './scripts/shared_chrome_proof_cleanup.mjs';
-const cleanup = createOwnedTargetCleanup({ control: () => new Promise(() => {}), targetId: 'C'.repeat(32), timeoutMs: 5 });
-try { await cleanup.finish(); process.exitCode = 2; }
-catch (error) { console.log(error.message); }
+const closed = [];
+const cleanup = createOwnedTargetCleanup({
+  control: (args) => new Promise((resolve) => setTimeout(() => { closed.push(args); resolve({}); }, 50)),
+  targetId: 'C'.repeat(32),
+});
+await cleanup.finish();
+console.log(JSON.stringify(closed));
 """
     completed = subprocess.run(
         ["node", "--input-type=module", "--eval", program],
@@ -457,7 +467,7 @@ catch (error) { console.log(error.message); }
         check=False,
     )
     assert completed.returncode == 0, completed.stderr
-    assert "cleanup timed out" in completed.stdout
+    assert json.loads(completed.stdout) == [["close", "C" * 32]]
 
 
 def test_anti_vacuity_live_proof_parses_diagnostic_json_and_tracks_invalid_target() -> None:

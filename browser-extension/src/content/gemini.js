@@ -95,17 +95,20 @@
   window.polylogueCapture.capturePage = capture;
   let lastTurnSignature = collectTurns().map((turn) => `${turn.role}:${turn.text}`).join("\n");
   let recaptureTimer = null;
+  // Debounce the raw mutation stream first, then build the transcript
+  // signature once for the settled batch: streaming emits a mutation per
+  // token, and walking every turn on each one is quadratic work.
   const freshnessObserver = new MutationObserver(() => {
-    let signature;
-    try { signature = collectTurns().map((turn) => `${turn.role}:${turn.text}`).join("\n"); }
-    catch { return; }
-    if (!signature || signature === lastTurnSignature) { lastTurnSignature = signature; return; }
-    lastTurnSignature = signature;
     if (recaptureTimer !== null) clearTimeout(recaptureTimer);
-    // Hint only: the background freshness scheduler owns the capture decision
-    // and honours the automatic-capture opt-out; capturing here would not.
     recaptureTimer = setTimeout(() => {
       recaptureTimer = null;
+      let signature;
+      try { signature = collectTurns().map((turn) => `${turn.role}:${turn.text}`).join("\n"); }
+      catch { return; }
+      if (!signature || signature === lastTurnSignature) { lastTurnSignature = signature; return; }
+      lastTurnSignature = signature;
+      // Hint only: the background freshness scheduler owns the capture
+      // decision and honours the automatic-capture opt-out.
       const providerSessionId = conversationIdFromUrl();
       if (!providerSessionId) return;
       chrome.runtime.sendMessage({

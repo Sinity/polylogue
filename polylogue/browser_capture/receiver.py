@@ -180,7 +180,13 @@ def _load_or_mint_receiver_token_locked(target: Path, *, rotate: bool) -> str:
 
 
 def persist_receiver_token(token: str, path: Path | None = None) -> str:
-    """Publish an explicitly configured receiver token for native pairing."""
+    """Publish an explicitly configured receiver token for native pairing.
+
+    The token is normalized once, exactly as ``load_or_mint_receiver_token``
+    reads the file back, so the receiver and the paired extension hold the
+    same bearer credential.
+    """
+    token = token.strip()
     if not token:
         raise ValueError("receiver token must not be empty")
     target = path if path is not None else browser_capture_receiver_token_path()

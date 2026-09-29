@@ -17,7 +17,6 @@ from typing import Any, cast
 import pytest
 
 from polylogue.browser_capture import capture_jobs as capture_jobs_module
-from polylogue.browser_capture.capture_job_events import read_capture_job_events
 from polylogue.browser_capture.capture_jobs import (
     CaptureJobRegistry,
     canonical_digest,
@@ -723,36 +722,6 @@ def test_orphan_census_reports_unreadable_files_and_refreshes_diagnostics(tmp_pa
         assert unreadable_entry["errno_class"] == "PermissionError"
     finally:
         connection.close()
-
-
-def test_schema_open_seeds_legacy_jobs_with_created_event(tmp_path: Path) -> None:
-    """Anti-vacuity: without schema-open backfill, an existing job has no baseline event."""
-    registry = CaptureJobRegistry(tmp_path, "receiver")
-    with registry._connection() as connection:
-        connection.execute(
-            "INSERT INTO capture_jobs (job_id, provider, account_scope, intent_key, intent_json, revision, "
-            "retry_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 4, ?, ?, ?)",
-            (
-                "legacy-job",
-                "chatgpt",
-                SCOPE,
-                INTENT_KEY,
-                canonical_json({"version": 1, "digest": "d", "intent_key": INTENT_KEY, "payload": {}}),
-                canonical_json({"state": "ready", "attempt": 0}),
-                "2026-01-01T00:00:00Z",
-                "2026-01-01T00:00:00Z",
-            ),
-        )
-    # A legacy database is first opened by a new receiver process: forget this
-    # process's completed schema upgrade so the next open runs it again.
-    from polylogue.browser_capture import capture_jobs
-
-    capture_jobs._SCHEMA_READY.clear()
-    with registry._connection() as connection:
-        events, _ = read_capture_job_events(connection, "legacy-job", 10)
-    assert len(events) == 1
-    assert events[0]["kind"] == "created"
-    assert events[0]["job_revision"] == 4
 
 
 def test_concurrent_first_registry_opens_serialize_schema_upgrade(tmp_path: Path) -> None:

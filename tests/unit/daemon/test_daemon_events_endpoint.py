@@ -1207,6 +1207,13 @@ class TestAgedOutCursorResync:
         assert handler._accept_message_window_anchor("", None, 500) is False
         assert b"400" in cast(BytesIO, handler.wfile).getvalue()
 
+    def test_query_parsing_keeps_a_blank_anchor(self) -> None:
+        """Anti-vacuity: parse_qs without keep_blank_values drops ``around=`` before the conflict check."""
+        handler = _make_handler("GET", "/api/sessions/x/read?view=messages&around=&offset=500")
+        _path, params = handler._parse_path()
+        assert params["around"] == [""]
+        assert handler._get_param(params, "around") is None
+
     def test_an_aged_out_page_cannot_also_deliver_rows(self) -> None:
         from polylogue.daemon.events import DaemonEventPage, EventCursorStatus
 

@@ -257,3 +257,13 @@ def test_allow_no_auth_receiver_serves_unauthenticated_by_explicit_opt_out(tmp_p
         conn.close()
 
     assert response.status == HTTPStatus.OK
+
+
+def test_explicit_receiver_token_is_normalized_before_persisting(tmp_path: Path) -> None:
+    """Anti-vacuity: persisting the raw value while the loader strips it gives the extension a different bearer."""
+    from polylogue.browser_capture.receiver import load_or_mint_receiver_token, persist_receiver_token
+
+    token_path = tmp_path / "receiver-token"
+    returned = persist_receiver_token("  configured-token\n", token_path)
+    assert returned == "configured-token"
+    assert load_or_mint_receiver_token(token_path) == returned

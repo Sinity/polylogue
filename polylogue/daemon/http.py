@@ -1727,12 +1727,14 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
     def _parse_path(self) -> tuple[list[str], dict[str, list[str]]]:
         parsed = urlparse(self.path)
         path = [unquote(segment) for segment in parsed.path.strip("/").split("/")]
-        params = parse_qs(parsed.query)
+        # Blank values are kept so a route can tell "sent empty" from "absent";
+        # _get_param still reads a blank as absent for ordinary parameters.
+        params = parse_qs(parsed.query, keep_blank_values=True)
         return path, params
 
     def _get_param(self, params: dict[str, list[str]], key: str, default: str | None = None) -> str | None:
         values = params.get(key)
-        if values:
+        if values and values[0] != "":
             return values[0]
         return default
 
@@ -4534,7 +4536,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             limit = self._get_int(params, "limit", 50)
             offset = self._get_int(params, "offset", 0)
             window_continuation = self._get_param(params, "continuation")
-            around = self._get_param(params, "around")
+            # An explicitly blank ``around`` is still an anchor request, so it
+            # conflicts with an offset or continuation rather than vanishing.
+            around = params["around"][0] if "around" in params else None
             if not self._accept_message_window_anchor(around, window_continuation, offset):
                 return
             archive_root = _web_reader_archive_root()

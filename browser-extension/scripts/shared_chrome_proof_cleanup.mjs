@@ -1,20 +1,11 @@
-const DEFAULT_CLEANUP_TIMEOUT_MS = 30_000;
-
-function boundedCleanup(cleanup, timeoutMs) {
-  let timeout = null;
-  const deadline = new Promise((_, reject) => {
-    timeout = setTimeout(() => reject(new Error(`owned Chrome target cleanup timed out after ${timeoutMs} ms`)), timeoutMs);
-  });
-  return Promise.race([Promise.resolve().then(cleanup), deadline]).finally(() => {
-    if (timeout !== null) clearTimeout(timeout);
-  });
-}
+// The close command is bounded by the control subprocess itself, which
+// terminates the child on its own timeout. Racing it here would abandon a slow
+// close that is still making progress and could leave the shared target open.
 
 export function createOwnedTargetCleanup({
   control,
   targetId,
   processLike = process,
-  timeoutMs = DEFAULT_CLEANUP_TIMEOUT_MS,
 }) {
   let cleanupPromise = null;
   let signalReceived = false;
@@ -27,7 +18,7 @@ export function createOwnedTargetCleanup({
 
   const close = () => {
     if (cleanupPromise === null) {
-      cleanupPromise = boundedCleanup(() => control(["close", targetId]), timeoutMs);
+      cleanupPromise = Promise.resolve().then(() => control(["close", targetId]));
     }
     return cleanupPromise;
   };

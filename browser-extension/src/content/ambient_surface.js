@@ -471,7 +471,13 @@
     async function refresh() {
       if (stopped) return null;
       try {
-        const response = await runtime.sendMessage({ type: "polylogue.missionControl.status", refresh: true });
+        // While the panel is open every refresh (periodic or manual) asks for
+        // intelligence too, so an open panel keeps its claims and Save state.
+        const response = await runtime.sendMessage({
+          type: "polylogue.missionControl.status",
+          refresh: true,
+          ...(panel.hidden ? {} : { include_intelligence: true }),
+        });
         if (response?.ok) render(response);
         return response;
       } catch (error) {
