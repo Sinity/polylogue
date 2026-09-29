@@ -757,6 +757,16 @@ def _captured_jsonl_ends_at_record_boundary(
 _FullRecordKey = tuple[str, str, int | None]
 
 
+def _emit_write_hold_spent_during_acquisition(exc: WriteHoldBudgetError) -> None:
+    emit(
+        "live.ingest.write_hold_spent_during_acquisition",
+        level=WARNING,
+        outcome="degraded",
+        reason="acquired files publish with their cursors; the rest stay backlog",
+        error_detail=str(exc),
+    )
+
+
 def _full_record_key(record: RawSessionRecord) -> _FullRecordKey:
     return record.raw_id, record.source_path, record.source_index
 
@@ -3336,21 +3346,32 @@ class LiveBatchProcessor:
         excluded_paths: dict[Path, str] = {}
         detection_fallbacks: dict[Path, str] = {}
         acquisition_time_budget_exceeded = False
+        acquisition_write_hold_exhausted = False
         reached_any_path = False
 
         def admit_acquisition(path: Path) -> bool:
             # The same item boundary covers ordinary files and vendor
             # conversions. An unattempted item is backlog, never poison.
-            nonlocal acquisition_time_budget_exceeded, reached_any_path
+            nonlocal acquisition_time_budget_exceeded, acquisition_write_hold_exhausted, reached_any_path
             try:
                 pass_exhausted = _ingest_pass_exhausted(
                     max_pass_seconds=max_pass_seconds if reached_any_path else None,
                     pass_started=pass_clock_started,
                     checkpoint="full_acquisition_file",
                 )
-            except WriteHoldBudgetError:
-                blob_store.discard_pending()
-                raise
+            except WriteHoldBudgetError as exc:
+                if not reached_any_path:
+                    # Nothing acquired yet, so ending the unit loses nothing.
+                    blob_store.discard_pending()
+                    raise
+                # Files already acquired in this pass are finished, not
+                # discarded: a file whose own acquisition outlasts the bound
+                # would otherwise be re-acquired and refused on every pass
+                # and never land. It stops the pass taking new files; the
+                # ones acquired go on to publish their cursors.
+                _emit_write_hold_spent_during_acquisition(exc)
+                acquisition_write_hold_exhausted = True
+                pass_exhausted = True
             if pass_exhausted:
                 acquisition_time_budget_exceeded = True
                 excluded_paths[path] = REFUSED_UNATTEMPTED_TIME_BUDGET
@@ -4064,21 +4085,23 @@ class LiveBatchProcessor:
             raw_source_revisions.setdefault(path, raw_id)
             raw_by_record[_full_record_key(raw_records[-1])] = path
 
-        # A one-item pass has no next-item checkpoint. Check once after the
-        # acquisition loop so its final item cannot release an over-budget
-        # hold as a successful unit.
+        # A one-item pass has no next-item checkpoint, so its overrun is read
+        # here. The acquired files are finished rather than discarded (the
+        # same forward-progress rule as the archive-write checkpoints): the
+        # unit ends once their cursors are durable.
         try:
             check_write_hold_budget("full_acquisition_complete")
-        except WriteHoldBudgetError:
-            blob_store.discard_pending()
-            raise
+        except WriteHoldBudgetError as exc:
+            if not acquisition_write_hold_exhausted:
+                _emit_write_hold_spent_during_acquisition(exc)
+            acquisition_write_hold_exhausted = True
 
         summary: _IngestBatchSummary | None = None
         archive_write: _ArchiveFullWriteResult | None = None
         raw_deferred_paths: list[Path] = []
         skipped_paths: set[Path] = set()
         time_budget_exceeded = acquisition_time_budget_exceeded
-        write_hold_exhausted = False
+        write_hold_exhausted = acquisition_write_hold_exhausted
         if raw_records:
             try:
                 blob_store.flush()

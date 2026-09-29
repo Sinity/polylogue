@@ -3915,6 +3915,66 @@ async def test_acquisition_is_checkpointed_per_file_not_once_per_batch(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("file_count", [1, 2])
+async def test_a_file_whose_acquisition_outlasts_the_hold_still_lands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, frozen_clock: FrozenClock, file_count: int
+) -> None:
+    """slc55: an acquired file is finished, not discarded, when its own capture spends the hold.
+
+    The unit stops taking new files, the files it never reached stay
+    backlog, and the acquired one publishes its cursor. Anti-vacuity: raise
+    at the next admission or after the acquisition loop (the predecessor)
+    and the pass ends with no cursor, so a file that always outlasts the
+    bound is re-acquired and refused forever.
+    """
+    from polylogue.core.write_hold import enter_write_hold, exit_write_hold
+    from polylogue.sources.live import batch as live_batch
+
+    root = tmp_path / "sessions"
+    root.mkdir()
+    paths = [root / f"slow-{index}.jsonl" for index in range(file_count)]
+    for index, path in enumerate(paths):
+        _write_jsonl(
+            path,
+            [
+                _codex_session_meta(f"slow-session-{index}"),
+                _codex_message(
+                    message_id=f"slow-message-{index}",
+                    role="user",
+                    text=f"slow capture {index}",
+                    timestamp="2026-08-02T00:00:00Z",
+                ),
+            ],
+        )
+    original_classify = live_batch.classify_pre_acquisition
+
+    def slow_classify(*args: Any, **kwargs: Any) -> Any:
+        frozen_clock.advance(31)
+        return original_classify(*args, **kwargs)
+
+    monkeypatch.setattr(live_batch, "classify_pre_acquisition", slow_classify)
+    cursor = CursorStore(tmp_path / "live.sqlite")
+    processor = LiveBatchProcessor(
+        cast(Any, SimpleNamespace(archive_root=tmp_path, backend=None)),
+        (WatchSource(name="codex", root=root),),
+        cursor=cursor,
+        parser_fingerprint="test-parser",
+    )
+
+    token = enter_write_hold("watcher.live_ingest.full", 30.0)
+    try:
+        result = await processor.ingest_files(paths, emit_event=False)
+    finally:
+        exit_write_hold(token)
+
+    assert result.failed_file_count == 0
+    assert result.succeeded_file_count == 1
+    assert [path for path in paths if cursor.get_record(path) is not None] == [paths[0]]
+    with sqlite3.connect(tmp_path / "index.db") as conn:
+        assert conn.execute("SELECT COUNT(*) FROM messages").fetchone() == (1,)
+
+
+@pytest.mark.asyncio
 async def test_a_hold_past_its_declared_bound_ends_the_pass(tmp_path: Path) -> None:
     """polylogue-ipyvj: past the bound the unit of work ends, typed.
 
