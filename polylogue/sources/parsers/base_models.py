@@ -13,6 +13,7 @@ from pydantic import (
     ConfigDict,
     Field,
     FieldSerializationInfo,
+    PrivateAttr,
     ValidationInfo,
     field_serializer,
     field_validator,
@@ -557,10 +558,15 @@ class ParsedAttachment(BaseModel):
     # Excluded from serialization/repr; not a stored field.
     precomputed_blob: tuple[str, int] | None = Field(default=None, exclude=True, repr=False)
     prepared_carrier_key: tuple[str, int, int] | None = Field(default=None, exclude=True, repr=False)
+    # Shallow value copies (including chunk-coordinate rebasing) retain the
+    # acquisition identity, without publishing process-local object identity.
+    _acquisition_identity: int | None = PrivateAttr(default=None)
 
     @property
     def acquisition_key(self) -> object:
-        return self.prepared_carrier_key if self.prepared_carrier_key is not None else id(self)
+        if self.prepared_carrier_key is not None:
+            return self.prepared_carrier_key
+        return self._acquisition_identity if self._acquisition_identity is not None else id(self)
 
     @field_validator("path")
     @classmethod

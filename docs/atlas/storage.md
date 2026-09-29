@@ -32,7 +32,7 @@ selected path without inspecting every source row
 
 ## Identity and generated columns
 
-- `sessions.session_id` is stored-generated as `origin || ':' || native_id` (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:783-788`).
+- `sessions.session_id` is stored-generated as `origin || ':' || native_id` (`SESSIONS_SPEC` in `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:795-803`).
 - `messages.message_id` is stored-generated with explicit namespace tags: native identity becomes `session_id || ':n:' || native_id`; content-derived identity becomes `session_id || ':c:' || content_identity || '.' || content_occurrence` -- a digest of the message's own declared semantic fields, so an insertion elsewhere in the export cannot renumber it onto a different message (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:337-342`).
 - `messages.identity_source` records which identity path fired; its index CHECK is generated from the semantic `MessageIdentitySource` Literal (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:360-365`; `polylogue/core/types.py:13-16`).
 - `blocks.block_id` is stored-generated as `message_id || ':' || position`; tool command/path and `search_text` projections are virtual generated columns (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:561-566`; `polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:635-650`).
@@ -51,9 +51,9 @@ selected path without inspecting every source row
 
 ## Parsed-session write choke point
 
-- `write_parsed_session_to_archive` computes public origin, stored native identity, session identity, parser fingerprint, and lowering fingerprint before lowering one parsed session (`polylogue/storage/sqlite/archive_tiers/write.py:1021-1124`).
-- It owns its transaction by default; bulk callers pass `manage_transaction=False` and own the surrounding commit to amortize per-commit fsync and WAL churn (`polylogue/storage/sqlite/archive_tiers/write.py:1070-1074`; `polylogue/storage/sqlite/archive_tiers/write.py:1241`).
-- It is the parsed-session lowering choke point shared by batch ingest and authoritative revision replay/reindex (`polylogue/storage/sqlite/archive_tiers/write.py:1108`; `polylogue/pipeline/services/ingest_batch/_core.py:1399`; `polylogue/storage/sqlite/archive_tiers/revision_governance.py:442`). It is not the only mutation function in the six-tier substrate.
+- `write_parsed_session_to_archive` computes public origin, stored native identity, session identity, parser fingerprint, and lowering fingerprint before lowering one parsed session (function `write_parsed_session_to_archive` in `polylogue/storage/sqlite/archive_tiers/write.py`).
+- It owns its transaction by default; bulk callers pass `manage_transaction=False` and own the surrounding commit to amortize per-commit fsync and WAL churn (the `manage_transaction` argument and transaction context in `write_parsed_session_to_archive`, `polylogue/storage/sqlite/archive_tiers/write.py`).
+- It is the parsed-session lowering choke point shared by batch ingest (`polylogue/pipeline/services/ingest_batch/_core.py`) and authoritative revision replay/reindex (`write_with_reparse_receipt` in `polylogue/storage/sqlite/archive_tiers/revision_governance.py`). It is not the only mutation function in the six-tier substrate.
 
 ## Blob publication, liveness, and GC
 
@@ -68,7 +68,7 @@ selected path without inspecting every source row
 
 ### Two-phase `gc_generations`
 
-1. Commit one generation and every exact member intent as `pending` before any unlink (`polylogue/storage/sqlite/archive_tiers/source.py:741-769`; `polylogue/storage/blob_gc.py:525-569`).
+1. Commit one generation and every exact member intent as `pending` before any unlink (`gc_generation_members` in `polylogue/storage/sqlite/archive_tiers/source.py:689-704`; `polylogue/storage/blob_gc.py:525-569`).
 2. Under `BEGIN IMMEDIATE` on source and index, recheck liveness/reservations, unlink or reconcile each member, commit outcomes, then finalize only when no pending members remain (`polylogue/storage/blob_gc.py:735-900`; `polylogue/storage/blob_gc.py:589-620`).
 
 Pending generations are restartable; a restart resumes their exact member set instead of rediscovering intent from the filesystem, and refuses an intent whose blob namespace was swapped or remounted (`polylogue/storage/blob_gc.py:622-638`; `polylogue/storage/blob_gc.py:640-664`; `polylogue/storage/blob_gc.py:916-951`).
@@ -88,7 +88,7 @@ Pending generations are restartable; a restart resumes their exact member set in
 - `branch_point_message_id` is deliberately not an FK. Parent full replacement deletes before reinserting deterministic message IDs; `ON DELETE SET NULL` would fire during the DELETE step and permanently sever the child (`polylogue/storage/sqlite/archive_tiers/archive_tiers_specs.py:1255-1274`).
 - A failed or unavailable liveness surface is not equivalent to zero references (`polylogue/storage/blob_liveness.py:321-340`; `polylogue/storage/blob_gc.py:9-13`).
 - A published blob may legitimately have no durable ref yet; its reservation protects that publication window (`polylogue/storage/blob_publication.py:110-150`; `polylogue/storage/sqlite/archive_tiers/source.py:730-739`).
-- GC history counters are summaries derived only after all member outcomes close; member rows are the crash-recovery authority (`polylogue/storage/sqlite/archive_tiers/source.py:741-769`; `polylogue/storage/blob_gc.py:571-588`).
+- GC history counters are summaries derived only after all member outcomes close; member rows are the crash-recovery authority (`gc_generation_members` in `polylogue/storage/sqlite/archive_tiers/source.py:689-704`; `polylogue/storage/blob_gc.py:571-588`).
 - A retained agent work event (`append_work_event`) is its own logical source: its `agent-work-event:` raw id is also its logical key and source path, admitted as a byte-proven singleton baseline, so it never joins the byte-revision cohort or accepted head of the transcript it annotates (`write_work_event_raw_and_parsed_result` in `polylogue/storage/sqlite/archive_tiers/revision_governance.py`). Its write is event-only and keeps the session's `raw_id` and `content_hash`. A cold build replays work-event keys after every byte and membership cohort, so the transcript's fresh write never meets a session an event created (`backfill_historical_revision_evidence` in `polylogue/sources/revision_backfill.py`). Excision seeds work-event raws by the session's `(origin, native_id)`, and source conservation counts one as materialized when its session is indexed.
 - Rebuildable `index.db` must not become authority for an irreversible durable mutation; blob GC therefore requires source-ledger and active-index checks to agree (`polylogue/storage/blob_gc.py:7-20`; `polylogue/storage/blob_liveness.py:321-359`).
 
