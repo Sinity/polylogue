@@ -800,17 +800,20 @@ def test_maintenance_route_persists_and_proves_a_future_train(tmp_path: Path, mo
         )
 
 
-def test_maintenance_route_replays_historical_sidecars_before_current_target(
+def test_maintenance_route_refuses_an_intermediate_sidecar_below_the_shipped_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A later shipped slot must not reject an earlier persisted train.
+    """A catch-up across two numbered slots is refused before any SQL runs.
 
-    The archive is bootstrapped at the adoption floor through the production
-    route, so it carries its own format marker and bootstrap receipt, and the
-    runtime target is only then raised to slot 3. A hand-authored source.db
-    cannot stand in: ``execute_durable_change_train`` admits an archive by its
-    ``.polylogue-format.json`` lineage marker first, which a bare fixture file
-    does not have.
+    Bootstrap DDL describes only the shipped target, so slot 2 of a v3
+    package has no fresh-DDL image to prove parity against. The archive is
+    bootstrapped at the adoption floor through the production route, so it
+    carries its own format marker, and the runtime target is then raised to
+    slot 3.
+
+    Anti-vacuity: drop the fresh-version check from
+    ``admit_durable_change_train`` and the refusal falls through to the
+    generic parity message, so the ``match`` below goes red.
     """
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
 
@@ -893,170 +896,19 @@ def test_maintenance_route_replays_historical_sidecars_before_current_target(
     monkeypatch.setattr(bootstrap, "ARCHIVE_DDL_BY_TIER", ddl)
     monkeypatch.setattr(migration_runner, "ARCHIVE_DDL_BY_TIER", ddl)
     db_path = tmp_path / "source.db"
-    released: list[bool] = []
 
-    first = execute_durable_change_train(
-        tmp_path,
-        ArchiveTier.SOURCE,
-        backup_manifest=None,
-        daemon_stopped_evidence_ref="proof:daemon-stopped",
-        single_writer_evidence_ref="proof:archive-ownership-lock",
-        release_archive_ownership=lambda: released.append(True),
-    )
-    assert first.migration_result is not None
-    assert first.migration_result.applied_versions == (2,)
-    with sqlite3.connect(db_path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone() == (2,)
-
-    second = execute_durable_change_train(
-        tmp_path,
-        ArchiveTier.SOURCE,
-        backup_manifest=None,
-        daemon_stopped_evidence_ref="proof:daemon-stopped",
-        single_writer_evidence_ref="proof:archive-ownership-lock",
-        release_archive_ownership=lambda: released.append(True),
-    )
-    assert second.migration_result is not None
-    assert second.migration_result.applied_versions == (3,)
-    with sqlite3.connect(db_path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone() == (3,)
-        assert conn.execute("SELECT name FROM sqlite_schema WHERE name='later_items'").fetchone() == ("later_items",)
-    assert released == [True, True]
-    historical_manifest = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2)
-    manifest_v3 = durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 3)
-    manifest_v3_bytes = manifest_v3.read_bytes()
-    manifest_v3.unlink()
-    with pytest.raises(DurableChangeTrainError, match=r"versions \[3\]"):
-        durable_change_train_module.reconcile_durable_change_train_startup(tmp_path)
-    assert released == [True, True]
-    with pytest.raises(DurableChangeTrainError, match="lacks released train evidence"):
+    with pytest.raises(DurableChangeTrainError, match=r"durable train v2 has no canonical fresh-DDL image"):
         execute_durable_change_train(
             tmp_path,
             ArchiveTier.SOURCE,
             backup_manifest=None,
             daemon_stopped_evidence_ref="proof:daemon-stopped",
             single_writer_evidence_ref="proof:archive-ownership-lock",
-            release_archive_ownership=lambda: pytest.fail("missing intervening train was admitted"),
+            release_archive_ownership=lambda: pytest.fail("an unprovable intermediate train was admitted"),
         )
-    manifest_v3.write_bytes(manifest_v3_bytes)
-    evidence_captures = 0
-    source_canonical_targets: list[int] = []
-    real_capture = migration_runner.capture_durable_database_evidence
-    real_canonical_inventory = durable_change_train_module._canonical_schema_inventory
-
-    def count_evidence_captures(
-        connection: sqlite3.Connection, tier: ArchiveTier
-    ) -> migration_runner.DurableDatabaseEvidence:
-        nonlocal evidence_captures
-        evidence_captures += 1
-        return real_capture(connection, tier)
-
-    def count_canonical_inventories(tier: ArchiveTier, target_version: int) -> migration_runner.DurableSchemaInventory:
-        if tier is ArchiveTier.SOURCE:
-            source_canonical_targets.append(target_version)
-        return real_canonical_inventory(tier, target_version)
-
-    monkeypatch.setattr(durable_change_train_module, "capture_durable_database_evidence", count_evidence_captures)
-    monkeypatch.setattr(durable_change_train_module, "_canonical_schema_inventory", count_canonical_inventories)
-    third = execute_durable_change_train(
-        tmp_path,
-        ArchiveTier.SOURCE,
-        backup_manifest=None,
-        daemon_stopped_evidence_ref="proof:daemon-stopped",
-        single_writer_evidence_ref="proof:archive-ownership-lock",
-        release_archive_ownership=lambda: released.append(True),
-    )
-    assert third.forward_version_receipt is not None
-    assert third.forward_version_receipt.historical_target_version == 2
-    assert third.forward_version_receipt.observed_live_version == 3
-    # The no-op pass reuses what it derived once: one live evidence capture
-    # for the source tier, and one canonical inventory, for the live target it
-    # observed. Re-deriving either per persisted manifest -- there are two,
-    # v2 and v3 -- would show up here immediately.
-    #
-    # Only the source tier is counted. The other durable tiers contribute
-    # their own corroboration inventories through
-    # ``_fresh_durable_bootstrap_tier_is_own``, which is a different mechanism
-    # with a different (currently repeated) call pattern; pinning a global
-    # total here would make this assertion about that instead.
-    assert evidence_captures == 1
-    assert source_canonical_targets == [3]
-
-    historical_train = load_durable_change_train_manifest(historical_manifest)
     with sqlite3.connect(db_path) as conn:
-        actual = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
-        receipt = durable_change_train_module._verify_released_train_live_tier(
-            conn,
-            historical_train,
-            current_target_version=3,
-            actual_evidence=actual,
-        )
-    assert receipt is not None
-    assert receipt.historical_target_version == 2
-    assert receipt.current_target_version == 3
-    assert receipt.observed_live_version == 3
-    assert historical_train.proof is not None
-    assert (
-        receipt.historical_schema_inventory_sha256 == historical_train.proof.fresh_ddl_parity.migrated_inventory_sha256
-    )
-    with sqlite3.connect(db_path) as conn:
-        with pytest.raises(DurableChangeTrainError, match="is newer than current target"):
-            durable_change_train_module._verify_released_train_live_tier(
-                conn,
-                historical_train,
-                current_target_version=2,
-                actual_evidence=actual,
-            )
-
-    captures = 0
-    real_capture = migration_runner.capture_durable_database_evidence
-
-    def count_captures(connection: sqlite3.Connection, tier: ArchiveTier) -> migration_runner.DurableDatabaseEvidence:
-        nonlocal captures
-        captures += 1
-        return real_capture(connection, tier)
-
-    monkeypatch.setattr(durable_change_train_module, "capture_durable_database_evidence", count_captures)
-    assert reconcile_durable_change_train_startup(tmp_path) == (
-        durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 2),
-        durable_change_train_manifest_path(tmp_path, ArchiveTier.SOURCE, 3),
-    )
-    assert captures == 1
-
-    unrelated_root = tmp_path / "unrelated-archive"
-    unrelated_root.mkdir()
-    # The bootstrapped tier runs in WAL mode, so the committed slot-3 state
-    # can still be sitting in ``source.db-wal``. Copying the main file alone
-    # would hand the unrelated root a v2 image and make the refusal below a
-    # fixture artifact instead of the identity check under test.
-    with closing(sqlite3.connect(db_path)) as live:
-        live.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    shutil.copy2(db_path, unrelated_root / "source.db")
-    unrelated_manifest = durable_change_train_manifest_path(unrelated_root, ArchiveTier.SOURCE, 2)
-    unrelated_manifest.parent.mkdir(parents=True)
-    shutil.copy2(historical_manifest, unrelated_manifest)
-    shutil.copy2(manifest_v3, durable_change_train_manifest_path(unrelated_root, ArchiveTier.SOURCE, 3))
-    with sqlite3.connect(unrelated_root / "source.db") as conn:
-        assert conn.execute("PRAGMA integrity_check").fetchone() == ("ok",)
-        # Without the live slot in the copy the refusal below would fire for
-        # a version mismatch and prove nothing about archive identity.
-        assert conn.execute("PRAGMA user_version").fetchone() == (3,)
-    with pytest.raises(DurableChangeTrainError, match="immutable archive identity differs"):
-        reconcile_durable_change_train_startup(unrelated_root)
-
-    # Remove the object the newest slot introduced: the live tier still says
-    # v3 but no longer has the canonical v3 shape.
-    with sqlite3.connect(db_path) as conn:
-        conn.execute(f"DROP TABLE {migrations[-1][1]}")
-        conn.commit()
-        tampered = migration_runner.capture_durable_database_evidence(conn, ArchiveTier.SOURCE)
-        with pytest.raises(DurableChangeTrainError, match="canonical live version"):
-            durable_change_train_module._verify_released_train_live_tier(
-                conn,
-                historical_train,
-                current_target_version=3,
-                actual_evidence=tampered,
-            )
+        assert conn.execute("PRAGMA user_version").fetchone() == (1,)
+        assert conn.execute("SELECT name FROM sqlite_schema WHERE name='durable_items'").fetchone() is None
 
 
 def test_released_train_chain_is_anchored_at_adoption_floor() -> None:

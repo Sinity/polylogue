@@ -2038,6 +2038,14 @@ def admit_durable_change_train(
     if train.migration.requires_backup and not train.backup_plan_ref:
         raise DurableChangeTrainError("durable train migration requires backup authority but declares no backup plan")
     _validate_riders(train)
+    if fresh_ddl_parity.tier is train.tier and fresh_ddl_parity.fresh_version != train.target_version:
+        # Bootstrap DDL describes only the shipped version; there is no
+        # historical projection, so an intermediate slot has no fresh image.
+        raise DurableChangeTrainError(
+            f"durable train v{train.target_version} has no canonical fresh-DDL image: shipped "
+            f"{train.tier.value} DDL is v{fresh_ddl_parity.fresh_version}; catch-up across more than "
+            "one numbered slot is not supported"
+        )
     if (
         fresh_ddl_parity.tier is not train.tier
         or fresh_ddl_parity.target_version != train.target_version
