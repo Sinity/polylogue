@@ -334,17 +334,17 @@ def test_prepared_rows_match_identity_golden_fixture() -> None:
     prepared = prepare_session_rows(session)
 
     assert prepared.session_id == "codex-session:tool-use-and-thinking"
-    assert prepared.session_content_hash.hex() == "64aa4c29b79e8b1936f1e163b5a660310b4b2e0ace2427505a1c468e9d2dc298"
+    assert prepared.session_content_hash.hex() == "b388bae80e73def1b0c39c892a27ab887bca6b7b65128e823ae698025e54123f"
     assert [(row[0], row[1], cast(bytes, row[30]).hex()) for row in prepared.message_rows] == [
         (
             "codex-session:tool-use-and-thinking",
             "t0",
-            "698f50caf1c2bd550f05e569d6e35f456efcae723563c3d075251ba2ecd4a445",
+            "57c72bee62c3ca3cc1fb517d1cafb1263d6e5bef6eb62389745f7b31b6b22794",
         ),
         (
             "codex-session:tool-use-and-thinking",
             "t1",
-            "901c34a4203c0d3e2a38b3a6c9331105b6dff6f1199b331f2ebb82452105d78c",
+            "44ddaa18fd9e840cff5d611079f6d03f10d5e7a37d29b563c42053fa573f419a",
         ),
     ]
     assert [(row[0], cast(bytes, row[-1]).hex()) for row in prepared.block_rows] == [
@@ -397,21 +397,21 @@ def test_seeded_corpus_stores_identity_golden_fixture(tmp_path: Path) -> None:
 
     assert observed == {
         "sessions": [
-            ("codex-session:duplicate-native-ids", "4dd014e1d41e81b9b7bcf94889e199132fdd50df59e0c1eb60def5ab368e816e"),
-            ("codex-session:plain-text", "c2bc5d3f45adfab7b2b273bfa01082db06b2d327acf3f13529255fe917f0b817"),
-            ("codex-session:tool-use-and-thinking", "64aa4c29b79e8b1936f1e163b5a660310b4b2e0ace2427505a1c468e9d2dc298"),
+            ("codex-session:duplicate-native-ids", "675394355f0dd0809ccac312e6c0b8258d948cd6bae827626cd44d6d207aa491"),
+            ("codex-session:plain-text", "f04fe5e617574de32f9fb38ccedcf1159ce2581b14715cbc1c52516eb7d9793f"),
+            ("codex-session:tool-use-and-thinking", "b388bae80e73def1b0c39c892a27ab887bca6b7b65128e823ae698025e54123f"),
         ],
         "messages": [
-            "codex-session:duplicate-native-ids:c:71b9c4bb640966a23595ee589a5e1a76.0",
-            "codex-session:duplicate-native-ids:c:f88028512715e01b32558cd5c33ef802.0",
+            "codex-session:duplicate-native-ids:c:51df76b4cf624cadeb3cf1b2dfcf0334.0",
+            "codex-session:duplicate-native-ids:c:72f749a44016ab7561e4d3dc39527788.0",
             "codex-session:plain-text:n:m0",
             "codex-session:plain-text:n:m1",
             "codex-session:tool-use-and-thinking:n:t0",
             "codex-session:tool-use-and-thinking:n:t1",
         ],
         "blocks": [
-            "codex-session:duplicate-native-ids:c:71b9c4bb640966a23595ee589a5e1a76.0:0",
-            "codex-session:duplicate-native-ids:c:f88028512715e01b32558cd5c33ef802.0:0",
+            "codex-session:duplicate-native-ids:c:51df76b4cf624cadeb3cf1b2dfcf0334.0:0",
+            "codex-session:duplicate-native-ids:c:72f749a44016ab7561e4d3dc39527788.0:0",
             "codex-session:plain-text:n:m0:0",
             "codex-session:plain-text:n:m1:0",
             "codex-session:tool-use-and-thinking:n:t0:0",

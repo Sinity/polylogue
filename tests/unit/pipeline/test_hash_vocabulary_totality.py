@@ -193,28 +193,26 @@ def test_a_value_outside_the_vocabulary_is_refused_by_name() -> None:
         None,
     ],
 )
-def test_previously_hashable_payloads_keep_their_digest(payload: object) -> None:
-    """No stored identity moves: the JSON-native path is byte-for-byte unchanged.
+def test_json_native_payloads_hash_to_pinned_digests(payload: object) -> None:
+    """The JSON-native lowering is pinned byte for byte.
 
-    These digests were computed by running ``origin/master``'s
-    ``_normalize_nested_for_hash`` (commit 0b1e99d69) against the same payloads
-    through ``hash_payload``. Every value type the fix newly admits previously
-    raised, and ``content_identity`` is computed on the write path before any
-    row is inserted (``storage/sqlite/archive_tiers/write.py``), so no archived
-    message can carry a shape whose identity this change moves.
+    ``None`` and ``""`` lower to the encoder's own ``null`` and ``""``, and
+    strings and keys stay exact, so these digests are ``hash_payload`` of the
+    payload as written.
 
     Anti-vacuity: any change to the JSON-native lowering -- reordering keys,
-    dropping a sentinel, tagging a container -- turns these literals red.
+    reintroducing a null or empty marker, folding a string, tagging a
+    container -- turns these literals red.
     """
     expected = {
-        "{'a': 1, 'b': 'x', 'c': None, 'd': '', 'e': [1, 2, {'f': 'café'}], 'g': True, 'h': 1.5}": "c5f49a915545f513",
-        "{'tuple': (1, 'a', None)}": "1197ba6cb48bb886",
+        "{'a': 1, 'b': 'x', 'c': None, 'd': '', 'e': [1, 2, {'f': 'café'}], 'g': True, 'h': 1.5}": "dcfe6ba4e4dd365c",
+        "{'tuple': (1, 'a', None)}": "b1c5b57a4c9acbb5",
         "{'intkey': {1: 'a', 2: 'b'}}": "a9328ce48b1a01ce",
         "{'deep': {'deeper': {'s': 'é', 'n': 0, 'f': 0.0, 'b': False}}}": "9c17a8e354f05ef4",
         "{'empties': {'d': {}, 'l': []}}": "8e4d0667b1e2aafe",
         "[]": "4f53cda18c2baa0c",
-        "''": "3c5c29debc2c0150",
-        "None": "641924dd2a7bb104",
+        "''": "12ae32cb1ec02d01",
+        "None": "74234e98afe7498f",
     }[repr(payload)]
     assert hash_payload(_normalize_nested_for_hash(payload)).startswith(expected)
 
@@ -222,9 +220,9 @@ def test_previously_hashable_payloads_keep_their_digest(payload: object) -> None
 def test_fast_walk_matches_the_declared_walk_over_mixed_payloads() -> None:
     """The concrete-type fast walk lowers exactly as the declared walk does.
 
-    Anti-vacuity: skipping NFC on ``dict`` keys or string values in the fast
-    walk, or passing a ``set``/``Decimal``/``bytes`` leaf through unlowered,
-    makes the lowered values differ.
+    Anti-vacuity: folding ``dict`` keys or string values in only one walk, or
+    passing a ``set``/``Decimal``/``bytes`` leaf through unlowered, makes the
+    lowered values differ.
     """
     import random
     from collections.abc import Mapping as MappingABC

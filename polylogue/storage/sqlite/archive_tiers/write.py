@@ -4341,23 +4341,29 @@ def _row_fields_digest(row: Sequence[object], m_idx: Mapping[str, int]) -> bytes
 
 
 def _message_content_address(message: ParsedMessage) -> bytes:
-    """Return an identity-free witness for one message's semantic content."""
+    """Return an identity-free witness for one message's semantic content.
+
+    It follows content identity's rules (``_NFC_TEXT_FIELDS`` in
+    ``pipeline/ids.py``): prose text is NFC-folded, identifiers and tool
+    arguments stay exact, and an absent field frames differently from an
+    empty one.
+    """
     parts: list[str] = [
         _enum_value(message.role) or "",
         _enum_value(message.message_type) or "",
         _enum_value(message.material_origin) or "",
-        _content_address_text(message.text),
-        _content_address_text(message.user_context_text),
+        _content_address_prose(message.text),
+        _content_address_prose(message.user_context_text),
         _enum_value(message.stop_reason) or "",
     ]
     for block in _message_blocks(message):
         parts.extend(
             (
                 _block_type(block).value,
-                _content_address_text(block.text),
+                _content_address_prose(block.text),
                 _content_address_text(block.tool_name),
                 _content_address_text(block.tool_id),
-                _content_address_json(block.tool_input) if block.tool_input is not None else "",
+                _content_address_text(None if block.tool_input is None else _json_dumps(block.tool_input)),
                 _content_address_text(_semantic_type(block)),
                 _content_address_text(block.media_type),
                 _content_address_text(_block_language(block)),
@@ -4370,11 +4376,18 @@ def _message_content_address(message: ParsedMessage) -> bytes:
 
 
 def _content_address_text(value: str | None) -> str:
-    return unicodedata.normalize("NFC", _sqlite_text(value) or "")
+    """An exact optional part: absence is the empty part, a present value is tagged.
+
+    Every present value, the empty string included, gains a leading ``=``, so
+    no value can frame like an absent one.
+    """
+    text = _sqlite_text(value)
+    return "" if text is None else "=" + text
 
 
-def _content_address_json(value: object) -> str:
-    return unicodedata.normalize("NFC", _json_dumps(value))
+def _content_address_prose(value: str | None) -> str:
+    """:func:`_content_address_text` of a prose field, NFC-folded."""
+    return _content_address_text(None if value is None else unicodedata.normalize("NFC", value))
 
 
 def _block_content_hash(
