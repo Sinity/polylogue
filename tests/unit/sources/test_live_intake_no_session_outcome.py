@@ -25,11 +25,18 @@ from polylogue.sources.live.cursor import CursorStore
 _MAX_DEFERRED_PAGES = 20
 
 
-async def _admit(archive_root: Path, source_root: Path, metrics_sink: list[Any] | None = None) -> dict[str, Any]:
+async def _admit(
+    archive_root: Path,
+    source_root: Path,
+    metrics_sink: list[Any] | None = None,
+    *,
+    source_name: str = "claude-code",
+    suffixes: tuple[str, ...] = (".jsonl",),
+) -> dict[str, Any]:
     archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
     watcher = LiveWatcher(
         archive,
-        (WatchSource(name="claude-code", root=source_root),),
+        (WatchSource(name=source_name, root=source_root, suffixes=suffixes),),
         cursor=CursorStore(archive_root / "index.db"),
         read_snapshot=open_operation_read,
     )
@@ -171,3 +178,92 @@ async def test_a_corrupt_capture_is_excluded_as_corrupt_input(workspace_env: dic
     assert "terminal_corrupt_input" in kinds
     with sqlite3.connect(archive_root / "index.db") as conn:
         assert conn.execute("SELECT count(*) FROM sessions").fetchone()[0] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_undecodable_json_document_is_excluded_as_corrupt_input(workspace_env: dict[str, Path]) -> None:
+    """A known-provider JSON document that does not decode settles as corrupt input.
+
+    Anti-vacuity: only a JSONL record's decode failure was terminal
+    (polylogue-6r7wv). A JSON document's left the raw parse-failed with no
+    terminal carrier and the page ``RETRYABLE``, so every pass re-read bytes
+    that can never decode.
+    """
+    archive_root = workspace_env["archive_root"]
+    source_root = workspace_env["data_root"] / "chatgpt-exports"
+    source_root.mkdir(parents=True)
+    source_path = source_root / "conversation.json"
+    source_path.write_bytes(b'{"title": "cut", "mapping": {"n": {"id": "n", "message": ')
+
+    batches: list[Any] = []
+    outcomes = await _admit(archive_root, source_root, batches, source_name="chatgpt", suffixes=(".json",))
+
+    assert {result.outcome for result in outcomes.values()} == {AdmissionOutcome.EXCLUDED}, outcomes
+    (result,) = outcomes.values()
+    assert result.reason is not None and result.reason.startswith("corrupt_input:"), result
+    assert batches[-1].excluded_paths == {str(source_path): "corrupt_input"}
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        artifacts = conn.execute("SELECT artifact_kind, parse_as_session FROM raw_artifacts").fetchall()
+    assert ("terminal_corrupt_input", 0) in artifacts, artifacts
+
+
+def _claude_record(uuid: str, parent: str | None, role: str, text: str) -> bytes:
+    content: object = text if role == "user" else [{"type": "text", "text": text}]
+    return (
+        json.dumps(
+            {
+                "type": role,
+                "message": {"role": role, "content": content},
+                "uuid": uuid,
+                "parentUuid": parent,
+                "sessionId": "partial",
+                "timestamp": "2026-01-01T00:00:00Z",
+            }
+        ).encode()
+        + b"\n"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_stable_truncated_capture_is_admitted_as_a_typed_partial(workspace_env: dict[str, Path]) -> None:
+    """A stable capture whose final record is truncated admits its complete records, visibly in part.
+
+    The intake result is ``ADMITTED`` (the complete records are admitted, as
+    rejecting them would drop valid input) and carries the typed partial:
+    reason ``truncated_tail``, the complete-record count and the byte offset
+    where the left-out tail begins. The batch metrics and the dispatcher's
+    class report count it.
+
+    Anti-vacuity: before polylogue-xf8qp the same capture was a plain
+    ``ADMITTED`` with no partial and nothing in the batch counted the tail.
+    """
+    from polylogue.core.raw_failure_evidence import PARTIAL_TRUNCATED_TAIL, PartialAdmission
+
+    archive_root = workspace_env["archive_root"]
+    source_root = workspace_env["data_root"] / "claude-projects"
+    source_root.mkdir(parents=True)
+    source_path = source_root / "partial.jsonl"
+    complete = _claude_record("u1", None, "user", "question") + _claude_record("a1", "u1", "assistant", "answer")
+    payload = complete + b'{"type":"user","message":{"role":"user","cont'
+    source_path.write_bytes(payload)
+
+    batches: list[Any] = []
+    outcomes = await _admit(archive_root, source_root, batches)
+
+    (result,) = outcomes.values()
+    assert result.outcome is AdmissionOutcome.ADMITTED, result
+    expected = PartialAdmission(
+        reason=PARTIAL_TRUNCATED_TAIL,
+        complete_record_count=2,
+        complete_prefix_bytes=len(complete),
+        source_bytes=len(payload),
+    )
+    assert result.partial == expected
+    metrics = batches[-1]
+    assert metrics.partial_admission_paths == {str(source_path): expected}
+    payload_fields = metrics.to_payload()
+    assert payload_fields["partial_file_count"] == 1
+    assert payload_fields["partial_reasons"] == {PARTIAL_TRUNCATED_TAIL: 1}
+    assert payload_fields["partial_left_out_bytes"] == len(payload) - len(complete)
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        assert conn.execute("SELECT count(*) FROM messages").fetchone()[0] == 2

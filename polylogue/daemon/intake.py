@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, TypeVar, cast, overload, runtime_checkable
 
+from polylogue.core.raw_failure_evidence import PartialAdmission
 from polylogue.daemon.observation import Observation, ObservationBoard, ObservationState
 from polylogue.daemon.service_halt import HaltReason, HaltRegistry, UnitKind, unit_id
 from polylogue.logging import ERROR, WARNING, emit
@@ -110,6 +111,10 @@ class AdmissionResult:
     #: A RETRYABLE item the adapter never attempted (e.g. the daemon is
     #: degraded): it counts toward no attempt budget or cooldown.
     unattempted: bool = False
+    #: For ``ADMITTED``: what the admission left out, when it took in only
+    #: part of the item (a truncated final record). Counted as admitted and
+    #: as partial, so a partial admission is never a plain success.
+    partial: PartialAdmission | None = None
 
     @property
     def acknowledgeable(self) -> bool:
@@ -207,6 +212,9 @@ class IntakeClassReport:
 
     deferred: int = 0
     """Items the domain deliberately admitted nothing for. Not progress."""
+
+    partially_admitted: int = 0
+    """Admitted items that took in only part of their source. Also counted in ``admitted``."""
 
     retried: int = 0
     isolated: int = 0
@@ -410,7 +418,12 @@ class FairIntakeDispatcher:
                 emit(
                     "daemon.intake.page",
                     outcome="degraded"
-                    if report.retried or report.isolated or report.halted or report.excluded or report.deferred
+                    if report.retried
+                    or report.isolated
+                    or report.halted
+                    or report.excluded
+                    or report.deferred
+                    or report.partially_admitted
                     else "ok",
                     component=spec.name,
                     files=report.planned_count,
@@ -421,6 +434,7 @@ class FairIntakeDispatcher:
                     retried=report.retried,
                     refused=report.excluded,
                     deferred=report.deferred,
+                    partially_admitted=report.partially_admitted,
                     stage_timings_ms={
                         "discovery": report.discovery_duration_ms,
                         "admission": report.admission_duration_ms,
@@ -471,7 +485,7 @@ class FairIntakeDispatcher:
             return IntakeClassReport(name=spec.name, discovery_failed=True, reason=f"discovery failed: {exc}")
         discovery_duration_ms = max(0.0, (self._clock() - discovery_started) * 1000)
 
-        admitted = duplicates = excluded = deferred = retried = isolated = 0
+        admitted = duplicates = excluded = deferred = partially_admitted = retried = isolated = 0
         estimated_cost = actual_cost = 0
         # Plan the page against the class deficit first, then admit the whole
         # plan in one adapter call. The deficit is denominated in payload
@@ -529,6 +543,7 @@ class FairIntakeDispatcher:
                     duplicates=duplicates,
                     excluded=excluded,
                     deferred=deferred,
+                    partially_admitted=partially_admitted,
                     retried=retried,
                     isolated=isolated,
                     discovered=len(page),
@@ -556,6 +571,19 @@ class FairIntakeDispatcher:
                 runtime.deficit -= item_actual_cost - item_cost
                 if result.outcome is AdmissionOutcome.ADMITTED:
                     admitted += 1
+                    if result.partial is not None:
+                        partially_admitted += 1
+                        emit(
+                            "daemon.intake.item_partial",
+                            level=WARNING,
+                            outcome="degraded",
+                            reason=result.partial.reason,
+                            component=spec.name,
+                            source_id=item.item_id,
+                            complete_record_count=result.partial.complete_record_count,
+                            complete_prefix_bytes=result.partial.complete_prefix_bytes,
+                            source_bytes=result.partial.source_bytes,
+                        )
                 elif result.outcome is AdmissionOutcome.EXCLUDED:
                     excluded += 1
                 elif result.outcome is AdmissionOutcome.DEFERRED:
@@ -661,6 +689,7 @@ class FairIntakeDispatcher:
             duplicates=duplicates,
             excluded=excluded,
             deferred=deferred,
+            partially_admitted=partially_admitted,
             retried=retried,
             isolated=isolated,
             discovered=len(page),
@@ -767,6 +796,7 @@ class FairIntakeDispatcher:
                         "duplicates": report.duplicates,
                         "excluded": report.excluded,
                         "deferred": report.deferred,
+                        "partially_admitted": report.partially_admitted,
                         "retried": report.retried,
                         "isolated": report.isolated,
                         "discovered": report.discovered,

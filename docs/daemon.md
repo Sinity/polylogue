@@ -769,9 +769,19 @@ its captured bytes (the file changed after preparation, or preparation was
 deferred), the writer does not decode the capture to classify it: it releases
 that capture, reports `live.ingest.json_capture_deferred`, and defers the path
 to a later pass whose preparation matches what it captures. A complete JSONL
-record that does not decode is refused for every provider: the raw is retained
-with `terminal_corrupt_input` evidence (`terminal_unknown_json_decode` for an
-unknown provider) instead of being skipped on the way to the cursor frontier.
+record or a JSON document that does not decode is refused for every provider:
+the raw is retained with `terminal_corrupt_input` evidence
+(`terminal_unknown_json_decode` for an unknown provider) instead of being
+skipped on the way to the cursor frontier, and the path is excluded as
+`corrupt_input`. Retained replay applies the same rule
+(`prepared_jsonl.terminal_decode_evidence`), so neither route re-reads bytes
+that cannot decode. A stable JSONL capture whose final record is truncated
+admits its complete records and is reported as a partial admission: the item
+is `admitted` with a typed partial (reason `truncated_tail`, the complete-record
+count, and the byte offset where the left-out tail begins), counted as
+`partially_admitted` in the class report and the `daemon.intake.page` event,
+with one `daemon.intake.item_partial` event per item; the batch payload
+carries `partial_file_count`, `partial_reasons` and `partial_left_out_bytes`.
 
 An archive storage fault -- a full disk or quota, an I/O error, a corrupt
 database page, a read-only mount, or attachment bytes a parse worker published

@@ -766,19 +766,31 @@ def test_publish_rejects_changed_source_or_generation(tmp_path: Path, mutation: 
 
 
 def test_poison_observation_does_not_suppress_healthy_sibling(tmp_path: Path) -> None:
+    """An undecodable sibling settles as terminal corrupt input and the healthy one materializes.
+
+    The poison raw is a known-provider JSON document that does not decode:
+    its outcome is terminal (polylogue-6r7wv), not a failure retried on every
+    pass, and it never blocks the healthy raw.
+    """
     bootstrap_archive_root(tmp_path)
     _admit(tmp_path, ("healthy",), path="healthy.json")
     with ArchiveStore.open_existing(tmp_path, read_only=False) as archive:
-        archive.write_raw_payload(
+        poison_raw_id = archive.write_raw_payload(
             provider=Provider.CHATGPT,
             payload=b"not json",
             source_path="poison.json",
             acquired_at_ms=1,
         )
     report = _run(tmp_path)
-    assert report.done == 1 and report.failed == 1
+    assert report.failed == 0
     with sqlite3.connect(tmp_path / "index.db") as conn:
         assert conn.execute("SELECT native_id FROM sessions").fetchall() == [("healthy",)]
+    with sqlite3.connect(tmp_path / "source.db") as conn:
+        kinds = {
+            str(row[0])
+            for row in conn.execute("SELECT artifact_kind FROM raw_artifacts WHERE raw_id = ?", (poison_raw_id,))
+        }
+    assert "terminal_corrupt_input" in kinds
 
 
 def test_zero_output_requires_parser_evidence(tmp_path: Path) -> None:

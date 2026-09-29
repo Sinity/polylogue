@@ -19,13 +19,16 @@ import io
 import os
 import sqlite3
 import stat
-from collections.abc import Callable, Iterable, Mapping
+import zipfile
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 from typing import IO
 
+from polylogue.archive.revision_authority import raw_receipt_order_sql
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.raw_coordinates import relocated_source_path, split_zip_member_text
 from polylogue.core.sources import provider_from_origin
 from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError, PreparedBlob
 
@@ -188,24 +191,161 @@ def is_legacy_append_without_window(row: Mapping[str, object]) -> bool:
     )
 
 
-def retained_blob_source_candidates(
+def _live_zip_split(source_path: str, root: Path) -> tuple[str, str] | None:
+    """Split ``<container>:<member>`` at a prefix that is a real ZIP here.
+
+    The container path may itself hold colons (a Windows drive, a legal POSIX
+    filename), so every colon is tried, shortest container first.
+    """
+    start = 0
+    while (separator_at := source_path.find(":", start)) != -1:
+        start = separator_at + 1
+        if separator_at == 0 or separator_at == len(source_path) - 1:
+            continue
+        candidate = relocated_source_path(Path(source_path[:separator_at]), root)
+        if candidate.is_file() and zipfile.is_zipfile(candidate):
+            return source_path[:separator_at], source_path[start:]
+    return None
+
+
+def resolved_source_path(source_path: str, root: Path, *, container_member: bool) -> str:
+    """Resolve a recorded acquisition path against the archive root in force.
+
+    A container member keeps its ``:<member>`` suffix and re-anchors its
+    container; a direct path is re-anchored whole, so a colon in a loose
+    file's name stays file-name data.
+    """
+    split = (_live_zip_split(source_path, root) or split_zip_member_text(source_path)) if container_member else None
+    outer, member = split if split is not None else (source_path, None)
+    path = relocated_source_path(Path(outer), root)
+    return f"{path}:{member}" if member is not None else str(path)
+
+
+def is_container_member_row(row: Mapping[str, object], root: Path) -> bool:
+    """Whether a row names a ZIP member: a recorded coordinate, or a legacy path whose prefix is a live ZIP."""
+    if is_recorded_container_member(row):
+        return True
+    source_path = row.get("source_path")
+    return isinstance(source_path, str) and _live_zip_split(source_path, root) is not None
+
+
+def legacy_append_start(
+    conn: sqlite3.Connection,
     row: Mapping[str, object],
     *,
-    container_member: bool,
-    prior_full_observations: Iterable[tuple[int, int]] = (),
-) -> tuple[RetainedBlobSource, ...]:
+    resolved_path: str,
+) -> int | None:
+    """Where a window-less append row's bytes begin in its source file, or ``None``.
+
+    The row continues the byte chain of the same path (as recorded, or
+    re-anchored at the root in force). The chain's anchor is the latest
+    observation received before the row whose end is recorded: a full
+    observation at source index 0 (its size) or a windowed append (its end
+    offset). Every window-less append received between the anchor and the
+    row extends the chain by its size, since appends are contiguous, and the
+    row starts where the chain ends. "Received before" is the durable
+    ``raw_payload`` receipt order (``raw_receipt_order_sql``), never
+    ``acquired_at_ms``: a wall-clock step back between observations must not
+    hide the anchor or pick a later one. A row with no receipt has no order
+    and no start. The start is an inference; the caller proves it by hashing
+    the window.
+    """
+    raw_id = row.get("raw_id") or row.get("ref_id")
+    source_path = row.get("source_path")
+    if not isinstance(raw_id, str) or not isinstance(source_path, str):
+        return None
+    own_order = conn.execute(
+        "SELECT MAX(rowid) FROM blob_refs WHERE ref_id = ? AND ref_type = 'raw_payload'", (raw_id,)
+    ).fetchone()[0]
+    if own_order is None:
+        return None
+    anchor_order = raw_receipt_order_sql("anchor")
+    anchor = conn.execute(
+        f"""
+        SELECT COALESCE(anchor.append_end_offset, anchor.blob_size), {anchor_order}
+        FROM raw_sessions AS anchor
+        WHERE anchor.source_path IN (?, ?)
+          AND (
+              anchor.append_end_offset IS NOT NULL
+              OR (
+                  anchor.source_index = 0
+                  AND anchor.revision_kind IN ('full', 'unknown')
+                  AND anchor.append_start_offset IS NULL
+              )
+          )
+          AND {anchor_order} < ?
+        ORDER BY {anchor_order} DESC, anchor.raw_id DESC
+        LIMIT 1
+        """,
+        (source_path, resolved_path, own_order),
+    ).fetchone()
+    if anchor is None or _optional_int(anchor[0]) is None:
+        return None
+    chained_order = raw_receipt_order_sql("chained")
+    (chained_size,) = conn.execute(
+        f"""
+        SELECT COALESCE(SUM(chained.blob_size), 0)
+        FROM raw_sessions AS chained
+        WHERE chained.source_path IN (?, ?)
+          AND chained.source_index = -1
+          AND chained.revision_kind = 'unknown'
+          AND chained.append_start_offset IS NULL
+          AND chained.append_end_offset IS NULL
+          AND {chained_order} > ?
+          AND {chained_order} < ?
+        """,
+        (source_path, resolved_path, anchor[1], own_order),
+    ).fetchone()
+    return int(anchor[0]) + int(chained_size)
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedBlobSources:
+    """Where one retained raw's bytes can be replayed from under the archive root in force."""
+
+    #: The recorded source path re-anchored at the root in force.
+    source_path: str
+    container_member: bool
+    candidates: tuple[RetainedBlobSource, ...]
+
+
+def retained_blob_sources(conn: sqlite3.Connection, row: Mapping[str, object], *, root: Path) -> RetainedBlobSources:
     """Every recorded source window that can prove one raw's retained bytes.
 
     This is the one owner of that decision: backup recoverability and raw
     derivation's blob restoration both read their candidates here, so a raw
-    one route can prove is one the other can restore. ``row`` is the raw's
-    recorded evidence (:func:`read_raw_source_evidence`); ``container_member``
-    is the caller's container decision (a relocated archive root can move
-    the container). ``prior_full_observations`` are ``(acquired_at_ms,
-    size)`` of the full observations at the same path, read only for a
-    legacy append row. Candidates are proofs only once the bytes read from
-    them hash to the raw's recorded identity; the caller checks that.
+    one route can prove is one the other can restore. It re-anchors the
+    recorded path at the archive root in force, decides whether the row is a
+    ZIP member, and, for a window-less append row, finds where its bytes
+    start (:func:`legacy_append_start`). ``row`` is the raw's recorded evidence
+    (:func:`read_raw_source_evidence`, or a row of the same shape) and
+    ``conn`` reads the source tier. Candidates are proofs only once the bytes
+    read from them hash to the raw's recorded identity; the caller checks
+    that.
     """
+    recorded = row.get("source_path")
+    if not isinstance(recorded, str) or not recorded:
+        return RetainedBlobSources("", False, ())
+    container_member = is_container_member_row(row, root)
+    resolved = resolved_source_path(recorded, root, container_member=container_member)
+    legacy_start = (
+        legacy_append_start(conn, row, resolved_path=resolved)
+        if not container_member and is_legacy_append_without_window(row)
+        else None
+    )
+    return RetainedBlobSources(
+        resolved,
+        container_member,
+        _source_candidates(row, container_member=container_member, legacy_append_start=legacy_start),
+    )
+
+
+def _source_candidates(
+    row: Mapping[str, object],
+    *,
+    container_member: bool,
+    legacy_append_start: int | None,
+) -> tuple[RetainedBlobSource, ...]:
     if container_member:
         return (RetainedBlobSource(RetainedBlobSourceKind.ZIP_MEMBER),)
     size = _optional_int(row.get("size_bytes"))
@@ -221,19 +361,12 @@ def retained_blob_source_candidates(
             windows.append(SourceByteWindow(0, end))
         return tuple(RetainedBlobSource(RetainedBlobSourceKind.APPEND_WINDOW, window) for window in windows)
     if is_legacy_append_without_window(row):
-        acquired_at = _optional_int(row.get("acquired_at_ms"))
-        predecessors = (
-            [(timestamp, full_size) for timestamp, full_size in prior_full_observations if timestamp < acquired_at]
-            if acquired_at is not None
-            else []
-        )
-        if not predecessors:
+        if legacy_append_start is None:
             return ()
-        _timestamp, predecessor_end = max(predecessors)
         return (
             RetainedBlobSource(
                 RetainedBlobSourceKind.LEGACY_APPEND_WINDOW,
-                SourceByteWindow(predecessor_end, predecessor_end + size),
+                SourceByteWindow(legacy_append_start, legacy_append_start + size),
             ),
         )
     full_at_origin = (
@@ -313,12 +446,16 @@ def stage_exact_source_window_blob(
 __all__ = [
     "RetainedBlobSource",
     "RetainedBlobSourceKind",
+    "RetainedBlobSources",
     "SourceByteWindow",
+    "is_container_member_row",
     "is_legacy_append_without_window",
     "is_recorded_container_member",
+    "legacy_append_start",
     "read_raw_source_evidence",
+    "resolved_source_path",
+    "retained_blob_sources",
     "source_window_holds_blob",
-    "retained_blob_source_candidates",
     "stage_exact_blob",
     "stage_exact_source_window_blob",
 ]

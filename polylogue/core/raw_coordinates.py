@@ -137,7 +137,28 @@ def zip_member_container(source_path: str) -> Path | None:
     return coordinate[0] if coordinate is not None else None
 
 
+_ARCHIVE_ROOT_SOURCE_DIRECTORIES = ("inbox", "browser-capture", "hooks")
+
+
+def relocated_source_path(path: Path, root: Path) -> Path:
+    """The same acquisition path under the archive root in force, when it exists there.
+
+    Acquisition records absolute paths. A path under the archive's own
+    ``inbox``, ``browser-capture`` or ``hooks`` directory moves with the
+    archive root, so it is re-anchored at the root in force when the
+    re-anchored file exists; any other path is kept as recorded.
+    """
+    parts = path.parts
+    for directory in _ARCHIVE_ROOT_SOURCE_DIRECTORIES:
+        if directory in parts:
+            candidate = root.joinpath(*parts[parts.index(directory) :])
+            if candidate.exists():
+                return candidate
+    return path
+
+
 __all__ = [
+    "relocated_source_path",
     "zip_member_container",
     "zip_member_coordinate",
     "split_zip_member_text",

@@ -66,8 +66,10 @@ from polylogue.core.raw_coordinates import (
     zip_member_source_index,
 )
 from polylogue.core.raw_failure_evidence import (
+    PARTIAL_TRUNCATED_TAIL,
     RAW_FAILURE_EVIDENCE_KINDS,
     RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS,
+    PartialAdmission,
     RawFailureEvidenceKind,
 )
 from polylogue.core.sources import origin_from_provider
@@ -159,6 +161,7 @@ from polylogue.sources.live.batch_support import (
     foreign_origin_exclusion,
     jsonl_complete_prefix,
     jsonl_complete_prefix_path,
+    jsonl_prefix_record_count,
     last_complete_newline_from_tail,
     sha256_range_from_path,
     tail_hash_from_path,
@@ -758,6 +761,10 @@ class _ArchiveFullWriteResult:
     # input -- keyed to the settled exclusion reason. Their paths still
     # advance the cursor as successes; intake reports them excluded.
     settled_exclusions: dict[_FullRecordKey, str] = field(default_factory=dict)
+    # Accepted raws admitted only in part -- a stable capture whose final
+    # record is truncated admits its complete records -- with what was left
+    # out. Intake reports them admitted with the partial, never a plain success.
+    partial_admissions: dict[_FullRecordKey, PartialAdmission] = field(default_factory=dict)
     # A raw whose membership census does not produce an accepted session is
     # still a durably acquired, successfully parsed source observation. The
     # decision can be pending for the materialization conveyor or already
@@ -1337,6 +1344,7 @@ class LiveBatchProcessor:
         excluded_by_path: dict[Path, str] = {}
         detection_fallbacks_by_path: dict[Path, str] = {}
         settled_exclusions: dict[Path, str] = {}
+        partial_admissions: dict[Path, PartialAdmission] = {}
         succeeded_paths: set[Path] = set()
         # polylogue-cnu3: the most severe structural disposition this batch
         # hit, if any. Set at each terminal except-clause below by
@@ -1824,6 +1832,7 @@ class LiveBatchProcessor:
                 excluded_by_path.update(full_result.excluded)
                 detection_fallbacks_by_path.update(full_result.detection_fallbacks)
                 settled_exclusions.update(full_result.settled_exclusions)
+                partial_admissions.update(full_result.partial_admissions)
                 emit(
                     "live.ingest.source_group",
                     source_name=source_name,
@@ -2004,6 +2013,9 @@ class LiveBatchProcessor:
             failed_paths=retry_paths,
             succeeded_paths=tuple(sorted(admitted_paths)),
             settled_exclusion_paths={str(path): reason for path, reason in sorted(settled_exclusions.items())},
+            partial_admission_paths={
+                str(path): partial for path, partial in sorted(partial_admissions.items()) if path in admitted_paths
+            },
             new_sessions=tuple(new_session_touches),
             updated_sessions=tuple(updated_session_touches),
             time_budget_exceeded=full_ingest_time_budget_exceeded,
@@ -4229,6 +4241,12 @@ class LiveBatchProcessor:
                 settled_exclusions[path] = (
                     REFUSED_CORRUPT_INPUT if REFUSED_CORRUPT_INPUT in reasons else REFUSED_NO_SESSIONS
                 )
+        partial_admissions: dict[Path, PartialAdmission] = {}
+        if archive_write is not None and archive_write.partial_admissions:
+            for key, path in raw_by_record.items():
+                partial = archive_write.partial_admissions.get(key)
+                if partial is not None and path in succeeded_paths and path not in settled_exclusions:
+                    partial_admissions.setdefault(path, partial)
         for path in skipped_paths:
             # The archive-write checkpoint did not reach these records. They
             # have no raw row or cursor and must stay eligible on the next
@@ -4256,6 +4274,7 @@ class LiveBatchProcessor:
                 path: reason for path, reason in detection_fallbacks.items() if path in succeeded_paths
             },
             settled_exclusions=settled_exclusions,
+            partial_admissions=partial_admissions,
             raw_fingerprints=raw_fingerprints,
             raw_byte_sizes=raw_byte_sizes,
             raw_frontier_sizes=raw_frontier_sizes,
@@ -4673,7 +4692,22 @@ class LiveBatchProcessor:
                     )
                     if incomplete_tail and stable_capture:
                         # The full raw is conserved, while the ordinary parser
-                        # below receives only the proven complete prefix.
+                        # below receives only the proven complete prefix. The
+                        # admission is partial and says so: the complete
+                        # records are admitted, the truncated tail is not.
+                        # ``incomplete_tail`` holds only for a recorded prefix.
+                        admitted_prefix = cast(int, record.complete_prefix_size)
+                        if payload is not None:
+                            complete_records = jsonl_prefix_record_count(BytesIO(payload), admitted_prefix)
+                        else:
+                            with blob_store.open(blob_hash) as prefix_handle:
+                                complete_records = jsonl_prefix_record_count(prefix_handle, admitted_prefix)
+                        result.partial_admissions[_full_record_key(record)] = PartialAdmission(
+                            reason=PARTIAL_TRUNCATED_TAIL,
+                            complete_record_count=complete_records,
+                            complete_prefix_bytes=admitted_prefix,
+                            source_bytes=record.blob_size,
+                        )
                         archive.record_raw_failure_evidence(
                             source_raw_id,
                             provider=provider,
@@ -6159,12 +6193,12 @@ class LiveBatchProcessor:
                 return None
             logical_source_key = str(key_rows[0][0])
             rows = conn.execute(
-                """
+                f"""
                 SELECT raw_id, revision_kind, source_revision, acquisition_generation,
                        revision_authority, blob_size, predecessor_raw_id, baseline_raw_id,
                        append_start_offset, append_end_offset, predecessor_source_revision,
                        lower(hex(blob_hash)) AS blob_hash_hex, source_path, source_index, acquired_at_ms,
-                       parsed_at_ms, parse_error
+                       parsed_at_ms, parse_error, {raw_receipt_order_sql("raw_sessions")} AS receipt_order
                 FROM raw_sessions
                 WHERE logical_source_key = ? AND source_revision IS NOT NULL
                 """,
@@ -6193,14 +6227,11 @@ class LiveBatchProcessor:
             # cannot become an append frontier. Full capture preserves its
             # missing parser/index work.
             return None
-        full_sizes = [
-            (int(row[14]), int(row[5]), str(row[0]))
-            for row in path_rows
-            if int(row[13]) == 0 and str(row[1]) == RawRevisionKind.FULL.value and str(row[0])
-        ]
-        full_sizes = sorted(full_sizes)
+        has_full_observation = any(
+            int(row[13]) == 0 and str(row[1]) == RawRevisionKind.FULL.value and str(row[0]) for row in path_rows
+        )
         inferred: dict[str, tuple[int, int, str, str | None, str, str]] = {}
-        if full_sizes:
+        if has_full_observation:
             try:
                 source_size = path.stat().st_size
             except OSError:
@@ -6238,7 +6269,13 @@ class LiveBatchProcessor:
             previous_raw_id: str | None = None
             previous_revision: str | None = None
             baseline_raw_id: str | None = None
-            for row in sorted(path_rows, key=lambda item: (int(item[14]), str(item[0]))):
+            # Observation order is the durable receipt order, never the wall
+            # clock: a clock step back between a full snapshot and its append
+            # must not reorder the chain. A row without a receipt ranks oldest.
+            for row in sorted(
+                path_rows,
+                key=lambda item: (item[17] is not None, int(item[17] or 0), str(item[0])),
+            ):
                 raw_id = str(row[0])
                 if str(row[1]) == RawRevisionKind.FULL.value:
                     blob_hash = blob_hash_by_raw_id.get(raw_id)

@@ -48,10 +48,8 @@ from polylogue.storage.raw_authority import (
     validate_raw_replay_application_receipt,
 )
 from polylogue.storage.source_blob_restoration import (
-    is_legacy_append_without_window,
-    is_recorded_container_member,
     read_raw_source_evidence,
-    retained_blob_source_candidates,
+    retained_blob_sources,
     stage_exact_blob,
     stage_exact_source_window_blob,
 )
@@ -1035,7 +1033,7 @@ class RawObservationDerivation:
         staged_hashes: set[str] = set()
         try:
             for raw_id in raw_ids:
-                _provider, blob_hash, path, _kind, _size = descriptors[raw_id]
+                _provider, blob_hash, _path, _kind, _size = descriptors[raw_id]
                 if blob_hash in staged_hashes:
                     continue
                 try:
@@ -1048,7 +1046,7 @@ class RawObservationDerivation:
                     # retryable disappearance, not as lost bytes.
                     continue
                 prepared, reason = self._stage_blob_from_recorded_source(
-                    archive, blob_store, raw_id, blob_hash=blob_hash, source_path=path
+                    archive, blob_store, raw_id, blob_hash=blob_hash
                 )
                 if prepared is None:
                     raise RetainedPreparationRetryableError(
@@ -1071,12 +1069,12 @@ class RawObservationDerivation:
         raw_id: str,
         *,
         blob_hash: str,
-        source_path: str,
     ) -> tuple[PreparedBlob | None, str | None]:
         """Stage one absent blob from the first recorded source window holding its exact bytes.
 
-        The candidate windows come from ``retained_blob_source_candidates``,
-        the owner backup recoverability reads too. A ZIP member is replayed
+        The candidate windows, and the recorded path re-anchored at this
+        archive's root, come from ``retained_blob_sources``, the owner backup
+        recoverability reads too. A ZIP member is replayed
         through acquisition's ZIP admission (``zip_reacquired_unit``)
         and staged only when the replayed value is byte-identical to the
         blob; a structural-only match is ``inexact_payload``. Returns the
@@ -1086,22 +1084,8 @@ class RawObservationDerivation:
         row = read_raw_source_evidence(conn, raw_id)
         if row is None:
             raise KeyError(raw_id)
-        prior_full_observations: list[tuple[int, int]] = []
-        if is_legacy_append_without_window(row):
-            prior_full_observations = [
-                (int(acquired_at_ms), int(size))
-                for acquired_at_ms, size in conn.execute(
-                    "SELECT acquired_at_ms, blob_size FROM raw_sessions "
-                    "WHERE source_path = ? AND source_index = 0 AND revision_kind IN ('full', 'unknown') "
-                    "AND acquired_at_ms IS NOT NULL AND blob_size IS NOT NULL",
-                    (source_path,),
-                )
-            ]
-        candidates = retained_blob_source_candidates(
-            row,
-            container_member=is_recorded_container_member(row),
-            prior_full_observations=prior_full_observations,
-        )
+        sources = retained_blob_sources(conn, row, root=self.archive_root)
+        source_path, candidates = sources.source_path, sources.candidates
         if not candidates:
             return None, "no_source_window"
         reason: str | None = None

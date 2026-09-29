@@ -260,6 +260,12 @@ def _fields() -> dict[str, FieldKind]:
         "idempotent",
         "duplicates",
         "isolated",
+        # partial admission: admitted items that left out a truncated tail,
+        # and the admitted prefix of one such item.
+        "partially_admitted",
+        "complete_record_count",
+        "complete_prefix_bytes",
+        "source_bytes",
         "attempted",
         "confirmed",
         "remaining",
