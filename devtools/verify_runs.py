@@ -36,6 +36,7 @@ from devtools.pytest_suite_cost_plugin import (
 )
 from devtools.pytest_suite_cost_plugin import SUITE_COST_DIR_ENV, summarize_step_receipts
 from devtools.testmon_provision import TESTMON_DATA_RELPATH
+from devtools.verification_result import INTERRUPTED_DIAGNOSES
 
 
 def environment_fingerprint(*, root: Path | None = None, env: Mapping[str, str] | None = None) -> dict[str, Any]:
@@ -878,7 +879,7 @@ def _terminal_status(entry: Mapping[str, Any]) -> str:
     aggregate = entry.get("pytest_aggregate")
     aggregate = aggregate if isinstance(aggregate, Mapping) else {}
     reason = str(entry.get("termination_reason") or aggregate.get("termination_reason") or "")
-    if entry.get("diagnosis") == "verification_interrupted" or reason in {
+    if entry.get("diagnosis") in INTERRUPTED_DIAGNOSES or reason in {
         "cancelled",
         "canceled",
         "timeout",

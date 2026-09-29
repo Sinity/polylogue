@@ -1475,6 +1475,13 @@ def main(argv: list[str] | None = None) -> int:
             "terminal_union_count": statistics.get("terminal_count"),
             "terminal_green": statistics.get("ordinary_eligible", False),
             "outcomes": statistics.get("outcomes", {}),
+            # Carried so the evidence lane can tell an interrupted run from a
+            # failed one; the local metadata alone never reaches the receipt.
+            **(
+                {"termination_reason": metadata["termination_reason"]}
+                if isinstance(metadata.get("termination_reason"), str)
+                else {}
+            ),
         },
     )
     append_verify_history(payload)

@@ -242,6 +242,22 @@ def test_outside_the_pool_the_run_is_submitted(tmp_path: Path, monkeypatch: pyte
     assert not list((tmp_path / ".cache" / "verify").glob("pytest-slot-*.json")), "the launch file outlived its run"
 
 
+def test_a_queued_run_names_its_output_log_when_it_submits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The captured log is named while the job waits, not only after it ends.
+
+    Anti-vacuity: printing the path only on release leaves a queued run with
+    no watchable output, since the child writes nowhere else.
+    """
+    _install_fake_agentctl(tmp_path, monkeypatch)
+
+    outcome = run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+
+    [waiting] = [line for line in capsys.readouterr().err.splitlines() if "waiting for the host pytest slot" in line]
+    assert str(outcome.log_path) in waiting
+
+
 def test_two_acquisitions_keep_distinct_capture_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A rerun cannot replace the first acquisition's captured stdout file."""
     _install_fake_agentctl(tmp_path, monkeypatch)
@@ -898,6 +914,37 @@ def test_a_killed_waiter_reaps_the_job_it_submitted(tmp_path: Path) -> None:
         "the launch file carries a resolved environment and must not survive the reap"
     )
     assert _scratch_trees(tmp_path) == [], "a killed waiter leaves no scratch behind"
+
+
+def test_an_interrupt_right_after_job_start_still_reaps_the_job(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signal between ``job start`` and the wait cancels the job it created.
+
+    The interrupt lands while the waiting message is written. Anti-vacuity:
+    installing the reaping handler only around the wait lets this interrupt
+    unwind with no ``job cancel``, leaving the queued job in the pytest pool.
+    """
+    record = _install_fake_agentctl(tmp_path, monkeypatch)
+    real_stderr = sys.stderr
+
+    class _InterruptOnWait:
+        def write(self, text: str) -> int:
+            if "waiting for the host pytest slot" in text:
+                raise KeyboardInterrupt
+            return real_stderr.write(text)
+
+        def flush(self) -> None:
+            real_stderr.flush()
+
+    monkeypatch.setattr(sys, "stderr", _InterruptOnWait())
+
+    with pytest.raises(KeyboardInterrupt):
+        run_pytest(_marker_command(tmp_path / "unused"), cwd=str(tmp_path), env=_environment(), root=tmp_path)
+
+    verbs = _verbs(record)
+    assert verbs[0] == "job start", verbs
+    assert "job cancel 7" in verbs, verbs
 
 
 def test_a_refused_cancellation_leaves_the_launch_file_for_the_job(tmp_path: Path) -> None:

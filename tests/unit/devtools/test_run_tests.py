@@ -556,6 +556,39 @@ def test_main_persists_interrupted_direct_cli_result_to_local_run_artifacts(
         assert payload["final_git_head"] == "head"
 
 
+def test_interrupted_focused_run_publishes_an_interrupted_evidence_receipt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Ctrl-C during ``devtools test`` reaches the evidence lane as ``interrupted``.
+
+    Anti-vacuity: dropping ``termination_reason`` from the focused aggregate,
+    or not treating ``pytest_interrupted`` as an interruption, publishes the
+    receipt with status ``failed``.
+    """
+    from devtools.verify_runs import canonical_verification_receipt
+
+    published: list[dict[str, Any]] = []
+
+    def interrupt(*_args: Any, **_kwargs: Any) -> tuple[int, float, dict[str, Any]]:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(run_tests, "assert_polylogue_matches_checkout", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(run_tests, "_clear_pytest_report", lambda _cmd: None)
+    monkeypatch.setattr(run_tests, "_run", interrupt)
+    monkeypatch.setattr(run_tests, "git_head", lambda _root: "head")
+    monkeypatch.setattr(run_tests, "append_verify_history", lambda _payload: None)
+    monkeypatch.setattr(run_tests, "append_verification_evidence", lambda payload: published.append(dict(payload)))
+
+    assert run_tests.main(["tests/unit/example.py"]) == 130
+
+    [payload] = published
+    assert payload["pytest_aggregate"]["termination_reason"] == "operator_interrupt"
+    assert canonical_verification_receipt(payload)["status"] == "interrupted"
+
+
 def test_main_records_rewritten_focused_exit_and_why_surfaces_the_failure(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

@@ -717,38 +717,19 @@ def _submit(
     # a result document; reading that one would report someone else's run.
     _slot_result_path(log_path).unlink(missing_ok=True)
     _write_launch(launch_path, argv=command, cwd=cwd, env=env, log_path=log_path)
-    try:
-        started = _agentctl(
-            [
-                "--json",
-                "job",
-                "start",
-                str(root),
-                PYTEST_OPERATION,
-                "--workspace",
-                str(root),
-                "--",
-                str(launch_path),
-            ],
-            env=client,
-        )
-        started_document = _document(started, verb="job start")
-        job_id = started_document.get("job_id")
-        reference = started_document.get("reference")
-        reference = reference if isinstance(reference, str) and reference else None
-        if not isinstance(job_id, int) or isinstance(job_id, bool):
-            raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`{AGENTCTL} job start` returned no job id"))
-    except PytestSlotUnavailableError:
-        launch_path.unlink(missing_ok=True)
-        raise
-    sys.stderr.write(f"  waiting for the host pytest slot ({AGENTCTL} job {job_id}, pool {PYTEST_POOL}) ...\n")
-    sys.stderr.flush()
+    launched: dict[str, Any] = {}
 
     def reap_owned_job() -> None:
         # Only on this waiter's own death (a signal or interpreter exit): the
         # job is then cancelled, by reference so it is found even if the queue
         # dropped its entry.
-        cancelled = _reap_job(job_id, reference=reference, env=client, launch_path=launch_path)
+        job_id = launched.get("job_id")
+        if not isinstance(job_id, int):
+            # No job id reached this process yet. A job the in-flight start
+            # created finds no launch file and ends without running pytest.
+            launch_path.unlink(missing_ok=True)
+            return
+        cancelled = _reap_job(job_id, reference=launched.get("reference"), env=client, launch_path=launch_path)
         if cancelled:
             on_exit()
         elif resource_state is not None:
@@ -756,7 +737,42 @@ def _submit(
             if preserve_guard is not None:
                 preserve_guard()
 
+    # Installed before the job exists: a signal between ``job start`` returning
+    # its id and the wait would otherwise kill the waiter under the previous
+    # handler and leave the queued job occupying the pytest pool.
     with _on_exit(reap_owned_job):
+        try:
+            started = _agentctl(
+                [
+                    "--json",
+                    "job",
+                    "start",
+                    str(root),
+                    PYTEST_OPERATION,
+                    "--workspace",
+                    str(root),
+                    "--",
+                    str(launch_path),
+                ],
+                env=client,
+            )
+            started_document = _document(started, verb="job start")
+            job_id = started_document.get("job_id")
+            reference = started_document.get("reference")
+            reference = reference if isinstance(reference, str) and reference else None
+            if not isinstance(job_id, int) or isinstance(job_id, bool):
+                raise PytestSlotUnavailableError(REFUSAL.format(reason=f"`{AGENTCTL} job start` returned no job id"))
+        except PytestSlotUnavailableError:
+            launch_path.unlink(missing_ok=True)
+            raise
+        launched.update(job_id=job_id, reference=reference)
+        # The child writes only to this log, never to the job's own stream, so
+        # the path is named now: following it is how a queued run is watched.
+        sys.stderr.write(
+            f"  waiting for the host pytest slot ({AGENTCTL} job {job_id}, pool {PYTEST_POOL}); "
+            f"pytest output: {log_path} ...\n"
+        )
+        sys.stderr.flush()
         view = _wait_for(job_id, reference=reference, env=client)
     receipt = _read_slot_result(log_path)
     try:
