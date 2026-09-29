@@ -5384,7 +5384,9 @@ def test_cold_build_rebuilds_a_session_that_retains_an_agent_work_event(tmp_path
         )
     assert appended["content_changed"] is True
 
-    def session_state(index_path: Path) -> tuple[object, ...]:
+    def session_state(
+        index_path: Path,
+    ) -> tuple[list[Any], list[Any], list[tuple[str, str]], list[Any]]:
         with sqlite3.connect(index_path) as conn:
             header = conn.execute(
                 "SELECT session_id, title, created_at_ms, updated_at_ms FROM sessions ORDER BY session_id"

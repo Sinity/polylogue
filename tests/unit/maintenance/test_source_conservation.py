@@ -535,7 +535,9 @@ def test_work_event_on_an_indexed_session_is_materialized(tmp_path: Path) -> Non
     check = _run(tmp_path)
     assert check.status is OutcomeStatus.OK, check.summary
     assert _count(check, "materialized") == 2
-    assert raw_id in _terms(check)["materialized"]["sample"]
+    sample = _terms(check)["materialized"]["sample"]
+    assert isinstance(sample, list)
+    assert raw_id in sample
 
 
 def test_parsed_raw_without_session_or_rule_is_unexplained(tmp_path: Path) -> None:
