@@ -15,7 +15,7 @@ from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.raw_coordinates import MemberAddressingMode
 from polylogue.logging import get_logger
 
-from .acquisition_boundary import admit_bound_bytes, bind_stream
+from .acquisition_boundary import admit_bound_bytes, bind_stream, drain_bound
 from .assembly import get_assembly_spec
 from .cursor import _ParseContext
 from .decoder_json import JsonValue
@@ -105,11 +105,21 @@ class _SessionEmitter:
         emitted = self._emit_stream(handle, stream_name, pre_read_bytes, precomputed_raw, session_artifact)
         if self._ctx.bound_provider is None:
             yield from emitted
-        else:
-            # At a bound location the stream is one admission unit: a record
-            # is refused only when its bytes are read, so no session leaves
-            # before the whole stream validated.
-            yield from list(emitted)
+            return
+        # At a bound location the stream is one admission unit: a record is
+        # refused only when its bytes are read, so no session leaves before
+        # the whole stream validated.
+        collected: list[tuple[RawSessionData | None, ParsedSession]] = []
+        try:
+            collected.extend(emitted)
+        except ContentIdentityRefusal:
+            # An element whose identity cannot be stored is the stream's
+            # recorded gap; the sessions parsed beside it are still emitted
+            # once the rest of the stream validated.
+            drain_bound(handle)
+            yield from collected
+            raise
+        yield from collected
 
     def _emit_stream(
         self,
