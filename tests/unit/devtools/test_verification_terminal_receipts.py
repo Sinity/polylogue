@@ -55,7 +55,8 @@ def receipt_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 def _only_receipt(root: Path) -> dict[str, Any]:
     paths = list((root / verify_runs.VERIFY_RUNS_DIR).glob("*/run.json"))
     assert len(paths) == 1
-    return json.loads(paths[0].read_text(encoding="utf-8"))
+    receipt: dict[str, Any] = json.loads(paths[0].read_text(encoding="utf-8"))
+    return receipt
 
 
 def test_focused_sigterm_finishes_receipt_and_publications(
@@ -252,9 +253,9 @@ def test_queued_interruption_keeps_start_time_worktree_provenance(
     def exit_process(code: int) -> None:
         raise SystemExit(code)
 
-    monkeypatch.setattr(pytest_slot.subprocess, "Popen", Process)
+    monkeypatch.setattr("devtools.pytest_slot.subprocess.Popen", Process)
     monkeypatch.setattr(pytest_slot, "ProcessGroupMemorySampler", Sampler)
-    monkeypatch.setattr(pytest_slot.os, "_exit", exit_process)
+    monkeypatch.setattr("devtools.pytest_slot.os._exit", exit_process)
     launch, log = tmp_path / "launch.json", tmp_path / "slot.log"
     pytest_slot._write_launch(launch, argv=[sys.executable, "-m", "pytest"], cwd=str(tmp_path), env={}, log_path=log)
     with pytest.raises(SystemExit) as ended:

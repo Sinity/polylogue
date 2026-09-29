@@ -392,8 +392,8 @@ def test_pattern_entrypoint_marks_sha1_as_non_security_use(
 
     monkeypatch.setattr(verify_patterns, "hashlib", SimpleNamespace(sha1=restricted_sha1))
     monkeypatch.setattr(verify_patterns, "repo_root", lambda: tmp_path)
-    monkeypatch.setattr(verify_patterns.shutil, "which", lambda _name: "/fixture/ast-grep")
-    monkeypatch.setattr(verify_patterns.subprocess, "run", process)
+    monkeypatch.setattr("devtools.verify_patterns.shutil.which", lambda _name: "/fixture/ast-grep")
+    monkeypatch.setattr("devtools.verify_patterns.subprocess.run", process)
     assert verify_patterns.main(["--json"]) == 0
     assert observations and not any(observations)
     assert json.loads(capsys.readouterr().out)["blocking"] is False

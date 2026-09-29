@@ -23,6 +23,7 @@ from devtools.pytest_slot import SlotOutcome
 from devtools.verify_runs import (
     CURRENT_RUN_PATH,
     CURRENT_STATISTICS_PATH,
+    VERIFY_RUNS_DIR,
     VerifyRun,
     git_head,
     git_worktree_content_sha256,
@@ -215,7 +216,7 @@ def test_outliers_aggregate_phases_and_report_test_and_file_shares(
             json.dumps({"tests": [{"nodeid": nodeid, "call": {"duration": duration}}]}), encoding="utf-8"
         )
 
-    run_dir = tmp_path / run_tests.VERIFY_RUNS_DIR / "completed"
+    run_dir = tmp_path / VERIFY_RUNS_DIR / "completed"
     steps = []
     for index, path in enumerate(sorted(report_dir.glob("last-pytest-*.json"))):
         step_id = f"{index:02d}-pytest-lane"
