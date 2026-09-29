@@ -497,7 +497,7 @@ async def _observed_event_read_steps(db_path: Path, session_id: str) -> tuple[in
             conn,
             RunProjectionListQuery(session_id=session_id, kind="tool_finished", limit=None),
         )
-        await conn.set_progress_handler(None, 0)
+        await conn.set_progress_handler(None, 0)  # type: ignore[arg-type]  # None clears the handler, as in sqlite3
     return steps, [str(record.event.tool_id) for record in events]
 
 

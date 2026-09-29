@@ -355,7 +355,7 @@ def test_topology_truncation_keeps_unresolved_edges_of_retained_children() -> No
     )
     session = Session(id=root, origin=Origin.CODEX_SESSION, messages=MessageCollection(messages=[]))
 
-    payload = build_session_orchestration(session, topology).topology
+    payload = build_session_orchestration(str(session.id), topology, messages=session.messages).topology
 
     assert payload is not None
     edges = cast(list[dict[str, object]], payload["edges"])
