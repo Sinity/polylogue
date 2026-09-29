@@ -551,12 +551,20 @@ class _FutureTypeFrame:
     key: str | None = None
     own_types: dict[str, str | None] = field(default_factory=dict)
     first_child: str | None = None
+    # Map children keyed by their owning key: a repeated key replaces the
+    # earlier value's candidate in place, matching the decoder's
+    # last-value-wins dict (first-key position, last value).
+    child_types: dict[str, str | None] = field(default_factory=dict)
 
     def selected(self) -> str | None:
         if self.kind == "map":
             for key in ("type", "content_type", "kind", "record_type"):
                 if value := self.own_types.get(key):
                     return value
+            for candidate in self.child_types.values():
+                if candidate is not None:
+                    return candidate
+            return None
         return self.first_child
 
 
@@ -594,12 +602,17 @@ class _FirstFutureType:
         elif event in {"end_map", "end_array"}:
             selected = self._frames.pop().selected()
             if self._frames:
-                if selected is not None and self._frames[-1].first_child is None:
-                    self._frames[-1].first_child = selected
+                parent = self._frames[-1]
+                if parent.kind == "map":
+                    parent.child_types[parent.key or ""] = selected
+                elif selected is not None and parent.first_child is None:
+                    parent.first_child = selected
             else:
                 self.value = selected
-        elif frame.kind == "map" and frame.key in self._TYPE_KEYS:
-            frame.own_types[frame.key or ""] = _future_wire_type(value) if event == "string" else None
+        elif frame.kind == "map":
+            if frame.key in self._TYPE_KEYS:
+                frame.own_types[frame.key or ""] = _future_wire_type(value) if event == "string" else None
+            frame.child_types[frame.key or ""] = None
 
 
 def _root_envelope_without(

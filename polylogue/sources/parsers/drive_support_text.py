@@ -41,12 +41,16 @@ class TimestampBounds:
     """The earliest and latest parseable chunk timestamps, in one pass.
 
     Equal instants keep the first spelling for the earliest bound and the
-    last spelling for the latest, as a stable sort of every value would.
+    last *distinct* spelling for the latest, as a stable sort of the
+    deduplicated spellings would: ``Z``, ``+00:00``, ``Z`` keeps ``+00:00``.
+    Only spellings at the current latest instant are remembered, so memory
+    stays bounded by that instant's spellings.
     """
 
     def __init__(self) -> None:
         self.earliest: tuple[datetime, str] | None = None
         self.latest: tuple[datetime, str] | None = None
+        self._latest_spellings: set[str] = set()
 
     def observe(self, value: str | None) -> None:
         if not isinstance(value, str) or not value:
@@ -56,8 +60,12 @@ class TimestampBounds:
             return
         if self.earliest is None or parsed < self.earliest[0]:
             self.earliest = (parsed, value)
-        if self.latest is None or parsed >= self.latest[0]:
+        if self.latest is None or parsed > self.latest[0]:
             self.latest = (parsed, value)
+            self._latest_spellings = {value}
+        elif parsed == self.latest[0] and value not in self._latest_spellings:
+            self.latest = (parsed, value)
+            self._latest_spellings.add(value)
 
 
 __all__ = ["TimestampBounds", "chunk_timestamp", "extract_text_from_chunk"]
