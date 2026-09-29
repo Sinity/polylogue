@@ -4192,3 +4192,24 @@ def test_stale_deferral_escalates_when_recorded_byte_size_lags_the_file(
     record = watcher._cursor.get_record(f)
     assert record is not None
     assert record.failure_count == 1
+
+
+def test_cold_build_cursor_corroboration_reads_the_candidate_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-slc55: a cold build corroborates cursors against its candidate.
+
+    The writer publishes into the inactive candidate generation; the active
+    index is empty until promotion. Anti-vacuity: resolving the active index
+    here demotes every cursor the build just wrote and re-ingests the file.
+    """
+    from polylogue.sources.live import cold_build
+
+    candidate = tmp_path / ".index-generations" / "gen-1" / "index.db"
+    registered = SimpleNamespace(generation=SimpleNamespace(index_path=str(candidate)))
+    monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root=None: registered)
+    assert live_watcher._published_index_path(tmp_path) == candidate
+
+    monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root=None: None)
+    monkeypatch.setattr(live_watcher, "resolve_active_index_path", lambda root: root / "index.db")
+    assert live_watcher._published_index_path(tmp_path) == tmp_path / "index.db"

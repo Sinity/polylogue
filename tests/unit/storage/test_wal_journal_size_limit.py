@@ -124,8 +124,10 @@ def test_open_readonly_connection_applies_query_only(tmp_path: Path) -> None:
     conn = open_readonly_connection(db_path)
     try:
         assert _pragma_int(conn, "query_only") == 1
-        # Any DML attempt must be rejected at parse time.
-        with pytest.raises(sqlite3.OperationalError):
+        # Any DML attempt must be rejected at prepare time: the read
+        # authorizer denies it (``DatabaseError`` on Python 3.14) before
+        # query_only would (``OperationalError``); both subclass this.
+        with pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly database"):
             conn.execute("INSERT INTO t (id) VALUES (1)")
     finally:
         conn.close()

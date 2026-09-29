@@ -415,31 +415,38 @@ def release_refused_capture(blob_store: BlobStore, blob_hash: str, receipt_id: s
     Dropping a pending publication or releasing a flushed reservation hands
     the bytes back to ordinary GC; nothing references them.
     """
-    from polylogue.storage.blob_publication import discard_pending_blob, release_refused_publication_receipt
+    from polylogue.storage.blob_publication import release_refused_publication_receipt
 
+    if receipt_id is None:
+        # A store without receipts wrote final bytes; nothing references
+        # them, so ordinary GC reclaims them.
+        return
     discard_receipt = getattr(blob_store, "discard_pending_receipt", None)
-    if receipt_id is not None and callable(discard_receipt):
-        if discard_receipt(receipt_id):
-            return
-    elif discard_pending_blob(blob_store, blob_hash):
+    if callable(discard_receipt) and discard_receipt(receipt_id):
         return
     source_db_path = getattr(blob_store, "source_db_path", None)
-    if source_db_path is not None and receipt_id is not None:
+    if source_db_path is not None:
         release_refused_publication_receipt(source_db_path, receipt_id, blob_hash)
 
 
 @contextmanager
-def release_captures_on_refusal(blob_store: BlobStore) -> Iterator[list[tuple[str, str | None]]]:
+def release_captures_on_refusal(
+    blob_store: BlobStore,
+    *,
+    refusals: tuple[type[Exception], ...] = (ForeignOriginContentError,),
+) -> Iterator[list[tuple[str, str | None]]]:
     """Scope one admission unit: a refusal releases every capture it made.
 
-    The caller appends each ``(blob_hash, receipt_id)`` it captures; on
-    :class:`ForeignOriginContentError` all are released before the refusal
-    propagates, so a refused unit leaves no retained bytes.
+    The caller appends each ``(blob_hash, receipt_id)`` it captures; on one of
+    ``refusals`` all are released before the exception propagates, so a
+    refused unit leaves no retained bytes. A caller whose scope yields
+    nothing before it completes widens ``refusals`` to every failure: nothing
+    it captured can be referenced then.
     """
     captures: list[tuple[str, str | None]] = []
     try:
         yield captures
-    except ForeignOriginContentError:
+    except refusals:
         for blob_hash, receipt_id in captures:
             release_refused_capture(blob_store, blob_hash, receipt_id)
         raise

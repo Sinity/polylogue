@@ -356,21 +356,24 @@ def test_production_baseline_excludes_refused_plain_files(tmp_path: Path) -> Non
 
 
 def test_publisher_discards_one_refused_pending_blob(tmp_path: Path) -> None:
-    """A refused blob's queued publication is dropped before any flush.
+    """A refused capture's queued publication is dropped before any flush.
 
-    Anti-vacuity: without ``discard_pending_hash`` the refused blob stays
+    Anti-vacuity: without ``discard_pending_receipt`` the refused blob stays
     queued and a later flush reserves it with no raw row to consume it.
     """
-    from polylogue.storage.blob_publication import ArchiveBlobPublisher, discard_pending_blob
+    from polylogue.sources.acquisition_boundary import release_refused_capture
+    from polylogue.storage.blob_publication import ArchiveBlobPublisher
 
     publisher = ArchiveBlobPublisher(tmp_path / "source.db", tmp_path / "blob")
     kept, _ = publisher.write_from_bytes(b"kept")
     refused, _ = publisher.write_from_bytes(b"refused")
-    assert discard_pending_blob(publisher, refused) is True
-    assert discard_pending_blob(publisher, refused) is False
+    refused_receipt = publisher.receipt_id(refused)
+    assert refused_receipt is not None
+    release_refused_capture(publisher, refused, refused_receipt)
+    assert publisher.discard_pending_receipt(refused_receipt) is False
     assert publisher.receipt_id(refused) is None
     assert publisher.receipt_id(kept) is not None
-    assert publisher.has_pending
+    assert [receipt.blob_hash for receipt, _ in publisher._pending] == [kept]
 
 
 def test_refused_unit_releases_every_capture_even_identical_ones(tmp_path: Path) -> None:

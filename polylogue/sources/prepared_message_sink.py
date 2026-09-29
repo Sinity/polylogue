@@ -7,8 +7,10 @@ import json
 import os
 import re
 import sqlite3
+import threading
 import uuid
-from collections.abc import Iterable, Iterator, Mapping, MutableSequence, Set
+from collections import OrderedDict
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableSequence, Set
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -28,6 +30,7 @@ from polylogue.sources.live.tool_result_sidecars import (
     SidecarMatch,
 )
 from polylogue.sources.parsers.base import ParsedAttachment, ParsedMessage, ParsedSession, ParsedSessionEvent
+from polylogue.sources.parsers.claude.common import _ClaudeMessageEvidence
 from polylogue.sources.sidecar_evidence import RetainedSidecarScope
 
 _ACTIVE_PARENT_LOOKUP_SQL = (
@@ -38,6 +41,83 @@ _ACTIVE_PARENT_LOOKUP_SQL = (
 
 def _read_uri(path: Path) -> str:
     return f"file:{quote(str(path))}?mode=ro"
+
+
+#: Byte budget, counted in sealed ``message_json`` bytes, for decoded sessions
+#: kept across passes. A session larger than half of it is never retained and
+#: keeps streaming from disk, so whale memory stays bounded as before.
+DECODED_SESSION_BUDGET_BYTES = 64 * 1024 * 1024
+
+_DecodedKey = tuple[str, int, int, int, int, int, int]
+
+
+class _DecodedSessions:
+    """A small process-wide LRU of fully decoded sealed sessions.
+
+    Publishing one session walks its messages about twenty times (content
+    identities, timestamps, messages, blocks, file edits, events, links,
+    paste spans, ...). Each walk re-read the sealed carrier and re-ran pydantic
+    validation of every message: on the fresh-build benchmark that was 45% of
+    the ingest writer's CPU. A sealed carrier is immutable, so its first
+    complete walk is retained for the following ones.
+
+    Retained messages are shared between walks. The writer treats parsed
+    messages as values -- it derives rows and ``model_copy`` for changes --
+    and never assigns to one in place.
+    """
+
+    def __init__(self, budget_bytes: int) -> None:
+        self.budget_bytes = budget_bytes
+        self._entries: OrderedDict[_DecodedKey, tuple[tuple[ParsedMessage, ...], int]] = OrderedDict()
+        self._bytes = 0
+        self._lock = threading.Lock()
+
+    def get(self, key: _DecodedKey) -> tuple[ParsedMessage, ...] | None:
+        with self._lock:
+            entry = self._entries.get(key)
+            if entry is None:
+                return None
+            self._entries.move_to_end(key)
+            return entry[0]
+
+    def put(self, key: _DecodedKey, messages: tuple[ParsedMessage, ...], size: int) -> None:
+        with self._lock:
+            if key in self._entries or size > self.budget_bytes // 2:
+                return
+            self._entries[key] = (messages, size)
+            self._bytes += size
+            while self._bytes > self.budget_bytes and self._entries:
+                _key, (_messages, evicted) = self._entries.popitem(last=False)
+                self._bytes -= evicted
+
+    def discard_path(self, path: str) -> None:
+        with self._lock:
+            for key in [key for key in self._entries if key[0] == path]:
+                self._bytes -= self._entries.pop(key)[1]
+
+    def discard_under(self, directory: str) -> None:
+        prefix = directory.rstrip(os.sep) + os.sep
+        with self._lock:
+            for key in [key for key in self._entries if key[0].startswith(prefix)]:
+                self._bytes -= self._entries.pop(key)[1]
+
+    def clear(self) -> None:
+        with self._lock:
+            self._entries.clear()
+            self._bytes = 0
+
+
+_DECODED_SESSIONS = _DecodedSessions(DECODED_SESSION_BUDGET_BYTES)
+
+
+def discard_decoded_sessions(path: Path) -> None:
+    """Release retained decodes of one sealed carrier before it is removed."""
+    _DECODED_SESSIONS.discard_path(str(path))
+
+
+def discard_decoded_sessions_under(directory: Path) -> None:
+    """Release retained decodes of every carrier in a scratch tree being removed."""
+    _DECODED_SESSIONS.discard_under(str(directory))
 
 
 def _message_json(value: ParsedMessage) -> str:
@@ -65,12 +145,16 @@ def _attachment_json(value: ParsedAttachment) -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachment_ordinal: int) -> ParsedAttachment:
+def _attachment_from_json(encoded: str) -> ParsedAttachment:
     payload = json.loads(encoded)
     inline = payload.pop("_prepared_inline_bytes", None)
     if inline is not None:
         payload["inline_bytes"] = base64.b64decode(inline, validate=True)
-    return ParsedAttachment.model_validate(payload).model_copy(
+    return ParsedAttachment.model_validate(payload)
+
+
+def _decode_attachment(encoded: str, path: Path, session_ordinal: int, attachment_ordinal: int) -> ParsedAttachment:
+    return _attachment_from_json(encoded).model_copy(
         update={"prepared_carrier_key": (str(path), session_ordinal, attachment_ordinal)}
     )
 
@@ -303,6 +387,10 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                 (self.session_ordinal, ordinal),
             ).fetchone()
         else:
+            key = self._decoded_key()
+            decoded = _DECODED_SESSIONS.get(key) if key is not None else None
+            if decoded is not None:
+                return decoded[ordinal]
             with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
                 row = conn.execute(
                     "SELECT message_json FROM prepared_message WHERE session_ordinal = ? AND message_ordinal = ?",
@@ -380,14 +468,51 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
             for row in cursor:
                 yield ParsedMessage.model_validate_json(row[0])
             return
+        key = self._decoded_key()
+        decoded = _DECODED_SESSIONS.get(key) if key is not None else None
+        if decoded is not None:
+            yield from decoded[start:]
+            return
+        retained: list[ParsedMessage] | None = [] if key is not None and start == 0 else None
+        retained_bytes = 0
         with closing(sqlite3.connect(_read_uri(self.path), uri=True)) as conn:
+            # The budget is in stored bytes: ``len`` of the decoded text
+            # counts code points and undercounts non-ASCII transcripts.
             cursor = conn.execute(
-                "SELECT message_json FROM prepared_message WHERE session_ordinal = ? "
-                "AND message_ordinal >= ? ORDER BY message_ordinal",
+                "SELECT message_json, length(CAST(message_json AS BLOB)) FROM prepared_message "
+                "WHERE session_ordinal = ? AND message_ordinal >= ? ORDER BY message_ordinal",
                 (self.session_ordinal, start),
             )
             for row in cursor:
-                yield ParsedMessage.model_validate_json(row[0])
+                message = ParsedMessage.model_validate_json(row[0])
+                if retained is not None:
+                    retained_bytes += int(row[1])
+                    if retained_bytes > _DECODED_SESSIONS.budget_bytes // 2:
+                        retained = None
+                    else:
+                        retained.append(message)
+                yield message
+        # Only a walk that reached the end holds the whole session.
+        # An empty session costs nothing to decode and would occupy an LRU
+        # entry the byte budget never charges for.
+        if key is not None and retained and len(retained) == self._count:
+            _DECODED_SESSIONS.put(key, tuple(retained), retained_bytes)
+
+    def _decoded_key(self) -> _DecodedKey | None:
+        """Identify this sealed session's bytes, or ``None`` when unreadable."""
+        try:
+            stat = os.stat(self.path)
+        except OSError:
+            return None
+        return (
+            str(self.path),
+            self.session_ordinal,
+            stat.st_dev,
+            stat.st_ino,
+            stat.st_mtime_ns,
+            stat.st_ctime_ns,
+            stat.st_size,
+        )
 
     def normalize_active_path(self) -> SqliteMessageSink:
         """Apply the writer's leaf/path normalization without a message list."""
@@ -411,15 +536,18 @@ class SqliteMessageSink(MutableSequence[ParsedMessage]):
                     message = self[ordinal]
                     self[ordinal] = message.model_copy(update={"is_active_leaf": expected})
             return self
-        leaf = self._writer.execute(
-            "SELECT provider_id FROM prepared_message WHERE session_ordinal = ? AND active_leaf = 1",
+        leaf, leaf_parent = self._writer.execute(
+            "SELECT provider_id, parent_id FROM prepared_message WHERE session_ordinal = ? AND active_leaf = 1",
             (self.session_ordinal,),
-        ).fetchone()[0]
+        ).fetchone()
         if not leaf:
             return self
         self._writer.execute("DROP TABLE IF EXISTS temp.prepared_active_path")
         self._writer.execute("CREATE TEMP TABLE prepared_active_path (provider_id TEXT PRIMARY KEY)")
-        cursor: str | None = leaf
+        # The walk starts at the leaf row itself: a later message repeating
+        # the leaf's provider id may name a different parent.
+        self._writer.execute("INSERT INTO prepared_active_path VALUES (?)", (leaf,))
+        cursor: str | None = leaf_parent
         while cursor:
             result = self._writer.execute("INSERT OR IGNORE INTO prepared_active_path VALUES (?)", (cursor,))
             if result.rowcount == 0:
@@ -831,6 +959,91 @@ class SqliteMessageStore:
 
     def close(self) -> None:
         self.conn.close()
+
+
+class ClaudeChatEvidence:
+    """Claude chat records in scratch, rebuilt into evidence when emitted.
+
+    Only the raw record is stored: its evidence is a pure function of the
+    record, its array index and its evidence key.
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        conn.execute("CREATE TABLE claude_evidence (original_index INTEGER PRIMARY KEY, raw_json TEXT NOT NULL)")
+
+    def put(self, evidence: _ClaudeMessageEvidence) -> None:
+        self._conn.execute(
+            "INSERT INTO claude_evidence VALUES (?, ?)", (evidence.original_index, json.dumps(dict(evidence.raw)))
+        )
+
+    def raw(self, original_index: int) -> dict[str, object]:
+        row = self._conn.execute(
+            "SELECT raw_json FROM claude_evidence WHERE original_index = ?", (original_index,)
+        ).fetchone()
+        if row is None:
+            raise KeyError(original_index)
+        raw = json.loads(row[0])
+        assert isinstance(raw, dict)
+        return raw
+
+    def get(
+        self,
+        original_index: int,
+        rebuild: Callable[[dict[str, object]], _ClaudeMessageEvidence],
+    ) -> _ClaudeMessageEvidence:
+        return rebuild(self.raw(original_index))
+
+    def close(self) -> None:
+        self._conn.execute("DROP TABLE claude_evidence")
+
+
+class ClaudeAttachmentScratch:
+    """Merged Claude attachment rows in scratch, in first-seen order."""
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+        conn.execute(
+            "CREATE TABLE claude_attachment (ordinal INTEGER PRIMARY KEY, attachment_id TEXT NOT NULL UNIQUE, "
+            "name TEXT, mime_type TEXT, attachment_json TEXT NOT NULL)"
+        )
+        conn.execute("CREATE INDEX claude_attachment_descriptor ON claude_attachment(name, mime_type)")
+
+    def get(self, provider_attachment_id: str) -> ParsedAttachment | None:
+        row = self._conn.execute(
+            "SELECT attachment_json FROM claude_attachment WHERE attachment_id = ?", (provider_attachment_id,)
+        ).fetchone()
+        return _attachment_from_json(row[0]) if row is not None else None
+
+    def put(self, attachment: ParsedAttachment) -> None:
+        self._conn.execute(
+            "INSERT INTO claude_attachment (attachment_id, name, mime_type, attachment_json) VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(attachment_id) DO UPDATE SET name = excluded.name, mime_type = excluded.mime_type, "
+            "attachment_json = excluded.attachment_json",
+            (attachment.provider_attachment_id, attachment.name, attachment.mime_type, _attachment_json(attachment)),
+        )
+
+    def unique_by_descriptor(self, name: str, mime_type: str | None) -> ParsedAttachment | None:
+        rows = self._conn.execute(
+            "SELECT attachment_json FROM claude_attachment WHERE name = ? AND mime_type IS ? LIMIT 2",
+            (name, mime_type),
+        ).fetchall()
+        return _attachment_from_json(rows[0][0]) if len(rows) == 1 else None
+
+    def __iter__(self) -> Iterator[ParsedAttachment]:
+        last = -1
+        while True:
+            row = self._conn.execute(
+                "SELECT ordinal, attachment_json FROM claude_attachment WHERE ordinal > ? ORDER BY ordinal LIMIT 1",
+                (last,),
+            ).fetchone()
+            if row is None:
+                return
+            last = row[0]
+            yield _attachment_from_json(row[1])
+
+    def close(self) -> None:
+        self._conn.execute("DROP TABLE claude_attachment")
 
 
 class ChatGPTNodeMapping(Mapping[str, object]):

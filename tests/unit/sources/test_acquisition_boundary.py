@@ -353,7 +353,15 @@ def test_every_acquisition_route_refuses_a_foreign_tail(route: str, tmp_path: Pa
 
 #: Calls that read source bytes into the archive or open an archive member.
 _SOURCE_BYTE_SINKS = frozenset(
-    {"write_from_path", "write_from_fileobj", "prepare_from_path", "prepare_from_fileobj", "open_bounded_zip_entry"}
+    {
+        "write_from_path",
+        "write_from_fileobj",
+        "write_from_writer",
+        "prepare_from_path",
+        "prepare_from_fileobj",
+        "prepare_from_writer",
+        "open_bounded_zip_entry",
+    }
 )
 
 #: Call sites outside the boundary, each with the reason it is not an
@@ -364,8 +372,13 @@ _DECLARED_NON_ACQUISITION_SITES: dict[tuple[str, str], str] = {
     ("polylogue/sources/acquisition_boundary.py", "capture_bound_stream"): "the boundary itself",
     ("polylogue/storage/blob_store.py", "BlobStore.write_from_path"): "blob store implementation",
     ("polylogue/storage/blob_store.py", "BlobStore.write_from_fileobj"): "blob store implementation",
+    ("polylogue/storage/blob_store.py", "BlobStore.write_from_writer"): "blob store implementation",
     ("polylogue/storage/blob_publication.py", "ArchiveBlobPublisher.write_from_path"): "publisher delegation",
     ("polylogue/storage/blob_publication.py", "ArchiveBlobPublisher.write_from_fileobj"): "publisher delegation",
+    ("polylogue/storage/blob_publication.py", "ArchiveBlobPublisher.write_from_writer"): "publisher delegation",
+    ("polylogue/operations/attachment_convergence.py", "_download_prepared"): (
+        "downloads a provider-hosted attachment, not session records"
+    ),
     ("polylogue/storage/blob_integrity.py", "_current_raw_payload_bytes"): "re-reads a retained member for integrity",
     ("polylogue/operations/ingest_inputs.py", "retain_input_page"): (
         "freezes a declared input's physical bytes; its decode "

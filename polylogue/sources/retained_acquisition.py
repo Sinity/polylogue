@@ -17,6 +17,7 @@ from pathlib import Path
 
 from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, BoundedMemberReport, ZipAdmission
 from polylogue.config import Source
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Provider
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_raw_id, zip_member_source_index
@@ -168,6 +169,11 @@ def iter_retained_source_records(
                 # The declared source binds; a foreign member is a typed
                 # refusal in the member denominator, never a retained raw.
                 record_rejected(entry, f"{exc.code}: {exc}")
+                continue
+            except ContentIdentityRefusal as exc:
+                # The member cannot be stored: a recorded refusal, not an
+                # aborted acquisition of the whole ZIP.
+                record_rejected(entry, f"content_identity_refused: {exc}")
                 continue
             for data in member_records:
                 split = data.source_index or 0

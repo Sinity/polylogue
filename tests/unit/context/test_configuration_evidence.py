@@ -117,7 +117,10 @@ def test_git_history_preserves_same_second_revisions_as_ambiguous(
 
     history = git_artifact_history(tmp_path, "CLAUDE.md", owner="operator", kind="instruction")
 
-    assert len(history) == 2
+    # Both snapshots stay ambiguous inside their second; the final commit-order
+    # state is published from the next second on.
+    assert len(history) == 3
+    assert history[-1].observed_from_ms == 1_767_225_601_000 and history[-1].observed_until_ms is None
     assert resolve_context(history, at_ms=1_767_225_600_000).status == "overlap"
     assert resolve_context(history, at_ms=1_767_225_601_000).artifacts[0].content_hash == history[-1].content_hash
 
@@ -183,3 +186,100 @@ def test_git_deletion_closes_the_prior_revision(tmp_path: Path) -> None:
     subprocess.run(["git", "commit", "-qm", "delete"], cwd=tmp_path, check=True)
     history = git_artifact_history(tmp_path, "CLAUDE.md", owner="o", kind="instruction")
     assert len(history) == 1 and history[0].observed_until_ms is not None
+
+
+def test_an_unmapped_invocation_still_matches_by_its_own_name() -> None:
+    """A partial declaration mapping does not make every artifact of the kind match.
+
+    Anti-vacuity: default the lookup to the candidate's own path and the
+    unmapped ``deploy`` skill joins the sole active review declaration.
+    """
+    review = artifact_from_bytes(
+        kind="skill", path="review/SKILL.md", payload=b"review", owner="o", repository=None, observed_from_ms=0
+    )
+    joined = join_invocations(
+        (("deploy", "skill", 1), ("review", "skill", 1)),
+        (review,),
+        declaration_names={"review": review.path},
+    )
+    assert joined[0].declaration is None
+    assert joined[1].declaration == review
+
+
+@pytest.mark.parametrize("same_second", [False, True])
+def test_git_history_reads_pre_rename_revisions_under_their_historical_name(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, same_second: bool
+) -> None:
+    """Revisions from before a rename are history, not deletions.
+
+    Anti-vacuity: read every followed commit under the final name and the
+    pre-rename commits fail ``git show``, become deletion stamps, and leave
+    the original bytes out of the history; in one timestamp second the
+    stamps also produced an inverted interval.
+    """
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    if same_second:
+        monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-01-01T00:00:00+0000")
+        monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-01-01T00:00:00+0000")
+    (tmp_path / "old").mkdir()
+    (tmp_path / "old/SKILL.md").write_bytes(b"original")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "add"], cwd=tmp_path, check=True)
+    (tmp_path / "review").mkdir()
+    subprocess.run(["git", "mv", "old/SKILL.md", "review/SKILL.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "rename"], cwd=tmp_path, check=True)
+    (tmp_path / "review/SKILL.md").write_bytes(b"revised")
+    subprocess.run(["git", "commit", "-qam", "revise"], cwd=tmp_path, check=True)
+
+    history = git_artifact_history(tmp_path, "review/SKILL.md", owner="o", kind="skill")
+
+    original = artifact_from_bytes(
+        kind="skill",
+        path="review/SKILL.md",
+        payload=b"original",
+        owner="o",
+        repository=str(tmp_path),
+        observed_from_ms=0,
+    )
+    assert original.content_hash in {revision.content_hash for revision in history}
+    assert {revision.path for revision in history} == {"review/SKILL.md"}
+    assert all(
+        revision.observed_until_ms is None or revision.observed_until_ms > revision.observed_from_ms
+        for revision in history
+    )
+
+
+def test_git_history_frames_paths_that_look_like_metadata(tmp_path: Path) -> None:
+    """A path whose bytes resemble a log marker is still read as a path.
+
+    Anti-vacuity: recognize records by a text prefix such as ``commit:`` and
+    the path token is taken for a commit hash, so neither revision is read.
+    """
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    for payload in (b"first", b"second"):
+        (tmp_path / "commit:notes").write_bytes(payload)
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-qm", payload.decode()], cwd=tmp_path, check=True)
+
+    history = git_artifact_history(tmp_path, "commit:notes", owner="o", kind="instruction")
+
+    expected = {
+        artifact_from_bytes(
+            kind="instruction",
+            path="commit:notes",
+            payload=payload,
+            owner="o",
+            repository=str(tmp_path),
+            observed_from_ms=0,
+        ).content_hash
+        for payload in (b"first", b"second")
+    }
+    assert {revision.content_hash for revision in history} == expected

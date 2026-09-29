@@ -172,7 +172,7 @@ def read_session_evidence(archive: ArchiveStore, session_id: str) -> SessionEvid
     lineage_error: sqlite3.Error | None = None
     try:
         rows = archive._conn.execute(
-            "SELECT dst_origin || ':' || dst_native_id, link_type, status FROM session_links WHERE src_session_id = ? ORDER BY link_type, dst_origin, dst_native_id LIMIT 20",
+            "SELECT dst_origin || ':' || dst_native_id, link_type, status FROM session_links WHERE src_session_id = ? ORDER BY link_type, dst_origin, dst_native_id",
             (resolved_id,),
         ).fetchall()
     except sqlite3.Error as exc:

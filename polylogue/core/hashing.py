@@ -39,6 +39,16 @@ def hash_payload(payload: object) -> str:
     return digest(payload, QUERY)
 
 
+def hash_item_payload(payload: object) -> str:
+    """Hash one item's payload (a message, an event) exactly as :func:`hash_payload`.
+
+    The bytes and digest are identical; the payload is encoded in one pass
+    instead of framed member by member, which only pays off for a payload
+    holding many items, such as a whole session tree.
+    """
+    return digest(payload, QUERY, frame_depth=0)
+
+
 def hash_bytes(payload: bytes) -> str:
     """Hash bytes to a full SHA-256 hex digest."""
     return hashlib.sha256(payload).hexdigest()
@@ -53,4 +63,4 @@ def hash_file(path: Path) -> str:
     return hasher.hexdigest()
 
 
-__all__ = ["hash_bytes", "hash_file", "hash_payload", "hash_text", "hash_text_short"]
+__all__ = ["hash_bytes", "hash_file", "hash_item_payload", "hash_payload", "hash_text", "hash_text_short"]

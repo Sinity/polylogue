@@ -339,10 +339,10 @@ A few keys not shown in the full example above, with their TOML path:
 | `daemon_parse_stage_workers` | `daemon.raw_materialization.parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool (polylogue-m6tp phase (a); always runs -- pre-parses raw-materialization census candidates in a bounded thread pool before the writer hold); unset/`<=0` uses the adaptive `cpu_count - 1` default. |
 | `daemon_parse_stage_max_inflight_bytes` | `daemon.raw_materialization.parse_stage_max_inflight_bytes` | Whale-memory budget (bytes) for raw payloads admitted while prefetch parses are in flight; unset/`<=0` uses the adaptive 1/16-physical-RAM default (clamped [64 MiB, 2 GiB]). |
 | `daemon_parse_stage_max_cached_tree_bytes` | `daemon.raw_materialization.parse_stage_max_cached_tree_bytes` | Whole-cache budget (bytes) for estimated parsed-tree bytes held resident between `warm()` passes; unset/`<=0` uses the adaptive 1/8-physical-RAM default (clamped [256 MiB, 4 GiB]). |
-| `daemon_parse_stage_warm_timeout_seconds` | `daemon.raw_materialization.parse_stage_warm_timeout_seconds` | Bound (seconds) on how long a prefetch `warm()` pass waits for its dispatched workers; unset/`<=0` uses the 300s default. |
+| `daemon_parse_stage_stall_report_seconds` | `daemon.raw_materialization.parse_stage_stall_report_seconds` | Seconds without a completed worker before a prefetch `warm()` pass reports `daemon.parse_prefetch.preparation_stalled`. Not a deadline: the pass keeps waiting. Unset/`<=0` uses the 300s default. |
 | `live_watcher_parse_stage_workers` | `watcher.parse_stage_workers` | Worker cap for the watcher-owned pre-parse thread pool (polylogue-wf8a; always runs -- pre-parses the live watcher's full-ingest catch-up/live-batch candidates in a bounded thread pool before the writer hold); unset/`<=0` uses the adaptive `cpu_count - 1` default. |
 | `live_watcher_parse_stage_max_inflight_bytes` | `watcher.parse_stage_max_inflight_bytes` | Whale-memory budget (bytes) for in-flight watcher prefetch payloads; unset/`<=0` uses the adaptive 1/32-physical-RAM default (clamped [64 MiB, 512 MiB]). |
-| `live_watcher_parse_stage_warm_timeout_seconds` | `watcher.parse_stage_warm_timeout_seconds` | Bound (seconds) on how long a watcher prefetch `warm()` pass waits for its dispatched workers; unset/`<=0` uses the 60s default. |
+| `live_watcher_parse_stage_stall_report_seconds` | `watcher.parse_stage_stall_report_seconds` | Seconds without forward progress before a watcher preparation reports `live.parse_prefetch.preparation_stalled`. Not a deadline: the warm keeps waiting. Unset/`<=0` uses the 60s default. |
 | `judgment_automation_enabled` | `judgment_automation.enabled` | Opt-in (polylogue-6qjc, default off): schedule the daemon judgment-automation sweep that calls the `judge` dispatcher on auto-judgeable assertion candidates per policy and escalates the rest to a `handoff` assertion. Exercises the same authority as the MCP `judge` dispatcher, so the sweep also requires `mcp_judge_enabled`. See [`docs/daemon.md`](daemon.md). |
 | `judgment_automation_interval_s` | `judgment_automation.interval_s` | Seconds between judgment-automation sweeps (default 3600; floored at 60 at runtime). |
 | `judgment_automation_batch_limit` | `judgment_automation.batch_limit` | Maximum candidates judged per judgment-automation sweep (default 200). |
@@ -393,10 +393,10 @@ Common runtime overrides:
 | `POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS` | `daemon_parse_stage_workers` | Worker cap for the daemon-owned pre-parse thread pool. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `daemon_parse_stage_max_inflight_bytes` | In-flight raw-payload budget for the prefetch cache. |
 | `POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES` | `daemon_parse_stage_max_cached_tree_bytes` | Resident parsed-tree budget for the prefetch cache. |
-| `POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS` | `daemon_parse_stage_warm_timeout_seconds` | Timeout for a prefetch `warm()` pass. |
+| `POLYLOGUE_DAEMON_PARSE_STAGE_STALL_REPORT_SECONDS` | `daemon_parse_stage_stall_report_seconds` | Stall-report interval for a prefetch `warm()` pass. |
 | `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WORKERS` | `live_watcher_parse_stage_workers` | Worker cap for the watcher-owned pre-parse thread pool. |
 | `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_MAX_INFLIGHT_BYTES` | `live_watcher_parse_stage_max_inflight_bytes` | In-flight payload budget for the watcher prefetch cache. |
-| `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_WARM_TIMEOUT_SECONDS` | `live_watcher_parse_stage_warm_timeout_seconds` | Timeout for a watcher prefetch `warm()` pass. |
+| `POLYLOGUE_LIVE_WATCHER_PARSE_STAGE_STALL_REPORT_SECONDS` | `live_watcher_parse_stage_stall_report_seconds` | Stall-report interval for a watcher preparation. |
 
 `POLYLOGUE_SESSION_REF` is deliberately not a layered config key. It is
 launcher/harness-injected correlation metadata for one process invocation,

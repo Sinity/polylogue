@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import IO, TypeAlias
 
 from polylogue.config import Source
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONValue
 from polylogue.logging import WARNING, emit, get_logger
@@ -149,6 +150,17 @@ def iter_source_raw_data(
                                 reason=f"{exc.code}: {exc}",
                             )
                             _record_cursor_failure(cursor_state, entry_path, f"{exc.code}: {exc}")
+                        except ContentIdentityRefusal as exc:
+                            # The member cannot be stored; record the gap and
+                            # acquire the rest of the ZIP.
+                            emit(
+                                "sources.zip.member_identity_refused",
+                                level=WARNING,
+                                outcome="refused",
+                                entry=entry_path,
+                                reason=str(exc),
+                            )
+                            _record_cursor_failure(cursor_state, entry_path, str(exc))
             else:
                 yield read_plain_source_file(
                     SourceReadContext(

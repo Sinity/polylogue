@@ -109,7 +109,7 @@ def test_zip_member_fault_preserves_typed_retry_classification(
         raise fault
 
     with monkeypatch.context() as patcher:
-        patcher.setattr(production_baseline, "replay_zip_entry_acquisition_payloads", unreadable_member)
+        patcher.setattr(production_baseline, "replay_zip_entry_acquisition_revisions", unreadable_member)
         baseline = capture_production_source_baseline(
             (WatchSource("account", root, suffixes=(".zip",)),), operation_id="zip-fault"
         )
@@ -749,3 +749,49 @@ def test_the_admission_scan_checkpoints_inside_one_long_line(tmp_path: Path) -> 
             size_bytes=sidecar.stat().st_size,
             checkpoint=checkpoint,
         )
+
+
+def test_whole_zip_member_revision_is_hashed_without_buffering_the_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A preserved whole member is hashed in chunks, as acquisition streams it.
+
+    Anti-vacuity: replaying the member through an unbounded ``handle.read()``
+    (the payload replay's whole-member branch) trips the guard below.
+    """
+    from polylogue.sources import decoders
+
+    root = tmp_path / "account"
+    root.mkdir()
+    member = b'{"type":"user","sessionId":"s1","uuid":"u1","message":{"role":"user","content":"hi"}}\n' * 50
+    bundle = root / "export.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("projects/p/s1.jsonl", member)
+    original_open = decoders.open_bounded_zip_entry
+
+    class ChunkOnlyReader:
+        def __init__(self, handle: Any) -> None:
+            self._handle = handle
+
+        def __enter__(self) -> ChunkOnlyReader:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            self._handle.close()
+
+        def read(self, size: int = -1) -> bytes:
+            assert size > 0, "whole ZIP member buffered in memory"
+            return bytes(self._handle.read(size))
+
+    monkeypatch.setattr(
+        decoders,
+        "open_bounded_zip_entry",
+        lambda zf, info: ChunkOnlyReader(original_open(zf, info)),
+    )
+    baseline = capture_production_source_baseline(
+        (WatchSource("claude-code", root, suffixes=(".zip",)),), operation_id="stream"
+    )
+    accepted = baseline.accepted
+    assert [(row.path, row.revision, row.material_bytes) for row in accepted] == [
+        (f"{bundle}:projects/p/s1.jsonl", hashlib.sha256(member).hexdigest(), len(member))
+    ]

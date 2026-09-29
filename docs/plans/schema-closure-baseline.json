@@ -147,6 +147,7 @@
     "polylogue/core/hook_payload.py",
     "polylogue/core/identity_law.py",
     "polylogue/core/json.py",
+    "polylogue/core/json_envelope.py",
     "polylogue/core/loopback.py",
     "polylogue/core/memory.py",
     "polylogue/core/message_owner.py",

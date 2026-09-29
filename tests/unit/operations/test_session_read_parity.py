@@ -223,3 +223,50 @@ def test_session_owner_continuation_refusal_names_its_dialect(tmp_path: Path) ->
                     archive=pinned.archive,
                     serving_identity="direct",
                 )
+
+
+def test_narrowed_continuation_resumes_at_its_bound_offset_and_selection(tmp_path: Path) -> None:
+    """A smaller ``limit`` beside a continuation narrows the window, nothing else.
+
+    Anti-vacuity: return the freshly parsed request instead of the one rebuilt
+    from the token and the resumed list reads offset 0 again (repeating the
+    first page) while reporting offset 2, and the resumed search loses its
+    expression.
+    """
+    import asyncio as _asyncio
+
+    from polylogue.archive.query.transaction import QueryContinuation, QueryTransactionRequest
+    from polylogue.operations.session_contracts import SessionList, SessionSearch
+    from polylogue.operations.session_reads import _transaction, session_query
+
+    root = tmp_path / "archive"
+    for index in range(4):
+        SessionBuilder(root / "index.db", f"narrow-{index}").provider("codex").title(f"Narrow {index}").add_message(
+            text=f"Narrowing row {index}."
+        ).save()
+
+    async def pages() -> tuple[list[str], list[str]]:
+        everything = await session_query(root, SessionList(limit=4))
+        first = await session_query(root, SessionList(limit=2))
+        assert first.continuation
+        resumed = await session_query(root, SessionList(continuation=first.continuation, limit=1))
+        assert resumed.offset == 2
+        return [str(item.id) for item in everything.items], [str(item.id) for item in resumed.items]
+
+    everything, resumed = _asyncio.run(pages())
+    assert resumed == everything[2:3]
+
+    bound = QueryTransactionRequest(
+        operation="sessions.search",
+        arguments=SessionSearch(expression="narrowing").model_dump(
+            mode="json", exclude={"continuation", "limit", "offset"}
+        ),
+        page_size=10,
+        offset=10,
+        projection="session-owner-v1",
+        stable_order="date,identity",
+    ).with_archive_epoch("archive:v1:narrow")
+    token = QueryContinuation(bound, bound.result_ref).encode()
+    search, transaction = _transaction(SessionSearch(continuation=token, limit=5))
+    assert (search.expression, search.offset, search.limit) == ("narrowing", 10, 5)
+    assert (transaction.offset, transaction.page_size) == (10, 5)

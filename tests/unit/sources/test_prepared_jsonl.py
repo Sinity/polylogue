@@ -194,6 +194,59 @@ def test_prepared_artifact_refuses_same_count_row_change_and_file_replacement(tm
         artifact.verify_files(full=False)
 
 
+def _count_message_decodes(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    decodes = [0]
+    real = ParsedMessage.model_validate_json
+
+    def counting(data: str | bytes, *args: object, **kwargs: object) -> ParsedMessage:
+        decodes[0] += 1
+        return real(data, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ParsedMessage, "model_validate_json", counting)
+    return decodes
+
+
+def test_sealed_session_decodes_once_across_walks(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Publication walks a session's messages many times; each walk after the
+    first reuses the decoded messages.
+
+    Anti-vacuity: without the retained decode, the second and third walks
+    validate every message again, so the count is 3 instead of 1.
+    """
+    artifact, coordinate = _prepared_artifact(tmp_path)
+    (session,) = list(artifact.iter_sessions())
+    decodes = _count_message_decodes(monkeypatch)
+    first = list(session.messages)
+    second = list(session.messages)
+    assert isinstance(session.messages, SqliteMessageSink)
+    third = list(session.messages.iter_from(0))
+    assert decodes[0] == 1
+    assert [message.model_dump() for message in second] == [message.model_dump() for message in first]
+    assert third[0].owner_coordinate == coordinate
+    assert session.messages[0] is first[0]
+
+
+def test_discarded_or_oversized_sessions_are_decoded_again(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A discarded carrier releases its decode, and a session above half the
+    budget is never retained, so memory stays bounded by the budget."""
+    from polylogue.sources import prepared_message_sink
+
+    artifact, _coordinate = _prepared_artifact(tmp_path)
+    assert artifact.sessions_path is not None
+    (session,) = list(artifact.iter_sessions())
+    decodes = _count_message_decodes(monkeypatch)
+    list(session.messages)
+    prepared_message_sink.discard_decoded_sessions(artifact.sessions_path)
+    list(session.messages)
+    assert decodes[0] == 2
+
+    prepared_message_sink.discard_decoded_sessions(artifact.sessions_path)
+    monkeypatch.setattr(prepared_message_sink._DECODED_SESSIONS, "budget_bytes", 8)
+    list(session.messages)
+    list(session.messages)
+    assert decodes[0] == 4
+
+
 def _claude_document(session_id: str) -> dict[str, object]:
     return {
         "uuid": session_id,
@@ -1651,17 +1704,29 @@ def test_grok_single_object_changed_during_stream_defers_and_discards(
     assert list(directory.glob("*.db")) == []
 
 
-def test_grok_future_wire_type_keeps_parser_admission_event(tmp_path: Path) -> None:
+def test_grok_future_wire_type_keeps_parser_admission_event(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     record = {
+        "type": "future_export",
         "conversations": [
             {
-                "conversation": {"title": "T"},
+                "conversation": {"title": "T", "kind": "unknown_conversation"},
                 "responses": [{"sender": "human", "message": "Hi", "type": "future_response"}],
-            }
-        ]
+            },
+            {
+                "conversation": {"title": "Known"},
+                "responses": [{"sender": "human", "message": "Hello"}],
+            },
+        ],
     }
     source = tmp_path / "future-grok.json"
     source.write_text(json.dumps(record), encoding="utf-8")
+    expected = parse_payload(Provider.GROK, record, "fallback")
+
+    def refuse_whole_document(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("future-typed Grok export decoded as a whole document")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse_whole_document)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse_whole_document)
     artifact = prepare_jsonl_blob(
         str(source),
         str(source),
@@ -1671,10 +1736,13 @@ def test_grok_future_wire_type_keeps_parser_admission_event(tmp_path: Path) -> N
         shard_directory=str(tmp_path / "prepared"),
     )
     assert artifact.error is None
-    [actual] = artifact.iter_sessions()
-    [expected] = parse_payload(Provider.GROK, record, "fallback")
-    assert list(actual.session_events) == expected.session_events
-    assert [event.event_type for event in actual.session_events] == ["grok_unknown_input"]
+    actual = list(artifact.iter_sessions())
+    assert [list(session.session_events) for session in actual] == [session.session_events for session in expected]
+    assert [session.unit_accounting for session in actual] == [session.unit_accounting for session in expected]
+    assert [[event.payload for event in session.session_events] for session in actual] == [
+        [{"source_index": 1, "wire_type": "unknown_conversation"}],
+        [],
+    ]
     artifact.discard()
 
 
@@ -1938,8 +2006,11 @@ def test_retained_grok_future_wire_keeps_parser_admission_event(tmp_path: Path) 
         None,
     )
     assert artifact.error is None
-    assert artifact.positive_evidence_filtered is False
+    assert artifact.positive_evidence_filtered
     [session] = artifact.iter_sessions()
+    [expected] = parse_payload(Provider.GROK, record, "fallback")
+    assert list(session.session_events) == expected.session_events
+    assert session.unit_accounting == expected.unit_accounting
     assert [event.event_type for event in session.session_events] == ["grok_unknown_input"]
     artifact.discard()
 
@@ -2789,3 +2860,17 @@ def test_retained_claude_design_object_uses_streamed_replay_route(
     assert len(actual.session_events) == 300
     assert actual.created_at == "2026-01-01T00:00:00+00:00"
     assert actual.updated_at == "2026-01-01T00:00:59+00:00"
+
+
+def test_removing_a_scratch_tree_releases_its_decodes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: removing replay scratch without evicting leaves the walked
+    session's decode resident, so the next walk decodes nothing."""
+    from polylogue.sources import prepared_message_sink
+
+    artifact, _coordinate = _prepared_artifact(tmp_path)
+    (session,) = list(artifact.iter_sessions())
+    decodes = _count_message_decodes(monkeypatch)
+    list(session.messages)
+    prepared_message_sink.discard_decoded_sessions_under(tmp_path)
+    list(session.messages)
+    assert decodes[0] == 2

@@ -718,6 +718,38 @@ def test_the_live_pass_writes_into_the_owned_generation_not_the_active_one(
         assert reader._conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
 
 
+def test_the_ops_checkpoint_holder_spans_the_page_cursor_writes(
+    tmp_path: Path, cold_build: ColdBuildGeneration, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The page's cursor publication still runs under the checkpoint holder.
+
+    The archive pass closes inside the page, before its cursor, convergence
+    and attempt writes; each of those publications closes its own ``ops.db``
+    connection, which checkpoints unless the holder is still open.
+
+    Anti-vacuity: release the holder on the archive pass's close again (drop
+    the ``_ops_page_depth`` guard in ``open_writer``'s ``close_page`` or the
+    ``begin_ops_page`` call in ``ingest_files``) and the holder is gone when
+    the cursors are written.
+    """
+    root = tmp_path / "sessions"
+    root.mkdir()
+    held_at_cursor_write: list[bool] = []
+    record_full_cursors = LiveBatchProcessor._record_full_cursors
+
+    def observed(self: LiveBatchProcessor, *args: Any, **kwargs: Any) -> Any:
+        held_at_cursor_write.append(cold_build._ops_checkpoint_holder is not None)
+        return record_full_cursors(self, *args, **kwargs)
+
+    monkeypatch.setattr(LiveBatchProcessor, "_record_full_cursors", observed)
+    _ingest(tmp_path, root, "one.jsonl", "page-holder")
+
+    assert held_at_cursor_write == [True]
+    # The page end still releases it: the window never spans pages.
+    assert cold_build._ops_checkpoint_holder is None
+    assert cold_build._ops_page_depth == 0
+
+
 def test_a_file_intake_excludes_does_not_block_promotion(tmp_path: Path) -> None:
     """The baseline records intake's own exclusion, so the build promotes (polylogue-se08w).
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import fcntl
 import sqlite3
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -198,6 +198,11 @@ class ArchiveBlobPublisher(BlobStore):
     def write_from_fileobj(self, source: IO[bytes], *, heartbeat: Heartbeat | None = None) -> tuple[str, int]:
         return self._queue(self._store.prepare_from_fileobj(source, heartbeat=heartbeat))
 
+    def write_from_writer(
+        self, write: Callable[[IO[bytes]], None], *, heartbeat: Heartbeat | None = None
+    ) -> tuple[str, int]:
+        return self._queue(self._store.prepare_from_writer(write, heartbeat=heartbeat))
+
     def write_from_bytes(self, data: bytes) -> tuple[str, int]:
         return self._queue(self._store.prepare_from_bytes(data))
 
@@ -250,20 +255,6 @@ class ArchiveBlobPublisher(BlobStore):
             return True
         return False
 
-    def discard_pending_hash(self, blob_hash: str) -> bool:
-        """Drop the queued publication of one refused blob before any flush.
-
-        Returns whether it was pending. Bytes already published are left to
-        ordinary GC through ``release_refused_publication_receipt``.
-        """
-        prepared = self._pending_by_hash.pop(blob_hash, None)
-        if prepared is None:
-            return False
-        self._pending = [(receipt, item) for receipt, item in self._pending if item is not prepared]
-        self._latest_receipt_by_hash.pop(blob_hash, None)
-        self._store.discard_prepared(prepared)
-        return True
-
     def discard_pending(self) -> None:
         for _receipt, prepared in self._pending:
             self._store.discard_prepared(prepared)
@@ -289,12 +280,6 @@ class ArchiveBlobPublisher(BlobStore):
 
     def read_all(self, hash_hex: str) -> bytes:
         return self.blob_path(hash_hex).read_bytes()
-
-
-def discard_pending_blob(blob_store: BlobStore, blob_hash: str) -> bool:
-    """Drop a refused blob's queued publication when the store batches them."""
-    discard = getattr(blob_store, "discard_pending_hash", None)
-    return bool(discard(blob_hash)) if callable(discard) else False
 
 
 def publication_receipt_id(blob_store: BlobStore, blob_hash: str) -> str | None:
