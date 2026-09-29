@@ -62,6 +62,7 @@ def session_profile_record(
         {
             "logical_session_id": SessionId(session_id),
             "source_name": origin or "fixture",
+            "materialized_at": "2026-01-01T00:00:00+00:00",
             "evidence_search_text": search_text,
             "inference_search_text": search_text,
             "enrichment_search_text": search_text,
