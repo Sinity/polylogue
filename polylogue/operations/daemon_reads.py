@@ -321,12 +321,14 @@ def read_is_archive_scan(name: str, payload: Mapping[str, object]) -> bool:
     """
     if name != "read.chronicle":
         return False
+    from polylogue.core.errors import PolylogueError
     from polylogue.operations.read_view_chronicle import chronicle_payload_is_scan
 
     try:
         return chronicle_payload_is_scan(payload)
-    except ValueError:
-        # An invalid request is refused by execution with its typed error.
+    except (ValueError, TypeError, PolylogueError):
+        # An invalid request (a bad sort is a ``QuerySpecError``) is refused
+        # by execution with its typed error, never by this classifier.
         return False
 
 
@@ -353,7 +355,14 @@ def requires_vector_snapshot(name: str, payload: Mapping[str, object]) -> bool:
 
     if name not in {"cli.query", "read.temporal", "read.chronicle"}:
         return False
-    spec = _cli_query_spec(_params(payload))
+    from polylogue.core.errors import PolylogueError
+
+    try:
+        spec = _cli_query_spec(_params(payload))
+    except (ValueError, TypeError, PolylogueError):
+        # Like ``read_is_archive_scan``: an invalid request is refused by
+        # execution with its typed error, never by this pre-dispatch check.
+        return False
     return bool(spec.similar_text or spec.similar_session_id or spec.retrieval_lane == "hybrid")
 
 

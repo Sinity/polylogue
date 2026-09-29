@@ -477,3 +477,41 @@ async def test_units_of_a_sampled_page_get_the_sampled_width(tmp_path: Path, mon
     )
 
     assert widths and set(widths) == {1}
+
+
+@pytest.mark.asyncio
+async def test_a_complete_composed_sort_streams_its_candidate_summaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A complete scan hands candidate summaries to the reducer batch by batch.
+
+    Anti-vacuity (Codex P2, #5695): accumulate every summary before reducing
+    and the fetch returns all 250 rows in one list.
+    """
+    from polylogue.archive.query import archive_execution
+
+    for index in range(250):
+        _seed(tmp_path, f"s{index:03d}", updated_at="2026-01-01T00:00:00Z", messages=1 + index % 7)
+    original = archive_execution._archive_summaries
+    returned: list[int] = []
+    streamed: list[int] = []
+
+    def spied(*args: Any, **kwargs: Any) -> Any:
+        on_batch = kwargs.get("on_batch")
+        if on_batch is not None:
+
+            def counting(rows: list[Any]) -> None:
+                streamed.append(len(rows))
+                on_batch(rows)
+
+            kwargs["on_batch"] = counting
+        result = original(*args, **kwargs)
+        returned.append(len(result))
+        return result
+
+    monkeypatch.setattr(archive_execution, "_archive_summaries", spied)
+    sessions = await list_archive(SessionQueryPlan(sort="messages", limit=1), archive_root=tmp_path, config=None)
+
+    assert len(sessions) == 1 and len(sessions[0].messages) == 7
+    assert returned == [0]
+    assert sum(streamed) == 250

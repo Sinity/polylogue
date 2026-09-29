@@ -197,6 +197,7 @@ def _archive_summaries(
     default_limit: int,
     keep: Callable[[list[ArchiveSessionSummary]], list[ArchiveSessionSummary]] | None = None,
     complete: bool = False,
+    on_batch: Callable[[list[ArchiveSessionSummary]], None] | None = None,
 ) -> list[ArchiveSessionSummary]:
     """Fetch the candidate rows for ``plan`` in the archive's SQL order.
 
@@ -210,7 +211,18 @@ def _archive_summaries(
     Every returned row has passed ``keep`` exactly once, on every route, so a
     caller that supplies it does not filter again. ``complete`` pages through
     the whole candidate set for a caller that orders it itself.
+
+    With ``on_batch``, each fetched batch that passed ``keep`` is handed to it
+    as it arrives and nothing is accumulated (the result is empty): a
+    complete scan feeding a bounded reducer holds one batch at a time.
     """
+
+    def deliver(rows: list[ArchiveSessionSummary]) -> list[ArchiveSessionSummary]:
+        if on_batch is None:
+            return rows
+        on_batch(rows)
+        return []
+
     filter_kwargs = plan_filter_kwargs(plan)
     limit = _fetch_limit(plan, default=default_limit)
     post_filter_fetch = (plan.has_post_filters() and plan.limit is not None) or complete
@@ -220,7 +232,7 @@ def _archive_summaries(
 
     if plan.similar_session_id is not None:
         search_hits = _session_seed_hits(plan, archive, config=config, archive_root=archive_root)
-        return _kept(keep, _summaries_from_hits(archive, search_hits))
+        return deliver(_kept(keep, _summaries_from_hits(archive, search_hits)))
 
     if plan.similar_text is not None or plan.retrieval_lane in {"semantic", "hybrid"}:
         try:
@@ -243,21 +255,24 @@ def _archive_summaries(
                 reverse=reverse,
                 **filter_kwargs,
             )
-        return _kept(keep, _summaries_from_hits(archive, search_hits))
+        return deliver(_kept(keep, _summaries_from_hits(archive, search_hits)))
 
     query_text = _plan_text_query(plan)
     if query_text is not None:
         if not post_filter_fetch:
-            return _kept(
-                keep,
-                _summaries_from_hits(
-                    archive,
-                    archive.search_summaries(
-                        query_text, limit=limit, offset=plan.offset, sort=sort, reverse=reverse, **filter_kwargs
+            return deliver(
+                _kept(
+                    keep,
+                    _summaries_from_hits(
+                        archive,
+                        archive.search_summaries(
+                            query_text, limit=limit, offset=plan.offset, sort=sort, reverse=reverse, **filter_kwargs
+                        ),
                     ),
-                ),
+                )
             )
         kept_hits: list[ArchiveSessionSummary] = []
+        kept_count = 0
         seen: set[str] = set()
         fetch_offset = 0
         while True:
@@ -272,25 +287,30 @@ def _archive_summaries(
             fresh = [hit for hit in batch if hit.session_id not in seen]
             seen.update(hit.session_id for hit in fresh)
             rows = _summaries_from_hits(archive, fresh)
-            kept_hits.extend(keep(rows) if keep is not None else rows)
-            if len(batch) < limit or (keep is not None and wanted is not None and len(kept_hits) >= wanted):
+            kept_rows = keep(rows) if keep is not None else rows
+            kept_count += len(kept_rows)
+            kept_hits.extend(deliver(kept_rows))
+            if len(batch) < limit or (keep is not None and wanted is not None and kept_count >= wanted):
                 break
             fetch_offset += len(batch)
         return kept_hits
 
     if not post_filter_fetch:
-        return _kept(
-            keep,
-            archive.list_summaries(
-                limit=limit,
-                offset=plan.offset,
-                sort=sort,
-                reverse=reverse,
-                sample=plan.sample is not None,
-                **filter_kwargs,
-            ),
+        return deliver(
+            _kept(
+                keep,
+                archive.list_summaries(
+                    limit=limit,
+                    offset=plan.offset,
+                    sort=sort,
+                    reverse=reverse,
+                    sample=plan.sample is not None,
+                    **filter_kwargs,
+                ),
+            )
         )
     summaries: list[ArchiveSessionSummary] = []
+    summary_count = 0
     fetch_offset = 0
     while True:
         summary_batch = archive.list_summaries(
@@ -301,8 +321,10 @@ def _archive_summaries(
             sample=False,
             **filter_kwargs,
         )
-        summaries.extend(keep(summary_batch) if keep is not None else summary_batch)
-        if len(summary_batch) < limit or (keep is not None and wanted is not None and len(summaries) >= wanted):
+        kept_batch = keep(summary_batch) if keep is not None else summary_batch
+        summary_count += len(kept_batch)
+        summaries.extend(deliver(kept_batch))
+        if len(summary_batch) < limit or (keep is not None and wanted is not None and summary_count >= wanted):
             break
         fetch_offset += len(summary_batch)
     return summaries
@@ -554,6 +576,17 @@ async def list_archive(
             return [row for row in rows if row.session_id in kept_sessions]
 
         filtering = plan.has_post_filters()
+
+        def reduce_batch(rows: list[ArchiveSessionSummary]) -> None:
+            # A complete scan streams its candidates into the bounded
+            # reducer; a filtered one already retained its survivors in
+            # ``keep``.
+            if filtering:
+                return
+            for start in range(0, len(rows), _COMPOSED_SORT_CHUNK):
+                chunk = rows[start : start + _COMPOSED_SORT_CHUNK]
+                retain(plan._apply_full_filters(hydrate(archive, chunk), sql_pushed=True))
+
         archive_rows = _archive_summaries(
             fetch_plan,
             archive,
@@ -562,12 +595,9 @@ async def list_archive(
             default_limit=default_limit,
             keep=keep if filtering else None,
             complete=complete,
+            on_batch=reduce_batch if complete else None,
         )
         if complete:
-            if not filtering:
-                for start in range(0, len(archive_rows), _COMPOSED_SORT_CHUNK):
-                    chunk = archive_rows[start : start + _COMPOSED_SORT_CHUNK]
-                    retain(plan._apply_full_filters(hydrate(archive, chunk), sql_pushed=True))
             ordered = best
         else:
             if filtering:

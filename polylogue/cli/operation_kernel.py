@@ -313,7 +313,9 @@ def dispatch(
     )
 
     def _ask_daemon(call_request: OperationRequest) -> Mapping[str, Any] | None:
-        return client.operation(call_request.operation, dict(call_request.payload), archive_root=str(root))
+        return client.operation(
+            call_request.operation, dict(call_request.payload), archive_root=str(root), deadline_ms=deadline_ms
+        )
 
     try:
         return OperationKernel(_ask_daemon).execute(request)

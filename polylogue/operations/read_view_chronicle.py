@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from polylogue.archive.query.plan import SessionQueryPlan
     from polylogue.archive.session.domain_models import Session, SessionSummary
     from polylogue.core.protocols import VectorProvider
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, ArchiveStore
 
 
 DEFAULT_CHRONICLE_EDGE_LIMIT = 8
@@ -199,22 +199,14 @@ def _select_summaries(
     # default, so it keeps the requested plan (as the generic route does).
     complete = chronicle_needs_complete_scan(plan)
     fetch_plan = replace(plan, limit=None, offset=0) if complete else plan
-    rows = _archive_summaries(
-        fetch_plan,
-        archive,
-        config=None,
-        archive_root=archive.archive_root,
-        default_limit=5,
-        complete=complete,
-    )
-    summaries: list[SessionSummary] = [archive_summary_to_domain(row) for row in rows]
-    summary_by_id = {str(summary.id): summary for summary in summaries}
     if plan.needs_content_loading() or composed_order:
         # One hydration per candidate, chunk by chunk. A composed-count order
         # keeps only the best ``offset + limit`` sessions seen so far, so a
         # one-row page over a large archive never holds every transcript.
         # A sampled request draws uniformly from every qualified candidate
-        # through a reservoir of the sample's size.
+        # through a reservoir of the sample's size. A complete scan streams
+        # its candidate summaries batch by batch, keeping only the summaries
+        # of sessions still in that bound.
         bound = None if plan.limit is None else (plan.offset or 0) + plan.limit
         best: list[Session] = []
         reservoir: OffsetSampledPage[Session] | None = (
@@ -223,31 +215,69 @@ def _select_summaries(
             else None
         )
         matched_ids: set[str] = set()
-        for start in range(0, len(rows), _POST_FILTER_CHUNK):
-            chunk = rows[start : start + _POST_FILTER_CHUNK]
-            sessions = [
-                archive_envelope_to_session(
-                    archive.read_session(row.session_id),
-                    display_label=row.display_label,
-                    display_label_source=row.display_label_source,
-                )
-                for row in chunk
-            ]
-            kept = plan._apply_full_filters(sessions, sql_pushed=True)
-            if composed_order and reservoir is not None:
-                reservoir.offer(kept)
-                best = reservoir.items()
-            elif composed_order:
-                best = plan._sort_sessions([*best, *kept])
-                if bound is not None:
-                    best = best[:bound]
-            else:
-                matched_ids.update(str(session.id) for session in kept)
+        summary_by_id: dict[str, SessionSummary] = {}
+
+        def consume(rows: list[ArchiveSessionSummary]) -> None:
+            nonlocal best
+            for start in range(0, len(rows), _POST_FILTER_CHUNK):
+                chunk = rows[start : start + _POST_FILTER_CHUNK]
+                for row in chunk:
+                    summary_by_id[row.session_id] = archive_summary_to_domain(row)
+                sessions = [
+                    archive_envelope_to_session(
+                        archive.read_session(row.session_id),
+                        display_label=row.display_label,
+                        display_label_source=row.display_label_source,
+                    )
+                    for row in chunk
+                ]
+                kept = plan._apply_full_filters(sessions, sql_pushed=True)
+                if composed_order and reservoir is not None:
+                    reservoir.offer(kept)
+                    best = reservoir.items()
+                elif composed_order:
+                    best = plan._sort_sessions([*best, *kept])
+                    if bound is not None:
+                        best = best[:bound]
+                else:
+                    matched_ids.update(str(session.id) for session in kept)
+                if composed_order:
+                    retained = {str(session.id) for session in best}
+                    for session_id in [key for key in summary_by_id if key not in retained]:
+                        del summary_by_id[session_id]
+
+        rows = _archive_summaries(
+            fetch_plan,
+            archive,
+            config=None,
+            archive_root=archive.archive_root,
+            default_limit=5,
+            complete=complete,
+            on_batch=consume if complete else None,
+        )
+        if not complete:
+            consume(rows)
         if composed_order:
             ordered = [summary_by_id[str(session.id)] for session in best]
         else:
-            ordered = order_query_summaries(plan, [summary for summary in summaries if str(summary.id) in matched_ids])
+            ordered = order_query_summaries(
+                plan,
+                [
+                    summary
+                    for summary in (archive_summary_to_domain(row) for row in rows)
+                    if str(summary.id) in matched_ids
+                ],
+            )
     else:
+        rows = _archive_summaries(
+            fetch_plan,
+            archive,
+            config=None,
+            archive_root=archive.archive_root,
+            default_limit=5,
+            complete=complete,
+        )
+        summaries = [archive_summary_to_domain(row) for row in rows]
         ordered = order_query_summaries(plan, plan._apply_common_filters(summaries, sql_pushed=True))
     ranked = bool(plan.similar_text or plan.similar_session_id or plan.retrieval_lane in {"semantic", "hybrid"})
     if (plan.has_post_filters() or ranked or composed_order) and plan.offset:

@@ -14,6 +14,18 @@ from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from tests.infra.builders import make_conv, make_msg
 
 
+def _serving(rows: list[Any]) -> Any:
+    """A fake candidate fetch that streams to ``on_batch`` as the real one does."""
+
+    def fetch(*_args: object, on_batch: Any = None, **_kwargs: object) -> list[Any]:
+        if on_batch is None:
+            return rows
+        on_batch(rows)
+        return []
+
+    return fetch
+
+
 def test_chronicle_edges_reads_composed_pages_and_counts_only_authored_dialogue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -102,7 +114,7 @@ def test_chronicle_operation_applies_exclude_text_before_offset_and_limit(monkey
         "codex-session:3": "keep third",
     }
     archive = Mock(archive_root="/tmp/archive")
-    monkeypatch.setattr(archive_execution, "_archive_summaries", lambda *args, **kwargs: rows)
+    monkeypatch.setattr(archive_execution, "_archive_summaries", _serving(rows))
     monkeypatch.setattr(read_view_chronicle, "archive_summary_to_domain", lambda row: summaries[row.session_id])
     monkeypatch.setattr(
         "polylogue.archive.hydration.archive_envelope_to_session",
@@ -197,7 +209,7 @@ def test_a_chronicle_count_sort_hydrates_each_candidate_once(monkeypatch: pytest
         for index, row in enumerate(rows)
     }
     archive = Mock(archive_root="/tmp/archive")
-    monkeypatch.setattr(archive_execution, "_archive_summaries", lambda *args, **kwargs: rows)
+    monkeypatch.setattr(archive_execution, "_archive_summaries", _serving(rows))
     monkeypatch.setattr(read_view_chronicle, "archive_summary_to_domain", lambda row: summaries[row.session_id])
     monkeypatch.setattr(
         "polylogue.archive.hydration.archive_envelope_to_session",
@@ -242,7 +254,7 @@ def test_a_sampled_chronicle_count_sort_samples_every_candidate(monkeypatch: pyt
         for index, row in enumerate(rows)
     }
     archive = Mock(archive_root="/tmp/archive")
-    monkeypatch.setattr(archive_execution, "_archive_summaries", lambda *args, **kwargs: rows)
+    monkeypatch.setattr(archive_execution, "_archive_summaries", _serving(rows))
     monkeypatch.setattr(read_view_chronicle, "archive_summary_to_domain", lambda row: summaries[row.session_id])
     monkeypatch.setattr(
         "polylogue.archive.hydration.archive_envelope_to_session",

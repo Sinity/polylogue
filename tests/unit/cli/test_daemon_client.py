@@ -801,3 +801,42 @@ def test_a_read_waits_on_the_socket_for_its_own_deadline(monkeypatch: pytest.Mon
     assert client.operation("read.chronicle", {}, archive_root=str(tmp_path)) is None
     assert captured == [121.0]
     assert client.timeout_s == 0.1
+
+
+def test_an_explicit_dispatch_deadline_reaches_the_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A caller's ``deadline_ms`` is the request's deadline, not the derived scan one.
+
+    Anti-vacuity (Codex P1, #5695): let ``_ask_daemon`` omit ``deadline_ms``
+    and a one-second scan-shaped read goes out with the 120-second deadline.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.cli import operation_kernel
+    from polylogue.daemon_client import DaemonClient
+
+    seen: list[object] = []
+
+    def operation(self: DaemonClient, name: str, payload: dict[str, object], **kwargs: object) -> None:
+        seen.append(kwargs.get("deadline_ms"))
+        return None
+
+    monkeypatch.setattr(DaemonClient, "operation", operation)
+    request = operation_kernel.OperationRequest("read.chronicle", {"params": {"sort": "messages", "limit": 1}})
+    with pytest.raises(operation_kernel.OperationUnavailableError):
+        operation_kernel.dispatch(SimpleNamespace(), request, archive_root=tmp_path, deadline_ms=1000)
+
+    assert seen == [1000]
+
+
+def test_invalid_chronicle_payloads_reach_execution_for_their_typed_refusal() -> None:
+    """The pre-dispatch classifiers never raise on a request execution will refuse.
+
+    Anti-vacuity (Codex P2, #5695): catch only ``ValueError`` and a bogus
+    sort's ``QuerySpecError`` escapes the classifier before execution.
+    """
+    from polylogue.operations.daemon_reads import operation_deadline_s, read_is_archive_scan, requires_vector_snapshot
+
+    payload = {"params": {"sort": "bogus"}}
+    assert read_is_archive_scan("read.chronicle", payload) is False
+    assert requires_vector_snapshot("read.chronicle", payload) is False
+    assert operation_deadline_s("read.chronicle", payload) > 0
