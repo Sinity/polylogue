@@ -9,6 +9,7 @@ import json
 import re
 from collections import Counter
 from dataclasses import asdict, dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Literal, TypeAlias
 
@@ -222,6 +223,21 @@ _DERIVED_IDENTIFIER_ANNOTATIONS = frozenset(
     }
 )
 
+#: Annotations the generator itself stamps with a timestamp. Their value is
+#: never observed provider data, but an ISO timestamp reads as a
+#: high-entropy token, so a well-formed one is exempt from the value bar.
+_GENERATED_TIMESTAMP_ANNOTATIONS = frozenset({"x-polylogue-generated-at"})
+
+
+def _is_generated_timestamp(key: str, value: object) -> bool:
+    if key not in _GENERATED_TIMESTAMP_ANNOTATIONS or not isinstance(value, str):
+        return False
+    try:
+        datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
 
 def _observed_value_leak(value: str) -> bool:
     """A UUID or long hex run is an observed identifier, never a field name or path."""
@@ -330,6 +346,7 @@ def _walk_artifact(
                 key.startswith("x-polylogue-")
                 and key not in _REVIEW_FIELDS
                 and key not in _DERIVED_IDENTIFIER_ANNOTATIONS
+                and not _is_generated_timestamp(key, child)
             ):
                 _annotation_findings(child, artifact=artifact, json_path=child_path, findings=findings)
             if key in _REVIEW_FIELDS:

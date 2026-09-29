@@ -181,7 +181,7 @@ def test_post_wraps_url_errors(
     def raise_url_error(*_a: object, **_k: object) -> _FakeHTTPResponse:
         raise URLError("connection refused")
 
-    monkeypatch.setattr("polylogue.sources.parsers.antigravity.urlopen", raise_url_error)
+    monkeypatch.setattr(antigravity._LOOPBACK_OPENER, "open", raise_url_error)
 
     with pytest.raises(AntigravityExportError) as exc_info:
         fake_client._post("/endpoint", {"q": "x"})
@@ -195,7 +195,7 @@ def test_post_wraps_transport_timeouts(
     def raise_timeout(*_a: object, **_k: object) -> _FakeHTTPResponse:
         raise TimeoutError("timed out")
 
-    monkeypatch.setattr("polylogue.sources.parsers.antigravity.urlopen", raise_timeout)
+    monkeypatch.setattr(antigravity._LOOPBACK_OPENER, "open", raise_timeout)
 
     with pytest.raises(AntigravityExportError, match="timed out"):
         fake_client._post("/endpoint", {})
@@ -219,7 +219,7 @@ def test_conversion_outlives_the_probe_budget(
             raise TimeoutError("timed out")
         return _FakeHTTPResponse(b'{"markdown": "### User Input\\n\\nhello"}')
 
-    monkeypatch.setattr("polylogue.sources.parsers.antigravity.urlopen", fake_urlopen)
+    monkeypatch.setattr(antigravity._LOOPBACK_OPENER, "open", fake_urlopen)
 
     assert fake_client.export_markdown("cascade").startswith("### User Input")
 
@@ -239,7 +239,7 @@ def test_probe_and_search_keep_the_short_budget(
         budgets.append(timeout)
         return _FakeHTTPResponse(b'{"results": []}')
 
-    monkeypatch.setattr("polylogue.sources.parsers.antigravity.urlopen", fake_urlopen)
+    monkeypatch.setattr(antigravity._LOOPBACK_OPENER, "open", fake_urlopen)
 
     fake_client.search_sessions()
 
@@ -254,7 +254,7 @@ def test_post_rejects_non_object_responses(
     def fake_urlopen(*_a: object, **_k: object) -> _FakeHTTPResponse:
         return _FakeHTTPResponse(b"[1, 2, 3]")
 
-    monkeypatch.setattr("polylogue.sources.parsers.antigravity.urlopen", fake_urlopen)
+    monkeypatch.setattr(antigravity._LOOPBACK_OPENER, "open", fake_urlopen)
 
     with pytest.raises(AntigravityExportError) as exc_info:
         fake_client._post("/endpoint", {})
@@ -268,7 +268,7 @@ def test_post_returns_decoded_object(
     def fake_urlopen(*_a: object, **_k: object) -> _FakeHTTPResponse:
         return _FakeHTTPResponse(b'{"ok": true, "n": 1}')
 
-    monkeypatch.setattr("polylogue.sources.parsers.antigravity.urlopen", fake_urlopen)
+    monkeypatch.setattr(antigravity._LOOPBACK_OPENER, "open", fake_urlopen)
 
     result = fake_client._post("/endpoint", {"q": "x"})
     assert result == {"ok": True, "n": 1}
@@ -860,7 +860,7 @@ def test_client_reads_only_its_own_discovery_file_and_sends_csrf_token(
         seen.append(request)
         return _FakeHTTPResponse(b'{"results": []}')
 
-    monkeypatch.setattr("polylogue.sources.parsers.antigravity.urlopen", fake_urlopen)
+    monkeypatch.setattr(antigravity._LOOPBACK_OPENER, "open", fake_urlopen)
     client.search_sessions()
     request = seen[0]
     assert request.full_url.startswith("http://127.0.0.1:40002/")
@@ -910,3 +910,50 @@ def test_a_discovery_file_older_than_the_launch_is_not_accepted_for_a_reused_pid
     stale.write_text('{"pid": 444, "httpPort": 40010}')
     os.utime(stale, ns=(3_000_000_000, 3_000_000_000))
     assert client._await_discovered_port(launched_at_ns=launched_at_ns) == 40010
+
+
+def test_language_server_rpcs_never_go_through_an_environment_proxy(
+    fake_client: AntigravityLanguageServerClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The CSRF-bearing RPC reaches the loopback server even with ``HTTP_PROXY`` set.
+
+    Anti-vacuity (Codex P1, #5704): open with the default ``urlopen`` and the
+    request goes to the dead proxy, so the call raises instead of reaching
+    the server.
+    """
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    seen: list[str | None] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            seen.append(self.headers.get("x-codeium-csrf-token"))
+            self.rfile.read(int(self.headers.get("Content-Length", "0")))
+            body = b'{"markdown": "### User Input\\n\\nhello"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args: object) -> None:
+            return None
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        # A port nothing listens on: a proxied request fails to connect.
+        monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:9")
+        monkeypatch.setenv("http_proxy", "http://127.0.0.1:9")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        fake_client.port = server.server_address[1]
+
+        assert fake_client.export_markdown("cascade").startswith("### User Input")
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert len(seen) == 1

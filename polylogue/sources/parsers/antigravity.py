@@ -20,7 +20,7 @@ from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
 from typing import Protocol
-from urllib.request import Request, urlopen
+from urllib.request import ProxyHandler, Request, build_opener
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.archive.message.artifacts import classify_material_origin
@@ -85,6 +85,10 @@ def trajectory_raw_id(source_path: Path | str, logical_revision: str) -> str:
     return hashlib.sha256(identity.encode("utf-8", errors="surrogateescape")).hexdigest()
 
 
+#: Language-server RPCs carry the CSRF token and go to loopback only; an
+#: environment ``HTTP_PROXY`` does not bypass ``127.0.0.1`` on its own and
+#: would hand the token to whoever runs the proxy.
+_LOOPBACK_OPENER = build_opener(ProxyHandler({}))
 _SEARCH_ENDPOINT = "/exa.language_server_pb.LanguageServerService/SearchConversations"
 _MARKDOWN_ENDPOINT = "/exa.language_server_pb.LanguageServerService/ConvertTrajectoryToMarkdown"
 _SECTION_RE = re.compile(r"^### (?P<title>User Input|Planner Response)\s*$", re.MULTILINE)
@@ -1314,7 +1318,7 @@ class AntigravityLanguageServerClient:
         )
         budget = _REQUEST_TIMEOUT_S if timeout is None else timeout
         try:
-            with urlopen(request, timeout=budget) as response:
+            with _LOOPBACK_OPENER.open(request, timeout=budget) as response:
                 loaded = loads(response.read())
         except (OSError, TimeoutError, ValueError) as exc:
             raise AntigravityExportError(str(exc)) from exc

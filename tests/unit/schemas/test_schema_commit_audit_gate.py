@@ -199,3 +199,21 @@ def test_the_tree_exchange_uses_renamex_np_where_renameat2_is_absent(
     package_publication._exchange_paths(tmp_path / "a", tmp_path / "b")
 
     assert calls == [(bytes(tmp_path / "a"), bytes(tmp_path / "b"), 2)]
+
+
+def test_a_generated_at_timestamp_passes_the_annotation_audit(tmp_path: Path) -> None:
+    """The generator's own ISO timestamp is not an observed value.
+
+    Anti-vacuity (Codex P1, #5704): hold ``x-polylogue-generated-at`` to the
+    entropy bar and every generated bundle is refused. A value there that is
+    not a timestamp is still audited.
+    """
+    element = tmp_path / "versions" / "v1" / "elements" / "session_document.json"
+    element.parent.mkdir(parents=True)
+    element.write_text(json.dumps({"type": "object", "x-polylogue-generated-at": "2026-05-11T04:14:47.338395+00:00"}))
+
+    assert audit_schema_artifacts(tmp_path).blockers == ()
+
+    element.write_text(json.dumps({"type": "object", "x-polylogue-generated-at": "abc123XYZ987mnop"}))
+
+    assert [finding.category for finding in audit_schema_artifacts(tmp_path).blockers] == ["unsafe_annotation_value"]

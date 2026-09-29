@@ -51,7 +51,11 @@ loopback ports.
 1. **Separate machine and browser credentials.** When `--api-auth-token`
    is configured, machine clients present `Authorization: Bearer <token>`.
    The first-party shell instead rotates a short-lived `read`/`user_state`/
-   `events` credential through `POST /api/web-auth/session`. It can update
+   `events` credential through `POST /api/web-auth/session`.
+   Shell HTML routes (`/`, `/sessions`, `/search` ...) require the same
+   bearer or web credential; a browser without one is shown the sign-in page
+   with `401`, and the CLI signs it in through a one-time fragment ticket
+   exchanged at `/web-auth/sign-in`. It can update
    marks, annotations, saved views, recall packs, and workspaces, but archive
    reset, ingest, and maintenance operations remain machine-bearer capabilities.
    The opaque value
