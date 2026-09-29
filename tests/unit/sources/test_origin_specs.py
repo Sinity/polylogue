@@ -2099,9 +2099,11 @@ def test_identity_aliases_are_checked_as_the_parser_selects_them() -> None:
         )
 
 
-def test_a_session_native_id_with_a_surrogate_is_stored_substituted() -> None:
-    """Anti-vacuity: bind the provider session id unsanitized and SQLite raises
-    ``UnicodeEncodeError`` for every admitted surrogate-bearing session."""
+def test_a_session_native_id_with_a_surrogate_is_refused_by_name() -> None:
+    """Anti-vacuity: substitute the surrogate and two distinct provider sessions
+    share one stored row; bind it raw and SQLite raises an unnamed error."""
     from polylogue.storage.sqlite.archive_tiers.write import _stored_session_native_id
 
-    assert _stored_session_native_id(" s\ud800 ") == "s�"
+    with pytest.raises(ValueError, match="surrogate"):
+        _stored_session_native_id(" s\ud800 ")
+    assert _stored_session_native_id(" s\ufffd ") == "s\ufffd"

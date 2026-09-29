@@ -11507,11 +11507,13 @@ def _stored_session_native_id(native_id: str) -> str:
     messages, so an unidentifiable session must fail loudly rather than
     silently write a self-mismatched row.
     """
-    # The same surrogate substitution ``messages.native_id`` applies: a lone
-    # surrogate cannot be bound as SQLite text.
-    stripped = (_sqlite_text(native_id) or "").strip()
+    stripped = native_id.strip()
     if not stripped:
         raise ValueError("session native_id cannot be empty")
+    if _SURROGATE_RE.search(stripped):
+        # A lone surrogate cannot be bound as SQLite text, and substituting it
+        # would merge distinct provider sessions into one row: refused by name.
+        raise ValueError("session native_id holds a UTF-16 surrogate code unit and cannot be stored")
     return stripped
 
 
