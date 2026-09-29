@@ -305,11 +305,7 @@ def _read_session_windows(
             except Exception as exc:
                 from polylogue.cli.operation_kernel import OperationFailedError
 
-                if (
-                    not isinstance(exc, OperationFailedError)
-                    or exc.code != "result_too_large"
-                    or window_limit <= 1
-                ):
+                if not isinstance(exc, OperationFailedError) or exc.code != "result_too_large" or window_limit <= 1:
                     raise
                 window_limit = max(1, window_limit // 2)
         window_ceiling = window_limit

@@ -16,7 +16,9 @@ def test_session_window_continuation_keeps_remaining_bound(monkeypatch: pytest.M
     monkeypatch.setattr(archive_query, "_SESSION_READ_WINDOW", 4)
     requests: list[OperationRequest] = []
 
-    def read(_config: Config, request: OperationRequest, **_kwargs):
+    def read(
+        _config: Config, request: OperationRequest, **_kwargs: object
+    ) -> tuple[dict[str, object], dict[str, object]]:
         requests.append(request)
         resumed = request.payload.get("continuation") is not None
         if resumed and request.payload.get("limit") != 1:
@@ -41,7 +43,9 @@ def test_session_window_retries_resumed_pages_without_widening(monkeypatch: pyte
     monkeypatch.setattr(archive_query, "_SESSION_READ_WINDOW", 4)
     requests: list[tuple[int, object]] = []
 
-    def read(_config: Config, request: OperationRequest, **_kwargs):
+    def read(
+        _config: Config, request: OperationRequest, **_kwargs: object
+    ) -> tuple[dict[str, object], dict[str, object]]:
         size = request.payload.get("limit")
         assert isinstance(size, int)
         cursor = request.payload.get("continuation")

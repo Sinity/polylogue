@@ -57,7 +57,9 @@ async def test_review_count_does_not_hydrate_off_page_judgments(
     hydrated: list[str] = []
     original = user_write._latest_candidate_judgment
 
-    def record_judgment_read(conn: sqlite3.Connection, candidate_assertion_id: str):
+    def record_judgment_read(
+        conn: sqlite3.Connection, candidate_assertion_id: str
+    ) -> user_write.ArchiveAssertionEnvelope | None:
         hydrated.append(candidate_assertion_id)
         return original(conn, candidate_assertion_id)
 

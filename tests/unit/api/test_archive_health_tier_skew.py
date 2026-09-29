@@ -6,13 +6,13 @@ import sqlite3
 from pathlib import Path
 
 from polylogue import Polylogue
-from polylogue.readiness import VerifyStatus
+from polylogue.readiness import ReadinessReport, VerifyStatus
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from tests.infra.archive_templates import bootstrap_archive_root
 
 
-async def _health_check(root: Path):
+async def _health_check(root: Path) -> ReadinessReport:
     archive = Polylogue(archive_root=root, db_path=root / "index.db")
     try:
         return await archive.health_check()
