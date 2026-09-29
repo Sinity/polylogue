@@ -262,6 +262,156 @@ def test_otel_object_parser_keeps_order_conflicts_and_inherited_conversations() 
     assert all(session.models_used == sorted(session.models_used) for session in sessions)
 
 
+def _topology_document() -> dict[str, Any]:
+    """Cross-resource traces, adoption, membership and replayed history.
+
+    The HTTP root of trace ``t-x`` lives under an unnamed resource while its
+    GenAI children live under ``neutral-agent``; two conversations share that
+    root, and the one whose span started first adopts it. Chat inputs replay
+    earlier history behind a pinned system prompt, a tool exchange is
+    replayed by id, and a ``text_completion`` span carries usage and a
+    response model without messages. A plain HTTP trace is not this origin's
+    material; a trace whose GenAI attribute survives only in a conflicting
+    copy is. Copies naming different conversations leave their span on its
+    trace, and an unidentified span with a future ``kind`` still reaches the
+    admission proof.
+    """
+
+    def chat(span: str, start: int, conversation: str | None, inputs: list[Any], output: str, **extra: Any) -> Any:
+        attributes = [
+            _attribute("gen_ai.operation.name", "chat"),
+            _attribute("gen_ai.input.messages", json.dumps(inputs)),
+            _attribute("gen_ai.output.messages", json.dumps([{"role": "assistant", "content": output}])),
+            _attribute("gen_ai.response.model", "response-model"),
+        ]
+        if conversation is not None:
+            attributes.append(_attribute("gen_ai.conversation.id", conversation))
+        return {
+            "traceId": "t-x",
+            "spanId": span,
+            "parentSpanId": "http-root",
+            "startTimeUnixNano": str(start),
+            "attributes": attributes,
+            **extra,
+        }
+
+    system = {"role": "system", "content": "pinned"}
+    call = {"role": "assistant", "parts": [{"type": "tool_call", "id": "call-1"}]}
+    result = {"role": "tool", "parts": [{"type": "tool_call_response", "id": "call-1"}]}
+    agent_spans = [
+        chat("g1", 10, "conv-1", [system, {"role": "user", "content": "q1"}], "a1"),
+        chat(
+            "g2",
+            20,
+            "conv-1",
+            [system, {"role": "user", "content": "q1"}, {"role": "assistant", "content": "a1"}, call, result],
+            "a2",
+        ),
+        chat("g3", 15, "conv-2", [{"role": "user", "content": "other"}], "reply"),
+        {
+            "traceId": "t-x",
+            "spanId": "tool-1",
+            "parentSpanId": "g2",
+            "startTimeUnixNano": "18",
+            "attributes": [
+                _attribute("gen_ai.operation.name", "execute_tool"),
+                _attribute("gen_ai.tool.name", "search"),
+                _attribute("gen_ai.tool.call.id", "call-1"),
+                _attribute("gen_ai.tool.call.result", "found"),
+            ],
+        },
+        {
+            "traceId": "t-x",
+            "spanId": "completion",
+            "parentSpanId": "g1",
+            "startTimeUnixNano": "25",
+            "attributes": [
+                _attribute("gen_ai.operation.name", "text_completion"),
+                _attribute("gen_ai.request.model", "request-model"),
+                _attribute("gen_ai.usage.input_tokens", 3),
+            ],
+        },
+    ]
+    ambiguous = _chat_span("t-amb", "amb", 30, conversation="c-a")
+    late_plain = {"traceId": "t-late", "spanId": "late", "startTimeUnixNano": "40", "attributes": []}
+    unnamed_spans = [
+        {
+            "traceId": "t-x",
+            "spanId": "http-root",
+            "startTimeUnixNano": "5",
+            "attributes": [_attribute("http.method", "POST")],
+        },
+        {"traceId": "t-plain", "spanId": "db", "startTimeUnixNano": "6", "attributes": [_attribute("db.system", "x")]},
+        ambiguous,
+        {**ambiguous, "attributes": [*ambiguous["attributes"][:-1], _attribute("gen_ai.conversation.id", "c-b")]},
+        late_plain,
+        {**late_plain, "attributes": [_attribute("gen_ai.system", "neutral")]},
+        {"kind": "future_span_kind", "attributes": []},
+    ]
+    return {
+        "resourceSpans": [
+            {
+                "resource": {"attributes": [_attribute("service.name", "neutral-agent")]},
+                "scopeSpans": [{"schemaUrl": otel_genai.SEMCONV_SCHEMA_URL, "spans": agent_spans}],
+            },
+            {
+                "resource": {
+                    "attributes": [
+                        _attribute("deployment.environment", "neutral"),
+                        _attribute("process.pid", 7),
+                        _attribute("service.version", "2"),
+                    ]
+                },
+                "scopeSpans": [{"spans": unnamed_spans}],
+            },
+        ]
+    }
+
+
+def test_otlp_topology_streams_with_parser_parity(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    document = _topology_document()
+    source = _source(tmp_path, document)
+    parsed = [session.provider_session_id for session in otel_genai.parse(document, "ignored")]
+    unnamed = next(identity.split(":", 1)[0] for identity in parsed if identity.startswith("resource-"))
+    assert parsed == [
+        "neutral-agent:conversation:conv-1",
+        "neutral-agent:conversation:conv-2",
+        f"{unnamed}:trace:t-amb",
+        f"{unnamed}:trace:t-late",
+    ]
+    expected = _expected(document, source)
+    by_identity = {session.provider_session_id: session for session in expected}
+    assert f"{unnamed}:trace:t-amb" in by_identity
+    first = by_identity["neutral-agent:conversation:conv-1"]
+    evidence = [event.payload for event in first.session_events if event.event_type == "otel_span_evidence"]
+    # The cross-resource root joins the conversation that started first and
+    # keeps its own resource identity.
+    assert [(payload["span_id"], payload.get("resource_id")) for payload in evidence][0] == ("http-root", unnamed)
+    # Replayed history and the replayed tool exchange add only the new turn.
+    assert [message.text for message in first.messages] == ["pinned", "q1", "a1", None, None, "a2"]
+    assert first.models_used == ["request-model", "response-model"]
+    assert any(
+        event.event_type == "message_usage" and event.payload["model"] == "request-model"
+        for event in first.session_events
+    )
+    assert first.unit_accounting is not None
+    unknown = [event.payload for event in first.session_events if event.event_type.endswith("_unknown_input")]
+    assert unknown == [{"source_index": 1, "wire_type": "future_span_kind"}]
+
+    _refuse_whole_document(monkeypatch)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.OTEL_GENAI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    assert artifact.shard_path is not None
+    _assert_same_publication(list(artifact.iter_sessions()), expected, artifact.shard_path, tmp_path)
+
+
 @pytest.mark.parametrize(
     "text",
     [
