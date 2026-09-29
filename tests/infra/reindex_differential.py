@@ -235,12 +235,40 @@ def finished_build_work_identity(
     """
     if not routes:
         raise ValueError("finished-build code identity requires at least one production route")
-    code_digest = hashlib.sha256("".join(inspect.getsource(route) for route in routes).encode()).hexdigest()
     return FinishedBuildWorkIdentity(
         source_identity=f"sha256:{sealed.digest}",
-        code_identity=f"sha256:{code_digest}",
+        code_identity=f"sha256:{route_code_digest(routes, checkout=_CHECKOUT_ROOT)}",
         profile_identity=profile,
     )
+
+
+_CHECKOUT_ROOT = Path(__file__).resolve().parents[2]
+
+
+def route_code_digest(routes: Sequence[Callable[..., object] | type], *, checkout: Path) -> str:
+    """Digest the source files of ``routes`` and every ``polylogue`` module they import.
+
+    A route's own body delegates to helpers in other modules; hashing only
+    ``inspect.getsource(route)`` let an edit to any of them keep the identity,
+    so two arms built from different code compared as the same work. Each
+    member file contributes its checkout-relative path and exact bytes.
+    """
+    from devtools.fresh_build_bench.report import polylogue_import_closure
+
+    roots: set[Path] = set()
+    for route in routes:
+        source_file = inspect.getsourcefile(route)
+        if source_file is None:
+            raise ValueError(f"finished-build route {route!r} has no source file")
+        roots.add(Path(source_file).resolve())
+    members = sorted(roots | set(polylogue_import_closure(sorted(roots), checkout)))
+    digest = hashlib.sha256()
+    for member in members:
+        label = member.relative_to(checkout).as_posix() if member.is_relative_to(checkout) else member.as_posix()
+        content = member.read_bytes()
+        digest.update(f"{label}\0{len(content)}\0".encode())
+        digest.update(content)
+    return digest.hexdigest()
 
 
 @dataclass(frozen=True, slots=True)

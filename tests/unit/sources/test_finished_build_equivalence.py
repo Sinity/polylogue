@@ -447,3 +447,40 @@ def test_finished_build_comparison_rejects_a_diverged_or_indebted_arm(tmp_path: 
         conn.execute("DELETE FROM blocks WHERE block_id = (SELECT block_id FROM blocks ORDER BY block_id LIMIT 1)")
     with pytest.raises(AssertionError, match="derived table blocks differs"):
         assert_finished_builds_equivalent(baseline.output, recapture())
+
+
+def test_route_code_digest_moves_when_a_transitive_dependency_changes(tmp_path: Path) -> None:
+    """Editing a module the route imports changes the work's code identity.
+
+    Anti-vacuity: hashing only ``inspect.getsource(route)`` leaves the digest
+    unchanged when ``polylogue/dep.py`` changes, so arms built from different
+    code would compare as the same work.
+    """
+    import importlib.util
+
+    from tests.infra.reindex_differential import route_code_digest
+
+    package = tmp_path / "polylogue"
+    package.mkdir()
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    dependency = package / "dep.py"
+    dependency.write_text("RULE = 1\n", encoding="utf-8")
+    route_file = package / "route.py"
+    route_file.write_text(
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from polylogue.dep import RULE\n\n\n"
+        "def route() -> None:\n"
+        "    return None\n",
+        encoding="utf-8",
+    )
+    spec = importlib.util.spec_from_file_location("finished_build_route_probe", route_file)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    before = route_code_digest((module.route,), checkout=tmp_path)
+    dependency.write_text("RULE = 2\n", encoding="utf-8")
+    after = route_code_digest((module.route,), checkout=tmp_path)
+
+    assert before != after
