@@ -37,11 +37,22 @@ class Rule:
 
 def _rules(root: Path) -> tuple[Rule, ...]:
     raw = yaml.safe_load((root / "devtools/patterns/registry.yaml").read_text(encoding="utf-8"))
-    entries = raw.get("rules", []) if isinstance(raw, dict) else []
+    if not isinstance(raw, dict) or not isinstance(raw.get("rules"), list):
+        raise ValueError("pattern registry must be a mapping with a rules list")
+    entries = raw["rules"]
     result: list[Rule] = []
-    for entry in entries:
+    seen: set[str] = set()
+    for index, entry in enumerate(entries):
         if not isinstance(entry, dict):
-            continue
+            raise ValueError(f"pattern registry rule {index} must be a mapping")
+        required = ("id", "rule", "baseline", "owner", "status")
+        if any(not isinstance(entry.get(key), str) or not entry[key] for key in required):
+            raise ValueError(f"pattern registry rule {index} has missing or invalid fields")
+        if entry["id"] in seen:
+            raise ValueError(f"duplicate pattern rule id: {entry['id']}")
+        if entry["status"] not in {"enforcing", "pending"}:
+            raise ValueError(f"invalid pattern rule status for {entry['id']}: {entry['status']}")
+        seen.add(entry["id"])
         result.append(
             Rule(
                 rule_id=str(entry["id"]),
@@ -79,9 +90,9 @@ def _baseline(path: Path) -> Counter[Anchor]:
             raise ValueError(f"invalid baseline entry in {path}: {raw_line!r}")
         if (
             not file_name
-            or len(digest) != hashlib.sha1().digest_size * 2
+            or len(digest) != 40
             or any(character not in "0123456789abcdef" for character in digest)
-            or len(context) != hashlib.sha1().digest_size * 2
+            or len(context) != 40
             or any(character not in "0123456789abcdef" for character in context)
             or count < 1
         ):
@@ -113,7 +124,7 @@ def _match_anchor(root: Path, item: dict[str, Any], file_lines: dict[str, list[s
     if line_number > len(lines):
         raise ValueError(f"ast-grep match line is outside {file_name}: {line_number}")
     normalized_line = lines[line_number - 1].strip()
-    digest = hashlib.sha1(normalized_line.encode("utf-8")).hexdigest()
+    digest = hashlib.sha1(normalized_line.encode("utf-8"), usedforsecurity=False).hexdigest()
     source = "\n".join(lines)
     tree = ast.parse(source, filename=file_name)
 
@@ -135,7 +146,7 @@ def _match_anchor(root: Path, item: dict[str, Any], file_lines: dict[str, list[s
         return best
 
     context_text = "/".join(path(tree) or ("Module",))
-    context = hashlib.sha1(context_text.encode("utf-8")).hexdigest()
+    context = hashlib.sha1(context_text.encode("utf-8"), usedforsecurity=False).hexdigest()
     return file_name, digest, context
 
 
@@ -250,7 +261,18 @@ def _baseline_text(content: str) -> Counter[Anchor]:
 
 
 def _payload(root: Path) -> dict[str, Any]:
-    rules = _rules(root)
+    try:
+        rules = _rules(root)
+    except (OSError, ValueError, KeyError, yaml.YAMLError) as exc:
+        gate = evidence_gate_result(
+            gate="patterns",
+            executable="ast-grep",
+            executable_available=True,
+            required_count=0,
+            inspected_count=0,
+            details=(f"malformed pattern registry: {exc}",),
+        )
+        return {"blocking": True, "new_matches": [], "stale_matches": [], "required_gate": gate.to_payload()}
     details: list[str] = []
     new_matches: list[str] = []
     stale_matches: list[str] = []

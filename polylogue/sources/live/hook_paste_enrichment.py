@@ -143,8 +143,8 @@ def _archive_source_path(db_path: Path) -> Path:
     return ArchiveLocation.resolve(db_path.parent).active_tier("source").configured_path
 
 
-def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, object]]) -> int:
-    require_write_lease(f"hook paste enrichment({index_db})", archive_root=index_db.parent)
+def _enrich_archive_paste_from_hooks(index_db: Path, events: list[dict[str, object]], *, archive_root: Path) -> int:
+    require_write_lease(f"hook paste enrichment({index_db})", archive_root=archive_root)
     conn = sqlite3.connect(str(index_db))
     updated = 0
     updated_sessions: set[str] = set()
@@ -250,7 +250,7 @@ def enrich_paste_from_hooks(db_path: Path, *, session_ids: Iterable[str] | None 
     archive_index = _archive_index_path(db_path)
     if archive_index is None:
         return 0
-    updated = _enrich_archive_paste_from_hooks(archive_index, events)
+    updated = _enrich_archive_paste_from_hooks(archive_index, events, archive_root=db_path.parent)
     if updated:
         logger.info("hook_paste: enriched %d archive message(s) from hook events", updated)
     return updated

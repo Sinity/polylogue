@@ -14,9 +14,8 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Awaitable, Callable, Coroutine, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from contextlib import redirect_stdout
-from dataclasses import replace
 from datetime import UTC, datetime
 from functools import partial
 from http.server import ThreadingHTTPServer
@@ -87,7 +86,7 @@ from polylogue.operations.embedding_lifecycle import (
 )
 from polylogue.sources.live import LiveWatcher, WatchSource
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
-from polylogue.sources.live.watcher import INBOX_SOURCE_SUFFIXES, default_sources
+from polylogue.sources.live.watcher import POLYLOGUE_OWNED_SOURCE_NAMES, daemon_watch_sources, default_sources
 
 # The daemon ring's seam onto the storage checkpoint and one-tier writer
 # factories: daemon modules take them from here rather than each reaching
@@ -159,9 +158,6 @@ _OWNED_DEBT_STAGES = frozenset(
 T = TypeVar("T")
 _RAW_MATERIALIZATION_CONVERGENCE_INTERVAL_SECONDS = 30
 
-# An additional root is content-detected by the ordinary export route. SQLite
-# remains admitted only by typed provider sources such as Hermes and Codex.
-_ADDITIONAL_SOURCE_SUFFIXES = (".json", ".jsonl", ".ndjson", ".zip")
 # Parse passes checkpoint between raw batches. Acquisition has no pass-time
 # limit, but its downloads and preparation hold no archive writer lease.
 _DRIVE_CATCHUP_MAX_PASS_SECONDS = 20.0
@@ -399,67 +395,24 @@ def _enable_faulthandler_if_supported() -> None:
         faulthandler.enable()
 
 
-def _watch_sources_from_roots(
-    roots: tuple[Path, ...],
+def _watch_sources(
     *,
     browser_capture_spool_path: Path | None = None,
     hermes_root: Path | None = None,
-    include_defaults: bool = True,
-    default_source_names: tuple[str, ...] = (),
 ) -> tuple[WatchSource, ...]:
-    """Build typed default sources plus configured additional roots.
+    """The daemon's watch set (see :func:`daemon_watch_sources`)."""
+    return daemon_watch_sources(browser_capture_spool_path=browser_capture_spool_path, hermes_root=hermes_root)
 
-    The archive inbox is different: ``polylogue import`` stages approved
-    exports there, including ChatGPT ``.json`` files and zipped takeouts, so
-    it keeps the same suffix contract as the default inbox source. Other
-    additional roots use content detection over ordinary export formats.
 
-    ``default_source_names`` selects whole typed default source definitions.
-    An empty selection keeps all defaults; ``include_defaults=False`` drops
-    them. Explicit roots remain additive in either case.
+def _is_polylogue_owned_source(source: WatchSource) -> bool:
+    """Whether Polylogue owns *source*'s directory, decided by role.
+
+    The browser-capture spool and the archive inbox are Polylogue's, and so
+    is the primary writable hook spool its installed hooks write. A
+    read-only legacy spool and every provider directory belong to someone
+    else and are never created here.
     """
-    from polylogue.paths import archive_root, browser_capture_spool_root
-
-    inbox_root = (archive_root() / "inbox").resolve(strict=False)
-    browser_root = (
-        browser_capture_spool_path.expanduser()
-        if browser_capture_spool_path is not None
-        else browser_capture_spool_root()
-    ).resolve(strict=False)
-
-    sources = list(default_sources(hermes_root=hermes_root)) if include_defaults else []
-    if default_source_names:
-        available = {source.name for source in sources}
-        unknown = set(default_source_names) - available
-        if unknown:
-            raise click.UsageError(
-                f"unknown default source(s): {', '.join(sorted(unknown))}; available: {', '.join(sorted(available))}"
-            )
-        selected = set(default_source_names)
-        sources = [source for source in sources if source.name in selected]
-    if browser_capture_spool_path is not None and any(source.name == "browser-capture" for source in sources):
-        spool = browser_capture_spool_path.expanduser()
-        sources = [source for source in sources if source.name != "browser-capture"]
-        sources.append(WatchSource(name="browser-capture", root=spool, suffixes=(".json",)))
-
-    known_roots = {source.root.resolve(strict=False) for source in sources}
-    for root in roots:
-        resolved = root.resolve(strict=False)
-        if resolved in known_roots:
-            sources = [
-                replace(source, required=True) if source.root.resolve(strict=False) == resolved else source
-                for source in sources
-            ]
-            continue
-        if resolved == inbox_root:
-            source = WatchSource(name="inbox", root=root, suffixes=INBOX_SOURCE_SUFFIXES, required=True)
-        elif resolved == browser_root:
-            source = WatchSource(name="browser-capture", root=root, suffixes=(".json",), required=True)
-        else:
-            source = WatchSource(name=root.name, root=root, suffixes=_ADDITIONAL_SOURCE_SUFFIXES, required=True)
-        sources.append(source)
-        known_roots.add(resolved)
-    return tuple(sources)
+    return source.name in POLYLOGUE_OWNED_SOURCE_NAMES or source.role == "primary-writable"
 
 
 def _active_index_db_path() -> Path:
@@ -690,7 +643,7 @@ async def _periodic_status_snapshot_refresh() -> None:
 
 
 async def _run_drive_source_catchup_once(
-    session_profile_callback: SessionProfileCallback,
+    session_profile_callback: SessionProfileCallback | None,
 ) -> int:
     """Acquire and parse configured Drive sources once.
 
@@ -733,7 +686,7 @@ async def _run_drive_source_catchup_once(
                 max_pass_seconds=_DRIVE_CATCHUP_MAX_PASS_SECONDS,
             )
             session_ids = tuple(sorted(result.parse_result.processed_ids))
-            if session_ids:
+            if session_ids and session_profile_callback is not None:
                 try:
                     await session_profile_callback(session_ids)
                 except Exception as exc:
@@ -768,7 +721,7 @@ async def _run_drive_source_catchup_once(
 
 
 async def _run_drive_source_catchup_safely(
-    session_profile_callback: SessionProfileCallback,
+    session_profile_callback: SessionProfileCallback | None,
 ) -> int:
     """Run Drive catch-up without letting remote-source failures kill daemon."""
     try:
@@ -828,7 +781,7 @@ def _log_spool_depth_if_notable() -> None:
     from polylogue.hooks import hook_install_sidecar_drift
 
     for harness in ("claude-code", "codex"):
-        with contextlib.suppress(Exception):
+        with _alert_probe("hook_install_sidecar_drift", component=harness):
             drift = hook_install_sidecar_drift(harness)
             if drift:
                 emit(
@@ -841,7 +794,7 @@ def _log_spool_depth_if_notable() -> None:
                     files=len(drift),
                     error_detail=", ".join(str(path) for path in drift),
                 )
-    with contextlib.suppress(Exception):
+    with _alert_probe("browser_capture_spool_depth", component="browser-capture"):
         browser_capture_depth = _browser_capture_spool_pending_file_count(cap=_BROWSER_CAPTURE_SPOOL_DEPTH_ALERT_CAP)
         if browser_capture_depth >= _BROWSER_CAPTURE_SPOOL_DEPTH_ALERT_CAP:
             emit(
@@ -958,7 +911,7 @@ async def _periodic_convergence_check(
     db = _active_index_db_path()
 
     async def once() -> None:
-        await _retry_convergence_debt_once(db)
+        debt_error = await _retry_convergence_debt_once(db)
         if raw_retention_callback is not None:
             try:
                 await raw_retention_callback()
@@ -976,6 +929,8 @@ async def _periodic_convergence_check(
             await session_profile_callback.converge_backlog(_SESSION_PROFILE_BACKLOG_SECONDS)
         elif session_profile_callback is not None:
             await session_profile_callback(None)
+        if debt_error is not None:
+            raise debt_error
 
     await daemon_periodic_runner().run(
         "convergence_check",
@@ -986,8 +941,59 @@ async def _periodic_convergence_check(
     )
 
 
-async def _retry_convergence_debt_once(db: Path) -> None:
-    """Run one logged derived-debt retry pass when the archive exists."""
+def _drive_sources_configured() -> bool:
+    """Whether any configured source is a Drive source.
+
+    Without a readable config the Drive intake class stays unregistered for
+    this daemon's life, so the failure is reported rather than read as "no
+    Drive sources" (polylogue-hu24g).
+    """
+    try:
+        from polylogue.config import get_config
+
+        return any(source.is_drive for source in get_config().sources)
+    except Exception as exc:
+        emit(
+            "daemon.intake.drive_config_unreadable",
+            level=WARNING,
+            outcome="degraded",
+            reason="config_unreadable",
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
+        return False
+
+
+@contextlib.contextmanager
+def _alert_probe(probe: str, *, component: str) -> Iterator[None]:
+    """Run one alert probe; a probe that raises is itself an alert.
+
+    An alert probe swallowed by ``suppress`` can never fire, so its failure is
+    reported instead of hidden (polylogue-hu24g).
+    """
+    try:
+        yield
+    except Exception as exc:
+        emit(
+            "daemon.alert_probe.failed",
+            level=WARNING,
+            outcome="degraded",
+            reason="alert_probe_failed",
+            loop="heartbeat",
+            component=component,
+            operation=probe,
+            error_type=type(exc).__name__,
+            error_detail=str(exc),
+        )
+
+
+async def _retry_convergence_debt_once(db: Path) -> BaseException | None:
+    """Run one logged derived-debt retry pass when the archive exists.
+
+    A failed pass is returned rather than swallowed: the caller finishes its
+    other stages and then re-raises it, so the periodic loop records it as
+    its ``last_error`` (polylogue-hu24g).
+    """
     from polylogue.daemon.intake_adapters import active_cold_build_generation
 
     if active_cold_build_generation() is not None:
@@ -1005,7 +1011,7 @@ async def _retry_convergence_debt_once(db: Path) -> None:
             loop="convergence debt retry",
             path=db,
         )
-        return
+        return None
     if not db.exists():
         emit(
             "daemon.convergence_debt.pass.skipped",
@@ -1015,14 +1021,18 @@ async def _retry_convergence_debt_once(db: Path) -> None:
             loop="convergence debt retry",
             path=db,
         )
-        return
+        return None
     # The span emits its terminal ``.error`` event from ``__exit__``, before
-    # this handler runs, so swallowing the failure here (the loop must keep
-    # ticking) still leaves the failure recorded rather than hidden.
-    with (
-        contextlib.suppress(Exception),
-        span("daemon.convergence_debt.pass", loop="convergence debt retry", path=db) as pass_span,
-    ):
+    # this handler runs; the failure is also returned to the caller.
+    try:
+        await _run_convergence_debt_pass(db)
+    except Exception as exc:
+        return exc
+    return None
+
+
+async def _run_convergence_debt_pass(db: Path) -> None:
+    with span("daemon.convergence_debt.pass", loop="convergence debt retry", path=db) as pass_span:
         try:
             # The drain builds the stage set (which resolves the configured
             # Sinex transport) and walks it. Neither may happen under the
@@ -1195,6 +1205,7 @@ def _derivation_admission(report: DerivationReport, key: str, *, subject: str) -
         return AdmissionResult(
             AdmissionOutcome.RETRYABLE,
             reason=(failed.error if failed is not None else None) or f"{subject} derivation failed",
+            transient=failed.transient if failed is not None else True,
         )
     pending = next((outcome for outcome in outcomes if outcome.outcome is Outcome.PENDING), None)
     if pending is not None or (report.done == 0 and report.pending > 0):
@@ -2400,10 +2411,18 @@ async def _run_daemon_services_under_active_writer_lease(
         raise
 
     try:
-        # Ensure all configured source roots exist so health checks don't flag
-        # never-yet-used sources (e.g. hooks sidecar dir) as missing.
+        # Create the source roots Polylogue owns (hook carriers, the
+        # browser-capture spool, the inbox) so health checks don't flag a
+        # never-yet-used one as missing. A provider's own directory belongs
+        # to that tool: it is never created here, so an uninstalled tool or a
+        # relocated directory whose symlink is currently dangling reads as an
+        # unavailable source instead of being fabricated or failing startup.
+        # Ownership is the source's role, never where its path resolves: a
+        # provider directory relocated by a symlink into the archive tree
+        # still belongs to its tool, and a dangling one is a retryable gap.
         for src in sources:
-            src.root.mkdir(parents=True, exist_ok=True)
+            if _is_polylogue_owned_source(src):
+                src.root.mkdir(parents=True, exist_ok=True)
 
         if lifecycle_events_enabled:
             await _emit_daemon_lifecycle_event(
@@ -2419,7 +2438,7 @@ async def _run_daemon_services_under_active_writer_lease(
                     "browser_capture_port": browser_capture_port,
                     "watch_enabled": enable_watch,
                     "source_catchup_enabled": enable_source_catchup,
-                    "source_roots": [str(src.root) for src in sources],
+                    "watch_roots": [str(src.root) for src in sources],
                 },
             )
     except BaseException:
@@ -2478,6 +2497,7 @@ async def _run_daemon_services_under_active_writer_lease(
         capabilities.add(ServiceCapability.API)
     if browser_port is not None:
         capabilities.add(ServiceCapability.BROWSER_HOST)
+    embedding_config = None
     if schema_blocked:
         capabilities.add(ServiceCapability.SCHEMA_BLOCKED)
     else:
@@ -2485,7 +2505,8 @@ async def _run_daemon_services_under_active_writer_lease(
         from polylogue.config import load_polylogue_config
         from polylogue.daemon.embedding_backlog import embedding_convergence_unavailable_reason
 
-        if embedding_convergence_unavailable_reason(load_polylogue_config()) is None:
+        embedding_config = load_polylogue_config()
+        if embedding_convergence_unavailable_reason(embedding_config) is None:
             capabilities.add(ServiceCapability.EMBEDDINGS)
 
     halts = HaltRegistry(archive_root_path)
@@ -2714,14 +2735,19 @@ async def _run_daemon_services_under_active_writer_lease(
                     write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
                     now=time.time,
                 )
-            from polylogue.daemon.embedding_owner import compose_embedding_convergence
+            from polylogue.daemon.embedding_owner import ComposedEmbeddingConvergence, compose_embedding_convergence
             from polylogue.daemon.raw_observation_owner import RawObservationConvergenceOwner
             from polylogue.operations.embedding_derivation import embedding_session_ids_for_paths
 
-            embedding_convergence = compose_embedding_convergence(
-                archive_root_path / "index.db",
-                compute_adapter=daemon_compute,
-                write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+            embedding_convergence: ComposedEmbeddingConvergence = (
+                cast("ComposedEmbeddingConvergence", api_server.operation_runtime.embedding_convergence)
+                if api_server is not None and api_server.operation_runtime.embedding_convergence is not None
+                else compose_embedding_convergence(
+                    archive_root_path / "index.db",
+                    compute_adapter=daemon_compute,
+                    write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
+                    config=embedding_config,
+                )
             )
             # Every operation runtime this daemon composes shares its one
             # embedding owner: the API's, or the ingest owner under --no-api.
@@ -2729,7 +2755,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 api_server.operation_runtime if api_server is not None else None,
                 ingest_owner_runtime,
             ):
-                if operation_runtime is not None and operation_runtime.embedding_convergence is None:
+                if operation_runtime is not None:
                     operation_runtime.embedding_convergence = embedding_convergence
 
             async def converge_ingest_embeddings(index_db: Path, paths: Sequence[Path]) -> bool:
@@ -2836,7 +2862,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 ),
                 ("wal_checkpoint", _periodic_wal_checkpoint),
                 ("fts_merge", _periodic_fts_merge),
-                ("heartbeat", _periodic_heartbeat),
+                ("heartbeat", lambda: _periodic_heartbeat(sources=sources)),
                 (
                     "embedding_backlog",
                     lambda: periodic_embedding_backlog_check(
@@ -2938,7 +2964,10 @@ async def _run_daemon_services_under_active_writer_lease(
                         return await write_coordinator.run_sync(actor, function, *args, **kwargs)
 
                     async def run_remote_intake() -> int:
-                        assert session_profile_callback is not None
+                        if session_profile_callback is None:
+                            # Derived schema skew blocks profile publication,
+                            # but source acquisition remains durable and safe.
+                            return await _run_drive_source_catchup_safely(None)
                         return await _run_drive_source_catchup_safely(session_profile_callback)
 
                     async def discover_raw_intake(limit: int) -> tuple[tuple[str, int], ...]:
@@ -2994,11 +3023,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         report = await asyncio.wrap_future(submitted.future)
                         return _derivation_admission(report, raw_id, subject="hook event")
 
-                    drive_sources_configured = False
-                    with contextlib.suppress(Exception):
-                        from polylogue.config import get_config
-
-                        drive_sources_configured = any(source.is_drive for source in get_config().sources)
+                    drive_sources_configured = _drive_sources_configured()
                     # polylogue-f7pdm: availability is re-evaluated per
                     # discovery pass, not latched at startup. On a fresh root
                     # ``source.db`` does not exist yet, and a one-shot
@@ -3031,7 +3056,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         DaemonIntakeContext(
                             archive_root=archive_root_path,
                             watcher=watcher,
-                            sources=sources,
+                            sources=sources if enable_watch else (),
                             write_runner=run_intake_write,
                         ),
                         source_halts=SubUnitHaltPolicy(
@@ -3316,6 +3341,17 @@ async def _run_daemon_services_under_active_writer_lease(
                 # Preflight-blocked, or no intake service is schedulable under
                 # this profile: keep HTTP/health and other components serving
                 # so operators see the degraded state.
+                async def unresolved_intake_service() -> None:
+                    raise AssertionError("an intake service was selected after its construction guard")
+
+                for service_name in ("fair_intake", "watcher"):
+                    if supervisor.state(service_name) is ServiceState.PENDING:
+                        if watcher_creation_blocked:
+                            supervisor.mark_unavailable(
+                                service_name, reason="durable schema mismatch blocks intake construction"
+                            )
+                        else:
+                            supervisor.start(service_name, unresolved_intake_service)
                 if lifecycle_events_enabled:
                     await _emit_daemon_lifecycle_event(
                         "component_skipped",
@@ -3889,13 +3925,6 @@ def health_command(
 
 @main.command("run", help="Run configured long-lived daemon components.")
 @click.option(
-    "--root",
-    "roots",
-    multiple=True,
-    type=click.Path(exists=False, path_type=Path),
-    help="Add a watch root alongside typed defaults (repeatable).",
-)
-@click.option(
     "--host",
     default="127.0.0.1",
     show_default=True,
@@ -4005,22 +4034,9 @@ def health_command(
         "through it -- default OFF; an explicit opt-out for the auto-minted-token default."
     ),
 )
-@click.option(
-    "--no-default-sources",
-    is_flag=True,
-    default=False,
-    help="Watch only the given --root values; do not add the typed default sources.",
-)
-@click.option(
-    "--default-source",
-    "default_source_names",
-    multiple=True,
-    help="Watch only this named typed default source (repeatable); --root values remain additive.",
-)
 @click.pass_context
 def run_command(
     ctx: click.Context,
-    roots: tuple[Path, ...],
     host: str,
     port: int,
     spool_path: Path | None,
@@ -4038,8 +4054,6 @@ def run_command(
     browser_port: int | None,
     api_auth_token: str | None,
     api_allow_no_auth: bool,
-    no_default_sources: bool,
-    default_source_names: tuple[str, ...],
 ) -> None:
     """Run configured daemon components.
 
@@ -4065,8 +4079,6 @@ def run_command(
         source = ctx.get_parameter_source(name)
         return source is None or source is click.core.ParameterSource.DEFAULT
 
-    if not roots and cfg.source_roots:
-        roots = tuple(Path(root).expanduser() for root in cfg.source_roots)
     if parameter_is_default("host") and cfg.layer_of("browser_capture_host") != "default":
         host = cfg.browser_capture_host
     if parameter_is_default("port") and cfg.layer_of("browser_capture_port") != "default":
@@ -4101,16 +4113,9 @@ def run_command(
 
     atexit.register(_cleanup_pidfile)
 
-    if no_default_sources and not roots:
-        raise click.UsageError("--no-default-sources requires at least one --root")
-    if no_default_sources and default_source_names:
-        raise click.UsageError("--default-source cannot be used with --no-default-sources")
-    sources = _watch_sources_from_roots(
-        roots,
+    sources = _watch_sources(
         browser_capture_spool_path=spool_path,
         hermes_root=runtime.source_paths.hermes,
-        include_defaults=not no_default_sources,
-        default_source_names=default_source_names,
     )
     components = []
     if enable_watch:
@@ -4161,41 +4166,13 @@ def run_command(
 
 
 @main.command("watch", help="Watch source directories and ingest new sessions live.")
-@click.option(
-    "--root",
-    "roots",
-    multiple=True,
-    type=click.Path(exists=False, path_type=Path),
-    help="Add a watch root alongside typed defaults (repeatable).",
-)
-@click.option(
-    "--no-default-sources",
-    is_flag=True,
-    default=False,
-    help="Watch only the given --root values; do not add the typed default sources.",
-)
-@click.option(
-    "--default-source",
-    "default_source_names",
-    multiple=True,
-    help="Watch only this named typed default source (repeatable); --root values remain additive.",
-)
-def watch_command(roots: tuple[Path, ...], no_default_sources: bool, default_source_names: tuple[str, ...]) -> None:
+def watch_command() -> None:
     from polylogue.config import resolve_runtime_config
     from polylogue.operations.durable_change_train import ArchiveOwnershipError, DurableChangeTrainError
     from polylogue.paths import archive_root
 
-    if no_default_sources and not roots:
-        raise click.UsageError("--no-default-sources requires at least one --root")
-    if no_default_sources and default_source_names:
-        raise click.UsageError("--default-source cannot be used with --no-default-sources")
     runtime_source_paths = resolve_runtime_config().source_paths
-    sources = _watch_sources_from_roots(
-        roots,
-        hermes_root=runtime_source_paths.hermes,
-        include_defaults=not no_default_sources,
-        default_source_names=default_source_names,
-    )
+    sources = _watch_sources(hermes_root=runtime_source_paths.hermes)
 
     archive_root_path = Path(archive_root())
     archive_root_path.mkdir(mode=0o700, parents=True, exist_ok=True)

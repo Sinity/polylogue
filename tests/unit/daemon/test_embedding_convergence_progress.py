@@ -223,6 +223,52 @@ def test_scoped_foreground_convergence_honors_the_monthly_cap(tmp_path: Path, mo
     assert result.report is None
 
 
+def test_unmeasured_monthly_spend_refuses_the_pass(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The scoped (ingest-foreground) call obeys the same cap as the periodic pass.
+
+    Foreground ingest embedding runs through the very composition the periodic
+    backlog uses (``compose_embedding_convergence``; see
+    ``converge_ingest_embeddings`` in ``polylogue/daemon/cli.py`` and
+    ``periodic_embedding_backlog_check``), so a scope argument cannot buy work
+    the monthly cap has already spent (polylogue-liwst).
+
+    Anti-vacuity: a foreground path that skips the cap check goes on to build a
+    frame from the stub adapter below and raises instead of returning the
+    ``monthly_cost_cap`` deferral.
+    """
+
+    class _StubAdapter:
+        domain = "embedding"
+
+    async def exercise() -> embedding_owner.EmbeddingConvergenceResult:
+        coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+        bridge = DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop())
+        monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: _EmbeddingConfig())
+        monkeypatch.setattr(
+            "polylogue.operations.embedding_derivation.make_embedding_derivation",
+            lambda *_args, **_kwargs: _StubAdapter(),
+        )
+        # The spend probe could not read ops.db (polylogue-oulj2).
+        monkeypatch.setattr(
+            embedding_backlog,
+            "_archive_embedding_catchup_estimated_cost_this_month",
+            lambda _ops_db: None,
+        )
+        composed = embedding_owner.compose_embedding_convergence(
+            tmp_path / "index.db",
+            compute_adapter=BoundedComputeAdapter(max_workers=1),
+            write_bridge=bridge,
+        )
+        # A scoped call is exactly what ingest foreground convergence makes.
+        return await composed(["claude-code-session:s1"])
+
+    # Anti-vacuity: treating an unreadable spend as 0.0 grants the whole
+    # monthly budget, so the pass reaches the owner and ``report`` is set.
+    result = asyncio.run(exercise())
+    assert result.deferred_reason == "spend_unmeasured"
+    assert result.report is None
+
+
 def test_embedding_startup_marks_running_catchup_receipts_interrupted(tmp_path: Path) -> None:
     from polylogue.core.enums import OperationStatus
     from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier

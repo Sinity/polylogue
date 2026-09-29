@@ -533,7 +533,6 @@ async def _query_advanced_sessions(
                         query=request.query or "",
                         limit=clamped_limit,
                         offset=effective_offset,
-                        retrieval_lane=request.retrieval_lane or "dialogue",
                         sort=request.sort,
                         config=config,
                         archive_root=archive_root,
@@ -733,6 +732,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
         MCPUserMarkListPayload,
         MCPUserMarkPayload,
     )
+    from polylogue.surfaces.outcome import decide_outcome
 
     poly = hooks.get_polylogue()
     clamped_limit = hooks.clamp_limit(limit)
@@ -761,6 +761,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=mark_offset,
                     next_offset=mark_next_offset,
+                    outcome=decide_outcome(matched=len(mark_page)),
                 )
             )
 
@@ -789,6 +790,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=annotation_offset,
                     next_offset=annotation_next_offset,
+                    outcome=decide_outcome(matched=len(annotation_page)),
                 )
             )
 
@@ -805,6 +807,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=view_offset,
                     next_offset=view_next_offset,
+                    outcome=decide_outcome(matched=len(view_page)),
                 )
             )
 
@@ -821,6 +824,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=pack_offset,
                     next_offset=pack_next_offset,
+                    outcome=decide_outcome(matched=len(pack_page)),
                 )
             )
 
@@ -837,6 +841,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                     limit=clamped_limit,
                     offset=workspace_offset,
                     next_offset=workspace_next_offset,
+                    outcome=decide_outcome(matched=len(workspace_page)),
                 )
             )
 
@@ -863,6 +868,7 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
                         "limit": clamped_limit,
                         "offset": correction_offset,
                         "next_offset": correction_next_offset,
+                        "outcome": decide_outcome(matched=len(correction_page)).to_dict(),
                     }
                 )
             )
@@ -874,7 +880,12 @@ async def _query_personal_state(hooks: ServerCallbacks, projection: str, *, limi
         )
         return hooks.json_payload(
             MCPBlackboardNoteListPayload(
-                items=note_page, total=note_total, limit=clamped_limit, offset=note_offset, next_offset=note_next_offset
+                items=note_page,
+                total=note_total,
+                limit=clamped_limit,
+                offset=note_offset,
+                next_offset=note_next_offset,
+                outcome=decide_outcome(matched=len(note_page)),
             )
         )
 
@@ -1641,6 +1652,12 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                             "subject": subject,
                             **page,
                             "read_views": list(session_list_projection_names()),
+                            # Identities only: the full profile metadata has
+                            # its own facade route and would not fit a
+                            # capability page's response budget.
+                            "read_view_profile_ids": [
+                                profile["view_id"] for profile in await hooks.get_polylogue().list_read_view_profiles()
+                            ],
                         }
                     )
                 )
@@ -1688,6 +1705,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
         offset: int | None = None,
         recipient_ref: str | None = None,
         assertion_ref: str | None = None,
+        segment_profile: Literal["default", "prose_with_refs"] = "default",
     ) -> str:
         """Compile a policy-gated bounded context image with receipts.
 
@@ -1759,7 +1777,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                         limit=clamped_limit,
                         offset=page_offset,
                         next_offset=next_offset,
-                        outcome=decide_outcome(matched=matched),
+                        outcome=decide_outcome(matched=len(page)),
                     )
                 )
             payload = await hooks.get_polylogue().context_image_payload(
@@ -1769,6 +1787,7 @@ def register_cutover_read_tools(mcp: ToolRegistrar, hooks: ServerCallbacks) -> N
                 include_messages=True,
                 include_assertions=True,
                 redact_paths=True,
+                segment_profile=segment_profile,
             )
             return hooks.json_payload(payload, exclude_none=True)
 
@@ -2730,19 +2749,22 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
             """Record one typed event through the facade's archive ingest seam."""
             from polylogue.coordination.work_events import validate_work_event_type
 
-            try:
-                validate_work_event_type(event_type)
-                result = await hooks.get_polylogue().record_work_event(
-                    session_id,
-                    event_id=event_id,
-                    event_type=event_type,
-                    summary=summary,
-                    payload=payload,
-                    timestamp=timestamp,
-                )
-            except (KeyError, ValueError) as exc:
-                return hooks.error_json(str(exc), code="invalid_argument", tool="record_work_event")
-            return hooks.json_payload(MCPRootPayload(root=result))
+            async def run() -> str:
+                try:
+                    validate_work_event_type(event_type)
+                    result = await hooks.get_polylogue().record_work_event(
+                        session_id,
+                        event_id=event_id,
+                        event_type=event_type,
+                        summary=summary,
+                        payload=payload,
+                        timestamp=timestamp,
+                    )
+                except (KeyError, ValueError) as exc:
+                    return hooks.error_json(str(exc), code="invalid_argument", tool="record_work_event")
+                return hooks.json_payload(MCPRootPayload(root=result))
+
+            return await hooks.async_safe_call("record_work_event", run, session_id=session_id)
 
         async def emit_decision(
             session_id: str,
@@ -2753,18 +2775,22 @@ def register_cutover_privileged_tools(mcp: ToolRegistrar, hooks: ServerCallbacks
             timestamp: str | None = None,
         ) -> str:
             """Record a decision using the shared work-event vocabulary."""
-            try:
-                result = await hooks.get_polylogue().emit_decision(
-                    session_id,
-                    event_id=event_id,
-                    decision=decision,
-                    summary=summary,
-                    evidence_refs=tuple(evidence_refs or ()),
-                    timestamp=timestamp,
-                )
-            except (KeyError, ValueError) as exc:
-                return hooks.error_json(str(exc), code="invalid_argument", tool="emit_decision")
-            return hooks.json_payload(MCPRootPayload(root=result))
+
+            async def run() -> str:
+                try:
+                    result = await hooks.get_polylogue().emit_decision(
+                        session_id,
+                        event_id=event_id,
+                        decision=decision,
+                        summary=summary,
+                        evidence_refs=tuple(evidence_refs or ()),
+                        timestamp=timestamp,
+                    )
+                except (KeyError, ValueError) as exc:
+                    return hooks.error_json(str(exc), code="invalid_argument", tool="emit_decision")
+                return hooks.json_payload(MCPRootPayload(root=result))
+
+            return await hooks.async_safe_call("emit_decision", run, session_id=session_id)
 
         register_declared_handler(mcp, record_work_event, name="record_work_event")
         register_declared_handler(mcp, emit_decision, name="emit_decision")

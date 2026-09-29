@@ -669,7 +669,7 @@ def test_archive_tiers_writer_normalizes_duplicate_idless_active_leaves_by_posit
         conn.close()
 
 
-def test_archive_tiers_writer_replaces_lone_surrogates_before_sqlite(tmp_path: Path) -> None:
+def test_archive_tiers_writer_stores_lone_surrogates_sqlite_can_hold(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     session = ParsedSession(
         source_name=Provider.CLAUDE_CODE,
@@ -698,7 +698,9 @@ def test_archive_tiers_writer_replaces_lone_surrogates_before_sqlite(tmp_path: P
     session_row = conn.execute("SELECT title FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
     block_row = conn.execute("SELECT tool_input FROM blocks WHERE session_id = ?", (session_id,)).fetchone()
     assert session_row["title"] == "Surrogate \ufffd title"
-    assert '"new_string":"broken �� heading"' in block_row["tool_input"]
+    # A JSON column keeps the surrogates as escapes, so the stored value is
+    # the parsed one; only plain TEXT columns need the replacement character.
+    assert json.loads(block_row["tool_input"]) == {"new_string": "broken \ud83d\udbe0 heading"}
 
 
 def test_archive_tiers_writer_preserves_chatgpt_branch_variants(tmp_path: Path) -> None:

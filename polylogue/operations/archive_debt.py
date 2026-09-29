@@ -17,6 +17,7 @@ from polylogue.archive.raw_materialization import (
 )
 from polylogue.archive.revision_authority import RawRevisionAuthority
 from polylogue.core.errors import SchemaSkew
+from polylogue.core.raw_coordinates import zip_member_coordinate
 from polylogue.core.sqlite_introspection import table_exists as _table_exists
 from polylogue.daemon.convergence_debt_status import convergence_debt_summary_info
 from polylogue.daemon.embedding_readiness import embedding_readiness_info
@@ -281,7 +282,9 @@ def _raw_materialization_rows(archive_root: Path, *, index_db: Path | None = Non
         for row in candidate_rows:
             category: str
             can_reconcile_alias = not row["parse_error"] or _retryable_decode_missing_blob_error(row["parse_error"])
-            if can_reconcile_alias and (
+            if row["revision_quarantined"]:
+                category = "revision-authority-quarantined"
+            elif can_reconcile_alias and (
                 _raw_materialized_by_native_id(conn, row) or _raw_materialized_by_source_path_native(conn, row)
             ):
                 # An alias only reconciles the row when this artifact's own
@@ -786,12 +789,12 @@ def _raw_materialization_debt_row(
         actions = (
             ArchiveDebtActionPayload(
                 label="Inspect the raw-authority frontier",
-                command=("polylogue", "maintenance", "raw-authority-frontier"),
+                command=("polylogue", "ops", "maintenance", "raw-authority-frontier"),
                 description="Read the durable authority census for these raws; refinement is what unblocks replay.",
             ),
             ArchiveDebtActionPayload(
                 label="List unresolved raw-authority blockers",
-                command=("polylogue", "maintenance", "raw-authority-blockers"),
+                command=("polylogue", "ops", "maintenance", "raw-authority-blockers"),
             ),
         )
     elif category == "materialized-alias":
@@ -875,7 +878,7 @@ def _source_artifact_exists(source_path: str) -> bool:
     if not source_path:
         return False
     outer_path = source_path.split(":", 1)[0]
-    return os.path.exists(outer_path)
+    return os.path.exists(source_path) or os.path.exists(outer_path) or zip_member_coordinate(source_path) is not None
 
 
 def _count_values(values: Iterable[Any]) -> dict[str, int]:

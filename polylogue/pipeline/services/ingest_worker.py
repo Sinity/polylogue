@@ -15,7 +15,7 @@ import threading
 from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import IO, TYPE_CHECKING, Literal, cast
 
 from polylogue.archive.artifact_taxonomy import (
     ArtifactClassification,
@@ -31,6 +31,7 @@ from polylogue.archive.raw_payload.decode import (
 )
 from polylogue.core.common import format_malformed_jsonl_error as _format_malformed_jsonl_error
 from polylogue.core.enums import IngestOutcome, Provider, ValidationMode, ValidationStatus
+from polylogue.core.storage_faults import storage_fault_kind
 from polylogue.logging import WARNING, emit, get_logger
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.pipeline.ids import session_id as make_session_id
@@ -41,6 +42,7 @@ from polylogue.pipeline.ingest_outcomes import (
     corrupt_input_disposition,
     non_session_artifact_disposition,
     parser_defect_disposition,
+    storage_fault_disposition,
     success_disposition,
     unsupported_shape_disposition,
     validation_rejected_disposition,
@@ -55,6 +57,7 @@ from polylogue.storage.runtime import (
 )
 
 if TYPE_CHECKING:
+    from polylogue.core.json import JSONValue
     from polylogue.schemas.packages import SchemaResolution
     from polylogue.schemas.runtime_registry import SchemaRegistry
     from polylogue.sources.parsers.base import ParsedSession
@@ -1087,6 +1090,50 @@ def _run_parse_plan(
 # ---------------------------------------------------------------------------
 
 
+#: Source name of the browser-capture spool (``config.source_paths``).
+_BROWSER_CAPTURE_SOURCE_NAME = "browser-capture"
+
+
+def _browser_capture_payload(context: _IngestContext, blob_store: BlobStore) -> object | None:
+    """Decode a retained browser capture as a stream; ``None`` for other raws.
+
+    A capture's size is not bounded at the receiver, so it is never read or
+    decoded whole: attachment byte carriers are decoded straight into the
+    blob store as they stream past, and the parser records the blob instead
+    of holding the bytes. A document that turns out not to be a capture
+    envelope takes the ordinary decode.
+    """
+    from polylogue.browser_capture.capture_decode import iter_carrier_bytes, load_capture_for_ingest
+    from polylogue.browser_capture.models import SpilledCarrier, looks_like_browser_capture
+
+    if context.raw_record.source_name != _BROWSER_CAPTURE_SOURCE_NAME or is_jsonl_source_path(
+        context.raw_record.source_path
+    ):
+        return None
+
+    def spill(_field_name: str, carrier: str) -> SpilledCarrier | None:
+        def write(handle: IO[bytes]) -> None:
+            for chunk in iter_carrier_bytes(carrier):
+                handle.write(chunk)
+
+        try:
+            prepared = blob_store.prepare_from_writer(write)
+        except ValueError:
+            return None
+        try:
+            # This worker holds no write lease, so the writer reserves the
+            # blob later (``ArchiveBlobPublisher.adopt_published``); renewing
+            # a deduplicated copy's age keeps GC off it until then.
+            blob_hash, size_bytes = blob_store.publish_prepared_renewing(prepared)
+        finally:
+            blob_store.discard_prepared(prepared)
+        return SpilledCarrier(blob_hash, size_bytes)
+
+    with context.raw_source.open("rb") as handle:
+        payload = load_capture_for_ingest(handle, spill)
+    return payload if looks_like_browser_capture(payload) else None
+
+
 def ingest_record(
     raw_record: RawSessionRecord,
     archive_root_str: str,
@@ -1150,14 +1197,18 @@ def ingest_record(
 
     # ── Phase 1: Decode blob (ONE decode, not two) ────────────────────
     try:
+        capture_payload = _browser_capture_payload(context, blob_store)
         envelope = build_raw_payload_envelope(
-            context.raw_source,
+            context.raw_source if capture_payload is None else cast("JSONValue", capture_payload),
             source_path=raw_record.source_path,
             fallback_provider=raw_record.source_name or "",
             payload_provider=stored_payload_provider,
             sqlite_immutable=True,
         )
     except Exception as exc:
+        # Spilling a capture's carriers writes to the blob store, so a full or
+        # failing archive disk surfaces here; it says nothing about the input.
+        fault = storage_fault_kind(exc)
         return _record_result(
             context,
             stored_payload_provider,
@@ -1165,7 +1216,11 @@ def ingest_record(
             validation_error=f"decode: {exc}",
             parse_error=f"decode: {exc}",
             error=f"decode: {exc}",
-            disposition=classify_decode_exception(exc),
+            disposition=(
+                classify_decode_exception(exc)
+                if fault is None
+                else storage_fault_disposition(fault, diagnostic=str(exc))
+            ),
         )
 
     return _run_parse_plan(context, _build_envelope_parse_plan(context, envelope))

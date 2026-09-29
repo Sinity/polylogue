@@ -55,3 +55,25 @@ async def test_bounded_accepts_a_typed_timeout_handler() -> None:
 def test_bounded_rejects_non_positive_or_non_finite_budgets(budget: object) -> None:
     with pytest.raises((TypeError, ValueError)):
         run_bounded(["true"], budget)  # type: ignore[arg-type]
+
+
+def test_run_bounded_rejects_string_argv_without_splitting() -> None:
+    with pytest.raises(TypeError, match="not a string"):
+        run_bounded("git status", 1)
+
+
+@pytest.mark.asyncio
+async def test_bounded_timeout_class_receives_budget() -> None:
+    with pytest.raises(BoundedTimeoutError) as caught:
+        await bounded(asyncio.sleep(10), 0.01, on_timeout=BoundedTimeoutError)
+    assert caught.value.budget == pytest.approx(0.01)
+
+
+@pytest.mark.asyncio
+async def test_bounded_preserves_inner_timeout_error() -> None:
+    async def fails_early() -> None:
+        raise TimeoutError("inner operation timeout")
+
+    with pytest.raises(TimeoutError, match="inner operation timeout") as caught:
+        await bounded(fails_early(), 1)
+    assert not isinstance(caught.value, BoundedTimeoutError)

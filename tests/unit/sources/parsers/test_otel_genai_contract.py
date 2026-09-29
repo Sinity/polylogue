@@ -171,8 +171,12 @@ def test_same_span_id_in_distinct_traces_within_a_conversation_is_preserved() ->
 
 def test_trace_fallback_and_empty_message_state_are_explicit() -> None:
     payload = _payload()
+    # A trace falls back to its own session only when no span in it names a
+    # conversation: a conversation-less root is otherwise adopted by the
+    # conversation beneath it.
+    for traced in _spans(payload):
+        traced["attributes"] = [a for a in traced["attributes"] if a["key"] != "gen_ai.conversation.id"]
     span = _spans(payload)[1]
-    span["attributes"] = [a for a in span["attributes"] if a["key"] != "gen_ai.conversation.id"]
     span["attributes"].append({"key": "gen_ai.input.messages", "value": {"arrayValue": {"values": []}}})
     session = next(
         s

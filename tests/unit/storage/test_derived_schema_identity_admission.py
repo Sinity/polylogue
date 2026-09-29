@@ -15,9 +15,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any, cast
 
+import aiosqlite
 import pytest
 
-from polylogue.core.errors import SchemaSkewError, SchemaVersionMismatchError
+from polylogue.core.errors import SchemaSkew, SchemaSkewError, SchemaVersionMismatchError
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 from polylogue.storage.sqlite.archive_tiers.bootstrap import (
@@ -26,6 +27,7 @@ from polylogue.storage.sqlite.archive_tiers.bootstrap import (
 )
 from polylogue.storage.sqlite.archive_tiers.schema_identity import DerivedTier, read_schema_identity
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.async_sqlite import configure_read_connection
 from polylogue.storage.sqlite.connection_profile import assert_tier_schema_supported
 from polylogue.storage.sqlite.schema import assert_readable_archive_layout
 from polylogue.storage.sqlite.schema_manifest import canonical_schema_manifest
@@ -121,6 +123,31 @@ def test_tier_admission_checks_identity_and_not_only_the_version(tmp_path: Path)
         conn.close()
 
 
+@pytest.mark.asyncio
+async def test_async_index_connection_refuses_a_stale_attached_source_tier(tmp_path: Path) -> None:
+    """An existing-root async connection validates siblings before yielding.
+
+    Anti-vacuity: remove the version check in ``_attach_sibling_tiers`` and
+    this read connection is yielded with the incompatible source tier attached;
+    ``source_tier.raw_sessions`` can then be queried under the current index's
+    schema assumptions.
+    """
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    initialize_active_archive_root(tmp_path)
+    source_path = tmp_path / "source.db"
+    expected_source_version = ARCHIVE_VERSION_BY_TIER[ArchiveTier.SOURCE]
+    with sqlite3.connect(source_path) as conn:
+        conn.execute(f"PRAGMA user_version = {expected_source_version - 1}")
+
+    async with aiosqlite.connect(f"file:{tmp_path / 'index.db'}?mode=ro", uri=True) as conn:
+        with pytest.raises(SchemaSkew) as caught:
+            await configure_read_connection(conn)
+
+    assert caught.value.tier == ArchiveTier.SOURCE.value
+    assert caught.value.found == expected_source_version - 1
+
+
 def test_a_skewed_tier_is_refused_before_materialisation_restamps_it(tmp_path: Path) -> None:
     """The stored version is admitted before it can be overwritten.
 
@@ -132,7 +159,7 @@ def test_a_skewed_tier_is_refused_before_materialisation_restamps_it(tmp_path: P
     """
     path = tmp_path / "index.db"
     with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE sessions (session_id TEXT PRIMARY KEY)")
+        initialize_archive_tier(conn, ArchiveTier.INDEX)
         conn.execute(f"PRAGMA user_version = {INDEX_VERSION - 1}")
 
     with pytest.raises(SchemaSkewError) as caught:
@@ -143,6 +170,26 @@ def test_a_skewed_tier_is_refused_before_materialisation_restamps_it(tmp_path: P
     # The version on disk was refused, not rewritten.
     with sqlite3.connect(path) as after:
         assert int(after.execute("PRAGMA user_version").fetchone()[0]) == INDEX_VERSION - 1
+
+
+def test_current_ops_identity_is_verified_before_open_returns(tmp_path: Path) -> None:
+    """Same-version ops opens reject foreign identity before any stamping.
+
+    Anti-vacuity: change ``open_initialized_tier_connection`` to adopt the
+    stored ops identity instead of verifying it and this no longer raises;
+    disposable-tier recovery is a separate explicit route.
+    """
+    path = tmp_path / "ops.db"
+    with sqlite3.connect(path) as conn:
+        initialize_archive_tier(conn, ArchiveTier.OPS)
+        conn.execute("UPDATE schema_identity SET identity = 'from-another-runtime' WHERE tier = 'ops'")
+        conn.commit()
+
+    with pytest.raises(SchemaSkewError):
+        open_initialized_tier_connection(path, ArchiveTier.OPS, daemon=False)
+
+    with sqlite3.connect(path) as after:
+        assert read_schema_identity(after, DerivedTier.OPS) == "from-another-runtime"
 
 
 @pytest.mark.parametrize(

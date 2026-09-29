@@ -19,7 +19,7 @@ from polylogue.config import Source
 from polylogue.core.content_identity import structural_content_identity, structurally_equal
 from polylogue.core.enums import Provider
 from polylogue.core.json import dumps_bytes
-from polylogue.core.raw_coordinates import MemberAddressingMode
+from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_container, zip_member_coordinate
 from polylogue.operations.zip_acquisition_replay import (
     MemberCandidate,
     resolve_member_candidate,
@@ -51,7 +51,7 @@ def _row(
     source_path: str,
     *,
     payload: bytes,
-    source_index: int,
+    source_index: int | None,
     addressing_mode: str = "",
 ) -> dict[str, object]:
     return {
@@ -305,10 +305,10 @@ def test_split_elements_persist_structural_identity_for_replay(tmp_path: Path) -
 
 
 def test_whole_member_hint_resolves_the_member_document(tmp_path: Path) -> None:
-    """A row recorded as whole-member reads the member, not an element.
+    """A legacy NULL index resolves the preserved whole member at index zero.
 
-    Anti-vacuity: element resolution would look for index 0 in a member that
-    yields no elements and report the blob unrecoverable.
+    Anti-vacuity: returning ``None`` for the legacy split index would refuse
+    the valid member before reopening the ZIP.
     """
     zip_path = tmp_path / "single.zip"
     document = _session("only")
@@ -320,8 +320,8 @@ def test_whole_member_hint_resolves_the_member_document(tmp_path: Path) -> None:
         _row(
             recorded_path,
             payload=member_bytes,
-            source_index=0,
-            addressing_mode=MemberAddressingMode.WHOLE_MEMBER.value,
+            source_index=None,
+            addressing_mode="",
         ),
         source_path=recorded_path,
         zip_payload_cache={},
@@ -597,3 +597,33 @@ def test_replay_refuses_to_guess_a_provider_from_the_public_origin(tmp_path: Pat
 
     assert payload is None
     assert error == "replay_provider_unrecorded"
+
+
+def test_zip_member_coordinate_splits_after_a_colon_in_the_container_path(tmp_path: Path) -> None:
+    """Anti-vacuity: splitting at the first colon names ``<tmp>/odd`` as the
+    container, which is not a file, so both lookups return ``None``.
+    """
+    container = tmp_path / "odd:name.zip"
+    with zipfile.ZipFile(container, "w") as archive:
+        archive.writestr("conversations.json", "[]")
+    coordinate = f"{container}:conversations.json"
+    assert zip_member_coordinate(coordinate) == (container, "conversations.json")
+    assert zip_member_container(coordinate) == container
+    # A loose file whose literal name holds a colon is never a member coordinate.
+    loose = tmp_path / "plain:file.json"
+    loose.write_text("{}")
+    assert zip_member_coordinate(str(loose)) is None
+
+
+def test_split_zip_member_text_separates_after_the_zip_suffix_when_the_container_is_gone() -> None:
+    """Anti-vacuity: a first-colon split names ``C`` as the container of a
+    Windows-style coordinate, and relocation and heartbeat labels lose the ZIP.
+    """
+    from polylogue.core.raw_coordinates import split_zip_member_text
+
+    assert split_zip_member_text(r"C:\imports\chat.zip:conversations.json") == (
+        r"C:\imports\chat.zip",
+        "conversations.json",
+    )
+    assert split_zip_member_text("/gone/odd:name.ZIP:a:b.json") == ("/gone/odd:name.ZIP", "a:b.json")
+    assert split_zip_member_text("/gone/plain:file.json") is None

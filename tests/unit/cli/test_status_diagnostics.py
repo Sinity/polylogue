@@ -36,6 +36,11 @@ def _set_xdg(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> tuple[Path, Pat
     return data_home, config_home
 
 
+def _install_chat_tool(tmp_path: Path) -> None:
+    """Make one canonical chat source directory present under the test HOME."""
+    (tmp_path / "home" / ".codex" / "sessions").mkdir(parents=True, exist_ok=True)
+
+
 def _create_index_db(data_home: Path, *, user_version: int = INDEX_SCHEMA_VERSION) -> Path:
     data_home.mkdir(parents=True, exist_ok=True)
     db = data_home / "index.db"
@@ -56,7 +61,7 @@ class TestDiagnoseNoArchive:
     def test_no_archive_with_config(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         _, config_home = _set_xdg(monkeypatch, tmp_path)
         config_home.mkdir(parents=True, exist_ok=True)
-        (config_home / "polylogue.toml").write_text('[sources]\nroots = ["/x"]\n')
+        (config_home / "polylogue.toml").write_text("[archive]\n", encoding="utf-8")
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "no_archive"
         assert diag.next_action == "polylogued run"
@@ -119,7 +124,7 @@ class TestDiagnoseSchemaMismatch:
         archive.commit()
         archive.close()
         config_home.mkdir(parents=True, exist_ok=True)
-        (config_home / "polylogue.toml").write_text('[sources]\nroots = ["/some/path"]\n')
+        _install_chat_tool(tmp_path)
 
         diag = diagnose_first_run(daemon_alive=False)
 
@@ -175,20 +180,121 @@ class TestDiagnoseStalePidfile:
 
 
 class TestDiagnoseNoSources:
-    def test_no_sources_when_config_empty(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-        data_home, config_home = _set_xdg(monkeypatch, tmp_path)
-        _create_index_db(data_home)
-        config_home.mkdir(parents=True, exist_ok=True)
-        (config_home / "polylogue.toml").write_text("[sources]\nroots = []\n")
-        diag = diagnose_first_run(daemon_alive=False)
-        assert diag.kind == "no_sources"
-        assert "polylogue init" in diag.next_action
+    def test_no_sources_when_no_chat_tool_directory_exists(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """No canonical source directory means nothing will be acquired.
 
-    def test_no_sources_when_config_missing(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        Anti-vacuity: stop checking the canonical directories and an empty
+        machine reports ``no_daemon`` instead.
+        """
         data_home, _ = _set_xdg(monkeypatch, tmp_path)
         _create_index_db(data_home)
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "no_sources"
+        assert "polylogue import" in diag.next_action
+
+    def test_a_configured_hermes_root_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """The probe checks the runtime's resolved roots, as the daemon watches them.
+
+        Anti-vacuity: probe the default ``~/.hermes`` instead and this machine,
+        whose only source is the overridden Hermes root, reports ``no_sources``.
+        """
+        data_home, _ = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        hermes = tmp_path / "elsewhere" / "hermes"
+        hermes.mkdir(parents=True)
+        monkeypatch.setenv("POLYLOGUE_HERMES_ROOT", str(hermes))
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_daemon"
+
+    def test_configured_drive_credentials_are_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Drive is configured through credential files, not a watched directory.
+
+        ``detect_chat_sources()`` only walks local provider directories, so a
+        Drive-only machine (valid credentials, no local tool installed) has
+        nothing present there; ``resolve_runtime_config().sources`` still adds
+        an "aistudio" entry when the credential file exists.
+
+        Anti-vacuity: check only ``detect_chat_sources()`` and a Drive-only
+        machine reports ``no_sources`` and tells the operator to import a
+        file, instead of the correct ``no_daemon`` (the source is configured,
+        the daemon is simply not running to catch it up).
+        """
+        data_home, config_home = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        config_home.mkdir(parents=True, exist_ok=True)
+        (config_home / "polylogue-credentials.json").write_text("{}", encoding="utf-8")
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_daemon"
+
+    def test_a_staged_inbox_import_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """Anti-vacuity: ignore the archive inbox and a staged export with no
+        provider directory reports ``no_sources`` and asks for another import."""
+        from polylogue.config import resolve_runtime_config
+
+        data_home, _ = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        inbox = resolve_runtime_config().source_paths.inbox
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / "export.zip").write_bytes(b"PK\x05\x06" + bytes(18))
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_daemon"
+
+    def test_an_inbox_entry_the_watcher_ignores_is_not_a_source(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Anti-vacuity: count any inbox entry and a ``.DS_Store`` alone
+        reports ``no_daemon``, although the inbox watcher admits nothing."""
+        from polylogue.config import resolve_runtime_config
+
+        data_home, _ = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        inbox = resolve_runtime_config().source_paths.inbox
+        (inbox / "empty-dir").mkdir(parents=True)
+        (inbox / ".DS_Store").write_bytes(b"\x00")
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_sources"
+
+    def test_a_secondary_canonical_root_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """The daemon watches Codex's state database beside its sessions root.
+
+        Anti-vacuity: probe only the primary provider directories and a
+        machine whose only source is ``~/.codex/state_5.sqlite`` reports
+        ``no_sources``.
+        """
+        data_home, _ = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        codex = tmp_path / "home" / ".codex"
+        codex.mkdir(parents=True)
+        (codex / "state_5.sqlite").write_bytes(b"")
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_daemon"
+
+    def test_a_configured_capture_spool_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        """``polylogued run`` watches a configured spool in place of the default one.
+
+        Anti-vacuity: probe only the default spool and a pending capture in
+        the configured spool reports ``no_sources``.
+        """
+        data_home, config_home = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        spool = tmp_path / "custom-spool"
+        spool.mkdir()
+        (spool / "capture.json").write_text("{}", encoding="utf-8")
+        config_home.mkdir(parents=True, exist_ok=True)
+        (config_home / "polylogue.toml").write_text(
+            f'[daemon.browser_capture]\nspool_path = "{spool}"\n', encoding="utf-8"
+        )
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_daemon"
+
+    def test_a_present_chat_tool_is_a_source(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+        data_home, _ = _set_xdg(monkeypatch, tmp_path)
+        _create_index_db(data_home)
+        _install_chat_tool(tmp_path)
+        diag = diagnose_first_run(daemon_alive=False)
+        assert diag.kind == "no_daemon"
 
 
 class TestDiagnoseNoDaemon:
@@ -196,7 +302,7 @@ class TestDiagnoseNoDaemon:
         data_home, config_home = _set_xdg(monkeypatch, tmp_path)
         _create_index_db(data_home)
         config_home.mkdir(parents=True, exist_ok=True)
-        (config_home / "polylogue.toml").write_text('[sources]\nroots = ["/some/path"]\n')
+        _install_chat_tool(tmp_path)
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "no_daemon"
         assert "polylogued run" in diag.next_action
@@ -214,7 +320,7 @@ class TestDiagnoseNoDaemon:
         conn.commit()
         conn.close()
         config_home.mkdir(parents=True, exist_ok=True)
-        (config_home / "polylogue.toml").write_text('[sources]\nroots = ["/some/path"]\n')
+        _install_chat_tool(tmp_path)
         diag = diagnose_first_run(daemon_alive=False)
         assert diag.kind == "no_daemon"
         assert "polylogued run" in diag.next_action
@@ -225,7 +331,7 @@ class TestDiagnoseMissingOptionalDep:
         data_home, config_home = _set_xdg(monkeypatch, tmp_path)
         _create_index_db(data_home)
         config_home.mkdir(parents=True, exist_ok=True)
-        (config_home / "polylogue.toml").write_text('[sources]\nroots = ["/x"]\n')
+        _install_chat_tool(tmp_path)
         # Force find_spec("sqlite_vec") → None.
         import importlib.util
 
@@ -247,7 +353,7 @@ class TestHealthy:
         data_home, config_home = _set_xdg(monkeypatch, tmp_path)
         _create_index_db(data_home)
         config_home.mkdir(parents=True, exist_ok=True)
-        (config_home / "polylogue.toml").write_text('[sources]\nroots = ["/x"]\n')
+        _install_chat_tool(tmp_path)
         # Pretend sqlite_vec is installed.
         import importlib.util
 

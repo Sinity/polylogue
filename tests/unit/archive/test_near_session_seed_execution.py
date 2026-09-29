@@ -283,6 +283,23 @@ async def test_search_hits_for_plan_session_seed_no_backend_fails_typed(
         await search_hits_for_plan(plan, config)
 
 
+async def test_search_hits_for_plan_reports_backend_construction_failure_as_failed(
+    seeded_archive: tuple[Path, Config, dict[str, tuple[str, str]]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-vacuity: mapping every non-``unavailable`` lane failure to ``pending`` tells callers to wait."""
+    _archive_root, config, mapping = seeded_archive
+
+    def broken_backend(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("misconfigured embedding backend")
+
+    monkeypatch.setattr("polylogue.storage.search_providers.create_vector_provider", broken_backend)
+    plan = SessionQueryPlan(similar_session_id=mapping["seed"][0])
+    with pytest.raises(EmbeddingRetrievalNotReadyError) as excinfo:
+        await search_hits_for_plan(plan, config)
+    assert excinfo.value.readiness_status == "failed"
+
+
 def test_session_seed_counts_as_search_hit_evidence() -> None:
     assert plan_has_search_hit_evidence(SessionQueryPlan(similar_session_id="abc123")) is True
     assert plan_has_search_hit_evidence(SessionQueryPlan()) is False

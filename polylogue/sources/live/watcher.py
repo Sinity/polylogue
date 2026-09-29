@@ -567,7 +567,31 @@ class LiveWatcher:
     # Shared helpers
     # ------------------------------------------------------------------
 
-    def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
+    def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+        """Split one page into (needed now, pending a scheduled retry).
+
+        A path whose cursor carries a retry that is not yet due is owed work,
+        not accounted for: reporting it as already admitted acknowledged the
+        page and dropped the obligation (polylogue-b8of0). Everything else
+        not needed is covered by its cursor.
+        """
+        needed = self._select_ingest_candidates(paths)
+        if len(needed) == len(paths):
+            return needed, ()
+        chosen = set(needed)
+        remaining = [path for path in paths if path not in chosen]
+        records = self._cursor.get_records(remaining)
+        pending = tuple(
+            path
+            for path in remaining
+            if (record := records.get(path)) is not None
+            and not record.excluded
+            and record.next_retry_at is not None
+            and not _retry_due(record.next_retry_at)
+        )
+        return needed, pending
+
+    def _select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
         """Narrow one admitted page to the files that actually need ingesting.
 
         The dispatcher's discovery is a bounded walk with a disposable
@@ -1413,25 +1437,6 @@ class LiveWatcher:
         )
 
 
-def _legacy_data_home_inbox_sources() -> tuple[WatchSource, ...]:
-    """Return the XDG data-home inbox when the archive root has moved away.
-
-    ``archive_root()`` defaults to ``data_home()``, so an archive whose root
-    was later pointed elsewhere leaves its inbox behind under no watch root at
-    all: exports staged there before the move are acquired by nothing, and a
-    wipe-and-reconverge never reads them. Same finite legacy-root topology the
-    hook spools already carry. Inert where the two inboxes coincide.
-    """
-    from polylogue.paths import archive_root, data_home
-
-    legacy_root = data_home() / "inbox"
-    if legacy_root.resolve() == (archive_root() / "inbox").resolve():
-        return ()
-    # Named apart from the archive inbox: two watch sources may not share a
-    # name, or every by-name lookup silently sees only the last one.
-    return (WatchSource(name="inbox-legacy", root=legacy_root, suffixes=INBOX_SOURCE_SUFFIXES),)
-
-
 def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ...]:
     """Discover the default live-source roots from XDG/home conventions.
 
@@ -1535,9 +1540,34 @@ def default_sources(*, hermes_root: Path | None = None) -> tuple[WatchSource, ..
         # #1683: inbox accepts archive, zip, and json-line formats so that
         # GDPR exports (typically .zip) and raw .json dumps are observed.
         WatchSource(name="inbox", root=archive_root() / "inbox", suffixes=INBOX_SOURCE_SUFFIXES),
-        *_legacy_data_home_inbox_sources(),
         *hook_carrier_watch_sources(hook_spool_sources()),
     )
+
+
+#: Watch sources whose directory Polylogue itself creates and writes; their
+#: existence proves nothing about any tool's material.
+POLYLOGUE_OWNED_SOURCE_NAMES = frozenset({"browser-capture", "inbox"})
+
+
+def daemon_watch_sources(
+    *,
+    browser_capture_spool_path: Path | None = None,
+    hermes_root: Path | None = None,
+) -> tuple[WatchSource, ...]:
+    """The daemon's watch set: every origin at its canonical location.
+
+    There are no custom source roots. Each origin is acquired from the place
+    its tool writes it, account exports arrive through ``polylogue import``
+    into the archive inbox, and a relocated tool directory is followed by a
+    symlink at the canonical path rather than by configuration. The one
+    substitution is the browser-capture spool, which Polylogue itself owns.
+    """
+    sources = list(default_sources(hermes_root=hermes_root))
+    if browser_capture_spool_path is not None:
+        spool = browser_capture_spool_path.expanduser()
+        sources = [source for source in sources if source.name != "browser-capture"]
+        sources.append(WatchSource(name="browser-capture", root=spool, suffixes=(".json",)))
+    return tuple(sources)
 
 
 def _cursor_db_path(polylogue: ArchiveRootOwner) -> Path:

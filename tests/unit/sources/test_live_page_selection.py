@@ -24,7 +24,7 @@ from tests.infra.frozen_clock import FrozenClock
 class _SelectionPlan:
     """What one page-admission selection decided, in the shape assertions read.
 
-    The dispatcher's bounded walk plus ``LiveWatcher.select_ingest_candidates``
+    The dispatcher's bounded walk plus ``LiveWatcher.classify_ingest_candidates``
     is the one route that decides this now; ``_plan_catch_up`` and its scan were the
     deleted second one.
     """
@@ -44,7 +44,7 @@ class _SelectionPlan:
 def _select_plan(watcher: LiveWatcher, root: Path) -> _SelectionPlan:
     source = next(source for source in watcher._sources if source.root == root)
     candidates = tuple(_bounded_source_paths(source, watcher._sources, limit=64, after=None))
-    return _SelectionPlan(candidates=candidates, needed=watcher.select_ingest_candidates(candidates))
+    return _SelectionPlan(candidates=candidates, needed=watcher.classify_ingest_candidates(candidates)[0])
 
 
 def _write_archive_blob(archive_root: Path, blob_hash: bytes | str, payload: bytes) -> None:

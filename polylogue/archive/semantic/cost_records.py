@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
-TokenProvenance = Literal["provider_reported", "tokenizer_estimated", "heuristic_estimated", "unknown"]
+TokenProvenance = Literal["provider_reported", "tokenizer_estimated", "heuristic_estimated", "mixed", "unknown"]
 CostConfidence = Literal["reported", "estimated", "partial", "unknown"]
 CostBasis = Literal[
     "api_billed", "api_equivalent_estimated", "subscription_equivalent_estimated", "configured_manual", "unknown"

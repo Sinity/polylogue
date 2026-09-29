@@ -430,6 +430,76 @@ def test_events_written_as_files_again_are_never_acquired(tmp_path: Path, monkey
 # ── the one-shot legacy fold (polylogue-k8wv) ─────────────────────────────
 
 
+def test_compact_carrier_census_streams_wide_directories(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """F141: compact counts every carrier without collecting a directory first.
+
+    Anti-vacuity: restoring sorted(scandir(...)) requests a second entry before
+    inspecting the first, and the instrumented real directory iterator refuses.
+    """
+    spool_root = tmp_path / "hooks"
+    leaf = hook_carrier_dir(spool_root) / "codex" / "2026-09-16"
+    leaf.mkdir(parents=True)
+    for name in ("one.ndjson", "two.ndjson", "ignore.txt"):
+        (leaf / name).write_bytes(b"")
+    (leaf / "link.ndjson").symlink_to(leaf / "one.ndjson")
+    real_scandir = os.scandir
+    scans: list[TrackedScan] = []
+
+    class TrackedEntry:
+        def __init__(self, entry: os.DirEntry[str], scan: TrackedScan) -> None:
+            self.entry = entry
+            self.scan = scan
+            self.name = entry.name
+            self.path = entry.path
+
+        def is_dir(self, *, follow_symlinks: bool = True) -> bool:
+            self.scan.inspected = True
+            return self.entry.is_dir(follow_symlinks=follow_symlinks)
+
+        def is_file(self, *, follow_symlinks: bool = True) -> bool:
+            self.scan.inspected = True
+            return self.entry.is_file(follow_symlinks=follow_symlinks)
+
+    class TrackedScan:
+        def __init__(self) -> None:
+            self.entries = real_scandir(leaf)
+            self.inspected = True
+            self.closed = False
+
+        def __iter__(self) -> TrackedScan:
+            return self
+
+        def __next__(self) -> TrackedEntry:
+            assert self.inspected, "carrier census accumulated entries before inspecting them"
+            entry = next(self.entries)
+            self.inspected = False
+            return TrackedEntry(entry, self)
+
+        def __enter__(self) -> TrackedScan:
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            self.close()
+
+        def close(self) -> None:
+            self.entries.close()
+            self.closed = True
+
+    def tracked_scandir(path: str | os.PathLike[str]) -> object:
+        if Path(path) != leaf:
+            return real_scandir(path)
+        scan = TrackedScan()
+        scans.append(scan)
+        return scan
+
+    monkeypatch.setattr(os, "scandir", tracked_scandir)
+    receipt = compact_legacy_spool(spool_root)
+
+    assert receipt["carrier_scope"] == {"before": {"file_count": 2}, "after": {"file_count": 2}}
+    assert len(scans) == 2
+    assert all(scan.closed for scan in scans)
+
+
 def test_compact_folds_the_retired_spool_into_carriers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``--compact`` is the one bridge from the retired spool to the carriers.
 

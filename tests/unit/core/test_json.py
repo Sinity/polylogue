@@ -664,3 +664,33 @@ def test_json_document_or_none_returns_the_same_object_when_nothing_changes() ->
     record: dict[str, object] = {"a": 1, "b": [1, 2, {"c": "x"}], "d": None}
     assert core_json.json_document_or_none(record) is record
     assert core_json.normalize_json_decimal(record) is record
+
+
+def test_decimal_free_lowering_does_not_copy_unchanged_containers() -> None:
+    """Anti-vacuity: eager container construction exceeds this peak by > 0.8 MB."""
+    import tracemalloc
+
+    from polylogue.core.json import _lower_json_value
+
+    value = {"rows": [{"index": index} for index in range(40_000)]}
+    tracemalloc.start()
+    lowered = _lower_json_value(value)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert lowered is value
+    assert peak < 100_000
+
+
+def test_exponent_scanner_does_not_slice_unchanged_json_strings() -> None:
+    """Anti-vacuity: per-string slices exceed the measured scanner allocation bound."""
+    import tracemalloc
+
+    from polylogue.core.json import _normalize_msgspec_float_exponents
+
+    data = b'["",' * 50_000 + b'""]'
+    tracemalloc.start()
+    normalized = _normalize_msgspec_float_exponents(data)
+    _, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    assert normalized is data
+    assert peak < 100_000

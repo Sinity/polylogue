@@ -72,6 +72,18 @@ def test_member_order_does_not_change_content_identity() -> None:
     assert forward == reverse == frozen
 
 
+def test_non_finite_set_members_sort_by_their_digest_tokens() -> None:
+    """NaN and infinities must not tie as null in the sort-key encoder."""
+    from polylogue.pipeline.ids import _normalize_nested_for_hash
+
+    positive = float("inf")
+    negative = float("-inf")
+    nan = float("nan")
+    first = {positive, nan, negative}
+    second = {negative, positive, nan}
+    assert hash_payload(_normalize_nested_for_hash(first)) == hash_payload(_normalize_nested_for_hash(second))
+
+
 _CROSS_PROCESS_PROGRAM = textwrap.dedent(
     """
     from polylogue.archive.message.roles import Role

@@ -696,7 +696,7 @@ a concrete lane — see below).
 | `auto` | Default lexical planner lane. Resolves to `dialogue` for ordinary text queries; vector work is explicit through `--semantic`, `--similar`, or `--retrieval-lane hybrid`. | `bm25` |
 | `dialogue` | FTS5 over message text (`messages_fts` virtual table, `unicode61` tokenizer). Default lexical lane. | `bm25` |
 | `actions` | FTS5 over tool-use/tool-result block text in `messages_fts`. Targets tool/file/shell evidence rather than prose. Public ranked-hit payloads currently carry action rank/evidence without a numeric action BM25 score. | `null` |
-| `hybrid` | Reciprocal Rank Fusion combining FTS5 and vector similarity (requires embeddings). | `rrf` |
+| `hybrid` | Reciprocal Rank Fusion over the `dialogue`, `actions`, and vector legs. Without usable embeddings the vector leg is named in `unavailable_lanes`/`failed_lanes` and the lexical legs still fuse. | `rrf` |
 | `semantic` | Pure vector similarity over configured Voyage embeddings via sqlite-vec. Triggered by `--similar` or `--semantic`. | `vector_distance` |
 
 Implementation: `polylogue/storage/search/query_builders.py`,
@@ -748,14 +748,20 @@ Implementation: `polylogue/storage/search/query_builders.py`,
 
 #### `hybrid` (RRF fusion)
 
-- Runs both `dialogue` (FTS5) and `semantic` (vector) lanes, then fuses
-  with **Reciprocal Rank Fusion** at `k=60`:
+- Runs the `dialogue` (FTS5), `actions` (FTS5 action blocks), and
+  `semantic` (vector) legs, then fuses with **Reciprocal Rank Fusion** at
+  `k=60`:
   `fused_score = Σ 1 / (k + rank_in_lane)`.
 - Tie-breaking is deterministic: descending fused score, then ascending
   `session_id`. This makes cursor and offset pagination stable
   across runs even when scores tie.
 - Reported `score_kind` is `"rrf"`. Higher fused scores indicate stronger
   cross-lane consensus.
+- When the vector leg is unconfigured, has no current vectors, or fails,
+  the request stays `hybrid` (its cursor too) and the envelope reports the
+  lexical-only execution through `executed_lanes` plus `unavailable_lanes`
+  or `failed_lanes`. Cancellation and deadlines abort the whole search.
+- `total` is `null`: a fused candidate page has no archive-wide count.
 - **Lane contributions** (per-lane rank and per-lane RRF contribution)
   are preserved end-to-end on each hit's `score_components`
   ([#1267](https://github.com/Sinity/polylogue/issues/1267)): every lane
@@ -778,7 +784,10 @@ Implementation: `polylogue/storage/search/query_builders.py`,
 - Score kind is `"vector_distance"` — lower means closer in embedding
   space. Like BM25, distances are not directly comparable across
   different query embeddings.
-- Requires embeddings to be enabled and populated; see
+- Requires embeddings to be enabled and populated: a store with no vector
+  for the current messages and recipe refuses with a typed not-ready error
+  before a query embedding is purchased, rather than returning an empty
+  success; see
   [docs/architecture.md § Embedding Pipeline](architecture.md#embedding-pipeline).
 - Use `polylogue ops embed status` to check whether vector retrieval is disabled,
   missing an API key, pending backlog catch-up, partially usable, or complete.

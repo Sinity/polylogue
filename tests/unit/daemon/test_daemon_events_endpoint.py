@@ -451,8 +451,10 @@ class TestStatusEventEtag:
             assert cast(dict[str, object], first_payload["catchup"])["discovery_inspected_count"] == 0
             assert cast(dict[str, object], second_payload["catchup"])["discovery_inspected_count"] == 1
             assert _response_etag(response) != first_etag
-            body = response.split(b"\r\n\r\n", 1)[1]
-            assert _response_etag(response) == f'W/"status-{hashlib.sha256(body).hexdigest()[:24]}"'
+            from polylogue.daemon.http import _json_bytes, _stable_status_identity
+
+            identity = _json_bytes(_stable_status_identity(second_payload))
+            assert _response_etag(response) == f'W/"status-{hashlib.sha256(identity).hexdigest()[:24]}"'
         finally:
             end_discovery(token)
             reset_discovery_progress()
@@ -1115,10 +1117,14 @@ class TestDaemonEventRetention:
         assert [cast("dict[str, object]", event["payload"])["n"] for event in page.events] == [3, 4, 5]
         assert page.retained_min_id is not None
 
-    def test_declared_age_window_is_enforced_on_every_emit(self, empty_events_db: Path) -> None:
+    def test_declared_age_window_is_enforced_on_every_emit(
+        self, empty_events_db: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from polylogue.daemon import events
         from polylogue.daemon.events import emit_daemon_event, query_events_since
 
         base_ms = 1_700_000_000_000
+        monkeypatch.setattr(events, "current_epoch_ms", lambda: base_ms + 30_000)
         with _retention(max_age_ms=10_000):
             emit_daemon_event("ingestion_batch", payload={"n": "stale"}, observed_at_ms=base_ms)
             emit_daemon_event("ingestion_batch", payload={"n": "fresh"}, observed_at_ms=base_ms + 60_000)
@@ -1133,6 +1139,23 @@ class TestDaemonEventRetention:
             DaemonEventRetention(max_rows=0)
         with pytest.raises(ValueError, match="max_age_ms"):
             DaemonEventRetention(max_age_ms=-1)
+
+    def test_age_bound_keeps_an_in_window_first_row_and_its_suffix(self, empty_events_db: Path) -> None:
+        """Anti-vacuity: deleting through the highest expired ID also deletes the in-window row 1."""
+        from polylogue.daemon.events import DaemonEventRetention, _ensure_events_db, prune_daemon_events
+
+        initialized = _ensure_events_db(empty_events_db)
+        initialized.close()
+        with sqlite3.connect(empty_events_db) as conn:
+            conn.executemany(
+                "INSERT INTO daemon_events(ts_ms, kind, payload_json) VALUES (?, 'test', '{}')",
+                [(20_000,), (1_000,), (2_000,), (3_000,)],
+            )
+            assert prune_daemon_events(conn, DaemonEventRetention(max_age_ms=5_000), now_ms=10_000) == 0
+            assert [row[0] for row in conn.execute("SELECT id FROM daemon_events ORDER BY id")] == [1, 2, 3, 4]
+            conn.execute("INSERT INTO daemon_events(ts_ms, kind, payload_json) VALUES (1_000, 'test', '{}')")
+            conn.execute("UPDATE daemon_events SET ts_ms = 1_000 WHERE id = 1")
+            assert prune_daemon_events(conn, DaemonEventRetention(max_age_ms=5_000), now_ms=10_000) == 5
 
 
 class TestAgedOutCursorResync:
@@ -1193,6 +1216,37 @@ class TestAgedOutCursorResync:
 
         assert page.status is EventCursorStatus.AGED_OUT
         assert cast("dict[str, object]", cast("dict[str, object]", page.resync)["payload"])["reason"] == "ledger_reset"
+
+    def test_missing_ledger_resets_a_resumed_cursor(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        from polylogue.daemon import events
+
+        monkeypatch.setattr(events, "_events_db_path", lambda: tmp_path / "removed-ops.db")
+        page = events.query_events_since(42)
+        assert page.status is events.EventCursorStatus.AGED_OUT
+        assert page.resync is not None
+        assert cast(dict[str, object], page.resync["payload"])["reason"] == "ledger_reset"
+
+    def test_empty_anchor_parameter_conflicts_with_explicit_offset(self) -> None:
+        """Anti-vacuity: checking anchor truthiness accepts ``around=&offset=500``."""
+        handler = _make_handler("GET", "/api/sessions/x/read")
+        assert handler._accept_message_window_anchor("", None, 500) is False
+        assert b"400" in cast(BytesIO, handler.wfile).getvalue()
+
+    def test_query_parsing_keeps_a_blank_anchor(self) -> None:
+        """Anti-vacuity: parse_qs without keep_blank_values drops ``around=`` before the conflict check."""
+        handler = _make_handler("GET", "/api/sessions/x/read?view=messages&around=&offset=500")
+        _path, params = handler._parse_path()
+        assert params["around"] == [""]
+        assert handler._get_param(params, "around") is None
+
+    def test_messages_route_refuses_a_blank_anchor_with_an_offset(self) -> None:
+        """Anti-vacuity: reading ``around`` through ``_get_param`` turns ``around=`` into None and serves the offset."""
+        from polylogue.daemon.route_families.read_detail import _handle_get_messages
+
+        handler = _make_handler("GET", "/api/sessions/x/messages?around=&offset=500")
+        _path, params = handler._parse_path()
+        _handle_get_messages(handler, "x", params)
+        assert b"400" in cast(BytesIO, handler.wfile).getvalue()
 
     def test_an_aged_out_page_cannot_also_deliver_rows(self) -> None:
         from polylogue.daemon.events import DaemonEventPage, EventCursorStatus

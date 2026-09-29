@@ -669,6 +669,27 @@ class SessionProfileDerivation:
         page = keys[start : start + limit]
         return page, (page[-1] if start + len(page) < len(keys) and page else None)
 
+    def is_required_key(self, frame: object, session_id: str) -> bool:
+        """Recheck requiredness after lease-free work before classifying failure."""
+        scope = self._session_scope(frame)
+        if scope is not None and session_id not in scope:
+            return False
+        conn = self._read_connection()
+        try:
+            if getattr(frame, "profile_demand_only", False):
+                return (
+                    conn.execute(
+                        """SELECT 1 FROM sessions AS s
+                       JOIN session_profile_demand AS d ON d.session_id = s.session_id
+                       WHERE s.session_id = ?""",
+                        (session_id,),
+                    ).fetchone()
+                    is not None
+                )
+            return conn.execute("SELECT 1 FROM sessions WHERE session_id = ?", (session_id,)).fetchone() is not None
+        finally:
+            conn.close()
+
     def barrier_sessions(self, frame: object, keys: Sequence[str]) -> Mapping[str, str]:
         """Each key is a session id; only an archived session can be held."""
         del frame

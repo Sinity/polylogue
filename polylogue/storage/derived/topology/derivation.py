@@ -111,8 +111,8 @@ def _cycle_indexes(edges: Sequence[TopologyEdge]) -> set[int]:
     """Mark every edge on a path that reaches a back edge.
 
     The traversal carries its own stack rather than recursing. The writer admits
-    a lineage chain up to ``_CYCLE_WALK_BUDGET`` (1024) steps deep, and a
-    recursive depth-first walk raises ``RecursionError`` before that -- which
+    a lineage chain of any depth, and a recursive depth-first walk raises
+    ``RecursionError`` on a deep one -- which
     this classifier runs over every link in the archive, so one deep but
     perfectly acyclic lineage made unrelated topology reads fail outright.
     Frame-for-frame the same walk: a node enters ``visiting`` on push and moves

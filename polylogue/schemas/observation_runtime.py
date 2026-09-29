@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from itertools import islice
 from pathlib import Path
 from typing import TypeAlias, cast
@@ -20,11 +20,32 @@ from polylogue.schemas.observation_models import (
     SchemaClusterPayload,
     SchemaUnit,
 )
+from polylogue.sources.origin_specs import artifact_rule_for_path
 
 SchemaSample: TypeAlias = JSONDocument
 
 _MAX_PROFILE_TOKENS = 160
 _MAX_NESTED_PROFILE_TOKENS = 8
+
+
+def declared_structured_observation_config(
+    provider: Provider,
+    source_path: str | Path,
+    config: ProviderConfig,
+) -> ProviderConfig | None:
+    """Return how a declared non-session artifact is observed, or ``None`` when it stays opaque.
+
+    A structured sidecar is not a session, but its shape is schema evidence.
+    A JSON structured document is observed whole even when its provider
+    samples records (Claude's ``sessions-index.json``), so additive envelope
+    fields stay observable instead of only nested session-like rows.
+    """
+    rule = artifact_rule_for_path(provider, str(source_path))
+    if rule is None or rule.observation_strategy not in {"structured-records", "structured-documents"}:
+        return None
+    if rule.observation_strategy == "structured-documents" and Path(source_path).suffix.lower() == ".json":
+        return replace(config, sample_granularity="document", record_type_key=None)
+    return config
 
 
 @dataclass(frozen=True)

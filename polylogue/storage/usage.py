@@ -27,8 +27,10 @@ from polylogue.archive.semantic.pricing import (
 from polylogue.archive.semantic.subscription_pricing import (
     SUBSCRIPTION_CATALOG_EFFECTIVE_DATE,
     SUBSCRIPTION_CATALOG_PROVENANCE,
+    SUBSCRIPTION_TIERS,
     compute_credit_cost,
     credits_to_usd,
+    get_credit_rate,
     models_without_credit_rate,
 )
 from polylogue.core.enums import Origin, Provider
@@ -1303,13 +1305,13 @@ def origin_usage_report_from_connection(
                 provider_cumulative_usage=provider_cumulative_usage,
                 provider_request_lanes=ProviderUsageLanes.from_counters(
                     provider_request_usage,
-                    reported=_int(events.get("provider_event_count")) > 0,
+                    reported=_int(events.get("request_counter_event_count")) > 0,
                     input_includes_cache=coverage.provider == Provider.CODEX.value,
                     output_includes_reasoning=coverage.provider == Provider.CODEX.value,
                 ),
                 provider_cumulative_lanes=ProviderUsageLanes.from_counters(
                     provider_cumulative_usage,
-                    reported=not provider_cumulative_usage.is_zero(),
+                    reported=_int(events.get("cumulative_counter_event_count")) > 0,
                     input_includes_cache=coverage.provider == Provider.CODEX.value,
                     output_includes_reasoning=coverage.provider == Provider.CODEX.value,
                 ),
@@ -2106,10 +2108,7 @@ def _pricing_lane_reports(
         stored_cost = float(row["stored_cost_usd"] or 0.0)
         bucket.stored_cost_usd += stored_cost
         catalog_cost = 0.0
-        if provenance == "priced" and stored_cost > 0 and not logical:
-            catalog_cost = stored_cost
-            bucket.matched_model_row_count += row_count
-        elif model_name:
+        if model_name:
             normalized = _normalize_model(model_name)
             if normalized in PRICING:
                 pricing = PRICING[normalized]
@@ -2128,6 +2127,8 @@ def _pricing_lane_reports(
                     bucket.unmatched_model_row_count += row_count
                     caveats_by_provenance[provenance].add("missing_cache_price")
                 else:
+                    if provenance == "priced" and stored_cost > 0 and not logical:
+                        catalog_cost = stored_cost
                     bucket.matched_model_row_count += row_count
             else:
                 bucket.unmatched_model_row_count += row_count
@@ -2207,6 +2208,13 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
     ]
     last_cols = _counter_columns(columns, prefix="last")
     total_cols = _counter_columns(columns, prefix="total")
+    # A lane is reported by an event that carries one of its counters, even
+    # an explicit zero; an event carrying only the other lane says nothing.
+    for lane, cols in (("request", last_cols), ("cumulative", total_cols)):
+        present = " OR ".join(f"{expr} IS NOT NULL" for expr in cols.values() if expr != "0")
+        select_parts.append(
+            f"COALESCE(SUM(CASE WHEN {present or '0'} THEN 1 ELSE 0 END), 0) AS {lane}_counter_event_count"
+        )
     counter_exprs = (*last_cols.values(), *total_cols.values())
     zero_predicate = " AND ".join(f"COALESCE({expr}, 0) = 0" for expr in counter_exprs)
     present_predicate = " OR ".join(f"{expr} IS NOT NULL" for expr in counter_exprs if expr != "0")
@@ -2234,6 +2242,8 @@ def _provider_event_stats(conn: sqlite3.Connection, origin: str | None) -> dict[
     for row in rows:
         result[str(row["origin"])] = {
             "provider_event_count": _int(row["provider_event_count"]),
+            "request_counter_event_count": _int(row["request_counter_event_count"]),
+            "cumulative_counter_event_count": _int(row["cumulative_counter_event_count"]),
             "provider_event_session_count": _int(row["provider_event_session_count"]),
             "token_count_event_count": _int(row["token_count_event_count"]),
             "message_usage_event_count": _int(row["message_usage_event_count"]),
@@ -2323,6 +2333,10 @@ def _provider_event_stats_streaming(conn: sqlite3.Connection, origin: str | None
                 "total_tokens",
             )
         )
+        if any(value is not None for value in raw_values[:6]):
+            counts["request_counter_event_count"] += 1
+        if any(value is not None for value in raw_values[6:]):
+            counts["cumulative_counter_event_count"] += 1
         if any(value is not None for value in raw_values) and not any((*last_values, *total_values)):
             counts["zero_token_event_count"] += 1
         last_totals = last_totals_by_origin[origin_name]
@@ -2333,6 +2347,8 @@ def _provider_event_stats_streaming(conn: sqlite3.Connection, origin: str | None
     for origin_name, counts in counts_by_origin.items():
         result[origin_name] = {
             "provider_event_count": counts["provider_event_count"],
+            "request_counter_event_count": counts["request_counter_event_count"],
+            "cumulative_counter_event_count": counts["cumulative_counter_event_count"],
             "provider_event_session_count": len(sessions_by_origin[origin_name]),
             "token_count_event_count": counts["token_count_event_count"],
             "message_usage_event_count": counts["message_usage_event_count"],
@@ -2956,7 +2972,7 @@ def session_usage_costs_for_connection(
     conn: sqlite3.Connection,
     session_ids: Sequence[str],
 ) -> dict[str, SessionUsageCost]:
-    """Build canonical session cost projections with one grouped query.
+    """Build canonical session costs in physically bounded ID batches.
 
     The query intentionally joins ``sessions`` for session-scoped provider
     money and groups model rows in SQL.  No profile columns participate, so a
@@ -2967,110 +2983,137 @@ def session_usage_costs_for_connection(
     ids = tuple(dict.fromkeys(str(value) for value in session_ids if str(value)))
     if not ids:
         return {}
-    placeholders = ", ".join("?" for _ in ids)
-    rows = conn.execute(
-        f"""
-        SELECT s.session_id, s.reported_cost_usd,
-               COUNT(CASE WHEN COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0) +
-                                COALESCE(u.cache_read_tokens, 0) + COALESCE(u.cache_write_tokens, 0) > 0
-                          THEN u.model_name END) AS model_count,
-               COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
-               COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
-               COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens,
-               COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
-               SUM(u.provider_cost_usd) AS provider_cost_usd,
-               SUM(u.catalog_cost_usd) AS catalog_cost_usd,
-               COUNT(CASE WHEN COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0) +
-                                COALESCE(u.cache_read_tokens, 0) + COALESCE(u.cache_write_tokens, 0) > 0
-                          THEN u.catalog_cost_usd END) AS priced_model_count,
-               SUM(u.cost_credits) AS stored_credits,
-               GROUP_CONCAT(DISTINCT u.model_name) AS model_names,
-               MAX(CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
-                        WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' END) AS cost_provenance
-        FROM sessions AS s
-        LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
-        WHERE s.session_id IN ({placeholders})
-        GROUP BY s.session_id, s.reported_cost_usd
-        """,
-        ids,
-    ).fetchall()
+    from polylogue.storage.archive_identity import archive_root_for_index_path
+
+    subscription_tier = None
+    for database in conn.execute("PRAGMA database_list"):
+        if str(database[1]) == "main" and database[2]:
+            subscription_tier = _resolve_subscription_tier_setting(archive_root_for_index_path(Path(str(database[2]))))
+            break
+    bind_limit = conn.getlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER)
+    if bind_limit < 1:
+        raise ValueError("SQLite connection cannot bind a session identifier")
     result: dict[str, SessionUsageCost] = {}
-    credit_rows = conn.execute(
-        f"SELECT session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens "
-        f"FROM session_model_usage WHERE session_id IN ({placeholders})",
-        ids,
-    ).fetchall()
-    credits_by_session: dict[str, float] = {}
-    for model_row in credit_rows:
-        session_id = str(model_row["session_id"])
-        credits_by_session[session_id] = credits_by_session.get(session_id, 0.0) + compute_credit_cost(
-            str(model_row["model_name"]),
-            int(model_row["input_tokens"] or 0),
-            int(model_row["output_tokens"] or 0),
-            int(model_row["cache_read_tokens"] or 0),
-            int(model_row["cache_write_tokens"] or 0),
-        )
-    for row in rows:
-        session_id = str(row["session_id"])
-        model_count = int(row["model_count"] or 0)
-        input_tokens = int(row["input_tokens"] or 0)
-        output_tokens = int(row["output_tokens"] or 0)
-        cache_read_tokens = int(row["cache_read_tokens"] or 0)
-        cache_write_tokens = int(row["cache_write_tokens"] or 0)
-        total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
-        if row["provider_cost_usd"] is not None:
-            provider_money = float(row["provider_cost_usd"])
-        elif row["reported_cost_usd"] is not None:
-            provider_money = float(row["reported_cost_usd"])
-        else:
-            provider_money = None
-        catalog_complete = model_count > 0 and int(row["priced_model_count"] or 0) == model_count
-        catalog_cost = (
-            None
-            if not catalog_complete or row["catalog_cost_usd"] is None
-            else round(float(row["catalog_cost_usd"]), 6)
-        )
-        model_names = tuple(sorted(str(row["model_names"]).split(","))) if row["model_names"] else ()
-        availability: Literal["known_zero", "no_tokens", "unpriced", "priced", "provider_money"]
-        exactness: Literal["exact", "estimated", "unknown"]
-        if provider_money is not None:
-            availability = "provider_money"
-            provenance = "origin_reported"
-            exactness = "exact"
-        elif model_count == 0:
-            availability = "no_tokens"
-            provenance = "unknown"
-            exactness = "unknown"
-        elif catalog_cost is None:
-            availability = "unpriced"
-            provenance = str(row["cost_provenance"] or "unknown")
-            exactness = "estimated"
-        elif total_tokens == 0 and catalog_cost == 0:
-            availability = "known_zero"
-            provenance = str(row["cost_provenance"] or "priced")
-            exactness = "exact"
-        else:
-            availability = "priced"
-            provenance = str(row["cost_provenance"] or "priced")
-            exactness = "estimated"
-        credits: float | None = None if row["stored_credits"] is None else float(row["stored_credits"])
-        if credits is None and model_count:
-            credits = credits_by_session.get(session_id)
-        result[session_id] = SessionUsageCost(
-            session_id=session_id,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cache_read_tokens=cache_read_tokens,
-            cache_write_tokens=cache_write_tokens,
-            provider_reported_usd=provider_money,
-            catalog_api_equivalent_usd=catalog_cost,
-            subscription_equivalent_usd=None if credits is None else float(credits),
-            availability=availability,
-            provenance=provenance,
-            exactness=exactness,
-            pricing_recipe=CATALOG_PROVENANCE if catalog_cost is not None else None,
-            model_names=model_names,
-        )
+    for offset in range(0, len(ids), bind_limit):
+        batch = ids[offset : offset + bind_limit]
+        placeholders = ", ".join("?" for _ in batch)
+        rows = conn.execute(
+            f"""
+            SELECT s.session_id, s.reported_cost_usd,
+                   COUNT(CASE WHEN COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0) +
+                                    COALESCE(u.cache_read_tokens, 0) + COALESCE(u.cache_write_tokens, 0) > 0
+                              THEN u.model_name END) AS model_count,
+                   COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
+                   COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
+                   COALESCE(SUM(u.cache_read_tokens), 0) AS cache_read_tokens,
+                   COALESCE(SUM(u.cache_write_tokens), 0) AS cache_write_tokens,
+                   SUM(u.provider_cost_usd) AS provider_cost_usd,
+                   SUM(u.catalog_cost_usd) AS catalog_cost_usd,
+                   COUNT(CASE WHEN COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0) +
+                                    COALESCE(u.cache_read_tokens, 0) + COALESCE(u.cache_write_tokens, 0) > 0
+                              THEN u.catalog_cost_usd END) AS priced_model_count,
+                   SUM(u.cost_credits) AS stored_credits,
+                   GROUP_CONCAT(DISTINCT u.model_name) AS model_names,
+                   MAX(CASE WHEN u.provider_cost_usd IS NOT NULL THEN 'origin_reported'
+                            WHEN u.catalog_cost_usd IS NOT NULL THEN 'priced' END) AS cost_provenance
+            FROM sessions AS s
+            LEFT JOIN session_model_usage AS u ON u.session_id = s.session_id
+            WHERE s.session_id IN ({placeholders})
+            GROUP BY s.session_id, s.reported_cost_usd
+            """,
+            batch,
+        ).fetchall()
+        credit_rows = conn.execute(
+            f"SELECT session_id, model_name, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens "
+            f"FROM session_model_usage WHERE session_id IN ({placeholders})",
+            batch,
+        ).fetchall()
+        # ``None`` marks a session holding a token-bearing row whose model has
+        # no declared credit rate: its credit total is unknown, not zero.
+        credits_by_session: dict[str, float | None] = {}
+        for model_row in credit_rows:
+            session_id = str(model_row["session_id"])
+            normalized_model = _normalize_model(str(model_row["model_name"] or ""))
+            lanes = (
+                int(model_row["input_tokens"] or 0),
+                int(model_row["output_tokens"] or 0),
+                int(model_row["cache_read_tokens"] or 0),
+                int(model_row["cache_write_tokens"] or 0),
+            )
+            running = credits_by_session.get(session_id, 0.0)
+            if running is None or not any(lanes):
+                credits_by_session.setdefault(session_id, running)
+                continue
+            if get_credit_rate(normalized_model) is None:
+                credits_by_session[session_id] = None
+                continue
+            credits_by_session[session_id] = running + compute_credit_cost(normalized_model, *lanes)
+        for row in rows:
+            session_id = str(row["session_id"])
+            model_count = int(row["model_count"] or 0)
+            input_tokens = int(row["input_tokens"] or 0)
+            output_tokens = int(row["output_tokens"] or 0)
+            cache_read_tokens = int(row["cache_read_tokens"] or 0)
+            cache_write_tokens = int(row["cache_write_tokens"] or 0)
+            total_tokens = input_tokens + output_tokens + cache_read_tokens + cache_write_tokens
+            if row["provider_cost_usd"] is not None:
+                provider_money = float(row["provider_cost_usd"])
+            elif row["reported_cost_usd"] is not None:
+                provider_money = float(row["reported_cost_usd"])
+            else:
+                provider_money = None
+            catalog_complete = model_count > 0 and int(row["priced_model_count"] or 0) == model_count
+            catalog_cost = (
+                None
+                if not catalog_complete or row["catalog_cost_usd"] is None
+                else round(float(row["catalog_cost_usd"]), 6)
+            )
+            model_names = tuple(sorted(str(row["model_names"]).split(","))) if row["model_names"] else ()
+            availability: Literal["known_zero", "no_tokens", "unpriced", "priced", "provider_money"]
+            exactness: Literal["exact", "estimated", "unknown"]
+            if provider_money is not None:
+                availability = "provider_money"
+                provenance = "origin_reported"
+                exactness = "exact"
+            elif model_count == 0:
+                availability = "no_tokens"
+                provenance = "unknown"
+                exactness = "unknown"
+            elif catalog_cost is None:
+                availability = "unpriced"
+                provenance = str(row["cost_provenance"] or "unknown")
+                exactness = "estimated"
+            elif total_tokens == 0 and catalog_cost == 0:
+                availability = "known_zero"
+                provenance = str(row["cost_provenance"] or "priced")
+                exactness = "exact"
+            else:
+                availability = "priced"
+                provenance = str(row["cost_provenance"] or "priced")
+                exactness = "estimated"
+            credits: float | None = None if row["stored_credits"] is None else float(row["stored_credits"])
+            if credits is None and model_count:
+                credits = credits_by_session.get(session_id)
+            result[session_id] = SessionUsageCost(
+                session_id=session_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_write_tokens=cache_write_tokens,
+                provider_reported_usd=provider_money,
+                catalog_api_equivalent_usd=catalog_cost,
+                # An unrecognized configured tier has no conversion; it is not $0.
+                subscription_equivalent_usd=(
+                    None
+                    if credits is None or (subscription_tier or "pro") not in SUBSCRIPTION_TIERS
+                    else credits_to_usd(credits, tier=subscription_tier or "pro")
+                ),
+                availability=availability,
+                provenance=provenance,
+                exactness=exactness,
+                pricing_recipe=CATALOG_PROVENANCE if catalog_cost is not None else None,
+                model_names=model_names,
+            )
     return result
 
 

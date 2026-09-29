@@ -776,3 +776,67 @@ def test_a_404_claiming_the_operation_protocol_is_validated_strictly(_short_uds_
     with _raw_unix_http_responder(socket_path, status=404, payload={"protocol": DAEMON_OPERATION_PROTOCOL}):
         with pytest.raises(DaemonOperationProtocolError):
             DaemonClient(socket_path, timeout_s=5).operation("status", {}, archive_root="/archive")
+
+
+def test_a_read_waits_on_the_socket_for_its_own_deadline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A default-timeout client reading a scan-shaped request waits out its deadline.
+
+    Anti-vacuity (Codex P2, #5695): pass the derived deadline to the transport
+    for writes only and the read socket keeps the client's 0.1-second default,
+    failing while a valid 120-second scan is still running.
+    """
+    import polylogue.daemon_client as daemon_client_module
+    from polylogue.daemon_client import DaemonClient
+
+    client = DaemonClient(tmp_path / "daemon.sock")
+    captured: list[object] = []
+
+    def request(*args: object, **kwargs: object) -> None:
+        captured.append(kwargs["timeout_s"])
+        return None
+
+    monkeypatch.setattr(daemon_client_module, "_request_deadline_s", lambda *_args: 120.0)
+    monkeypatch.setattr(client, "_request_json_response", request)
+
+    assert client.operation("read.chronicle", {}, archive_root=str(tmp_path)) is None
+    assert captured == [121.0]
+    assert client.timeout_s == 0.1
+
+
+def test_an_explicit_dispatch_deadline_reaches_the_request(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A caller's ``deadline_ms`` is the request's deadline, not the derived scan one.
+
+    Anti-vacuity (Codex P1, #5695): let ``_ask_daemon`` omit ``deadline_ms``
+    and a one-second scan-shaped read goes out with the 120-second deadline.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.cli import operation_kernel
+    from polylogue.daemon_client import DaemonClient
+
+    seen: list[object] = []
+
+    def operation(self: DaemonClient, name: str, payload: dict[str, object], **kwargs: object) -> None:
+        seen.append(kwargs.get("deadline_ms"))
+        return None
+
+    monkeypatch.setattr(DaemonClient, "operation", operation)
+    request = operation_kernel.OperationRequest("read.chronicle", {"params": {"sort": "messages", "limit": 1}})
+    with pytest.raises(operation_kernel.OperationUnavailableError):
+        operation_kernel.dispatch(SimpleNamespace(), request, archive_root=tmp_path, deadline_ms=1000)
+
+    assert seen == [1000]
+
+
+def test_invalid_chronicle_payloads_reach_execution_for_their_typed_refusal() -> None:
+    """The pre-dispatch classifiers never raise on a request execution will refuse.
+
+    Anti-vacuity (Codex P2, #5695): catch only ``ValueError`` and a bogus
+    sort's ``QuerySpecError`` escapes the classifier before execution.
+    """
+    from polylogue.operations.daemon_reads import operation_deadline_s, read_is_archive_scan, requires_vector_snapshot
+
+    payload = {"params": {"sort": "bogus"}}
+    assert read_is_archive_scan("read.chronicle", payload) is False
+    assert requires_vector_snapshot("read.chronicle", payload) is False
+    assert operation_deadline_s("read.chronicle", payload) > 0

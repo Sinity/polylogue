@@ -128,15 +128,23 @@ def test_build_folder_lookup_query_contract(folder_ref: str, expected: str) -> N
 @pytest.mark.parametrize(
     ("name", "mime_type", "expected"),
     [
-        ("chat.json", "application/json", True),
-        ("chat.jsonl", "text/plain", True),
-        ("chat.jsonl.txt", "application/octet-stream", True),
-        ("chat.ndjson", "application/octet-stream", True),
+        # A transcript the operator uploaded to an AI Studio chat is an
+        # attachment, whatever its name or JSON shape.
+        ("chat.json", "application/json", False),
+        ("claude-session.jsonl", "text/plain", False),
+        ("claude-session.jsonl.txt", "text/plain", False),
+        ("chat.ndjson", "application/octet-stream", False),
         ("prompt.bin", GEMINI_PROMPT_MIME_TYPE, True),
+        ("Untitled prompt", GEMINI_PROMPT_MIME_TYPE, True),
         ("notes.md", "text/markdown", False),
     ],
 )
 def test_supported_drive_payload_contract(name: str, mime_type: str, expected: bool) -> None:
+    """Only the AI Studio prompt MIME type is a session.
+
+    Anti-vacuity: admitting by ``.json``/``.jsonl`` suffix again makes the
+    uploaded-transcript rows True.
+    """
     assert _is_supported_drive_payload(name, mime_type) is expected
 
 
@@ -217,9 +225,7 @@ def test_iter_json_files_filters_supported_entries(
         service._files_resource.files[file_id] = mock_drive_file(
             file_id=file_id, name=name, mime_type=mime_type, parents=parents
         )
-        if in_folder and (
-            name.lower().endswith((".json", ".jsonl", ".jsonl.txt", ".ndjson")) or mime_type == GEMINI_PROMPT_MIME_TYPE
-        ):
+        if in_folder and mime_type == GEMINI_PROMPT_MIME_TYPE:
             expected_ids.append(file_id)
 
     files = list(client.iter_json_files(folder_id))
@@ -429,8 +435,8 @@ def test_get_metadata_and_iteration_cache_contract(monkeypatch: pytest.MonkeyPat
                     "files": [
                         {
                             "id": "f1",
-                            "name": "one.json",
-                            "mimeType": "application/json",
+                            "name": "one",
+                            "mimeType": GEMINI_PROMPT_MIME_TYPE,
                             "modifiedTime": None,
                             "size": "1",
                         },
@@ -449,8 +455,8 @@ def test_get_metadata_and_iteration_cache_contract(monkeypatch: pytest.MonkeyPat
                     "files": [
                         {
                             "id": "f2",
-                            "name": "two.ndjson",
-                            "mimeType": "application/octet-stream",
+                            "name": "two",
+                            "mimeType": GEMINI_PROMPT_MIME_TYPE,
                             "modifiedTime": None,
                             "size": "2",
                         },

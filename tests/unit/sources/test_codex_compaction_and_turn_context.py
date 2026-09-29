@@ -7,8 +7,7 @@ writes rather than as a guess at internal state:
 
 * the COMPACTED branch is entered by a ``{"type": "compacted", "payload":
   {"replacement_history": [...]}}`` record whose re-embedded content text is
-  longer than ``_CODEX_REPLACEMENT_CONTEXT_MAX_CHARS`` (256 KiB), which is
-  what routes it into the digest-only channel;
+  large (over 256 KiB) and retained nowhere else in the session;
 * the TURN_CONTEXT branch is entered by ``{"type": "turn_context", "payload":
   {"user_instructions": ...}}`` records that restate a *different* prompt,
   which is what makes the parser consult its revision register at all.
@@ -17,6 +16,7 @@ writes rather than as a guess at internal state:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -60,47 +60,46 @@ def _compacted(text: str) -> dict[str, object]:
     }
 
 
-def test_the_compacted_branch_is_reachable_and_digests_oversized_history() -> None:
+def test_the_compacted_branch_stores_large_replacement_history_whole() -> None:
     """polylogue-xdr8w criterion 1, compacted half.
 
-    Anti-vacuity: shorten the content text below
-    ``_CODEX_REPLACEMENT_CONTEXT_MAX_CHARS`` and no
-    ``codex_replacement_context_omitted`` event is produced at all -- the
-    branch under test is not entered, which is exactly the state that left
-    this bead open.
+    Anti-vacuity: reinstate a per-value size ceiling and the large text is
+    missing from the replacement-context events.
     """
 
     session = parse(_rollout(_compacted(_OVERSIZED)), "xdr8w")
 
-    omitted = [event for event in session.session_events if event.event_type == "codex_replacement_context_omitted"]
-    assert len(omitted) == 1
-    assert omitted[0].payload["content_chars"] == len(_OVERSIZED)
-    assert omitted[0].payload["content_sha256"]
+    contexts = [event for event in session.session_events if event.event_type == "codex_replacement_context"]
+    assert [event.payload["content"] for event in contexts] == [_OVERSIZED]
+    assert contexts[0].payload["content_chars"] == len(_OVERSIZED)
 
 
-def test_a_lone_surrogate_in_replacement_history_does_not_break_the_parse() -> None:
-    """polylogue-xdr8w criterion 2.
+def test_a_lone_surrogate_in_replacement_history_survives_the_sqlite_sinks(tmp_path: Path) -> None:
+    """polylogue-xdr8w criterion 2, through the prepared production sinks.
 
-    ``json.loads`` admits a lone surrogate as a ``str``; the digest then
-    encoded it as strict UTF-8.  The text is built by decoding real JSON bytes
-    carrying a ``\\ud800`` escape, so this is a rollout the provider could
-    write, not a hand-assembled Python string.
+    ``json.loads`` admits a lone surrogate as a ``str``. The text is built by
+    decoding real JSON bytes carrying a ``\\ud800`` escape, so this is a
+    rollout the provider could write, not a hand-assembled Python string.
 
-    Anti-vacuity: drop ``errors="surrogatepass"`` from the digest encodes in
-    ``sources/parsers/codex.py`` and this raises ``UnicodeEncodeError``
-    ("surrogates not allowed") instead of parsing -- verified by reverting.
+    Anti-vacuity: store the event JSON without escaping lone surrogates and
+    the SQLite event sink raises ``UnicodeEncodeError`` on insert.
     """
+    from polylogue.sources.parsers.codex import parse_stream
+    from polylogue.sources.prepared_message_sink import SqliteMessageStore
 
     encoded = json.dumps(_compacted(_OVERSIZED + "\\ud800")).replace("\\\\ud800", "\\ud800")
     record = json.loads(encoded)
     text = record["payload"]["replacement_history"][0]["content"][0]["text"]
     assert text.endswith("\ud800")
 
-    session = parse(_rollout(record), "xdr8w")
-
-    omitted = [event for event in session.session_events if event.event_type == "codex_replacement_context_omitted"]
-    assert len(omitted) == 1
-    assert omitted[0].payload["content_chars"] == len(text)
+    store = SqliteMessageStore(tmp_path / "surrogate-sinks.db")
+    try:
+        events = store.new_event_sink()
+        parse_stream(iter(_rollout(record)), "xdr8w", message_sink=store.new_sink(), event_sink=events)
+        contexts = [event for event in events if event.event_type == "codex_replacement_context"]
+        assert [event.payload["content"] for event in contexts] == [text]
+    finally:
+        store.close()
 
 
 def test_the_turn_context_branch_is_reachable_and_numbers_revisions() -> None:
@@ -206,3 +205,23 @@ def test_the_register_answers_identically_whatever_its_size(revisions: int) -> N
 
     assert len(register) == revisions
     assert register.values() == tuple(f"revision {index}" for index in range(revisions))
+
+
+def test_a_lone_surrogate_survives_the_archive_write(tmp_path: Path) -> None:
+    """The stored event payload equals the parsed value the content hash covers.
+
+    Anti-vacuity: replace the surrogate with U+FFFD in the writer's JSON and
+    the stored content differs from the parsed content.
+    """
+    from polylogue.pipeline.ids import session_content_hash
+    from polylogue.storage.sqlite.archive_tiers.write import _json_dumps
+
+    encoded = json.dumps(_compacted("tail \\ud800")).replace("\\\\ud800", "\\ud800")
+    session = parse(_rollout(json.loads(encoded)), "xdr8w")
+    context = next(event for event in session.session_events if event.event_type == "codex_replacement_context")
+
+    stored = json.loads(_json_dumps(context.payload))
+
+    assert stored == context.payload
+    assert stored["content"].endswith("\ud800")
+    assert session_content_hash(session)

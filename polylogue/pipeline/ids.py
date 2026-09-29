@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, TypeAlias, TypeVar, cast, overload
 from polylogue.core.digest import QUERY
 from polylogue.core.enums import BlockType, Origin, Provider
 from polylogue.core.hashing import hash_bytes, hash_item_payload, hash_payload
-from polylogue.core.json import JSONValue, dumps
+from polylogue.core.json import JSONValue
 from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
 from polylogue.core.sources import origin_from_provider
 from polylogue.core.sqlite_scratch import connect_scratch_database
@@ -489,7 +489,11 @@ def _canonical_sort_key(value: object) -> str:
     over everything the vocabulary below admits, and is the same idiom the
     publication encoder already uses (``sinex/material_adapter.py``).
     """
-    return dumps(value, sort_keys=True)
+    # The query digest's stdlib encoder preserves the non-finite float tokens,
+    # while the core JSON document encoder intentionally lowers them to null.
+    # Use the digest representation here so NaN and infinities cannot tie in
+    # a set's sort key and leak the set's iteration order into the hash.
+    return hash_payload(value)
 
 
 def _normalize_nested_for_hash(value: object, *, path: str = "payload") -> object:
@@ -1648,9 +1652,7 @@ def _session_tree_hash(
     attachments_payload: list[dict[str, JSONValue]],
     session_events_payload: list[dict[str, JSONValue]],
 ) -> str:
-    session_fields = _model_hash_payload(
-        convo, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}
-    )
+    session_fields = _session_semantic_fields(convo)
     return hash_payload(
         _session_hash_payload(
             title=convo.title,
@@ -1662,6 +1664,15 @@ def _session_tree_hash(
         )
         | {"semantic_session_fields": session_fields}
     )
+
+
+def _session_semantic_fields(convo: ParsedSession) -> dict[str, JSONValue]:
+    fields = _model_hash_payload(convo, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"})
+    # Provider aliases can map to the same public source identity. Hash that
+    # canonical identity so replay through an alternate supported route does
+    # not create a content revision for identical session content.
+    fields["source_name"] = _normalize_for_hash(origin_from_provider(convo.source_name).value)
+    return fields
 
 
 def _stream_session_tree_hash(convo: ParsedSession) -> str:
@@ -1742,7 +1753,7 @@ def _stream_session_tree_hash(convo: ParsedSession) -> str:
             literal(",")
         write(_message_hash_payload(message, _message_revision_match_id(message)))
     literal('],"semantic_session_fields":')
-    write(_model_hash_payload(convo, _HASHED_FIELDS["ParsedSession"] - {"messages", "attachments", "session_events"}))
+    write(_session_semantic_fields(convo))
     literal(',"session_events":[')
     for event_index, event in enumerate(convo.session_events):
         if event_index:

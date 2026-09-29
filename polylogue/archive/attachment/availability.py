@@ -15,7 +15,7 @@ from enum import StrEnum
 class AttachmentAvailabilityState(StrEnum):
     AVAILABLE = "available"
     UNFETCHED = "unfetched"
-    # The provider was consulted and gave a terminal absence/access answer.
+    # Retained source evidence proves the bytes cannot be reacquired.
     # This is distinct from ``UNFETCHED`` (no attempt yet) and ``UNKNOWN``
     # (the archive cannot establish why bytes are absent).
     UNAVAILABLE = "unavailable"
@@ -73,7 +73,7 @@ def resolve_attachment_availability(
         if acquisition_status == "unavailable":
             return AttachmentAvailability(
                 AttachmentAvailabilityState.UNAVAILABLE,
-                "provider-bytes-unavailable",
+                "source-bytes-unavailable",
                 False,
                 generation_id,
             )
@@ -87,7 +87,9 @@ def resolve_attachment_availability(
     try:
         readable = bool(verify(hash_hex))
     except (OSError, ValueError):
-        readable = False
+        return AttachmentAvailability(
+            AttachmentAvailabilityState.UNKNOWN, "blob-verification-failed", False, generation_id
+        )
     if readable:
         return AttachmentAvailability(
             AttachmentAvailabilityState.AVAILABLE,
@@ -101,7 +103,9 @@ def resolve_attachment_availability(
         try:
             physical = bool(exists(hash_hex))
         except (OSError, ValueError):
-            physical = False
+            return AttachmentAvailability(
+                AttachmentAvailabilityState.UNKNOWN, "blob-existence-check-failed", False, generation_id
+            )
     else:
         physical = False
     if physical:

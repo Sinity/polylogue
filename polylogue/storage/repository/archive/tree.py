@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 
 from polylogue.analysis.topology import SessionTopology
 from polylogue.archive.session.domain_models import Session
-from polylogue.storage.derived.topology.derivation import derive_session_topology_async
 from polylogue.storage.runtime import SessionRecord
 
 if TYPE_CHECKING:
@@ -35,7 +34,7 @@ class RepositoryArchiveTreeMixin:
         ) -> list[Session]: ...
 
     async def _topology(self, session_id: str) -> SessionTopology | None:
-        return await derive_session_topology_async(self.queries, session_id)
+        return await self.queries.get_session_topology(session_id)
 
     async def get_session_tree(self, session_id: str) -> list[Session]:
         topology = await self._topology(session_id)
