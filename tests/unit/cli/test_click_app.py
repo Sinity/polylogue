@@ -185,7 +185,7 @@ class TestHandleQueryMode:
 
 def test_read_verb_messages_view_forwards_options(cli_runner: CliRunner) -> None:
     """read --view messages routes pagination and projection flags to run_messages."""
-    with patch("polylogue.cli.messages.run_messages") as mock_run_messages:
+    with patch("polylogue.cli.messages.run_messages", return_value=None) as mock_run_messages:
         result = cli_runner.invoke(
             click_cli,
             [
@@ -214,7 +214,7 @@ def test_read_verb_messages_view_forwards_options(cli_runner: CliRunner) -> None
 
 def test_read_verb_messages_view_forwards_full(cli_runner: CliRunner) -> None:
     """read --view messages --full requests the full single-session body."""
-    with patch("polylogue.cli.messages.run_messages") as mock_run_messages:
+    with patch("polylogue.cli.messages.run_messages", return_value=None) as mock_run_messages:
         result = cli_runner.invoke(
             click_cli,
             [

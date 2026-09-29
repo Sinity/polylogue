@@ -665,7 +665,7 @@ def archive_messages_payload(
         lineage_truncation_reason=session.lineage_truncation_reason,
         authority=authority,
         outcome=lineage_page_outcome(
-            matched=total,
+            matched=len(page),
             complete=session.lineage_complete,
             truncation_reason=session.lineage_truncation_reason,
         ),

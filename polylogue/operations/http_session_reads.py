@@ -320,7 +320,7 @@ def execute_http_session_messages(
         "lineage_complete": latest_envelope.lineage_complete,
         "lineage_truncation_reason": latest_envelope.lineage_truncation_reason,
         "outcome": lineage_page_outcome(
-            matched=window.total,
+            matched=len(window.rows),
             complete=latest_envelope.lineage_complete,
             truncation_reason=latest_envelope.lineage_truncation_reason,
         ).to_dict(),

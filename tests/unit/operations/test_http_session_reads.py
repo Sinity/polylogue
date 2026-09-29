@@ -243,3 +243,43 @@ def test_session_messages_authority_elapsed_covers_the_window_read() -> None:
 
     assert result is not None
     assert cast(dict[str, object], result["authority"])["elapsed_ms"] == 1000
+
+
+def test_session_messages_page_past_the_end_is_empty() -> None:
+    """A five-message session read at offset 10 answers an ``empty`` page.
+
+    Anti-vacuity: deciding the outcome from ``window.total`` (5) labels this
+    zero-row page ``ok``.
+    """
+    archive = MagicMock()
+    archive.resolve_session_id.return_value = "codex-session:child"
+    archive.read_session_page.return_value = SimpleNamespace(
+        session_id="codex-session:child",
+        origin="codex-session",
+        messages=(),
+        total_message_count=5,
+        lineage_complete=True,
+        lineage_truncation_reason=None,
+    )
+    placement = MagicMock()
+    placement.session_entries = ()
+
+    def _window(_archive: object, _request: object, *, read: Any, **_kwargs: object) -> SimpleNamespace:
+        rows, total, _completeness = read(5, 10)
+        return SimpleNamespace(rows=rows, total=total, limit=5, offset=10, next_offset=None, continuation=None)
+
+    with (
+        patch("polylogue.operations.http_session_reads.read_transcript_window_sync", side_effect=_window),
+        patch("polylogue.operations.http_session_reads._semantic_placement", return_value=placement),
+        patch("polylogue.operations.http_session_reads.authority_for_reader", return_value=object()),
+        patch("polylogue.operations.http_session_reads.serialize_authority", return_value={"mode": "daemon"}),
+    ):
+        result = execute_http_session_messages(
+            {"session_id": "child", "limit": 5, "offset": 10},
+            archive=archive,
+            adapters=_adapters(),
+        )
+
+    assert result is not None
+    assert result["total"] == 5
+    assert cast(dict[str, object], result["outcome"])["state"] == "empty"

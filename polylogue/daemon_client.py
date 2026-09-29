@@ -554,7 +554,10 @@ class DaemonClient:
                         DaemonMutationIndeterminateError, DaemonOperationProtocolError, DaemonOperationRejectedError
                     ):
                         self.cancel(target, archive_root=archive_root)
-                raise
+                # The unresolved call is the accepted mutation, not this
+                # control exchange: only ``target`` has a durable receipt the
+                # operator can recover, so it is the id the failure carries.
+                raise DaemonMutationIndeterminateError(method="POST", path="/api/operation", request_id=target) from exc
             except KeyboardInterrupt:
                 with suppress(
                     DaemonMutationIndeterminateError, DaemonOperationProtocolError, DaemonOperationRejectedError

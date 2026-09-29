@@ -23,7 +23,7 @@ from polylogue.rendering.semantic_cards import (
     lineage_descriptor_from_session,
 )
 from polylogue.rendering.semantic_markdown import render_semantic_transcript_markdown
-from polylogue.surfaces.outcome import lineage_page_outcome
+from polylogue.surfaces.outcome import OutcomeEnvelope, lineage_page_outcome, render_outcome_line
 from polylogue.surfaces.payloads import SessionMessagesResponsePayload, model_json_document
 
 #: One ``session.read`` messages window.  A whole transcript can exceed the
@@ -198,13 +198,18 @@ def run_messages(
     output_format: str | None = None,
     continuation: str | None = None,
     around: str | None = None,
-) -> None:
+) -> OutcomeEnvelope | None:
     """Execute the messages verb over the declared ``session.read`` window.
 
     The verb lowers and renders; which executor answers is the operation
     kernel's decision, so a reachable daemon serves this page exactly as it
     serves every sibling read and the route never branches on whether one is
     running.
+
+    Returns the page's terminal outcome, decided before format dispatch so
+    every format answers the same page the same way, or ``None`` when the
+    read was refused and already reported. The caller passes it to
+    :func:`finish_message_read` once any output destination is written.
     """
 
     started_at = monotonic()
@@ -235,9 +240,9 @@ def run_messages(
             windows.append(window)
     except OperationKernelError as exc:
         message_read_failure(env, exc, session_id=session_id)
-        return
+        return None
     if not windows:
-        return
+        return None
 
     last = windows[-1]
     messages: list[Mapping[str, object]] = [row for window in windows for row in window.rows]
@@ -246,6 +251,9 @@ def run_messages(
     # delivers the window it asked for.  Reporting the request's own bound for
     # a composed read would name a window nobody asked for.
     effective_limit = len(messages) if full else limit
+    outcome = message_page_outcome(
+        matched=len(messages), complete=last.lineage_complete, truncation_reason=last.lineage_truncation_reason
+    )
     if bool(request.params.get("verbose")):
         click.echo(f"served-by: {last.served_by.line()}", err=True)
 
@@ -268,11 +276,7 @@ def run_messages(
                 authority=authority_for_config(
                     config, server_identity=_authority_identity(last.served_by), started_at=started_at
                 ),
-                outcome=lineage_page_outcome(
-                    matched=last.total,
-                    complete=last.lineage_complete,
-                    truncation_reason=last.lineage_truncation_reason,
-                ),
+                outcome=outcome,
             ),
             exclude_none=True,
         )
@@ -281,7 +285,7 @@ def run_messages(
         # interpret/strip bracket sequences like "[bold]" inside message
         # text, corrupting the exact bytes json.dumps produced (#1818).
         click.echo(_json.dumps(payload, indent=2))
-        return
+        return outcome
     if fmt == "ndjson":
         import json as _json
 
@@ -292,7 +296,7 @@ def run_messages(
         # message text inside the JSON document.
         for row in messages:
             click.echo(_json.dumps({"session_id": session_id, **dict(row)}))
-        return
+        return outcome
 
     rendered = render_semantic_transcript_markdown(
         build_semantic_transcript(
@@ -307,6 +311,37 @@ def run_messages(
         # the existing destination adapter. Rich output would bypass that
         # contract and reinterpret markup.
         click.echo(rendered, nl=False)
+    return outcome
+
+
+def message_page_outcome(*, matched: int, complete: bool, truncation_reason: str | None) -> OutcomeEnvelope:
+    """Decide a delivered message page's outcome from the rows it delivered.
+
+    ``matched`` is the page's own row count, never the session's message
+    total: a valid session read past its last message delivers nothing, and
+    that page is ``empty`` rather than ``ok``.
+    """
+
+    return lineage_page_outcome(matched=matched, complete=complete, truncation_reason=truncation_reason)
+
+
+def finish_message_read(outcome: OutcomeEnvelope | None, *, output_format: str | None) -> None:
+    """Report a non-``ok`` page outcome and exit on it.
+
+    JSON already carries the outcome in its document; every other format
+    names it on stderr, so stdout keeps only rows. The exit status comes from
+    :func:`polylogue.cli.render.outcome.exit_for`, the one CLI read authority.
+    """
+
+    from polylogue.cli.render.outcome import exit_for
+
+    if outcome is None or outcome.state == "ok":
+        return
+    if (output_format or "markdown") != "json":
+        line = render_outcome_line(outcome)
+        if line is not None:
+            click.echo(line, err=True)
+    exit_for(outcome)
 
 
 def _authority_identity(served_by: ServedBy) -> Literal["daemon", "direct"]:
@@ -339,6 +374,8 @@ def _message_lineage(
 
 
 __all__ = [
+    "finish_message_read",
+    "message_page_outcome",
     "message_read_failure",
     "read_message_windows",
     "run_messages",

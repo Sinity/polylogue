@@ -1437,6 +1437,11 @@ def _emit_user_mutations(
     config = load_effective_config(env)
 
     def _apply(operation: str, payload: dict[str, object]) -> int:
+        if not session_ids:
+            # A selection that matched nothing is a zero-target no-op. The
+            # declared requests require at least one session id, so sending
+            # the empty list would turn "nothing to do" into a refusal.
+            return 0
         try:
             result = _submit_mutation_operation(config, operation, payload)
         except OperationKernelError as exc:
