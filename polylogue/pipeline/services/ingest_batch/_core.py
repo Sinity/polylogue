@@ -2269,12 +2269,12 @@ def _iter_ingest_results_chunk(
     """Process one chunk of raw_artifacts, in-process or through the process pool.
 
     The execution mode is chosen once, before anything is delivered, and never
-    changes afterwards. A pool that cannot accept a raw yields a typed
-    retryable result for that raw instead of replaying the chunk inline: an
-    inline replay would deliver already-delivered raws a second time and run
-    work that asked for process isolation inside the coordinator. A pool that
-    broke (a worker died) is replaced for raws it never accepted, which keeps
-    the same isolation for them.
+    changes afterwards. A pool that cannot accept a raw yields a typed result
+    for that raw instead of replaying the chunk inline: an inline replay would
+    deliver already-delivered raws a second time and run work that asked for
+    process isolation inside the coordinator. A pool that broke (a worker
+    died) is replaced for raws it never accepted, which keeps the same
+    isolation for them. Every raw of the chunk yields exactly one result.
     """
     if worker_count <= 1 and not force_process_pool:
         for raw_record in raw_artifacts:
