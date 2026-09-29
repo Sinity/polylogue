@@ -1118,8 +1118,8 @@ class TestDaemonEventRetention:
         with pytest.raises(ValueError, match="max_age_ms"):
             DaemonEventRetention(max_age_ms=-1)
 
-    def test_age_bound_prunes_expired_suffix_after_a_future_dated_first_row(self, empty_events_db: Path) -> None:
-        """Anti-vacuity: an early retained timestamp must not pin expired later IDs."""
+    def test_age_bound_keeps_an_in_window_first_row_and_its_suffix(self, empty_events_db: Path) -> None:
+        """Anti-vacuity: deleting through the highest expired ID also deletes the in-window row 1."""
         from polylogue.daemon.events import DaemonEventRetention, _ensure_events_db, prune_daemon_events
 
         initialized = _ensure_events_db(empty_events_db)
@@ -1129,8 +1129,11 @@ class TestDaemonEventRetention:
                 "INSERT INTO daemon_events(ts_ms, kind, payload_json) VALUES (?, 'test', '{}')",
                 [(20_000,), (1_000,), (2_000,), (3_000,)],
             )
-            assert prune_daemon_events(conn, DaemonEventRetention(max_age_ms=5_000), now_ms=10_000) == 4
-            assert conn.execute("SELECT id FROM daemon_events").fetchall() == []
+            assert prune_daemon_events(conn, DaemonEventRetention(max_age_ms=5_000), now_ms=10_000) == 0
+            assert [row[0] for row in conn.execute("SELECT id FROM daemon_events ORDER BY id")] == [1, 2, 3, 4]
+            conn.execute("INSERT INTO daemon_events(ts_ms, kind, payload_json) VALUES (1_000, 'test', '{}')")
+            conn.execute("UPDATE daemon_events SET ts_ms = 1_000 WHERE id = 1")
+            assert prune_daemon_events(conn, DaemonEventRetention(max_age_ms=5_000), now_ms=10_000) == 5
 
 
 class TestAgedOutCursorResync:
@@ -1213,6 +1216,15 @@ class TestAgedOutCursorResync:
         _path, params = handler._parse_path()
         assert params["around"] == [""]
         assert handler._get_param(params, "around") is None
+
+    def test_messages_route_refuses_a_blank_anchor_with_an_offset(self) -> None:
+        """Anti-vacuity: reading ``around`` through ``_get_param`` turns ``around=`` into None and serves the offset."""
+        from polylogue.daemon.route_families.read_detail import _handle_get_messages
+
+        handler = _make_handler("GET", "/api/sessions/x/messages?around=&offset=500")
+        _path, params = handler._parse_path()
+        _handle_get_messages(handler, "x", params)
+        assert b"400" in cast(BytesIO, handler.wfile).getvalue()
 
     def test_an_aged_out_page_cannot_also_deliver_rows(self) -> None:
         from polylogue.daemon.events import DaemonEventPage, EventCursorStatus

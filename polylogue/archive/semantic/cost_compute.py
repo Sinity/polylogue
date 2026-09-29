@@ -261,17 +261,19 @@ def compute_session_cost(
         total_api = float(estimate.total_usd or 0.0)
         catalog_total = sum(item.api_cost_usd for item in breakdowns)
         if breakdowns and catalog_total > 0:
-            remaining = round(total_api, 6)
-            reconciled: list[SessionCostBreakdown] = []
-            for index, item in enumerate(breakdowns):
-                amount = (
-                    remaining
-                    if index == len(breakdowns) - 1
-                    else round(total_api * item.api_cost_usd / catalog_total, 6)
-                )
-                remaining = round(remaining - amount, 6)
-                reconciled.append(item.model_copy(update={"api_cost_usd": amount}))
-            breakdowns = reconciled
+            # Largest-remainder allocation in whole micro-dollars: every share
+            # is non-negative and the shares sum exactly to the provider total.
+            total_micros = round(total_api * 1_000_000)
+            exact = [total_micros * item.api_cost_usd / catalog_total for item in breakdowns]
+            micros = [int(share) for share in exact]
+            leftover = total_micros - sum(micros)
+            by_remainder = sorted(range(len(exact)), key=lambda i: exact[i] - micros[i], reverse=True)
+            for index in by_remainder[:leftover]:
+                micros[index] += 1
+            breakdowns = [
+                item.model_copy(update={"api_cost_usd": amount / 1_000_000})
+                for item, amount in zip(breakdowns, micros, strict=True)
+            ]
         elif len(breakdowns) == 1:
             # One model: the session total is that model's exact cost.
             breakdowns = [breakdowns[0].model_copy(update={"api_cost_usd": round(total_api, 6)})]

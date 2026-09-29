@@ -135,6 +135,25 @@ def test_exact_session_total_is_not_attributed_to_an_arbitrary_unpriced_model() 
     assert {item.confidence for item in summary.per_model} == {"unknown"}
 
 
+def test_exact_total_reconciliation_never_yields_a_negative_share() -> None:
+    """Anti-vacuity: rounding each share independently gives the first three models
+    $0.000001 each of a $0.000002 total and the last model -$0.000001."""
+    session = make_conv(id="exact-provider-tiny-total", provider="chatgpt", messages=[])
+    tokens = {"gpt-4o": 255, "gpt-4o-2024-05-13": 128, "gpt-4o-2024-08-06": 255, "gpt-4o-2024-11-20": 200}
+    summary = compute_session_cost(
+        session,
+        session_estimate=CostEstimatePayload(
+            origin="chatgpt", status="exact", total_usd=0.000002, usage=CostUsagePayload()
+        ),
+        model_usage=[ModelUsageTotals(model_name=name, input_tokens=n, output_tokens=0) for name, n in tokens.items()],
+    )
+
+    shares = [item.api_cost_usd for item in summary.per_model]
+    assert len(shares) == 4
+    assert min(shares) >= 0.0
+    assert round(sum(shares) * 1_000_000) == 2
+
+
 def test_compute_session_cost_falls_back_to_word_count_estimate_for_zero_token_usage() -> None:
     """polylogue-9kjtc AC2: when session_model_usage carries only zero-token
     rows (the chatgpt-export/claude-ai-export shape) but the session's

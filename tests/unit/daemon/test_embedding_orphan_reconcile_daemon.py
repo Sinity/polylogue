@@ -193,3 +193,16 @@ def test_daemon_coordinator_owns_real_orphan_reconcile_mutation(tmp_path: Path) 
             conn.execute("SELECT needs_reindex FROM embedding_status WHERE session_id = ?", (session_id,)).fetchone()[0]
             == 1
         )
+
+
+def test_scanned_message_ids_include_orphan_keys() -> None:
+    """Anti-vacuity: filtering on the ``message:`` prefix drops the orphan cleanup's session from scanned accounting."""
+    from polylogue.daemon.derivation import DerivationKey, KeyOutcome, Outcome
+    from polylogue.daemon.embedding_owner import _message_ids
+
+    outcomes = [
+        KeyOutcome(key=DerivationKey(domain="embeddings", key="message:m-1"), outcome=Outcome.DONE),
+        KeyOutcome(key=DerivationKey(domain="embeddings", key="orphan:m-2"), outcome=Outcome.DONE),
+        KeyOutcome(key=DerivationKey(domain="other", key="message:m-3"), outcome=Outcome.DONE),
+    ]
+    assert _message_ids(outcomes, "embeddings") == ("m-1", "m-2")

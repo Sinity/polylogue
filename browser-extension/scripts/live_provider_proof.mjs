@@ -338,11 +338,14 @@ async function runLiveProviderProof() {
   } finally {
     if (workerClient && previousReceiverConfiguration) await restoreReceiverConfiguration(workerClient, previousReceiverConfiguration).catch(() => undefined);
     pendingReceiverRestore = null;
-    if (activeBrowserClient) await closeProofTargets(activeBrowserClient, createdTargetIds);
-    if (workerClient) workerClient.close();
-    if (activeBrowserClient) activeBrowserClient.close();
-    activeBrowserClient = null;
-    createdTargetIds = [];
+    try {
+      if (activeBrowserClient) await closeProofTargets(activeBrowserClient, createdTargetIds);
+    } finally {
+      if (workerClient) workerClient.close();
+      if (activeBrowserClient) activeBrowserClient.close();
+      activeBrowserClient = null;
+      createdTargetIds = [];
+    }
   }
 }
 

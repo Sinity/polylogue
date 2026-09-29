@@ -329,11 +329,15 @@ class _EmbeddingBackfillExecution:
 
 
 def _message_ids(outcomes: Iterable[KeyOutcome], domain: str) -> tuple[str, ...]:
-    """Message ids of the embedding keys a pass reached."""
+    """Message ids of the embedding keys a pass reached, required and orphan alike.
+
+    An orphan key retires a ref whose message left the membership; when that
+    message is still indexed its session counts as scanned like any other.
+    """
     return tuple(
-        item.key.key.removeprefix("message:")
+        key.split(":", 1)[1]
         for item in outcomes
-        if item.key.domain == domain and item.key.key.startswith("message:")
+        if item.key.domain == domain and (key := item.key.key).startswith(("message:", "orphan:"))
     )
 
 
