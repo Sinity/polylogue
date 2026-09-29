@@ -147,6 +147,40 @@ def test_atif_trajectory_streams_step_events_before_eof_with_parser_parity(
     _assert_same_publication(actual, expected, artifact.shard_path, tmp_path)
 
 
+def test_streamed_atif_trajectory_carries_the_dispatch_admission_proof(tmp_path: Path) -> None:
+    """A step of a future kind beyond the classifier's witness is still a typed unknown.
+
+    Fails if the streamed carrier reaches the writer with no conservation
+    proof, or proves only the sampled prefix of the steps.
+    """
+    document = _trajectory(200, subagents=False)
+    steps = document["steps"]
+    assert isinstance(steps, list)
+    steps[150] = {**steps[150], "kind": "future_step_kind"}
+    source = _source(tmp_path, document)
+    expected = _expected(document, source)
+    assert expected[0].unit_accounting is not None
+    assert expected[0].unit_accounting.outcomes
+
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.HERMES.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    actual = list(artifact.iter_sessions())
+    assert [session.unit_accounting for session in actual] == [session.unit_accounting for session in expected]
+    assert [
+        event.payload
+        for session in actual
+        for event in session.session_events
+        if event.event_type == "hermes_unknown_input"
+    ] == [{"source_index": 1, "wire_type": "future_step_kind"}]
+
+
 @pytest.mark.parametrize(
     "extra",
     [
