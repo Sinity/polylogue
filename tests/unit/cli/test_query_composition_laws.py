@@ -167,7 +167,12 @@ def _daemon_delete_route(archive_root: Path) -> Any:
     def _route(_config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
         if operation.endswith(".preview"):
             prepared["ids"] = [str(item) for item in cast(list[Any], payload["session_ids"])]
-            return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": prepared["ids"]}
+            return {
+                "status": "prepared",
+                "preview_ref": "preview:delete",
+                "session_count": len(prepared["ids"]),
+                "session_ids_sample": list(prepared["ids"])[:20],
+            }
         if operation.endswith(".authorize"):
             # ``_delete_authorization_refs`` (archive_query.py) reads
             # ``authorization_refs``/``authorization_ref`` since #4867 renamed the

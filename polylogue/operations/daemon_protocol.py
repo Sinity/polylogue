@@ -507,13 +507,21 @@ class InsightRebuildRequest(_OperationPayload):
         return self
 
 
+#: Transport bound shared by every delete phase. A selection accepted by the
+#: preview yields one preview (then authorization) reference per chunk, so the
+#: follow-up phases must accept a body sized for the same selection.
+DELETE_SELECTION_MAX_BODY_BYTES = 64 * 1024 * 1024
+
+
 class DeletePreviewRequest(_OperationPayload):
-    session_ids: list[str] = Field(min_length=1, max_length=10_000)
+    # No count cap: the preview splits any selection into bounded audit
+    # chunks, and the operation's ``max_body_bytes`` bounds the transport.
+    session_ids: list[str] = Field(min_length=1)
 
 
 class DeleteAuthorizeRequest(_OperationPayload):
     preview_ref: str | None = Field(default=None, min_length=1)
-    preview_refs: list[str] | None = Field(default=None, min_length=1, max_length=40)
+    preview_refs: list[str] | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def exact_reference_shape(self) -> DeleteAuthorizeRequest:
@@ -532,7 +540,7 @@ class DeleteCancelRequest(DeleteAuthorizeRequest):
 
 class DeleteExecuteRequest(_OperationPayload):
     authorization_ref: str | None = Field(default=None, min_length=1)
-    authorization_refs: list[str] | None = Field(default=None, min_length=1, max_length=40)
+    authorization_refs: list[str] | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def exact_reference_shape(self) -> DeleteExecuteRequest:
@@ -1099,7 +1107,7 @@ class MutationResult(_OperationPayload):
     preview_refs: list[str] | None = None
     authorization_ref: str | None = None
     authorization_refs: list[str] | None = None
-    session_ids: list[str] | None = None
+    session_ids_sample: list[str] | None = None
     session_count: int | None = Field(default=None, ge=0)
     expires_at_ms: int | None = None
     outcome: str | None = None
@@ -1142,10 +1150,17 @@ class MutationResult(_OperationPayload):
             if self.outcome not in DAEMON_OPERATION_OUTCOMES or self.sequence is None:
                 raise ValueError("mutation lifecycle result requires outcome and durable sequence")
         elif self.status == "prepared":
-            if not self.preview_refs or self.preview_ref != self.preview_refs[0] or self.session_ids is None:
-                raise ValueError("prepared result requires exact preview references and selection")
-            if self.session_count != len(self.session_ids) or self.expires_at_ms is None:
-                raise ValueError("prepared result requires selection count and expiry")
+            from polylogue.operations.mutation_transaction import DELETE_PREVIEW_SAMPLE_IDS
+
+            if not self.preview_refs or self.preview_ref != self.preview_refs[0] or self.session_ids_sample is None:
+                raise ValueError("prepared result requires exact preview references and selection sample")
+            if (
+                self.session_count is None
+                or self.session_count < 1
+                or len(self.session_ids_sample) != min(self.session_count, DELETE_PREVIEW_SAMPLE_IDS)
+                or self.expires_at_ms is None
+            ):
+                raise ValueError("prepared result requires selection count, its leading sample and expiry")
         elif self.status == "authorized":
             if not self.authorization_refs or self.authorization_ref != self.authorization_refs[0]:
                 raise ValueError("authorized result requires exact authorization references")
@@ -1195,14 +1210,9 @@ class AcceptedOperationReference(_OperationPayload):
     artifact_kind: str = Field(min_length=1)
     artifact_ref: str = Field(min_length=1)
     accepted_at_ms: int = Field(ge=0)
-    part_count: int = Field(ge=1, le=4096)
+    #: Paged machine batches accept any number of parts (polylogue-zxbbl).
+    part_count: int = Field(ge=1)
     accepted_deadline_unix_ms: int | None
-
-    @model_validator(mode="after")
-    def operation_part_bound(self) -> AcceptedOperationReference:
-        if self.operation_name != "maintenance.insights.rebuild" and self.part_count > 40:
-            raise ValueError("operation exceeds its forty-part acceptance bound")
-        return self
 
     def to_dict(self) -> dict[str, object]:
         return self.model_dump(mode="json")
@@ -2154,10 +2164,12 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.WRITE,
         DaemonFallback.NEVER,
         capability="archive.delete_session",
-        deadline_s=30.0,
-        # A preview carries the exact selection: up to
-        # ``DELETE_PREVIEW_MAX_SESSION_IDS`` session ids, not a parameter map.
-        max_body_bytes=64 * 1024 * 1024,
+        # Accepted durably at its first page; the caller follows the durable
+        # request to completion (polylogue-zxbbl), within the budget execute has.
+        deadline_s=300.0,
+        # A preview carries the exact selection -- every session id, split
+        # into bounded preview chunks -- not a parameter map.
+        max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.preview.request/v1",
         result_contract="mutation.session.delete.preview.result/v1",
         request_type="DeletePreviewRequest",
@@ -2170,7 +2182,11 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.WRITE,
         DaemonFallback.NEVER,
         capability="archive.delete_session",
-        deadline_s=30.0,
+        # Accepted durably at its first page; the caller follows the durable
+        # request to completion (polylogue-zxbbl), within the budget execute has.
+        deadline_s=300.0,
+        # Carries one reference per preview chunk of the selection.
+        max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.authorize.request/v1",
         result_contract="mutation.session.delete.authorize.result/v1",
         request_type="DeleteAuthorizeRequest",
@@ -2183,7 +2199,10 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         DaemonAuthority.CONTROL,
         DaemonFallback.NEVER,
         capability="archive.delete_session",
-        deadline_s=30.0,
+        # Paged like the preview it releases, within the same budget.
+        deadline_s=300.0,
+        # Carries one reference per preview chunk of the selection.
+        max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.cancel.request/v1",
         result_contract="mutation.session.delete.cancel.result/v1",
         request_type="DeleteCancelRequest",
@@ -2199,6 +2218,8 @@ DAEMON_OPERATION_SPECS: tuple[DaemonOperationSpec, ...] = (
         deadline_s=300.0,
         progress=True,
         accepted_reference=True,
+        # Carries one reference per preview chunk of the selection.
+        max_body_bytes=DELETE_SELECTION_MAX_BODY_BYTES,
         request_contract="mutation.session.delete.execute.request/v1",
         result_contract="mutation.result/v1",
         request_type="DeleteExecuteRequest",
