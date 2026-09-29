@@ -951,13 +951,6 @@ writes:
     tier: "source"
     classification: lifecycle_transition
     reason: "forward path of the same two-phase commit: _prepare sets the pending command only WHERE pending_mutation_id IS NULL, _promote clears it only WHERE it still matches (mutation_id, pending_payload_sha256) with rowcount == 1, and _apply_prepared advances the audit head only from the prepared prior -- the singleton control/head row advancing through its declared prepared/promoted states"
-  - file: "polylogue/storage/sqlite/audit_continuity.py"
-    function: "AuditContinuityCoordinator._repair_promoted_rebind"
-    table: "audit_continuity_head"
-    kind: "update"
-    tier: "audit"
-    classification: two_phase_recovery
-    reason: "cross-tier two-phase commit recovery: the abort/rebind paths re-read audit_continuity_head under BEGIN IMMEDIATE, refuse unless it still equals the prepared command's exact prior generation+head, and the source abort additionally matches pending_payload_sha256 with rowcount == 1 -- checksum-validated prepared evidence, never a recomputed value"
   - file: "polylogue/storage/sqlite/durable_change_train.py"
     function: "_probe_revision_provider_resolution"
     table: "raw_sessions"
@@ -1063,13 +1056,6 @@ writes:
     tier: "source"
     classification: guarded_producer_refinement
     reason: "acquisition-time NULL/placeholder fill inside the raw writer itself: each statement carries its own guard in the WHERE -- file_mtime_ms IS NULL, capture_mode IS NULL, addressing_mode IS NULL, or origin = 'unknown-export' -- so a value already established by a better-informed route is never overwritten. refine_raw_origin's docstring states the rule and _assert_existing_raw_identity raises on two confident but different origins instead of picking one"
-  - file: "polylogue/storage/sqlite/query_objects.py"
-    function: "migrate_saved_query_assertions"
-    table: "assertions"
-    kind: "update"
-    tier: "user"
-    classification: row_supersession
-    reason: "a declared step of the numbered user-tier migration chain: migration_runner binds this call to USER migration v8 inside that migration's own transaction, and it rewrites only target_ref, re-deriving it as the content-addressed 'query:<hash>' of the assertion's own stored value_json through the canonical put_query boundary. The saved query payload itself is untouched"
   - file: "polylogue/storage/sqlite/query_objects.py"
     function: "promote_query"
     table: "queries"

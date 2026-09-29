@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sqlite3
 from collections.abc import Callable, Iterator
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -322,6 +323,74 @@ def test_restart_from_a_large_wal_recovers_the_committed_rows(tmp_path: Path) ->
     )
     assert observation.mode == "truncate"
     assert observation.wal_bytes_after == 0
+
+
+_CRASHING_WRITER = """
+import os, sys
+from pathlib import Path
+from polylogue.storage.sqlite import connection_profile
+from polylogue.storage.sqlite.connection_profile import arm_recurring_checkpoint_owner
+
+db = Path(sys.argv[1])
+with arm_recurring_checkpoint_owner():
+    conn = connection_profile.open_connection(db, validate_schema=False)
+    conn.execute("CREATE TABLE payload (id INTEGER PRIMARY KEY, body BLOB)")
+    conn.executemany("INSERT INTO payload (body) VALUES (?)", [(b"z" * 4096,) for _ in range(1024)])
+    conn.commit()
+    assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 0
+    os._exit(0)
+"""
+
+
+def test_a_killed_owned_writer_recovers_through_the_recurring_sweep(tmp_path: Path) -> None:
+    """A writer process that dies without closing leaves a large WAL as the record.
+
+    The child arms the recurring owner, so its writes never autocheckpoint, and
+    exits without closing -- no last-connection checkpoint runs. The parent
+    then takes the daemon's own route: a live read sees every committed row,
+    and ``checkpoint_archive_wals`` drains the WAL at the recurring boundary
+    with typed evidence, inside the checkpoint budget, without reaching
+    RESTART or TRUNCATE.
+
+    Anti-vacuity: an owner that leaves implicit autocheckpoint on drains the
+    WAL inside the child, so the premise assertion on the WAL size fails; a
+    recurring escalation that reaches TRUNCATE reports ``mode == "truncate"``.
+    """
+    import subprocess
+    import sys
+
+    db = tmp_path / "index.db"
+    completed = subprocess.run(
+        [sys.executable, "-c", _CRASHING_WRITER, str(db)], capture_output=True, text=True, timeout=120
+    )
+    assert completed.returncode == 0, completed.stderr
+    wal = db.with_name("index.db-wal")
+    assert wal.stat().st_size >= 1024 * 4096, "the killed writer must leave its commits in the WAL"
+
+    reader = connection_profile.open_readonly_connection(db, validate_schema=False)
+    try:
+        assert reader.execute("SELECT count(*) FROM payload").fetchone()[0] == 1024
+    finally:
+        reader.close()
+
+    # Keep one connection open so the sweep is observed on a surviving WAL,
+    # not on SQLite's last-close cleanup.
+    holder = sqlite3.connect(db)
+    try:
+        (observation,) = wal_checkpoint.checkpoint_archive_wals(
+            tmp_path, reason="restart", escalation="recurring", warn_bytes=1, escalation_bytes=1
+        )
+    finally:
+        holder.close()
+    assert observation.error is None
+    assert observation.mode == "passive"
+    assert observation.log_pages > 0
+    assert (observation.busy_pages, observation.checkpointed_pages) == (0, observation.log_pages)
+    assert not observation.blocked
+    assert not observation.over_hold_budget
+
+    with closing(sqlite3.connect(db)) as check:
+        assert check.execute("SELECT count(*) FROM payload").fetchone()[0] == 1024
 
 
 # -- the cold-build pass boundary --------------------------------------------

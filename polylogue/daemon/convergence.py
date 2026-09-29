@@ -25,6 +25,7 @@ from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeGuard, cast, runtime_checkable
 
+from polylogue.core.compute_cancel import compute_cancel
 from polylogue.daemon.derivation import (
     Budget,
     DerivationAdapter,
@@ -171,6 +172,9 @@ class DerivationConvergenceOwner:
         # paging: reusing the archive cursor could skip an earlier changed id.
         # Only no-hint archive sweeps retain their own cursor across passes.
         pass_resume = resume if frame.scope is None else False
+        cancelled = threading.Event()
+        # Bound into the context ``propagate`` copies for the compute thread.
+        cancel_token = compute_cancel.set(cancelled)
         submitted = self._compute_adapter.submit(
             propagate(
                 partial(
@@ -185,6 +189,7 @@ class DerivationConvergenceOwner:
             ),
             admission_class="incremental-background",
         )
+        compute_cancel.reset(cancel_token)
         operation = asyncio.wrap_future(submitted.future, loop=loop)
         try:
             return await asyncio.shield(operation)
@@ -192,7 +197,9 @@ class DerivationConvergenceOwner:
             # A caller may stop awaiting this sweep, but cannot let a compute
             # worker that already owns a bridged publication outlive owner
             # shutdown.  Settle it before propagating cancellation so the
-            # composition layer can drain the coordinator safely.
+            # composition layer can drain the coordinator safely. A retained
+            # preparation the pass is waiting on is stopped, not waited out.
+            cancelled.set()
             with contextlib.suppress(BaseException):
                 await asyncio.shield(operation)
             raise
@@ -269,6 +276,8 @@ class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
         adapter = cast("_SelectedSessionAdapter", candidate)
         loop = asyncio.get_running_loop()
         admission = _DerivationAdmission(self._write_bridge, loop_thread_id=threading.get_ident())
+        cancelled = threading.Event()
+        cancel_token = compute_cancel.set(cancelled)
         submitted = self._compute_adapter.submit(
             propagate(
                 partial(
@@ -287,12 +296,14 @@ class SessionProfileConvergenceOwner(DerivationConvergenceOwner):
             ),
             admission_class="incremental-background",
         )
+        compute_cancel.reset(cancel_token)
         operation = asyncio.wrap_future(submitted.future, loop=loop)
         try:
             return await asyncio.shield(operation)
         except asyncio.CancelledError:
             # As for recurring passes, a task cancellation cannot detach a
             # bridged writer admission from owner shutdown.
+            cancelled.set()
             with contextlib.suppress(BaseException):
                 await asyncio.shield(operation)
             raise

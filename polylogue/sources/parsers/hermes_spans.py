@@ -306,6 +306,13 @@ def marker_payload(
     }
 
 
+#: Root fields :func:`looks_like_atif_payload` reads.
+ATIF_SIGNATURE_FIELDS = frozenset({"schema_version", "session_id", "steps"})
+
+#: Root fields :func:`looks_like_atof_payload` reads.
+ATOF_SIGNATURE_FIELDS = frozenset({"atof_version", "kind", "uuid", "timestamp", "name"})
+
+
 def looks_like_atif_payload(payload: JSONDocument) -> bool:
     """Return whether ``payload`` is a real ATIF trajectory document.
 

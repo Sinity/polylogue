@@ -58,7 +58,7 @@ def _ensure_events_db(path: Path | None = None) -> sqlite3.Connection:
         path.parent.mkdir(parents=True, exist_ok=True)
         initialize_archive_database(path, ArchiveTier.OPS)
         _CONVERGED_EVENT_DBS.add(path)
-    conn = open_daemon_connection(path)
+    conn = open_daemon_connection(path, archive_root=path.parent)
     conn.executescript(_DAEMON_EVENTS_DDL)
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(daemon_events)")}
     if "idempotency_key" not in columns:

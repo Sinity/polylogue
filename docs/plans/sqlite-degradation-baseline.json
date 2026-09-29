@@ -956,10 +956,6 @@
       "digest": "6cb024d5e4962151626476fa9419117a7e6abf4d"
     },
     {
-      "file": "polylogue/storage/sqlite/audit_continuity.py",
-      "digest": "8d4646d35d5aa424ac37aacbc1389babe82b87ad"
-    },
-    {
       "file": "polylogue/storage/sqlite/connection_profile.py",
       "digest": "d65f6f25331da8af186e0fb925ca6f48905e683c"
     },

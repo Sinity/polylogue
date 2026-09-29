@@ -335,6 +335,10 @@ class _FullIngestResult:
     # group's cursors first and only then stops taking new work -- a batch is
     # never left committed-and-failed with its cursor unrecorded.
     write_hold_exhausted: bool = False
+    #: Planned paths held back for publication order: each shares a
+    #: canonical session with a path this group published, so it was not
+    #: attempted here and publishes in the next group.
+    ordering_held: list[Path] = field(default_factory=list)
 
 
 def _full_ingest_result_from_summary(
@@ -1059,7 +1063,7 @@ def _parse_path_as_session_artifact(path: Path, *, provider: Provider) -> bool:
         # transcript directory, so location cannot outrank its provenance.
         from polylogue.sources.origin_specs import recognize_source_class
 
-        recognition = recognize_source_class(provider, path, source_size_bytes=_path_size(path))
+        recognition = recognize_source_class(provider, path)
         if recognition is not None and recognition.source_class != "session":
             return False
         path_classification = classify_artifact_path(path, provider=provider)
@@ -1237,9 +1241,7 @@ def _classify_pre_acquisition(
         and hermes_member is not None
         and hermes_member.disposition != "out-of-scope"
     )
-    source_class = recognize_source_class(
-        fallback_provider, path, source_only=source_only, source_size_bytes=size_bytes
-    )
+    source_class = recognize_source_class(fallback_provider, path, source_only=source_only)
     if source_class is not None and source_class.source_class == "unsupported" and not hermes_owned_sqlite_name:
         return PreAcquisitionDecision("unsupported source class")
     if fallback_provider in {Provider.ANTIGRAVITY, Provider.UNKNOWN} and antigravity.looks_like_trajectory_db_path(
