@@ -830,9 +830,10 @@ class FileIntakeAdapter(IntakeAdapter):
             # pass for no admission.
             paths = [Path(cast(Any, item.payload)) for item in batch]
             classify = getattr(self.context.watcher, "classify_ingest_candidates", None)
-            select = getattr(self.context.watcher, "select_ingest_candidates", None)
             pending_retry: set[Path] = set()
-            if callable(classify):
+            if not callable(classify):
+                needed = set(paths)
+            else:
                 # The selection is a read that can decide to write: an
                 # incomplete-append deferral, an archived-cursor
                 # reconciliation and a device-drift rebase all correct cursor
@@ -846,12 +847,6 @@ class FileIntakeAdapter(IntakeAdapter):
                     selected, pending = classify(paths)
                 needed = set(selected)
                 pending_retry = set(pending)
-            elif not callable(select):
-                needed = set(paths)
-            elif callable(run_writer_sync):
-                needed = set(await run_writer_sync("watcher.intake.select", select, paths))
-            else:
-                needed = set(select(paths))
             skipped = [item for item in batch if Path(cast(Any, item.payload)) not in needed]
             for item in skipped:
                 if Path(cast(Any, item.payload)) in pending_retry:

@@ -602,8 +602,8 @@ async def test_retry_cooldown_does_not_restart_large_file_walk(
         def intake_revision(self, _source: WatchSource) -> int:
             return self.revision
 
-        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
-            return tuple(path for path in paths if path == poison or path.name == "0.json")
+        def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            return tuple(path for path in paths if path == poison or path.name == "0.json"), ()
 
         async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
             if paths == [poison]:
@@ -703,8 +703,8 @@ async def test_retry_debt_overflow_revisits_evicted_file_after_cooldown(
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
-        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
-            return tuple(paths)
+        def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            return tuple(paths), ()
 
         async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
             if now[0] < 5.0:
@@ -766,8 +766,8 @@ async def test_mixed_fresh_page_keeps_failed_sibling_retryable(tmp_path: Path, v
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
-        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
-            return tuple(paths)
+        def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            return tuple(paths), ()
 
         async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
             if failed in paths and now[0] < 5.0 and vanish_without_hint and failed.exists():
@@ -935,8 +935,8 @@ async def test_cursor_row_without_due_authority_does_not_replace_local_retry_deb
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
-        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
-            return tuple(paths)
+        def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            return tuple(paths), ()
 
         async def _ingest_files(self, _paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
             return SimpleNamespace(succeeded_paths=(), failed_paths=(str(carrier),), source_payload_read_bytes=0)
@@ -1139,7 +1139,7 @@ async def test_path_scoped_refusal_skips_regular_candidate_selection(tmp_path: P
         _cursor=cursor,
         _batch_processor=PartialRefusalProcessor(),
         intake_revision=lambda _source: 0,
-        select_ingest_candidates=select,
+        classify_ingest_candidates=lambda paths: (select(paths), ()),
         _ingest_files=ingest,
     )
     adapter = FileIntakeAdapter(
@@ -1153,6 +1153,51 @@ async def test_path_scoped_refusal_skips_regular_candidate_selection(tmp_path: P
     assert outcomes[page[1].item_id].outcome is AdmissionOutcome.ADMITTED
     assert watcher._batch_processor._refused_paths == frozenset()
     assert cursor.has_pending_retries((root,)) is True
+
+
+@pytest.mark.asyncio
+async def test_a_scheduled_retry_is_deferred_not_acknowledged_as_a_duplicate(tmp_path: Path) -> None:
+    """A path whose cursor retry is not yet due stays owed work.
+
+    Anti-vacuity (polylogue-b8of0): reporting every unselected path as a
+    DUPLICATE acknowledges the page and drops the scheduled retry.
+    """
+    root = tmp_path / "source"
+    root.mkdir()
+    owed, current = (root / name for name in ("a.json", "b.json"))
+    owed.write_text("{}")
+    current.write_text("{}")
+    source = WatchSource(name="capture", root=root, suffixes=(".json",))
+    ingested: list[Path] = []
+
+    class RefusingNothing:
+        _refused_paths: frozenset[Path] = frozenset()
+
+        def require_cursor_authority(self, paths: Sequence[Path]) -> None:
+            return None
+
+    async def ingest(paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
+        ingested.extend(paths)
+        return SimpleNamespace(succeeded_paths=(), source_payload_read_bytes=0)
+
+    watcher = SimpleNamespace(
+        _cursor=CursorStore(tmp_path / "index.db"),
+        _batch_processor=RefusingNothing(),
+        intake_revision=lambda _source: 0,
+        classify_ingest_candidates=lambda paths: ((), (owed,)),
+        _ingest_files=ingest,
+    )
+    adapter = FileIntakeAdapter(
+        DaemonIntakeContext(archive_root=tmp_path, watcher=watcher, sources=(source,)),  # type: ignore[arg-type]
+        source,
+    )
+    page = await adapter.discover(limit=2)
+    outcomes = await adapter.admit_page(page)
+    by_path = {Path(cast(Any, item.payload)): outcomes[item.item_id] for item in page}
+    assert by_path[owed].outcome is AdmissionOutcome.DEFERRED
+    assert by_path[owed].actual_cost == 0
+    assert by_path[current].outcome is AdmissionOutcome.DUPLICATE
+    assert ingested == []
 
 
 @pytest.mark.asyncio
@@ -1171,8 +1216,8 @@ async def test_partially_planned_local_retry_rotates_past_poison(tmp_path: Path)
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
-        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
-            return tuple(paths)
+        def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            return tuple(paths), ()
 
         async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
             succeeded = tuple(path for path in paths if path != poison)
@@ -1338,8 +1383,8 @@ async def test_cold_build_waits_for_local_retry_debt_without_cursor_row(
         def intake_revision(self, _source: WatchSource) -> int:
             return 0
 
-        def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
-            return tuple(paths)
+        def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
+            return tuple(paths), ()
 
         async def _ingest_files(self, paths: Sequence[Path], **_kwargs: object) -> SimpleNamespace:
             self.attempts += 1

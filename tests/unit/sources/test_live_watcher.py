@@ -1190,7 +1190,7 @@ def test_page_selection_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: py
     """One page reads its cursor rows in one bulk call, never one read per file.
 
     Anti-vacuity: replace the bulk ``get_records`` in
-    ``select_ingest_candidates`` with a per-path ``get_record`` loop and the
+    ``classify_ingest_candidates`` with a per-path ``get_record`` loop and the
     stubbed per-file reader below raises.
     """
     root = tmp_path / "src"
@@ -1213,8 +1213,35 @@ def test_page_selection_uses_bulk_cursor_records(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(watcher._cursor, "get_records", counted_get_records)
     monkeypatch.setattr(watcher._cursor, "get_record", fail_get_record)
 
-    assert list(watcher.select_ingest_candidates(files)) == files
+    assert list(watcher.classify_ingest_candidates(files)[0]) == files
     assert bulk_calls == 1
+
+
+def test_page_classification_names_scheduled_retries_as_pending(tmp_path: Path) -> None:
+    """A not-yet-due retry is pending; a settled exclusion is neither.
+
+    Anti-vacuity (polylogue-b8of0): without the pending split the scheduled
+    retry reads exactly like a file its cursor already accounts for.
+    """
+    root = tmp_path / "src"
+    root.mkdir()
+    owed, settled = root / "owed.jsonl", root / "settled.jsonl"
+    for path in (owed, settled):
+        path.write_text('{"role":"user","content":"a"}\n')
+    watcher, _parse_sources = _make_watcher(tmp_path, root)
+    watcher._cursor.set(owed, 0, failure_count=1, next_retry_at="2999-01-01T00:00:00+00:00")
+    observed = settled.stat()
+    watcher._cursor.set(
+        settled,
+        observed.st_size,
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+        st_dev=observed.st_dev,
+        st_ino=observed.st_ino,
+        mtime_ns=observed.st_mtime_ns,
+        excluded=True,
+    )
+
+    assert watcher.classify_ingest_candidates([owed, settled]) == ((), (owed,))
 
 
 async def _ingest_one(watcher: LiveWatcher, path: Path) -> None:
@@ -3576,7 +3603,7 @@ def test_page_selection_rebases_device_drift_after_one_prefix_proof(
 
     monkeypatch.setattr(watcher._cursor, "rebase_authoritative_observations", counted_rebase)
 
-    assert watcher.select_ingest_candidates([path]) == ()
+    assert watcher.classify_ingest_candidates([path])[0] == ()
     rebased = watcher._cursor.get_record(path)
     assert calls == 1
     assert rebase_batches == 1
@@ -3584,7 +3611,7 @@ def test_page_selection_rebases_device_drift_after_one_prefix_proof(
     assert rebased is not None
     assert rebased.st_dev == stat.st_dev
 
-    assert watcher.select_ingest_candidates([path]) == ()
+    assert watcher.classify_ingest_candidates([path])[0] == ()
     assert calls == 1
     assert parse_sources.await_count == 0
 

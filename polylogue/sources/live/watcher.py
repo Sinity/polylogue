@@ -566,10 +566,6 @@ class LiveWatcher:
     # Shared helpers
     # ------------------------------------------------------------------
 
-    def select_ingest_candidates(self, paths: Sequence[Path]) -> tuple[Path, ...]:
-        """Return the paths that need ingesting now; see :meth:`classify_ingest_candidates`."""
-        return self.classify_ingest_candidates(paths)[0]
-
     def classify_ingest_candidates(self, paths: Sequence[Path]) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
         """Split one page into (needed now, pending a scheduled retry).
 
