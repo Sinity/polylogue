@@ -228,13 +228,16 @@ def test_preflight_bounds_a_large_trajectory_store_and_says_so(tmp_path: Path) -
     assert any("the remainder was not inspected" in caveat for caveat in result.caveats)
 
 
-def test_unidentified_trajectory_rows_keep_distinct_identities(tmp_path: Path) -> None:
-    """Several trajectory rows without ids do not share the path fallback id.
+def test_several_unidentified_trajectory_rows_are_refused(tmp_path: Path) -> None:
+    """Several trajectory rows without ids are refused, not told apart by position.
 
-    Anti-vacuity: give every unidentified row the bare ``fallback_id`` again
-    and both sessions carry ``provider_session_id == "unnamed"``.
+    A row's position or rowid moves with deletions and VACUUM, so an id minted
+    from it would re-point one trajectory onto another's archive identity
+    (#5711). Anti-vacuity: mint ``<fallback>:trajectory-<n>`` for each
+    unidentified row and the export parses into two sessions.
     """
     from polylogue.sources.parsers import antigravity
+    from polylogue.sources.sqlite_export import LogicalExportError
 
     source = tmp_path / "unnamed.sqlite"
     with sqlite3.connect(source) as connection:
@@ -247,12 +250,8 @@ def test_unidentified_trajectory_rows_keep_distinct_identities(tmp_path: Path) -
             """
         )
 
-    sessions = list(antigravity.parse_trajectory_db(source, fallback_id="unnamed"))
-
-    assert [session.provider_session_id for session in sessions] == [
-        "unnamed",
-        "unnamed:trajectory-1",
-    ]
+    with pytest.raises(LogicalExportError):
+        list(antigravity.parse_trajectory_db(source, fallback_id="unnamed"))
 
 
 def test_generated_trajectory_id_avoids_a_native_id(tmp_path: Path) -> None:

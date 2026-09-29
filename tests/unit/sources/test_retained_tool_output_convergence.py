@@ -156,7 +156,9 @@ def _gemini_tree(root: Path) -> dict[str, Path]:
     outputs = project / "tool-outputs" / f"session-{_GEMINI_SESSION_ID}"
     outputs.mkdir(parents=True)
     sidecar = outputs / f"{_GEMINI_TOOL_ID}.txt"
-    sidecar.write_text(f"{_GEMINI_NEEDLE}\n" * 400, encoding="utf-8")
+    # Longer than the 8,000 + 32,000 characters the envelope says it excerpts:
+    # a shorter sidecar reads as a partial write and is refused (#5643).
+    sidecar.write_text(f"{_GEMINI_NEEDLE}\n" * 2000, encoding="utf-8")
 
     snapshot = chats / f"session-{_GEMINI_SESSION_ID}.json"
     snapshot.write_text(

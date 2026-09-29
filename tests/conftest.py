@@ -748,6 +748,10 @@ def _clear_polylogue_env(
     # (TCPMUX) and reliably refuses on a developer host (#1325).
     monkeypatch.setenv("POLYLOGUE_DAEMON_URL", "http://127.0.0.1:1")
     yield
+    # The production cache keeps one connection per (thread, path) for the
+    # process's life. A test that builds several archives would otherwise
+    # carry every one of them into the descriptor check that follows.
+    _clear_connection_cache()
 
 
 @pytest.fixture

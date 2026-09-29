@@ -278,6 +278,7 @@ SESSION_INPUT_EXCLUDED_COLUMNS: Mapping[str, str] = {
     "delivery_status": "hashed ParsedMessage field, covered by the projected content_hash",
     "end_turn": "hashed ParsedMessage field, covered by the projected content_hash",
     "user_context_text": "hashed ParsedMessage field, covered by the projected content_hash",
+    "fields_digest": "digest of the message's own hashed fields, an input to the projected content_hash",
 }
 
 _HASHED_BLOB_COLUMNS = frozenset({"content_hash"})

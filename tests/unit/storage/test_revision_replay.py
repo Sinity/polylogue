@@ -2376,6 +2376,7 @@ def test_chain_replay_supersedes_equal_frontier_quarantined_membership_head(tmp_
     the CAS rejecting the whole replay.
     """
     from polylogue.operations.raw_observation_derivation import raw_observation_frame
+    from polylogue.sources.revision_backfill import record_session_enrichment_binding, session_enrichment_evidence_key
     from polylogue.storage.derived.raw import RawObservationDerivation
 
     bootstrap_archive_root(tmp_path)
@@ -2396,6 +2397,20 @@ def test_chain_replay_supersedes_equal_frontier_quarantined_membership_head(tmp_
             "SELECT content_hash FROM sessions WHERE session_id = ?", (session_id,)
         ).fetchone()
         assert stored is not None
+        # The retained writer binds each Codex session to the enrichment
+        # evidence it read (#5643); an unbound session reads as stale and is
+        # derived again. This direct replay stands in for that writer.
+        current_key = session_enrichment_evidence_key(
+            provider=Provider.CODEX,
+            source_path="session.json",
+            native_id="session",
+            index_conn=archive._conn,
+            source_conn=archive._ensure_source_conn(),
+            blob_root=tmp_path / "blob",
+        )
+        record_session_enrichment_binding(
+            archive._conn, session_id=session_id, carried_key=current_key, current_key=current_key
+        )
         archive.commit()
     assert RawObservationDerivation(tmp_path).inspect(raw_observation_frame(tmp_path), (capture,))[capture] == "valid"
 

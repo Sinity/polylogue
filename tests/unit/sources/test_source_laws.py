@@ -994,8 +994,10 @@ def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkey
         tool_result_sidecars: object | None = None,
         trust_fallback_id: bool = False,
     ) -> ParsedSession:
+        from polylogue.sources.parsers.base_models import AdmissionUnit, ParseAccounting
+
         calls.append((payload, fallback_id))
-        return _parsed_session(
+        session = _parsed_session(
             source_name=Provider.CLAUDE_CODE,
             provider_session_id=fallback_id,
             title=fallback_id,
@@ -1003,6 +1005,14 @@ def test_parse_payload_dispatches_claude_code_messages_and_single_records(monkey
             updated_at=None,
             messages=[],
         )
+        # A parser owns a disposition for every outer record it consumed
+        # (#5816); the stand-in accounts for them as the real parser does.
+        assert isinstance(payload, list)
+        session.unit_accounting = ParseAccounting(
+            expected={AdmissionUnit.OUTER_RECORD: len(payload)},
+            materialized_ordinals={AdmissionUnit.OUTER_RECORD: [(0, len(payload))]},
+        )
+        return session
 
     monkeypatch.setattr(claude_parser, "parse_code", fake_parse_code)
 

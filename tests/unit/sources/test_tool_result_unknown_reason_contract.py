@@ -613,9 +613,20 @@ _ROUTES: tuple[tuple[str, Provider, Callable[[Path], ParsedSession], Triple, str
         "outcome_success",
     ),
     (
-        "antigravity-unsupported-step-verdict",
+        # No outcome-bearing field at all: the step reported nothing (#5798).
+        "antigravity-unreported-step-verdict",
         Provider.ANTIGRAVITY,
         lambda root: _antigravity_session(root, '{"tool_name":"shell","output":"hi","tool_id":"ag-1"}'),
+        (ToolOutcome.UNKNOWN.value, None, NOT_REPORTED),
+        "outcome_unknown",
+    ),
+    (
+        # A status the parser's mapping does not cover is a verdict it did not read.
+        "antigravity-unsupported-step-verdict",
+        Provider.ANTIGRAVITY,
+        lambda root: _antigravity_session(
+            root, '{"tool_name":"shell","output":"hi","status":"pending","tool_id":"ag-1"}'
+        ),
         (ToolOutcome.UNKNOWN.value, None, UNSUPPORTED),
         "outcome_unknown",
     ),

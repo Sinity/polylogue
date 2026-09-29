@@ -1116,8 +1116,15 @@ def _collect_payload_evidence(
             if declared:
                 header_source_id = declared
                 header_update = update
-            source_identity = candidate.logical_source_id if artifact_scoped_identity else declared or header_source_id
-            declared_source_id = hash_payload({"source": source_identity})
+            # An artifact-scoped identity is namespaced apart from the retired
+            # path-derived ``{"source": <path>}`` identity: the cache refuses
+            # that one (``_old_path_fallback``), and sharing its value made
+            # every structured sidecar's fresh evidence unreachable there.
+            declared_source_id = (
+                hash_payload({"artifact": candidate.logical_source_id})
+                if artifact_scoped_identity
+                else hash_payload({"source": declared or header_source_id})
+            )
             effective_update = update if update is not None else (header_update if not declared else None)
             if spool is None:
                 prior_update = update_keys.get(declared_source_id)
