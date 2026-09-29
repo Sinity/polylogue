@@ -204,6 +204,15 @@ Restore expectations:
   active-index attachment ownership. Verification re-hashes restored bytes
   and checks the independent attachment evidence rather than accepting an
   equal file count.
+- A backup package is complete by itself. When a referenced source blob is
+  missing from the live store, backup replays its acquisition source and
+  copies the payload into the package only when it is the blob's exact
+  SHA-256 and size (a ZIP member only after the same ZIP admission
+  acquisition applies); `recoverability_proofs` records those recovered
+  hashes. Verification and the migration backup gate derive the required
+  blob set from the package's own `source.db`, `index.db`, reservations and
+  declared-absent sidecar and never read an acquisition file, so a package
+  missing any required blob is refused even if its receipt was signed.
 - The blob namespace authority marker is deliberately excluded from ordinary
   archive-file-set backups, including `full_evidence`. Those backups copy the
   source tier and referenced bytes as independently verified artifacts, not

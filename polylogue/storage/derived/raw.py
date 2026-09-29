@@ -37,7 +37,7 @@ from polylogue.core.raw_failure_evidence import (
 from polylogue.logging import WARNING, emit
 from polylogue.pipeline.services.process_pool import terminate_process_pool
 from polylogue.storage.archive_identity import ArchiveLocation
-from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError
+from polylogue.storage.blob_store import BlobStore, BlobVerificationCancelledError, PreparedBlob
 from polylogue.storage.raw_authority import (
     SUPERSEDED_MEMBERSHIP_FINGERPRINTS,
     build_raw_replay_plan,
@@ -45,6 +45,7 @@ from polylogue.storage.raw_authority import (
     raw_replay_application_receipt_from_connection,
     validate_raw_replay_application_receipt,
 )
+from polylogue.storage.source_blob_restoration import stage_exact_direct_source_blob
 from polylogue.storage.sqlite.archive_tiers.source_write import PENDING_RAW_LOGICAL_SOURCE_PREFIX
 from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 from polylogue.storage.sqlite.queries.raw_state import raw_provider_origin_sql
@@ -108,6 +109,35 @@ class RawObservationScope:
     raw_ids: tuple[str, ...] = ()
 
 
+def _discard_staged_blobs(store: BlobStore, prepared: tuple[PreparedBlob, ...]) -> None:
+    for item in prepared:
+        store.discard_prepared(item)
+
+
+class StagedBlobRestorations:
+    """Exact source bytes staged for absent retained blobs, awaiting the writer.
+
+    Compute stages them without a lease; ``publish`` reserves and publishes
+    them under the archive writer. A replacement the kernel never hands to
+    ``publish`` still has its staged files discarded when this owner is
+    collected.
+    """
+
+    def __init__(self, store: BlobStore, staged: Sequence[tuple[str, PreparedBlob]]) -> None:
+        self.store = store
+        self.staged = tuple(staged)
+        self._finalizer = weakref.finalize(
+            self, _discard_staged_blobs, store, tuple(prepared for _raw_id, prepared in self.staged)
+        )
+
+    def published(self) -> None:
+        """The writer moved the staged files into place; nothing is left to discard."""
+        self._finalizer.detach()
+
+    def discard(self) -> None:
+        self._finalizer()
+
+
 @dataclass(frozen=True, slots=True)
 class RawObservationReplacement:
     key: str
@@ -126,6 +156,7 @@ class RawObservationReplacement:
     scratch_owner: tempfile.TemporaryDirectory[str] | None = None
     empty: bool = False
     already_valid: bool = False
+    blob_restorations: StagedBlobRestorations | None = None
 
 
 def _session_id(session: ParsedSession) -> str:
@@ -601,6 +632,11 @@ class RawObservationDerivation:
             raw_ids, logical_keys = archive.expand_raw_membership_selection([key])
             binding = self._binding(raw_ids)
             descriptors = {raw_id: archive.raw_revision_descriptor(raw_id) for raw_id in raw_ids}
+            # Classification and preparation both read retained bytes, so an
+            # absent blob is restored before either runs.
+            restorations = self._stage_absent_blob_restorations(archive, raw_ids, descriptors)
+            if restorations is not None:
+                return RawObservationReplacement(key, binding, None, raw_ids, blob_restorations=restorations)
             process_prepared = bool(descriptors)
             if process_prepared:
                 from polylogue.core.sources import origin_from_provider
@@ -960,6 +996,92 @@ class RawObservationDerivation:
         # owner remains responsible for its final authority verdict.
         return RawObservationReplacement(key, binding, None, raw_ids)
 
+    def _stage_absent_blob_restorations(
+        self,
+        archive: ArchiveStore,
+        raw_ids: tuple[str, ...],
+        descriptors: Mapping[str, tuple[Provider, str, str, object, int]],
+    ) -> StagedBlobRestorations | None:
+        """Stage exact source bytes for every retained blob the component lacks.
+
+        Preparation cannot read an absent blob, and retrying it cannot make
+        the bytes reappear. When the raw's recorded direct source still holds
+        a window whose SHA-256 and size equal the raw's, those bytes are
+        staged here and published by the writer in ``publish``; the next pass
+        then prepares over present bytes. Otherwise the refusal names why
+        (``source_missing``, ``hash_mismatch``, ``container_member`` ...), so
+        an unrecoverable raw fails deterministically instead of as a vanished
+        file.
+        """
+        from polylogue.sources.revision_backfill import RetainedPreparationRetryableError
+
+        blob_store = BlobStore(self.archive_root / "blob")
+        staged: list[tuple[str, PreparedBlob]] = []
+        staged_hashes: set[str] = set()
+        try:
+            for raw_id in raw_ids:
+                _provider, blob_hash, path, _kind, size = descriptors[raw_id]
+                if blob_hash in staged_hashes:
+                    continue
+                try:
+                    self._blob_stat_identity(blob_store.blob_path(blob_hash))
+                    continue
+                except FileNotFoundError:
+                    pass
+                except OSError:
+                    # Present but unreadable: preparation reports it as a
+                    # retryable disappearance, not as lost bytes.
+                    continue
+                row = archive.source_connection.execute(
+                    "SELECT append_start_offset, append_end_offset, "
+                    "EXISTS (SELECT 1 FROM raw_container_coordinates WHERE raw_id = ?) "
+                    "FROM raw_sessions WHERE raw_id = ?",
+                    (raw_id, raw_id),
+                ).fetchone()
+                if row is None:
+                    raise KeyError(raw_id)
+                if row[2]:
+                    reason: str | None = "container_member"
+                    prepared: PreparedBlob | None = None
+                else:
+                    prepared, reason = stage_exact_direct_source_blob(
+                        blob_store,
+                        source_path=Path(path),
+                        blob_hash=blob_hash,
+                        size_bytes=int(size),
+                        append_start_offset=None if row[0] is None else int(row[0]),
+                        append_end_offset=None if row[1] is None else int(row[1]),
+                        stop=compute_cancel_requested,
+                    )
+                if prepared is None:
+                    raise RetainedPreparationRetryableError(
+                        f"retained raw blob absent and not restorable from its source ({reason}): {raw_id}"
+                    )
+                staged.append((raw_id, prepared))
+                staged_hashes.add(blob_hash)
+        except BlobVerificationCancelledError as exc:
+            _discard_staged_blobs(blob_store, tuple(prepared for _raw_id, prepared in staged))
+            raise RetainedPreparationRetryableError("retained blob restoration cancelled") from exc
+        except BaseException:
+            _discard_staged_blobs(blob_store, tuple(prepared for _raw_id, prepared in staged))
+            raise
+        return StagedBlobRestorations(blob_store, staged) if staged else None
+
+    def _publish_blob_restorations(self, restorations: StagedBlobRestorations) -> None:
+        """Reserve and publish staged restorations, then consume their receipts."""
+        from polylogue.storage.blob_publication import ArchiveBlobPublisher, consume_restored_raw_blob_receipts
+
+        source_db = self.archive_root / "source.db"
+        publisher = ArchiveBlobPublisher(source_db, restorations.store.root, store=restorations.store)
+        raw_by_hash = {prepared.hash_hex: raw_id for raw_id, prepared in restorations.staged}
+        for _raw_id, prepared in restorations.staged:
+            publisher.queue_prepared(prepared)
+        receipts = publisher.flush()
+        restorations.published()
+        consume_restored_raw_blob_receipts(
+            source_db, tuple((receipt, raw_by_hash[receipt.blob_hash]) for receipt in receipts)
+        )
+
     def publish(self, frame: RawFrame, replacement: RawObservationReplacement) -> bool:
         from polylogue.sources.revision_backfill import (
             RetainedPreparationRetryableError,
@@ -981,6 +1103,11 @@ class RawObservationDerivation:
             refusal = raw_frontier_blocked_raw_ids(self.archive_root, replacement.raw_ids)
             selected_paths = set(self.source_paths(replacement.raw_ids).values())
             if refusal.unattributed_reason is not None or selected_paths.intersection(refusal.source_paths):
+                return False
+            if replacement.blob_restorations is not None:
+                self._publish_blob_restorations(replacement.blob_restorations)
+                # The restored bytes are prepared on the next pass, which now
+                # finds them present; this publication certifies no output.
                 return False
             from polylogue.operations.operation_context import open_operation_read
 
@@ -1071,8 +1198,12 @@ class RawObservationDerivation:
                     for prepared_write in (replacement.prepared_writes or {}).values():
                         prepared_write.close()
                 finally:
-                    if replacement.scratch_owner is not None:
-                        _cleanup_scratch(replacement.scratch_owner)
+                    try:
+                        if replacement.scratch_owner is not None:
+                            _cleanup_scratch(replacement.scratch_owner)
+                    finally:
+                        if replacement.blob_restorations is not None:
+                            replacement.blob_restorations.discard()
 
 
 def _cleanup_scratch(scratch_owner: tempfile.TemporaryDirectory[str]) -> None:

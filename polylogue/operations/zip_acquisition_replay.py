@@ -20,6 +20,7 @@ from polylogue.core.content_identity import ContentIdentityRefusal, payload_cont
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_coordinate
 from polylogue.core.sources import origin_provider_fiber
+from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     replay_zip_entry_acquisition_payloads,
@@ -191,8 +192,8 @@ def zip_reacquisition_payload(
         return None, "source_missing"
     try:
         with zipfile.ZipFile(zip_path) as archive:
+            central_directory = archive.infolist()
             if coordinate is None:
-                central_directory = archive.infolist()
                 matching = [
                     (ordinal, entry) for ordinal, entry in enumerate(central_directory) if entry.filename == member
                 ]
@@ -201,7 +202,6 @@ def zip_reacquisition_payload(
                 entry_ordinal, entry = matching[0]
             else:
                 entry_ordinal = coordinate[0]
-                central_directory = archive.infolist()
                 if entry_ordinal >= len(central_directory):
                     return None, "container_coordinate_mismatch"
                 entry = central_directory[entry_ordinal]
@@ -219,6 +219,10 @@ def zip_reacquisition_payload(
                     if len(fiber) != 1:
                         return None, "replay_provider_unrecorded"
                     provider = fiber[0]
+                # Nothing is decompressed until acquisition's own admission
+                # admits this exact entry; a cached candidate was admitted.
+                if not _acquisition_admits(zip_path, central_directory, entry, provider):
+                    return None, "container_member_rejected"
                 context = ZipEntryReadContext(
                     source=Source(name=provider.value, path=zip_path.parent),
                     zip_path=zip_path,
@@ -251,6 +255,23 @@ def zip_reacquisition_payload(
         expected_is_structural=structural_identity,
     )
     return resolution.payload_bytes, resolution.error
+
+
+def _acquisition_admits(
+    zip_path: Path,
+    central_directory: list[zipfile.ZipInfo],
+    entry: zipfile.ZipInfo,
+    provider: Provider,
+) -> bool:
+    """Replay acquisition's ZIP admission for one member of the whole archive.
+
+    Acquisition runs ``ZipEntryValidator`` over the complete central
+    directory, and admission is cumulative: the aggregate-size budget counts
+    every admitted entry before this one. The member is admitted only if that
+    same pass, in directory order, yields this exact ``ZipInfo``.
+    """
+    validator = ZipEntryValidator(provider, cursor_state=None, zip_path=zip_path)
+    return any(admitted is entry for admitted in validator.filter_entries(central_directory))
 
 
 def _expected_digest(row: Mapping[str, object]) -> str | None:

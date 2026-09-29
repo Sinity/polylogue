@@ -27,6 +27,7 @@ from polylogue.storage.backup_attestation import (
     BackupAttestationError,
     verify_verification_receipt,
 )
+from polylogue.storage.backup_blob_closure import package_blob_closure
 from polylogue.storage.sqlite.archive_tiers import ARCHIVE_DDL_BY_TIER, ARCHIVE_VERSION_BY_TIER
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.connection_profile import open_readonly_connection
@@ -716,7 +717,8 @@ def _validate_blob_inventory(
     receipt: dict[str, object],
     *,
     file_evidence: dict[str, dict[str, object]],
-) -> None:
+) -> frozenset[str]:
+    """Check the receipt's blob inventory and return the hashes the package carries."""
     current = _current_blob_inventory(backup_root, manifest, file_evidence=file_evidence)
     if receipt.get("blob_inventory_file") != _blob_inventory_file_evidence(
         backup_root,
@@ -733,6 +735,40 @@ def _validate_blob_inventory(
     for blob in current:
         if str(blob["blob_hash"]) != str(blob["sha256"]):
             raise MigrationError(f"migration backup blob hash mismatch: {blob['path']}")
+    return frozenset(str(blob["blob_hash"]) for blob in current)
+
+
+# Keyed by the same stat signature as the inventory cache: an unchanged tree
+# has an unchanged closure, so a repeated gate does not re-project source.db.
+_backup_blob_closure_cache: dict[Path, tuple[tuple[tuple[str, int, int], ...], frozenset[str]]] = {}
+
+
+def _validate_package_blob_closure(backup_root: Path, carried: frozenset[str]) -> None:
+    """Refuse a package that does not carry every blob its own tiers require.
+
+    Completeness is decided from the package alone. A receipt written while
+    backup verification still accepted a missing blob because its live
+    acquisition file could reproduce it is refused here: once that file is
+    gone, restoring the package would leave a row whose bytes are absent.
+    """
+    resolved = backup_root.resolve(strict=True)
+    signature = _backup_root_stat_signature(resolved)
+    cached = _backup_blob_closure_cache.get(resolved)
+    if cached is not None and cached[0] == signature:
+        required = cached[1]
+    else:
+        try:
+            required = package_blob_closure(resolved).required
+        except (RuntimeError, sqlite3.Error, OSError) as exc:
+            raise MigrationError(f"migration backup blob closure is unreadable: {exc}") from exc
+        if _backup_root_stat_signature(resolved) == signature:
+            _backup_blob_closure_cache[resolved] = (signature, required)
+    missing = sorted(required - carried)
+    if missing:
+        raise MigrationError(
+            f"migration backup package omits {len(missing)} blob(s) its own tiers require"
+            f" (sample: {', '.join(missing[:10])})"
+        )
 
 
 def _load_verified_backup_package(
@@ -786,9 +822,10 @@ def _validate_closed_backup_package(
         live_tier_paths=live_tier_paths,
         file_evidence=file_evidence,
     )
-    _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
+    carried = _validate_blob_inventory(backup_root, manifest, receipt, file_evidence=file_evidence)
     if receipt.get("artifact_inventory") != artifact_inventory:
         raise MigrationError("migration backup receipt does not match the closed artifact inventory")
+    _validate_package_blob_closure(backup_root, carried)
     return artifacts
 
 

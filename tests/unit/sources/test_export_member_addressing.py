@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.archive.zip_admission import MAX_COMPRESSION_RATIO
 from polylogue.config import Source
 from polylogue.core.content_identity import structural_content_identity, structurally_equal
 from polylogue.core.enums import Provider
@@ -109,6 +110,45 @@ def test_inserted_element_shifts_the_hint_without_losing_the_conversation(tmp_pa
 
     assert error is None
     assert payload == expected
+
+
+def test_reacquisition_refuses_a_member_acquisition_admission_rejects(tmp_path: Path) -> None:
+    """Replay applies acquisition's ZIP admission before decompressing a member.
+
+    The same member bytes replay from an archive that stores them plainly.
+    Stored at a compression ratio above the admission limit, acquisition
+    refuses the member, so replay refuses it too and caches nothing.
+    Anti-vacuity: without the admission check the high-ratio archive yields
+    the recorded payload.
+    """
+    padded = {**_session("padded"), "pad": " " * 1_000_000}
+    member_bytes = json.dumps([_META, padded, _session("other")], separators=(",", ":")).encode()
+    expected = dumps_bytes(padded)
+    stored_zip = tmp_path / "stored.zip"
+    high_ratio_zip = tmp_path / "high-ratio.zip"
+    with zipfile.ZipFile(stored_zip, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("conversations.json", member_bytes)
+    with zipfile.ZipFile(high_ratio_zip, "w", compression=zipfile.ZIP_BZIP2) as archive:
+        archive.writestr("conversations.json", member_bytes)
+    with zipfile.ZipFile(high_ratio_zip) as archive:
+        entry = archive.infolist()[0]
+    assert entry.file_size / entry.compress_size > MAX_COMPRESSION_RATIO
+
+    stored_path = f"{stored_zip}:conversations.json"
+    assert zip_reacquisition_payload(
+        _row(stored_path, payload=expected, source_index=0),
+        source_path=stored_path,
+        zip_payload_cache={},
+    ) == (expected, None)
+
+    high_ratio_path = f"{high_ratio_zip}:conversations.json"
+    cache: dict[str, tuple[MemberCandidate, ...]] = {}
+    assert zip_reacquisition_payload(
+        _row(high_ratio_path, payload=expected, source_index=0),
+        source_path=high_ratio_path,
+        zip_payload_cache=cache,
+    ) == (None, "container_member_rejected")
+    assert cache == {}
 
 
 def test_reacquisition_accepts_structural_identity_after_reserialization(tmp_path: Path) -> None:

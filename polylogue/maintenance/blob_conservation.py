@@ -8,9 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from polylogue.config import Config
-from polylogue.daemon.backup import _source_blob_reservations, _source_recoverability_proofs
+from polylogue.daemon.backup import _source_recoverability_proofs
 from polylogue.maintenance.offline_guard import offline_writer_block_reason
 from polylogue.storage.archive_identity import resolve_active_index_path
+from polylogue.storage.backup_blob_closure import source_blob_reservations
 from polylogue.storage.blob_integrity import project_source_blob_liveness
 from polylogue.storage.blob_store import BlobNamespaceEntryKind, BlobNamespaceIssue, BlobStore
 from polylogue.storage.index_generation import RebuildLease, RebuildLeaseUnavailableError
@@ -108,7 +109,7 @@ def _check_blob_conservation_locked(root: Path, *, sample_size: int) -> BlobCons
         if entry.kind is BlobNamespaceEntryKind.BLOB and entry.hash_hex and entry.hash_hex not in corrupt
     }
     referenced = set(projection.live_hashes)
-    reservations = _source_blob_reservations(source_db, immutable=False)
+    reservations = source_blob_reservations(source_db, immutable=False)
     # A reservation protects a published file from the orphan side of this
     # check, but it is not itself a durable reference.  In particular, a
     # writer may commit the reservation before the atomic rename, so a

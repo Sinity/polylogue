@@ -434,6 +434,44 @@ def release_refused_publication_receipt(
     return removed > 0
 
 
+def consume_restored_raw_blob_receipts(
+    source_db_path: Path,
+    restored: Sequence[tuple[BlobPublicationReceipt, str]],
+) -> int:
+    """Consume receipts for bytes restored under an already-committed raw row.
+
+    Restoring an absent retained blob publishes bytes whose referencing
+    ``raw_sessions`` row committed long before, so no later reference
+    transaction exists to consume the reservation. This is that transaction:
+    each ``(receipt, raw_id)`` is consumed only while the raw row still names
+    the receipt's hash, so a reservation never outlives its protection
+    silently and never clears for a referent that is gone. Returns the number
+    consumed.
+    """
+    if not restored:
+        return 0
+    require_write_lease(f"blob restoration receipts({source_db_path})", archive_root=source_db_path.parent)
+    conn = open_source_tier_write_connection(source_db_path, archive_root=source_db_path.parent)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        consumed = 0
+        for receipt, raw_id in restored:
+            blob_hash = bytes.fromhex(receipt.blob_hash)
+            cursor = conn.execute(
+                "DELETE FROM blob_publication_reservations WHERE publication_id = ? AND blob_hash = ? "
+                "AND EXISTS (SELECT 1 FROM raw_sessions WHERE raw_id = ? AND blob_hash = ?)",
+                (receipt.publication_id, blob_hash, raw_id, blob_hash),
+            )
+            consumed += cursor.rowcount
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+    return consumed
+
+
 def _liveness_decision(
     source_conn: sqlite3.Connection,
     index_conn: sqlite3.Connection | None,
@@ -727,6 +765,7 @@ __all__ = [
     "flush_blob_publications",
     "inspect_blob_publication_receipts",
     "publication_receipt_id",
+    "consume_restored_raw_blob_receipts",
     "reconcile_blob_publication_reservations",
     "reconcile_blob_publication_reservations_under_exclusion",
 ]
