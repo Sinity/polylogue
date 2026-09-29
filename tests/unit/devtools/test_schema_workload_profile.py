@@ -231,3 +231,19 @@ def test_template_integers_keep_their_measured_values() -> None:
     from polylogue.schemas.synthetic.workload import template_measures
 
     assert ("int", "payload.exit_code", 0) in set(template_measures({"payload": {"exit_code": 0}}))
+
+
+def test_a_leading_blank_line_does_not_make_a_rollout_legacy(tmp_path: Path) -> None:
+    """A rollout the record reader would measure is not skipped as legacy.
+
+    Anti-vacuity (Codex P1, #5670): probe only the raw first line and a
+    rollout that starts with a blank line is dropped from the profile.
+    """
+    from devtools.schema_workload_profile import _codex_is_legacy, _codex_parent
+
+    path = tmp_path / "rollout.jsonl"
+    meta = {"type": "session_meta", "payload": {"id": "child", "parent_thread_id": "parent"}}
+    path.write_text("\n" + json.dumps(meta) + "\n", encoding="utf-8")
+
+    assert not _codex_is_legacy(path)
+    assert _codex_parent(path) == "parent"

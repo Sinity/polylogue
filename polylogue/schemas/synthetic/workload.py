@@ -39,7 +39,7 @@ from pathlib import Path
 
 WORKLOAD_PROFILE_FILE = "workload-corpus.json"
 WORKLOAD_PROFILE_KIND = "polylogue.synthetic-workload-profile"
-WORKLOAD_PROFILE_VERSION = 3
+WORKLOAD_PROFILE_VERSION = 4
 
 #: Origins with a workload renderer.
 WORKLOAD_ORIGINS: tuple[str, ...] = ("claude-code", "codex")
@@ -257,7 +257,6 @@ def text_measure(origin: str, kind: str, record: Mapping[str, object]) -> int | 
 # Key skeletons (template kinds)
 # ---------------------------------------------------------------------------
 
-_SKELETON_DEPTH = 6
 #: Containers whose keys are data (JSON-schema properties, model ids, file
 #: paths, user-defined structured output), so their inner keys are not kept.
 _OPAQUE_KEYS = frozenset(
@@ -288,8 +287,6 @@ def record_skeleton(
     Codex completion's ``item.type`` survive generation.
     """
     if isinstance(value, Mapping):
-        if depth >= _SKELETON_DEPTH:
-            return "obj"
         opaque = _OPAQUE_KEYS | ({"data"} if value.get("type") == "structured_output" else set())
         out: dict[str, object] = {}
         for key, item in sorted(value.items()):
@@ -303,7 +300,7 @@ def record_skeleton(
                 out[key] = record_skeleton(item, depth + 1, allowed=allowed, values=values)
         return out
     if isinstance(value, list):
-        if depth >= _SKELETON_DEPTH or not value:
+        if not value:
             return []
         return [record_skeleton(value[0], depth + 1, allowed=allowed, values=values)]
     if isinstance(value, bool):
@@ -354,19 +351,19 @@ def template_measures(
     only the keys it keeps, so a generated field draws its own length --
     a file path is not sized like the file content beside it -- and a list
     its own measured cardinality. ``measure`` is ``"str"``, ``"list"`` or
-    ``"int"`` (an integer leaf's own value, bucketed).
+    ``"int"`` (an integer leaf's own value, bucketed) or ``"bool"`` (0 or 1).
+    Nesting is followed to its end: a public-schema field is measured
+    however deep it sits.
     """
-    if depth > _SKELETON_DEPTH:
-        return
-    if isinstance(value, str):
+    if isinstance(value, bool):
+        yield "bool", path, int(value)
+    elif isinstance(value, str):
         yield "str", path, len(value)
-    elif isinstance(value, int) and not isinstance(value, bool):
+    elif isinstance(value, int):
         # Integers by magnitude: an ``exit_code`` that is almost always 0
         # stays 0, a timestamp stays timestamp-sized.
         yield "int", path, max(value, 0)
     elif isinstance(value, Mapping):
-        if depth >= _SKELETON_DEPTH:
-            return
         opaque = _OPAQUE_KEYS | ({"data"} if value.get("type") == "structured_output" else set())
         for key, item in value.items():
             if not (isinstance(key, str) and _IDENTIFIER.match(key) and (allowed is None or key in allowed)):
@@ -375,8 +372,6 @@ def template_measures(
                 continue
             yield from template_measures(item, allowed=allowed, path=f"{path}.{key}" if path else key, depth=depth + 1)
     elif isinstance(value, list):
-        if depth >= _SKELETON_DEPTH:
-            return
         yield "list", path, len(value)
         # Every item: a long list's one huge payload is its tail.
         for item in value:
@@ -535,6 +530,12 @@ class WorkloadProfile:
     template_lists: Mapping[str, Mapping[str, Histogram]] = field(default_factory=dict)
     #: Integer leaf values per template kind and field path.
     template_ints: Mapping[str, Mapping[str, Histogram]] = field(default_factory=dict)
+    #: Boolean leaf values (0/1) per template kind and field path.
+    template_bools: Mapping[str, Mapping[str, Histogram]] = field(default_factory=dict)
+    #: Nested descendants below each first-level subagent.
+    nested_descendants: Histogram = field(default_factory=lambda: Histogram((0,), (1.0,)))
+    #: Spawns of each subagent inside a nested tree.
+    nested_spawns: Histogram = field(default_factory=lambda: Histogram((0,), (1.0,)))
     #: The rendered family's tool-call names (set by :meth:`for_stream`).
     tool_names: Mapping[str, float] = field(default_factory=dict)
 
@@ -561,6 +562,9 @@ class WorkloadProfile:
             template_strings=_path_histograms(payload.get("template_strings")),
             template_lists=_path_histograms(payload.get("template_lists")),
             template_ints=_path_histograms(payload.get("template_ints")),
+            template_bools=_path_histograms(payload.get("template_bools")),
+            nested_descendants=Histogram.from_payload(_mapping(payload.get("nested_descendants_per_subagent"))),
+            nested_spawns=Histogram.from_payload(_mapping(payload.get("nested_spawns_per_subagent"))),
         )
 
     def for_stream(self, stream: StreamProfile) -> WorkloadProfile:
@@ -588,7 +592,10 @@ class WorkloadProfile:
             weights = {str(index): weight for index, (_, weight) in enumerate(entries)}
             skeleton = entries[int(_weighted(rng, weights))][0]
         shape = _TemplateShape(
-            self.template_strings.get(kind, {}), self.template_lists.get(kind, {}), self.template_ints.get(kind, {})
+            self.template_strings.get(kind, {}),
+            self.template_lists.get(kind, {}),
+            self.template_ints.get(kind, {}),
+            self.template_bools.get(kind, {}),
         )
         record = _instantiate(skeleton, rng, fill, shape)
         return record if isinstance(record, dict) else {}
@@ -597,9 +604,26 @@ class WorkloadProfile:
         """Subagent transcripts whose parent is not a retained session."""
         return _rate(rng, self.share("orphan_subagents_per_session"))
 
-    def nested_subagents(self, rng: random.Random) -> int:
-        """Subagents spawned by one subagent (a nested spawn)."""
-        return _rate(rng, self.share("nested_subagents_per_subagent"))
+    def nested_tree(self, rng: random.Random) -> list[int]:
+        """Spawns per node of one first-level subagent's nested tree, breadth first.
+
+        The tree's size is drawn from the measured descendant distribution
+        and each node's spawns from the measured spawn distribution, so a
+        generated tree is always finite and as large as a measured one.
+        """
+        budget = self.nested_descendants.sample(rng)
+        spawns: list[int] = []
+        frontier = 1
+        while frontier and budget:
+            frontier -= 1
+            count = min(self.nested_spawns.sample(rng), budget)
+            if count == 0 and frontier == 0:
+                # The tree still owes descendants; the last open node spawns.
+                count = 1
+            spawns.append(count)
+            budget -= count
+            frontier += count
+        return spawns
 
 
 def _rate(rng: random.Random, mean: float) -> int:
@@ -626,6 +650,7 @@ class _TemplateShape:
     strings: Mapping[str, Histogram]
     lists: Mapping[str, Histogram]
     ints: Mapping[str, Histogram] = field(default_factory=dict)
+    bools: Mapping[str, Histogram] = field(default_factory=dict)
 
 
 def _instantiate(
@@ -662,7 +687,10 @@ def _instantiate(
     if skeleton == "float":
         return round(rng.random() * 100, 3)
     if skeleton == "bool":
-        return rng.random() < 0.5
+        # A measured flag keeps its measured rate (``preventedContinuation``
+        # is almost never true); an unmeasured one is false.
+        measured_flag = shape.bools.get(path)
+        return measured_flag.sample(rng) == 1 if measured_flag is not None else False
     if skeleton == "obj":
         return {}
     return None
@@ -1257,8 +1285,6 @@ def _claude_code_stream(
         return synthetic_text(rng, length, non_ascii=rng.random() < profile.non_ascii(kind))
 
     for kind in kinds:
-        if kind == "user_tool_result" and not open_calls:
-            kind = "assistant_tool_use"
         record_uuid = _uuid(rng)
         # Advancing the clock is deferred until it is known whether this
         # record actually carries a timestamp: _claude_code_template's
@@ -1272,6 +1298,18 @@ def _claude_code_stream(
         if kind.startswith("assistant_"):
             blocks: list[dict[str, object]] = []
             if kind == "assistant_tool_use":
+                # The thinking and text a tool-call message carries beside
+                # its calls, at their measured rates, in Claude's order.
+                if rng.random() < profile.share("tool_use_thinking_share"):
+                    blocks.append(
+                        {
+                            "type": "thinking",
+                            "thinking": text("assistant_thinking", f"{kind}:thinking"),
+                            "signature": _token(rng, "", 180),
+                        }
+                    )
+                if rng.random() < profile.share("tool_use_text_share"):
+                    blocks.append({"type": "text", "text": text("assistant_text", f"{kind}:text")})
                 # Parallel calls: one message, the measured number of blocks.
                 for _ in range(stream.count(rng, f"{kind}:blocks")):
                     call_id = _token(rng, "toolu_", 24)
@@ -1305,6 +1343,24 @@ def _claude_code_stream(
                     "service_tier": "standard",
                 }
             record = {**base, "type": "assistant", "message": message, "requestId": _token(rng, "req_", 24)}
+        elif kind == "user_tool_result" and not open_calls:
+            # A result whose call is not in this transcript (a resumed or
+            # compacted prefix inherited it): production keeps it, unmatched.
+            record = {
+                **base,
+                "type": "user",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "tool_use_id": _token(rng, "toolu_", 24),
+                            "type": "tool_result",
+                            "content": text(kind),
+                            "is_error": rng.random() < error_share,
+                        }
+                    ],
+                },
+            }
         elif kind == "user_tool_result":
             # Answers to parallel calls may share one message: the measured
             # number of result blocks, each answering the next open call.
@@ -1346,7 +1402,9 @@ def _claude_code_stream(
         elif kind == "user_text":
             record = {**base, "type": "user", "message": {"role": "user", "content": text(kind)}}
         else:
-            record = _claude_code_template(profile, rng, kind, base, open_calls, parent, fork_parent)
+            record = _claude_code_template(
+                profile, rng, kind, base, open_calls, parent, fork_parent, spawned_agents or []
+            )
         if record.get("uuid") == record_uuid:
             parent = record_uuid
             out.last_uuid = record_uuid
@@ -1370,8 +1428,15 @@ def _claude_code_template(
     open_calls: Sequence[tuple[str, str, str, dict[str, object]]],
     parent: str | None,
     fork_parent: tuple[str, str],
+    spawned_agents: Sequence[str] = (),
 ) -> dict[str, object]:
-    """A non-relational record (progress, attachment, system, snapshot, ...)."""
+    """A non-relational record (progress, attachment, system, snapshot, ...).
+
+    Its relational fields name records that exist: the tool-use ids name the
+    latest open call, and an ``agent_progress`` tick names the open Agent or
+    Task call it reports on and the child that call will spawn (production
+    folds those ticks into dispatch edges by exactly these fields).
+    """
     parts = kind.split(":")
     record_type = parts[1] if len(parts) > 1 and parts[1] != "other" else "system"
     subtype = parts[2] if len(parts) > 2 else None
@@ -1386,6 +1451,7 @@ def _claude_code_template(
         "leafUuid": parent,
         "messageId": base["uuid"],
         "toolUseID": open_calls[-1][0] if open_calls else _token(rng, "toolu_", 24),
+        "parentToolUseID": open_calls[-1][0] if open_calls else _token(rng, "toolu_", 24),
         # Fork lineage names the session this transcript descends from and
         # the parent record it branched at.
         "parentSessionId": fork_parent[0],
@@ -1401,6 +1467,20 @@ def _claude_code_template(
             owner["type"] = subtype
         else:
             record["subtype"] = subtype
+    data = record.get("data")
+    if isinstance(data, dict) and data.get("type") == "agent_progress":
+        agent_call = next((call for call in reversed(open_calls) if call[2] in {"Agent", "Task"}), None)
+        if agent_call is not None and "parentToolUseID" in record:
+            record["parentToolUseID"] = agent_call[0]
+        for key in ("agentId", "agent_id", "childSessionId", "child_session_id"):
+            if key not in data:
+                continue
+            if agent_call is not None and spawned_agents and key in {"agentId", "agent_id"}:
+                data[key] = spawned_agents[0]
+            else:
+                # No open dispatch, or no child it will name: a generated id
+                # here would be an edge to a transcript that does not exist.
+                del data[key]
     return record
 
 
@@ -1641,7 +1721,7 @@ def _codex_stream(
                 "last_token_usage": {**last, "total_tokens": last["input_tokens"] + last["output_tokens"]},
                 "model_context_window": 272_000}}  # fmt: skip
         else:
-            out.lines.append(_dumps(_codex_template(profile, rng, kind, timestamp, turn_id)))
+            out.lines.append(_dumps(_codex_template(profile, rng, kind, timestamp, turn_id, thread_id)))
             continue
         out.lines.append(_dumps({"timestamp": timestamp, "type": record_type, "payload": payload}))
     return out
@@ -1682,10 +1762,37 @@ def _codex_output(
     return concat('{"output":"', embedded(body), f'","metadata":{metadata}}}')
 
 
+#: Payload paths that name the rollout's own turn, and its own thread. The
+#: turn carriers are the three production reads (``_codex_turn_evidence``;
+#: a disagreement among them is a recorded conflict); a template's generated
+#: value at any of them would point at a turn or thread that does not exist.
+_CODEX_TURN_PATHS: tuple[tuple[str, ...], ...] = (
+    ("turn_id",),
+    ("turnId",),
+    ("metadata", "turn_id"),
+    ("internal_chat_message_metadata_passthrough", "turn_id"),
+)
+_CODEX_THREAD_PATHS: tuple[tuple[str, ...], ...] = (("thread_id",), ("threadId",))
+
+
+def _bind_present(payload: dict[str, object], paths: Sequence[tuple[str, ...]], value: str) -> None:
+    for path in paths:
+        owner: object = payload
+        for key in path[:-1]:
+            owner = owner.get(key) if isinstance(owner, dict) else None
+        if isinstance(owner, dict) and path[-1] in owner:
+            owner[path[-1]] = value
+
+
 def _codex_template(
-    profile: WorkloadProfile, rng: random.Random, kind: str, timestamp: str, turn_id: str
+    profile: WorkloadProfile, rng: random.Random, kind: str, timestamp: str, turn_id: str, thread_id: str
 ) -> dict[str, object]:
-    """A non-relational rollout record (events, compaction, other items)."""
+    """A non-relational rollout record (events, compaction, other items).
+
+    ``payload.turn_id`` and ``payload.thread_id`` are bound to the active
+    turn and this rollout's thread, as production writes them; production
+    attributes an event to its turn by ``payload.turn_id``.
+    """
     parts = kind.split(":")
     record_type = parts[1] if len(parts) > 1 and parts[1] != "other" else "event_msg"
     subtype = parts[2] if len(parts) > 2 else None
@@ -1698,6 +1805,8 @@ def _codex_template(
         record["payload"] = payload
     if subtype is not None:
         payload["type"] = subtype
+    _bind_present(payload, _CODEX_TURN_PATHS, turn_id)
+    _bind_present(payload, _CODEX_THREAD_PATHS, thread_id)
     return record
 
 
@@ -1728,17 +1837,23 @@ def _codex_session(
     files.append(main)
     sub_stream = profile.streams.get("subagent")
     if sub_stream is not None:
-        # Spawn edges: main → subagents, subagent → nested subagents (at the
-        # measured rate), and orphans whose parent was never retained. A child
-        # starts inside its direct parent's lifetime, never before it.
-        pending = [(main.session_id, first, end)] * profile.subagents_per_session.sample(rng)
-        pending += [(_uuid(rng), first, end) for _ in range(profile.orphan_subagents(rng))]
-        while pending:
-            parent, parent_start, parent_end = pending.pop()
+        # Spawn edges: main → subagents, orphans whose parent was never
+        # retained, and below each of them a nested tree of the measured
+        # size and shape. A child starts inside its direct parent's
+        # lifetime, never before it.
+        first_level = [(main.session_id, first, end)] * profile.subagents_per_session.sample(rng)
+        first_level += [(_uuid(rng), first, end) for _ in range(profile.orphan_subagents(rng))]
+
+        def spawn(parent: str, parent_start: datetime, parent_end: datetime) -> tuple[str, datetime, datetime]:
             child_start = parent_start + (parent_end - parent_start) * rng.random()
             item, (child_first, child_end) = rollout(sub_stream, parent, child_start)
             files.append(item)
-            pending += [(item.session_id, child_first, child_end)] * profile.nested_subagents(rng)
+            return item.session_id, child_first, child_end
+
+        for parent, parent_start, parent_end in first_level:
+            tree = [spawn(parent, parent_start, parent_end)]
+            for index, count in enumerate(profile.nested_tree(rng)):
+                tree += [spawn(*tree[index]) for _ in range(count)]
     return files, stats
 
 
@@ -1748,6 +1863,9 @@ _SESSION_BUILDERS = {"claude-code": _claude_code_session, "codex": _codex_sessio
 # ---------------------------------------------------------------------------
 # Corpus
 # ---------------------------------------------------------------------------
+
+
+_DEFAULT_PROJECTS_ROOT = "/synthetic/claude-code/projects"
 
 
 @dataclass(frozen=True)
@@ -1764,7 +1882,14 @@ class WorkloadCorpus:
     target_bytes: int | None = None
     target_sessions: int | None = None
 
-    def iter_sessions(self) -> Iterator[tuple[list[WorkloadFile], WorkloadStats]]:
+    def iter_sessions(
+        self, *, projects_root: str = _DEFAULT_PROJECTS_ROOT
+    ) -> Iterator[tuple[list[WorkloadFile], WorkloadStats]]:
+        """Each generated session's files, sidecar references resolved against ``projects_root``.
+
+        A byte target counts the resolved bytes, which are what is written:
+        a reference's length depends on the root it names.
+        """
         if self.target_bytes is None and self.target_sessions is None:
             raise ValueError("a workload needs target_bytes or target_sessions")
         rng = random.Random(self.seed)
@@ -1781,14 +1906,16 @@ class WorkloadCorpus:
             origin = rng.choices(names, weights=weights, k=1)[0]
             session_rng = random.Random(f"{self.seed}\x1f{origin}\x1f{index}")
             files, stats = _SESSION_BUILDERS[origin](session_rng, profiles[origin], index=index)
+            files = [_resolve_sidecar_refs(item, projects_root) for item in files]
+            stats.bytes = sum(item.size for item in files)
+            stats.per_origin_bytes = {origin: stats.bytes}
             produced_bytes += stats.bytes
             index += 1
             yield files, stats
 
-    def iter_files(self, *, projects_root: str = "/synthetic/claude-code/projects") -> Iterator[WorkloadFile]:
-        for files, _ in self.iter_sessions():
-            for item in files:
-                yield _resolve_sidecar_refs(item, projects_root)
+    def iter_files(self, *, projects_root: str = _DEFAULT_PROJECTS_ROOT) -> Iterator[WorkloadFile]:
+        for files, _ in self.iter_sessions(projects_root=projects_root):
+            yield from files
 
     def write(self, root: Path) -> WorkloadStats:
         """Write the corpus under ``root``, which must hold no earlier workload.
@@ -1801,9 +1928,8 @@ class WorkloadCorpus:
                 raise FileExistsError(f"{tree} already holds a workload; write into an empty root")
         total = WorkloadStats()
         projects_root = str((root / "claude-code" / "projects").resolve())
-        for files, stats in self.iter_sessions():
+        for files, stats in self.iter_sessions(projects_root=projects_root):
             for item in files:
-                item = _resolve_sidecar_refs(item, projects_root)
                 path = root / item.relpath
                 path.parent.mkdir(parents=True, exist_ok=True)
                 written = 0

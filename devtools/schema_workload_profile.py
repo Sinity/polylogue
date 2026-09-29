@@ -77,6 +77,7 @@ class _Templates:
             "str": defaultdict(lambda: defaultdict(_buckets)),
             "list": defaultdict(lambda: defaultdict(_buckets)),
             "int": defaultdict(lambda: defaultdict(_buckets)),
+            "bool": defaultdict(lambda: defaultdict(_buckets)),
         }
 
     def add(self, kind: str, record: Mapping[str, object], weight: float) -> None:
@@ -87,9 +88,10 @@ class _Templates:
         for measure, path, length in template_measures(record, allowed=self.allowed):
             self.measures[measure][kind][path][log2_bucket(length)] += weight
 
-    def payload(self) -> tuple[dict[str, object], dict[str, object], dict[str, object], dict[str, object]]:
+    def payload(self) -> tuple[dict[str, object], dict[str, dict[str, object]]]:
+        """The skeletons, and each measure's per-kind, per-path histograms."""
         templates: dict[str, object] = {}
-        per_path: dict[str, dict[str, object]] = {"str": {}, "list": {}, "int": {}}
+        per_path: dict[str, dict[str, object]] = {measure: {} for measure in self.measures}
         for kind, entries in sorted(self.skeletons.items()):
             # Every observed variant: a rare skeleton is the one structure
             # some parser path sees, and it passed the public allowlists.
@@ -99,7 +101,7 @@ class _Templates:
                 per_path[measure][kind] = {
                     path: _histogram(buckets) for path, buckets in sorted(by_kind[kind].items()) if _histogram(buckets)
                 }
-        return templates, per_path["str"], per_path["list"], per_path["int"]
+        return templates, per_path
 
 
 def default_source_root(origin: str) -> Path:
@@ -179,6 +181,9 @@ class _Stream:
                     self.lengths[f"{kind}:{tool}"][log2_bucket(len(text))] += weight
                 if origin == "claude-code":
                     self.lengths[f"{kind}:blocks"][log2_bucket(len(calls))] += weight
+                    # Thinking and text beside the calls in the same message.
+                    for companion, companion_text in _companion_blocks(record):
+                        self.lengths[f"{kind}:{companion}"][log2_bucket(len(companion_text))] += weight
             else:
                 length = text_measure(origin, kind, record)
                 if length is not None:
@@ -228,6 +233,21 @@ class _Stream:
             "lengths": {kind: _histogram(counter) for kind, counter in sorted(self.lengths.items())},
             "gap_ms": _histogram(self.gaps),
         }
+
+
+def _companion_blocks(record: Mapping[str, object]) -> list[tuple[str, str]]:
+    """``(kind, text)`` of the thinking and text blocks of a Claude tool-call message."""
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    found: list[tuple[str, str]] = []
+    for block in content if isinstance(content, list) else ():
+        if not isinstance(block, Mapping):
+            continue
+        if block.get("type") == "thinking" and isinstance(block.get("thinking"), str):
+            found.append(("thinking", str(block["thinking"])))
+        elif block.get("type") == "text" and isinstance(block.get("text"), str):
+            found.append(("text", str(block["text"])))
+    return found
 
 
 def _ranked(weights: Mapping[str, float]) -> list[tuple[str, float]]:
@@ -285,6 +305,10 @@ def _count_shares(
             shares["assistant"] += weight
             if isinstance(message.get("usage"), Mapping):
                 shares["assistant_usage"] += weight
+        if kind == "assistant_tool_use":
+            shares["tool_use_messages"] += weight
+            for companion in {companion for companion, _text in _companion_blocks(record)}:
+                shares[f"tool_use_with:{companion}"] += weight
         if kind == "user_tool_result" and isinstance(message, Mapping):
             content = message.get("content")
             block = (
@@ -372,6 +396,8 @@ def _family_payload(origin: str, shares: Mapping[str, float]) -> dict[str, objec
         if origin == "codex"
         else {
             "assistant_usage_share": ratio("assistant_usage", "assistant"),
+            "tool_use_thinking_share": ratio("tool_use_with:thinking", "tool_use_messages"),
+            "tool_use_text_share": ratio("tool_use_with:text", "tool_use_messages"),
             "tool_error_share": ratio("tool_errors", "tool_results"),
             "sidecar_share_of_large": round(shares.get("sidecar_refs", 0.0) / large, 4) if large else 0.0,
         }
@@ -404,23 +430,25 @@ def _stream_families(origin: str, root: Path) -> dict[str, list[Path]]:
     return families
 
 
+def _first_record(path: Path) -> dict[str, object] | None:
+    """The first record :func:`_records` would measure (blank lines skipped)."""
+    return next(_records(path), None)
+
+
 def _codex_is_legacy(path: Path) -> bool:
-    """A rollout in the pre-envelope flat format (records without ``payload``)."""
-    try:
-        with path.open("rb") as handle:
-            first = json.loads(handle.readline() or b"{}")
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return True
-    return not (isinstance(first, dict) and isinstance(first.get("payload"), dict))
+    """A rollout in the pre-envelope flat format (records without ``payload``).
+
+    Decided from the first record the profile would measure, so a leading
+    blank line does not classify an envelope rollout as legacy and drop it.
+    An unreadable file raises rather than being skipped as legacy.
+    """
+    first = _first_record(path)
+    return not (first is not None and isinstance(first.get("payload"), dict))
 
 
 def _codex_parent(path: Path) -> str | None:
-    try:
-        with path.open("rb") as handle:
-            first = json.loads(handle.readline() or b"{}")
-    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-        return None
-    payload = first.get("payload") if isinstance(first, dict) else None
+    first = _first_record(path)
+    payload = first.get("payload") if first is not None else None
     if not isinstance(payload, dict):
         return None
     parent = payload.get("parent_thread_id")
@@ -434,31 +462,56 @@ def _codex_parent(path: Path) -> str | None:
 
 def _fanout(
     origin: str, root: Path, families: Mapping[str, list[Path]]
-) -> tuple[defaultdict[int, float], float, float]:
-    """Subagent fan-out per main session, nested spawns per subagent, orphans per main session.
+) -> tuple[defaultdict[int, float], defaultdict[int, float], defaultdict[int, float], float]:
+    """Subagent fan-out per main session, the nested-spawn topology, orphans per main session.
 
     A nested spawn is a subagent whose parent is itself a subagent; an orphan
-    is one whose parent is not among the measured sessions at all.
+    is one whose parent is not among the measured sessions at all. Nesting
+    is measured as two finite distributions: the nested descendants below
+    each first-level subagent, and the spawns of each subagent in those
+    nested trees. A mean nesting rate cannot describe a long finite chain:
+    rounded, it reads as every subagent spawning one more, forever.
     """
     fanout = _buckets()
     if origin == "claude-code":
         parents = {path: path.parent.parent.name for path in families["subagent"] if path.parent.name == "subagents"}
         main_ids = {main.stem for main in families["main"]}
-        subagent_ids: set[str] = set()
+        subagent_of = {path: path.stem for path in parents}
     else:
         parents = {path: parent for path in families["subagent"] if (parent := _codex_parent(path))}
         main_ids = {path.stem[-36:] for path in families["main"]}
-        subagent_ids = {path.stem[-36:] for path in families["subagent"]}
+        subagent_of = {path: path.stem[-36:] for path in families["subagent"]}
+    subagent_ids = set(subagent_of.values()) if origin != "claude-code" else set()
     per_parent: defaultdict[str, int] = defaultdict(int)
-    for parent in parents.values():
+    children: defaultdict[str, list[str]] = defaultdict(list)
+    for path, parent in parents.items():
         per_parent[parent] += 1
+        if parent in subagent_ids and parent not in main_ids:
+            children[parent].append(subagent_of[path])
     for session_id in main_ids:
         fanout[log2_bucket(per_parent.get(session_id, 0))] += 1
-    nested = sum(count for parent, count in per_parent.items() if parent in subagent_ids and parent not in main_ids)
     orphans = sum(
         count for parent, count in per_parent.items() if parent not in main_ids and parent not in subagent_ids
     )
-    return fanout, nested / max(1, len(parents)), orphans / max(1, len(main_ids))
+    descendants = _buckets()
+    spawns = _buckets()
+    for path, parent in parents.items():
+        if parent in subagent_ids and parent not in main_ids:
+            continue
+        # A first-level subagent: walk its nested tree without recursion (a
+        # measured chain can be tens of thousands deep).
+        count = 0
+        queue = [subagent_of[path]]
+        seen = set(queue)
+        while queue:
+            node = queue.pop()
+            below = [child for child in children.get(node, ()) if child not in seen]
+            spawns[log2_bucket(len(below))] += 1
+            count += len(below)
+            seen.update(below)
+            queue.extend(below)
+        descendants[log2_bucket(count)] += 1
+    return fanout, descendants, spawns, orphans / max(1, len(main_ids))
 
 
 def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> dict[str, object]:
@@ -484,8 +537,8 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
                 print(f"  {origin}/{name}: {index + 1}/{len(tail_paths) + len(drawn)}", file=sys.stderr, flush=True)
         streams[name] = stream.payload(origin)
 
-    fanout, nested_per_subagent, orphans_per_session = _fanout(origin, root, families)
-    template_payload, template_strings, template_lists, template_ints = templates.payload()
+    fanout, nested_descendants, nested_spawns, orphans_per_session = _fanout(origin, root, families)
+    template_payload, per_path = templates.payload()
     return {
         "kind": WORKLOAD_PROFILE_KIND,
         "version": WORKLOAD_PROFILE_VERSION,
@@ -494,14 +547,16 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
         "main_sessions": int(_round2(len(families.get("main", ())))),
         "streams": streams,
         "subagents_per_session": _histogram(fanout),
+        "nested_descendants_per_subagent": _histogram(nested_descendants),
+        "nested_spawns_per_subagent": _histogram(nested_spawns),
         "shares": {
             "orphan_subagents_per_session": round(orphans_per_session, 4),
-            "nested_subagents_per_subagent": round(nested_per_subagent, 4),
         },
         "templates": template_payload,
-        "template_strings": template_strings,
-        "template_lists": template_lists,
-        "template_ints": template_ints,
+        "template_strings": per_path["str"],
+        "template_lists": per_path["list"],
+        "template_ints": per_path["int"],
+        "template_bools": per_path["bool"],
     }
 
 

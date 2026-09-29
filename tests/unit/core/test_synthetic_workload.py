@@ -109,6 +109,7 @@ def test_every_tool_result_answers_an_earlier_call_in_its_stream(origin: str) ->
         if item.role == "sidecar":
             continue
         calls: set[str] = set()
+        answered: set[str] = set()
         for record in _records(item.data):
             if origin == "claude-code":
                 message = record.get("message")
@@ -117,8 +118,14 @@ def test_every_tool_result_answers_an_earlier_call_in_its_stream(origin: str) ->
                     if block.get("type") == "tool_use":
                         calls.add(block["id"])
                     elif block.get("type") == "tool_result":
-                        assert block["tool_use_id"] in calls
-                        results += 1
+                        # A result with no open call is an inherited,
+                        # unmatched one; any other answers an earlier call.
+                        if calls - answered:
+                            assert block["tool_use_id"] in calls
+                            answered.add(block["tool_use_id"])
+                            results += 1
+                        else:
+                            assert block["tool_use_id"] not in calls
             else:
                 payload = record.get("payload")
                 if not isinstance(payload, dict):
@@ -273,19 +280,15 @@ def test_default_origin_mix_follows_session_populations() -> None:
 def test_codex_nested_subagents_keep_their_subagent_parent() -> None:
     """Anti-vacuity: collapsing nested spawns into orphans gives them parents that exist nowhere."""
     measured = load_workload_profile("codex")
-    assert measured.share("nested_subagents_per_subagent") > 0
+    assert measured.nested_descendants.buckets != (0,)
     profile = dataclasses.replace(
         measured,
-        shares={**measured.shares, "nested_subagents_per_subagent": 0.5, "orphan_subagents_per_session": 0.0},
+        shares={**measured.shares, "orphan_subagents_per_session": 0.0},
         subagents_per_session=Histogram((2,), (1.0,)),
+        nested_descendants=Histogram((2,), (1.0,)),
+        nested_spawns=Histogram((1,), (1.0,)),
     )
-    # A nested spawn is sampled at its rate; take the first seed that draws one.
-    files: list[WorkloadFile] = []
-    for seed in range(1, 50):
-        files, _ = _codex_session(random.Random(seed), profile, index=0)
-        parents = {item.session_id: item.parent_session_id for item in files}
-        if any(parent in parents and parents[parent] is not None for parent in parents.values()):
-            break
+    files, _ = _codex_session(random.Random(1), profile, index=0)
     parents = {item.session_id: item.parent_session_id for item in files}
     starts = {item.session_id: _records(item.data)[0]["timestamp"] for item in files}
     main = next(item.session_id for item in files if item.parent_session_id is None)
@@ -296,6 +299,216 @@ def test_codex_nested_subagents_keep_their_subagent_parent() -> None:
     for thread, parent in parents.items():
         if parent in starts:
             assert str(starts[thread]) >= str(starts[parent])
+
+
+def test_a_long_measured_nesting_chain_generates_a_finite_tree() -> None:
+    """Every subagent spawning one more (a rounded mean of 1.0) still ends.
+
+    Anti-vacuity (Codex P1, #5670): apply the rounded nesting mean to every
+    child and this session never finishes generating.
+    """
+    measured = load_workload_profile("codex")
+    profile = dataclasses.replace(
+        measured,
+        shares={**measured.shares, "orphan_subagents_per_session": 0.0},
+        subagents_per_session=Histogram((1,), (1.0,)),
+        nested_descendants=Histogram((5,), (1.0,)),
+        nested_spawns=Histogram((1,), (1.0,)),
+    )
+    files, _ = _codex_session(random.Random(2), profile, index=0)
+    subagents = [item for item in files if item.parent_session_id is not None]
+    # One first-level subagent and its 16..31 nested descendants, as a chain.
+    assert 17 <= len(subagents) <= 32
+    parents = [item.parent_session_id for item in subagents]
+    assert len(set(parents)) == len(parents)
+
+
+def test_nesting_is_measured_as_finite_distributions(tmp_path: Path) -> None:
+    """A measured chain is its descendant count and one spawn per node.
+
+    Anti-vacuity (Codex P1, #5670): measure only the rounded nested/all
+    ratio and a 40-deep chain is indistinguishable from unbounded nesting.
+    """
+    import uuid as uuid_module
+
+    from devtools.schema_workload_profile import _fanout
+
+    def rollout(thread: str, parent: str | None) -> Path:
+        path = tmp_path / f"rollout-2026-01-01T00-00-00-{thread}.jsonl"
+        payload: dict[str, object] = {"id": thread}
+        if parent is not None:
+            payload["parent_thread_id"] = parent
+        path.write_text(json.dumps({"type": "session_meta", "payload": payload}) + "\n", encoding="utf-8")
+        return path
+
+    main_id = str(uuid_module.UUID(int=1))
+    chain = [str(uuid_module.UUID(int=index + 2)) for index in range(40)]
+    main = rollout(main_id, None)
+    subagents = [rollout(thread, main_id if index == 0 else chain[index - 1]) for index, thread in enumerate(chain)]
+
+    fanout, descendants, spawns, orphans = _fanout("codex", tmp_path, {"main": [main], "subagent": subagents})
+
+    assert dict(descendants) == {6: 1}  # 39 descendants: bucket [32, 63]
+    assert dict(spawns) == {1: 39, 0: 1}
+    assert orphans == 0.0
+    assert dict(fanout) == {1: 1}
+
+
+def test_a_sampled_claude_result_with_no_open_call_is_kept_unmatched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A sampled result class is emitted even when no call is open.
+
+    Anti-vacuity (Codex P1, #5670): turn such a result into a tool call and
+    the generated stream has no results and a call in their place.
+    """
+    from polylogue.schemas.synthetic.workload import StreamProfile, _claude_code_session
+
+    measured = load_workload_profile("claude-code")
+    profile = dataclasses.replace(
+        measured,
+        subagents_per_session=Histogram((0,), (1.0,)),
+        shares={**measured.shares, "orphan_subagents_per_session": 0.0},
+    )
+    monkeypatch.setattr(StreamProfile, "kind_sequence", lambda self, rng, count: ["user_tool_result"] * 2)
+    files, stats = _claude_code_session(random.Random(8), profile, index=0)
+    records = _records(files[0].data)
+    blocks = [block for record in records for block in record["message"]["content"]]  # type: ignore[index]
+    assert [block["type"] for block in blocks] == ["tool_result", "tool_result"]
+    assert stats.tool_calls == 0
+
+
+def test_a_claude_tool_call_message_keeps_its_thinking_and_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Thinking and text beside tool calls are rendered at their measured shares.
+
+    Anti-vacuity (Codex P1, #5670): render only the calls of a mixed message
+    and the thinking and text production parses from it never appear.
+    """
+    from polylogue.schemas.synthetic.workload import StreamProfile, _claude_code_session
+
+    measured = load_workload_profile("claude-code")
+    main = measured.streams["main"]
+    profile = dataclasses.replace(
+        measured,
+        streams={
+            **measured.streams,
+            "main": dataclasses.replace(
+                main, shares={**main.shares, "tool_use_thinking_share": 1.0, "tool_use_text_share": 1.0}
+            ),
+        },
+        subagents_per_session=Histogram((0,), (1.0,)),
+        shares={**measured.shares, "orphan_subagents_per_session": 0.0},
+    )
+    monkeypatch.setattr(StreamProfile, "kind_sequence", lambda self, rng, count: ["assistant_tool_use"])
+    files, _stats = _claude_code_session(random.Random(9), profile, index=0)
+    content = _records(files[0].data)[0]["message"]["content"]  # type: ignore[index]
+    types = [block["type"] for block in content]
+    assert types[:2] == ["thinking", "text"] and set(types[2:]) == {"tool_use"}
+
+
+def test_template_booleans_render_at_their_measured_rate() -> None:
+    """A flag that is never true stays false.
+
+    Anti-vacuity (Codex P1, #5670): render every boolean leaf as a fair coin
+    and about half of these records claim a prevented continuation.
+    """
+    from polylogue.schemas.synthetic.workload import template_measures
+
+    assert ("bool", "preventedContinuation", 0) in set(template_measures({"preventedContinuation": False}))
+    measured = load_workload_profile("claude-code")
+    kind = "record:system:stop_hook_summary"
+    profile = dataclasses.replace(
+        measured,
+        templates={kind: (({"preventedContinuation": "bool", "unmeasured": "bool"}, 1.0),)},
+        template_bools={kind: {"preventedContinuation": Histogram((0,), (1.0,))}},
+    )
+    rng = random.Random(10)
+    records = [profile.template_record(rng, kind, {}) for _ in range(200)]
+    assert not any(record["preventedContinuation"] for record in records)
+    assert not any(record["unmeasured"] for record in records)
+
+
+def test_deep_template_fields_are_kept_and_measured() -> None:
+    """A public field nested past six levels keeps its structure and measures.
+
+    Anti-vacuity (Codex P1, #5670): truncate skeletons at depth six and the
+    nested ``start``/``end`` fields render as ``{}``.
+    """
+    from polylogue.schemas.synthetic.workload import template_measures
+
+    deep: dict[str, object] = {"start": {"line": 3}, "end": {"line": 4}}
+    for key in ("range", "diagnostics", "files", "attachment", "wrap", "outer"):
+        deep = {key: deep}
+    skeleton = record_skeleton(deep)
+    node: object = skeleton
+    for key in ("outer", "wrap", "attachment", "files", "diagnostics", "range"):
+        assert isinstance(node, dict)
+        node = node[key]
+    assert node == {"end": {"line": "int"}, "start": {"line": "int"}}
+    paths = {path for _measure, path, _value in template_measures(deep)}
+    assert "outer.wrap.attachment.files.diagnostics.range.start.line" in paths
+
+
+def test_codex_template_events_name_the_active_turn_and_thread() -> None:
+    """A template event's turn carriers name the generated turn.
+
+    Anti-vacuity (Codex P1, #5670): fill only envelope fields and
+    ``payload.turn_id`` keeps a generated id no ``turn_context`` names.
+    """
+    from polylogue.schemas.synthetic.workload import _codex_template
+
+    measured = load_workload_profile("codex")
+    kind = "record:event_msg:item_completed"
+    skeleton = {
+        "payload": {
+            "turn_id": "str",
+            "thread_id": "str",
+            "metadata": {"turn_id": "str"},
+            "internal_chat_message_metadata_passthrough": {"turn_id": "str"},
+        },
+        "timestamp": "str",
+        "type": "=event_msg",
+    }
+    profile = dataclasses.replace(measured, templates={kind: ((skeleton, 1.0),)})
+    record = _codex_template(profile, random.Random(11), kind, "2026-01-01T00:00:00.000Z", "turn-1", "thread-1")
+    payload = record["payload"]
+    assert isinstance(payload, dict)
+    assert payload["turn_id"] == "turn-1" and payload["thread_id"] == "thread-1"
+    assert payload["metadata"] == {"turn_id": "turn-1"}
+    assert payload["internal_chat_message_metadata_passthrough"] == {"turn_id": "turn-1"}
+
+
+def test_claude_agent_progress_names_its_open_dispatch() -> None:
+    """An ``agent_progress`` tick names the open Agent call and the child it spawns.
+
+    Anti-vacuity (#5670, same class as the Codex turn binding): keep the
+    template's generated ``parentToolUseID``/``data.agentId`` and production
+    folds the tick into a dispatch edge to a transcript that does not exist.
+    """
+    from polylogue.schemas.synthetic.workload import _claude_code_template
+
+    measured = load_workload_profile("claude-code")
+    kind = "record:progress:agent_progress"
+    skeleton = {"parentToolUseID": "str", "data": {"agentId": "str", "type": "=agent_progress"}}
+    profile = dataclasses.replace(measured, templates={kind: ((skeleton, 1.0),)})
+    base = {"uuid": "u", "sessionId": "s", "timestamp": "t", "isSidechain": False, "cwd": "/w"}
+    open_call = ("toolu_agent", "u0", "Agent", {})
+    bound = _claude_code_template(profile, random.Random(12), kind, base, [open_call], None, ("p", "q"), ["child-1"])
+    assert bound["parentToolUseID"] == "toolu_agent"
+    assert bound["data"] == {"agentId": "child-1", "type": "agent_progress"}
+    unbound = _claude_code_template(profile, random.Random(12), kind, base, [], None, ("p", "q"), ["child-1"])
+    assert "agentId" not in unbound["data"]  # type: ignore[operator]
+
+
+def test_a_byte_target_counts_resolved_sidecar_references() -> None:
+    """Sizes are measured after sidecar references name the real root.
+
+    Anti-vacuity (Codex P2, #5670): count ``{projects_root}`` placeholders and
+    a long output root writes more bytes than the target accounted for.
+    """
+    root = "/" + "long-output-root/" * 40
+    corpus = generate_workload_corpus(seed=21, target_sessions=20, origins={"claude-code": 1.0})
+    for files, stats in corpus.iter_sessions(projects_root=root):
+        assert stats.bytes == sum(item.size for item in files)
+        assert not any(b"{projects_root}" in item.data for item in files if item.role != "sidecar")
 
 
 def test_record_type_values_outside_public_vocabulary_are_not_published() -> None:
