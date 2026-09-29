@@ -1,0 +1,355 @@
+"""A single claude.ai conversation object streams through sealed preparation."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from io import BytesIO
+from pathlib import Path
+
+import ijson
+import pytest
+
+from polylogue.core.enums import Provider, Role
+from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.decoder_json import claude_ai_object_envelope
+from polylogue.sources.dispatch import parse_payload, require_positive_conversational_evidence
+from polylogue.sources.parsers.base import ParsedMessage, ParsedSession
+from polylogue.sources.parsers.claude import common as claude_common
+from polylogue.sources.prepared_jsonl import prepare_jsonl_blob
+from polylogue.sources.prepared_message_sink import ClaudeChatEvidence, SqliteMessageStore
+from polylogue.storage.blob_store import BlobStore
+from polylogue.storage.sqlite.archive_tiers import write as archive_tier_write
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
+
+
+def _conversation(message_count: int = 300) -> dict[str, object]:
+    """A branched conversation carrying every normalization the parser owns."""
+    messages: list[dict[str, object]] = []
+    for index in range(message_count):
+        message: dict[str, object] = {
+            "uuid": f"m-{index}",
+            "sender": "human" if index % 2 == 0 else "assistant",
+            "text": f"Neutral turn {index}",
+            "created_at": f"2026-01-01T{index // 3600:02d}:{index // 60 % 60:02d}:{index % 60:02d}Z",
+            "parent_message_uuid": f"m-{index - 1}" if index else None,
+        }
+        messages.append(message)
+    messages[3]["updated_at"] = "2026-01-02T00:00:00Z"
+    messages[3]["edited_at"] = "2026-01-02T00:00:00Z"
+    messages[4]["attachments"] = [
+        {"file_name": "brief.txt", "file_type": "text/plain", "extracted_content": "Neutral brief", "file_size": 13}
+    ]
+    messages[5]["content"] = [
+        {"type": "text", "text": "Neutral"},
+        {"type": "tool_use", "name": "web_search", "input": {"query": "neutral"}},
+        {"type": "tool_result", "name": "web_search", "content": [{"type": "text", "text": "Neutral result"}]},
+    ]
+    messages[6]["compaction_summary"] = [
+        {"text": "Neutral summary", "start_timestamp": "2026-01-01T00:00:00Z", "stop_timestamp": "2026-01-01T00:01:00Z"}
+    ]
+    messages[7]["thinking"] = {"type": "enabled", "budget_tokens": 1024}
+    # A sibling variant, a duplicate native id, an ID-less turn and an empty turn.
+    messages.append(
+        {
+            "uuid": "m-9",
+            "sender": "assistant",
+            "text": "Neutral variant",
+            "created_at": "2026-01-01T00:00:08Z",
+            "parent_message_uuid": "m-8",
+        }
+    )
+    messages.append({"sender": "human", "text": "Neutral idless", "parent_message_uuid": "m-8"})
+    messages.append({"uuid": "m-empty", "sender": "assistant", "text": "", "parent_message_uuid": "m-2"})
+    return {
+        "uuid": "claude-conversation",
+        "name": "Neutral conversation",
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-03T00:00:00Z",
+        "model": "neutral-model",
+        "settings": {"effort_level": "high", "thinking_mode": "auto"},
+        "summary": "Neutral provider summary",
+        "status": "complete",
+        "current_leaf_message_uuid": f"m-{message_count - 1}",
+        "chat_messages": messages,
+        "files": [{"file_name": "brief.txt", "file_type": "text/plain"}, {"file_name": "other.txt"}],
+    }
+
+
+def _expected(payload: dict[str, object], source: Path) -> ParsedSession:
+    [expected] = require_positive_conversational_evidence(
+        parse_payload(Provider.CLAUDE_AI, [payload], "fallback"),
+        provider=Provider.CLAUDE_AI,
+        source_path=str(source),
+    )
+    expected.content_hash = session_content_hash(expected)
+    return expected
+
+
+def _assert_same_publication(actual: ParsedSession, expected: ParsedSession, shard_path: Path, tmp_path: Path) -> None:
+    assert actual.content_hash == expected.content_hash
+    assert actual.unit_accounting == expected.unit_accounting
+    assert [event.model_dump(mode="json") for event in actual.session_events] == [
+        event.model_dump(mode="json") for event in expected.session_events
+    ]
+    assert [attachment.model_dump(mode="json") for attachment in actual.attachments] == [
+        attachment.model_dump(mode="json") for attachment in expected.attachments
+    ]
+    exclude = {"messages", "session_events", "attachments"}
+    assert actual.model_dump(mode="json", exclude=exclude) == expected.model_dump(mode="json", exclude=exclude)
+    expected_shard = prepare_session_shard(tmp_path / "expected", [expected])
+    with sqlite3.connect(expected_shard.path) as baseline, sqlite3.connect(shard_path) as prepared:
+        for table in ("messages", "blocks", "shard_session"):
+            assert (
+                prepared.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+                == baseline.execute(f"SELECT * FROM {table} ORDER BY rowid").fetchall()
+            )
+
+
+def _refuse_whole_document(monkeypatch: pytest.MonkeyPatch) -> None:
+    def refuse(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError("whole-document decode or parse was used")
+
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl._iter_json_stream", refuse)
+    monkeypatch.setattr("polylogue.sources.prepared_jsonl.parse_payload", refuse)
+
+    def refuse_resident(self: object, _value: object) -> None:
+        raise AssertionError("streamed Claude AI evidence was held in a resident store")
+
+    monkeypatch.setattr(claude_common._ResidentEvidence, "put", refuse_resident)
+    monkeypatch.setattr(claude_common._ResidentAttachmentRows, "put", refuse_resident)
+
+
+def test_claude_ai_object_streams_evidence_before_eof_with_parser_parity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _conversation()
+    source = tmp_path / "conversation.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    expected = _expected(payload, source)
+    assert len(expected.messages) == 302
+    assert {event.event_type for event in expected.session_events} >= {
+        "model_configuration",
+        "message_revision",
+        "claude_ai_compaction_summary",
+        "normalization_diagnostic",
+        "provider_session_status",
+        "claude_ai_conversation_summary",
+    }
+    assert len(expected.attachments) == 2
+
+    _refuse_whole_document(monkeypatch)
+    decoded = 0
+    first_spilled_after: int | None = None
+    original_items = ijson.items
+    original_put = ClaudeChatEvidence.put
+
+    def tracked_items(*args: object, **kwargs: object) -> object:
+        nonlocal decoded
+        for item in original_items(*args, **kwargs):
+            decoded += 1
+            yield item
+
+    def tracked_put(self: ClaudeChatEvidence, evidence: object) -> None:
+        nonlocal first_spilled_after
+        if first_spilled_after is None:
+            first_spilled_after = decoded
+        original_put(self, evidence)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ijson, "items", tracked_items)
+    monkeypatch.setattr(ClaudeChatEvidence, "put", tracked_put)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_AI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    assert artifact.positive_evidence_filtered
+    assert first_spilled_after == 1
+    [actual] = artifact.iter_sessions()
+    assert artifact.shard_path is not None and artifact.sessions_path is not None
+    _assert_same_publication(actual, expected, artifact.shard_path, tmp_path)
+    with sqlite3.connect(artifact.sessions_path) as conn:
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    assert not tables & {"claude_evidence", "claude_attachment"}
+
+
+def test_claude_ai_object_future_wire_type_keeps_parser_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = _conversation(12)
+    messages = payload["chat_messages"]
+    assert isinstance(messages, list)
+    messages[2]["metadata"] = {"kind": "future_metadata"}
+    messages[5]["type"] = "future_turn"
+    envelope = claude_ai_object_envelope(BytesIO(json.dumps(payload).encode()))
+    assert envelope is not None and envelope["__admission_future_type"] == "future_metadata"
+    source = tmp_path / "future.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    expected = _expected(payload, source)
+    assert [event.payload for event in expected.session_events if event.event_type == "claude_ai_unknown_input"] == [
+        {"source_index": 1, "wire_type": "future_metadata"}
+    ]
+
+    _refuse_whole_document(monkeypatch)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_AI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    assert artifact.error is None
+    [actual] = artifact.iter_sessions()
+    assert artifact.shard_path is not None
+    _assert_same_publication(actual, expected, artifact.shard_path, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"sessions": []},
+        {"account_uuid": "neutral-account", "conversations_memory": "Neutral"},
+        {"docs": [], "prompt_template": "Neutral"},
+        {"polylogue_capture_kind": "browser_capture"},
+        {"chat_messages": {"not": "an array"}},
+    ],
+)
+def test_claude_ai_probe_leaves_rerouted_shapes_to_the_object_parser(tmp_path: Path, extra: dict[str, object]) -> None:
+    payload = {**_conversation(12), **extra}
+    assert claude_ai_object_envelope(BytesIO(json.dumps(payload).encode())) is None
+
+
+def test_claude_ai_object_without_identity_keeps_bundle_fallback_identity(tmp_path: Path) -> None:
+    payload = _conversation(12)
+    del payload["uuid"]
+    source = tmp_path / "anonymous.json"
+    source.write_text(json.dumps(payload), encoding="utf-8")
+    expected = _expected(payload, source)
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_AI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(tmp_path / "prepared"),
+    )
+    [actual] = artifact.iter_sessions()
+    assert actual.provider_session_id == expected.provider_session_id == "fallback-0"
+    assert actual.content_hash == expected.content_hash
+
+
+def test_claude_ai_object_corrupt_suffix_leaves_no_artifact(tmp_path: Path) -> None:
+    source = tmp_path / "damaged.json"
+    source.write_text(json.dumps(_conversation(20))[:-2] + ", {broken", encoding="utf-8")
+    directory = tmp_path / "prepared"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_AI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+    )
+    assert artifact.error is not None
+    assert artifact.sessions_path is None
+    assert list(directory.glob("*.db")) == []
+
+
+@pytest.mark.parametrize("failure", ["mutation", "parser"])
+def test_claude_ai_object_failure_after_spill_discards_scratch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    source = tmp_path / "conversation.json"
+    source.write_text(json.dumps(_conversation(20)), encoding="utf-8")
+    original_put = ClaudeChatEvidence.put
+    spilled = 0
+
+    def put_then_fail(self: ClaudeChatEvidence, evidence: object) -> None:
+        nonlocal spilled
+        original_put(self, evidence)  # type: ignore[arg-type]
+        spilled += 1
+        if spilled == 10:
+            if failure == "mutation":
+                source.write_text(source.read_text(encoding="utf-8") + " ", encoding="utf-8")
+            else:
+                raise RuntimeError("synthetic parse worker failure")
+
+    monkeypatch.setattr(ClaudeChatEvidence, "put", put_then_fail)
+    directory = tmp_path / "prepared"
+    artifact = prepare_jsonl_blob(
+        str(source),
+        str(source),
+        Provider.CLAUDE_AI.value,
+        "fallback",
+        is_stream=False,
+        shard_directory=str(directory),
+    )
+    assert spilled >= 10
+    assert artifact.error is not None
+    assert artifact.sessions_path is None
+    assert artifact.deferred is (failure == "mutation")
+    assert list(directory.glob("*.db")) == []
+
+
+def test_retained_claude_ai_object_uses_streamed_replay_route(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import polylogue.sources.revision_backfill as revision_backfill
+
+    payload = _conversation()
+    blob_root = tmp_path / "blob"
+    blob_hash, _size = BlobStore(blob_root).write_from_bytes(json.dumps(payload).encode())
+    source_db = tmp_path / "source.db"
+    index_db = tmp_path / "index.db"
+    for path, tier in ((source_db, ArchiveTier.SOURCE), (index_db, ArchiveTier.INDEX)):
+        with sqlite3.connect(path) as conn:
+            initialize_archive_tier(conn, tier)
+    _refuse_whole_document(monkeypatch)
+    artifact = revision_backfill.prepare_retained_jsonl_artifact(
+        "synthetic-raw",
+        Provider.CLAUDE_AI.value,
+        blob_hash,
+        str(tmp_path / "claude" / "conversation.json"),
+        "full",
+        None,
+        str(blob_root),
+        str(source_db),
+        str(index_db),
+        str(tmp_path / "prepared"),
+        "2025-01-02T03:04:05Z",
+    )
+    assert artifact.error is None
+    assert artifact.positive_evidence_filtered
+    [actual] = artifact.iter_sessions()
+    assert actual.provider_session_id == "claude-conversation"
+    assert len(actual.messages) == 302
+    assert actual.created_at == "2026-01-01T00:00:00+00:00"
+
+
+def test_sink_active_path_walk_starts_at_the_leaf_row(tmp_path: Path) -> None:
+    messages = [
+        ParsedMessage(provider_message_id="a", role=Role.USER, text="one"),
+        ParsedMessage(provider_message_id="b", role=Role.ASSISTANT, text="two", parent_message_provider_id="a"),
+        ParsedMessage(provider_message_id="x", role=Role.USER, text="three"),
+        ParsedMessage(
+            provider_message_id="b",
+            role=Role.ASSISTANT,
+            text="four",
+            parent_message_provider_id="x",
+            is_active_leaf=False,
+        ),
+    ]
+    messages[1] = messages[1].model_copy(update={"is_active_leaf": True})
+    resident = archive_tier_write._normalized_messages(list(messages))
+    store = SqliteMessageStore(tmp_path / "scratch.db")
+    sink = store.new_sink()
+    sink.extend(messages)
+    normalized = list(sink.normalize_active_path())
+    store.close()
+    assert [message.is_active_path for message in normalized] == [message.is_active_path for message in resident]
+    assert [message.is_active_path for message in resident] == [True, True, None, True]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextvars
+import dataclasses
 import hashlib
 import json
 import os
@@ -24,7 +25,7 @@ from io import BytesIO
 from itertools import chain, islice
 from pathlib import Path
 from types import TracebackType
-from typing import BinaryIO, Final, Literal, Protocol, cast
+from typing import Any, BinaryIO, Final, Literal, Protocol, cast
 
 import ijson
 from ijson.common import ObjectBuilder
@@ -118,6 +119,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
+    WORK_EVENT_RAW_ID_PREFIX,
     PreparedRows,
     PreparedSessionWrite,
     PreparedSessionWriteRefusedError,
@@ -969,6 +971,188 @@ def _retained_dependency_digest(assembly_digest: str | None, parser_sidecars_dig
     return hashlib.sha256(f"{assembly_digest or ''}:{parser_sidecars_digest}".encode("ascii")).hexdigest()
 
 
+def enrichment_dependency_digest(
+    *,
+    provider: Provider,
+    source_path: str,
+    provider_session_ids: Iterable[str],
+    index_conn: sqlite3.Connection | None,
+    source_conn: sqlite3.Connection | None,
+    blob_root: Path | None,
+    parser_sidecars: bool,
+) -> str:
+    """Digest every archive input a prepared session's enrichment depends on.
+
+    The preparing worker and the writer compute this from their own read
+    views; a mismatch means the evidence moved between preparation and
+    publication and the prepared interpretation is stale. ``parser_sidecars``
+    also binds retained tool-result siblings, which only a retained parse
+    reads; a live parse reads them from the source tree.
+    ``provider_session_ids`` is consumed only by a provider whose evidence is
+    keyed by session (``_replay_enrichment_reads_index``).
+    """
+    from polylogue.sources.assembly import get_assembly_spec
+
+    assembly_digest: str | None = None
+    if get_assembly_spec(provider) is not None:
+        assembly_digest = _enrichment_evidence_digest(
+            _retained_enrichment_sidecar_data(
+                provider=provider,
+                sessions=(),
+                provider_session_ids=provider_session_ids,
+                index_conn=index_conn,
+                source_conn=source_conn,
+                blob_root=blob_root,
+                source_path=source_path,
+            )
+        )
+    parser_digest = (
+        _retained_parser_sidecar_digest(source_conn, provider=provider, source_path=source_path)
+        if parser_sidecars and source_conn is not None
+        else ""
+    )
+    return _retained_dependency_digest(assembly_digest, parser_digest)
+
+
+#: Providers whose enrichment reads session-scoped retained evidence that can
+#: arrive after the session it describes: a Claude Code project's
+#: ``sessions-index.json`` and the install's prompt history, and Codex's
+#: session index, history and projected thread-state titles. Export bundles
+#: (ChatGPT asset maps) arrive with the export they describe.
+_SESSION_EVIDENCE_PROVIDERS = frozenset({Provider.CLAUDE_CODE, Provider.CODEX})
+
+
+def provider_binds_enrichment(provider: Provider) -> bool:
+    """Whether sessions of ``provider`` carry a late-arriving enrichment binding."""
+    return provider in _SESSION_EVIDENCE_PROVIDERS
+
+
+def _evidence_json(value: object) -> object:
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    raise TypeError(f"unencodable enrichment evidence: {type(value).__name__}")
+
+
+def enrichment_evidence_key(provider: Provider, sidecar_data: SidecarData, native_id: str) -> str | None:
+    """Digest the evidence ``enrich_session`` reads for exactly one session.
+
+    The projection is this session's own index entry and prompt-history rows
+    (Claude Code), or its thread name, history title and state titles (Codex),
+    so an unrelated session's evidence moving never marks this one. Canonical
+    JSON, not pickle, so a worker process and the writer compute equal keys
+    for equal evidence. ``None``: the provider has no late-arriving evidence.
+    """
+    if provider not in _SESSION_EVIDENCE_PROVIDERS or not native_id:
+        return None
+    projection: tuple[object, ...]
+    if provider is Provider.CLAUDE_CODE:
+        projection = (
+            provider.value,
+            sidecar_data.get("session_index", {}).get(native_id),
+            sidecar_data.get("history_paste_index", {}).get(native_id),
+        )
+    else:
+        projection = (
+            provider.value,
+            *(
+                cast("Mapping[str, str]", sidecar_data.get(name) or {}).get(native_id)
+                for name in ("thread_names", "history_titles", "state_titles", "retained_state_titles")
+            ),
+        )
+    encoded = json.dumps(projection, default=_evidence_json, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(encoded.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def stamp_enrichment_evidence(provider: Provider, sidecar_data: SidecarData, session: ParsedSession) -> ParsedSession:
+    """Carry the key of the evidence ``session`` was just enriched from."""
+    key = enrichment_evidence_key(provider, sidecar_data, session.provider_session_id.strip())
+    if key is None:
+        return session
+    return session.model_copy(update={"enrichment_evidence_key": key})
+
+
+def session_enrichment_evidence_key(
+    *,
+    provider: Provider,
+    source_path: str | None,
+    native_id: str,
+    index_conn: sqlite3.Connection | None,
+    source_conn: sqlite3.Connection | None,
+    blob_root: Path | None,
+) -> str | None:
+    """The key of the evidence the archive holds now for one stored session.
+
+    Resolved exactly as retained replay resolves its enrichment evidence, so
+    it equals the key a session enriched from that evidence carries.
+    """
+    if provider not in _SESSION_EVIDENCE_PROVIDERS or not source_path or not native_id:
+        return None
+    data = _retained_enrichment_sidecar_data(
+        provider=provider,
+        sessions=(),
+        provider_session_ids=[native_id],
+        index_conn=index_conn,
+        source_conn=source_conn,
+        blob_root=blob_root,
+        source_path=source_path,
+    )
+    return enrichment_evidence_key(provider, data, native_id)
+
+
+def record_session_enrichment_binding(
+    index_conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    carried_key: str | None,
+    current_key: str | None,
+) -> None:
+    """Bind a just-published session to the evidence it was enriched from.
+
+    Called by the writer after the session row is written, in the same
+    transaction. The session carries the key of the evidence its enrichment
+    read; it is bound only when that is still the archive's evidence. A
+    session enriched before its evidence arrived (or moved) stays unbound, so
+    inspection re-derives it on the retained route instead of certifying it.
+    """
+    if current_key is None or carried_key != current_key:
+        return
+    index_conn.execute(
+        """INSERT INTO session_enrichment_bindings (session_id, evidence_key) VALUES (?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET evidence_key = excluded.evidence_key""",
+        (session_id, current_key),
+    )
+
+
+def prepared_enrichment_dependency_state(
+    archive: Any,
+    artifact: PreparedJsonl,
+    *,
+    provider: Provider,
+    source_path: str,
+    sessions: Iterable[ParsedSession],
+    parser_sidecars: bool,
+) -> str | None:
+    """Return why a prepared artifact's enrichment is stale, or ``None``.
+
+    The writer publishes into ``archive``; the artifact is current only when
+    it was enriched against that same index and the same evidence.
+    """
+    if artifact.enrichment_index_path != str(Path(archive.index_db_path).resolve()):
+        return "index dependency changed"
+    if artifact.enrichment_digest is None:
+        return None
+    current = enrichment_dependency_digest(
+        provider=provider,
+        source_path=source_path,
+        provider_session_ids=(session.provider_session_id for session in sessions if session.provider_session_id),
+        index_conn=archive.index_connection,
+        source_conn=archive._ensure_source_conn(),
+        blob_root=Path(archive.archive_root) / "blob",
+        parser_sidecars=parser_sidecars,
+    )
+    return None if current == artifact.enrichment_digest else "enrichment evidence changed"
+
+
 def prepare_retained_jsonl_artifact(
     raw_id: str,
     provider_token: str,
@@ -1115,6 +1299,19 @@ def prepare_retained_jsonl_artifact(
                 witness: JSONValue = {**envelope, "messages": list(messages)}
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
 
+            def classify_claude_ai_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
+                witness: JSONValue = {
+                    **{key: value for key, value in envelope.items() if not key.startswith("__")},
+                    "chat_messages": list(messages),
+                }
+                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
+
+            def classify_drive_chunked_object(witness: dict[str, JSONValue]) -> bool:
+                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
+
+            def classify_hermes_atif_object(witness: dict[str, JSONValue]) -> bool:
+                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
+
             def classify_chatgpt_object(envelope: dict[str, object]) -> bool:
                 mapping = envelope["mapping"]
                 assert isinstance(mapping, Mapping)
@@ -1145,6 +1342,9 @@ def prepare_retained_jsonl_artifact(
                 classify_generic_object=classify_generic_object,
                 classify_hermes_object=classify_hermes_object,
                 classify_claude_design_object=classify_claude_design_object,
+                classify_claude_ai_object=classify_claude_ai_object,
+                classify_drive_chunked_object=classify_drive_chunked_object,
+                classify_hermes_atif_object=classify_hermes_atif_object,
                 classify_chatgpt_object=classify_chatgpt_object,
                 classify_gemini_object=classify_gemini_object,
                 # The publisher recomputes this digest from the retained
@@ -1384,25 +1584,11 @@ def _prepared_retained_outcome(
             sessions = list(artifact.iter_sessions())
         except Exception as exc:
             raise RetainedPreparationRetryableError(f"prepared retained artifact unavailable for raw {raw_id}") from exc
-        if artifact.enrichment_digest is not None:
-            evidence = _retained_enrichment_sidecar_data(
-                provider=provider,
-                sessions=sessions,
-                index_conn=archive.index_connection,
-                source_conn=archive._ensure_source_conn(),
-                blob_root=Path(archive.archive_root) / "blob",
-                source_path=source_path,
-            )
-            current_dependency = _retained_dependency_digest(
-                _enrichment_evidence_digest(evidence),
-                _retained_parser_sidecar_digest(
-                    archive._ensure_source_conn(), provider=provider, source_path=source_path
-                ),
-            )
-            if current_dependency != artifact.enrichment_digest:
-                raise RetainedPreparationRetryableError(
-                    f"prepared retained enrichment evidence changed for raw {raw_id}"
-                )
+        stale = prepared_enrichment_dependency_state(
+            archive, artifact, provider=provider, source_path=source_path, sessions=sessions, parser_sidecars=True
+        )
+        if stale is not None:
+            raise RetainedPreparationRetryableError(f"prepared retained {stale} for raw {raw_id}")
         return sessions, size, kind
     if prepared.sessions_path is None:
         raise RetainedPreparationRetryableError(f"prepared retained carrier is missing for raw {raw_id}")
@@ -4579,7 +4765,9 @@ _PATH_INDEPENDENT_PARSE_PROVIDERS: Final[frozenset[Provider]] = frozenset(
         Provider.CHATGPT,
         Provider.CLAUDE_AI,
         Provider.CLAUDE_DESIGN,
-        Provider.CLAUDE_CODE,
+        # Provider.CLAUDE_CODE is absent for the Gemini CLI reason below: its
+        # stream parse resolves retained ``tool-results/`` sidecars and
+        # subagent siblings from ``source_path``.
         Provider.CODEX,
         Provider.GEMINI,
         # Provider.GEMINI_CLI is deliberately absent: ``parse_gemini_cli``
@@ -5115,6 +5303,239 @@ def _replay_enrichment_reads_index(provider: Provider) -> bool:
     return provider is Provider.CODEX
 
 
+class RetainedSessionEnricher:
+    """Apply retained assembly evidence to one session at a time.
+
+    Live intake, the writer's inline fallback and retained replay must publish
+    the same interpretation of the same bytes. Retained replay enriches every
+    parsed session from durable archive evidence (Codex thread titles, Claude
+    Code session index/history, ChatGPT asset maps); a route that skipped it
+    stored the native id as the title and a different content hash, and the
+    raw owner then accepted that output as current. Bundle exports share one
+    source-scoped evidence snapshot; other providers resolve evidence for the
+    session being enriched.
+    """
+
+    __slots__ = (
+        "_blob_root",
+        "_bundle",
+        "_cached",
+        "_frames",
+        "_index_conn",
+        "_keeps_session_ids",
+        "_provider",
+        "_session_ids",
+        "_source_conn",
+        "_source_path",
+    )
+
+    def __init__(
+        self,
+        provider: Provider,
+        *,
+        source_path: str,
+        index_conn: sqlite3.Connection | None,
+        source_conn: sqlite3.Connection | None,
+        blob_root: Path | None,
+        frames: _RebindingEvidenceFrames | None = None,
+    ) -> None:
+        self._provider = provider
+        self._frames = frames
+        self._source_path = source_path
+        self._index_conn = index_conn
+        self._source_conn = source_conn
+        self._blob_root = blob_root
+        self._bundle = provider in BUNDLE_PROVIDERS and Path(source_path).name.lower().endswith(".json")
+        self._cached: SidecarData | None = None
+        # Only a provider whose evidence is keyed by session needs the ids;
+        # a bundle of any other provider keeps none of them.
+        self._keeps_session_ids = _replay_enrichment_reads_index(provider)
+        self._session_ids: list[str] = []
+
+    def _bind(self, *, enriched: bool) -> None:
+        """Take the current evidence frames, rebinding them when they near expiry."""
+        if self._frames is None:
+            return
+        connections = self._frames.current(self._digest_from_bound if enriched else None)
+        self._index_conn = connections.get(ArchiveTier.INDEX)
+        self._source_conn = connections.get(ArchiveTier.SOURCE)
+
+    def _digest_from_bound(self) -> str:
+        connections = self._frames.connections if self._frames is not None else {}
+        if self._frames is not None:
+            self._index_conn = connections.get(ArchiveTier.INDEX)
+            self._source_conn = connections.get(ArchiveTier.SOURCE)
+        return self._compute_digest()
+
+    def dependency_digest(self) -> str:
+        """The evidence every session enriched so far depends on.
+
+        Sealed into a prepared artifact, then recomputed by the writer
+        (``prepared_enrichment_dependency_state``) before it publishes.
+        """
+        self._bind(enriched=True)
+        return self._compute_digest()
+
+    def _compute_digest(self) -> str:
+        return enrichment_dependency_digest(
+            provider=self._provider,
+            source_path=self._source_path,
+            provider_session_ids=self._session_ids,
+            index_conn=self._index_conn,
+            source_conn=self._source_conn,
+            blob_root=self._blob_root,
+            parser_sidecars=False,
+        )
+
+    def __call__(self, session: ParsedSession) -> ParsedSession:
+        from polylogue.sources.assembly import get_assembly_spec
+
+        self._bind(enriched=bool(self._session_ids) or self._cached is not None)
+        if self._keeps_session_ids and session.provider_session_id:
+            self._session_ids.append(session.provider_session_id)
+        spec = get_assembly_spec(self._provider)
+        if spec is None:
+            return session
+        if not self._bundle:
+            return _replay_safe_enrich_sessions(
+                provider=self._provider,
+                sessions=[session],
+                index_conn=self._index_conn,
+                source_conn=self._source_conn,
+                blob_root=self._blob_root,
+                source_path=self._source_path,
+            )[0]
+        if self._cached is None:
+            self._cached = _retained_enrichment_sidecar_data(
+                provider=self._provider,
+                sessions=(),
+                index_conn=self._index_conn,
+                source_conn=self._source_conn,
+                blob_root=self._blob_root,
+                source_path=self._source_path,
+            )
+        return stamp_enrichment_evidence(self._provider, self._cached, spec.enrich_session(session, self._cached))
+
+    def enrich_all(self, sessions: Sequence[ParsedSession]) -> list[ParsedSession]:
+        return [self(session) for session in sessions]
+
+
+class EnrichmentEvidenceMovedError(RuntimeError):
+    """Retained evidence changed while one preparation was enriching its sessions.
+
+    Retryable: a fresh preparation reads one consistent view again.
+    """
+
+
+class _RebindingEvidenceFrames:
+    """Short read frames for a worker's enrichment, rebound before they expire.
+
+    A preparation can outlast any read frame's declared bound (a very large
+    bundle), so the frames are not held across the whole parse: each is
+    opened when enrichment first reads it and replaced once it has lived half
+    its bound. Every session enriched so far must read the same evidence in
+    the replacement as in the frame it was enriched from, or the sealed
+    digest -- computed from the last frame -- would certify evidence some
+    sessions never saw; a moved view refuses the preparation instead.
+    """
+
+    def __init__(self, *, source_db_path: str | Path, index_db_path: str | Path) -> None:
+        self._paths = ((ArchiveTier.SOURCE, Path(source_db_path)), (ArchiveTier.INDEX, Path(index_db_path)))
+        self._stack: ExitStack | None = None
+        self._opened_at = 0.0
+        self.connections: dict[ArchiveTier, sqlite3.Connection | None] = {}
+
+    def _open(self) -> None:
+        stack = ExitStack()
+        connections: dict[ArchiveTier, sqlite3.Connection | None] = {}
+        try:
+            for tier, path in self._paths:
+                if not path.exists():
+                    connections[tier] = None
+                    continue
+                frame = stack.enter_context(read_frame(path, tier=tier, timeout_class="background-read"))
+                frame.connection.execute("BEGIN")
+                connections[tier] = frame.connection
+        except BaseException:
+            stack.close()
+            raise
+        self._stack, self.connections, self._opened_at = stack, connections, time.monotonic()
+
+    def current(self, digest: Callable[[], str] | None) -> dict[ArchiveTier, sqlite3.Connection | None]:
+        """The live frames, rebound when half their bound has passed.
+
+        ``digest`` computes the enrichment dependency digest from
+        ``self.connections``; ``None`` when nothing has been enriched yet.
+        """
+        if self._stack is None:
+            self._open()
+        elif time.monotonic() - self._opened_at >= _EVIDENCE_FRAME_REBIND_S:
+            before = digest() if digest is not None else None
+            self.close()
+            self._open()
+            if before is not None and digest is not None and digest() != before:
+                raise EnrichmentEvidenceMovedError("retained enrichment evidence moved during preparation")
+        return self.connections
+
+    def close(self) -> None:
+        if self._stack is not None:
+            stack, self._stack = self._stack, None
+            self.connections = {}
+            stack.close()
+
+
+#: Half the background read frame bound: a frame is replaced well before it expires.
+_EVIDENCE_FRAME_REBIND_S = 150.0
+
+
+@contextmanager
+def open_retained_session_enricher(
+    provider: Provider,
+    *,
+    source_path: str,
+    source_db_path: str | Path,
+    index_db_path: str | Path,
+    blob_root: str | Path,
+) -> Iterator[RetainedSessionEnricher]:
+    """Enrichment for a worker that has no archive handle, over rebinding read frames.
+
+    An absent tier is ordinary absence (a source-only or not yet bootstrapped
+    archive): enrichment then counts the degradation and applies only the
+    parsed-content fallbacks, exactly as retained replay does without it.
+    """
+    frames = _RebindingEvidenceFrames(source_db_path=source_db_path, index_db_path=index_db_path)
+    try:
+        yield RetainedSessionEnricher(
+            provider,
+            source_path=source_path,
+            index_conn=None,
+            source_conn=None,
+            blob_root=Path(blob_root),
+            frames=frames,
+        )
+    finally:
+        frames.close()
+
+
+def enrich_sessions_from_archive(
+    archive: Any, provider: Provider, source_path: str, sessions: Sequence[ParsedSession]
+) -> list[ParsedSession]:
+    """Enrich a writer-side parse from the archive's own retained evidence.
+
+    An ``UNKNOWN`` acquisition provider resolves to the parser's, as retained
+    replay does before it enriches, so both routes find the same assembly.
+    """
+    if provider is Provider.UNKNOWN and sessions:
+        provider = sessions[0].source_name
+    return RetainedSessionEnricher(
+        provider,
+        source_path=source_path,
+        index_conn=archive.index_connection,
+        source_conn=archive.source_connection,
+        blob_root=Path(archive.archive_root) / "blob",
+    ).enrich_all(sessions)
+
+
 def _replay_safe_enrich_sessions(
     *,
     provider: Provider,
@@ -5156,7 +5577,10 @@ def _replay_safe_enrich_sessions(
     )
     if evidence_observer is not None:
         evidence_observer(sidecar_data)
-    return [spec.enrich_session(session, sidecar_data) for session in sessions]
+    return [
+        stamp_enrichment_evidence(provider, sidecar_data, spec.enrich_session(session, sidecar_data))
+        for session in sessions
+    ]
 
 
 def _retained_enrichment_sidecar_data(
@@ -5167,8 +5591,13 @@ def _retained_enrichment_sidecar_data(
     source_conn: sqlite3.Connection | None,
     blob_root: Path | None,
     source_path: str | None,
+    provider_session_ids: Iterable[str] | None = None,
 ) -> SidecarData:
-    """Read the exact retained assembly evidence used by enrichment."""
+    """Read the exact retained assembly evidence used by enrichment.
+
+    ``provider_session_ids`` replaces ``sessions`` when the caller holds only
+    the identities (the evidence depends on nothing else of a session).
+    """
 
     sidecar_data = cast("SidecarData", {})
     reads_index = _replay_enrichment_reads_index(provider)
@@ -5177,7 +5606,11 @@ def _retained_enrichment_sidecar_data(
     if reads_index and index_conn is not None:
         from polylogue.sources.codex_state_projection import read_thread_titles
 
-        thread_ids = [session.provider_session_id for session in sessions if session.provider_session_id]
+        thread_ids = (
+            list(provider_session_ids)
+            if provider_session_ids is not None
+            else [session.provider_session_id for session in sessions if session.provider_session_id]
+        )
         titles = read_thread_titles(index_conn, thread_ids=thread_ids, source_path=source_path)
         if titles:
             sidecar_data = cast("SidecarData", {"retained_state_titles": titles})
@@ -5352,7 +5785,10 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
 
     # Work events have their own durable envelope.  They are not provider
     # transcript records, so replay them before dispatching to provider parsers.
-    if source_path.startswith("agent-work-event:"):
+    # Replay returns the event alone; ``write_parsed_session_to_archive``
+    # recognizes the work-event raw and writes it event-only, keeping the
+    # stored session header.
+    if source_path.startswith(WORK_EVENT_RAW_ID_PREFIX):
         _provider, payload, _path, _kind = archive.raw_revision_material(raw_id)
         try:
             envelope = json.loads(payload)
@@ -6772,6 +7208,7 @@ def _parse_stream_raw(
 __all__ = [
     "RAW_AUTHORITY_PARSER_FINGERPRINT",
     "RawParsePrefetchCache",
+    "RetainedSessionEnricher",
     "RawRevisionReplayResourceBlockedError",
     "RebuildDeadlineExceededError",
     "RevisionBackfillResult",
@@ -6779,6 +7216,8 @@ __all__ = [
     "backfill_historical_revision_evidence",
     "census_historical_revision_evidence",
     "census_parse_worker",
+    "enrich_sessions_from_archive",
+    "open_retained_session_enricher",
     "record_resource_blocked_revision_census",
     "require_current_parser_source_census",
     "uncensused_historical_revision_raw_ids",

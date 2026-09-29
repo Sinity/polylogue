@@ -18,11 +18,14 @@ from polylogue.browser_capture.models import (
     BrowserCaptureBlock,
     BrowserCaptureEnvelope,
     BrowserCaptureTurn,
+    SpilledCarrier,
     has_chatgpt_native_payload,
     has_claude_ai_native_payload,
     looks_like_browser_capture,
+    validate_capture_envelope,
 )
 from polylogue.core.enums import BlockType, Provider, Role, SessionKind, TitleSource
+from polylogue.core.hashing import hash_bytes
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.sources.parsers.base import parser_admission
 from polylogue.sources.parsers.base_models import (
@@ -213,13 +216,20 @@ def _apply_browser_capture_session_kind(
     return session.model_copy(update={"session_kind": session_kind, "ingest_flags": ingest_flags})
 
 
-def _browser_capture_attachment_inline_bytes(attachment: BrowserCaptureAttachment) -> bytes | None:
+def _browser_capture_attachment_content(attachment: BrowserCaptureAttachment) -> bytes | SpilledCarrier | None:
+    """The attachment's bytes, or the blob a streamed decode already put them in."""
+    if (spilled := attachment.spilled_carrier("content_base64")) is not None:
+        return spilled
     if attachment.content_base64 is not None:
         return decode_attachment_base64(attachment.content_base64)
 
+    if (spilled := attachment.spilled_carrier("inline_base64")) is not None:
+        return spilled
     if attachment.inline_base64 is not None:
         return decode_attachment_base64(attachment.inline_base64, field_name="inline_base64")
 
+    if (spilled := attachment.spilled_carrier("data")) is not None:
+        return spilled
     if attachment.data is not None:
         return decode_attachment_base64(attachment.data, field_name="data")
 
@@ -255,10 +265,15 @@ def _browser_capture_parsed_attachment(
     message_provider_id: str | None,
     role: Role | None = None,
 ) -> ParsedAttachment:
-    inline_bytes = _browser_capture_attachment_inline_bytes(attachment)
+    content = _browser_capture_attachment_content(attachment)
+    inline_bytes = content if isinstance(content, bytes) else None
+    precomputed_blob = (content.blob_hash, content.size_bytes) if isinstance(content, SpilledCarrier) else None
     size_bytes = attachment.size_bytes
-    if inline_bytes is not None and size_bytes is None:
-        size_bytes = len(inline_bytes)
+    if size_bytes is None:
+        if inline_bytes is not None:
+            size_bytes = len(inline_bytes)
+        elif precomputed_blob is not None:
+            size_bytes = precomputed_blob[1]
     url = attachment.url
     direction, producer_ref = derive_attachment_provenance(role, message_provider_id)
     return ParsedAttachment(
@@ -270,11 +285,20 @@ def _browser_capture_parsed_attachment(
         size_bytes=size_bytes,
         path=None,
         source_url=url if url else None,
-        upload_origin="url" if url else "paste" if inline_bytes is not None else "oauth",
+        upload_origin="url" if url else "paste" if content is not None else "oauth",
         direction=direction,
         producer_ref=producer_ref,
         inline_bytes=inline_bytes,
+        precomputed_blob=precomputed_blob,
     )
+
+
+def _attachment_content_hash(attachment: ParsedAttachment) -> str | None:
+    if attachment.inline_bytes is not None:
+        return hash_bytes(attachment.inline_bytes)
+    if attachment.precomputed_blob is not None:
+        return attachment.precomputed_blob[0]
+    return None
 
 
 def _is_claude_envelope_attachment_id(provider_attachment_id: str) -> bool:
@@ -324,14 +348,16 @@ def _claude_attachment_cross_route_match(
     if native.size_bytes is not None and envelope.size_bytes is not None and native.size_bytes != envelope.size_bytes:
         return False
 
-    native_bytes = native.inline_bytes
-    envelope_bytes = envelope.inline_bytes
-    if native_bytes is not None and envelope_bytes is not None:
-        return native_bytes == envelope_bytes
+    if native.inline_bytes is not None and envelope.inline_bytes is not None:
+        return native.inline_bytes == envelope.inline_bytes
+    native_hash = _attachment_content_hash(native)
+    envelope_hash = _attachment_content_hash(envelope)
+    if native_hash is not None and envelope_hash is not None:
+        return native_hash == envelope_hash
     # With only one byte carrier, a declared size is the minimum evidence that
     # this is the same source object.  Two metadata-only rows remain distinct.
     return (
-        (native_bytes is not None or envelope_bytes is not None)
+        (native_hash is not None or envelope_hash is not None)
         and native.size_bytes is not None
         and envelope.size_bytes == native.size_bytes
     )
@@ -419,6 +445,7 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
         # The native row remains authoritative for provider identity and file
         # metadata. The browser projection contributes acquired bytes and can
         # fill omissions, but must not replace native size/origin/file IDs.
+        candidate_has_bytes = candidate.inline_bytes is not None or candidate.precomputed_blob is not None
         merged[existing.provider_attachment_id] = existing.model_copy(
             update={
                 "message_provider_id": existing.message_provider_id or candidate.message_provider_id,
@@ -433,9 +460,8 @@ def _merge_envelope_attachments(parsed: ParsedSession, envelope: BrowserCaptureE
                 "attachment_kind": existing.attachment_kind or candidate.attachment_kind,
                 "source_url": existing.source_url or candidate.source_url,
                 "caption": existing.caption or candidate.caption,
-                "inline_bytes": (
-                    candidate.inline_bytes if candidate.inline_bytes is not None else existing.inline_bytes
-                ),
+                "inline_bytes": candidate.inline_bytes if candidate_has_bytes else existing.inline_bytes,
+                "precomputed_blob": (candidate.precomputed_blob if candidate_has_bytes else existing.precomputed_blob),
             }
         )
     return parsed.model_copy(update={"attachments": list(merged.values())})
@@ -609,7 +635,7 @@ def _parse_claude_fallback_envelope(
         session_kind=_session_kind_for_browser_capture(envelope, provider_session_id),
         created_at=created_at,
         updated_at=updated_at,
-        messages=normalized.messages,
+        messages=list(normalized.messages),
         active_leaf_message_provider_id=normalized.active_leaf_message_provider_id,
         attachments=attachments,
         session_events=[*normalized.session_events, *_capture_session_events(envelope)],
@@ -773,7 +799,7 @@ def _merge_envelope_session_events(parsed: ParsedSession, envelope: BrowserCaptu
 @parser_admission("browser_capture")
 def parse(payload: object, fallback_id: str) -> ParsedSession:
     """Parse a browser-capture envelope into the canonical parser contract."""
-    envelope = BrowserCaptureEnvelope.model_validate(payload)
+    envelope = validate_capture_envelope(payload)
     provider = envelope.session.provider if envelope.session.provider is not Provider.UNKNOWN else Provider.UNKNOWN
     provider_session_id = (
         legacy_browser_capture_native_id(provider, envelope.session.provider_session_id) or fallback_id

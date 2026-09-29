@@ -12,6 +12,7 @@ contract spanning index and source) moved to
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import sqlite3
 import time
@@ -116,10 +117,9 @@ from polylogue.archive.stats import ArchiveStats
 from polylogue.archive.topology.edge import topology_status_composes_sql
 from polylogue.archive.write_gateway import ArchiveWriteGateway, WriteOperation
 from polylogue.core.digest import REFERENCE, canonical_bytes
-from polylogue.core.enums import BranchType, DisplayLabelSource, Origin, Provider, SessionKind
+from polylogue.core.enums import DisplayLabelSource, Origin, Provider
 from polylogue.core.errors import (
     ArchiveTierUnavailableError,
-    PostFilterAfterLimitError,
     UnsupportedInsightFilterError,
 )
 from polylogue.core.json import require_json_value
@@ -314,6 +314,7 @@ from polylogue.storage.sqlite.archive_tiers.user_write import (
     upsert_workspace,
 )
 from polylogue.storage.sqlite.archive_tiers.write import (
+    WORK_EVENT_RAW_ID_PREFIX,
     ArchiveSessionEnvelope,
     PreparedRows,
     PreparedSessionShardRows,
@@ -662,6 +663,15 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
         del data
         return self._refuse()
 
+    def adopt_published(self, blob_hash: str, size_bytes: int) -> tuple[str, int]:
+        """Reserve nothing: the frozen namespace must already hold the bytes."""
+        blob_path = self.blob_path(blob_hash)
+        if not blob_path.is_file() or blob_path.stat().st_size != size_bytes:
+            raise InactiveCandidateDurableWriteError(
+                f"inactive candidate requires adopted blob bytes in the frozen blob namespace: {blob_hash}"
+            )
+        return blob_hash, size_bytes
+
     def flush(self) -> tuple[()]:
         return ()
 
@@ -669,10 +679,13 @@ class _InactiveCandidateBlobPublisher(ArchiveBlobPublisher):
         return None
 
 
-#: Declared ceiling on how many candidate sessions ``list_session_cost_insights``
-#: may scan when a ``status`` filter must be evaluated before the page is cut.
-#: Beyond it the route refuses by name instead of silently post-filtering a page.
-COST_STATUS_FILTER_CANDIDATE_CAP = 20_000
+#: Rows ``iter_summaries``/``iter_search_summaries`` fetch per batch from their
+#: single cursor. A memory bound only: ``limit=None`` streams the whole scope.
+SUMMARY_FETCH_BATCH = 500
+
+#: Rows ``iter_session_cost_insights`` fetches and prices per batch from its
+#: single cursor. A memory bound only: the whole matched scope is streamed.
+COST_INSIGHT_FETCH_BATCH = 500
 
 
 def _assert_active_cold_build_index_only(index_path: Path, *, durable_paths: tuple[Path, ...]) -> None:
@@ -1606,45 +1619,30 @@ class ArchiveStore:
         event_id = validate_work_event_id(event_id)
         event_type = validate_work_event_type(event_type)
         resolved = self.resolve_session_id(session_id)
-        existing = self.read_session(resolved)
-        existing_row = self._conn.execute(
-            "SELECT commit_hash, pending_drafts_json FROM sessions WHERE session_id = ?",
+        existing = self._conn.execute(
+            "SELECT native_id, origin FROM sessions WHERE session_id = ?",
             (resolved,),
         ).fetchone()
-        if existing_row is None:
+        if existing is None:
             raise KeyError(f"session not found: {resolved}")
-        provider = provider_from_origin(Origin.from_string(existing.origin))
+        native_id, origin = str(existing[0]), str(existing[1])
+        provider = provider_from_origin(Origin.from_string(origin))
         event_payload = {"event_id": event_id, "summary": summary, **payload}
         event = ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=event_payload)
-        # Keep the ordinary append writer's session upsert lossless. This
-        # lightweight ParsedSession intentionally has no messages, so copy
-        # every session-owned field represented on the archive envelope.
+        # The event carries no header. The writer recognizes the work-event
+        # raw and appends only the event, keeping every session-owned field;
+        # replay of the retained raw takes the same route.
         session = ParsedSession(
             source_name=provider,
-            provider_session_id=existing.native_id,
-            title=existing.title,
-            session_kind=SessionKind(existing.session_kind),
-            created_at=existing.created_at,
-            updated_at=existing.updated_at,
+            provider_session_id=native_id,
             messages=[],
             session_events=[event],
-            active_leaf_message_provider_id=existing.active_leaf_message_id,
-            instructions_text=existing.instructions_text,
-            reported_cost_usd=existing.reported_cost_usd,
-            pending_drafts=json.loads(existing_row["pending_drafts_json"] or "[]"),
-            git_branch=existing.git_branch,
-            git_repository_url=existing.git_repository_url,
-            git_commit_hash=existing_row["commit_hash"],
-            branch_type=BranchType(existing.branch_type) if existing.branch_type else None,
-            working_directories=list(existing.working_directories),
-            provider_project_ref=existing.provider_project_ref,
-            display_name=existing.display_name,
         )
         raw_payload = json.dumps(
             {
                 "_polylogue_work_event": 1,
                 "provider": provider.value,
-                "native_session_id": existing.native_id,
+                "native_session_id": native_id,
                 "event_id": event_id,
                 "event_type": event_type,
                 "timestamp": timestamp,
@@ -1653,11 +1651,11 @@ class ArchiveStore:
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
-        raw_id = "agent-work-event:" + hashlib.sha256((resolved + "\0" + event_id).encode()).hexdigest()
+        raw_id = WORK_EVENT_RAW_ID_PREFIX + hashlib.sha256((resolved + "\0" + event_id).encode()).hexdigest()
         result = self.write_raw_and_parsed_result(
             session,
             payload=raw_payload,
-            source_path=f"agent-work-event:{resolved}",
+            source_path=f"{WORK_EVENT_RAW_ID_PREFIX}{resolved}",
             acquired_at_ms=int(time.time() * 1000),
             source_index=-1,
             raw_id=raw_id,
@@ -3123,6 +3121,73 @@ class ArchiveStore:
             thread=payload,
         )
 
+    def iter_session_cost_insights(
+        self,
+        *,
+        session_id: str | None = None,
+        origin: str | None = None,
+        since_ms: int | None = None,
+        until_ms: int | None = None,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> Iterator[SessionCostInsight]:
+        """Stream archive session cost insights, newest first, over one cursor.
+
+        Rows are fetched and priced in batches of
+        :data:`COST_INSIGHT_FETCH_BATCH`, so a caller that filters per row
+        scans the matched scope once with bounded memory.
+        """
+        where: list[str] = []
+        params: list[object] = []
+        if session_id is not None:
+            try:
+                resolved_session_id = self.resolve_session_id(session_id)
+            except KeyError:
+                # Unknown session id: no cost insight exists. An empty stream
+                # lets the daemon cost endpoint run its existence check and
+                # answer 404 instead of surfacing this as an opaque 500.
+                return
+            where.append("s.session_id = ?")
+            params.append(resolved_session_id)
+        origin = _origin_value(origin)
+        if origin is not None:
+            where.append("s.origin = ?")
+            params.append(origin)
+        if since_ms is not None:
+            where.append("s.sort_key_ms >= ?")
+            params.append(since_ms)
+        if until_ms is not None:
+            where.append("s.sort_key_ms <= ?")
+            params.append(until_ms)
+        clause = "WHERE " + " AND ".join(where) if where else ""
+        base_sql = f"""
+            SELECT s.session_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
+                   s.sort_key_ms,
+                   (SELECT SUM(u.cost_credits) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_credits,
+                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
+                   (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
+                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
+                   (
+                       SELECT smu.model_name
+                       FROM session_model_usage smu
+                       WHERE smu.session_id = s.session_id
+                       ORDER BY smu.input_tokens + smu.output_tokens DESC, smu.model_name
+                       LIMIT 1
+                   ) AS model_name
+            FROM sessions s
+            LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
+            {clause}
+            ORDER BY s.sort_key_ms DESC, s.session_id
+            """
+        if limit is not None or offset:
+            base_sql += " LIMIT ? OFFSET ?"
+            params.extend([-1 if limit is None else max(int(limit), 0), max(int(offset), 0)])
+        cursor = self._conn.execute(base_sql, tuple(params))
+        while rows := cursor.fetchmany(COST_INSIGHT_FETCH_BATCH):
+            canonical = session_usage_costs_for_connection(self._conn, [str(row["session_id"]) for row in rows])
+            for row in rows:
+                yield _session_cost_insight_from_archive_row(self._conn, row, canonical.get(str(row["session_id"])))
+
     def list_session_cost_insights(
         self,
         *,
@@ -3149,78 +3214,21 @@ class ArchiveStore:
                 route="list_session_cost_insights",
                 detail="the route selects one dominant model per session and cannot filter on it",
             )
-        where: list[str] = []
-        params: list[object] = []
-        if session_id is not None:
-            try:
-                resolved_session_id = self.resolve_session_id(session_id)
-            except KeyError:
-                # Unknown session id: no cost insight exists. Returning [] lets
-                # the daemon cost endpoint run its existence check and answer
-                # 404 instead of surfacing this as an opaque 500.
-                return []
-            where.append("s.session_id = ?")
-            params.append(resolved_session_id)
-        origin = _origin_value(origin)
-        if origin is not None:
-            where.append("s.origin = ?")
-            params.append(origin)
-        if since_ms is not None:
-            where.append("s.sort_key_ms >= ?")
-            params.append(since_ms)
-        if until_ms is not None:
-            where.append("s.sort_key_ms <= ?")
-            params.append(until_ms)
-        clause = "WHERE " + " AND ".join(where) if where else ""
-        # A ``status`` filter is decided per row below, so the SQL page must not
-        # be cut first. Scan the matched scope (bounded by a declared cap) and
-        # paginate after filtering.
-        post_filter_status = status is not None
-        pagination = "" if limit is None or post_filter_status else " LIMIT ? OFFSET ?"
-        if post_filter_status:
-            pagination = f" LIMIT {COST_STATUS_FILTER_CANDIDATE_CAP + 1}"
-        elif limit is not None:
-            params.extend([max(int(limit), 0), max(int(offset), 0)])
-        rows = self._conn.execute(
-            f"""
-            SELECT s.session_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
-                   s.sort_key_ms,
-                   (SELECT SUM(u.cost_credits) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_credits,
-                   (SELECT COALESCE(SUM(u.provider_cost_usd), s.reported_cost_usd, SUM(u.catalog_cost_usd)) FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_usd,
-                   (SELECT CASE WHEN COUNT(u.model_name) = 0 THEN NULL WHEN COUNT(u.catalog_cost_usd) = COUNT(u.model_name) THEN 0 ELSE 1 END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_is_estimated,
-                   (SELECT CASE WHEN MAX(u.provider_cost_usd) IS NOT NULL OR s.reported_cost_usd IS NOT NULL THEN 'origin_reported' WHEN MAX(u.catalog_cost_usd) IS NOT NULL THEN 'priced' END FROM session_model_usage u WHERE u.session_id = s.session_id) AS cost_provenance,
-                   (
-                       SELECT smu.model_name
-                       FROM session_model_usage smu
-                       WHERE smu.session_id = s.session_id
-                       ORDER BY smu.input_tokens + smu.output_tokens DESC, smu.model_name
-                       LIMIT 1
-                   ) AS model_name
-            FROM sessions s
-            LEFT JOIN session_profiles sp ON sp.session_id = s.session_id
-            {clause}
-            ORDER BY s.sort_key_ms DESC, s.session_id
-            {pagination}
-            """,
-            tuple(params),
-        ).fetchall()
-        canonical = session_usage_costs_for_connection(self._conn, [str(row["session_id"]) for row in rows])
-        insights = [
-            _session_cost_insight_from_archive_row(self._conn, row, canonical.get(str(row["session_id"])))
-            for row in rows
-        ]
-        if status is not None:
-            if len(rows) > COST_STATUS_FILTER_CANDIDATE_CAP:
-                raise PostFilterAfterLimitError(
-                    filter_name="status",
-                    route="list_session_cost_insights",
-                    candidate_count=len(rows),
-                    cap=COST_STATUS_FILTER_CANDIDATE_CAP,
-                )
-            insights = [insight for insight in insights if insight.estimate.status == status]
-            start = max(int(offset), 0)
-            insights = insights[start:] if limit is None else insights[start : start + max(int(limit), 0)]
-        return insights
+
+        def scan(*, limit: int | None = None, offset: int = 0) -> Iterator[SessionCostInsight]:
+            return self.iter_session_cost_insights(
+                session_id=session_id, origin=origin, since_ms=since_ms, until_ms=until_ms, limit=limit, offset=offset
+            )
+
+        if status is None:
+            return list(scan(limit=limit, offset=offset))
+        # A ``status`` filter is decided per row, so the SQL page cannot be cut
+        # first: one forward scan of the matched scope, where ``islice`` skips
+        # the offset without retaining it and stops once the page is full.
+        start = max(int(offset), 0)
+        stop = None if limit is None else start + max(int(limit), 0)
+        matching = (insight for insight in scan() if insight.estimate.status == status)
+        return list(itertools.islice(matching, start, stop))
 
     def list_cost_rollup_insights(
         self,
@@ -6299,10 +6307,10 @@ class ArchiveStore:
             ),
         )
 
-    def list_summaries(
+    def iter_summaries(
         self,
         *,
-        limit: int = 50,
+        limit: int | None = None,
         offset: int = 0,
         origin: str | None = None,
         origins: tuple[str, ...] = (),
@@ -6339,8 +6347,12 @@ class ArchiveStore:
         sample: bool = False,
         sort: str | None = None,
         reverse: bool = False,
-    ) -> list[ArchiveSessionSummary]:
-        """List session summaries ordered like the normal archive recency view."""
+    ) -> Iterator[ArchiveSessionSummary]:
+        """Stream session summaries ordered like the normal archive recency view.
+
+        One cursor serves the whole read, fetched in batches of
+        :data:`SUMMARY_FETCH_BATCH`; ``limit=None`` streams the matched scope.
+        """
         where, params = _session_filter_clause(
             "s",
             origin=origin,
@@ -6380,12 +6392,12 @@ class ArchiveStore:
             try:
                 resolved_id = self.resolve_session_id(session_id)
             except KeyError:
-                return []
+                return
             where = f"{where} AND s.session_id = ?" if where else "WHERE s.session_id = ?"
             params.append(resolved_id)
         order_by = _summary_order_by(sample=sample, sort=sort, reverse=reverse)
-        params.extend([limit, 0 if sample else offset])
-        rows = self._conn.execute(
+        params.extend([-1 if limit is None else limit, 0 if sample else offset])
+        cursor = self._conn.execute(
             f"""
             SELECT s.session_id, s.native_id, s.origin, s.title, s.created_at_ms, s.updated_at_ms,
                    s.parent_session_id, s.branch_type,
@@ -6425,14 +6437,21 @@ class ArchiveStore:
             LIMIT ? OFFSET ?
             """,
             params,
-        ).fetchall()
-        return [_summary_from_row(row, self._conn) for row in rows]
+        )
+        while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+            for row in rows:
+                yield _summary_from_row(row, self._conn)
 
-    def search_summaries(
+    def list_summaries(self, *, limit: int = 50, **filters: Any) -> list[ArchiveSessionSummary]:
+        """List one page of session summaries; see :meth:`iter_summaries`."""
+
+        return list(self.iter_summaries(limit=limit, **filters))
+
+    def iter_search_summaries(
         self,
         query: str,
         *,
-        limit: int = 20,
+        limit: int | None = None,
         offset: int = 0,
         sort: str | None = None,
         reverse: bool = False,
@@ -6468,14 +6487,18 @@ class ArchiveStore:
         since_session_id: str | None = None,
         boolean_predicate: QueryPredicate | None = None,
         root: bool | None = None,
-    ) -> list[ArchiveSessionSearchHit]:
-        """Search archive block text and return session-level hits with snippets."""
+    ) -> Iterator[ArchiveSessionSearchHit]:
+        """Stream block-text search hits with snippets over one cursor.
+
+        ``limit=None`` streams every hit; rows are fetched in batches of
+        :data:`SUMMARY_FETCH_BATCH`.
+        """
         match_query = normalize_fts5_query(query)
         if match_query is None:
             # Empty / whitespace / asterisk-only query: no FTS expression to
             # run. Mirror the read model lexical path and return no hits rather
             # than raising ``fts5: syntax error``.
-            return []
+            return
         # A real query needs the block FTS index. Surface a degraded index as a
         # sanitized DatabaseError (→ 503 "Search index") instead of a raw
         # ``no such table`` 500 or a misleading empty-result 200.
@@ -6528,8 +6551,8 @@ class ArchiveStore:
             filter_params.append(session_id)
         order_by = _search_order_by(sort=sort, reverse=reverse)
         params: list[object] = [match_query, *filter_params]
-        params.extend([limit, offset])
-        rows = self._conn.execute(
+        params.extend([-1 if limit is None else limit, offset])
+        cursor = self._conn.execute(
             f"""
             SELECT b.block_id, b.message_id, b.session_id, s.origin, s.native_id, s.title,
                    b.search_text AS fallback_text,
@@ -6544,23 +6567,31 @@ class ArchiveStore:
             LIMIT ? OFFSET ?
             """,
             params,
-        ).fetchall()
-        return [
-            ArchiveSessionSearchHit(
-                rank=index,
-                session_id=str(row["session_id"]),
-                block_id=str(row["block_id"]),
-                message_id=str(row["message_id"]),
-                origin=str(row["origin"]),
-                title=str(row["title"]) if row["title"] is not None else None,
-                snippet=_highlight_search_snippet(
-                    str(row["snippet"] or ""),
-                    fallback=str(row["fallback_text"] or ""),
-                    query=match_query,
-                ),
-            )
-            for index, row in enumerate(rows, start=offset + 1)
-        ]
+        )
+        index = offset
+        while rows := cursor.fetchmany(SUMMARY_FETCH_BATCH):
+            for row in rows:
+                index += 1
+                yield (
+                    ArchiveSessionSearchHit(
+                        rank=index,
+                        session_id=str(row["session_id"]),
+                        block_id=str(row["block_id"]),
+                        message_id=str(row["message_id"]),
+                        origin=str(row["origin"]),
+                        title=str(row["title"]) if row["title"] is not None else None,
+                        snippet=_highlight_search_snippet(
+                            str(row["snippet"] or ""),
+                            fallback=str(row["fallback_text"] or ""),
+                            query=match_query,
+                        ),
+                    )
+                )
+
+    def search_summaries(self, query: str, *, limit: int = 20, **filters: Any) -> list[ArchiveSessionSearchHit]:
+        """Return one page of block-text search hits; see :meth:`iter_search_summaries`."""
+
+        return list(self.iter_search_summaries(query, limit=limit, **filters))
 
     def count_search_sessions(
         self,

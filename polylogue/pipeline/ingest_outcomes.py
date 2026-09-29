@@ -131,6 +131,21 @@ def validation_rejected_disposition(*, evidence_ref: str, diagnostic: str | None
     )
 
 
+def value_bound_refused_disposition(*, stage: str, diagnostic: str | None) -> IngestAttemptDisposition:
+    """A value SQLite cannot store in one cell: permanent and input-specific, never a parser defect."""
+    from polylogue.sources.value_bounds import VALUE_BOUND_REFUSED
+
+    return IngestAttemptDisposition(
+        outcome=IngestOutcome.VALIDATION_REJECTED,
+        evidence_ref=f"{stage}:{VALUE_BOUND_REFUSED}",
+        diagnostic=bounded_diagnostic(diagnostic),
+        remediation=(
+            "the input carries a single value larger than SQLite can store; its bytes stay retained as "
+            "source evidence, and retrying the same input cannot index it"
+        ),
+    )
+
+
 def transient_error_disposition(*, evidence_ref: str, diagnostic: str | None) -> IngestAttemptDisposition:
     return IngestAttemptDisposition(
         outcome=IngestOutcome.TRANSIENT_ERROR,
@@ -186,7 +201,11 @@ def classify_decode_exception(exc: BaseException) -> IngestAttemptDisposition:
     boundary is an unexpected defect in the decoder itself, not corrupt
     input.
     """
+    from polylogue.sources.value_bounds import ValueBoundRefusedError
+
     evidence_ref = f"decode:{type(exc).__name__}"
+    if isinstance(exc, ValueBoundRefusedError):
+        return value_bound_refused_disposition(stage="decode", diagnostic=str(exc))
     if isinstance(exc, UnicodeDecodeError | ValueError):
         return corrupt_input_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
     return parser_defect_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
@@ -202,9 +221,13 @@ def classify_parse_exception(exc: BaseException) -> IngestAttemptDisposition:
     """
     from pydantic import ValidationError
 
+    from polylogue.sources.value_bounds import ValueBoundRefusedError
+
     evidence_ref = f"parse:{type(exc).__name__}"
     if isinstance(exc, ValidationError):
         return validation_rejected_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
+    if isinstance(exc, ValueBoundRefusedError):
+        return value_bound_refused_disposition(stage="parse", diagnostic=str(exc))
     return parser_defect_disposition(evidence_ref=evidence_ref, diagnostic=str(exc))
 
 
@@ -215,14 +238,18 @@ def storage_fault_disposition(kind: StorageFaultKind, *, diagnostic: str | None)
     outcome is the retryable infrastructure bucket; ``evidence_ref`` names
     the fault kind so it stays countable apart from lock contention.
     """
+    remediation = (
+        "blob GC reclaimed bytes published before the writer reserved them -- "
+        "the inputs were not quarantined and the retry republishes them"
+        if kind is StorageFaultKind.EVICTED
+        else "archive storage refused the write; free space or repair the archive storage -- "
+        "the inputs were not quarantined and are retried when writes succeed"
+    )
     return IngestAttemptDisposition(
         outcome=IngestOutcome.TRANSIENT_ERROR,
         evidence_ref=f"archive_write:storage_fault:{kind.value}",
         diagnostic=bounded_diagnostic(diagnostic),
-        remediation=(
-            "archive storage refused the write; free space or repair the archive storage -- "
-            "the inputs were not quarantined and are retried when writes succeed"
-        ),
+        remediation=remediation,
     )
 
 
