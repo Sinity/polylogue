@@ -35,9 +35,9 @@ _RETRY_STATES = frozenset({"ready", "retry_wait", "held", "completed", "abandone
 # A capture-job event is a control message: a kind, a few refs, and a small
 # structured payload. It is not a capture envelope and never carries
 # conversation content -- that travels the capture route, which owns the spool
-# quota. The registry database lives outside the spool directory the
-# receiver's SPOOL_MAX_BYTES measures, so an uncapped event body grows
-# registry.sqlite3 without any quota noticing. 64 KiB is well below the local
+# quota. The registry database lives outside the spool directory whose
+# capture bodies the receiver reserves space for, so an uncapped event body
+# grows registry.sqlite3 without any reservation noticing. 64 KiB is well below the local
 # attachment precedent (ACTION_ATTACHMENT_MAX_BYTES, 16 MiB, which does carry
 # content) and still far above any real event: the largest payloads are a
 # handful of refs and a reason string.
@@ -359,6 +359,7 @@ class CaptureJobRegistry:
             body.get("provider"), body.get("account_scope"), body.get("client_protocol")
         )
         intent = self._intent(body.get("intent"))
+        self.gc()
         now = _stamp()
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -411,6 +412,11 @@ class CaptureJobRegistry:
         intent_key = body.get("intent_key")
         if intent_key is not None and (not isinstance(intent_key, str) or not intent_key.startswith("i1:")):
             raise CaptureJobError(400, "invalid_intent")
+        # Every capture cycle opens with discovery and falls through to
+        # create() only for an unknown intent, so these two routes are where
+        # retired jobs are collected. Collecting before listing means the
+        # client never adopts a job this pass is about to delete.
+        self.gc()
         with self._connection() as connection:
             rows = connection.execute(
                 "SELECT * FROM capture_jobs WHERE provider=? AND account_scope=?"
@@ -421,17 +427,10 @@ class CaptureJobRegistry:
             return {"jobs": [self._summary(row) for row in rows]}
 
     def list_orphans(self, protocol: object) -> dict[str, object]:
-        """Run the receiver's spool housekeeping pass and return its census.
-
-        This route already reconciles the spool's legacy checkpoint root into
-        the durable orphan census; retention collection runs on the same pass so
-        eligible jobs are reclaimed at the cadence the receiver is already
-        polled, without a second schedule.
-        """
+        """Reconcile the spool's legacy checkpoint root into the orphan census."""
         self._validate_protocol(protocol)
-        collected = self.gc()
         with self._connection() as connection:
-            return {"orphans": self._census_legacy_orphans(connection), "collected": collected["deleted"]}
+            return {"orphans": self._census_legacy_orphans(connection)}
 
     def get(self, job_id: str, body: dict[str, object]) -> dict[str, object]:
         with self._connection() as connection:
@@ -706,7 +705,7 @@ class CaptureJobRegistry:
 
         Clients drive retry to ``completed``/``abandoned`` and never send a
         retention object, so without this the receiver's own creation default
-        is the only retention any job ever holds and housekeeping collects
+        is the only retention any job ever holds and ``gc()`` collects
         nothing. A job that a client has already spoken for keeps what it
         declared. Authoritativeness is read from the evidence that defines it:
         a job still holding conversation-bearing timeline events is the record

@@ -3,10 +3,23 @@ from __future__ import annotations
 import json
 import math
 import re
-from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import dataclass, replace
+import sqlite3
+from collections.abc import (
+    Callable,
+    Container,
+    Iterable,
+    Iterator,
+    Mapping,
+    MutableMapping,
+    MutableSequence,
+    MutableSet,
+    Sequence,
+)
+from contextlib import closing, nullcontext
+from dataclasses import asdict, dataclass, replace
 from decimal import Decimal
 from types import MappingProxyType
+from typing import Any, Protocol, cast, runtime_checkable
 
 from pydantic import ValidationError
 
@@ -58,21 +71,28 @@ class _GenerationTiming:
     ended_at_ms: int | None
     event_timestamp: str | None
     fidelity: str
-    related_message_provider_ids: frozenset[str]
-    duplicate_duration_message_provider_ids: frozenset[str]
 
 
 def _coerce_float(value: object) -> float | None:
+    """A finite float from a numeric or timestamp value, else ``None``.
+
+    Non-finite values (``"nan"``, ``inf``) are no ordering evidence: NaN
+    compares false with everything, so a sort over it depends on the store
+    (SQLite keeps NaN as NULL), and message order must not.
+    """
     # Exclude bool explicitly (bool is a subclass of int)
     if isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        result = float(value)
+        return result if math.isfinite(result) else None
     if isinstance(value, str):
         try:
-            return float(value)
+            result = float(value)
         except (ValueError, TypeError):
             pass
+        else:
+            return result if math.isfinite(result) else None
         parsed = parse_timestamp(value)
         if parsed is not None:
             return parsed.timestamp()
@@ -86,7 +106,9 @@ def _non_negative_finite_float(value: object) -> float | None:
     return parsed
 
 
-def _generation_branch_key(mapping: Mapping[str, object], node_id: str, memo: dict[str, str] | None = None) -> str:
+def _generation_branch_key(
+    mapping: Mapping[str, object], node_id: str, memo: MutableMapping[str, str] | None = None
+) -> str:
     """Return the first assistant-side node below the nearest user ancestor.
 
     ChatGPT repeats run-wide reasoning metadata across thought, tool, recap,
@@ -149,7 +171,26 @@ def _generation_branch_key(mapping: Mapping[str, object], node_id: str, memo: di
     return result
 
 
-def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_GenerationTiming]:
+class GenerationTimingSelection(Protocol):
+    """Where :func:`_extract_generation_timings` selects one timing per generation.
+
+    Implemented over SQLite by ``prepared_message_sink.GenerationTimings``,
+    on the spill's scratch database or a private in-memory one, so the
+    per-node selection state is never held in process memory.
+    """
+
+    branch_memo: MutableMapping[str, str]
+
+    def add_related(self, branch_key: str, message_id: str) -> None: ...
+
+    def set_legacy_duration(self, branch_key: str, message_id: str, duration_ms: int) -> None: ...
+
+    def offer(
+        self, branch_key: str, score: tuple[int, int, int, int, str], elapsed_ms: int, timing: Mapping[str, object]
+    ) -> None: ...
+
+
+def _extract_generation_timings(mapping: Mapping[str, object], timings: GenerationTimingSelection) -> None:
     """Select one authoritative lifecycle timing per ChatGPT generation.
 
     Native conversation payloads commonly copy ``reasoning_start_time`` and
@@ -174,10 +215,6 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
     attachments, and events.
     """
 
-    candidates: dict[str, list[tuple[tuple[int, int, int, int, str], _GenerationTiming]]] = {}
-    related_message_ids: dict[str, set[str]] = {}
-    legacy_duration_by_message_id: dict[str, dict[str, int]] = {}
-    branch_key_memo: dict[str, str] = {}
     for node_id, raw_node in mapping.items():
         if not isinstance(raw_node, Mapping):
             continue
@@ -197,7 +234,7 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
 
         message_id_raw = raw_message.get("id") or raw_node.get("id") or node_id
         message_id = str(message_id_raw)
-        branch_key = _generation_branch_key(mapping, str(node_id), branch_key_memo)
+        branch_key = _generation_branch_key(mapping, str(node_id), timings.branch_memo)
         native_timing_field_names = (
             "reasoning_start_time",
             "reasoning_end_time",
@@ -206,7 +243,7 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
         has_native_timing_field = any(field_name in raw_metadata for field_name in native_timing_field_names)
         has_legacy_duration_field = "durationMs" in raw_metadata or "duration_ms" in raw_metadata
         if has_native_timing_field or has_legacy_duration_field:
-            related_message_ids.setdefault(branch_key, set()).add(message_id)
+            timings.add_related(branch_key, message_id)
 
         start_sec = _non_negative_finite_float(raw_metadata.get("reasoning_start_time"))
         end_sec = _non_negative_finite_float(raw_metadata.get("reasoning_end_time"))
@@ -216,7 +253,7 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
             legacy_duration_raw = raw_metadata.get("duration_ms")
         legacy_duration_ms = _non_negative_int(legacy_duration_raw)
         if legacy_duration_ms is not None:
-            legacy_duration_by_message_id.setdefault(branch_key, {})[message_id] = legacy_duration_ms
+            timings.set_legacy_duration(branch_key, message_id, legacy_duration_ms)
 
         has_valid_native_timing_value = any(value is not None for value in (start_sec, end_sec, finished_sec))
         if finished_sec is not None:
@@ -247,8 +284,6 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
             ended_at_ms=round(end_sec * 1000) if end_sec is not None else None,
             event_timestamp=str(end_sec) if end_sec is not None else None,
             fidelity=fidelity,
-            related_message_provider_ids=frozenset(),
-            duplicate_duration_message_provider_ids=frozenset(),
         )
         score = (
             source_rank,
@@ -257,23 +292,7 @@ def _extract_generation_timings(mapping: Mapping[str, object]) -> list[_Generati
             int(raw_message.get("end_turn") is True),
             message_id,
         )
-        candidates.setdefault(branch_key, []).append((score, timing))
-
-    timings: list[_GenerationTiming] = []
-    for branch_key, branch_candidates in candidates.items():
-        selected = max(branch_candidates, key=lambda item: item[0])[1]
-        timings.append(
-            replace(
-                selected,
-                related_message_provider_ids=frozenset(related_message_ids.get(branch_key, ())),
-                duplicate_duration_message_provider_ids=frozenset(
-                    message_provider_id
-                    for message_provider_id, duration_ms in legacy_duration_by_message_id.get(branch_key, {}).items()
-                    if duration_ms == selected.elapsed_duration_ms
-                ),
-            )
-        )
-    return timings
+        timings.offer(branch_key, score, timing.elapsed_duration_ms, asdict(timing))
 
 
 #: The export's terminal states for a completed tool run. Everything else --
@@ -752,27 +771,51 @@ def _constructs_from_chatgpt_metadata(msg_metadata: object) -> list[ParsedWebCon
     return constructs
 
 
-def _active_path_node_ids(mapping: Mapping[str, object], current_node: str | None) -> list[str]:
-    """Return the active ChatGPT path from root to ``current_node``.
+@dataclass(frozen=True, slots=True)
+class _ActivePath:
+    """The ChatGPT active path from ``current_node`` up to its root.
 
     ChatGPT exports preserve regenerated and edited branches in ``mapping`` and
     use ``current_node`` only to identify the leaf the user last saw. The v1
     parser contract keeps every branch and carries the active path explicitly
     instead of using it as a lossy filter (#1743).
+
+    Membership lives in ``members``, a set from the caller's factory (scratch
+    on the preparation route), which also stops the walk at a parent cycle.
+    The path itself is never materialized: ``leaf_first`` re-walks the parent
+    chain for exactly ``length`` steps, the steps the first walk took.
     """
+
+    mapping: Mapping[str, object]
+    current_node: str | None
+    members: Container[str]
+    length: int
+
+    def leaf_first(self) -> Iterator[str]:
+        node_id = self.current_node
+        for _ in range(self.length):
+            assert node_id is not None
+            yield node_id
+            node = self.mapping[node_id]
+            parent = node.get("parent") if isinstance(node, dict) else None
+            node_id = parent if isinstance(parent, str) else None
+
+
+def _active_path(
+    mapping: Mapping[str, object],
+    current_node: str | None,
+    new_set: Callable[[], MutableSet[str]] = set,
+) -> _ActivePath:
+    members = new_set()
+    length = 0
     if current_node and current_node in mapping:
-        path: list[str] = []
-        seen: set[str] = set()
-        node_id: str | None = current_node
-        while node_id is not None and node_id in mapping and node_id not in seen:
-            seen.add(node_id)
-            path.append(node_id)
+        node_id: object = current_node
+        while isinstance(node_id, str) and node_id in mapping and node_id not in members:
+            members.add(node_id)
+            length += 1
             node = mapping[node_id]
             node_id = node.get("parent") if isinstance(node, dict) else None
-        path.reverse()
-        return path
-
-    return []
+    return _ActivePath(mapping, current_node, members, length)
 
 
 def _non_negative_int(value: object) -> int | None:
@@ -807,8 +850,35 @@ def _asset_pointer_block_metadata(record: Mapping[str, object], pointer: str) ->
     return metadata
 
 
+class _MessageAttachmentIds:
+    """Normalized file id -> index of one message's own attachments.
+
+    Indexed incrementally: each attachment appended to the message since the
+    last lookup is read once, so a message naming N attachments and N
+    pointers costs O(N) reads rather than a rescan of its suffix per pointer.
+    The first attachment with a given id wins, as the linear scan it
+    replaces found.
+    """
+
+    def __init__(
+        self, attachments: MutableSequence[ParsedAttachment], start: int, ids: MutableMapping[str, str]
+    ) -> None:
+        self.attachments = attachments
+        self.ids = ids
+        self.indexed = start
+
+    def find(self, file_id: str) -> int | None:
+        while self.indexed < len(self.attachments):
+            key = strip_asset_pointer_scheme(self.attachments[self.indexed].provider_attachment_id)
+            if key and key not in self.ids:
+                self.ids[key] = str(self.indexed)
+            self.indexed += 1
+        found = self.ids.get(file_id)
+        return int(found) if found is not None else None
+
+
 def _append_asset_attachment(
-    attachments: list[ParsedAttachment],
+    attachments: MutableSequence[ParsedAttachment],
     record: Mapping[str, object],
     *,
     pointer: str,
@@ -816,7 +886,7 @@ def _append_asset_attachment(
     attachment_kind: str,
     direction: AttachmentDirection | None,
     producer_ref: str | None,
-    dedupe_from: int,
+    dedupe: _MessageAttachmentIds,
 ) -> None:
     """Record an asset-pointer record as the attachment its bytes bind to.
 
@@ -825,8 +895,7 @@ def _append_asset_attachment(
     the bare file id, so a pointer that reaches storage as block metadata
     alone leaves its acquired bytes with nothing to bind to.
 
-    ``dedupe_from`` is the index at which this message's own attachments
-    start. A user upload is named twice — once by the message's ``metadata``
+    ``dedupe`` indexes this message's own attachments. A user upload is named twice — once by the message's ``metadata``
     attachment row (bare ``file-<id>``) and once by the content part's
     pointer URI (``file-service://file-<id>``) — and both normalize to the
     same id, so the second naming must not mint a second row.
@@ -834,32 +903,33 @@ def _append_asset_attachment(
     file_id = strip_asset_pointer_scheme(pointer)
     if not file_id:
         return
-    for index, existing in enumerate(attachments[dedupe_from:], start=dedupe_from):
-        if strip_asset_pointer_scheme(existing.provider_attachment_id) == file_id:
-            # A user upload is commonly named by both a metadata attachment
-            # row (the bare ``file-…`` id) and an image/audio pointer part.
-            # Keep that one acquisition identity, but do not lose the richer
-            # media/provenance facts carried by the pointer part.  In
-            # particular, metadata rows predate ``attachment_kind`` and may
-            # otherwise remain indistinguishable from an ordinary upload.
-            update: dict[str, object] = {}
-            if existing.attachment_kind is None:
-                update["attachment_kind"] = attachment_kind
-            if existing.mime_type is None:
-                pointer_mime_type = _string_value(record, "mime_type", "media_type")
-                if pointer_mime_type is not None:
-                    update["mime_type"] = pointer_mime_type
-            if existing.size_bytes is None:
-                pointer_size = _non_negative_int(record.get("size_bytes"))
-                if pointer_size is not None:
-                    update["size_bytes"] = pointer_size
-            if existing.direction is None and direction is not None:
-                update["direction"] = direction
-            if existing.producer_ref is None and producer_ref is not None:
-                update["producer_ref"] = producer_ref
-            if update:
-                attachments[index] = existing.model_copy(update=update)
-            return
+    index = dedupe.find(file_id)
+    if index is not None:
+        existing = attachments[index]
+        # A user upload is commonly named by both a metadata attachment
+        # row (the bare ``file-…`` id) and an image/audio pointer part.
+        # Keep that one acquisition identity, but do not lose the richer
+        # media/provenance facts carried by the pointer part.  In
+        # particular, metadata rows predate ``attachment_kind`` and may
+        # otherwise remain indistinguishable from an ordinary upload.
+        update: dict[str, object] = {}
+        if existing.attachment_kind is None:
+            update["attachment_kind"] = attachment_kind
+        if existing.mime_type is None:
+            pointer_mime_type = _string_value(record, "mime_type", "media_type")
+            if pointer_mime_type is not None:
+                update["mime_type"] = pointer_mime_type
+        if existing.size_bytes is None:
+            pointer_size = _non_negative_int(record.get("size_bytes"))
+            if pointer_size is not None:
+                update["size_bytes"] = pointer_size
+        if existing.direction is None and direction is not None:
+            update["direction"] = direction
+        if existing.producer_ref is None and producer_ref is not None:
+            update["producer_ref"] = producer_ref
+        if update:
+            attachments[index] = existing.model_copy(update=update)
+        return
     attachments.append(
         ParsedAttachment(
             provider_attachment_id=pointer,
@@ -987,38 +1057,35 @@ def _strip_citation_markers(text: str) -> str:
 
 _SANDBOX_FILE_RE = re.compile(r"sandbox:(/mnt/data/[^\s)\]\"'>]+)")
 
+#: Sandbox attachments one assistant message may materialize when the parse
+#: holds its attachments in memory (no scratch spill). The text is
+#: attacker-authored: unique ``sandbox:/mnt/data/<n>`` links expand into
+#: ``ParsedAttachment`` models at ~80x the source text's size, so an
+#: in-memory parse keeps this physical bound and reports the excess; the
+#: scratch-backed prepared route records every link.
+MAX_IN_MEMORY_SANDBOX_ATTACHMENTS_PER_MESSAGE = 512
 
-# One assistant message's text yields one synthetic attachment per distinct
-# sandbox link, and that text is attacker-authored: a message body made of
-# unique ``sandbox:/mnt/data/<n>`` links expands into hundreds of thousands of
-# `ParsedAttachment` models (measured ~80x peak RSS over the source text) and
-# as many attachment rows. A genuine Code Interpreter turn produces a handful.
-MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE = 512
 
-
-def _sandbox_file_paths(text: str) -> tuple[list[str], int]:
-    """Ordered, deduplicated ``/mnt/data`` paths linked in assistant text.
+def _sandbox_file_paths(text: str, seen: MutableSet[str] | None = None) -> Iterator[str]:
+    """Ordered, distinct ``/mnt/data`` paths linked in assistant text.
 
     Trailing prose punctuation is stripped so ``(sandbox:/mnt/data/kit.zip).``
     yields ``/mnt/data/kit.zip``. Directory links keep their trailing slash in
-    the returned path.
-
-    Returns the retained paths and the total number of distinct paths the text
-    actually carried. The two differ only past
-    ``MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE``, and the caller reports that
-    difference rather than letting the excess vanish.
+    the returned path. Every distinct link becomes an attachment; the prepared
+    route keeps them in scratch, so a message linking many files is recorded
+    whole rather than capped. ``seen`` holds the distinct paths; the prepared
+    route passes a scratch-backed set so a message linking millions of files
+    does not hold them all in memory.
     """
 
-    seen: dict[str, None] = {}
-    total = 0
+    if seen is None:
+        seen = set()
     for match in _SANDBOX_FILE_RE.finditer(text):
         path = match.group(1).rstrip(".,;:!?*`")
         if path == "/mnt/data/" or path in seen:
             continue
-        total += 1
-        if len(seen) < MAX_SANDBOX_ATTACHMENTS_PER_MESSAGE:
-            seen[path] = None
-    return list(seen), total
+        seen.add(path)
+        yield path
 
 
 def _extract_content_text(content: Mapping[str, object]) -> str:
@@ -1096,7 +1163,9 @@ _TOOL_RESULT_CARRIER_TYPES: frozenset[BlockType] = frozenset(
 )
 
 
-def _owning_tool_call_id(mapping: Mapping[str, object], parent_id: str | None) -> str | None:
+def _owning_tool_call_id(
+    mapping: Mapping[str, object], parent_id: str | None, memo: MutableMapping[str, str] | None = None
+) -> str | None:
     """Resolve which node a ``role: tool`` result answers.
 
     A tool episode is a chain: the calling node, then one or more ``role: tool``
@@ -1104,23 +1173,44 @@ def _owning_tool_call_id(mapping: Mapping[str, object], parent_id: str | None) -
     *previous result*, so the direct mapping parent names another answer rather
     than the node the episode hangs off. Skipping the tool-role ancestors
     reaches that node, and every result of one episode names the same owner.
+
+    ``memo`` caches the owner of every tool node a walk passes through (each
+    of them resolves to the same owner), so a long chain of results is walked
+    once rather than once per result. A walk that ends on a parent cycle is
+    not cached, as in ``_generation_branch_key``.
     """
     seen: set[str] = set()
+    path: list[str] = []
     current = parent_id
+    result: str | None = current
+    cycle = True
     while isinstance(current, str) and current and current not in seen:
+        if memo is not None and current in memo:
+            result, cycle = memo[current], False
+            break
         seen.add(current)
         node = mapping.get(current)
         if not isinstance(node, Mapping):
-            return current
+            result, cycle = current, False
+            break
         message = node.get("message")
         author = message.get("author") if isinstance(message, Mapping) else None
         if not (isinstance(author, Mapping) and author.get("role") == "tool"):
-            return current
+            result, cycle = current, False
+            break
+        path.append(current)
         parent = node.get("parent")
         if not parent:
-            return current
+            result, cycle = current, False
+            break
         current = str(parent)
-    return current
+    else:
+        result = current
+        cycle = isinstance(current, str) and bool(current)
+    if memo is not None and not cycle and result is not None:
+        for visited in path:
+            memo[visited] = result
+    return result
 
 
 def _tool_role_result_blocks(
@@ -1260,6 +1350,143 @@ def _tool_role_result_blocks(
 # The machine-readable form of this register is ``CHATGPT_READ_KEYS`` /
 # ``CHATGPT_EXCLUDED_KEYS``, declared below next to
 # ``_CHATGPT_CONVERSATION_SETTING_KEYS`` because it reuses it.
+@runtime_checkable
+class DeclaredChildPositions(Protocol):
+    """A mapping view that answers declared sibling order without the array.
+
+    The prepared route keeps each node's ``children`` array in scratch rather
+    than on the node, so the one question the parser asks of it -- where a
+    child sits in its parent's declared order -- is answered by lookup.
+    """
+
+    def declared_child_position(self, parent_key: str, child_id: object) -> int | None: ...
+
+
+def _sibling_ordinal_lookup(mapping: Mapping[str, object]) -> Callable[[str], int]:
+    """Answer each node's arrival ordinal among its parent's children.
+
+    A scratch-backed mapping answers from its own index; any other mapping
+    computes the ordinals once (``_sibling_ordinals``).
+    """
+    lookup = getattr(mapping, "sibling_ordinal", None)
+    if callable(lookup):
+        return cast(Callable[[str], int], lookup)
+    ordinals = _sibling_ordinals(mapping)
+    return lambda node_id: ordinals.get(node_id, 0)
+
+
+def _declared_child_position(mapping: Mapping[str, object], parent_key: str, node: Mapping[str, object]) -> int | None:
+    """Index of ``node`` in its parent's ``children`` array, when it is listed."""
+    if isinstance(mapping, DeclaredChildPositions):
+        return mapping.declared_child_position(parent_key, node.get("id"))
+    parent_node = mapping.get(parent_key)
+    if isinstance(parent_node, dict):
+        children = parent_node.get("children")
+        if isinstance(children, list):
+            current_node_id = node.get("id")
+            if current_node_id in children:
+                return children.index(current_node_id)
+    return None
+
+
+class MessageEntries(Protocol):
+    """Normalized messages before ordering and cross-message resolution.
+
+    The collecting parser keeps them in a list; the prepared route keeps them
+    in scratch. Both answer the same questions, so the ordering, parent,
+    active-leaf and timing-owner rules below exist once.
+    """
+
+    def add(self, timestamp: float | None, idx: int, node_id: str, message: ParsedMessage) -> None: ...
+
+    def ordered(self) -> Iterator[ParsedMessage]:
+        """Messages by (timestamp, mapping order), untimestamped last."""
+        ...
+
+    def provider_for_node(self, node_id: str) -> str | None: ...
+
+    def position_for_node(self, node_id: str) -> int | None: ...
+
+    def emitted_provider_ids(self) -> Container[str]: ...
+
+    def last_emitted_among(self, provider_ids: frozenset[str]) -> str | None:
+        """The provider id among ``provider_ids`` that comes last in :meth:`ordered`."""
+        ...
+
+
+class _ListMessageEntries:
+    def __init__(self) -> None:
+        self._entries: list[tuple[float | None, int, str, ParsedMessage]] = []
+        self._by_node: dict[str, ParsedMessage] = {}
+        self._sorted = False
+
+    def add(self, timestamp: float | None, idx: int, node_id: str, message: ParsedMessage) -> None:
+        self._entries.append((timestamp, idx, node_id, message))
+        self._by_node[node_id] = message
+        self._sorted = False
+
+    def _ordered_entries(self) -> list[tuple[float | None, int, str, ParsedMessage]]:
+        if not self._sorted:
+            if any(value is not None for value, _, _, _ in self._entries):
+                # Explicit None check instead of `or` keeps zero/negative timestamps.
+                self._entries.sort(key=lambda item: (item[0] is None, item[0] if item[0] is not None else 0.0, item[1]))
+            self._sorted = True
+        return self._entries
+
+    def ordered(self) -> Iterator[ParsedMessage]:
+        return (entry[3] for entry in self._ordered_entries())
+
+    def provider_for_node(self, node_id: str) -> str | None:
+        message = self._by_node.get(node_id)
+        return message.provider_message_id if message is not None else None
+
+    def position_for_node(self, node_id: str) -> int | None:
+        message = self._by_node.get(node_id)
+        return message.position if message is not None else None
+
+    def emitted_provider_ids(self) -> Container[str]:
+        return {message.provider_message_id for message in self._by_node.values()}
+
+    def last_emitted_among(self, provider_ids: frozenset[str]) -> str | None:
+        return next(
+            (
+                entry[3].provider_message_id
+                for entry in reversed(self._ordered_entries())
+                if entry[3].provider_message_id in provider_ids
+            ),
+            None,
+        )
+
+
+class SessionSpill(Protocol):
+    """Where :func:`parse` keeps a session's growing collections.
+
+    Omitted, :func:`parse` collects into lists. The prepared route passes
+    scratch-backed sequences so a large mapping never holds its normalized
+    messages, attachments or events in memory.
+    """
+
+    def entries(self) -> MessageEntries: ...
+
+    def messages(self) -> MutableSequence[ParsedMessage]: ...
+
+    def attachments(self) -> MutableSequence[ParsedAttachment]: ...
+
+    def events(self) -> MutableSequence[ParsedSessionEvent]: ...
+
+    def seen_set(self) -> MutableSet[str]:
+        """An empty set for per-message deduplication."""
+        ...
+
+    def string_map(self) -> MutableMapping[str, str]:
+        """An empty string map for per-node memos and indexes."""
+        ...
+
+    def connection(self) -> sqlite3.Connection:
+        """The scratch database the session's selection tables live in."""
+        ...
+
+
 def extract_messages_from_mapping(
     mapping: Mapping[str, object],
     current_node: str | None = None,
@@ -1268,18 +1495,66 @@ def extract_messages_from_mapping(
     preserve_empty_messages: bool = False,
     default_model_slug: str | None = None,
 ) -> tuple[list[ParsedMessage], list[ParsedAttachment]]:
-    entries: list[tuple[float | None, int, str, ParsedMessage]] = []
+    entries = _ListMessageEntries()
     attachments: list[ParsedAttachment] = []
+    active_path = _collect_message_entries(
+        mapping,
+        current_node,
+        entries,
+        attachments,
+        admission=admission,
+        preserve_empty_messages=preserve_empty_messages,
+        default_model_slug=default_model_slug,
+    )
+    return list(_resolved_messages(entries, active_path)), attachments
+
+
+def _resolved_messages(entries: MessageEntries, active_path: _ActivePath) -> Iterator[ParsedMessage]:
+    """Final order, parent references resolved to emitted ids, the active leaf marked."""
+    emitted_message_ids = entries.emitted_provider_ids()
+    active_leaf_position = next(
+        (
+            position
+            for node_id in active_path.leaf_first()
+            if (position := entries.position_for_node(node_id)) is not None
+        ),
+        None,
+    )
+    for message in entries.ordered():
+        parent_id = message.parent_message_provider_id
+        if parent_id is not None:
+            resolved = entries.provider_for_node(parent_id)
+            if resolved is None and parent_id in emitted_message_ids:
+                resolved = parent_id
+            message = message.model_copy(update={"parent_message_provider_id": resolved})
+        if active_leaf_position is not None:
+            message = message.model_copy(update={"is_active_leaf": message.position == active_leaf_position})
+        yield message
+
+
+def _collect_message_entries(
+    mapping: Mapping[str, object],
+    current_node: str | None,
+    entries: MessageEntries,
+    attachments: MutableSequence[ParsedAttachment],
+    *,
+    admission: AdmissionLedger | None,
+    preserve_empty_messages: bool,
+    default_model_slug: str | None,
+    new_seen_set: Callable[[], MutableSet[str]] = set,
+    sandbox_attachment_limit: int | None = MAX_IN_MEMORY_SANDBOX_ATTACHMENTS_PER_MESSAGE,
+    new_string_map: Callable[[], MutableMapping[str, str]] = dict,
+) -> _ActivePath:
+    """Normalize every message node into ``entries``; return the active path."""
     if admission is not None:
         admission.expect(
             AdmissionUnit.MESSAGE,
             sum(1 for node in mapping.values() if isinstance(node, dict) and isinstance(node.get("message"), dict)),
         )
     message_ordinal = 0
-    sibling_ordinals = _sibling_ordinals(mapping)
-    active_path_ids = _active_path_node_ids(mapping, current_node)
-    active_path_id_set = set(active_path_ids)
-    emitted_by_node_id: dict[str, str] = {}
+    sibling_ordinal = _sibling_ordinal_lookup(mapping)
+    active_path = _active_path(mapping, current_node, new_seen_set)
+    tool_owners = new_string_map()
     for idx, node_id in enumerate(mapping.keys(), start=1):
         node = mapping.get(node_id)
         if not isinstance(node, dict):
@@ -1329,7 +1604,7 @@ def extract_messages_from_mapping(
         parent_id = node.get("parent")
         parent_message_provider_id = str(parent_id) if parent_id else None
         tool_result_owner_id = (
-            _owning_tool_call_id(mapping, parent_message_provider_id)
+            _owning_tool_call_id(mapping, parent_message_provider_id, tool_owners)
             if role is Role.TOOL
             else parent_message_provider_id
         )
@@ -1340,18 +1615,14 @@ def extract_messages_from_mapping(
         # naming the same parent carries the same sequence
         # (``_sibling_ordinals``).
         if parent_message_provider_id:
-            branch_index = sibling_ordinals.get(node_id, 0)
-            parent_node = mapping.get(str(parent_id))
-            if isinstance(parent_node, dict):
-                children = parent_node.get("children")
-                if isinstance(children, list):
-                    current_node_id = node.get("id")
-                    if current_node_id in children:
-                        branch_index = children.index(current_node_id)
+            branch_index = sibling_ordinal(node_id)
+            declared_position = _declared_child_position(mapping, str(parent_id), node)
+            if declared_position is not None:
+                branch_index = declared_position
 
         # Where this message's own attachments begin, so an asset named both
         # by a metadata row and by a content part collapses to one row.
-        message_attachment_start = len(attachments)
+        message_attachment_ids = _MessageAttachmentIds(attachments, len(attachments), new_string_map())
 
         # Extract attachments from message metadata
         raw_msg_metadata = msg.get("metadata")
@@ -1399,22 +1670,13 @@ def extract_messages_from_mapping(
         # produced it. attachment_kind="sandbox_file" keeps every acquisition
         # path away from it (there is nothing local to fetch).
         if role is Role.ASSISTANT and text:
-            sandbox_paths, sandbox_total = _sandbox_file_paths(text)
-            if sandbox_total > len(sandbox_paths):
-                # A counted degradation, not a silent truncation: the exact
-                # number of links the message carried stays in the record even
-                # though only the bounded prefix becomes attachments.
-                emit(
-                    "sources.chatgpt.sandbox_links_bounded",
-                    level=WARNING,
-                    outcome="degraded",
-                    reason="sandbox_attachment_cap",
-                    message_provider_id=str(msg_id),
-                    found=sandbox_total,
-                    recorded=len(sandbox_paths),
-                    skipped=sandbox_total - len(sandbox_paths),
-                )
-            for sandbox_path in sandbox_paths:
+            sandbox_found = 0
+            sandbox_recorded = 0
+            for sandbox_path in _sandbox_file_paths(text, new_seen_set()):
+                sandbox_found += 1
+                if sandbox_attachment_limit is not None and sandbox_recorded >= sandbox_attachment_limit:
+                    continue
+                sandbox_recorded += 1
                 attachments.append(
                     ParsedAttachment(
                         provider_attachment_id=f"sandbox:{msg_id}:{sandbox_path}",
@@ -1425,6 +1687,20 @@ def extract_messages_from_mapping(
                         direction="model_output",
                         producer_ref=f"message:{msg_id}",
                     )
+                )
+            if sandbox_found > sandbox_recorded:
+                # A counted degradation of the in-memory route, never a
+                # silent truncation: the exact number of distinct links stays
+                # in the record even though only the bounded prefix is kept.
+                emit(
+                    "sources.chatgpt.sandbox_links_bounded",
+                    level=WARNING,
+                    outcome="degraded",
+                    reason="sandbox_attachment_cap",
+                    message_provider_id=str(msg_id),
+                    found=sandbox_found,
+                    recorded=sandbox_recorded,
+                    skipped=sandbox_found - sandbox_recorded,
                 )
 
         model_slug: object = None
@@ -1636,7 +1912,7 @@ def extract_messages_from_mapping(
                     attachment_kind="computer_screenshot",
                     direction="model_output",
                     producer_ref=f"message:{msg_id}",
-                    dedupe_from=message_attachment_start,
+                    dedupe=message_attachment_ids,
                 )
         elif content_type in ("tether_quote", "tether_browsing_display", "sonic_webpage"):
             # Browsing/web-search retrieval (April-era layer, polylogue-xofj):
@@ -1794,7 +2070,7 @@ def extract_messages_from_mapping(
                             attachment_kind="image_asset",
                             direction=image_direction,
                             producer_ref=image_producer,
-                            dedupe_from=message_attachment_start,
+                            dedupe=message_attachment_ids,
                         )
                 elif isinstance(part, dict) and part.get("content_type") in {
                     "audio_asset_pointer",
@@ -1830,7 +2106,7 @@ def extract_messages_from_mapping(
                             attachment_kind=_chatgpt_media_attachment_kind(pointer_field, content_type),
                             direction=media_direction,
                             producer_ref=media_producer,
-                            dedupe_from=message_attachment_start,
+                            dedupe=message_attachment_ids,
                         )
                     if not media_constructs:
                         media_constructs.append(
@@ -2009,7 +2285,7 @@ def extract_messages_from_mapping(
             position=idx - 1,
             branch_index=branch_index,
             variant_index=branch_index,
-            is_active_path=node_id in active_path_id_set if active_path_ids else None,
+            is_active_path=node_id in active_path.members if active_path.length else None,
             model_name=model_name,
             model_effort=model_effort,
             duration_ms=duration_ms,
@@ -2024,43 +2300,10 @@ def extract_messages_from_mapping(
             ),
             stop_reason=stop_reason,
         )
-        emitted_by_node_id[node_id] = parsed.provider_message_id
-        entries.append((_coerce_float(timestamp), idx, node_id, parsed))
+        entries.add(_coerce_float(timestamp), idx, node_id, parsed)
         if admission is not None:
             admission.materialized(AdmissionUnit.MESSAGE, current_message_ordinal, node_id)
-    if any(value is not None for value, _, _, _ in entries):
-        # Use explicit None check instead of `or` to handle zero/negative timestamps correctly
-        entries.sort(key=lambda item: (item[0] is None, item[0] if item[0] is not None else 0.0, item[1]))
-    messages = [entry[3] for entry in entries]
-    emitted_message_ids = {message.provider_message_id for message in messages}
-    messages = [
-        message.model_copy(
-            update={
-                "parent_message_provider_id": (
-                    emitted_by_node_id.get(
-                        message.parent_message_provider_id,
-                        message.parent_message_provider_id
-                        if message.parent_message_provider_id in emitted_message_ids
-                        else None,
-                    )
-                )
-            }
-        )
-        if message.parent_message_provider_id is not None
-        else message
-        for message in messages
-    ]
-    active_leaf_node_id = next(
-        (node_id for node_id in reversed(active_path_ids) if node_id in emitted_by_node_id),
-        None,
-    )
-    if active_leaf_node_id is not None:
-        active_leaf_position = next(entry[3].position for entry in entries if entry[2] == active_leaf_node_id)
-        messages = [
-            message.model_copy(update={"is_active_leaf": message.position == active_leaf_position})
-            for message in messages
-        ]
-    return (messages, attachments)
+    return active_path
 
 
 def _mapping_nodes_are_valid(mapping: Mapping[str, object]) -> bool:
@@ -2305,7 +2548,9 @@ def _run_stream_text(aggregate_result: Mapping[str, object]) -> str:
     return ""
 
 
-def _aggregate_result_events(mapping: Mapping[str, object], emitted_message_ids: set[str]) -> list[ParsedSessionEvent]:
+def _aggregate_result_events(
+    mapping: Mapping[str, object], emitted_message_ids: Container[str]
+) -> Iterator[ParsedSessionEvent]:
     """Conserve each code-interpreter run's own record.
 
     The run's output already IS the result node's text, so the stream text is
@@ -2316,7 +2561,6 @@ def _aggregate_result_events(mapping: Mapping[str, object], emitted_message_ids:
     in the parsed session, and neither does the executed program, which rides
     the ``aggregate_result`` web construct.
     """
-    events: list[ParsedSessionEvent] = []
     for node_id, node in mapping.items():
         if not isinstance(node, Mapping):
             continue
@@ -2355,20 +2599,17 @@ def _aggregate_result_events(mapping: Mapping[str, object], emitted_message_ids:
             payload["stream_retained_as_message_text"] = stream_text == node_text
             if stream_text != node_text:
                 payload["stream_text"] = stream_text
-        events.append(
-            ParsedSessionEvent(
-                event_type="chatgpt_code_interpreter_run",
-                timestamp=_string_value(aggregate_result, "end_time", "update_time", "start_time"),
-                source_message_provider_id=message_id,
-                payload=payload,
-            )
+        yield ParsedSessionEvent(
+            event_type="chatgpt_code_interpreter_run",
+            timestamp=_string_value(aggregate_result, "end_time", "update_time", "start_time"),
+            source_message_provider_id=message_id,
+            payload=payload,
         )
-    return events
 
 
 def _message_authorship_events(
-    mapping: Mapping[str, object], emitted_message_ids: set[str]
-) -> list[ParsedSessionEvent]:
+    mapping: Mapping[str, object], emitted_message_ids: Container[str]
+) -> Iterator[ParsedSessionEvent]:
     """Conserve the wire's own statement of what a message is and who wrote it.
 
     ``channel`` separates a turn's reasoning-adjacent ``commentary`` from the
@@ -2376,7 +2617,6 @@ def _message_authorship_events(
     ``phase`` -- and ``author.metadata.real_author`` names the tool that
     actually produced a message rendered through another role's envelope.
     """
-    events: list[ParsedSessionEvent] = []
     for node_id, node in mapping.items():
         if not isinstance(node, Mapping):
             continue
@@ -2395,37 +2635,29 @@ def _message_authorship_events(
             payload["channel"] = channel
         if real_author is not None:
             payload["real_author"] = real_author
-        events.append(
-            ParsedSessionEvent(
-                event_type="chatgpt_message_authorship",
-                timestamp=str(message.get("create_time")) if message.get("create_time") is not None else None,
-                source_message_provider_id=message_id,
-                payload=payload,
-            )
+        yield ParsedSessionEvent(
+            event_type="chatgpt_message_authorship",
+            timestamp=str(message.get("create_time")) if message.get("create_time") is not None else None,
+            source_message_provider_id=message_id,
+            payload=payload,
         )
-    return events
 
 
-def _block_metadata_evidence_events(messages: Sequence[ParsedMessage]) -> list[ParsedSessionEvent]:
-    events: list[ParsedSessionEvent] = []
+def _block_metadata_evidence_events(messages: Iterable[ParsedMessage]) -> Iterator[ParsedSessionEvent]:
     for message in messages:
         for block_index, block in enumerate(message.blocks):
             if not block.metadata:
                 continue
-            events.append(
-                ParsedSessionEvent(
-                    event_type="chatgpt_block_metadata",
-                    timestamp=message.timestamp,
-                    source_message_provider_id=message.provider_message_id,
-                    payload={"block_index": block_index, **dict(block.metadata)},
-                )
+            yield ParsedSessionEvent(
+                event_type="chatgpt_block_metadata",
+                timestamp=message.timestamp,
+                source_message_provider_id=message.provider_message_id,
+                payload={"block_index": block_index, **dict(block.metadata)},
             )
-    return events
 
 
-def _iter_message_nodes(mapping: Mapping[str, object]) -> list[tuple[str, Mapping[str, object]]]:
+def _iter_message_nodes(mapping: Mapping[str, object]) -> Iterator[tuple[str, Mapping[str, object]]]:
     """Every ``(provider_message_id, message)`` pair in mapping order."""
-    pairs: list[tuple[str, Mapping[str, object]]] = []
     for node in mapping.values():
         if not isinstance(node, Mapping):
             continue
@@ -2434,11 +2666,10 @@ def _iter_message_nodes(mapping: Mapping[str, object]) -> list[tuple[str, Mappin
             continue
         # The same identity ``extract_messages_from_mapping`` mints, so the
         # events these feed bind to the message the parser emitted.
-        pairs.append((str(message.get("id") or node.get("id") or ""), message))
-    return pairs
+        yield str(message.get("id") or node.get("id") or ""), message
 
 
-def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> list[ParsedSessionEvent]:
+def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> Iterator[ParsedSessionEvent]:
     """Message-level ``metadata`` evidence with no column or block to hold it.
 
     Three separately named facts rather than one metadata bag, so a reader
@@ -2460,7 +2691,6 @@ def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> list[Par
         A just-in-time plugin's call and response payload -- the only
         record of what a plugin was asked and what it answered.
     """
-    events: list[ParsedSessionEvent] = []
     for message_id, message in _iter_message_nodes(mapping):
         metadata = message.get("metadata")
         if not isinstance(metadata, Mapping):
@@ -2472,13 +2702,11 @@ def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> list[Par
             payload: dict[str, object] = {"targeted_reply": targeted_reply}
             if (label := _string_value(metadata, "targeted_reply_label")) is not None:
                 payload["targeted_reply_label"] = label
-            events.append(
-                ParsedSessionEvent(
-                    event_type="chatgpt_targeted_reply",
-                    timestamp=timestamp_text,
-                    source_message_provider_id=message_id,
-                    payload=payload,
-                )
+            yield ParsedSessionEvent(
+                event_type="chatgpt_targeted_reply",
+                timestamp=timestamp_text,
+                source_message_provider_id=message_id,
+                payload=payload,
             )
         delivery: dict[str, object] = {}
         weight = message.get("weight")
@@ -2489,25 +2717,20 @@ def _message_metadata_evidence_events(mapping: Mapping[str, object]) -> list[Par
         if (channel := _string_value(message, "channel")) is not None:
             delivery["channel"] = channel
         if delivery:
-            events.append(
-                ParsedSessionEvent(
-                    event_type="chatgpt_message_delivery",
-                    timestamp=timestamp_text,
-                    source_message_provider_id=message_id,
-                    payload=delivery,
-                )
+            yield ParsedSessionEvent(
+                event_type="chatgpt_message_delivery",
+                timestamp=timestamp_text,
+                source_message_provider_id=message_id,
+                payload=delivery,
             )
         jit_plugin_data = metadata.get("jit_plugin_data")
         if isinstance(jit_plugin_data, Mapping) and jit_plugin_data:
-            events.append(
-                ParsedSessionEvent(
-                    event_type="chatgpt_jit_plugin_data",
-                    timestamp=timestamp_text,
-                    source_message_provider_id=message_id,
-                    payload=dict(jit_plugin_data),
-                )
+            yield ParsedSessionEvent(
+                event_type="chatgpt_jit_plugin_data",
+                timestamp=timestamp_text,
+                source_message_provider_id=message_id,
+                payload=dict(jit_plugin_data),
             )
-    return events
 
 
 #: Conversation-level keys that state how the operator configured or filed
@@ -2750,7 +2973,7 @@ def _custom_gpt_event(
 
 
 @parser_admission("chatgpt")
-def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
+def parse(payload: Mapping[str, object], fallback_id: str, *, spill: SessionSpill | None = None) -> ParsedSession:
     mapping = payload.get("mapping") or {}
     if not isinstance(mapping, Mapping):
         mapping = {}
@@ -2768,75 +2991,81 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     admission.expect(AdmissionUnit.OUTER_RECORD, 1)
     admission.materialized(AdmissionUnit.OUTER_RECORD, 0, "conversation")
     conversation_model_slug = _string_value(payload, "default_model_slug")
-    messages, attachments = extract_messages_from_mapping(
+    entries: MessageEntries = spill.entries() if spill is not None else _ListMessageEntries()
+    attachments: MutableSequence[ParsedAttachment] = spill.attachments() if spill is not None else []
+    active_path = _collect_message_entries(
         mapping,
         current_node,
+        entries,
+        attachments,
         admission=admission,
         preserve_empty_messages=derived_current_node is not None,
         default_model_slug=conversation_model_slug,
+        new_seen_set=spill.seen_set if spill is not None else set,
+        sandbox_attachment_limit=None if spill is not None else MAX_IN_MEMORY_SANDBOX_ATTACHMENTS_PER_MESSAGE,
+        new_string_map=spill.string_map if spill is not None else dict,
     )
-    generation_timings = _extract_generation_timings(mapping)
-    emitted_message_ids = {message.provider_message_id for message in messages}
-    resolved_generation_timings: list[_GenerationTiming] = []
-    for timing in generation_timings:
-        if timing.message_provider_id in emitted_message_ids:
-            resolved_generation_timings.append(timing)
-            continue
-        fallback_owner_id = next(
-            (
-                message.provider_message_id
-                for message in reversed(messages)
-                if message.provider_message_id in timing.related_message_provider_ids
-            ),
-            None,
-        )
-        resolved_generation_timings.append(
-            replace(timing, message_provider_id=fallback_owner_id) if fallback_owner_id is not None else timing
-        )
-    generation_timings = resolved_generation_timings
-    timing_by_message_id = {timing.message_provider_id: timing for timing in generation_timings}
-    duplicate_duration_message_ids = {
-        message_provider_id
-        for timing in generation_timings
-        for message_provider_id in timing.duplicate_duration_message_provider_ids
-    }
-    normalized_messages: list[ParsedMessage] = []
-    for message in messages:
-        resolved_timing = timing_by_message_id.get(message.provider_message_id)
-        if resolved_timing is not None:
-            normalized_messages.append(message.model_copy(update={"duration_ms": resolved_timing.elapsed_duration_ms}))
-        elif message.provider_message_id in duplicate_duration_message_ids:
-            normalized_messages.append(message.model_copy(update={"duration_ms": None}))
-        else:
-            normalized_messages.append(message)
-    messages = normalized_messages
-    session_events = [
-        ParsedSessionEvent(
-            event_type="generation_lifecycle",
-            timestamp=timing.event_timestamp,
-            source_message_provider_id=timing.message_provider_id,
-            payload={
-                "state": "completed",
-                "evidence_source": "provider_native",
-                "fidelity": timing.fidelity,
-                "duration_semantics": "provider_reported_elapsed",
-                "elapsed_duration_ms": timing.elapsed_duration_ms,
-                **({"started_at_ms": timing.started_at_ms} if timing.started_at_ms is not None else {}),
-                **({"ended_at_ms": timing.ended_at_ms} if timing.ended_at_ms is not None else {}),
-            },
-        )
-        for timing in generation_timings
-    ]
-    session_events.extend(_block_metadata_evidence_events(messages))
+    emitted_message_ids = entries.emitted_provider_ids()
+    session_events: MutableSequence[ParsedSessionEvent] = spill.events() if spill is not None else []
+    messages: MutableSequence[ParsedMessage] = spill.messages() if spill is not None else []
+    message_count = 0
+    reported_duration_ms: int | None = None
+    model_names: set[str] = set()
+    active_leaf_message_provider_id: str | None = None
+    # The generation-timing selection lives in the spill's scratch database,
+    # or in a private in-memory one when the parse collects into lists.
+    with nullcontext(spill.connection()) if spill is not None else closing(sqlite3.connect(":memory:")) as timing_conn:
+        from polylogue.sources.prepared_message_sink import GenerationTimings as _Timings
+
+        timings = _Timings(timing_conn)
+        _extract_generation_timings(mapping, timings)
+        for branch_key, selected in timings.selected():
+            timing = _GenerationTiming(**cast("dict[str, Any]", selected))
+            if timing.message_provider_id not in emitted_message_ids:
+                fallback_owner_id = entries.last_emitted_among(timings.related(branch_key))
+                if fallback_owner_id is not None:
+                    timing = replace(timing, message_provider_id=fallback_owner_id)
+            timings.resolve(timing.message_provider_id, timing.elapsed_duration_ms)
+            session_events.append(
+                ParsedSessionEvent(
+                    event_type="generation_lifecycle",
+                    timestamp=timing.event_timestamp,
+                    source_message_provider_id=timing.message_provider_id,
+                    payload={
+                        "state": "completed",
+                        "evidence_source": "provider_native",
+                        "fidelity": timing.fidelity,
+                        "duration_semantics": "provider_reported_elapsed",
+                        "elapsed_duration_ms": timing.elapsed_duration_ms,
+                        **({"started_at_ms": timing.started_at_ms} if timing.started_at_ms is not None else {}),
+                        **({"ended_at_ms": timing.ended_at_ms} if timing.ended_at_ms is not None else {}),
+                    },
+                )
+            )
+        # One pass over the final messages writes them and gathers every
+        # per-message summary, so neither route holds a second copy.
+        for message in _resolved_messages(entries, active_path):
+            resolved_duration_ms = timings.resolved_duration_ms(message.provider_message_id)
+            if resolved_duration_ms is not None:
+                message = message.model_copy(update={"duration_ms": resolved_duration_ms})
+            elif timings.repeats_selected_duration(message.provider_message_id):
+                message = message.model_copy(update={"duration_ms": None})
+            messages.append(message)
+            message_count += 1
+            session_events.extend(_block_metadata_evidence_events((message,)))
+            if message.duration_ms is not None:
+                reported_duration_ms = (reported_duration_ms or 0) + message.duration_ms
+            if message.model_name:
+                model_names.add(message.model_name)
+            if active_leaf_message_provider_id is None and message.is_active_leaf:
+                active_leaf_message_provider_id = message.provider_message_id
     session_events.extend(_aggregate_result_events(mapping, emitted_message_ids))
     session_events.extend(_message_authorship_events(mapping, emitted_message_ids))
-    emitted_provider_ids = {message.provider_message_id for message in messages}
     session_events.extend(
         event
         for event in _message_metadata_evidence_events(mapping)
-        if event.source_message_provider_id in emitted_provider_ids
+        if event.source_message_provider_id in emitted_message_ids
     )
-    duration_values = [message.duration_ms for message in messages if message.duration_ms is not None]
     provider_title = payload.get("title") or payload.get("name")
     title = provider_title or fallback_id
     # polylogue-cijx.4 decision 3 / has_real_title (archive_tiers/archive.py):
@@ -2851,7 +3080,7 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     title_source = TitleSource.ORIGIN if provider_title else None
     conv_id = payload.get("id") or payload.get("uuid") or payload.get("conversation_id")
     ingest_flags: list[str] = []
-    if not messages and payload.get("conversation_id") and payload.get("id") and "mapping" not in payload:
+    if not message_count and payload.get("conversation_id") and payload.get("id") and "mapping" not in payload:
         ingest_flags.append(SHARED_CONVERSATION_INDEX_INGEST_FLAG)
     if payload.get("is_temporary") is True:
         ingest_flags.append("capture:temporary-chat")
@@ -2872,12 +3101,11 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
     # The conversation's ``default_model_slug`` names the model it was
     # configured to use; per-message slugs name the models that actually
     # answered. The union is the session's model summary.
-    model_names: set[str] = {message.model_name for message in messages if message.model_name}
     if conversation_model_slug:
         model_names.add(conversation_model_slug)
     models_used = sorted(model_names)
 
-    return ParsedSession(
+    session = ParsedSession(
         source_name=Provider.CHATGPT,
         provider_session_id=str(conv_id or fallback_id),
         title=str(title),
@@ -2886,15 +3114,19 @@ def parse(payload: Mapping[str, object], fallback_id: str) -> ParsedSession:
         provider_project_ref=provider_project_ref,
         created_at=str(payload.get("create_time")) if payload.get("create_time") is not None else None,
         updated_at=str(payload.get("update_time")) if payload.get("update_time") is not None else None,
-        messages=messages,
-        active_leaf_message_provider_id=next(
-            (message.provider_message_id for message in messages if message.is_active_leaf),
-            None,
-        ),
-        attachments=attachments,
-        session_events=session_events,
+        messages=[] if spill is not None else list(messages),
+        active_leaf_message_provider_id=active_leaf_message_provider_id,
+        attachments=[] if spill is not None else list(attachments),
+        session_events=[] if spill is not None else list(session_events),
         unit_accounting=admission.close(),
-        reported_duration_ms=sum(duration_values) if duration_values else None,
+        reported_duration_ms=reported_duration_ms,
         models_used=models_used,
         ingest_flags=ingest_flags,
+    )
+    if spill is None:
+        return session
+    # Model validation would copy a scratch-backed sequence into a list, so
+    # the spilled collections are attached after construction.
+    return session.model_copy(
+        update={"messages": messages, "attachments": attachments, "session_events": session_events}
     )

@@ -1987,6 +1987,17 @@ SESSION_SUMMARY_BINDINGS_SPEC = _make_table_spec(
     ),
 )
 
+SESSION_ENRICHMENT_BINDINGS_SPEC = _make_table_spec(
+    "session_enrichment_bindings",
+    (
+        _raw_column(
+            "session_id",
+            """session_id     TEXT PRIMARY KEY REFERENCES sessions(session_id) ON DELETE CASCADE""",
+        ),
+        _raw_column("evidence_key", """evidence_key   TEXT NOT NULL"""),
+    ),
+)
+
 WORK_EVIDENCE_GRAPHS_SPEC = _make_table_spec(
     "work_evidence_graphs",
     (
@@ -2244,6 +2255,7 @@ INDEX_TABLE_SPECS = {
     "derived_refresh_guard": DERIVED_REFRESH_GUARD_SPEC,
     "session_usage_rollup_bindings": SESSION_USAGE_ROLLUP_BINDINGS_SPEC,
     "session_summary_bindings": SESSION_SUMMARY_BINDINGS_SPEC,
+    "session_enrichment_bindings": SESSION_ENRICHMENT_BINDINGS_SPEC,
     "work_evidence_graphs": WORK_EVIDENCE_GRAPHS_SPEC,
     "work_evidence_nodes": WORK_EVIDENCE_NODES_SPEC,
     "work_evidence_edges": WORK_EVIDENCE_EDGES_SPEC,
