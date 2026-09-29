@@ -187,7 +187,7 @@ def _probe_schema(db: Path) -> StatusDiagnostic | None:
             kind="schema_mismatch",
             headline=f"Schema version {current_version} is not runtime {expected_version}.",
             detail=detail,
-            next_action="polylogue ops reset --index && polylogued run",
+            next_action="polylogue ops reset --index, then restart polylogued",
         )
     return None
 

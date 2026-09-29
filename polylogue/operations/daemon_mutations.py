@@ -193,30 +193,13 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
     if flags["index"] or flags["database"]:
         if (root / ".index-active-pointer").exists():
             raise ValueError("reset is unsafe for a managed active generation")
-        names = [("index database", "index.db")] if flags["index"] else []
+        # Only the tiers bootstrap recreates from nothing. source.db, user.db
+        # and audit.db are durable: an established archive whose format
+        # marker names a missing one refuses to open, so no reset names them.
+        # ``embeddings.db`` holds purchased vectors that nothing replays.
+        names = [("index database", "index.db")]
         if flags["database"]:
-            if bool(payload.get("include_source_db", False)):
-                from polylogue.operations.reset_safety import unresolvable_raw_source_count
-
-                at_risk = unresolvable_raw_source_count(root)
-                if at_risk:
-                    raise ValueError(
-                        f"refusing to delete source.db: {at_risk} raw row(s) reference source paths that no longer exist"
-                    )
-            # ``embeddings.db`` is absent deliberately: bootstrap classifies it
-            # ``expensive_rebuild`` because nothing replays its vectors from
-            # source.db -- they are re-purchased from the embedding provider.
-            # Deleting it is a repurchase, not a reset, so ``--database`` keeps
-            # it; no product route replaces this tier.
-            names = [
-                ("source database", "source.db"),
-                ("index database", "index.db"),
-                ("ops database", "ops.db"),
-            ]
-            if not bool(payload.get("include_source_db", False)):
-                names = [item for item in names if item[1] != "source.db"]
-            if not bool(payload.get("include_user_db", False)):
-                pass
+            names.append(("ops database", "ops.db"))
         for name, filename in names:
             path = root / filename
             if path.exists():
@@ -225,14 +208,6 @@ def _reset_targets(root: Path, payload: dict[str, object]) -> list[tuple[str, Pa
                 sidecar = path.with_name(f"{path.name}{suffix}")
                 if sidecar.exists():
                     targets.append((f"{name} {suffix}", sidecar))
-    if flags["database"] and bool(payload.get("include_user_db", False)):
-        path = root / "user.db"
-        if path.exists():
-            targets.append(("user database", path))
-        for suffix in ("-wal", "-shm"):
-            sidecar = path.with_name(f"{path.name}{suffix}")
-            if sidecar.exists():
-                targets.append((f"user database {suffix}", sidecar))
     if flags["blob"]:
         path = blob_store_root()
         if path.exists():
@@ -282,20 +257,63 @@ def maintenance_reset(
     here and handed to :class:`FilesystemResetActuator`, so PREPARE and APPLY
     see the identical set and the audit rows precede the first deletion.
 
-    Archive tier databases are refused before any audit row: this handler
-    runs inside the daemon that holds them open (``LiveArchiveTierResetError``).
+    This handler runs inside the daemon, which holds ``index.db`` and
+    ``ops.db`` open. A request naming them is staged instead: the executor
+    records the authorized plan and its running attempt, nothing is deleted,
+    and the next daemon start applies the whole plan before any tier opens
+    (``apply_staged_archive_resets``). A target that is or holds a tier no
+    reset deletes is refused before any audit row.
     """
     from polylogue.operations.mutation_actuators import FilesystemResetActuator, FilesystemResetArgs
-    from polylogue.operations.reset_safety import LiveArchiveTierResetError, live_archive_tier_targets
+    from polylogue.operations.reset_safety import UnresettableArchiveTierError, classify_reset_targets
 
     targets = _reset_targets(context.archive_root, request.payload)
-    live_tiers = live_archive_tier_targets(
-        context.archive_root, targets, served_index_path=snapshot.archive.index_db_path
-    )
-    if live_tiers:
-        raise LiveArchiveTierResetError(live_tiers)
+    classes = classify_reset_targets(context.archive_root, targets, served_index_path=snapshot.archive.index_db_path)
+    if classes.unresettable:
+        raise UnresettableArchiveTierError(classes.unresettable_names)
     args = FilesystemResetArgs(archive_root=context.archive_root, targets=tuple(targets))
+    if classes.derived_tier_files:
+        return _stage_reset_for_daemon_start(request, context, audit, FilesystemResetActuator(), args)
     return _execute_named_mutation(request, context, audit, snapshot, FilesystemResetActuator(), args)
+
+
+def _stage_reset_for_daemon_start(
+    request: DaemonOperationRequest,
+    context: OperationContext,
+    audit: AuditRepository,
+    actuator: Any,
+    args: Any,
+) -> dict[str, object]:
+    """Authorize a tier reset and record its running attempt without applying it.
+
+    The attempt belongs to this daemon process. Once the process exits the
+    attempt's owner is dead, and the next start's quiescent seam resolves the
+    plan through ``FilesystemResetActuator.recover``, which deletes exactly
+    the authorized objects. Until then the run stays ``running``, so an
+    overlapping reset is refused as concurrent work.
+    """
+    binding = runtime_operation_binding(actuator)
+    if request.payload.get("confirm") is not True:
+        raise ConfirmationRequiredError(f"{request.operation} requires explicit confirmation")
+    executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
+    preview = executor.prepare_bound_for_archive(binding, args, context.principal, archive_root=context.archive_root)
+    authorization = executor.authorize_bound(binding, preview, context.principal, confirmation_strength="bound_token")
+    started = executor.begin_bound(binding, preview, authorization, args)
+    return {
+        "operation": request.operation,
+        "outcome": "completed",
+        "sequence": 1,
+        # The durable effect of this request is the staged, authorized plan.
+        "effect": "committed",
+        "affected_count": 0,
+        "receipt_ref": f"mutation-operation:{started.operation_id}",
+        "result": {
+            "state": "staged",
+            "applies_at": "daemon_start",
+            "deleted": 0,
+            "targets": [name for name, _path in args.targets],
+        },
+    }
 
 
 def maintenance_blob_publications_abandon(

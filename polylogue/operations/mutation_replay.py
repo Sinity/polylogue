@@ -97,4 +97,43 @@ def recover_interrupted_operations(archive_root: Path) -> None:
     resolve_interrupted_operations(audit, archive_root, orphans)
 
 
-__all__ = ["recover_interrupted_operations", "recoverable_actuators"]
+def apply_staged_archive_resets(archive_root: Path) -> tuple[str, ...]:
+    """Apply the resets a previous daemon staged, before any tier is opened.
+
+    ``maintenance.reset`` naming ``index.db``/``ops.db`` records its authorized
+    plan and a running attempt owned by the daemon that received it, and
+    deletes nothing. Once that process has exited, this seam resolves every
+    such plan whose owner is dead through its actuator's ``recover`` inside
+    :func:`~polylogue.operations.reset_safety.archive_tiers_closed`. The
+    caller holds exclusive archive ownership and has opened no tier, so no
+    handle can be left on an unlinked file.
+
+    Only operations whose recovery route replaces archive files are touched;
+    everything else stays for :func:`recover_interrupted_operations`. Returns
+    the ids of the operations resolved here.
+    """
+
+    if not (archive_root / "audit.db").is_file():
+        return ()
+    from polylogue.operations.audit import AuditRepository
+    from polylogue.operations.reset_safety import archive_tiers_closed
+
+    audit = AuditRepository.for_archive_root(
+        archive_root,
+        attempt_owner_id=AuditRepository.current_process_attempt_owner(),
+    )
+    audit.reconcile_continuity()
+    routes = recoverable_actuators()
+    staged = tuple(
+        operation
+        for operation in audit.orphaned_operations()
+        if getattr(routes.get(operation.operation), "replaces_archive_files", False)
+    )
+    if not staged:
+        return ()
+    with archive_tiers_closed(archive_root):
+        deferred = set(resolve_interrupted_operations(audit, archive_root, staged))
+    return tuple(operation.operation_id for operation in staged if operation.operation_id not in deferred)
+
+
+__all__ = ["apply_staged_archive_resets", "recover_interrupted_operations", "recoverable_actuators"]

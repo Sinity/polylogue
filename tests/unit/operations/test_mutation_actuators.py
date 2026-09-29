@@ -2642,42 +2642,142 @@ class TestReplayActsOnTheRecordedIdsExactly:
         assert self._sibling_state(archive_root, sibling) == (True, 0)
 
 
-@pytest.mark.parametrize(
-    "target_name", ["index.db", "ops.db", "source.db", "user.db", "embeddings.db", "audit.db", "."]
-)
-def test_reset_apply_and_recovery_refuse_tier_files_before_any_deletion(tmp_path: Path, target_name: str) -> None:
+def _wal_tier(db_path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("CREATE TABLE IF NOT EXISTS reset_probe(value TEXT)")
+    conn.execute("INSERT INTO reset_probe VALUES ('retained')")
+    conn.commit()
+    return conn
+
+
+@pytest.mark.parametrize("target_name", ["source.db", "user.db", "embeddings.db", "audit.db", "."])
+def test_reset_never_deletes_a_durable_tier_or_a_directory_holding_tiers(tmp_path: Path, target_name: str) -> None:
+    """No route deletes these: bootstrap refuses an archive missing a durable tier (07.F012).
+
+    Anti-vacuity: drop the ``unresettable`` checks in ``apply``/``recover`` and
+    the tier (or the archive directory holding it) is deleted at the seam.
+    """
     from polylogue.operations.mutation_actuators import FilesystemResetActuator, FilesystemResetArgs
     from polylogue.operations.mutation_transaction import ReplayHandles
-    from polylogue.operations.reset_safety import LiveArchiveTierResetError
+    from polylogue.operations.reset_safety import UnresettableArchiveTierError, archive_tiers_closed
 
     initialize_active_archive_root(tmp_path)
-    db_path = tmp_path / ("index.db" if target_name == "." else target_name)
-    conn = sqlite3.connect(db_path)
+    db_path = tmp_path / ("user.db" if target_name == "." else target_name)
+    conn = _wal_tier(db_path)
     try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("CREATE TABLE reset_probe(value TEXT)")
-        conn.execute("INSERT INTO reset_probe VALUES ('retained')")
-        conn.commit()
         cache = tmp_path / "reset-cache"
         cache.write_bytes(b"also retained on refusal")
-        targets = (("cache", cache), ("tier", tmp_path / target_name))
-        args = FilesystemResetArgs(tmp_path, targets)
+        args = FilesystemResetArgs(tmp_path, (("cache", cache), ("tier", tmp_path / target_name)))
         actuator = FilesystemResetActuator()
         plan = actuator.prepare(args)
-        with pytest.raises(LiveArchiveTierResetError):
+        with pytest.raises(UnresettableArchiveTierError):
             actuator.apply(plan, args)
         handles = ReplayHandles(tmp_path)
         try:
-            resolution = actuator.recover(handles, plan)
+            with archive_tiers_closed(tmp_path):
+                resolution = actuator.recover(handles, plan)
         finally:
             handles.close()
         assert resolution.outcome == "replay-failed"
         assert resolution.receipt is None
         assert cache.read_bytes() == b"also retained on refusal"
         assert db_path.exists()
-        assert db_path.with_name(db_path.name + "-wal").exists()
         assert conn.execute("SELECT value FROM reset_probe").fetchone() == ("retained",)
-        with sqlite3.connect(db_path) as reopened:
-            assert reopened.execute("SELECT value FROM reset_probe").fetchone() == ("retained",)
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("target_name", ["index.db", "ops.db"])
+def test_derived_tier_reset_waits_for_the_closed_seam_then_deletes_the_database_and_sidecars(
+    tmp_path: Path, target_name: str
+) -> None:
+    """A live APPLY or ordinary recovery never unlinks a derived tier (07.F012).
+
+    Outside ``archive_tiers_closed`` the open handle keeps its data and the
+    plan stays pending; inside it the database, every sidecar beside it and
+    the plan's other targets are deleted.
+
+    Anti-vacuity: drop the deferral and ordinary recovery unlinks the file
+    under the open connection; drop the sidecar sweep and ``-wal`` survives.
+    """
+    from polylogue.operations.mutation_actuators import FilesystemResetActuator, FilesystemResetArgs
+    from polylogue.operations.mutation_transaction import RecoveryDeferredError, ReplayHandles
+    from polylogue.operations.reset_safety import LiveArchiveTierResetError, archive_tiers_closed
+
+    initialize_active_archive_root(tmp_path)
+    db_path = tmp_path / target_name
+    conn = _wal_tier(db_path)
+    wal = db_path.with_name(db_path.name + "-wal")
+    cache = tmp_path / "reset-cache"
+    cache.write_bytes(b"deleted with the plan")
+    targets = [("cache", cache), ("tier", db_path)]
+    targets += [(f"tier {suffix}", db_path.with_name(db_path.name + suffix)) for suffix in ("-wal", "-shm")]
+    args = FilesystemResetArgs(tmp_path, tuple(targets))
+    actuator = FilesystemResetActuator()
+    plan = actuator.prepare(args)
+    try:
+        with pytest.raises(LiveArchiveTierResetError):
+            actuator.apply(plan, args)
+        handles = ReplayHandles(tmp_path)
+        try:
+            with pytest.raises(RecoveryDeferredError):
+                actuator.recover(handles, plan)
+        finally:
+            handles.close()
+        assert cache.exists()
+        assert wal.exists()
+        assert conn.execute("SELECT COUNT(*) FROM reset_probe").fetchone() == (1,)
+    finally:
+        conn.close()
+    # Closing the last connection may checkpoint the WAL away; leave a stale
+    # one behind, as a killed daemon would.
+    wal.write_bytes(b"stale frames")
+
+    handles = ReplayHandles(tmp_path)
+    try:
+        with archive_tiers_closed(tmp_path):
+            resolution = actuator.recover(handles, plan)
+    finally:
+        handles.close()
+
+    assert resolution.outcome == "complete"
+    assert not db_path.exists()
+    assert not wal.exists()
+    assert not db_path.with_name(db_path.name + "-shm").exists()
+    assert not cache.exists()
+
+
+def test_seam_keeps_a_recreated_tier_and_clears_sidecars_of_a_vanished_one(tmp_path: Path) -> None:
+    """Identity decides the database; a vanished database's stale sidecars still go.
+
+    Anti-vacuity: drop the identity check and the recreated ``ops.db`` is
+    deleted; tie sidecars to the database's own identity and the stale
+    ``index.db-wal`` stays beside the file bootstrap creates next.
+    """
+    from polylogue.operations.mutation_actuators import FilesystemResetActuator, FilesystemResetArgs
+    from polylogue.operations.mutation_transaction import ReplayHandles
+    from polylogue.operations.reset_safety import archive_tiers_closed
+
+    initialize_active_archive_root(tmp_path)
+    index_db, ops_db = tmp_path / "index.db", tmp_path / "ops.db"
+    args = FilesystemResetArgs(tmp_path, (("index database", index_db), ("ops database", ops_db)))
+    actuator = FilesystemResetActuator()
+    plan = actuator.prepare(args)
+    index_db.unlink()
+    index_db.with_name("index.db-wal").write_bytes(b"stale frames")
+    ops_db.unlink()
+    ops_db.write_bytes(b"recreated after the preview")
+    ops_db.with_name("ops.db-wal").write_bytes(b"belongs to the new file")
+
+    handles = ReplayHandles(tmp_path)
+    try:
+        with archive_tiers_closed(tmp_path):
+            resolution = actuator.recover(handles, plan)
+    finally:
+        handles.close()
+
+    assert resolution.outcome == "complete"
+    assert not index_db.with_name("index.db-wal").exists()
+    assert ops_db.read_bytes() == b"recreated after the preview"
+    assert ops_db.with_name("ops.db-wal").exists()

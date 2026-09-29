@@ -311,7 +311,7 @@ def test_every_prior_index_schema_version_is_rejected_not_silently_reopened(tmp_
     table, so a DDL edit alone (e.g. widening a CHECK constraint) does
     *not* retroactively apply to those archives — only the version bump
     forces them through ``version_mismatch`` rejection and the documented
-    fresh-first rebuild (``polylogue ops reset --index && polylogued run``)
+    fresh-first rebuild (``polylogue ops reset --index, then restart polylogued``)
     instead of being silently reopened with stale DDL that a subsequent
     write could violate (see commit that added
     ``INDEX_SCHEMA_VERSION`` specifically so this scenario is caught here,

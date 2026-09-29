@@ -2230,6 +2230,24 @@ async def _run_daemon_services_under_active_writer_lease(
                     f"{' behind a verified backup' if migration.requires_backup else ''}"
                 ),
             )
+        # A reset of index.db/ops.db staged by the previous daemon lands here:
+        # this process holds exclusive ownership and has opened no tier yet,
+        # so no connection can be left on an unlinked file. Bootstrap then
+        # recreates the deleted tiers and the empty index cold-builds.
+        from polylogue.operations.mutation_replay import apply_staged_archive_resets
+
+        if not durable_tier_schema_mismatch():
+            with write_lease("daemon.archive_reset.startup", archive_root=archive_root_path):
+                applied_resets = apply_staged_archive_resets(archive_root_path)
+            if applied_resets:
+                emit(
+                    "daemon.archive_reset.applied",
+                    level=WARNING,
+                    outcome="ok",
+                    reason="staged_reset_applied_before_tiers_open",
+                    rows=len(applied_resets),
+                    error_detail=", ".join(applied_resets),
+                )
     except BaseException:
         archive_owner.release()
         raise

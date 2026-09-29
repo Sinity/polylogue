@@ -164,7 +164,7 @@ def archive_snapshot_epoch(archive: ArchiveStore, *, relations: Iterable[str] | 
                 "this archive generation predates the query_unit_frame_state epoch-tracking table (or an "
                 "interrupted rebuild never promoted a generation that has it) and cannot serve query "
                 "continuations; rebuild the index tier from source with "
-                "`polylogue ops reset --index && polylogued run`"
+                "`polylogue ops reset --index, then restart polylogued`"
             ) from exc
         logger.warning("query transaction: could not read archive snapshot epoch", exc_info=True)
         raise QueryArchiveEpochUnreadableError("could not establish archive frame for query continuation") from exc

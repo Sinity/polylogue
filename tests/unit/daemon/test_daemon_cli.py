@@ -1534,6 +1534,67 @@ def test_run_daemon_services_parks_operation_recovery_on_audit_schema_mismatch(
     recover_mock.assert_not_called()
 
 
+def test_run_daemon_services_applies_staged_resets_before_any_tier_opens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-9kemf 07.F012: a staged tier reset lands before startup opens a tier.
+
+    The seam must run under the daemon's archive ownership and before the
+    schema preflight, lifecycle start and operation recovery, which all open
+    tier connections. At the seam this process holds no descriptor on any tier
+    file.
+
+    Anti-vacuity: move ``apply_staged_archive_resets`` after the schema
+    preflight (or drop it) and the recorded order no longer starts with the
+    seam.
+    """
+    from polylogue.daemon import cli as daemon_cli
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    archive_root_path = tmp_path / "archive"
+    initialize_active_archive_root(archive_root_path)
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(archive_root_path))
+    tier_names = {f"{tier.value}.db{suffix}" for tier in ArchiveTier for suffix in ("", "-wal", "-shm")}
+    order: list[str] = []
+    open_tier_files: list[str] = []
+
+    class _StopStartupError(Exception):
+        pass
+
+    def seam(root: Path) -> tuple[str, ...]:
+        order.append("seam")
+        assert root == archive_root_path
+        for fd in Path("/proc/self/fd").iterdir():
+            with contextlib.suppress(OSError):
+                target = Path(os.readlink(fd))
+                if target.parent == archive_root_path and target.name in tier_names:
+                    open_tier_files.append(target.name)
+        return ()
+
+    def preflight() -> object:
+        order.append("schema_preflight")
+        raise _StopStartupError
+
+    with (
+        patch("polylogue.operations.mutation_replay.apply_staged_archive_resets", seam),
+        patch.object(daemon_cli, "_check_schema_version_fast", preflight),
+        pytest.raises(_StopStartupError),
+    ):
+        asyncio.run(
+            daemon_cli.run_daemon_services(
+                sources=(WatchSource(name="codex", root=archive_root_path),),
+                enable_watch=True,
+                enable_browser_capture=False,
+                browser_capture_host="127.0.0.1",
+                browser_capture_port=8765,
+                browser_capture_spool_path=None,
+            )
+        )
+
+    assert order == ["seam", "schema_preflight"]
+    assert open_tier_files == []
+
+
 def test_forward_versioned_durable_tier_is_a_typed_startup_refusal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

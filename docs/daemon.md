@@ -912,7 +912,7 @@ copy indefinitely (observed 2026-07-30 on an unrelated host-level `VACUUM
 INTO` cron job: 1.5 TB written in 2 hours against a live `index.db` rebuild
 before the operation was killed by its own timeout). Run any operator-owned
 task in a quiet window and never concurrently with
-`polylogue ops reset --index && polylogued run`.
+`polylogue ops reset --index, then restart polylogued`.
 
 ### Litestream Integration (Guidance)
 

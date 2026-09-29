@@ -183,9 +183,8 @@ polylogue find pytest then read --view summary
 
 Restore expectations:
 
-- `user.db` must survive ordinary `polylogue ops reset --database` and
-  `polylogue ops reset --all`; deleting it requires the explicit
-  `--include-user-db` opt-in.
+- `user.db` survives every `polylogue ops reset`, including `--database` and
+  `--all`: a reset deletes only `index.db` and `ops.db`.
 - Assertion candidates, accepted/rejected/deferred judgments, and promoted
   active assertions all live in `user.db`. Rebuilding `index.db` from
   `source.db` must not turn rejected or deferred inference candidates back into

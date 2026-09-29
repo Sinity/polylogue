@@ -836,8 +836,6 @@ class RawAuthorityBlockerResolveRequest(_OperationPayload):
 class ResetRequest(_OperationPayload):
     index: bool = False
     database: bool = False
-    include_user_db: bool = False
-    include_source_db: bool = False
     blob: bool = False
     assets: bool = False
     cache: bool = False

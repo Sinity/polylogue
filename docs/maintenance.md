@@ -64,10 +64,17 @@ The order of preference is: **do nothing → daemon → guarded recovery →
 reset**. Reset is the only one that destroys primary data.
 
 `polylogue ops reset` runs in the daemon, which holds every archive tier
-database open. A reset whose targets include a tier database or its
-`-wal`/`-shm` sidecar (`--index`, `--database`, `--all`, or a directory
-holding the tiers) is refused with `reset_live_archive_tier` before any audit
-row or deletion; the other targets in that request are not deleted either.
+database open. A reset that names `index.db` or `ops.db` (`--index`,
+`--database`, `--all`) is therefore staged: the daemon records the authorized
+plan and deletes nothing, and the next `polylogued` start deletes the whole
+plan, including its other targets, before it opens any tier. Restart the
+daemon to apply it; bootstrap then recreates the deleted tiers and the empty
+index cold-builds from `source.db`. A reset only ever deletes `index.db` and
+`ops.db`: `source.db`, `user.db` and `audit.db` are durable, an established
+archive missing one refuses to open, and `embeddings.db` holds purchased
+vectors. A target that is or holds any of those is refused with
+`reset_unresettable_archive_tier` before any audit row. To start over, move
+the whole archive root aside (see "Fresh-start archive after a reset ruling").
 
 ## Subcommands
 
@@ -288,10 +295,11 @@ durable evidence.
 An executor-routed mutation that is interrupted before audit finalization
 leaves a nonterminal `operation_runs` row. The daemon resolves these at
 startup under its own writer lease (`polylogued run` ->
-`recover_interrupted_operations`). A later mutation request first resolves
-every dead run whose family its process has loaded; it refuses while dead work
-it cannot route overlaps its targets or would delete archive files, and asks
-for a retry after recovering a file reset under its already-open handles.
+`recover_interrupted_operations`). A reset of archive tier files resolves
+earlier, at `apply_staged_archive_resets`, before any tier opens; anywhere
+else it stays pending. A later mutation request first resolves every dead run
+whose family its process has loaded; it refuses while dead work it cannot
+route overlaps its targets or would delete archive files.
 
 Every mutation family declares a recovery route
 (`polylogue/operations/mutation_replay.py`). Most re-apply the recorded plan:
@@ -439,7 +447,7 @@ General durable migration and runtime recovery policy still applies to archives 
 
 **Symptoms.** None yet — this is the proactive check to run *before* symptoms
 appear, immediately after any operation that replaces or promotes a whole
-tier: a derived-tier rebuild (`polylogue ops reset --index && polylogued run`),
+tier: a derived-tier rebuild (`polylogue ops reset --index`, then a daemon restart),
 a durable-tier migration (previous runbook), or a full restore from backup.
 
 **Why this matters.** A blue-green index rebuild can leave the conventional
@@ -561,9 +569,3 @@ primary one, but [#818](https://github.com/Sinity/polylogue/issues/818)
 tracks remaining classes), attach the lease/GC probe snapshot from
 step 2 to that issue so the GC pass that mis-classified the blob can
 be reproduced.
-
-Database reset lifecycle limitation: `--index`, `--database`, and `--all` are
-currently refused; stopping the daemon does not enable a CLI-side reset writer.
-The refusal also covers direct APPLY and interrupted-plan recovery, before any
-mixed cache/asset targets are deleted. A lifecycle-owned quiesce, audited reset,
-and restart route remains required; refusal is not a successful reset.

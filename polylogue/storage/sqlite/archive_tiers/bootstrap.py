@@ -613,7 +613,7 @@ def initialize_archive_database(
                     "the build that created the database before opening it; do not move the database aside."
                 )
             rebuild_command = (
-                "polylogue ops reset --index && polylogued run"
+                "polylogue ops reset --index, then restart polylogued"
                 if tier is ArchiveTier.INDEX
                 else f"mv {path} {path}.stale"
             )
