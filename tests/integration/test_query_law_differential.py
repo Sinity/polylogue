@@ -172,7 +172,7 @@ def test_query_law_unmutated_run_is_green_for_the_same_probes(
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def census_snapshot(
     query_law_corpus: QueryCorpus, tmp_path_factory: pytest.TempPathFactory
 ) -> Iterator[ArchiveSnapshot]:
@@ -182,11 +182,12 @@ def census_snapshot(
     shutil.rmtree(snapshot.root, ignore_errors=True)
 
 
-@pytest.fixture(scope="module")
-def census(census_snapshot: ArchiveSnapshot) -> tuple[CensusObservation, ...]:
-    # This census uses the Python facade against its explicit snapshot root;
-    # it has no CLI leg and needs no ambient daemon or function-scoped patch.
-    return asyncio.run(run_workload_census(census_snapshot))
+@pytest.fixture
+def census(census_snapshot: ArchiveSnapshot, monkeypatch: pytest.MonkeyPatch) -> tuple[CensusObservation, ...]:
+    # The census runs against the reflink copy, so its CLI leg needs a daemon
+    # rooted at that copy rather than the source corpus archive.
+    with cli_daemon_archive(census_snapshot.root, monkeypatch):
+        return asyncio.run(run_workload_census(census_snapshot))
 
 
 def test_query_law_census_covers_every_declared_family(census: tuple[CensusObservation, ...]) -> None:
@@ -347,17 +348,3 @@ def test_query_law_census_leaves_durable_tiers_byte_identical(census_snapshot: A
 
     assert_snapshot_unmutated(census_snapshot)
     assert census_snapshot.root != census_snapshot.source
-
-
-@pytest.fixture(scope="module")
-def module_census_witness(census: tuple[CensusObservation, ...]) -> tuple[CensusObservation, ...]:
-    """Retain the real census for a second consumer at its required lifetime."""
-    return census
-
-
-def test_census_is_shared_with_module_lifetime_consumers(
-    census: tuple[CensusObservation, ...],
-    module_census_witness: tuple[CensusObservation, ...],
-) -> None:
-    """A function-scoped census fails before this assertion with ScopeMismatch."""
-    assert census is module_census_witness
