@@ -31,15 +31,16 @@ import json
 import random
 import re
 import uuid
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
+from typing import TypeVar
 
 WORKLOAD_PROFILE_FILE = "workload-corpus.json"
 WORKLOAD_PROFILE_KIND = "polylogue.synthetic-workload-profile"
-WORKLOAD_PROFILE_VERSION = 4
+WORKLOAD_PROFILE_VERSION = 5
 
 #: Origins with a workload renderer.
 WORKLOAD_ORIGINS: tuple[str, ...] = ("claude-code", "codex")
@@ -237,6 +238,23 @@ def measured_text(origin: str, kind: str, record: Mapping[str, object]) -> str |
     return None
 
 
+def tool_result_texts(record: Mapping[str, object]) -> list[str]:
+    """The body of every ``tool_result`` block of a Claude Code user record."""
+    message = record.get("message")
+    content = message.get("content") if isinstance(message, Mapping) else None
+    return [
+        _compact(block.get("content") or "")
+        for block in (content if isinstance(content, list) else ())
+        if isinstance(block, Mapping) and block.get("type") == "tool_result"
+    ]
+
+
+def result_length(text: str) -> int:
+    """A Claude result body's size; a persisted output counts at its full size."""
+    persisted = persisted_output_size(text)
+    return persisted if persisted is not None else len(text)
+
+
 def text_measure(origin: str, kind: str, record: Mapping[str, object]) -> int | None:
     """Length of a relational record's dominant text, or None.
 
@@ -300,9 +318,13 @@ def record_skeleton(
                 out[key] = record_skeleton(item, depth + 1, allowed=allowed, values=values)
         return out
     if isinstance(value, list):
-        if not value:
-            return []
-        return [record_skeleton(value[0], depth + 1, allowed=allowed, values=values)]
+        # Every distinct item shape, first-seen order: a later item carrying
+        # an optional field the first lacks is a shape generation renders.
+        variants: dict[str, object] = {}
+        for item in value:
+            shape = record_skeleton(item, depth + 1, allowed=allowed, values=values)
+            variants.setdefault(json.dumps(shape, sort_keys=True), shape)
+        return list(variants.values())
     if isinstance(value, bool):
         return "bool"
     if isinstance(value, int):
@@ -351,12 +373,17 @@ def template_measures(
     only the keys it keeps, so a generated field draws its own length --
     a file path is not sized like the file content beside it -- and a list
     its own measured cardinality. ``measure`` is ``"str"``, ``"list"`` or
-    ``"int"`` (an integer leaf's own value, bucketed) or ``"bool"`` (0 or 1).
+    ``"int"`` (an integer leaf's own value, bucketed), ``"float"`` (a float
+    leaf in thousandths, bucketed) or ``"bool"`` (0 or 1).
     Nesting is followed to its end: a public-schema field is measured
     however deep it sits.
     """
     if isinstance(value, bool):
         yield "bool", path, int(value)
+    elif isinstance(value, float):
+        # Floats in thousandths, by magnitude: a cost of 0.012 USD stays
+        # cents-sized and a float timestamp stays timestamp-sized.
+        yield "float", path, max(0, round(value * _FLOAT_SCALE))
     elif isinstance(value, str):
         yield "str", path, len(value)
     elif isinstance(value, int):
@@ -486,6 +513,11 @@ class StreamProfile:
         histogram = self.lengths.get(key)
         return max(1, histogram.sample(rng)) if histogram is not None else 1
 
+    def count_or_none(self, rng: random.Random, key: str) -> int:
+        """A measured per-record cardinality that may be zero (zero when unmeasured)."""
+        histogram = self.lengths.get(key)
+        return histogram.sample(rng) if histogram is not None else 0
+
 
 def _mapping(value: object) -> Mapping[str, object]:
     return value if isinstance(value, Mapping) else {}
@@ -532,6 +564,8 @@ class WorkloadProfile:
     template_ints: Mapping[str, Mapping[str, Histogram]] = field(default_factory=dict)
     #: Boolean leaf values (0/1) per template kind and field path.
     template_bools: Mapping[str, Mapping[str, Histogram]] = field(default_factory=dict)
+    #: Float leaf values (thousandths) per template kind and field path.
+    template_floats: Mapping[str, Mapping[str, Histogram]] = field(default_factory=dict)
     #: Nested descendants below each first-level subagent.
     nested_descendants: Histogram = field(default_factory=lambda: Histogram((0,), (1.0,)))
     #: Spawns of each subagent inside a nested tree.
@@ -563,6 +597,7 @@ class WorkloadProfile:
             template_lists=_path_histograms(payload.get("template_lists")),
             template_ints=_path_histograms(payload.get("template_ints")),
             template_bools=_path_histograms(payload.get("template_bools")),
+            template_floats=_path_histograms(payload.get("template_floats")),
             nested_descendants=Histogram.from_payload(_mapping(payload.get("nested_descendants_per_subagent"))),
             nested_spawns=Histogram.from_payload(_mapping(payload.get("nested_spawns_per_subagent"))),
         )
@@ -596,6 +631,7 @@ class WorkloadProfile:
             self.template_lists.get(kind, {}),
             self.template_ints.get(kind, {}),
             self.template_bools.get(kind, {}),
+            self.template_floats.get(kind, {}),
         )
         record = _instantiate(skeleton, rng, fill, shape)
         return record if isinstance(record, dict) else {}
@@ -632,6 +668,8 @@ def _rate(rng: random.Random, mean: float) -> int:
 
 
 _DEFAULT_STRINGS = Histogram((3, 4, 5), (1.0, 1.0, 1.0))
+#: Float leaves are measured and rendered in thousandths.
+_FLOAT_SCALE = 1000
 #: A list the profile never measured (no observation at that path) has one item.
 _DEFAULT_LIST = Histogram((1,), (1.0,))
 
@@ -651,6 +689,7 @@ class _TemplateShape:
     lists: Mapping[str, Histogram]
     ints: Mapping[str, Histogram] = field(default_factory=dict)
     bools: Mapping[str, Histogram] = field(default_factory=dict)
+    floats: Mapping[str, Histogram] = field(default_factory=dict)
 
 
 def _instantiate(
@@ -676,7 +715,7 @@ def _instantiate(
         if not skeleton:
             return []
         count = shape.lists.get(path, _DEFAULT_LIST).sample(rng)
-        return [_instantiate(skeleton[0], rng, fill, shape, f"{path}[]") for _ in range(count)]
+        return [_instantiate(rng.choice(skeleton), rng, fill, shape, f"{path}[]") for _ in range(count)]
     if isinstance(skeleton, str) and skeleton.startswith("="):
         return skeleton[1:]
     if skeleton == "str":
@@ -685,7 +724,8 @@ def _instantiate(
         measured = shape.ints.get(path)
         return measured.sample(rng) if measured is not None else rng.randint(0, 5000)
     if skeleton == "float":
-        return round(rng.random() * 100, 3)
+        measured_float = shape.floats.get(path)
+        return measured_float.sample(rng) / _FLOAT_SCALE if measured_float is not None else 0.0
     if skeleton == "bool":
         # A measured flag keeps its measured rate (``preventedContinuation``
         # is almost never true); an unmeasured one is false.
@@ -820,6 +860,7 @@ class Joined:
 Text = str | LazyText | Joined
 #: A single generated text (sliceable); ``Joined`` only arises from ``concat``.
 Plain = str | LazyText
+_Built = TypeVar("_Built")
 
 
 def concat(*parts: Text) -> Text:
@@ -1121,6 +1162,52 @@ def _path_text(rng: random.Random, cwd: str, length: int) -> Text:
     return concat(f"{cwd}/src/", synthetic_text(rng, stem, non_ascii=False, b64=True), ".py")
 
 
+def _fitted(
+    rng: random.Random,
+    length: int,
+    *,
+    non_ascii: bool,
+    build: Callable[[Plain], _Built],
+    measure: Callable[[_Built], int],
+) -> _Built:
+    """``build(body)`` whose measured size is the sampled ``length``.
+
+    The profile measures a whole field -- a Codex call's ``arguments``, a
+    Claude call's compact ``input``, an output with its exec envelope --
+    so the body is what remains after the envelope, and after the escaping
+    the body needs once embedded. The randomness ``build`` draws is replayed
+    exactly for the final build. A lazily generated body (above
+    ``LAZY_TEXT_THRESHOLD``) is fitted to the envelope only.
+    """
+    state = rng.getstate()
+    overhead = measure(build(""))
+    rng.setstate(state)
+    body = synthetic_text(rng, max(0, length - overhead), non_ascii=non_ascii)
+    state = rng.getstate()
+    built = build(body)
+    if isinstance(body, str) and body:
+        overshoot = measure(built) - length
+        if overshoot > 0:
+            rng.setstate(state)
+            built = build(body[: max(0, len(body) - overshoot)])
+    return built
+
+
+def _text_length(text: object) -> int:
+    """The length of a built text field (a plain body is its own length)."""
+    return len(text) if isinstance(text, (str, LazyText, Joined)) else 0
+
+
+def _compact_length(value: object) -> int:
+    """The profile's measure of a Claude call input: its compact JSON length."""
+    try:
+        return len(_compact(value))
+    except TypeError:
+        # A lazily generated field cannot be serialized here; its size is
+        # dominated by the body, which is already the sampled length.
+        return 0
+
+
 def _patch_text(path: Text, body: Text) -> Text:
     """An apply_patch payload in the Codex patch format, touching ``path``."""
     return concat("*** Begin Patch\n*** Update File: ", path, "\n@@\n+", body, "\n*** End Patch")
@@ -1162,8 +1249,14 @@ def _claude_code_tool_result(
     tool_input: Mapping[str, object],
     body: Text,
     spawned_agents: list[str] | None,
+    *,
+    call_id: str | None = None,
+    spawn_calls: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """The call's ``toolUseResult`` in the shape its tool reports.
+
+    ``spawn_calls`` records which call spawned each assigned agent, the join
+    key its ``agent-*.meta.json`` carries.
 
     Edit and Write results carry the edit evidence production turns into
     durable file edits; an Agent/Task result names the spawned child. Other
@@ -1192,6 +1285,8 @@ def _claude_code_tool_result(
     if name in {"Agent", "Task"}:
         # A child whose transcript is not retained still gets its own id.
         agent_id = spawned_agents.pop(0) if spawned_agents else "a" + _token(rng, "", 16).lower()
+        if spawn_calls is not None and call_id is not None:
+            spawn_calls[agent_id] = call_id
         return {
             "status": "completed",
             "agentId": agent_id,
@@ -1204,6 +1299,9 @@ def _claude_code_tool_result(
 
 
 _CC_MODEL = "claude-synthetic-1"
+#: Tools whose ``toolUseResult`` is their own evidence (a durable edit, a
+#: spawned child); their results are never grouped with another's.
+_CC_ENVELOPE_TOOLS = frozenset({"Edit", "Write", "Agent", "Task"})
 _CC_SIDECAR_THRESHOLD = 30_000
 
 
@@ -1252,6 +1350,7 @@ def _claude_code_stream(
     sidecars: list[tuple[str, str, Text]],
     fork_parent: tuple[str, str],
     spawned_agents: list[str] | None = None,
+    spawn_calls: dict[str, str] | None = None,
 ) -> _Stream:
     """One Claude Code transcript.
 
@@ -1300,7 +1399,7 @@ def _claude_code_stream(
             if kind == "assistant_tool_use":
                 # The thinking and text a tool-call message carries beside
                 # its calls, at their measured rates, in Claude's order.
-                if rng.random() < profile.share("tool_use_thinking_share"):
+                for _ in range(stream.count_or_none(rng, f"{kind}:thinking_blocks")):
                     blocks.append(
                         {
                             "type": "thinking",
@@ -1308,7 +1407,7 @@ def _claude_code_stream(
                             "signature": _token(rng, "", 180),
                         }
                     )
-                if rng.random() < profile.share("tool_use_text_share"):
+                for _ in range(stream.count_or_none(rng, f"{kind}:text_blocks")):
                     blocks.append({"type": "text", "text": text("assistant_text", f"{kind}:text")})
                 # Parallel calls: one message, the measured number of blocks.
                 for _ in range(stream.count(rng, f"{kind}:blocks")):
@@ -1317,7 +1416,13 @@ def _claude_code_stream(
                     modelled = name
                     if name == "other":
                         name = rng.choice(_CC_OTHER_TOOLS)
-                    tool_input = _claude_code_tool_input(rng, name, cwd, text(kind, f"{kind}:{modelled}"))
+                    tool_input = _fitted(
+                        rng,
+                        stream.length(rng, f"{kind}:{modelled}", fallback=kind),
+                        non_ascii=rng.random() < profile.non_ascii(kind),
+                        build=partial(_claude_code_tool_input, rng, name, cwd),
+                        measure=_compact_length,
+                    )
                     blocks.append({"type": "tool_use", "id": call_id, "name": name, "input": tool_input})
                     open_calls.append((call_id, record_uuid, name, tool_input))
                     out.tool_calls += 1
@@ -1344,8 +1449,9 @@ def _claude_code_stream(
                 }
             record = {**base, "type": "assistant", "message": message, "requestId": _token(rng, "req_", 24)}
         elif kind == "user_tool_result" and not open_calls:
-            # A result whose call is not in this transcript (a resumed or
-            # compacted prefix inherited it): production keeps it, unmatched.
+            # Results whose calls are not in this transcript (a resumed or
+            # compacted prefix inherited them): production keeps them,
+            # unmatched, at the measured number of blocks.
             record = {
                 **base,
                 "type": "user",
@@ -1358,13 +1464,24 @@ def _claude_code_stream(
                             "content": text(kind),
                             "is_error": rng.random() < error_share,
                         }
+                        for _ in range(stream.count(rng, f"{kind}:blocks"))
                     ],
                 },
             }
         elif kind == "user_tool_result":
             # Answers to parallel calls may share one message: the measured
-            # number of result blocks, each answering the next open call.
-            answered = [open_calls.pop(0) for _ in range(min(len(open_calls), stream.count(rng, f"{kind}:blocks")))]
+            # number of result blocks, each answering the next open call, and
+            # any blocks beyond the open calls answering calls that precede
+            # this transcript (unmatched). A call whose result carries its
+            # own envelope (an edit, a spawned agent) is answered alone:
+            # production applies a record's ``toolUseResult`` to every
+            # result block in it.
+            wanted = stream.count(rng, f"{kind}:blocks")
+            answered = [open_calls.pop(0)]
+            if answered[0][2] in _CC_ENVELOPE_TOOLS:
+                wanted = 1
+            while len(answered) < wanted and open_calls and open_calls[0][2] not in _CC_ENVELOPE_TOOLS:
+                answered.append(open_calls.pop(0))
             call_id, call_uuid, call_name, call_input = answered[0]
             body = text(kind)
             content: Text = body
@@ -1383,7 +1500,9 @@ def _claude_code_stream(
             result_blocks: list[dict[str, object]] = [
                 {"tool_use_id": call_id, "type": "tool_result", "content": content, "is_error": is_error}
             ]
-            for extra_id, _uuid_of_call, _name, _input in answered[1:]:
+            extra_ids = [extra_id for extra_id, _uuid_of_call, _name, _input in answered[1:]]
+            extra_ids += [_token(rng, "toolu_", 24) for _ in range(wanted - len(answered))]
+            for extra_id in extra_ids:
                 result_blocks.append(
                     {
                         "tool_use_id": extra_id,
@@ -1396,7 +1515,9 @@ def _claude_code_stream(
                 **base,
                 "type": "user",
                 "message": {"role": "user", "content": result_blocks},
-                "toolUseResult": _claude_code_tool_result(rng, call_name, call_input, body, spawned_agents),
+                "toolUseResult": _claude_code_tool_result(
+                    rng, call_name, call_input, body, spawned_agents, call_id=call_id, spawn_calls=spawn_calls
+                ),
                 "sourceToolAssistantUUID": call_uuid,
             }
         elif kind == "user_text":
@@ -1504,10 +1625,11 @@ def _claude_code_session(
     orphans = profile.orphan_subagents(rng) if sub_stream is not None else 0
     agent_ids = ["a" + _token(rng, "", 16).lower() for _ in range(subagents + orphans)]
     # A forked main session names a parent outside this workload.
+    spawn_calls: dict[str, str] = {}
     generated = _claude_code_stream(
         rng, profile, main, session_id=session_id, project_dir=project_dir, agent_id=None,
         clock=clock, sidecars=sidecars, fork_parent=(_uuid(rng), _uuid(rng)),
-        spawned_agents=list(agent_ids[:subagents]),
+        spawned_agents=list(agent_ids[:subagents]), spawn_calls=spawn_calls,
     )  # fmt: skip
     first, end = generated.lifetime(clock)
     transcript = WorkloadFile("claude-code", f"claude-code/projects/{project_dir}/{session_id}.jsonl",
@@ -1535,7 +1657,12 @@ def _claude_code_session(
         stats.add(item, len(generated.lines))
         stats.tool_calls += generated.tool_calls
         meta = WorkloadFile("claude-code", f"claude-code/projects/{project_dir}/{owner}/subagents/agent-{agent_id}.meta.json",
-                            _dumps({"agentType": "general-purpose", "description": short_text(rng, 40)}),
+                            _dumps({
+                                "agentType": "general-purpose",
+                                "description": short_text(rng, 40),
+                                # The spawning call: the exact join to its parent block.
+                                **({"toolUseId": spawn_calls[agent_id]} if agent_id in spawn_calls else {}),
+                            }),
                             "sidecar", owner, owner)  # fmt: skip
         files.append(meta)
         stats.add(meta)
@@ -1627,7 +1754,14 @@ def _codex_stream(
             # An unmodelled function stays unmodelled: not a shell command.
             name = _CODEX_OTHER_FUNCTION if modelled == "other" else modelled
             open_calls.append((call_id, kind, name))
-            arguments = _codex_arguments(rng, name, text(kind, f"{kind}:{modelled}"))
+            key = f"{kind}:{modelled}"
+            arguments = _fitted(
+                rng,
+                stream.length(rng, key, fallback=kind),
+                non_ascii=rng.random() < profile.non_ascii(kind),
+                build=lambda body: _codex_arguments(rng, name, body),
+                measure=_text_length,
+            )
             return {"type": "function_call", "name": name, "arguments": arguments, "call_id": call_id}
         # The committed profile distinguishes apply_patch from every other
         # custom-tool-call name (measured 150k vs 560k); sample which class
@@ -1635,8 +1769,12 @@ def _codex_stream(
         custom_name = _draw_tool(rng, profile, "custom_tool_call:", ("other",))
         open_calls.append((call_id, kind, custom_name))
         if custom_name == "apply_patch":
-            custom_input: Text = _patch_text(
-                _path_text(rng, "/workspace/synthetic", 40), text(kind, f"{kind}:apply_patch")
+            custom_input: Text = _fitted(
+                rng,
+                stream.length(rng, f"{kind}:apply_patch", fallback=kind),
+                non_ascii=rng.random() < profile.non_ascii(kind),
+                build=lambda body: _patch_text(_path_text(rng, "/workspace/synthetic", 40), body),
+                measure=_text_length,
             )
         else:
             custom_input = text(kind, f"{kind}:{custom_name}")
@@ -1704,7 +1842,13 @@ def _codex_stream(
             payload = {
                 "type": output_kind,
                 "call_id": call_id,
-                "output": _codex_output(rng, profile, output_kind, text(kind), tool=call_name),
+                "output": _fitted(
+                    rng,
+                    stream.length(rng, kind, fallback=kind),
+                    non_ascii=rng.random() < profile.non_ascii(kind),
+                    build=partial(_codex_output, rng, profile, output_kind, tool=call_name),
+                    measure=_text_length,
+                ),
             }
         elif kind == "event_token_count":
             record_type = "event_msg"

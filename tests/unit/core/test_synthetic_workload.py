@@ -110,6 +110,13 @@ def test_every_tool_result_answers_an_earlier_call_in_its_stream(origin: str) ->
             continue
         calls: set[str] = set()
         answered: set[str] = set()
+        every_call = {
+            block["id"]
+            for record in _records(item.data)
+            if isinstance(message := record.get("message"), dict) and isinstance(message.get("content"), list)
+            for block in message["content"]
+            if isinstance(block, dict) and block.get("type") == "tool_use"
+        }
         for record in _records(item.data):
             if origin == "claude-code":
                 message = record.get("message")
@@ -118,14 +125,14 @@ def test_every_tool_result_answers_an_earlier_call_in_its_stream(origin: str) ->
                     if block.get("type") == "tool_use":
                         calls.add(block["id"])
                     elif block.get("type") == "tool_result":
-                        # A result with no open call is an inherited,
-                        # unmatched one; any other answers an earlier call.
-                        if calls - answered:
-                            assert block["tool_use_id"] in calls
+                        # A result answers an earlier call, or is an
+                        # inherited, unmatched one naming no call at all;
+                        # it never names a call that comes later.
+                        if block["tool_use_id"] in calls:
                             answered.add(block["tool_use_id"])
                             results += 1
                         else:
-                            assert block["tool_use_id"] not in calls
+                            assert block["tool_use_id"] not in every_call
             else:
                 payload = record.get("payload")
                 if not isinstance(payload, dict):
@@ -377,10 +384,11 @@ def test_a_sampled_claude_result_with_no_open_call_is_kept_unmatched(monkeypatch
 
 
 def test_a_claude_tool_call_message_keeps_its_thinking_and_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Thinking and text beside tool calls are rendered at their measured shares.
+    """Thinking and text beside tool calls are rendered at their measured multiplicity.
 
-    Anti-vacuity (Codex P1, #5670): render only the calls of a mixed message
-    and the thinking and text production parses from it never appear.
+    Anti-vacuity (Codex P1, #5670): render only the calls of a mixed message,
+    or collapse its companions to one presence flag, and the second text
+    block production parses from it never appears.
     """
     from polylogue.schemas.synthetic.workload import StreamProfile, _claude_code_session
 
@@ -391,7 +399,12 @@ def test_a_claude_tool_call_message_keeps_its_thinking_and_text(monkeypatch: pyt
         streams={
             **measured.streams,
             "main": dataclasses.replace(
-                main, shares={**main.shares, "tool_use_thinking_share": 1.0, "tool_use_text_share": 1.0}
+                main,
+                lengths={
+                    **main.lengths,
+                    "assistant_tool_use:thinking_blocks": Histogram((1,), (1.0,)),
+                    "assistant_tool_use:text_blocks": Histogram((2,), (1.0,)),
+                },
             ),
         },
         subagents_per_session=Histogram((0,), (1.0,)),
@@ -401,7 +414,9 @@ def test_a_claude_tool_call_message_keeps_its_thinking_and_text(monkeypatch: pyt
     files, _stats = _claude_code_session(random.Random(9), profile, index=0)
     content = _records(files[0].data)[0]["message"]["content"]  # type: ignore[index]
     types = [block["type"] for block in content]
-    assert types[:2] == ["thinking", "text"] and set(types[2:]) == {"tool_use"}
+    texts = types.count("text")
+    assert types[0] == "thinking" and types[1 : 1 + texts] == ["text"] * texts and texts in {2, 3}
+    assert set(types[1 + texts :]) == {"tool_use"}
 
 
 def test_template_booleans_render_at_their_measured_rate() -> None:
@@ -1027,3 +1042,179 @@ def test_session_bytes_are_merged_in_bounded_segments() -> None:
 
     assert max(len(segment) for segment in merged if isinstance(segment, bytes)) < 2 * workload._MERGED_SEGMENT_BYTES
     assert len(merged) > 1
+
+
+def test_a_partly_answered_result_message_keeps_its_sampled_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Result blocks beyond the open calls are emitted unmatched, not dropped.
+
+    Anti-vacuity (Codex P1, #5670): take ``min(open calls, sampled blocks)``
+    and a two-block sample with one open call renders one block.
+    """
+    from polylogue.schemas.synthetic.workload import StreamProfile, _claude_code_session
+
+    measured = load_workload_profile("claude-code")
+    main = measured.streams["main"]
+    lengths = {
+        **main.lengths,
+        "assistant_tool_use:blocks": Histogram((1,), (1.0,)),
+        "user_tool_result:blocks": Histogram((2,), (1.0,)),
+        "assistant_tool_use:thinking_blocks": Histogram((0,), (1.0,)),
+        "assistant_tool_use:text_blocks": Histogram((0,), (1.0,)),
+    }
+    profile = dataclasses.replace(
+        measured,
+        streams={**measured.streams, "main": dataclasses.replace(main, lengths=lengths, tool_names={"Bash": 1.0})},
+        subagents_per_session=Histogram((0,), (1.0,)),
+        shares={**measured.shares, "orphan_subagents_per_session": 0.0},
+    )
+    monkeypatch.setattr(
+        StreamProfile, "kind_sequence", lambda self, rng, count: ["assistant_tool_use", "user_tool_result"]
+    )
+    files, _stats = _claude_code_session(random.Random(10), profile, index=0)
+    call, result = _records(files[0].data)[:2]
+    called = [block["id"] for block in call["message"]["content"] if block["type"] == "tool_use"]  # type: ignore[index]
+    answered = [block["tool_use_id"] for block in result["message"]["content"]]  # type: ignore[index]
+
+    assert len(called) == 1 and len(answered) in {2, 3}
+    assert answered[0] == called[0] and not set(answered[1:]) & set(called)
+
+
+def test_an_envelope_bearing_result_is_answered_alone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An Edit result never shares its record, so its edit is not applied to another block.
+
+    Anti-vacuity (Codex P1, #5670): group Edit and Bash results into one record
+    under the first call's ``toolUseResult`` and production attaches the edit
+    to the Bash result too.
+    """
+    from polylogue.schemas.synthetic.workload import StreamProfile, _claude_code_session
+
+    measured = load_workload_profile("claude-code")
+    main = measured.streams["main"]
+    lengths = {
+        **main.lengths,
+        "assistant_tool_use:blocks": Histogram((2,), (1.0,)),
+        "user_tool_result:blocks": Histogram((2,), (1.0,)),
+        "assistant_tool_use:thinking_blocks": Histogram((0,), (1.0,)),
+        "assistant_tool_use:text_blocks": Histogram((0,), (1.0,)),
+    }
+    profile = dataclasses.replace(
+        measured,
+        streams={**measured.streams, "main": dataclasses.replace(main, lengths=lengths, tool_names={"Edit": 1.0})},
+        subagents_per_session=Histogram((0,), (1.0,)),
+        shares={**measured.shares, "orphan_subagents_per_session": 0.0},
+    )
+    monkeypatch.setattr(
+        StreamProfile, "kind_sequence", lambda self, rng, count: ["assistant_tool_use", "user_tool_result"]
+    )
+    files, _stats = _claude_code_session(random.Random(11), profile, index=0)
+    result = _records(files[0].data)[1]
+
+    assert len(result["message"]["content"]) == 1  # type: ignore[index]
+    assert "oldString" in result["toolUseResult"]  # type: ignore[operator]
+
+
+def test_a_spawned_agent_sidecar_names_its_spawning_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``agent-*.meta.json`` carries the Agent call id production joins on.
+
+    Anti-vacuity (Codex P1, #5670): write display metadata only and the
+    source-tier sidecar dispatch edge has no join key.
+    """
+    from polylogue.schemas.synthetic.workload import StreamProfile, _claude_code_session
+
+    measured = load_workload_profile("claude-code")
+    main = measured.streams["main"]
+    lengths = {
+        **main.lengths,
+        "assistant_tool_use:blocks": Histogram((1,), (1.0,)),
+        "user_tool_result:blocks": Histogram((1,), (1.0,)),
+        "assistant_tool_use:thinking_blocks": Histogram((0,), (1.0,)),
+        "assistant_tool_use:text_blocks": Histogram((0,), (1.0,)),
+    }
+    profile = dataclasses.replace(
+        measured,
+        streams={**measured.streams, "main": dataclasses.replace(main, lengths=lengths, tool_names={"Agent": 1.0})},
+        subagents_per_session=Histogram((1,), (1.0,)),
+        shares={**measured.shares, "orphan_subagents_per_session": 0.0},
+    )
+    real_sequence = StreamProfile.kind_sequence
+    main_stream = main
+
+    def sequence(self: StreamProfile, rng: random.Random, count: int) -> list[str]:
+        if self.records is main_stream.records:
+            return ["assistant_tool_use", "user_tool_result"]
+        return real_sequence(self, rng, count)
+
+    monkeypatch.setattr(StreamProfile, "kind_sequence", sequence)
+    files, _stats = _claude_code_session(random.Random(12), profile, index=0)
+    call = _records(files[0].data)[0]
+    call_id = next(block["id"] for block in call["message"]["content"] if block["type"] == "tool_use")  # type: ignore[index]
+    meta = next(item for item in files if item.relpath.endswith(".meta.json"))
+
+    assert json.loads(meta.data)["toolUseId"] == call_id
+
+
+def test_template_floats_render_their_measured_values() -> None:
+    """A float leaf keeps its measured magnitude.
+
+    Anti-vacuity (Codex P1, #5670): render floats as uniform 0..100 and a
+    cost of about a cent becomes tens of dollars.
+    """
+    from polylogue.schemas.synthetic.workload import template_measures
+
+    assert ("float", "totalCostUSD", 12) in set(template_measures({"totalCostUSD": 0.012}))
+    measured = load_workload_profile("claude-code")
+    kind = "record:cost-state"
+    profile = dataclasses.replace(
+        measured,
+        templates={kind: (({"totalCostUSD": "float"}, 1.0),)},
+        template_floats={kind: {"totalCostUSD": Histogram((4,), (1.0,))}},
+    )
+    rng = random.Random(13)
+    values = [profile.template_record(rng, kind, {})["totalCostUSD"] for _ in range(100)]
+
+    assert all(isinstance(value, float) and 0.008 <= value <= 0.015 for value in values)
+
+
+def test_list_skeletons_keep_every_item_shape() -> None:
+    """A later list item's optional field survives in the skeleton.
+
+    Anti-vacuity (Codex P1, #5670): keep only the first item's shape and the
+    ``range`` of the second diagnostic never reaches generation.
+    """
+    skeleton = record_skeleton({"items": [{"message": "a"}, {"message": "b", "range": {"line": 1}}]})
+
+    assert skeleton == {"items": [{"message": "str"}, {"message": "str", "range": {"line": "int"}}]}
+
+
+def test_codex_arguments_and_claude_inputs_fit_their_sampled_size() -> None:
+    """A generated field's whole measured size is the sampled length.
+
+    Anti-vacuity (Codex P2, #5670): pass the sampled length as the body and
+    the envelope and escaping make every generated field longer.
+    """
+    from polylogue.schemas.synthetic.workload import (
+        _claude_code_tool_input,
+        _codex_arguments,
+        _compact_length,
+        _fitted,
+        _text_length,
+    )
+
+    rng = random.Random(14)
+    for target in (40, 200, 5_000):
+        arguments = _fitted(
+            rng,
+            target,
+            non_ascii=False,
+            build=lambda body: _codex_arguments(rng, "exec_command", body),
+            measure=_text_length,
+        )
+        assert _text_length(arguments) == target
+        tool_input = _fitted(
+            rng,
+            target,
+            non_ascii=False,
+            build=lambda body: _claude_code_tool_input(rng, "Bash", "/workspace/x", body),
+            measure=_compact_length,
+        )
+        assert _compact_length(tool_input) == target

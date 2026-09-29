@@ -247,3 +247,58 @@ def test_a_leading_blank_line_does_not_make_a_rollout_legacy(tmp_path: Path) -> 
 
     assert not _codex_is_legacy(path)
     assert _codex_parent(path) == "parent"
+
+
+def test_a_malformed_record_refuses_the_profile(tmp_path: Path) -> None:
+    """A truncated line is a refusal, never a silently shorter profile.
+
+    Anti-vacuity (Codex P1, #5670): skip undecodable lines and the profile
+    succeeds without the lost record.
+    """
+    from devtools.schema_workload_profile import MalformedSourceError, _records
+
+    path = tmp_path / "session.jsonl"
+    path.write_text('{"type": "user"}\n{"type": "assist\n', encoding="utf-8")
+
+    with pytest.raises(MalformedSourceError):
+        list(_records(path))
+
+
+def test_every_result_block_and_companion_count_is_profiled(tmp_path: Path) -> None:
+    """A message's later result blocks and its companion multiplicity reach the profile.
+
+    Anti-vacuity (Codex P1, #5670): measure the first ``tool_result`` only and
+    the persisted second result's size and error vanish; collapse companions
+    to presence and two text blocks read as one.
+    """
+    root = tmp_path / "projects"
+    (root / "p").mkdir(parents=True)
+    call = {
+        "type": "assistant",
+        "message": {
+            "role": "assistant",
+            "content": [
+                {"type": "text", "text": "a"},
+                {"type": "text", "text": "b"},
+                {"type": "tool_use", "id": "t0", "name": "Bash", "input": {"command": "x"}},
+            ],
+        },
+    }
+    result = {
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "t0", "content": "ok", "is_error": False},
+                {"type": "tool_result", "tool_use_id": "t9", "content": "y" * 40_000, "is_error": True},
+            ],
+        },
+    }
+    (root / "p" / "s1.jsonl").write_text(json.dumps(call) + "\n" + json.dumps(result) + "\n", encoding="utf-8")
+
+    profile = measure("claude-code", root, sample=10, tail=0, seed=1)
+
+    main = profile["streams"]["main"]  # type: ignore[index]
+    assert main["lengths"]["assistant_tool_use:text_blocks"] == {"2": 1.0}
+    assert set(main["lengths"]["user_tool_result"]) == {"2", "16"}
+    assert main["shares"]["tool_error_share"] == 0.5

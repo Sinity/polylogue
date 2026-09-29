@@ -39,9 +39,11 @@ from polylogue.schemas.synthetic.workload import (
     published_field_names,
     published_kind_tokens,
     record_skeleton,
+    result_length,
     template_measures,
     text_measure,
     tool_calls_of,
+    tool_result_texts,
     workload_profile_path,
 )
 from polylogue.sources.parsers.codex import _codex_exec_envelope_outcome, _decoded_json_value, _structural_outcome
@@ -78,6 +80,7 @@ class _Templates:
             "list": defaultdict(lambda: defaultdict(_buckets)),
             "int": defaultdict(lambda: defaultdict(_buckets)),
             "bool": defaultdict(lambda: defaultdict(_buckets)),
+            "float": defaultdict(lambda: defaultdict(_buckets)),
         }
 
     def add(self, kind: str, record: Mapping[str, object], weight: float) -> None:
@@ -132,18 +135,31 @@ def _parse_ms(value: object) -> float | None:
         return None
 
 
+class MalformedSourceError(ValueError):
+    """A sampled transcript holds a record that is not one JSON object line."""
+
+
 def _records(path: Path) -> Iterator[dict[str, object]]:
+    """Every record of a JSONL transcript; a malformed line refuses the file.
+
+    A truncated line (a live file read mid-write) or invalid UTF-8 would
+    otherwise vanish from the counts, transitions and tails while the profile
+    still reports success. Only blank lines are skipped.
+    """
     with path.open("rb") as handle:
-        for line in handle:
+        for number, line in enumerate(handle, start=1):
             line = line.strip()
             if not line:
                 continue
             try:
                 value = json.loads(line)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                continue
-            if isinstance(value, dict):
-                yield value
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                raise MalformedSourceError(
+                    f"{path.name} line {number} is not a JSON record ({type(exc).__name__}); profile a quiescent source"
+                ) from exc
+            if not isinstance(value, dict):
+                raise MalformedSourceError(f"{path.name} line {number} is not a JSON object")
+            yield value
 
 
 class _Stream:
@@ -181,9 +197,19 @@ class _Stream:
                     self.lengths[f"{kind}:{tool}"][log2_bucket(len(text))] += weight
                 if origin == "claude-code":
                     self.lengths[f"{kind}:blocks"][log2_bucket(len(calls))] += weight
-                    # Thinking and text beside the calls in the same message.
-                    for companion, companion_text in _companion_blocks(record):
+                    # Thinking and text beside the calls in the same message:
+                    # how many of each (zero included), and each one's length.
+                    companions = _companion_blocks(record)
+                    for companion in ("thinking", "text"):
+                        count = sum(1 for name, _text in companions if name == companion)
+                        self.lengths[f"{kind}:{companion}_blocks"][log2_bucket(count)] += weight
+                    for companion, companion_text in companions:
                         self.lengths[f"{kind}:{companion}"][log2_bucket(len(companion_text))] += weight
+            elif origin == "claude-code" and kind == "user_tool_result":
+                # Every result block of the message, not only the first: a
+                # short success beside a multi-megabyte persisted output.
+                for result_text in tool_result_texts(record):
+                    self.lengths[kind][log2_bucket(result_length(result_text))] += weight
             else:
                 length = text_measure(origin, kind, record)
                 if length is not None:
@@ -283,12 +309,18 @@ def _count_shares(
     *,
     called_tool: str | None = None,
 ) -> None:
-    # Character class is measured on the same field the lengths are.
-    text = measured_text(origin, kind, record)
-    if text is not None:
+    # Character class is measured on the same fields the lengths are.
+    texts = (
+        tool_result_texts(record)
+        if origin == "claude-code" and kind == "user_tool_result"
+        else [text]
+        if (text := measured_text(origin, kind, record)) is not None
+        else []
+    )
+    for measured in texts:
         shares["texts"] += weight
         shares[f"texts:{kind}"] += weight
-        if not text.isascii():
+        if not measured.isascii():
             shares["non_ascii_texts"] += weight
             shares[f"non_ascii_texts:{kind}"] += weight
     for tool, _text in tool_calls_of(origin, kind, record):
@@ -305,21 +337,9 @@ def _count_shares(
             shares["assistant"] += weight
             if isinstance(message.get("usage"), Mapping):
                 shares["assistant_usage"] += weight
-        if kind == "assistant_tool_use":
-            shares["tool_use_messages"] += weight
-            for companion in {companion for companion, _text in _companion_blocks(record)}:
-                shares[f"tool_use_with:{companion}"] += weight
-        if kind == "user_tool_result" and isinstance(message, Mapping):
-            content = message.get("content")
-            block = (
-                next(
-                    (item for item in content if isinstance(item, Mapping) and item.get("type") == "tool_result"),
-                    None,
-                )
-                if isinstance(content, list)
-                else None
-            )
-            if isinstance(block, Mapping):
+        if kind == "user_tool_result":
+            # Every result block: its outcome and sidecar evidence each count.
+            for block in _tool_result_blocks(record):
                 shares["tool_results"] += weight
                 if block.get("is_error") is True:
                     shares["tool_errors"] += weight
@@ -396,8 +416,6 @@ def _family_payload(origin: str, shares: Mapping[str, float]) -> dict[str, objec
         if origin == "codex"
         else {
             "assistant_usage_share": ratio("assistant_usage", "assistant"),
-            "tool_use_thinking_share": ratio("tool_use_with:thinking", "tool_use_messages"),
-            "tool_use_text_share": ratio("tool_use_with:text", "tool_use_messages"),
             "tool_error_share": ratio("tool_errors", "tool_results"),
             "sidecar_share_of_large": round(shares.get("sidecar_refs", 0.0) / large, 4) if large else 0.0,
         }
@@ -557,6 +575,7 @@ def measure(origin: str, root: Path, *, sample: int, tail: int, seed: int) -> di
         "template_lists": per_path["list"],
         "template_ints": per_path["int"],
         "template_bools": per_path["bool"],
+        "template_floats": per_path["float"],
     }
 
 
