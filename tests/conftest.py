@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from hypothesis import HealthCheck, settings
 from hypothesis.configuration import set_hypothesis_home_dir
-from hypothesis.database import DirectoryBasedExampleDatabase
 
 from devtools.agent_env import refuse_bare_pytest
 from devtools.checkout_guard import (
@@ -25,6 +24,7 @@ from devtools.checkout_guard import (
     assert_polylogue_matches_checkout,
     resolved_polylogue_path,
 )
+from devtools.hypothesis_database import RevisionedExampleDatabase
 from tests.infra.session_archive_root import (
     discard_session_archive_root,
     pin_session_archive_root,
@@ -377,7 +377,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 # ---------------------------------------------------------------------------
 _HYPOTHESIS_HOME = Path(".cache/hypothesis")
 set_hypothesis_home_dir(_HYPOTHESIS_HOME)
-_HYPOTHESIS_DB = DirectoryBasedExampleDatabase(_HYPOTHESIS_HOME / "examples")
+_HYPOTHESIS_DB = RevisionedExampleDatabase(_HYPOTHESIS_HOME / "examples")
 
 settings.register_profile(
     "ci",
