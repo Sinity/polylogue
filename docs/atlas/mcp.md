@@ -50,14 +50,14 @@ field takes a `Provider` (`polylogue/operations/session_contracts.py:9-16`).
 
 ## Read-view discovery
 
-`explain(subject="capability")` returns the complete executable viewport-profile
-catalog in `read_view_profiles`, through `Polylogue.list_read_view_profiles()`.
-Each profile carries its `view_id` and execution metadata. The catalog is
-independent of the paged query-capability `items` and their `total`; `limit`
-and `offset` apply to those query declarations, not to the profile inventory.
-`read_views` remains the distinct session-list projection vocabulary. The
-self-inspection continuity scenario compares every profile identity against
-its independent fixture oracle rather than using a query-capability count.
+`explain(subject="capability")` returns `read_view_profile_ids`: the `view_id`
+of every executable viewport profile, from `Polylogue.list_read_view_profiles()`.
+The list is the whole declared catalog, independent of the paged
+query-capability `items` and their `total`; `limit` and `offset` apply to the
+query declarations only. Full profile metadata stays on its own facade and
+daemon route (`/api/read-view-profiles`). `read_views` remains the distinct
+session-list projection vocabulary. The self-inspection continuity scenario
+compares every profile identity against its fixture oracle.
 
 ## Insight projections
 

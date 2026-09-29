@@ -681,7 +681,7 @@ CONTINUITY_SCENARIOS: tuple[ContinuityScenarioSpec, ...] = (
                 "*",
                 reducer="count",
             ),
-            _fact("read_view_ids", "read-views", "read_view_profiles", "*", "view_id", reducer="unique_values"),
+            _fact("read_view_ids", "read-views", "read_view_profile_ids", "*", reducer="unique_values"),
         ),
         evidence=(),
         workflows=("find-then-read-messages", "find-then-context-image", "resolve-ref-drilldown"),

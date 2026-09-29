@@ -45,7 +45,7 @@ async def test_self_inspection_detects_removed_viewport_profile_on_mcp_route(
         return require_json_document(json.loads(text), context="capability response")
 
     before = await explain_profiles()
-    assert "read_view_profiles" in before
+    assert "read_view_profile_ids" in before
     scenario = continuity_scenario("self-inspection")
     projection = next(fact for fact in scenario.fact_projections if fact.name == "read_view_ids")
     observed = project_fact(projection, {"read-views": before})
