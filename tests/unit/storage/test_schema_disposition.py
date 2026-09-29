@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from dataclasses import replace
 from typing import Any, cast
 
@@ -18,7 +20,7 @@ from polylogue.storage.sqlite.archive_tiers.schema_disposition import (
 
 
 def test_archive_tier_schema_assembly_publishes_complete_disposition() -> None:
-    """The canonical tier map exposes the disposition it validates at import."""
+    """The canonical tier map exposes the audit disposition it validates at import."""
     assert audit_column_dispositions() == AUDIT_COLUMN_DISPOSITIONS
     assert_complete_audit_disposition(AUDIT_COLUMN_DISPOSITIONS)
 
@@ -110,3 +112,18 @@ def test_six_tier_disposition_rejects_undeclared_object() -> None:
 
     with pytest.raises(ValueError, match="undeclared schema objects"):
         assert_complete_schema_dispositions(rows)
+
+
+def test_archive_tiers_import_does_not_require_sqlite_vec() -> None:
+    """Importing the tier package works on a Python that cannot load sqlite-vec.
+
+    Anti-vacuity: computing the six-tier disposition at import builds the
+    canonical embeddings tier, which raises ``SchemaCensusError`` here.
+    """
+    code = """
+import sys
+sys.modules["sqlite_vec"] = None
+import polylogue.storage.sqlite.archive_tiers
+"""
+    completed = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert completed.returncode == 0, completed.stderr

@@ -3203,7 +3203,9 @@ def test_daemon_shutdown_marks_interrupted_attempts_only_without_signal(
         return None
 
     api_server.operation_runtime = SimpleNamespace(
-        shutdown=shutdown_operation_runtime, accepted_ingest_redrive_claimed=_no_redrive_claims
+        shutdown=shutdown_operation_runtime,
+        accepted_ingest_redrive_claimed=_no_redrive_claims,
+        embedding_convergence=None,
     )
     interrupted_cleanup_calls = 0
 
@@ -3630,11 +3632,18 @@ def test_raw_observation_publication_holds_writer_lease_through_replay(
     assert held == 0
 
 
-def test_raw_owner_cancellation_settles_publication_and_fts(
+def test_raw_owner_cancellation_stops_preparation_and_the_next_pass_publishes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    """Cancelling preparation still settles the shielded canonical publication."""
+    """A cancelled owner stops its preparation; the raw stays pending, not lost.
+
+    Since #5691 the owner publishes its cancellation to the compute pass
+    (``compute_cancel``), and retained preparation stops at its next check
+    instead of publishing after the owner is gone. Anti-vacuity: a cancelled
+    pass that publishes anyway fails the zero-session check, and one that
+    leaves the raw terminal fails the next pass's session and FTS checks.
+    """
     from polylogue.core.enums import Provider
     from polylogue.daemon.derivation import DerivationFrame, ReplacementLike
     from polylogue.daemon.execution import BoundedComputeAdapter
@@ -3704,6 +3713,9 @@ def test_raw_owner_cancellation_settles_publication_and_fts(
             release.set()
             with pytest.raises(asyncio.CancelledError):
                 await task
+            with sqlite3.connect(tmp_path / "index.db") as conn:
+                assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
+            await owner.converge_raw_id(raw_id)
             with sqlite3.connect(tmp_path / "index.db") as conn:
                 assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
                 assert conn.execute("SELECT COUNT(*) FROM messages_fts_docsize").fetchone()[0] > 0
@@ -4577,6 +4589,25 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
         supervisors = _capture_supervisor(stack, daemon_cli)
         stack.enter_context(patch.object(daemon_cli, "Polylogue", FakePolylogue))
         stack.enter_context(patch.object(daemon_cli, "LiveWatcher", FakeWatcher))
+        from polylogue.daemon import embedding_owner
+
+        ingest_owners: list[Any] = []
+        embedding_owners: list[object] = []
+        compose_owner = daemon_cli.compose_ingest_owner
+        compose_embedding = embedding_owner.compose_embedding_convergence
+
+        def capture_ingest_owner(*args: Any, **kwargs: Any) -> Any:
+            runtime, profiles = compose_owner(*args, **kwargs)
+            ingest_owners.append(runtime)
+            return runtime, profiles
+
+        def capture_embedding_owner(*args: Any, **kwargs: Any) -> Any:
+            owner = compose_embedding(*args, **kwargs)
+            embedding_owners.append(owner)
+            return owner
+
+        stack.enter_context(patch.object(daemon_cli, "compose_ingest_owner", capture_ingest_owner))
+        stack.enter_context(patch.object(embedding_owner, "compose_embedding_convergence", capture_embedding_owner))
         for attribute in (
             "_periodic_lifecycle_heartbeat",
             "_periodic_health_check",
@@ -4615,6 +4646,10 @@ def test_the_composition_route_spawns_only_declared_supervised_services(tmp_path
     assert created, "the task factory recorded nothing; the inventory never observed the route"
     # A daemon serving no API still composes its ingest owner (Codex P1, #5717).
     assert any(entry.name.startswith("polylogue-ingest-redrive:") for entry in created)
+    # ...and that owner shares the daemon's one embedding owner rather than
+    # composing a second one lazily on its first embedding operation.
+    assert len(ingest_owners) == 1 and len(embedding_owners) == 1
+    assert ingest_owners[0].embedding_convergence is embedding_owners[0]
     assert orphans == [], f"the composition route returned with live children: {orphans}"
     assert thread_orphans == [], f"the composition route returned with live threads: {thread_orphans}"
 

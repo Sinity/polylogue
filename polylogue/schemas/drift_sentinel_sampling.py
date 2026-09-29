@@ -61,7 +61,9 @@ def record_schema_drift_observations_to_ops_sync(
 
     ops_conn: sqlite3.Connection | None = None
     try:
-        ops_conn = open_initialized_tier_connection(ops_db_path, ArchiveTier.OPS, timeout=5.0, daemon=False)
+        ops_conn = open_initialized_tier_connection(
+            ops_db_path, ArchiveTier.OPS, timeout=5.0, daemon=False, archive_root=ops_db_path.parent
+        )
     except sqlite3.Error:
         logger.debug("schema drift sampling: ops.db open/init failed", exc_info=True)
         if ops_conn is not None:

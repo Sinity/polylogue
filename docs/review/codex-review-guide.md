@@ -9,6 +9,14 @@ costly failures are data silently lost or duplicated, a durable reference that
 re-points, a build that never converges, and work reported as done when it was
 skipped. Weight your attention there.
 
+## Review exhaustively
+
+Report every issue you can find in this review, in one pass. Do not stop at
+the first defect or hold findings back for a later round. When you find a
+defect, search the diff and the code it calls for every other site of the
+same class and report each of them in this review. A later round should
+find nothing that this one could have seen.
+
 ## Writing a finding
 
 - Give the concrete input (file shape, member, sequence, interruption point)
@@ -54,54 +62,104 @@ docs drift, performance that does not grow with archive size, and test
 weakness where the gate still runs. A test-only or docs-only diff is P2 unless
 it makes a required gate vacuous or crosses the public boundary.
 
-## Checks that are easy to miss (apply to every diff)
+## Checklist (every diff)
 
-Area-specific rules live in the `## Code Review Rules` section of the nested
-`AGENTS.md` beside the code they govern (`polylogue/storage/`,
-`polylogue/sources/`, `polylogue/daemon/`, `devtools/`). The checks below
-apply everywhere.
+Codex applies this list to each review. A coding agent applies the same list
+to its own full diff before every push, narrating each item (`AGENTS.md`,
+"Commits and PRs"). Area rules live in the `## Code Review Rules` section of
+the nested `AGENTS.md` beside the code (`polylogue/storage/`,
+`polylogue/sources/`, `polylogue/daemon/`, `devtools/`).
 
-1. **Accounting of skips.** In an enumeration or admission loop whose caller
-   claims the inputs were processed completely (files, ZIP members, records,
-   events), each skipped item must leave a typed disposition: a refusal, an
-   exclusion reason, or a retryable fault. A helper that selects from data
-   it leaves intact (picking the first user prompt, say) is not covered. A skip that is not recorded while the caller records
-   enumeration as complete is P1. Check fallbacks, such as an unknown provider
-   or origin selecting a narrower filter.
-2. **Transient versus permanent.** A read fault (EACCES, `SQLITE_BUSY`,
-   `SQLITE_CANTOPEN`, a required root that is missing or vanishes mid-read, a
-   partial write) stays retryable. It must not be recorded as "not ours",
-   excluded, or converged. Look for `except sqlite3.Error` or
-   `except OSError` that returns a negative answer. An optional source whose
-   root is not installed is a declared exclusion (`absent_root`), not a fault.
-3. **One decision, one owner.** If the diff adds a predicate that decides the
-   same thing as an existing one (what is a session, what is excluded, what is
-   retained, what is converged), flag the divergence and name the owner. Two
-   classifiers that can disagree are a defect even when they agree on today's
-   fixtures.
-4. **Interruption.** For each multi-step state change, wherever it lives
-   (daemon, operations, storage), ask what a cancel, deadline, kill, or
-   restart between the steps leaves behind: a stage marked skipped or
-   converged that never ran, a cursor advanced before its commit, a session
-   committed before its cursor, a resumed candidate treated as fresh, a
-   request that looks settled although its work never ran.
-5. **Scale.** Flag per-chunk, per-event, or per-open work that costs
-   O(archive): an unfiltered `fetchall`, a full-table scan, a six-tier
-   bootstrap, an fsync or FULL-synchronous commit per event, re-reading or
-   re-hashing the same file. The defect is cost that grows with the archive
-   while the unit of work stays fixed.
-6. **Removed symbols.** When the diff removes or renames a function,
-   attribute, or keyword, check the tests and stubs that name it
-   (`monkeypatch.setattr` targets, fakes with fixed signatures).
-7. **Origin versus Provider.** Flag a reverse lookup from Origin to Provider
-   that picks one of several matches without independent evidence; the AI
-   Studio and Drive mapping is non-injective. Safe path: refuse, or use a
-   declared hint such as the `family_hint` of `provider_from_origin` in
-   `core/sources.py`.
-8. **Outcome.** Row-bearing operations decide one `outcome` in
-   `surfaces/outcome.py`. `ok` over zero returned rows, over an unmeasured
-   component, or while convergence is incomplete is wrong (`degraded` or
-   `empty`). Exit codes follow the outcome.
+1. **Siblings and owners.** Where else does the rule this diff adds or fixes
+   apply: every route, caller, branch, and record it governs (live and
+   baseline replay, grouped, ZIP, append and source-only paths, sync and
+   async, CLI and MCP; every record rather than the first or a prefix)? If
+   the diff adds a predicate that decides something an existing one decides
+   (what is a session, excluded, retained, converged, a valid option), flag
+   the divergence and name the single owner; two classifiers that can
+   disagree are a defect even when they agree on today's fixtures. Example:
+   foreign-origin validation added to live ZIP intake but not to baseline
+   replay or append deltas; a hand parser of pytest options that misses
+   clustered short flags.
+2. **The fix itself.** Read each fix in the diff as new code. Does it add a
+   defect of its own: a new exception another caller does not catch, a new
+   marker another reader matches by substring, new state that a retry or
+   restart does not restore? Example: a new refusal type raised in one path
+   escapes uncaught through the baseline caller.
+3. **Memory and limits.** Does any read, cache, or buffer grow with the input
+   (an unfiltered `fetchall`, `list()` of a stream, a whole member or
+   transcript decoded at once, a set of every ID, a cache with no byte
+   bound)? The remedy streams, pages, or spills; a cap, truncation, or fixed
+   timeout on valid input or progressing work is itself a defect ("Limits").
+   Example: composing a whole transcript to run one query per message.
+4. **Cost per unit.** Does per-page or per-item work grow with the archive:
+   OFFSET or growing-cursor paging, a page cut before the filter or sort,
+   per-row queries, a quadratic loop, re-reading or re-hashing the same
+   bytes, a six-tier bootstrap or FULL-synchronous commit per event? The
+   defect is cost that grows with the archive while the unit of work stays
+   fixed. Are pages read from one snapshot? Example: a correlated prefix
+   count per row where one linear renumbering pass suffices.
+5. **Interruption.** For each loop, wait, and multi-step state change,
+   wherever it lives (daemon, operations, storage): is cancellation checked
+   inside it, and what does a cancel, deadline, kill, or restart between
+   steps leave behind (a stage marked skipped or converged that never ran, a
+   cursor advanced before its commit, a session committed before its cursor,
+   a claim never released, a resumed candidate treated as fresh, a request
+   that looks settled although its work never ran)? Example: reconciling
+   prepared sessions without polling cancellation.
+6. **Ordering and races.** Between check and use, can a writer, a file
+   change, or a concurrent task change what was checked? Is publication
+   atomic, are locks taken in one order, and are compared times from one
+   clock? Example: validating a path, then parsing bytes re-read from it.
+7. **Failure classification.** A read fault (EACCES, `SQLITE_BUSY`,
+   `SQLITE_CANTOPEN`, a root that vanishes mid-read, a partial write) stays
+   retryable; it is never recorded as "not ours", excluded, or converged
+   (look for `except sqlite3.Error` or `except OSError` that returns a
+   negative answer). A deterministic failure is not retried forever. A typed
+   refusal reaches every caller and is recorded, not swallowed by a broad
+   `except` or matched by substring. An optional source whose root is not
+   installed is a declared exclusion (`absent_root`), not a fault.
+8. **Silent outcomes.** In an enumeration or admission loop whose caller
+   claims complete processing, does every skipped item leave a typed
+   disposition (refusal, exclusion reason, retryable fault)? A helper that
+   selects from data it leaves intact is not covered. An unrecorded skip
+   while the caller records enumeration as complete is P1. Check fallbacks,
+   such as an unknown provider or origin selecting a narrower filter.
+   Row-bearing operations decide one `outcome` in `surfaces/outcome.py`:
+   `ok` over zero rows, an unmeasured component, or incomplete convergence
+   is wrong, and exit codes follow the outcome. Metrics, counts, and receipts
+   describe what ran.
+9. **Cleanup on failure.** When a step fails or refuses after acquiring
+   something (a blob, reservation, claim, scratch file, debt row, cache
+   entry), is it released or rolled back on every exit path? Example: a blob
+   published before member validation refuses it.
+10. **Identity and keys.** Does each hash, ID, and cache or receipt key cover
+    exactly its declared inputs, stay stable under insertion, deletion, and
+    reordering, stay NFC-, surrogate- and BOM-safe, and avoid collisions
+    across namespaces? A reverse lookup from Origin to Provider that picks
+    one of several matches without independent evidence is wrong (the AI
+    Studio and Drive mapping is non-injective; refuse, or use a declared hint
+    such as `family_hint` of `provider_from_origin` in `core/sources.py`).
+    Example: a fallback ID keyed by row position that renames on deletion.
+11. **Lossless transforms.** Does every copy, retry, replay, rerun, or
+    regeneration keep the fields and state it does not mean to change?
+    Example: rerunning failed tests drops caller-loaded plugins; a copied
+    prefix loses its variant coordinates.
+12. **Degenerate inputs.** Does each input handle zero, empty, one, absent,
+    non-finite, and oversized values? Example: a sample that selects zero
+    files crashes; a non-positive worker count spins.
+13. **Consumers.** Is every consumer of a changed interface, command, config
+    key, schema, route, or file format updated, and the predecessor deleted
+    ("Compatibility and complete changes")?
+14. **Tests and stubs.** Does each test drive the production route, stay
+    isolated from host state, and fail when the behaviour it names is
+    removed? When the diff removes or renames a function, attribute, or
+    keyword, do the tests and stubs that name it (`monkeypatch.setattr`
+    targets, fakes with fixed signatures) follow? Example: a test patching a
+    helper the receiver no longer calls.
+15. **Trust boundaries.** Do secrets stay out of argv, logs, and payloads;
+    are files created owner-only where they hold private data; is each
+    authentication or ownership check made on the value that is used?
 
 ## Compatibility and complete changes
 

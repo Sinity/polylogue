@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
 from polylogue.logging import DEBUG, emit
@@ -446,6 +446,42 @@ def read_spawn_edges(conn: sqlite3.Connection, *, source_scope: str | None = Non
     return edges
 
 
+def read_spawn_parents(conn: sqlite3.Connection, child_thread_ids: Iterable[str]) -> dict[str, str]:
+    """Return ``{child_thread_id: parent_thread_id}`` for the children the graph is not silent about.
+
+    Each child gets the parent :func:`read_parent_thread_id` would report, by
+    the same recency order across every scope. Comparing this per child before
+    and after a snapshot revision is what says whose projected parent moved;
+    the set of edges ever seen cannot, because superseded edges are retained
+    and a parent that returns (A, then B, then A) adds no new edge. A read
+    failure propagates: the caller is mid-write and must not re-derive from a
+    graph it could not read.
+    """
+    wanted = {child for child in child_thread_ids if child}
+    if not wanted:
+        return {}
+    predicate, parameters = _scope_predicate(None)
+    rows = conn.execute(
+        f"""
+        SELECT e.source_ref, e.target_ref
+        FROM work_evidence_edges AS e
+        JOIN work_evidence_graphs AS g ON g.graph_id = e.graph_id
+        WHERE {predicate} AND e.edge_kind = 'invoked'
+        {_RECENCY.format(alias="e")}, e.source_ref
+        """,
+        parameters,
+    ).fetchall()
+    parents: dict[str, str] = {}
+    for row in rows:
+        child = thread_id_from_context_ref(str(row[1]))
+        if child not in wanted or child in parents:
+            continue
+        parent = thread_id_from_context_ref(str(row[0])).strip()
+        if parent:
+            parents[child] = parent
+    return parents
+
+
 def read_spawn_edge_children(conn: sqlite3.Connection) -> set[str]:
     """Return every child thread id the graph carries a spawn edge for."""
     return {child for _parent, child in read_spawn_edges(conn)}
@@ -506,6 +542,7 @@ __all__ = [
     "read_provenance",
     "read_spawn_edge_children",
     "read_spawn_edges",
+    "read_spawn_parents",
     "read_thread_titles",
     "thread_context_id",
     "thread_context_ref",

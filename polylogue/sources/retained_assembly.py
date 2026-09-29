@@ -43,9 +43,11 @@ from __future__ import annotations
 
 import re
 import sqlite3
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import cast
+from typing import TypeVar, cast
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.core.enums import Origin, Provider
@@ -152,6 +154,55 @@ def _read(blob_store: BlobStore, artifact: RetainedArtifact) -> bytes | None:
         return None
 
 
+_Parsed = TypeVar("_Parsed")
+#: Install-global sidecars (``history.jsonl``, session indexes) are shared by
+#: every session file of one install. Live intake enriches each file, so
+#: reparsing the same retained history per file makes a fresh build pay
+#: O(files x history bytes). A retained blob is content-addressed and
+#: immutable, so its parsed form is keyed by hash, parser and anchor path.
+#: One parsed artifact is kept per kind -- the one the last enrichment of
+#: that kind already had to hold -- and only for one origin at a time
+#: (``claude_code.*`` or ``codex.*``): enriching another origin's file
+#: releases the previous origin's artifacts first, so residency never
+#: exceeds what a single enrichment needs, whatever the parsed size.
+_parsed_retained_cache: dict[str, tuple[tuple[str, str, str], object]] = {}
+_parsed_retained_lock = threading.Lock()
+#: Held across one read-and-parse, so parsed residency stays one origin's.
+_parsed_retained_fill_lock = threading.Lock()
+
+
+def _read_parsed(
+    blob_store: BlobStore,
+    artifact: RetainedArtifact,
+    kind: str,
+    parse: Callable[[bytes], _Parsed],
+) -> _Parsed | None:
+    key = (str(blob_store.root), artifact.blob_hash, artifact.source_path)
+    with _parsed_retained_lock:
+        cached = _parsed_retained_cache.get(kind)
+        if cached is not None and cached[0] == key:
+            return cast("_Parsed", cached[1])
+    # Fills are serialized: two workers filling different origins at once
+    # would each hold an unbounded parse and publish both. Under the fill
+    # lock, the previous artifact of this kind and every artifact of another
+    # origin are released before the next is parsed.
+    with _parsed_retained_fill_lock:
+        with _parsed_retained_lock:
+            cached = _parsed_retained_cache.get(kind)
+            if cached is not None and cached[0] == key:
+                return cast("_Parsed", cached[1])
+            origin = kind.split(".", 1)[0]
+            for held in [held for held in _parsed_retained_cache if held == kind or held.split(".", 1)[0] != origin]:
+                del _parsed_retained_cache[held]
+        payload = _read(blob_store, artifact)
+        if payload is None:
+            return None
+        parsed = parse(payload)
+        with _parsed_retained_lock:
+            _parsed_retained_cache[kind] = (key, parsed)
+        return parsed
+
+
 # --------------------------------------------------------------------------
 # Claude Code
 # --------------------------------------------------------------------------
@@ -195,13 +246,13 @@ def retained_claude_code_sidecars(
     )
     artifact = indexes.get(index_path)
     if artifact is not None:
-        payload = _read(blob_store, artifact)
-        if payload is not None:
-            from .parsers.claude.index import parse_sessions_index_bytes
+        from .parsers.claude.index import parse_sessions_index_bytes
 
-            entries: ClaudeCodeSessionIndex = parse_sessions_index_bytes(payload)
-            if entries:
-                resolved["session_index"] = entries
+        entries: ClaudeCodeSessionIndex | None = _read_parsed(
+            blob_store, artifact, "claude_code.session_index", parse_sessions_index_bytes
+        )
+        if entries:
+            resolved["session_index"] = entries
 
     histories = _select_retained(
         source_conn,
@@ -212,13 +263,16 @@ def retained_claude_code_sidecars(
     )
     artifact = histories.get(history_path)
     if artifact is not None:
-        payload = _read(blob_store, artifact)
-        if payload is not None:
-            from .parsers.claude.history import build_session_paste_index_bytes
+        from .parsers.claude.history import build_session_paste_index_bytes
 
-            pastes: ClaudeCodeHistoryPasteIndex = build_session_paste_index_bytes(payload, origin=history_path)
-            if pastes:
-                resolved["history_paste_index"] = pastes
+        pastes: ClaudeCodeHistoryPasteIndex | None = _read_parsed(
+            blob_store,
+            artifact,
+            "claude_code.history_paste_index",
+            lambda payload: build_session_paste_index_bytes(payload, origin=history_path),
+        )
+        if pastes:
+            resolved["history_paste_index"] = pastes
     return resolved
 
 
@@ -269,13 +323,11 @@ def retained_codex_sidecars(
     )
     artifact = indexes.get(index_path)
     if artifact is not None:
-        payload = _read(blob_store, artifact)
-        if payload is not None:
-            from .assembly_codex import parse_codex_session_index_bytes
+        from .assembly_codex import parse_codex_session_index_bytes
 
-            names = parse_codex_session_index_bytes(payload)
-            if names:
-                resolved["thread_names"] = names
+        names = _read_parsed(blob_store, artifact, "codex.session_index", parse_codex_session_index_bytes)
+        if names:
+            resolved["thread_names"] = names
 
     histories = _select_retained(
         source_conn,
@@ -286,13 +338,11 @@ def retained_codex_sidecars(
     )
     artifact = histories.get(history_path)
     if artifact is not None:
-        payload = _read(blob_store, artifact)
-        if payload is not None:
-            from .assembly_codex import parse_codex_history_bytes
+        from .assembly_codex import parse_codex_history_bytes
 
-            titles = parse_codex_history_bytes(payload)
-            if titles:
-                resolved["history_titles"] = titles
+        titles = _read_parsed(blob_store, artifact, "codex.history_titles", parse_codex_history_bytes)
+        if titles:
+            resolved["history_titles"] = titles
     return resolved
 
 

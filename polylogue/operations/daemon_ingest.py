@@ -36,6 +36,7 @@ from polylogue.operations.ingest_inputs import (
     discover_ingest_input_spool,
     enumerate_ingest_input,
     retain_input_page,
+    spool_connection,
 )
 from polylogue.operations.insight_acceptance import SessionInsightPartReceipt
 from polylogue.operations.machine_lifecycle import machine_request_state
@@ -149,7 +150,7 @@ class SourceReceiptSpool:
         self.path.unlink(missing_ok=True)
 
     def pending_raw_page(self, after: str | None = None) -> tuple[str, ...]:
-        with sqlite3.connect(f"file:{self.path}?mode=ro", uri=True) as conn:
+        with spool_connection(self.path, read_only=True) as conn:
             return tuple(
                 str(row[0])
                 for row in conn.execute(
@@ -159,7 +160,7 @@ class SourceReceiptSpool:
             )
 
     def session_page(self, after: str | None = None) -> tuple[str, ...]:
-        with sqlite3.connect(f"file:{self.path}?mode=ro", uri=True) as conn:
+        with spool_connection(self.path, read_only=True) as conn:
             return tuple(
                 str(row[0])
                 for row in conn.execute(
@@ -187,7 +188,7 @@ def _spool_source_receipt(
     enumeration_complete = True
     complete = True
     cursor: tuple[str, str] | None = None
-    with sqlite3.connect(path) as spool:
+    with spool_connection(path) as spool:
         spool.executescript(
             "CREATE TABLE items(ordinal INTEGER PRIMARY KEY, source_item_id TEXT NOT NULL, coordinate TEXT NOT NULL, "
             "raws_json TEXT NOT NULL, retired_count INTEGER NOT NULL);"
@@ -282,7 +283,7 @@ class IngestExecution:
         fd, name = tempfile.mkstemp(prefix="polylogue-ingest-state-", suffix=".sqlite", dir=os.environ.get("TMPDIR"))
         os.close(fd)
         self.state_path = Path(name)
-        with sqlite3.connect(self.state_path) as state:
+        with spool_connection(self.state_path) as state:
             state.executescript(
                 "CREATE TABLE refusals(ordinal INTEGER PRIMARY KEY, logical_key TEXT NOT NULL, raw_id TEXT NOT NULL, "
                 "reason TEXT NOT NULL, UNIQUE(logical_key, raw_id, reason));"
@@ -314,7 +315,7 @@ class IngestExecution:
         self.publisher = ArchiveBlobPublisher(archive_root / "source.db", archive_root / "blob")
 
     def record_refusal(self, refusal: CohortMembershipRefusalError) -> None:
-        with sqlite3.connect(self.state_path) as state:
+        with spool_connection(self.state_path) as state:
             state.execute(
                 # A transient retry drives the generation again from the start:
                 # one refused membership is one refusal, however many drives saw it.
@@ -323,7 +324,7 @@ class IngestExecution:
             )
 
     def record_changed_session(self, session_id: str, message_count: int) -> None:
-        with sqlite3.connect(self.state_path) as state:
+        with spool_connection(self.state_path) as state:
             state.execute(
                 "INSERT INTO changed_sessions VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET "
                 "message_count=excluded.message_count",
@@ -783,7 +784,7 @@ class IngestExecution:
         """Reuse canonical census and cohort publication, reconciling first."""
         initial = await self.receipt(generation_id)
         try:
-            with sqlite3.connect(f"file:{initial.path}?mode=ro", uri=True) as conn:
+            with spool_connection(initial.path, read_only=True) as conn:
                 retired = conn.execute("SELECT 1 FROM items WHERE retired_count>0 LIMIT 1").fetchone()
             if retired is not None:
                 raise ValueError("accepted raw member was retired; it cannot be readmitted")
@@ -825,7 +826,7 @@ class IngestExecution:
 
         observed = await self.receipt(generation_id)
         try:
-            with sqlite3.connect(observed.path) as pending:
+            with spool_connection(observed.path) as pending:
                 pending.execute("CREATE TABLE pending(logical_key TEXT PRIMARY KEY) WITHOUT ROWID")
                 pending.execute(
                     "CREATE TABLE attempts(logical_key TEXT PRIMARY KEY, count INTEGER NOT NULL) WITHOUT ROWID"
@@ -968,7 +969,7 @@ class IngestExecution:
         digest = hashlib.sha256()
         cursor: tuple[str, str] | None = None
         input_count = page_count = 0
-        with sqlite3.connect(f"file:{receipt.path}?mode=ro", uri=True) as observed:
+        with spool_connection(receipt.path, read_only=True) as observed:
             while source_page := await self.input_page(generation, cursor):
                 inputs: list[IngestInputHistoricalReceipt] = []
                 for item in source_page:
@@ -1087,7 +1088,7 @@ class IngestExecution:
         started = self.started_mutation
         operation_id = started.operation_id
         assert operation_id is not None
-        with sqlite3.connect(receipt.path) as observed:
+        with spool_connection(receipt.path) as observed:
             for item_id, raw_json in observed.execute("SELECT source_item_id, raws_json FROM items ORDER BY ordinal"):
                 raw_status = sorted(json.loads(str(raw_json)), key=lambda raw: raw[0])
                 if len(raw_status) <= MAX_INLINE_RAW_IDS_PER_INPUT:
@@ -1120,7 +1121,7 @@ class IngestExecution:
                         self.audit.append_ingest_input_raw_page(operation_id, page)
 
                     await self.runtime.write_phase("ingest.input_raw_page", persist_raw_page)
-        with sqlite3.connect(f"file:{self.state_path}?mode=ro", uri=True) as state:
+        with spool_connection(self.state_path, read_only=True) as state:
             counts = state.execute("SELECT COUNT(*), COALESCE(SUM(message_count), 0) FROM changed_sessions").fetchone()
             self.changed_session_count, self.changed_message_count = int(counts[0]), int(counts[1])
             self.refused_count = int(state.execute("SELECT COUNT(*) FROM refusals").fetchone()[0])

@@ -353,7 +353,9 @@ def scan_session_for_secret_candidates(
 
     user_db = archive_root / "user.db"
     initialize_archive_database(user_db, ArchiveTier.USER)
-    user_conn = open_isolated_write_connection(user_db, purpose=f"secret scan write({user_db})")
+    user_conn = open_isolated_write_connection(
+        user_db, purpose=f"secret scan write({user_db})", archive_root=archive_root
+    )
     written: list[str] = []
     try:
         with user_conn:
@@ -626,8 +628,10 @@ def scan_archive_for_secret_candidates(
         return BulkSecretScanResult(remaining_pending=0)
 
     index_conn = open_profiled_connection(index_db, profile=_READ_PROFILE)
-    user_conn = open_isolated_write_connection(user_db, purpose=f"secret scan write({user_db})")
-    ops_conn = open_isolated_write_connection(ops_db, purpose=f"secret scan write({ops_db})")
+    user_conn = open_isolated_write_connection(
+        user_db, purpose=f"secret scan write({user_db})", archive_root=archive_root
+    )
+    ops_conn = open_isolated_write_connection(ops_db, purpose=f"secret scan write({ops_db})", archive_root=archive_root)
 
     sessions_scanned = 0
     blocks_scanned_total = 0

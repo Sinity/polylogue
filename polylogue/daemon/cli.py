@@ -556,7 +556,7 @@ def _configure_fts_automerge_sync(db: Path) -> None:
     from polylogue.daemon.fts_automerge import configure_fts_automerge_sync
     from polylogue.storage.sqlite.connection_profile import open_connection
 
-    conn = open_connection(db, timeout=30.0)
+    conn = open_connection(db, timeout=30.0, archive_root=db.parent)
     try:
         configure_fts_automerge_sync(conn)
     finally:
@@ -1730,7 +1730,7 @@ def _session_id_touches(payload: dict[str, object], key: str) -> list[tuple[str 
     return touches
 
 
-def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
+def _emit_live_batch_event(kind: str, payload: dict[str, object], *, archive_root_path: Path) -> None:
     """Persist a live-ingest batch event and fan out granular #1204 topics.
 
     The legacy ``ingestion_batch`` kind is preserved verbatim for existing
@@ -1750,7 +1750,7 @@ def _emit_live_batch_event(kind: str, payload: dict[str, object]) -> None:
     records = [DaemonEventRecord(kind, payload)]
     if kind == "ingestion_batch":
         records.extend(_live_batch_session_events(payload))
-    emit_daemon_events(records)
+    emit_daemon_events(records, archive_root_path=archive_root_path)
 
 
 def _live_batch_session_events(payload: dict[str, object]) -> list[DaemonEventRecord]:
@@ -1823,6 +1823,7 @@ async def _emit_daemon_lifecycle_event(
                 "daemon.lifecycle",
                 operation_id=None,
                 payload=event_payload,
+                archive_root_path=archive_root_path,
             )
     except TimeoutError:
         emit(
@@ -2296,6 +2297,7 @@ async def _run_daemon_services_under_active_writer_lease(
 
             emit_daemon_event(
                 "maintenance_loops_parked",
+                archive_root_path=archive_root_path,
                 payload={
                     "reason": "schema_version_mismatch",
                     "loop_count": len(parked_loop_names),
@@ -2721,8 +2723,14 @@ async def _run_daemon_services_under_active_writer_lease(
                 compute_adapter=daemon_compute,
                 write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
             )
-            if api_server is not None and api_server.operation_runtime.embedding_convergence is None:
-                api_server.operation_runtime.embedding_convergence = embedding_convergence
+            # Every operation runtime this daemon composes shares its one
+            # embedding owner: the API's, or the ingest owner under --no-api.
+            for operation_runtime in (
+                api_server.operation_runtime if api_server is not None else None,
+                ingest_owner_runtime,
+            ):
+                if operation_runtime is not None and operation_runtime.embedding_convergence is None:
+                    operation_runtime.embedding_convergence = embedding_convergence
 
             async def converge_ingest_embeddings(index_db: Path, paths: Sequence[Path]) -> bool:
                 ids = embedding_session_ids_for_paths(index_db, archive_root=archive_root_path, paths=paths)
@@ -2906,7 +2914,7 @@ async def _run_daemon_services_under_active_writer_lease(
                         polylogue,
                         sources,
                         converger=converger,
-                        event_emitter=_emit_live_batch_event,
+                        event_emitter=functools.partial(_emit_live_batch_event, archive_root_path=archive_root_path),
                         write_coordinator=write_coordinator,
                         read_snapshot=lambda root: open_operation_read(
                             root,
