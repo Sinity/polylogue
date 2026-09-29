@@ -104,9 +104,10 @@ def test_work_event_payload_cannot_override_validated_identity(tmp_path: Path) -
         ).fetchone()
         payload = json.loads(stored[0])
         assert (payload["event_id"], payload["summary"]) == ("event-1", "declared summary")
-        raw_id = archive._conn.execute(
-            "SELECT raw_id FROM raw_sessions WHERE source_path LIKE 'agent-work-event:%'"
-        ).fetchone()[0]
+        with closing(sqlite3.connect(archive.source_db_path)) as source:
+            raw_id = source.execute(
+                "SELECT raw_id FROM raw_sessions WHERE raw_id LIKE 'agent-work-event:%'"
+            ).fetchone()[0]
         replayed = parse_retained_raw_sessions(archive, raw_id)
         assert replayed[0].session_events[0].payload["event_id"] == "event-1"
 
@@ -283,7 +284,7 @@ def test_observed_tool_rollup_respects_canonical_outcome_over_exit_code(
         assert (rows[0]["status"], rows[0]["event_count"]) == (expected, 1)
         # The observed-event relation projects and filters (through its
         # source pushdown) on the same canonical outcome.
-        source = parse_unit_source_expression(f"observed-events where kind:tool_finished status:{expected}")
+        source = parse_unit_source_expression(f"observed-events where kind:tool_finished AND status:{expected}")
         assert source is not None
         counts = archive.query_unit_counts("observed-event", source.predicate, group_by="status")
         assert [(row.group_key, row.count) for row in counts] == [(expected, 1)]

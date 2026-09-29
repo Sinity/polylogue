@@ -904,7 +904,7 @@
     },
     {
       "file": "polylogue/storage/raw_retention.py",
-      "digest": "cdc8ba6c105b396f2d421059328b53c972600623"
+      "digest": "cb7167b3325a15636f2cbc4c82fcde97e67ff56d"
     },
     {
       "file": "polylogue/storage/search_providers/sqlite_vec_runtime.py",
