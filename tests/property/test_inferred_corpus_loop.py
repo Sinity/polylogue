@@ -20,7 +20,7 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.core.outcomes import OutcomeStatus
 from polylogue.daemon.convergence import DaemonConverger
-from polylogue.maintenance.archive_verification import verify_archive
+from polylogue.maintenance.archive_verification import strict_acceptance_failures, verify_archive
 from polylogue.operations.canonical_archive_ingest import ingest_one_shot_archive
 from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
 from polylogue.scenarios import CorpusSpec
@@ -394,8 +394,6 @@ def test_every_supported_inferred_element_reaches_convergence_and_red_twin(
     green = verify_archive(archive_root)
     green_summary = [(check.name, check.status.value, check.summary) for check in green.checks]
     assert green.blocking is False, green_summary
-    from polylogue.maintenance.archive_verification import strict_acceptance_failures
-
     assert not strict_acceptance_failures(green, allow_not_applicable=True), green_summary
 
     broken_root = tmp_path / "broken"

@@ -37,7 +37,11 @@ from polylogue.daemon.convergence import (
 from polylogue.daemon.derivation import DerivationReport
 from polylogue.daemon.execution import BoundedComputeAdapter
 from polylogue.daemon.write_coordinator import DaemonWriteCoordinator, DaemonWriteThreadBridge
-from polylogue.maintenance.archive_verification import ArchiveVerificationReport, verify_archive
+from polylogue.maintenance.archive_verification import (
+    ArchiveVerificationReport,
+    strict_acceptance_failures,
+    verify_archive,
+)
 from polylogue.operations.fts_derivation import make_fts_derivation, make_fts_frame
 from polylogue.operations.session_profile_convergence import (
     make_session_marker_derivation,
@@ -430,8 +434,6 @@ def converge_convergence_archive(archive: ConvergenceArchive) -> None:
 def assert_archive_verification_green(root: Path) -> ArchiveVerificationReport:
     """Require every currently registered archive verification predicate to be green."""
     report = verify_archive(root)
-    from polylogue.maintenance.archive_verification import strict_acceptance_failures
-
     non_green = strict_acceptance_failures(report, allow_not_applicable=True)
     if non_green:
         raise AssertionError(f"archive verification registry is not green: {non_green}")

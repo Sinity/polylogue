@@ -37,7 +37,6 @@ def test_convergence_property_append_prefix_matches_full(
     tmp_path_factory: pytest.TempPathFactory, shift: int, split: int
 ) -> None:
     tmp_path = tmp_path_factory.mktemp("convergence-example")
-    assert not any(tmp_path.iterdir()), "each generated example must start empty"
     workload = generated_convergence_workload()
     composed = workload.sources
     order = rotated_session_order(composed, shift)

@@ -240,10 +240,13 @@ def _witness_entry_bytes(key: tuple[Any, ...], witnesses: list[bytes]) -> int:
 
 
 def _retain_witnesses(key: tuple[Any, ...], witnesses: list[bytes]) -> None:
-    """Memoize within the retained-heap budget without limiting generated data.
+    """Memoize one generated corpus under the module's declared retained-heap budget.
 
-    The caller always receives its complete witnesses. An entry larger than
-    the budget is generated normally but cannot remain cached.
+    Each entry is charged for its key, list and payload objects, not only its
+    payload bytes, so many tiny witnesses cannot outgrow the budget. The newest
+    entry is never the one evicted: a corpus larger than the whole budget still
+    answers the call that produced it, because a memo that discards what it
+    was just asked for is a slower no-op, not a bound.
     """
     global _GENERATED_WITNESS_BYTES
     previous = _GENERATED_WITNESSES.pop(key, None)
@@ -251,8 +254,9 @@ def _retain_witnesses(key: tuple[Any, ...], witnesses: list[bytes]) -> None:
         _GENERATED_WITNESS_BYTES -= _witness_entry_bytes(key, previous)
     _GENERATED_WITNESSES[key] = witnesses
     _GENERATED_WITNESS_BYTES += _witness_entry_bytes(key, witnesses)
-    while _GENERATED_WITNESSES and (
+    while (
         _GENERATED_WITNESS_BYTES + sys.getsizeof(_GENERATED_WITNESSES) > _GENERATED_WITNESS_BYTES_LIMIT
+        and len(_GENERATED_WITNESSES) > 1
     ):
         evicted_key, evicted = _GENERATED_WITNESSES.popitem(last=False)
         _GENERATED_WITNESS_BYTES -= _witness_entry_bytes(evicted_key, evicted)

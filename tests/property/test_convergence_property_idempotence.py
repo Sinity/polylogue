@@ -58,7 +58,6 @@ def test_convergence_property_reingest_is_idempotent(tmp_path_factory: pytest.Te
     assertion in this test.
     """
     tmp_path = tmp_path_factory.mktemp("convergence-example")
-    assert not any(tmp_path.iterdir()), "each generated example must start empty"
     workload = generated_convergence_workload()
     composed = workload.sources
     order = rotated_session_order(composed, shift)

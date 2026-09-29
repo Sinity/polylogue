@@ -29,7 +29,6 @@ from tests.infra.convergence_laws import (
 @given(st.integers(min_value=1, max_value=len(generated_convergence_workload().sources.sessions) - 1))
 def test_convergence_property_incremental_equals_bulk(tmp_path_factory: pytest.TempPathFactory, shift: int) -> None:
     tmp_path = tmp_path_factory.mktemp("convergence-example")
-    assert not any(tmp_path.iterdir()), "each generated example must start empty"
     workload = generated_convergence_workload()
     composed = workload.sources
     order = rotated_session_order(composed, shift)

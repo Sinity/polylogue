@@ -121,7 +121,6 @@ def test_convergence_plan_reads_its_declared_probe_set(tmp_path: Path) -> None:
     execute_convergence_plan(plan, (archive.root,), law=ConvergenceLaw.PERMUTATION)
 
 
-@pytest.mark.uses_real_clock
 def test_daemon_operation_stack_can_rebind_a_stale_explicit_socket(tmp_path: Path) -> None:
     """The permission probe must not bind the stale path before the real server."""
     from tests.infra.daemon_operations import running_daemon_operations
