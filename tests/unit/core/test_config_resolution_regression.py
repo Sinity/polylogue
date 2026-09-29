@@ -394,7 +394,7 @@ class TestNewlyInventoriedSettingsRouteThroughResolver:
         from polylogue.daemon.parse_prefetch import (
             daemon_parse_stage_max_cached_tree_bytes,
             daemon_parse_stage_max_inflight_bytes,
-            daemon_parse_stage_warm_timeout_seconds,
+            daemon_parse_stage_stall_report_seconds,
             daemon_parse_stage_worker_count,
         )
 
@@ -403,7 +403,7 @@ class TestNewlyInventoriedSettingsRouteThroughResolver:
             "POLYLOGUE_DAEMON_PARSE_STAGE_WORKERS",
             "POLYLOGUE_DAEMON_PARSE_STAGE_MAX_INFLIGHT_BYTES",
             "POLYLOGUE_DAEMON_PARSE_STAGE_MAX_CACHED_TREE_BYTES",
-            "POLYLOGUE_DAEMON_PARSE_STAGE_WARM_TIMEOUT_SECONDS",
+            "POLYLOGUE_DAEMON_PARSE_STAGE_STALL_REPORT_SECONDS",
         ):
             monkeypatch.delenv(env_var, raising=False)
         user = tmp_path / "user.toml"
@@ -413,7 +413,7 @@ class TestNewlyInventoriedSettingsRouteThroughResolver:
 parse_stage_workers = 3
 parse_stage_max_inflight_bytes = 999999
 parse_stage_max_cached_tree_bytes = 8888888
-parse_stage_warm_timeout_seconds = 12.5
+parse_stage_stall_report_seconds = 12.5
 """,
             encoding="utf-8",
         )
@@ -422,7 +422,7 @@ parse_stage_warm_timeout_seconds = 12.5
         assert daemon_parse_stage_worker_count() == 3
         assert daemon_parse_stage_max_inflight_bytes() == 999999
         assert daemon_parse_stage_max_cached_tree_bytes() == 8888888
-        assert daemon_parse_stage_warm_timeout_seconds() == 12.5
+        assert daemon_parse_stage_stall_report_seconds() == 12.5
 
 
 _HOSTILE_PROJECT_TOML = """

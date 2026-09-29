@@ -237,6 +237,30 @@ def test_claude_workflow_artifact_parser_retains_native_facts() -> None:
     assert journal.facts[0].payload["structuredResult"] == {"ok": True}
 
 
+def test_sidecar_bytes_decode_directly_encoded_surrogates_as_the_envelope_reader_does() -> None:
+    """Both readers of a retained sidecar decode it with the provider decoder.
+
+    Anti-vacuity: decode the bytes strictly and the sidecar yields no facts,
+    while the dispatch writer's envelope binds its tool_use id.
+    """
+    import io
+
+    from polylogue.core.json_envelope import top_level_envelopes
+    from polylogue.sources.parsers.claude.orchestration import DISPATCH_IDENTITY_FIELDS, DOCUMENT_READ_FIELDS
+
+    path = "/tmp/.claude/projects/x/parent-1/subagents/agent-a.meta.json"
+    payload = b'{"toolUseId": "toolu_1", "description": "x\xed\xa0\x80y"}'
+    direct = parse_claude_orchestration_artifact(path, payload)
+    (envelope,) = top_level_envelopes(
+        io.BytesIO(payload), expand_arrays=False, fields=DOCUMENT_READ_FIELDS, whole_fields=DISPATCH_IDENTITY_FIELDS
+    )
+    streamed = parse_claude_orchestration_artifact(path, envelope)
+
+    assert direct is not None and streamed is not None
+    assert [fact.tool_use_id for fact in direct.facts] == ["toolu_1"]
+    assert [fact.tool_use_id for fact in streamed.facts] == ["toolu_1"]
+
+
 def test_claude_agent_prompt_needs_positive_human_provenance() -> None:
     generated = parse_code(
         [{"type": "user", "uuid": "u1", "sessionId": "agent-session", "message": {"role": "user", "content": "work"}}],

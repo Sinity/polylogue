@@ -36,5 +36,7 @@ def test_convergence_one_shot_readers_cannot_mutate(
     database = tmp_path / "maintenance.db"
     _open_seeded_database(database)
 
-    with open_reader(database) as conn, pytest.raises(sqlite3.OperationalError):
+    # The read profile's authorizer (#5564) refuses the write at prepare time
+    # ("not authorized"), before SQLite's own read-only check.
+    with open_reader(database) as conn, pytest.raises(sqlite3.DatabaseError, match="not authorized|readonly"):
         conn.execute("INSERT INTO entries VALUES ('forbidden')")
