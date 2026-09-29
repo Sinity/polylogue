@@ -27,6 +27,21 @@ OperationRunStatus = Literal["running", "completed", "failed", "interrupted", "c
 RouteObservationStatus = Literal["ok", "error", "degraded", "timed_out", "unavailable"]
 RouteDaemonPath = Literal["daemon", "direct"]
 ContextInjectionDecision = Literal["included", "degraded", "dropped"]
+RouteObservationDropReasonToken = Literal["no_archive_root", "ops_db_missing", "emit_failed", "pruned", "not_sampled"]
+# How a daemon run ended, as its next-start reconciliation classifies it from
+# direct evidence (polylogue-peo). ``unknown`` is a real answer: no retained
+# source supports a cause, and adjacency in time never upgrades it.
+DaemonTerminationClass = Literal[
+    "clean",
+    "handled_signal",
+    "external_stop",
+    "watchdog",
+    "oom_kill",
+    "cgroup_kill",
+    "crash",
+    "host_gap",
+    "unknown",
+]
 
 
 def require_literal(value: object, vocabulary: object, *, name: str) -> str:
@@ -45,6 +60,7 @@ __all__ = [
     "ConvergenceDebtStatus",
     "ContextInjectionDecision",
     "CursorLagSeverity",
+    "DaemonTerminationClass",
     "JudgmentSchedulerStatus",
     "LineageInheritance",
     "ContentHash",
@@ -52,6 +68,7 @@ __all__ = [
     "MessageIdentitySource",
     "OperationRunStatus",
     "RouteDaemonPath",
+    "RouteObservationDropReasonToken",
     "RouteObservationStatus",
     "SessionId",
     "SessionCommitDetectionType",

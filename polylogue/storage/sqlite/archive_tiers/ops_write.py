@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,9 +20,11 @@ from polylogue.core.enums import (
 from polylogue.core.types import (
     ConvergenceDebtStatus,
     CursorLagSeverity,
+    DaemonTerminationClass,
     JudgmentSchedulerStatus,
     OperationRunStatus,
     RouteDaemonPath,
+    RouteObservationDropReasonToken,
     RouteObservationStatus,
     require_literal,
 )
@@ -1170,6 +1173,10 @@ def latest_daemon_lifecycle(conn: sqlite3.Connection) -> ArchiveDaemonLifecycle 
     ).fetchone()
     if row is None:
         return None
+    return _daemon_lifecycle_from_row(row)
+
+
+def _daemon_lifecycle_from_row(row: sqlite3.Row | tuple[object, ...]) -> ArchiveDaemonLifecycle:
     return ArchiveDaemonLifecycle(
         run_id=str(row[0]),
         started_at_ms=_int_value(row[1]),
@@ -1178,6 +1185,104 @@ def latest_daemon_lifecycle(conn: sqlite3.Connection) -> ArchiveDaemonLifecycle 
         signal=None if row[4] is None else str(row[4]),
         exit_kind=None if row[5] is None else str(row[5]),
         details=_json_loads(row[6] if isinstance(row[6], str) else None),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class UnreconciledDaemonRun:
+    """A daemon run with no termination receipt, and when the next run began."""
+
+    lifecycle: ArchiveDaemonLifecycle
+    next_started_at_ms: int | None
+    """Start of the run after this one: the latest instant this run can have
+    ended. ``None`` when no later run is recorded."""
+
+
+def unreconciled_daemon_runs(conn: sqlite3.Connection, *, current_run_id: str) -> tuple[UnreconciledDaemonRun, ...]:
+    """Return every ended-or-vanished run other than ``current_run_id`` that has no receipt, oldest first."""
+    rows = conn.execute(
+        """
+        SELECT l.run_id, l.started_at_ms, l.stopped_at_ms, l.last_heartbeat_at_ms,
+               l.signal, l.exit_kind, l.details_json, l.next_started_at_ms
+        FROM (
+            SELECT daemon_lifecycle.*,
+                   LEAD(started_at_ms) OVER (ORDER BY started_at_ms, run_id) AS next_started_at_ms
+            FROM daemon_lifecycle
+        ) AS l
+        LEFT JOIN daemon_termination_receipts AS r ON r.run_id = l.run_id
+        WHERE r.run_id IS NULL AND l.run_id != ?
+        ORDER BY l.started_at_ms, l.run_id
+        """,
+        (current_run_id,),
+    ).fetchall()
+    return tuple(
+        UnreconciledDaemonRun(
+            lifecycle=_daemon_lifecycle_from_row(row),
+            next_started_at_ms=None if row[7] is None else _int_value(row[7]),
+        )
+        for row in rows
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDaemonTerminationReceipt:
+    """One persisted termination receipt (``receipt`` is its JSON document)."""
+
+    run_id: str
+    classification: str
+    reconciled_at_ms: int
+    reconciled_by_run_id: str
+    receipt: dict[str, object]
+
+
+def record_daemon_termination_receipt(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    classification: str,
+    reconciled_at_ms: int,
+    reconciled_by_run_id: str,
+    receipt: dict[str, object],
+) -> bool:
+    """Persist a run's termination receipt once; return whether this call wrote it.
+
+    A run is reconciled at most once: a second reconciliation (a restart that
+    raced the first, a retried startup) is a no-op, never a rewrite, so the
+    receipt a reader saw cannot change under it.
+    """
+    require_literal(classification, DaemonTerminationClass, name="daemon termination classification")
+    cursor = conn.execute(
+        """
+        INSERT INTO daemon_termination_receipts (
+            run_id, classification, reconciled_at_ms, reconciled_by_run_id, receipt_json
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(run_id) DO NOTHING
+        """,
+        (run_id, classification, reconciled_at_ms, reconciled_by_run_id, _json_dumps(receipt)),
+    )
+    conn.commit()
+    return cursor.rowcount == 1
+
+
+def latest_daemon_termination_receipt(conn: sqlite3.Connection) -> ArchiveDaemonTerminationReceipt | None:
+    """Return the receipt of the most recently started run that has one."""
+    row = conn.execute(
+        """
+        SELECT r.run_id, r.classification, r.reconciled_at_ms, r.reconciled_by_run_id, r.receipt_json
+        FROM daemon_termination_receipts AS r
+        LEFT JOIN daemon_lifecycle AS l ON l.run_id = r.run_id
+        ORDER BY COALESCE(l.started_at_ms, r.reconciled_at_ms) DESC, r.run_id DESC
+        LIMIT 1
+        """
+    ).fetchone()
+    if row is None:
+        return None
+    return ArchiveDaemonTerminationReceipt(
+        run_id=str(row[0]),
+        classification=str(row[1]),
+        reconciled_at_ms=_int_value(row[2]),
+        reconciled_by_run_id=str(row[3]),
+        receipt=_json_loads(row[4] if isinstance(row[4], str) else None),
     )
 
 
@@ -1471,6 +1576,22 @@ def _mcp_call_log_entry_from_row(row: sqlite3.Row | tuple[object, ...]) -> Archi
     )
 
 
+@dataclass(frozen=True, slots=True)
+class RouteObservationDropRow:
+    """Route observations one process lost for one (surface, route, reason).
+
+    ``first_observed_at_ms``/``last_observed_at_ms`` span the lost
+    observations' own start times.
+    """
+
+    surface: str
+    route: str
+    reason: str
+    first_observed_at_ms: int
+    last_observed_at_ms: int
+    drop_count: int
+
+
 def record_route_observation(
     conn: sqlite3.Connection,
     *,
@@ -1488,19 +1609,23 @@ def record_route_observation(
     attributes: dict[str, object] | None = None,
     sampled: bool = True,
     observation_id: str | None = None,
-    pruned: list[tuple[str, str]] | None = None,
+    drops: Sequence[RouteObservationDropRow] = (),
 ) -> str:
     """Record one bounded route-latency observation and return its id.
 
-    When ``pruned`` is given, the ``(surface, route)`` of every row the
-    retention and row-cap prunes removed is appended to it, read from the
-    deletes themselves so attribution costs nothing beyond the prune.
+    ``drops`` are observations the caller's process lost earlier and could not
+    record then (its ops.db was locked or missing); they land in
+    ``route_observation_drops`` in the same transaction, so a reader in any
+    process counts them beside the percentiles (polylogue-jtwu.2). Rows the
+    row cap evicts from inside the retention window are recorded there too, as
+    ``pruned`` drops attributed to their own route. Rows past the age horizon
+    are retention, not loss: no window inside retention held them.
 
     Best-effort telemetry, not audit evidence: unlike ``record_mcp_call``
     (durable, conflict-checked, delivered via an outbox so a dropped
     connection cannot silently lose an entry), this writer is a plain
     direct INSERT -- callers that cannot reach ops.db (no archive
-    configured, disposable tier missing) are expected to catch and drop the
+    configured, disposable tier missing) are expected to catch and count the
     observation rather than block or retry. Bounded by both time (
     ``ROUTE_OBSERVATION_RETENTION_MS``) and row count
     (``ROUTE_OBSERVATION_ROW_CAP``) so a high-frequency route cannot let
@@ -1509,8 +1634,11 @@ def record_route_observation(
     require_literal(status, RouteObservationStatus, name="route observation status")
     if daemon_path is not None:
         require_literal(daemon_path, RouteDaemonPath, name="route daemon path")
+    for drop in drops:
+        require_literal(drop.reason, RouteObservationDropReasonToken, name="route observation drop reason")
     if observation_id is None:
         observation_id = str(uuid.uuid4())
+    horizon_ms = started_at_ms - ROUTE_OBSERVATION_RETENTION_MS
     with conn:
         conn.execute(
             """
@@ -1536,28 +1664,120 @@ def record_route_observation(
                 1 if sampled else 0,
             ),
         )
-        removed = conn.execute(
-            "DELETE FROM route_observations WHERE started_at_ms < ? RETURNING surface, route",
-            (started_at_ms - ROUTE_OBSERVATION_RETENTION_MS,),
-        ).fetchall()
+        conn.execute("DELETE FROM route_observations WHERE started_at_ms < ?", (horizon_ms,))
+        conn.execute("DELETE FROM route_observation_drops WHERE last_observed_at_ms < ?", (horizon_ms,))
+        evicted: dict[tuple[str, str], list[int]] = {}
         row_count = int(conn.execute("SELECT COUNT(*) FROM route_observations").fetchone()[0])
         if row_count > ROUTE_OBSERVATION_ROW_CAP:
             excess = row_count - ROUTE_OBSERVATION_ROW_CAP
-            removed.extend(
-                conn.execute(
-                    """
-                    DELETE FROM route_observations WHERE observation_id IN (
-                        SELECT observation_id FROM route_observations
-                        ORDER BY started_at_ms ASC LIMIT ?
+            for row in conn.execute(
+                """
+                DELETE FROM route_observations WHERE observation_id IN (
+                    SELECT observation_id FROM route_observations
+                    ORDER BY started_at_ms ASC LIMIT ?
+                )
+                RETURNING surface, route, started_at_ms
+                """,
+                (excess,),
+            ).fetchall():
+                evicted.setdefault((str(row[0]), str(row[1])), []).append(int(row[2]))
+        _insert_route_observation_drops(
+            conn,
+            [
+                *drops,
+                *(
+                    RouteObservationDropRow(
+                        surface=evicted_surface,
+                        route=evicted_route,
+                        reason="pruned",
+                        first_observed_at_ms=min(starts),
+                        last_observed_at_ms=max(starts),
+                        drop_count=len(starts),
                     )
-                    RETURNING surface, route
-                    """,
-                    (excess,),
-                ).fetchall()
-            )
-        if pruned is not None:
-            pruned.extend((str(row[0]), str(row[1])) for row in removed)
+                    for (evicted_surface, evicted_route), starts in evicted.items()
+                ),
+            ],
+            horizon_ms=horizon_ms,
+        )
     return observation_id
+
+
+def record_route_observation_drops(
+    conn: sqlite3.Connection,
+    *,
+    drops: Sequence[RouteObservationDropRow],
+    now_ms: int,
+) -> None:
+    """Record lost observations without a new observation (a process's final flush)."""
+    for drop in drops:
+        require_literal(drop.reason, RouteObservationDropReasonToken, name="route observation drop reason")
+    horizon_ms = now_ms - ROUTE_OBSERVATION_RETENTION_MS
+    with conn:
+        conn.execute("DELETE FROM route_observation_drops WHERE last_observed_at_ms < ?", (horizon_ms,))
+        _insert_route_observation_drops(conn, drops, horizon_ms=horizon_ms)
+
+
+def _insert_route_observation_drops(
+    conn: sqlite3.Connection,
+    drops: Sequence[RouteObservationDropRow],
+    *,
+    horizon_ms: int,
+) -> None:
+    # A drop older than the age horizon belongs to no window retention can
+    # still answer for, exactly like an aged-out observation.
+    conn.executemany(
+        """
+        INSERT INTO route_observation_drops (
+            surface, route, reason, first_observed_at_ms, last_observed_at_ms, drop_count
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                drop.surface,
+                drop.route,
+                drop.reason,
+                drop.first_observed_at_ms,
+                drop.last_observed_at_ms,
+                drop.drop_count,
+            )
+            for drop in drops
+            if drop.drop_count > 0 and drop.last_observed_at_ms >= horizon_ms
+        ],
+    )
+
+
+def route_observation_drop_counts(
+    conn: sqlite3.Connection,
+    *,
+    since_ms: int,
+    surface: str | None = None,
+) -> tuple[RouteObservationDropRow, ...]:
+    """Return the counted drops whose observed span reaches into the window.
+
+    Aggregated per (surface, route, reason), so the answer is bounded by the
+    declared routes and reasons, not by how many drops were recorded.
+    """
+    sql = """
+        SELECT surface, route, reason, MIN(first_observed_at_ms), MAX(last_observed_at_ms), SUM(drop_count)
+        FROM route_observation_drops
+        WHERE last_observed_at_ms >= ?
+    """
+    params: tuple[object, ...] = (since_ms,)
+    if surface is not None:
+        sql += " AND surface = ?"
+        params = (since_ms, surface)
+    sql += " GROUP BY surface, route, reason ORDER BY surface, route, reason"
+    return tuple(
+        RouteObservationDropRow(
+            surface=str(row[0]),
+            route=str(row[1]),
+            reason=str(row[2]),
+            first_observed_at_ms=_int_value(row[3]),
+            last_observed_at_ms=_int_value(row[4]),
+            drop_count=_int_value(row[5]),
+        )
+        for row in conn.execute(sql, params)
+    )
 
 
 def list_route_observations(
@@ -1703,6 +1923,7 @@ def _json_loads(raw_json: str | None) -> dict[str, object]:
 __all__ = [
     "ArchiveCursorLagSample",
     "ArchiveDaemonLifecycle",
+    "ArchiveDaemonTerminationReceipt",
     "ArchiveJudgmentSchedulerReceipt",
     "ArchiveDaemonStageEvent",
     "ArchiveEmbeddingCatchupRun",
@@ -1720,6 +1941,7 @@ __all__ = [
     "list_fts_drift_samples",
     "list_schema_drift_samples",
     "latest_daemon_lifecycle",
+    "latest_daemon_termination_receipt",
     "list_daemon_stage_events",
     "list_embedding_catchup_runs",
     "list_route_observations",
@@ -1733,10 +1955,16 @@ __all__ = [
     "record_daemon_lifecycle_start",
     "record_daemon_lifecycle_stop",
     "record_daemon_stage_event",
+    "record_daemon_termination_receipt",
     "record_judgment_scheduler_receipt",
     "record_fts_drift_sample",
     "record_ingest_attempt",
+    "RouteObservationDropRow",
+    "UnreconciledDaemonRun",
     "record_route_observation",
+    "record_route_observation_drops",
+    "route_observation_drop_counts",
+    "unreconciled_daemon_runs",
     "record_schema_drift_sample",
     "summarize_schema_drift_since",
     "upsert_embedding_catchup_run",

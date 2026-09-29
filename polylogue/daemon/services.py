@@ -269,6 +269,14 @@ _SPECS: tuple[DaemonServiceSpec, ...] = (
         cadence_s=900.0,
     ),
     _spec(
+        # Classify how every earlier run of this archive ended (polylogue-peo).
+        # Off the writer except for the one receipt write, and not a startup
+        # gate: host evidence (the journal) is read at its own pace.
+        "termination_reconciliation",
+        owner="daemon.lifecycle",
+        trigger=ServiceTrigger.ONESHOT,
+    ),
+    _spec(
         "health_check",
         owner="daemon.health",
         trigger=ServiceTrigger.PERIODIC,

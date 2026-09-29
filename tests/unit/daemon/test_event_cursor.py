@@ -1,28 +1,23 @@
-"""Cursor completeness of the ``daemon_events`` replay ledger.
+"""Retention and cursor completeness of the ``daemon_events`` replay ledger.
 
-``_cursor_refusal_reason`` decides whether a resuming subscriber's cursor is
-still honourable from ``MIN(id)`` alone. Two things must hold for that single
-number to be a sound completeness proof:
-
-- retention may only remove an ``id`` prefix, never an interior row; and
-- the range check and the page read must observe the same snapshot.
-
-Break either and the daemon answers a resumable subscriber with an ``OK`` page
-that is silently missing events -- the exact failure the ``AGED_OUT`` refusal
-exists to make visible.
+Retention has no row count and no age (polylogue-20d.13.6): the owning process
+removes a row once every live subscriber has read it and it is either a
+granular topic frame or a record superseded by a newer row of its kind. The
+removal is not a prefix -- the newest row of each record kind survives inside
+the removed range -- so the watermark, not ``MIN(id)``, says where complete
+history starts.
 
 Anti-vacuity, executed both ways:
 
-- restore ``DELETE FROM daemon_events WHERE ts_ms < ?`` and the two
-  out-of-order tests go red, while ``test_expired_prefix_is_removed`` and
-  ``test_expired_ledger_is_emptied`` stay green, so a blanket no-op cannot
-  pass either;
+- make ``prune_through`` ignore live cursors and
+  ``test_rows_a_live_subscriber_has_not_read_are_kept`` goes red;
+- keep only the rows above the lowest live cursor regardless of kind and
+  ``test_newest_record_of_each_kind_survives`` goes red;
+- decide the cursor from ``MIN(id)`` instead of the watermark and
+  ``test_a_cursor_below_the_watermark_is_refused_despite_interior_rows`` goes
+  red (an interior newest-of-kind row makes ``MIN(id)`` look complete);
 - drop the ``BEGIN``/``rollback`` pair in ``query_events_since`` and
   ``test_prune_between_range_and_page_unseen`` goes red.
-
-The retention fixtures carry a deliberate ``ts_ms``/``id`` skew. On a
-uniformly increasing ledger the old and new predicates agree exactly, and no
-assertion over such a fixture could separate them.
 """
 
 from __future__ import annotations
@@ -34,7 +29,12 @@ from pathlib import Path
 import pytest
 
 from polylogue.daemon import events as events_mod
-from polylogue.daemon.events import DaemonEventRetention, EventCursorStatus
+from polylogue.daemon.events import (
+    EVENT_MESSAGE_APPENDED,
+    EVENT_SESSION_UPDATED,
+    EventCursorStatus,
+    EventSubscriberRegistry,
+)
 
 
 @pytest.fixture
@@ -45,14 +45,14 @@ def ledger(workspace_env: dict[str, Path], monkeypatch: pytest.MonkeyPatch) -> P
     return path
 
 
-def _seed(path: Path, rows: list[tuple[int, str]]) -> None:
-    """Write exact ``(ts_ms, kind)`` rows into the production ledger schema."""
+def _seed(path: Path, kinds: list[str]) -> None:
+    """Write rows of the given kinds, ids 1..n, into the production ledger schema."""
     events_mod.emit_daemon_event("bootstrap", payload={})
     with sqlite3.connect(path) as conn:
         conn.execute("DELETE FROM daemon_events")
         conn.executemany(
             "INSERT INTO daemon_events (id, ts_ms, kind, operation_id, payload_json) VALUES (?, ?, ?, NULL, '{}')",
-            [(index + 1, ts_ms, kind) for index, (ts_ms, kind) in enumerate(rows)],
+            [(index + 1, 1_000 + index, kind) for index, kind in enumerate(kinds)],
         )
         conn.commit()
 
@@ -62,52 +62,112 @@ def _ids(path: Path) -> list[int]:
         return [int(row[0]) for row in conn.execute("SELECT id FROM daemon_events ORDER BY id")]
 
 
-def _prune(path: Path, retention: DaemonEventRetention, *, now_ms: int) -> int:
+def _prune(path: Path, registry: EventSubscriberRegistry) -> int:
     with sqlite3.connect(path) as conn:
-        removed = events_mod.prune_daemon_events(conn, retention, now_ms=now_ms)
+        removed = events_mod.prune_daemon_events(conn, subscribers=registry)
         conn.commit()
     return removed
 
 
-#: id 1 at T, id 2 at T-100s, id 3 at T+1s -- valid, non-monotonic timestamps.
-_SKEWED = [(1_000_000, "first"), (900_000, "out-of-order"), (1_001_000, "third")]
+def test_a_process_that_does_not_own_the_ledger_never_prunes(ledger: Path) -> None:
+    """Another process cannot see the daemon's live subscribers, so it only appends."""
+    _seed(ledger, [EVENT_MESSAGE_APPENDED, EVENT_MESSAGE_APPENDED, "ingestion_batch", "ingestion_batch"])
+    assert _prune(ledger, EventSubscriberRegistry()) == 0
+    assert _ids(ledger) == [1, 2, 3, 4]
 
 
-def test_out_of_order_row_survives_age_prune(ledger: Path) -> None:
-    _seed(ledger, _SKEWED)
-    removed = _prune(ledger, DaemonEventRetention(max_age_ms=50_000), now_ms=1_001_000)
-    assert removed == 0
-    assert _ids(ledger) == [1, 2, 3]
+def test_newest_record_of_each_kind_survives(ledger: Path) -> None:
+    """With no live subscriber, topic frames go and each record kind keeps its newest row."""
+    _seed(
+        ledger,
+        [
+            "ingestion_batch",
+            EVENT_MESSAGE_APPENDED,
+            "judgment-automation",
+            "ingestion_batch",
+            EVENT_SESSION_UPDATED,
+            "ingestion_batch",
+        ],
+    )
+    registry = EventSubscriberRegistry()
+    with registry.owning():
+        removed = _prune(ledger, registry)
+    assert removed == 4
+    assert _ids(ledger) == [3, 6]
+    assert events_mod.get_last_ingestion_batch() is not None
+    assert events_mod.get_latest_daemon_event("judgment-automation") is not None
 
 
-def test_cursor_page_keeps_every_event(ledger: Path) -> None:
-    _seed(ledger, _SKEWED)
-    _prune(ledger, DaemonEventRetention(max_age_ms=50_000), now_ms=1_001_000)
-    page = events_mod.query_events_since(1)
-    assert page.status is EventCursorStatus.OK
-    assert [event["kind"] for event in page.events] == ["out-of-order", "third"]
-
-
-def test_expired_prefix_is_removed(ledger: Path) -> None:
-    """Opposite direction: age retention must still trim a genuine prefix."""
-    _seed(ledger, [(100_000, "expired"), (200_000, "expired"), (1_000_000, "kept")])
-    removed = _prune(ledger, DaemonEventRetention(max_age_ms=50_000), now_ms=1_000_000)
-    assert removed == 2
-    assert _ids(ledger) == [3]
-
-
-def test_expired_ledger_is_emptied(ledger: Path) -> None:
-    _seed(ledger, [(100_000, "expired"), (200_000, "expired")])
-    removed = _prune(ledger, DaemonEventRetention(max_age_ms=50_000), now_ms=9_000_000)
-    assert removed == 2
+def test_rows_a_live_subscriber_has_not_read_are_kept(ledger: Path) -> None:
+    _seed(ledger, [EVENT_MESSAGE_APPENDED] * 6)
+    registry = EventSubscriberRegistry()
+    with registry.owning():
+        slow = registry.subscribe(2)
+        fast = registry.subscribe(5)
+        assert _prune(ledger, registry) == 2
+        assert _ids(ledger) == [3, 4, 5, 6]
+        slow.advance(4)
+        assert _prune(ledger, registry) == 2
+        assert _ids(ledger) == [5, 6]
+        slow.close()
+        fast.close()
+        assert _prune(ledger, registry) == 2
     assert _ids(ledger) == []
 
 
+def test_a_live_subscriber_reads_every_row_after_its_cursor(ledger: Path) -> None:
+    """Pruning while a stream is open never shortens that stream's next page."""
+    _seed(ledger, [EVENT_MESSAGE_APPENDED] * 4)
+    registry = EventSubscriberRegistry()
+    with registry.owning(), registry.subscribe(1):
+        _prune(ledger, registry)
+        page = events_mod.query_events_since(1)
+    assert page.status is EventCursorStatus.OK
+    assert [event["id"] for event in page.events] == [2, 3, 4]
+
+
+def test_a_cursor_below_the_watermark_is_refused_despite_interior_rows(ledger: Path) -> None:
+    """The newest ``ingestion_batch`` (id 1) survives at the bottom of the removed range.
+
+    ``MIN(id)`` is then 1 and a resume from 1 would look complete, while the
+    frames 2..4 it never read are gone.
+    """
+    _seed(ledger, ["ingestion_batch", EVENT_MESSAGE_APPENDED, EVENT_MESSAGE_APPENDED, EVENT_MESSAGE_APPENDED])
+    registry = EventSubscriberRegistry()
+    with registry.owning():
+        _prune(ledger, registry)
+    assert _ids(ledger) == [1]
+
+    page = events_mod.query_events_since(1)
+    assert page.status is EventCursorStatus.AGED_OUT
+    assert page.resync is not None
+    assert page.resync["payload"]["reason"] == events_mod.RESYNC_CURSOR_AGED_OUT  # type: ignore[index]
+    assert page.latest_id == 4
+
+    # A subscriber that has read through the watermark is complete.
+    assert events_mod.query_events_since(4).status is EventCursorStatus.OK
+    # A cursor ahead of every id the ledger ever held is a reset tier.
+    reset = events_mod.query_events_since(9)
+    assert reset.resync is not None
+    assert reset.resync["payload"]["reason"] == events_mod.RESYNC_LEDGER_RESET  # type: ignore[index]
+
+
+def test_the_production_emit_prunes_in_the_owning_process(ledger: Path) -> None:
+    """The enforcement point runs inside every emit, against the process registry."""
+    with events_mod.EVENT_SUBSCRIBERS.owning():
+        for index in range(5):
+            events_mod.emit_message_appended(session_id=f"s-{index}", source_name="codex", appended_count=1)
+        events_mod.emit_daemon_event("ingestion_batch", payload={"n": 1})
+        events_mod.emit_daemon_event("ingestion_batch", payload={"n": 2})
+    kinds = [event["kind"] for event in events_mod.query_daemon_events(limit=100)]
+    assert kinds == ["ingestion_batch"]
+
+
 def test_prune_between_range_and_page_unseen(ledger: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _seed(ledger, [(1_000, "a"), (2_000, "b"), (3_000, "c")])
+    _seed(ledger, ["a", "b", "c"])
     real_range = events_mod._retained_range
 
-    def prune_after_range(conn: sqlite3.Connection) -> tuple[int | None, int]:
+    def prune_after_range(conn: sqlite3.Connection) -> tuple[int | None, int, int]:
         result = real_range(conn)
 
         # A separate thread: SQLite will not let this reader's own connection
