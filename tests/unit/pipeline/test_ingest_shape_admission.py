@@ -13,6 +13,7 @@ from pathlib import Path
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.core.enums import Provider
+from polylogue.core.json import JSONValue
 from polylogue.pipeline.services.ingest_worker import IngestRecordResult, ingest_record
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.runtime import RawSessionRecord
@@ -37,7 +38,7 @@ def _ingest(tmp_path: Path, provider: Provider, source_path: str, content: bytes
 def test_claude_project_export_reaches_parse_project_through_ingest(tmp_path: Path) -> None:
     """Anti-vacuity: without the project signature the classifier calls this
     payload an unrecognized or metadata document and no session is produced."""
-    payload = {"uuid": "p1", "docs": [{"uuid": "d1", "content": "x"}], "prompt_template": "t"}
+    payload: JSONValue = {"uuid": "p1", "docs": [{"uuid": "d1", "content": "x"}], "prompt_template": "t"}
 
     assert classify_artifact(payload, provider=Provider.CLAUDE_AI).parse_as_session
 
@@ -49,7 +50,7 @@ def test_claude_project_export_reaches_parse_project_through_ingest(tmp_path: Pa
 
 def test_claude_account_memory_export_reaches_its_parser_through_ingest(tmp_path: Path) -> None:
     """The sibling claude.ai shape with no message list is admitted the same way."""
-    payload = [{"account_uuid": "acct-1", "conversations_memory": "Prefers short answers."}]
+    payload: JSONValue = [{"account_uuid": "acct-1", "conversations_memory": "Prefers short answers."}]
 
     assert classify_artifact(payload, provider=Provider.CLAUDE_AI).parse_as_session
 
@@ -64,7 +65,7 @@ def test_project_signature_alone_does_not_admit_a_bare_uuid_document() -> None:
     assert not classify_artifact({"uuid": "p1", "docs": []}, provider=Provider.CLAUDE_AI).parse_as_session
 
 
-def _codex_rollout(*extra: dict[str, object]) -> list[dict[str, object]]:
+def _codex_rollout(*extra: JSONValue) -> list[JSONValue]:
     return [
         {
             "type": "session_meta",
