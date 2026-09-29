@@ -37,6 +37,7 @@ import ijson
 
 from polylogue.archive.attachment.availability import AttachmentAvailability, resolve_attachment_availability
 from polylogue.archive.message.types import MessageType
+from polylogue.archive.revision_authority import is_work_event_raw_id
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.archive.session.repo_identity import normalize_repo_name, normalize_repo_path
 from polylogue.archive.topology.edge import (
@@ -1964,9 +1965,11 @@ def write_parsed_session_to_archive(
     # A work-event raw carries one event and no session header. Writing it as
     # an ordinary session would upsert default header values over the stored
     # session (and, on a same-raw full replay, replace its transcript), so it
-    # is an event-only append that keeps every session-owned field. The rule
-    # keys on the retained raw identity, so events retained before this
-    # writer existed replay the same way.
+    # is an event-only append that keeps every session-owned field, including
+    # the transcript's ``raw_id`` and ``content_hash``: the accepted revision
+    # head and later re-ingest compare against those, and an annotation does
+    # not change which raw authored the session. The rule keys on the
+    # retained raw identity, so every route replays an event the same way.
     stored_header = (
         _stored_session_header(
             conn,
@@ -9455,11 +9458,10 @@ def _increment_provider_usage_model_rollup(
     )
 
 
-#: ``raw_id`` prefix of a retained agent work event (``ArchiveStore.append_work_event``).
-WORK_EVENT_RAW_ID_PREFIX = "agent-work-event:"
-
-#: Session-owned header columns an event-only write keeps from the stored row.
+#: Session-owned columns an event-only write keeps from the stored row.
 _EVENT_ONLY_PRESERVED_COLUMNS: tuple[str, ...] = (
+    "raw_id",
+    "content_hash",
     "branch_type",
     "active_leaf_message_id",
     "title",
@@ -9478,10 +9480,6 @@ _EVENT_ONLY_PRESERVED_COLUMNS: tuple[str, ...] = (
     "created_at_ms",
     "updated_at_ms",
 )
-
-
-def is_work_event_raw_id(raw_id: str | None) -> bool:
-    return raw_id is not None and raw_id.startswith(WORK_EVENT_RAW_ID_PREFIX)
 
 
 def _stored_session_header(

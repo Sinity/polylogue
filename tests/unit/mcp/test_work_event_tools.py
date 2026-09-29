@@ -225,3 +225,47 @@ def test_retained_work_event_replay_keeps_the_reconstructed_session(tmp_path: Pa
             (session_id,),
         ).fetchall()
         assert [tuple(row) for row in events] == [("tool_run", "evt-replay")]
+
+
+def test_session_excision_reaches_its_retained_work_events(tmp_path: Path) -> None:
+    """Excising a session also removes the work events retained for it.
+
+    Anti-vacuity: each work event is its own logical source, so drop the
+    work-event seed from excision resolution and neither the transcript's
+    revision closure nor ``sessions.raw_id`` reaches the event raw.
+    """
+    from polylogue.security.excision import resolve_session_excision_target
+
+    with ArchiveStore(tmp_path, initialize=True, read_only=False) as archive:
+        session_ids = [
+            write_index_session(
+                archive,
+                ParsedSession(
+                    source_name=Provider.CODEX,
+                    provider_session_id=native_id,
+                    messages=[ParsedMessage(provider_message_id="m1", role=Role.USER, text="start")],
+                ),
+            )
+            for native_id in ("excised-work-event-session", "kept-work-event-session")
+        ]
+        for session_id in session_ids:
+            archive.append_work_event(
+                session_id=session_id,
+                event_type="decision",
+                payload={"decision": "continue"},
+                event_id="evt-excise",
+                summary="private summary",
+            )
+        event_raw_by_session = dict(
+            archive._ensure_source_conn()
+            .execute(
+                "SELECT origin || ':' || native_id, raw_id FROM raw_sessions WHERE raw_id GLOB 'agent-work-event:*'"
+            )
+            .fetchall()
+        )
+
+    target = resolve_session_excision_target(tmp_path, session_ids[0])
+
+    raw_ids = {raw.raw_id for raw in target.raw_targets}
+    assert event_raw_by_session[session_ids[0]] in raw_ids
+    assert event_raw_by_session[session_ids[1]] not in raw_ids
