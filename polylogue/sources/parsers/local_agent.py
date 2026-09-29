@@ -197,6 +197,10 @@ def fold_gemini_cli_checkpoint_stream(payload: Sequence[JSONValue]) -> JSONDocum
     return json_document(document)
 
 
+#: Root fields :func:`looks_like_hermes` reads.
+HERMES_SIGNATURE_FIELDS = frozenset({"session_id", "messages", "session_start", "last_updated", "platform"})
+
+
 def looks_like_hermes(payload: JSONDocument) -> bool:
     return (
         isinstance(payload.get("session_id"), str)
