@@ -7,11 +7,15 @@ recorded position now holds a different, equally valid conversation.
 
 from __future__ import annotations
 
+import contextlib
+import dataclasses
 import hashlib
 import json
 import sqlite3
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
+from typing import IO
 
 import pytest
 
@@ -24,12 +28,12 @@ from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_cont
 from polylogue.operations.zip_acquisition_replay import (
     MemberCandidate,
     resolve_member_candidate,
-    zip_reacquisition_payload,
+    zip_reacquired_unit,
 )
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
-    replay_zip_entry_acquisition_payloads,
+    replay_zip_entry_acquisition_revisions,
     stream_preserved_zip_entry_raw_data,
 )
 from polylogue.storage.blob_store import BlobStore
@@ -41,6 +45,14 @@ _META = {"metadata": "bundle sibling"}
 
 def _session(native_id: str) -> dict[str, object]:
     return {"id": native_id, "mapping": {"node": {"message": {"author": {"role": "user"}}}}}
+
+
+def _sha(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _candidate(mode: MemberAddressingMode, index: int | None, payload: bytes) -> MemberCandidate:
+    return MemberCandidate(mode, index, structural_content_identity(json.loads(payload)), _sha(payload), len(payload))
 
 
 def _write_member(path: Path, records: object, *, member: str = "conversations.json") -> None:
@@ -81,14 +93,14 @@ def test_reordered_member_returns_the_recorded_conversation(tmp_path: Path) -> N
 
     _write_member(zip_path, [_META, _session("second"), _session("first")])
 
-    payload, error = zip_reacquisition_payload(
+    unit, error = zip_reacquired_unit(
         _row(recorded_path, payload=expected, source_index=0),
         source_path=recorded_path,
         zip_payload_cache={},
     )
 
     assert error is None
-    assert payload == expected
+    assert unit is not None and unit.byte_identity == _sha(expected)
 
 
 def test_inserted_element_shifts_the_hint_without_losing_the_conversation(tmp_path: Path) -> None:
@@ -102,14 +114,14 @@ def test_inserted_element_shifts_the_hint_without_losing_the_conversation(tmp_pa
     expected = dumps_bytes(_session("kept"))
     _write_member(zip_path, [_META, _session("inserted"), _session("kept"), _session("tail")])
 
-    payload, error = zip_reacquisition_payload(
+    unit, error = zip_reacquired_unit(
         _row(recorded_path, payload=expected, source_index=0),
         source_path=recorded_path,
         zip_payload_cache={},
     )
 
     assert error is None
-    assert payload == expected
+    assert unit is not None and unit.byte_identity == _sha(expected)
 
 
 def test_reacquisition_refuses_a_member_acquisition_admission_rejects(tmp_path: Path) -> None:
@@ -135,15 +147,17 @@ def test_reacquisition_refuses_a_member_acquisition_admission_rejects(tmp_path: 
     assert entry.file_size / entry.compress_size > MAX_COMPRESSION_RATIO
 
     stored_path = f"{stored_zip}:conversations.json"
-    assert zip_reacquisition_payload(
+    unit, error = zip_reacquired_unit(
         _row(stored_path, payload=expected, source_index=0),
         source_path=stored_path,
         zip_payload_cache={},
-    ) == (expected, None)
+    )
+    assert error is None
+    assert unit is not None and unit.byte_identity == _sha(expected)
 
     high_ratio_path = f"{high_ratio_zip}:conversations.json"
     cache: dict[str, tuple[MemberCandidate, ...]] = {}
-    assert zip_reacquisition_payload(
+    assert zip_reacquired_unit(
         _row(high_ratio_path, payload=expected, source_index=0),
         source_path=high_ratio_path,
         zip_payload_cache=cache,
@@ -158,7 +172,7 @@ def test_reacquisition_accepts_structural_identity_after_reserialization(tmp_pat
     expected_value = {**_session("kept"), "ordinal": 1}
     _write_member(zip_path, [_META, {**_session("kept"), "ordinal": 1.0}, _session("other")])
 
-    payload, error = zip_reacquisition_payload(
+    unit, error = zip_reacquired_unit(
         {
             **_row(recorded_path, payload=b"old", source_index=0),
             "content_identity": structural_content_identity(expected_value),
@@ -169,8 +183,8 @@ def test_reacquisition_accepts_structural_identity_after_reserialization(tmp_pat
     )
 
     assert error is None
-    assert payload is not None
-    assert structurally_equal(json.loads(payload), expected_value)
+    assert unit is not None
+    assert unit.content_identity == structural_content_identity(expected_value)
 
 
 def test_duplicate_equal_elements_never_resolve_to_an_unrelated_conversation(tmp_path: Path) -> None:
@@ -187,16 +201,16 @@ def test_duplicate_equal_elements_never_resolve_to_an_unrelated_conversation(tmp
         [_META, _session("unrelated"), _session("duplicated"), _session("duplicated")],
     )
 
-    payload, error = zip_reacquisition_payload(
+    unit, error = zip_reacquired_unit(
         _row(recorded_path, payload=expected, source_index=0),
         source_path=recorded_path,
         zip_payload_cache={},
     )
 
     assert error is None
-    assert payload == expected
+    assert unit is not None and unit.byte_identity == _sha(expected)
 
-    candidates = tuple(MemberCandidate(MemberAddressingMode.ELEMENT_OF_CONTAINER, index, expected) for index in (1, 2))
+    candidates = tuple(_candidate(MemberAddressingMode.ELEMENT_OF_CONTAINER, index, expected) for index in (1, 2))
     resolution = resolve_member_candidate(
         candidates,
         expected_digest=hashlib.sha256(expected).hexdigest(),
@@ -217,13 +231,13 @@ def test_hinted_element_is_refused_when_its_content_is_not_the_recorded_one(tmp_
     removed = dumps_bytes(_session("removed"))
     _write_member(zip_path, [_META, _session("survivor"), _session("other")])
 
-    payload, error = zip_reacquisition_payload(
+    unit, error = zip_reacquired_unit(
         _row(recorded_path, payload=removed, source_index=0),
         source_path=recorded_path,
         zip_payload_cache={},
     )
 
-    assert payload is None
+    assert unit is None
     assert error == "content_identity:unmatched"
 
 
@@ -250,7 +264,7 @@ def test_whole_member_document_is_acquired_as_a_whole_member(tmp_path: Path, rec
             blob_store=blob_store,
         )
         records = list(iter_zip_entry_raw_data(archive, context))
-        replayed = list(replay_zip_entry_acquisition_payloads(archive, context))
+        replayed = list(replay_zip_entry_acquisition_revisions(archive, context))
 
     assert [record.addressing_mode for record in records] == [MemberAddressingMode.WHOLE_MEMBER]
     assert [record.source_index for record in records] == [None]
@@ -356,7 +370,7 @@ def test_whole_member_hint_resolves_the_member_document(tmp_path: Path) -> None:
     recorded_path = f"{zip_path}:conversations.json"
     member_bytes = json.dumps(document, separators=(",", ":")).encode()
 
-    payload, error = zip_reacquisition_payload(
+    unit, error = zip_reacquired_unit(
         _row(
             recorded_path,
             payload=member_bytes,
@@ -368,7 +382,7 @@ def test_whole_member_hint_resolves_the_member_document(tmp_path: Path) -> None:
     )
 
     assert error is None
-    assert payload == member_bytes
+    assert unit is not None and unit.byte_identity == _sha(member_bytes)
 
 
 def test_corrupt_member_reports_a_typed_failure(tmp_path: Path) -> None:
@@ -385,13 +399,13 @@ def test_corrupt_member_reports_a_typed_failure(tmp_path: Path) -> None:
     zip_path.write_bytes(bytes(raw))
     recorded_path = f"{zip_path}:conversations.json"
 
-    payload, error = zip_reacquisition_payload(
+    unit, error = zip_reacquired_unit(
         _row(recorded_path, payload=dumps_bytes(_session("a")), source_index=0),
         source_path=recorded_path,
         zip_payload_cache={},
     )
 
-    assert payload is None
+    assert unit is None
     assert error is not None
     assert error.startswith("error:") or error == "content_identity:unmatched"
 
@@ -410,14 +424,14 @@ def test_relocated_archive_resolves_against_the_path_in_force(tmp_path: Path) ->
     recorded_path = f"{original}:conversations.json"
     resolved_path = f"{relocated}:conversations.json"
 
-    payload, error = zip_reacquisition_payload(
+    unit, error = zip_reacquired_unit(
         _row(recorded_path, payload=expected, source_index=0),
         source_path=resolved_path,
         zip_payload_cache={},
     )
 
     assert error is None
-    assert payload == expected
+    assert unit is not None and unit.byte_identity == _sha(expected)
 
 
 def test_equal_content_without_a_recorded_digest_is_one_logical_item() -> None:
@@ -428,8 +442,8 @@ def test_equal_content_without_a_recorded_digest_is_one_logical_item() -> None:
     equal pair differs only in serialization.
     """
     equal = (
-        MemberCandidate(MemberAddressingMode.ELEMENT_OF_CONTAINER, 0, b'{"a": 1, "b": 2}'),
-        MemberCandidate(MemberAddressingMode.ELEMENT_OF_CONTAINER, 1, b'{"b":2.0,"a":1.0}'),
+        _candidate(MemberAddressingMode.ELEMENT_OF_CONTAINER, 0, b'{"a": 1, "b": 2}'),
+        _candidate(MemberAddressingMode.ELEMENT_OF_CONTAINER, 1, b'{"b":2.0,"a":1.0}'),
     )
     resolution = resolve_member_candidate(equal, expected_digest=None, hint_mode=None, hint_index=0)
     assert resolution.outcome == "duplicate_observations"
@@ -437,10 +451,10 @@ def test_equal_content_without_a_recorded_digest_is_one_logical_item() -> None:
 
     mixed = (
         equal[0],
-        MemberCandidate(MemberAddressingMode.ELEMENT_OF_CONTAINER, 1, b'{"a": 1, "b": 3}'),
+        _candidate(MemberAddressingMode.ELEMENT_OF_CONTAINER, 1, b'{"a": 1, "b": 3}'),
     )
     refused = resolve_member_candidate(mixed, expected_digest=None, hint_mode=None, hint_index=0)
-    assert refused.payload_bytes is None
+    assert refused.candidate is None
     assert refused.error == "content_identity:unavailable"
 
 
@@ -451,7 +465,7 @@ def test_replay_uses_structural_digest_when_serialization_changes() -> None:
     spelling, so a raw ``blob_hash`` comparison cannot resolve it.
     """
     expected = {"id": "kept", "ordinal": 1}
-    candidate = MemberCandidate(
+    candidate = _candidate(
         MemberAddressingMode.ELEMENT_OF_CONTAINER,
         0,
         b'{"ordinal":1.0,"id":"kept"}',
@@ -466,7 +480,7 @@ def test_replay_uses_structural_digest_when_serialization_changes() -> None:
 
     assert resolution.error is None
     assert resolution.outcome == "hint_verified"
-    assert resolution.payload_bytes == candidate.payload_bytes
+    assert resolution.candidate == candidate
 
 
 def test_structural_identity_does_not_fall_back_to_a_colliding_byte_hash(tmp_path: Path) -> None:
@@ -481,7 +495,7 @@ def test_structural_identity_does_not_fall_back_to_a_colliding_byte_hash(tmp_pat
     payload = dumps_bytes(_session("kept"))
     _write_member(zip_path, [_META, _session("kept")])
 
-    recovered, error = zip_reacquisition_payload(
+    unit, error = zip_reacquired_unit(
         {
             **_row(recorded_path, payload=payload, source_index=0),
             "content_identity": hashlib.sha256(payload).hexdigest(),
@@ -491,7 +505,7 @@ def test_structural_identity_does_not_fall_back_to_a_colliding_byte_hash(tmp_pat
         zip_payload_cache={},
     )
 
-    assert recovered is None
+    assert unit is None
     assert error == "content_identity:unmatched"
 
 
@@ -582,37 +596,78 @@ def test_recorded_addressing_mode_survives_a_round_trip(tmp_path: Path) -> None:
             )
 
 
-def test_replay_reuses_the_identity_acquisition_already_computed(
+class _ReadRecorder:
+    """Delegates to a member handle and records every requested read size."""
+
+    def __init__(self, handle: IO[bytes], sizes: list[int]) -> None:
+        self._handle = handle
+        self._sizes = sizes
+
+    def read(self, size: int = -1) -> bytes:
+        self._sizes.append(size)
+        return self._handle.read(size)
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._handle, name)
+
+
+def test_replay_proves_preserved_members_without_holding_their_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A stale hint does not re-hash candidates the replay already identified.
+    """Proving a preserved member streams it, and the pass caches digests only.
 
-    Anti-vacuity: drop the precomputed identity from ``MemberCandidate`` and
-    resolving the reordered member calls the patched hash, failing the test.
+    Anti-vacuity: read a whole member with ``handle.read()`` and a recorded
+    read size is unbounded; keep a unit's bytes on its cached candidate and
+    the no-bytes assertion fails.
     """
-    from polylogue.operations import zip_acquisition_replay
+    from polylogue.sources import source_acquisition_components as components
+    from polylogue.sources.acquisition_boundary import open_bound_member as open_member
 
+    asset = b"".join(hashlib.sha256(str(index).encode()).digest() for index in range(96_000))
+    document = _session("only")
     zip_path = tmp_path / "export.zip"
-    recorded_path = f"{zip_path}:conversations.json"
-    expected = dumps_bytes(_session("first"))
-    _write_member(zip_path, [_META, _session("second"), _session("first")])
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr("file-abc.png", asset)
+        archive.writestr("conversations.json", json.dumps(document, separators=(",", ":")))
 
-    def _no_rehash(payload: bytes) -> str:
-        raise AssertionError("candidate identity recomputed during replay")
+    sizes: list[int] = []
 
-    monkeypatch.setattr(zip_acquisition_replay, "payload_content_identity", _no_rehash)
-    payload, error = zip_reacquisition_payload(
+    @contextlib.contextmanager
+    def recording_open(zf: zipfile.ZipFile, entry: zipfile.ZipInfo, location: Provider | None) -> Iterator[object]:
+        with open_member(zf, entry, location) as handle:
+            yield _ReadRecorder(handle, sizes)
+
+    monkeypatch.setattr(components, "open_bound_member", recording_open)
+    cache: dict[str, tuple[MemberCandidate, ...]] = {}
+    asset_path = f"{zip_path}:file-abc.png"
+    asset_unit, asset_error = zip_reacquired_unit(
+        _row(asset_path, payload=asset, source_index=None),
+        source_path=asset_path,
+        zip_payload_cache=cache,
+    )
+    document_path = f"{zip_path}:conversations.json"
+    document_unit, document_error = zip_reacquired_unit(
         {
-            **_row(recorded_path, payload=b"old", source_index=0),
-            "content_identity": structural_content_identity(_session("first")),
-            "addressing_mode": MemberAddressingMode.ELEMENT_OF_CONTAINER.value,
+            **_row(document_path, payload=b"unused", source_index=None),
+            "content_identity": structural_content_identity(document),
+            "addressing_mode": MemberAddressingMode.WHOLE_MEMBER.value,
         },
-        source_path=recorded_path,
-        zip_payload_cache={},
+        source_path=document_path,
+        zip_payload_cache=cache,
     )
 
-    assert error is None
-    assert payload == expected
+    assert asset_error is None and document_error is None
+    assert asset_unit is not None and asset_unit.byte_identity == _sha(asset)
+    assert asset_unit.size_bytes == len(asset)
+    assert document_unit is not None and document_unit.addressing_mode is MemberAddressingMode.WHOLE_MEMBER
+    assert sizes and all(0 <= size <= 1024 * 1024 for size in sizes)
+    cached = [candidate for candidates in cache.values() for candidate in candidates]
+    assert len(cached) == 2
+    assert not any(
+        isinstance(getattr(candidate, field.name), (bytes, bytearray))
+        for candidate in cached
+        for field in dataclasses.fields(candidate)
+    )
 
 
 def test_replay_refuses_to_guess_a_provider_from_the_public_origin(tmp_path: Path) -> None:
@@ -633,9 +688,9 @@ def test_replay_refuses_to_guess_a_provider_from_the_public_origin(tmp_path: Pat
         "origin": "aistudio-drive",
     }
 
-    payload, error = zip_reacquisition_payload(row, source_path=recorded_path, zip_payload_cache={})
+    unit, error = zip_reacquired_unit(row, source_path=recorded_path, zip_payload_cache={})
 
-    assert payload is None
+    assert unit is None
     assert error == "replay_provider_unrecorded"
 
 
@@ -690,18 +745,18 @@ def test_a_colon_path_names_a_container_only_when_its_prefix_is_a_real_zip(tmp_p
     for recorded in deleted_loose_files:
         assert blob_integrity._source_path_availability(recorded)[0] is False
         assert archive_debt._source_artifact_exists(recorded) is False
-        payload, reason = zip_reacquisition_payload(
+        unit, reason = zip_reacquired_unit(
             _row(recorded, payload=b"{}", source_index=0), source_path=recorded, zip_payload_cache={}
         )
-        assert (payload, reason) == (None, "container_coordinate_missing")
+        assert (unit, reason) == (None, "container_coordinate_missing")
 
     fake_zip = tmp_path / "fake.zip"
     fake_zip.write_text("not a ZIP archive")
     member_path = f"{fake_zip}:conversations.json"
-    payload, reason = zip_reacquisition_payload(
+    unit, reason = zip_reacquired_unit(
         _row(member_path, payload=b"{}", source_index=0), source_path=member_path, zip_payload_cache={}
     )
-    assert (payload, reason) == (None, "source_missing")
+    assert (unit, reason) == (None, "source_missing")
     assert archive_debt._source_artifact_exists(member_path) is False
 
     real_zip = tmp_path / "real.zip"

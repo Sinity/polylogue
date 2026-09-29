@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, ZipAdmission, ZipBombError
+from polylogue.archive.zip_admission import ZipBombError
 from polylogue.config import Source
 from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Provider
@@ -24,12 +24,7 @@ from polylogue.maintenance.receipt_fs import (
     read_optional_receipt,
 )
 from polylogue.sources.acquisition_boundary import open_bound_path
-from polylogue.sources.decoder_zip import (
-    ZipEntryValidator,
-    declared_artifact_provider,
-    is_declared_artifact_path,
-    provider_detection_path,
-)
+from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider
 from polylogue.sources.live.batch_support import (
     RetryableSourceReadError,
@@ -42,7 +37,7 @@ from polylogue.sources.live.watcher import WatchSource
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     replay_zip_entry_acquisition_revisions,
-    sniff_zip_provider,
+    zip_member_admission,
 )
 from polylogue.sources.sqlite_snapshot import (
     is_sqlite_path,
@@ -655,20 +650,11 @@ def _archive_members(
     with zipfile.ZipFile(path) as archive:
         central_directory = archive.infolist()
         ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
-        detection_entries = [
-            info
-            for info in ZipAdmission(zip_path=path).filter_entries(
-                central_directory, allowed_suffixes=ZIP_JSON_SUFFIXES
-            )
-            if provider_detection_path(info.filename)
-        ]
         provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
         # The location binds, not the sniffed dominant provider: an inbox
         # archive stays unbound so each member classifies, as in live intake.
         location_binding = bound_location_provider(provider)
-        if provider is Provider.UNKNOWN:
-            provider = sniff_zip_provider(archive, detection_entries) or provider
-        allowed_path = is_declared_artifact_path if provider is Provider.UNKNOWN else None
+        admission = zip_member_admission(archive, path, central_directory, provider)
 
         def excluded(info: zipfile.ZipInfo, reason: str) -> None:
             members.append(SourceDecision(source_name, f"{path}:{info.filename}", "excluded", reason))
@@ -676,9 +662,9 @@ def _archive_members(
         def fault(info: zipfile.ZipInfo, reason: str) -> None:
             members.append(SourceDecision(source_name, f"{path}:{info.filename}", "fault", reason))
 
-        entries = ZipEntryValidator(provider, cursor_state=None, zip_path=path).filter_entries(
+        entries = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=path).filter_entries(
             central_directory,
-            allowed_path=allowed_path,
+            allowed_path=admission.allowed_path,
             on_rejected=fault,
             on_unselected=excluded,
         )
@@ -691,15 +677,12 @@ def _archive_members(
             # denominator only once every record validated.
             member_decisions: list[SourceDecision] = []
             try:
-                entry_provider = provider
-                if provider is Provider.UNKNOWN:
-                    entry_provider = declared_artifact_provider(info.filename) or provider
                 context = ZipEntryReadContext(
                     Source(name=source_name, path=path.parent),
                     path,
                     info,
                     None,
-                    entry_provider,
+                    admission.entry_provider_hint(info.filename),
                     None,  # type: ignore[arg-type]
                     bound_provider=location_binding,
                 )

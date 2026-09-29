@@ -1076,6 +1076,7 @@ def test_enrichment_evidence_moved_reads_titles_through_a_real_index_connection(
             raw_id="raw-state-1",
             blob_hash="blob-state-1",
             observed_at_ms=1_000,
+            export_order=lambda _raw_id: None,
         )
         conn.commit()
 
@@ -1107,3 +1108,80 @@ def test_enrichment_evidence_moved_reads_titles_through_a_real_index_connection(
     assert current is not None
     assert current != no_evidence
     assert current != degraded
+
+
+def _write_spawn_state(path: Path, *, parent: str) -> None:
+    """A synthetic ``state_5.sqlite`` naming ``parent`` as the rollout thread's spawner."""
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE threads (
+                id TEXT PRIMARY KEY, title TEXT, cwd TEXT, created_at_ms INTEGER, updated_at_ms INTEGER,
+                source TEXT, model TEXT, agent_nickname TEXT, agent_role TEXT, archived INTEGER
+            );
+            CREATE TABLE thread_spawn_edges (parent_thread_id TEXT, child_thread_id TEXT, status TEXT);
+            """
+        )
+        conn.execute(
+            "INSERT INTO thread_spawn_edges (parent_thread_id, child_thread_id, status) VALUES (?, ?, 'closed')",
+            (parent, _THREAD_ID),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state_first", [True, False])
+async def test_a_rollout_takes_its_spawn_parent_from_its_own_install_root(
+    workspace_env: dict[str, Path], state_first: bool
+) -> None:
+    """Two installs' state name different parents for one thread; the rollout's root decides.
+
+    The rollout was acquired under root A, so its session's authoritative
+    parent is root A's whether the state exports are ingested before the
+    rollout or after it, and root B's export, observed later, never moves it.
+
+    Anti-vacuity: read the projected parent without the rollout's install
+    root and root B's later export wins: ``b-parent`` becomes authoritative.
+    """
+    from polylogue.archive.topology.edge import HOOK_AUTHORITATIVE_LINK_METHOD
+
+    roots = {name: workspace_env["data_root"] / f"codex-{name}" for name in ("a", "b")}
+    sources: list[WatchSource] = []
+    for root in roots.values():
+        (root / "sessions").mkdir(parents=True)
+        sources.append(WatchSource(name="codex", root=root / "sessions"))
+        sources.append(WatchSource(name="codex-state", root=root, suffixes=(".sqlite", ".db")))
+    db_path = workspace_env["data_root"] / "codex-two-roots.db"
+    archive = Polylogue(archive_root=workspace_env["archive_root"], db_path=db_path)
+    processor = LiveBatchProcessor(
+        archive,
+        tuple(sources),
+        cursor=CursorStore(db_path),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    rollout_path = roots["a"] / "sessions" / f"rollout-2026-07-20T10-00-00-{_THREAD_ID}.jsonl"
+    _write_codex_rollout(rollout_path)
+
+    async def ingest_states() -> None:
+        for name in ("a", "b"):
+            state_path = roots[name] / "state_5.sqlite"
+            _write_spawn_state(state_path, parent=f"{name}-parent")
+            metrics = await processor.ingest_files([state_path], emit_event=False)
+            assert metrics.failed_file_count == 0
+
+    try:
+        if state_first:
+            await ingest_states()
+        metrics = await processor.ingest_files([rollout_path], emit_event=False)
+        assert metrics.ingested_session_count == 1
+        if not state_first:
+            await ingest_states()
+    finally:
+        await archive.close()
+
+    with sqlite3.connect(workspace_env["archive_root"] / "index.db") as index_conn:
+        links = dict(
+            index_conn.execute(
+                "SELECT dst_native_id, method FROM session_links WHERE src_session_id = ?", (_CODEX_SESSION_ID,)
+            ).fetchall()
+        )
+    assert links == {"a-parent": HOOK_AUTHORITATIVE_LINK_METHOD}

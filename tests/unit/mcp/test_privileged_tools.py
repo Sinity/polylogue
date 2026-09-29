@@ -729,6 +729,13 @@ class TestWriteToolRoutesThroughOperationExecutor:
             for setup_call in setup:
                 setup_result = json.loads(await invoke_surface_async(write_fn, session_id=session_id, **setup_call))
                 assert setup_result.get("is_error") is not True, setup_result
+            if operation == "delete_session":
+                # A delete applies only the caller's own prepared preview.
+                prepared = json.loads(
+                    await invoke_surface_async(write_fn, operation="prepare_delete_session", session_id=session_id)
+                )
+                assert prepared.get("outcome") == "prepared", prepared
+                op_kwargs = {**op_kwargs, "fields": {"preview_ref": prepared["preview_ref"]}}
 
             captured: list[str] = []
             original_execute = OperationExecutor.execute

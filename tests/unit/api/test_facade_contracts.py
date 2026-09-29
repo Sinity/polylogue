@@ -204,15 +204,6 @@ MUTATION_BY_ID_RAISES_METHODS: frozenset[str] = frozenset(
     }
 )
 
-# Mutation methods that take only a session_id and return a typed
-# envelope describing the outcome (no raise on missing IDs).
-MUTATION_BY_ID_TYPED_OUTCOME: frozenset[str] = frozenset(
-    {
-        "delete_session",
-        "delete_session_safe",
-    }
-)
-
 # Mutation methods that take metadata key/value and resolve the ID.
 METADATA_MUTATION_METHODS: frozenset[str] = frozenset(
     {
@@ -229,6 +220,10 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
     {
         "explain_query_expression",
         "query_completions",
+        # A delete is prepared, then applied under the caller's preview.
+        "prepare_delete_session",
+        "delete_session",
+        "delete_session_safe",
         "get_sessions",
         "get_session_summaries",
         "get_actions_batch",
@@ -350,7 +345,6 @@ KNOWN_METHODS: frozenset[str] = (
     | READ_NULLARY_METHODS
     | SEARCH_METHODS
     | MUTATION_BY_ID_RAISES_METHODS
-    | MUTATION_BY_ID_TYPED_OUTCOME
     | METADATA_MUTATION_METHODS
     | BESPOKE_METHODS
 )
@@ -2438,25 +2432,125 @@ async def test_mutation_methods_raise_on_unknown_id(
         await archive.close()
 
 
-async def test_delete_session_returns_false_on_unknown_id(tmp_path: Path, facade_daemon_writer: Any) -> None:
-    """``delete_session`` returns ``False`` rather than raising for unknown IDs."""
+async def test_prepare_delete_session_returns_typed_not_found(tmp_path: Path, facade_daemon_writer: Any) -> None:
+    """``prepare_delete_session`` returns ``outcome='not_found'`` and no preview for unknown IDs."""
+    from polylogue.surfaces.payloads import DeleteSessionPreview
+
     archive = _archive(tmp_path)
     try:
-        result = await archive.delete_session("nonexistent")
-        assert result is False
+        result = await archive.prepare_delete_session("nonexistent")
+        assert isinstance(result, DeleteSessionPreview)
+        assert result.outcome == "not_found"
+        assert result.preview_ref is None
     finally:
         await archive.close()
 
 
-async def test_delete_session_safe_returns_typed_not_found(tmp_path: Path, facade_daemon_writer: Any) -> None:
-    """``delete_session_safe`` returns ``outcome='not_found'`` for unknown IDs."""
-    from polylogue.surfaces.payloads import DeleteSessionResult
+def _seed_delete_target(archive: Polylogue, provider_session_id: str) -> str:
+    from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+
+    session = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id=provider_session_id,
+        messages=[
+            ParsedMessage(
+                provider_message_id="m1",
+                role=Role.USER,
+                blocks=[ParsedContentBlock(type=BlockType.TEXT, text=f"delete target {provider_session_id}")],
+            )
+        ],
+    )
+    with ArchiveStore(archive.config.archive_root) as archive_db:
+        return write_index_session(archive_db, session)
+
+
+async def test_delete_session_requires_a_presented_preview(tmp_path: Path, facade_daemon_writer: Any) -> None:
+    """The daemon delete contract refuses a request that carries only a session id.
+
+    The declared request model (validated by the client and again by the
+    daemon before dispatch) requires ``preview_ref``. Anti-vacuity: the
+    handler previously prepared and self-authorized its own preview, so this
+    bare request deleted the session in one call and recorded ``bound_token``
+    for a plan the caller never saw.
+    """
+    from polylogue.api.facade_client import submit_facade_operation
 
     archive = _archive(tmp_path)
     try:
-        result = await archive.delete_session_safe("nonexistent")
-        assert isinstance(result, DeleteSessionResult)
-        assert result.outcome == "not_found"
+        session_id = _seed_delete_target(archive, "delete-no-preview")
+        with pytest.raises(ValueError):
+            await submit_facade_operation(archive.config, "mutation.facade.delete_session", {"session_id": session_id})
+        assert await archive.get_session(session_id) is not None
+    finally:
+        await archive.close()
+
+
+async def test_delete_session_refuses_an_unowned_foreign_or_inactive_preview(
+    tmp_path: Path, facade_daemon_writer: Any
+) -> None:
+    """A forged, other-session, or cancelled preview deletes nothing.
+
+    Anti-vacuity: dropping the ownership, target, or state checks lets one of
+    these requests delete a session the caller never prepared a delete for.
+    """
+    from polylogue.api.facade_client import submit_facade_operation
+    from polylogue.operations.daemon_errors import DaemonOperationRejectedError
+
+    archive = _archive(tmp_path)
+    try:
+        target = _seed_delete_target(archive, "delete-target")
+        other = _seed_delete_target(archive, "delete-other")
+
+        with pytest.raises(DaemonOperationRejectedError) as forged:
+            await archive.delete_session_safe(target, preview_ref="preview:forged")
+        assert forged.value.outcome == "preview_not_owned"
+
+        other_preview = await archive.prepare_delete_session(other)
+        assert other_preview.preview_ref is not None
+        with pytest.raises(DaemonOperationRejectedError) as foreign:
+            await archive.delete_session_safe(target, preview_ref=other_preview.preview_ref)
+        assert foreign.value.outcome == "preview_target_mismatch"
+
+        cancelled = await archive.prepare_delete_session(target)
+        assert cancelled.preview_ref is not None
+        await submit_facade_operation(
+            archive.config, "mutation.session.delete.cancel", {"preview_refs": [cancelled.preview_ref]}
+        )
+        with pytest.raises(DaemonOperationRejectedError) as stale:
+            await archive.delete_session_safe(target, preview_ref=cancelled.preview_ref)
+        assert stale.value.outcome == "preview_not_active"
+
+        assert await archive.get_session(target) is not None
+        assert await archive.get_session(other) is not None
+        with sqlite3.connect(tmp_path / "audit.db") as audit:
+            assert audit.execute("SELECT COUNT(*) FROM operation_authorizations").fetchone()[0] == 0
+    finally:
+        await archive.close()
+
+
+async def test_delete_session_consumes_the_presented_preview_once(tmp_path: Path, facade_daemon_writer: Any) -> None:
+    """The caller's own preview deletes the session and is recorded as the authorized plan."""
+    archive = _archive(tmp_path)
+    try:
+        session_id = _seed_delete_target(archive, "delete-presented")
+        preview = await archive.prepare_delete_session(session_id)
+        assert preview.outcome == "prepared"
+        assert preview.session_id == session_id
+        assert preview.preview_ref is not None
+
+        deleted = await archive.delete_session_safe(session_id, preview_ref=preview.preview_ref)
+
+        assert deleted.outcome == "deleted"
+        assert await archive.get_session(session_id) is None
+        with sqlite3.connect(tmp_path / "audit.db") as audit:
+            authorizations = audit.execute(
+                "SELECT preview_id, confirmation_strength FROM operation_authorizations"
+            ).fetchall()
+            state = audit.execute(
+                "SELECT state FROM operation_previews WHERE preview_id = ?", (preview.preview_ref,)
+            ).fetchone()[0]
+        assert authorizations == [(preview.preview_ref, "bound_token")]
+        assert state == "consumed"
     finally:
         await archive.close()
 
@@ -5488,9 +5582,11 @@ async def test_archive_tiers_api_delete_uses_index_tier_and_keeps_user_overlay(
             session_id = write_index_session(archive_db, session)
         await archive.add_tag(session_id, "keep-user-state")
 
-        deleted = await archive.delete_session_safe(session_id)
-        second = await archive.delete_session_safe(session_id)
-        bool_deleted = await archive.delete_session(session_id)
+        preview = await archive.prepare_delete_session(session_id)
+        assert preview.preview_ref is not None
+        deleted = await archive.delete_session_safe(session_id, preview_ref=preview.preview_ref)
+        second = await archive.delete_session_safe(session_id, preview_ref=preview.preview_ref)
+        bool_deleted = await archive.delete_session(session_id, preview_ref=preview.preview_ref)
         missing = await archive.get_session(session_id)
 
         assert deleted.outcome == "deleted"

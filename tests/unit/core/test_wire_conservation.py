@@ -134,6 +134,66 @@ TITLE_SCHEMA = {
 }
 
 
+CLAUDE_CODE_BLOCK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "message": {
+            "type": "object",
+            "properties": {
+                "content": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string"},
+                            "text": {"type": "string"},
+                            "thinking": {"type": "string"},
+                            "input": {"type": "object"},
+                            "content": {"type": "string", "x-polylogue-semantic-role": "message_body"},
+                        },
+                    },
+                }
+            },
+        }
+    },
+}
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        pytest.param({"type": "text", "text": "kept", "content": "lost"}, id="text"),
+        pytest.param({"type": "thinking", "thinking": "kept", "content": "lost"}, id="thinking"),
+        pytest.param({"type": "tool_use", "input": {"content": "kept"}, "content": "lost"}, id="tool_use"),
+    ],
+)
+def test_claude_code_block_content_beside_its_typed_body_is_conserved(block: dict[str, object]) -> None:
+    """An annotated ``content`` independent of the block's typed body is planted, and dropping it is loss.
+
+    Anti-vacuity: skipping ``content`` for text, thinking and tool-use blocks
+    plants only ``kept``, so a parser that drops ``lost`` reads as conserved.
+    """
+    payload = {"message": {"content": [block]}}
+
+    assert sorted(value.value for value in collect_planted_values(CLAUDE_CODE_BLOCK_SCHEMA, payload)) == [
+        "kept",
+        "lost",
+    ]
+    result = check_conservation(CLAUDE_CODE_BLOCK_SCHEMA, [payload], [_session("kept")])
+    assert [(finding.verdict, finding.path) for finding in result.findings] == [
+        ("loss", "$.message.content[0].content")
+    ]
+    assert check_conservation(CLAUDE_CODE_BLOCK_SCHEMA, [payload], [_session("kept", "lost")]).conserved
+
+
+def test_claude_code_block_content_repeating_its_typed_body_is_one_body() -> None:
+    """A ``content`` alias of the typed body is planted once, so emitting it once is conserved."""
+    payload = {"message": {"content": [{"type": "text", "text": "kept", "content": "kept"}]}}
+
+    assert [value.value for value in collect_planted_values(CLAUDE_CODE_BLOCK_SCHEMA, payload)] == ["kept"]
+    assert check_conservation(CLAUDE_CODE_BLOCK_SCHEMA, [payload], [_session("kept")]).conserved
+
+
 def test_title_is_conserved_against_titles_not_blocks() -> None:
     """A title reaching a block instead of the session title is still loss."""
     payload: dict[str, object] = {"name": "The Session"}

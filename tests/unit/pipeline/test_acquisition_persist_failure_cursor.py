@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 import errno
+import hashlib
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +14,12 @@ import pytest
 
 from polylogue.config import Source
 from polylogue.pipeline.services.acquisition import AcquisitionService
+from polylogue.sources.parsers.base import RawSessionData
+from polylogue.sources.source_acquisition_components import (
+    AcquisitionObservation,
+    SourceReadContext,
+    read_plain_source_file,
+)
 from polylogue.storage.repository import SessionRepository
 from polylogue.storage.sqlite import SQLiteBackend
 
@@ -70,6 +79,83 @@ async def test_failed_raw_persist_withholds_the_source_cursor(
         assert second.acquired == 1
     finally:
         await backend.close()
+
+
+def _raw_payload_receipts(archive_root: Path, source_path: Path) -> list[tuple[str, int]]:
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        rows = conn.execute(
+            "SELECT lower(hex(blob_hash)), size_bytes FROM blob_refs WHERE ref_type = 'raw_payload' AND source_path = ?",
+            (str(source_path),),
+        ).fetchall()
+    return [(str(blob_hash), int(size)) for blob_hash, size in rows]
+
+
+@pytest.mark.asyncio
+async def test_acquisition_outcome_is_the_committed_raw_receipt(
+    workspace_env: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A file's accepted outcome is its committed raw receipt, nothing earlier.
+
+    Acquisition hands back the retained artifact; only the source-tier raw
+    commit accepts it. A failed commit leaves no receipt and no cursor, and
+    the next pass -- a restart: a new service over the same archive --
+    re-acquires the file and commits the receipt naming its exact bytes.
+
+    Anti-vacuity: publish an admission receipt from acquisition itself and
+    the observation stream carries a ``source-admission`` phase for bytes
+    whose commit then fails, which the phase assertion rejects.
+    """
+    from polylogue.sources import source_acquisition
+
+    source_dir = workspace_env["data_root"] / "claude-projects"
+    source_dir.mkdir(parents=True)
+    source_path = source_dir / "session.jsonl"
+    _write_session(source_path)
+    source = Source(name="claude-code", path=source_path)
+    artifact = (hashlib.sha256(source_path.read_bytes()).hexdigest(), source_path.stat().st_size)
+
+    phases: list[object] = []
+
+    def recording_read(context: SourceReadContext) -> RawSessionData:
+        downstream = context.observation_callback
+
+        def record(observation: AcquisitionObservation) -> None:
+            phases.append(observation.get("phase"))
+            if downstream is not None:
+                downstream(observation)
+
+        return read_plain_source_file(dataclasses.replace(context, observation_callback=record))
+
+    monkeypatch.setattr(source_acquisition, "read_plain_source_file", recording_read)
+    original = SessionRepository.admit_raw
+    calls = 0
+
+    async def fail_once(self: SessionRepository, *args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError(errno.ENOSPC, "No space left on device")
+        return await original(self, *args, **kwargs)
+
+    monkeypatch.setattr(SessionRepository, "admit_raw", fail_once)
+
+    backend = SQLiteBackend(db_path=workspace_env["archive_root"] / "index.db")
+    try:
+        failed = await AcquisitionService(backend).acquire_sources([source])
+        assert (failed.errors, failed.acquired) == (1, 0)
+        assert _raw_payload_receipts(workspace_env["archive_root"], source_path) == []
+
+        restarted = await AcquisitionService(backend).acquire_sources([source])
+        assert (restarted.errors, restarted.acquired) == (0, 1)
+        assert _raw_payload_receipts(workspace_env["archive_root"], source_path) == [artifact]
+        known = await SessionRepository(backend=backend).get_known_source_cursors()
+        assert str(source_path) in known
+    finally:
+        await backend.close()
+
+    assert calls == 2
+    assert "source-admission" not in phases
 
 
 def test_a_colon_named_failure_does_not_withhold_its_prefix_sibling(tmp_path: Path) -> None:

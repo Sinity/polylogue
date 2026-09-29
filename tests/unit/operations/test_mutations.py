@@ -139,8 +139,10 @@ class TestDeleteSessionSafe:
     async def test_delete_then_not_found(self, workspace_env: dict[str, Path]) -> None:
         db_path = _seed(workspace_env, session_id="conv-del")
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            first = await poly.delete_session_safe(_native("conv-del"))
-            second = await poly.delete_session_safe(_native("conv-del"))
+            preview = await poly.prepare_delete_session(_native("conv-del"))
+            assert preview.preview_ref is not None
+            first = await poly.delete_session_safe(_native("conv-del"), preview_ref=preview.preview_ref)
+            second = await poly.delete_session_safe(_native("conv-del"), preview_ref=preview.preview_ref)
 
         assert isinstance(first, DeleteSessionResult)
         assert first.outcome == "deleted"
@@ -151,18 +153,21 @@ class TestDeleteSessionSafe:
             assert audit.execute("SELECT state FROM operation_previews").fetchone()[0] == "consumed"
             assert audit.execute("SELECT status FROM operation_runs").fetchone()[0] == "completed"
 
-    async def test_missing_session_returns_not_found(self, workspace_env: dict[str, Path]) -> None:
+    async def test_missing_session_prepares_not_found(self, workspace_env: dict[str, Path]) -> None:
         db_path = _seed(workspace_env)
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            result = await poly.delete_session_safe("never-existed")
+            result = await poly.prepare_delete_session("never-existed")
         assert result.outcome == "not_found"
         assert result.session_id == "never-existed"
+        assert result.preview_ref is None
 
     async def test_bool_wrapper_still_returns_bool(self, workspace_env: dict[str, Path]) -> None:
         db_path = _seed(workspace_env, session_id="conv-bool")
         async with Polylogue(db_path=db_path, archive_root=workspace_env["archive_root"]) as poly:
-            assert await poly.delete_session(_native("conv-bool")) is True
-            assert await poly.delete_session(_native("conv-bool")) is False
+            preview = await poly.prepare_delete_session(_native("conv-bool"))
+            assert preview.preview_ref is not None
+            assert await poly.delete_session(_native("conv-bool"), preview_ref=preview.preview_ref) is True
+            assert await poly.delete_session(_native("conv-bool"), preview_ref=preview.preview_ref) is False
 
 
 # ---------------------------------------------------------------------------

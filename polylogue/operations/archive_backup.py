@@ -12,7 +12,6 @@ the copied bytes and recorded source fingerprint describe the same state.
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import os
 import shutil
@@ -34,7 +33,7 @@ from polylogue.core.durable_fs import atomic_replace
 from polylogue.core.errors import SchemaSkew
 from polylogue.core.raw_coordinates import split_zip_member_text
 from polylogue.core.write_lease import require_write_lease, write_lease
-from polylogue.operations.zip_acquisition_replay import MemberCandidateCache, zip_reacquisition_payload
+from polylogue.operations.zip_acquisition_replay import MemberCandidate, MemberCandidateCache, zip_reacquired_unit
 from polylogue.paths import archive_root
 from polylogue.storage.backup_attestation import (
     VERIFICATION_RECEIPT_FORMAT,
@@ -774,21 +773,27 @@ def _source_recoverability_proofs(
             for candidate in candidates:
                 window = candidate.window
                 if window is None:
-                    payload, error = zip_reacquisition_payload(
+                    # A container unit is proven by its digests and, when the
+                    # package must carry it, streamed from its member again:
+                    # a preserved member can be gigabytes.
+                    unit, error = zip_reacquired_unit(
                         row,
                         source_path=resolved,
                         zip_payload_cache=zip_payload_cache,
                     )
-                    matched = (
-                        error is None and payload is not None and _payload_matches_reference(row, payload, blob_hash)
-                    )
-                    if (
-                        matched
-                        and payload is not None
-                        and recover is not None
-                        and not recover(blob_hash, _recorded_blob_size(row, payload), io.BytesIO(payload))
-                    ):
-                        matched, error = False, "inexact_payload"
+                    matched = error is None and unit is not None and _unit_matches_reference(row, unit, blob_hash)
+                    if matched and recover is not None and unit is not None:
+                        try:
+                            if unit.open_payload is None:
+                                exact = False
+                            else:
+                                with unit.open_payload() as unit_stream:
+                                    exact = recover(blob_hash, _recorded_blob_size(row, unit.size_bytes), unit_stream)
+                        except (OSError, zipfile.BadZipFile, LookupError, ContentIdentityRefusal) as exc:
+                            matched, error = False, f"error:{type(exc).__name__}"
+                        else:
+                            if not exact:
+                                matched, error = False, "inexact_payload"
                 else:
                     # A direct-source window is proven by its bytes' hash and
                     # streamed, so a large window costs no memory.
@@ -867,15 +872,35 @@ def _source_recoverability_proofs(
     return proofs
 
 
-def _recorded_blob_size(row: Mapping[str, object], payload: bytes) -> int:
-    """The retained size a recovered payload must have; the payload's own when unrecorded."""
+def _recorded_blob_size(row: Mapping[str, object], fallback_size: int) -> int:
+    """The retained size a recovered payload must have; the replayed unit's own when unrecorded."""
     value = row.get("size_bytes")
     if isinstance(value, (int, str)):
         try:
             return int(value)
         except ValueError:
             pass
-    return len(payload)
+    return fallback_size
+
+
+def _recorded_content_identity(row: Mapping[str, object]) -> str | None:
+    """The row's structural identity, when it records a valid one."""
+    content_identity = row.get("content_identity")
+    if not isinstance(content_identity, str) or len(content_identity) != 64:
+        return None
+    try:
+        bytes.fromhex(content_identity)
+    except ValueError:
+        return None
+    return content_identity.lower()
+
+
+def _unit_matches_reference(row: Mapping[str, object], unit: MemberCandidate, blob_hash: str) -> bool:
+    """Verify a replayed container unit by the recorded identity rule, from its digests."""
+    content_identity = _recorded_content_identity(row)
+    if content_identity is not None:
+        return unit.content_identity == content_identity
+    return unit.byte_identity == blob_hash
 
 
 def _payload_matches_reference(row: Mapping[str, object], payload: bytes, blob_hash: str) -> bool:

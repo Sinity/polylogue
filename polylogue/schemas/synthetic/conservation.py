@@ -228,7 +228,8 @@ def collect_planted_values(
     # Additive, not a short circuit: the projection supplies the block body the
     # annotation cannot see, and the ordinary walk below still reaches every
     # annotated position under this block.
-    found: list[PlantedValue] = list(_claude_code_block_projection(path, payload) or ())
+    block_bodies = _claude_code_block_projection(path, payload) or ()
+    found: list[PlantedValue] = list(block_bodies)
     visited_keys: set[str] = set()
     walked_items = False
     for variant in variants:
@@ -238,26 +239,20 @@ def collect_planted_values(
                 if key in visited_keys or not isinstance(child_schema, Mapping) or key not in payload:
                     continue
                 visited_keys.add(key)
-                if (
-                    key == "content"
-                    and path.startswith(_CLAUDE_CODE_BLOCK_PATH_PREFIX)
-                    and payload.get("type") in _CLAUDE_CODE_BLOCK_BODY_FIELDS
-                ):
-                    # Claude Code's historical ``content`` union covers
-                    # thinking/text/tool-use records, but the parser-owned
-                    # body for those forms is the typed field planted by
-                    # ``_claude_code_block_projection`` above, not this broad
-                    # inferred position. Planting here would compare
-                    # unrelated projections.
-                    continue
-                found.extend(
-                    collect_planted_values(
-                        child_schema,
-                        payload[key],
-                        path=f"{path}.{key}",
-                        depth=depth + 1,
-                    )
+                planted = collect_planted_values(
+                    child_schema,
+                    payload[key],
+                    path=f"{path}.{key}",
+                    depth=depth + 1,
                 )
+                if key == "content" and block_bodies:
+                    # A text, thinking or tool-use block's annotated
+                    # ``content`` is its own content unless it only repeats
+                    # the typed body planted above: an alias is one body,
+                    # and an independent value the parser drops is loss.
+                    aliases = {body.value for body in block_bodies}
+                    planted = tuple(value for value in planted if value.value not in aliases)
+                found.extend(planted)
 
         additional_properties = variant.get("additionalProperties")
         if isinstance(additional_properties, Mapping) and isinstance(payload, Mapping):

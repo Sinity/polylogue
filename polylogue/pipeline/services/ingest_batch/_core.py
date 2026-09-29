@@ -133,6 +133,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     _parsed_message_signature,
     _repair_stale_session_observations,
     prepare_session_write,
+    raw_source_path,
     recorded_attachment_owner_gaps,
     replace_parser_ingest_flag_tags,
     report_reextracted_prefix_blocks,
@@ -1190,10 +1191,7 @@ def _drive_structural_growth_predecessor(
     """
     # Import lazily: this classifier is only needed for this Drive-specific
     # lineage branch, so it stays out of the batch module's import graph and
-    # off the ingest-worker entry point's startup cost.  (The import cycle the
-    # comment here used to name does not exist: sources/live/__init__.py is
-    # fully lazy and sources/live/admission.py references neither
-    # batch_support nor ingest_batch.)
+    # off the ingest-worker entry point's startup cost.
     from polylogue.sources.drive.structural_diff import DriveStructuralRelation, classify_drive_structural_relation
 
     new_row = source_conn.execute(
@@ -1732,6 +1730,7 @@ def _write_session(
             fallback_timestamp=payload.fallback_timestamp,
             source_conn=source_conn,
             signature_cache=signature_cache,
+            raw_id=payload.raw_id,
             # The worker's carrier covers the full session; the admission gate
             # declines it for an append delta or a lineage-sliced tail.
             prepared_rows=payload.prepared_rows,
@@ -1760,6 +1759,7 @@ def _write_session(
         raw_id=payload.raw_id,
         fallback_timestamp=payload.fallback_timestamp,
         source_conn=source_conn,
+        child_source_path=raw_source_path(source_conn, payload.raw_id),
         merge_append=merge_append,
         force_replace=(
             force_write or browser_precedence == "replace" or append_force_replace or freshness_force_replace

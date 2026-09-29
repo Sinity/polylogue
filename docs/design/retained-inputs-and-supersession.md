@@ -126,7 +126,11 @@ the scope of the rollout that produced it: ingest passes that rollout's
 retained `source_path` to `resolve_retained_codex_state_titles`, and
 `codex_state_source_scope` maps the rollout and `state_5.sqlite` of one
 install to one scope. Two roots with different titles for one thread
-therefore keep both titles, and neither overwrites the other.
+therefore keep both titles, and neither overwrites the other. A spawn parent
+is read the same way: the session writer reads the projected parent in the
+root of the rollout's retained `source_path`, so two roots naming different
+parents for one thread never resolve to the more recently observed root. A
+reader that has no rollout path gets a parent only where every root agrees.
 
 ### R4 — Supersession replaces a value, never an object
 
@@ -143,6 +147,12 @@ a thread Codex deleted must leave the projection too"
 holds the thread, and that the archive no longer holds it. Only the first is
 observed. The projection must express the first as presence state and keep
 the archived object.
+
+Presence state must not depend on arrival order either. Replay applies
+exports in no particular order, so an export older than the current one
+still contributes the objects it names as absent-as-of-R rows, each holding
+the value of the newest export by receipt order that names it
+(`agent_thread_state.write_thread_state_graph`).
 
 ### R5 — Currency is decided by durable receipt order, never by wall clock or first sight
 

@@ -15,7 +15,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, BoundedMemberReport, ZipAdmission
+from polylogue.archive.zip_admission import BoundedMemberReport
 from polylogue.config import Source
 from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Provider
@@ -23,22 +23,17 @@ from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.raw_coordinates import MemberAddressingMode, zip_member_raw_id, zip_member_source_index
 from polylogue.logging import WARNING, emit
 from polylogue.sources.acquisition_boundary import refuse_declared_foreign
-from polylogue.sources.decoder_zip import (
-    ZipEntryValidator,
-    declared_artifact_provider,
-    is_declared_artifact_path,
-    provider_detection_path,
-)
+from polylogue.sources.decoder_zip import ZipEntryValidator
 from polylogue.sources.dispatch import ForeignOriginContentError, bound_location_provider
-from polylogue.sources.live.admission import ArtifactIdentity
 from polylogue.sources.origin_specs import database_member_for_filename
 from polylogue.sources.parsers.base import RawSessionData
 from polylogue.sources.source_acquisition_components import (
+    ArtifactIdentity,
     SourceReadContext,
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
     read_plain_source_file,
-    sniff_zip_provider,
+    zip_member_admission,
 )
 from polylogue.storage.blob_store import BlobStore
 
@@ -113,23 +108,12 @@ def iter_retained_source_records(
         # database-member binding above only resolves for a declared database
         # export, so an account export ZIP always arrives as UNKNOWN. Recover
         # the real provider the way the inbox route does, then let its own
-        # artifact declarations decide which members are material.
-        if provider is Provider.UNKNOWN:
-            detection_entries = [
-                info
-                for info in ZipAdmission(zip_path=logical_path).filter_entries(
-                    entries,
-                    allowed_suffixes=ZIP_JSON_SUFFIXES,
-                )
-                if provider_detection_path(info.filename)
-            ]
-            provider = sniff_zip_provider(archive, detection_entries) or Provider.UNKNOWN
-        # A genuinely mixed ZIP keeps UNKNOWN, under which no single provider's
-        # path rule can fire. Admitting any declared artifact path is what stops
-        # every ChatGPT export asset, Antigravity protobuf, brain Markdown and
-        # tool-result sidecar from being dropped while enumeration still reports
-        # itself complete (polylogue-ojxpn).
-        allowed_path = is_declared_artifact_path if provider is Provider.UNKNOWN else None
+        # artifact declarations decide which members are material. A genuinely
+        # mixed ZIP keeps UNKNOWN and admits any declared artifact path, so no
+        # export asset, Antigravity protobuf, brain Markdown or tool-result
+        # sidecar is dropped while enumeration reports itself complete
+        # (polylogue-ojxpn).
+        admission = zip_member_admission(archive, logical_path, entries, provider)
 
         def record_rejected(entry: zipfile.ZipInfo, reason: str) -> None:
             rejected.record(reason)
@@ -139,10 +123,10 @@ def iter_retained_source_records(
             unselected.record(f"{entry.filename}: {reason}")
             dispositions.append((ordinals[id(entry)], entry.filename, "unselected", reason))
 
-        validator = ZipEntryValidator(provider, cursor_state=None, zip_path=logical_path)
+        validator = ZipEntryValidator(admission.provider_hint, cursor_state=None, zip_path=logical_path)
         for entry in validator.filter_entries(
             entries,
-            allowed_path=allowed_path,
+            allowed_path=admission.allowed_path,
             on_rejected=record_rejected,
             on_unselected=record_unselected,
         ):
@@ -150,15 +134,12 @@ def iter_retained_source_records(
             # Under a residual UNKNOWN the container hint cannot name the family
             # that owns this member, so its ``raw-only`` declaration would not
             # fire and arbitrary binary bytes would take the JSON split route.
-            entry_provider = provider
-            if provider is Provider.UNKNOWN:
-                entry_provider = declared_artifact_provider(entry.filename) or provider
             context = ZipEntryReadContext(
                 source,
                 logical_path,
                 entry,
                 None,
-                entry_provider,
+                admission.entry_provider_hint(entry.filename),
                 blob_store,
                 bound_provider=location_binding,
             )

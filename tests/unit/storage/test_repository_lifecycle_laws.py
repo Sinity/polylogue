@@ -22,6 +22,7 @@ from pathlib import Path
 import pytest
 
 from polylogue.api import Polylogue
+from tests.infra.session_delete import delete_session_with_preview
 from tests.infra.storage_records import SessionBuilder, db_setup
 
 
@@ -147,7 +148,7 @@ class TestNeighborIsolation:
             assert await poly.list_tags() == {"review": 1}
 
             # Deleting the target leaves the neighbor and drops the target's tag.
-            assert await poly.delete_session(target_id) is True
+            assert await delete_session_with_preview(poly, target_id) is True
             remaining = {str(c.id) for c in await poly.list_sessions(limit=100)}
             assert remaining == {neighbor_id}
             assert await poly.list_tags() == {}
@@ -163,7 +164,7 @@ class TestDeleteAndReingest:
     async def test_delete_removes_session_and_count_goes_to_zero(self, workspace_env: dict[str, Path]) -> None:
         session_id = _seed_one(workspace_env, "del-conv")
         async with Polylogue(db_path=db_setup(workspace_env), archive_root=workspace_env["archive_root"]) as poly:
-            assert await poly.delete_session(session_id) is True
+            assert await delete_session_with_preview(poly, session_id) is True
             assert await poly.list_sessions(limit=100) == []
             assert await poly.get_session(session_id) is None
 

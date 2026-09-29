@@ -9,7 +9,11 @@ all three facts. Each test below names the mutation that makes it red.
 
 from __future__ import annotations
 
+import hashlib
+import itertools
 import sqlite3
+from collections.abc import Sequence
+from pathlib import Path
 
 import pytest
 
@@ -43,6 +47,7 @@ def _write(conn: sqlite3.Connection, **kwargs: object) -> bool:
         "blob_hash": "blob-1",
         "observed_at_ms": 1_000,
         "observation_order": 1,
+        "export_order": lambda _raw_id: None,
     }
     defaults.update(kwargs)
     return write_thread_state_graph(conn, **defaults)  # type: ignore[arg-type]
@@ -254,3 +259,166 @@ def test_a_later_receipt_wins_even_when_its_clock_rolled_back(index_conn: sqlite
     provenance = read_provenance(index_conn)
     assert provenance is not None
     assert (provenance.raw_id, provenance.observation_order) == ("raw-a", 3)
+
+
+#: Three retained exports of one scope, oldest first: the first two name
+#: ``kept-thread`` with conflicting revisions, the newest omits it.
+_EXPORTS: dict[str, dict[str, object]] = {
+    "raw-1": {
+        "threads": [ThreadRecord("kept-thread", "First title", 1_000)],
+        "spawn_edges": [SpawnRecord("parent-thread", "kept-thread", "running")],
+        "blob_hash": "blob-1",
+        "observed_at_ms": 1_000,
+        "observation_order": 1,
+    },
+    "raw-2": {
+        "threads": [ThreadRecord("kept-thread", "Revised title", 2_000)],
+        "spawn_edges": [SpawnRecord("parent-thread", "kept-thread", "closed")],
+        "blob_hash": "blob-2",
+        "observed_at_ms": 2_000,
+        "observation_order": 2,
+    },
+    "raw-3": {
+        "threads": [ThreadRecord("other-thread", "Other title", 3_000)],
+        "spawn_edges": [],
+        "blob_hash": "blob-3",
+        "observed_at_ms": 3_000,
+        "observation_order": 3,
+    },
+}
+
+
+def _export_order(raw_id: str) -> int | None:
+    export = _EXPORTS.get(raw_id)
+    return None if export is None else int(export["observation_order"])  # type: ignore[call-overload]
+
+
+def _graph_rows(conn: sqlite3.Connection) -> tuple[list[tuple[object, ...]], ...]:
+    return (
+        conn.execute("SELECT * FROM work_evidence_graphs ORDER BY graph_id").fetchall(),
+        conn.execute("SELECT * FROM work_evidence_nodes ORDER BY node_ref").fetchall(),
+        conn.execute("SELECT * FROM work_evidence_edges ORDER BY edge_ref").fetchall(),
+    )
+
+
+def _apply_exports(order: Sequence[str]) -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("PRAGMA foreign_keys = ON")
+    conn.executescript(INDEX_DDL)
+    for raw_id in order:
+        _write(conn, raw_id=raw_id, export_order=_export_order, **_EXPORTS[raw_id])
+    return conn
+
+
+def test_an_export_older_than_the_current_one_still_retains_what_it_names() -> None:
+    """Retained rows do not depend on whether replay visits the older export first.
+
+    Live order (S1, then S2 omitting the thread) leaves S1's title readable
+    as superseded evidence; a replay visiting S2 first must end the same.
+
+    Anti-vacuity: skip an export older than the current graph outright and the
+    replay order has no title for ``kept-thread``.
+    """
+    live = _apply_exports(["raw-1", "raw-3"])
+    replay = _apply_exports(["raw-3", "raw-1"])
+
+    for conn in (live, replay):
+        assert read_thread_titles(conn, thread_ids=["kept-thread"]) == {"kept-thread": "First title"}
+        assert read_parent_thread_id(conn, "kept-thread") == "parent-thread"
+    assert _graph_rows(replay) == _graph_rows(live)
+
+
+@pytest.mark.parametrize("order", list(itertools.permutations(_EXPORTS)))
+def test_retained_rows_hold_the_newest_revision_that_names_them(order: tuple[str, ...]) -> None:
+    """Conflicting revisions of a superseded object resolve by receipt order.
+
+    Every arrival order of three exports yields the rows of the in-order
+    (live) application: ``kept-thread`` keeps the newer ``Revised title`` and
+    ``closed`` label from S2, superseded by S3, whether S1 arrives before or
+    after S2.
+
+    Anti-vacuity: let an older export add only absent rows, or overwrite
+    retained rows unconditionally, and an order that delivers S1 after (or
+    before) S2 keeps ``First title`` or ``running``.
+    """
+    live = _apply_exports(sorted(_EXPORTS))
+    replay = _apply_exports(order)
+
+    assert read_thread_titles(replay, thread_ids=["kept-thread"]) == {"kept-thread": "Revised title"}
+    assert read_spawn_edges(replay) == {("parent-thread", "kept-thread"): "closed"}
+    assert _graph_rows(replay) == _graph_rows(live)
+
+
+def test_projection_ranks_retained_rows_by_their_exports_durable_receipts(tmp_path: Path) -> None:
+    """The Codex projection ranks each retained row by its export's receipt.
+
+    S3 lands first, then S2, then S1: S1 is older than both, so the row S2
+    retained for ``kept-thread`` must stand.
+
+    Anti-vacuity: rank retained rows without the source tier's receipts and
+    S1, arriving last, overwrites S2's title with ``First title``.
+    """
+    from polylogue.sources import codex_state_projection
+    from polylogue.sources.parsers import codex_state
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+    source = sqlite3.connect(tmp_path / "source.db")
+    initialize_archive_tier(source, ArchiveTier.SOURCE)
+    index = sqlite3.connect(tmp_path / "index.db")
+    index.execute("PRAGMA foreign_keys = ON")
+    index.executescript(INDEX_DDL)
+    for raw_id, export in _EXPORTS.items():
+        digest = hashlib.sha256(raw_id.encode()).digest()
+        source.execute(
+            "INSERT INTO raw_sessions (raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms) "
+            "VALUES (?, 'codex-session', '/install/state_5.sqlite', 0, ?, 1, 1)",
+            (raw_id, digest),
+        )
+        source.execute(
+            "INSERT INTO blob_refs (blob_hash, ref_id, ref_type, source_path, size_bytes, acquired_at_ms) "
+            "VALUES (?, ?, 'raw_payload', '/install/state_5.sqlite', 1, ?)",
+            (digest, raw_id, export["observed_at_ms"]),
+        )
+    source.commit()
+
+    for raw_id in ("raw-3", "raw-2", "raw-1"):
+        export = _EXPORTS[raw_id]
+        order = codex_state_projection.retained_export_order(source)(raw_id)
+        assert order is not None
+        snapshot = codex_state.CodexStateSnapshot(
+            threads=tuple(
+                codex_state.CodexThreadRecord(
+                    thread_id=thread.thread_id,
+                    title=thread.title or "",
+                    cwd="/work",
+                    created_at_ms=thread.occurred_at_ms or 0,
+                    updated_at_ms=thread.occurred_at_ms or 0,
+                    source="cli",
+                    model=None,
+                    agent_nickname=None,
+                    agent_role=None,
+                    archived=False,
+                )
+                for thread in export["threads"]  # type: ignore[attr-defined]
+            ),
+            spawn_edges=tuple(
+                codex_state.CodexSpawnEdge(edge.parent_thread_id, edge.child_thread_id, edge.status)
+                for edge in export["spawn_edges"]  # type: ignore[attr-defined]
+            ),
+        )
+        codex_state_projection.write_thread_state_projection(
+            index,
+            snapshot,
+            raw_id=raw_id,
+            blob_hash=str(export["blob_hash"]),
+            observed_at_ms=int(export["observed_at_ms"]),  # type: ignore[call-overload]
+            observation_order=order,
+            source_scope="/install",
+            source_conn=source,
+        )
+
+    assert read_thread_titles(index, thread_ids=["kept-thread"]) == {"kept-thread": "Revised title"}
+    assert read_thread_titles(index, thread_ids=["other-thread"]) == {"other-thread": "Other title"}
+    provenance = read_provenance(index, source_scope="/install")
+    assert provenance is not None and provenance.raw_id == "raw-3"

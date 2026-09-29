@@ -61,7 +61,11 @@ from polylogue.sources.parsers import codex_state
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
-from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+from polylogue.storage.sqlite.archive_tiers.write import (
+    prepare_session_write,
+    raw_source_path,
+    write_parsed_session_to_archive,
+)
 from tests.infra.thread_state import seed_spawn_edges
 
 _CHILD = "child-thread"
@@ -434,7 +438,7 @@ def test_unreadable_spawn_edge_projection_is_reported_not_silently_rootless(
     monkeypatch.setitem(sys.modules, "polylogue.sources.codex_state_projection", None)
 
     with capture() as events:
-        claim = _codex_spawn_edge_parent_claim(conn, None, child_native_id="child-thread")
+        claim = _codex_spawn_edge_parent_claim(conn, None, child_native_id="child-thread", child_source_path=None)
 
     assert claim is None
     assert any(
@@ -466,6 +470,7 @@ def _project_state_export(
         blob_hash=f"blob-{raw_id}",
         observed_at_ms=observed_at_ms,
         observation_order=observed_at_ms,
+        source_conn=None,
     )
     conn.commit()
 
@@ -629,7 +634,9 @@ def test_rederiving_a_deep_chain_projects_each_session_once(tmp_path: Path, monk
             for parent, child in zip(chain, chain[1:], strict=False)
         ),
     )
-    write_thread_state_projection(index, snapshot, raw_id="chain", blob_hash="blob-chain", observed_at_ms=1_000)
+    write_thread_state_projection(
+        index, snapshot, raw_id="chain", blob_hash="blob-chain", observed_at_ms=1_000, source_conn=None
+    )
     index.commit()
 
     assert len(calls) <= 2 * depth
@@ -639,3 +646,104 @@ def test_rederiving_a_deep_chain_projects_each_session_once(tmp_path: Path, monk
     ).fetchall()
     assert len(rows) == depth
     assert all(row["root_session_id"] == root_id and row["parent_session_id"] is not None for row in rows)
+
+
+_ROOT_A = "/roots/a/.codex"
+_ROOT_B = "/roots/b/.codex"
+
+
+def _two_roots_naming_one_child(tmp_path: Path) -> tuple[sqlite3.Connection, sqlite3.Connection]:
+    """An archive whose child rollout came from root A, with both roots' parents archived."""
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    source.execute(
+        "INSERT INTO raw_sessions (raw_id, origin, source_path, source_index, blob_hash, blob_size, acquired_at_ms) "
+        "VALUES ('child-rollout', ?, ?, 0, zeroblob(32), 1, 1)",
+        (Origin.CODEX_SESSION.value, f"{_ROOT_A}/sessions/2026/01/01/rollout-{_CHILD}.jsonl"),
+    )
+    source.commit()
+    for parent in ("a-parent", "b-parent"):
+        write_parsed_session_to_archive(index, _session(parent), source_conn=source)
+    return index, source
+
+
+def _project_both_roots(index: sqlite3.Connection, source: sqlite3.Connection) -> None:
+    """Root A names ``a-parent`` for the child; root B, observed later, names ``b-parent``."""
+    for order, (root, parent) in enumerate(((_ROOT_A, "a-parent"), (_ROOT_B, "b-parent")), start=1):
+        snapshot = codex_state.CodexStateSnapshot(
+            threads=(),
+            spawn_edges=(codex_state.CodexSpawnEdge(parent_thread_id=parent, child_thread_id=_CHILD, status="closed"),),
+        )
+        write_thread_state_projection(
+            index,
+            snapshot,
+            raw_id=f"state-{order}",
+            blob_hash=f"blob-{order}",
+            observed_at_ms=order * 1_000,
+            source_scope=root,
+            source_conn=source,
+        )
+        index.commit()
+
+
+def _assert_child_under_root_a(index: sqlite3.Connection, child_id: str) -> None:
+    links = _links(index, child_id)
+    assert links["a-parent"]["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
+    assert links["a-parent"]["status"] is None
+    assert "b-parent" not in links
+    assert _composed_parent(index, child_id)[0] == f"{Origin.CODEX_SESSION.value}:a-parent"
+
+
+@pytest.mark.parametrize("state_first", [True, False])
+def test_a_child_reads_its_parent_in_its_own_rollouts_install_root(tmp_path: Path, state_first: bool) -> None:
+    """Two roots name one child thread with different parents; the save uses its own root's.
+
+    The child's rollout was acquired from root A, so its authoritative parent
+    is root A's whether the exports land before the child's save or after it.
+
+    Anti-vacuity: read the projected parent without the child's install
+    root and the later root B wins: the save (or the re-derivation after
+    root B's export) makes ``b-parent`` authoritative.
+    """
+    index, source = _two_roots_naming_one_child(tmp_path)
+    if state_first:
+        _project_both_roots(index, source)
+    child_id = write_parsed_session_to_archive(
+        index,
+        _session(_CHILD),
+        source_conn=source,
+        raw_id="child-rollout",
+        child_source_path=raw_source_path(source, "child-rollout"),
+    )
+    if not state_first:
+        _project_both_roots(index, source)
+
+    _assert_child_under_root_a(index, child_id)
+
+
+def test_a_prepared_child_publishes_under_the_root_it_was_prepared_in(tmp_path: Path) -> None:
+    """The install root a prepared write resolved is the root its publication reads.
+
+    The daemon prepares a write against the source tier, while the
+    revision-governed write that publishes it holds no source handle; a raw's
+    source path never changes, so publication reuses the prepared root.
+
+    Anti-vacuity: re-derive the root at publication instead and the write
+    finds none: the two roots disagree, the re-checked claim is silent, and
+    the prepared write is refused as stale on every retry.
+    """
+    from polylogue.pipeline.ids import session_content_hash
+
+    index, source = _two_roots_naming_one_child(tmp_path)
+    _project_both_roots(index, source)
+    child = _session(_CHILD)
+    prepared = prepare_session_write(index, child, merge_append=False, source_conn=source, raw_id="child-rollout")
+    child_id = write_parsed_session_to_archive(
+        index,
+        child,
+        content_hash=str(session_content_hash(child)),
+        prepared_write=prepared,
+        raw_id="child-rollout",
+    )
+
+    _assert_child_under_root_a(index, child_id)

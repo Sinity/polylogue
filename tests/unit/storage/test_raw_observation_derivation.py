@@ -291,6 +291,58 @@ def test_one_pass_replays_a_shared_raw_component_once(tmp_path: Path, monkeypatc
     assert adapter.inspect(raw_observation_frame(tmp_path), raw_ids) == dict.fromkeys(raw_ids, "valid")
 
 
+def test_component_publications_leave_the_archive_fts_audit_to_one_pass_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """N replayed components cost one archive-wide exact FTS audit, not N.
+
+    Each component publication proves its own sessions' FTS rows; the
+    archive-wide exact inspection belongs to the daemon's
+    ``fts_readiness_binding`` stage, which runs once after the burst of block
+    writes retired its binding.
+
+    Wrong outcome prevented: every component's replay ran the archive-wide
+    ``fts_invariant_snapshot_sync`` scan under the writer, so a pass over N
+    components scanned every block N times. Anti-vacuity: drop
+    ``exact_fts_audit=False`` from ``RawObservationDerivation.publish`` and
+    ``audits`` equals the component count.
+    """
+    from polylogue.daemon.convergence_stages import make_fts_readiness_binding_stage
+    from polylogue.storage.fts import fts_lifecycle
+    from polylogue.storage.fts.derivation import GLOBAL_PARTITION, FtsDerivationAdapter
+
+    bootstrap_archive_root(tmp_path)
+    for index in range(3):
+        _admit(tmp_path, (f"component-{index}",), path=f"component-{index}.json")
+    audits = 0
+    global_inspections = 0
+    original_audit = fts_lifecycle.fts_invariant_snapshot_sync
+    original_inspect = FtsDerivationAdapter.inspect_partition
+
+    def counting_audit(conn: sqlite3.Connection) -> object:
+        nonlocal audits
+        audits += 1
+        return original_audit(conn)
+
+    def counting_inspect(self: FtsDerivationAdapter, conn: sqlite3.Connection, partition: str) -> object:
+        nonlocal global_inspections
+        global_inspections += int(partition == GLOBAL_PARTITION)
+        return original_inspect(self, conn, partition)
+
+    monkeypatch.setattr(fts_lifecycle, "fts_invariant_snapshot_sync", counting_audit)
+    monkeypatch.setattr(FtsDerivationAdapter, "inspect_partition", counting_inspect)
+
+    report = _run(tmp_path)
+
+    assert report.done == 3 and report.failed == report.pending == 0
+    assert (audits, global_inspections) == (0, 0)
+    stage = make_fts_readiness_binding_stage(tmp_path / "index.db")
+    assert stage.check(tmp_path / "index.db") is True
+    assert stage.execute(tmp_path / "index.db") is True
+    assert (audits, global_inspections) == (0, 1)
+    assert stage.check(tmp_path / "index.db") is False
+
+
 def test_duplicate_raws_share_preparation_but_keep_distinct_census(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

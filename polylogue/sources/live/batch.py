@@ -40,7 +40,6 @@ from polylogue.archive.revision_authority import (
 )
 from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandidate, plan_revision_replay
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
-from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, ZipAdmission
 from polylogue.config import Source
 from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
@@ -100,9 +99,7 @@ from polylogue.sources.artifact_observations import record_session_artifact_obse
 from polylogue.sources.codex_state_evidence import record_codex_state_snapshot_terminal
 from polylogue.sources.decoder_zip import (
     ZipBombError,
-    declared_artifact_provider,
     is_declared_artifact_path,
-    provider_detection_path,
 )
 from polylogue.sources.decoders import _iter_json_stream, _ZipEntryValidator
 from polylogue.sources.dispatch import (
@@ -227,8 +224,8 @@ from polylogue.sources.revision_backfill import (
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
     iter_zip_entry_raw_data,
-    sniff_zip_provider,
     stream_preserved_zip_entry_raw_data,
+    zip_member_admission,
 )
 from polylogue.sources.sqlite_snapshot import (
     codex_state_raw_id,
@@ -5808,26 +5805,16 @@ class LiveBatchProcessor:
         try:
             with zipfile.ZipFile(path) as zf:
                 central_directory = zf.infolist()
-                zip_provider_hint = fallback_provider
-                if fallback_provider is Provider.UNKNOWN:
-                    safe_json_entries = list(
-                        ZipAdmission(zip_path=path).filter_entries(
-                            central_directory,
-                            allowed_suffixes=ZIP_JSON_SUFFIXES,
-                        )
-                    )
-                    detection_entries = [info for info in safe_json_entries if provider_detection_path(info.filename)]
-                    zip_provider_hint = sniff_zip_provider(zf, detection_entries) or fallback_provider
+                admission = zip_member_admission(zf, path, central_directory, fallback_provider)
                 validator = _ZipEntryValidator(
-                    zip_provider_hint,
+                    admission.provider_hint,
                     cursor_state=None,
                     zip_path=path,
                 )
                 entry_ordinals = {id(info): ordinal for ordinal, info in enumerate(central_directory)}
-                allowed_path = is_declared_artifact_path if zip_provider_hint is Provider.UNKNOWN else None
                 entries = [
                     (entry_ordinals[id(info)], info)
-                    for info in validator.filter_entries(central_directory, allowed_path=allowed_path)
+                    for info in validator.filter_entries(central_directory, allowed_path=admission.allowed_path)
                 ]
                 # A GDPR/Takeout export ZIP dropped into a provider-agnostic
                 # inbox (``fallback_provider is Provider.UNKNOWN``) still has
@@ -5845,9 +5832,7 @@ class LiveBatchProcessor:
                     if info.file_size == 0:
                         continue
                     try:
-                        entry_provider_hint = zip_provider_hint
-                        if zip_provider_hint is Provider.UNKNOWN:
-                            entry_provider_hint = declared_artifact_provider(info.filename) or zip_provider_hint
+                        entry_provider_hint = admission.entry_provider_hint(info.filename)
                         for raw_data in iter_zip_entry_raw_data(
                             zf,
                             ZipEntryReadContext(

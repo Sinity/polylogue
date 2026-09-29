@@ -40,7 +40,7 @@ def test_origin_completion_matches_public_filter_projection() -> None:
     assert {item.value for item in items} == set(public_origin_tokens())
     assert {item.value for item in items} == set(descriptions)
     assert all(item.help == descriptions[item.value] for item in items)
-    assert "unknown-export" not in {item.value for item in items}
+    assert "unknown-export" in {item.value for item in items}
     assert "beads-issue" not in {item.value for item in items}
 
 

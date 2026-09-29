@@ -1127,7 +1127,7 @@ async function pairWithCode(code) {
   return { ok: true, health, pairing: health.pairing || (await storedReceiverPairing()) };
 }
 
-async function checkReceiverHealth({ allowCanonicalRecovery = true } = {}) {
+async function checkReceiverHealth({ allowCanonicalRecovery = true, allowCredentialRefresh = true } = {}) {
   const settings = await receiverSettings();
   const pairingBefore = await storedReceiverPairing();
 
@@ -1136,11 +1136,21 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true } = {}) {
   // request only creates receiver-side auth noise and cannot establish trust.
   if (!settings.authToken) {
     const bootstrap = await bootstrapReceiverCredential(settings, pairingBefore?.receiver_id || null);
-    if (bootstrap.ok) return checkReceiverHealth({ allowCanonicalRecovery: false });
+    // The credential was just fetched; another native launch cannot improve it.
+    if (bootstrap.ok) return checkReceiverHealth({ allowCanonicalRecovery: false, allowCredentialRefresh: false });
+    // The native host found nothing answering at the endpoint (a stopped
+    // daemon): that is an offline receiver, not a credential problem.
+    if (bootstrap.error === "receiver_unreachable") {
+      return { ok: false, status: "unreachable", detail: "receiver_unreachable", endpoint: settings.baseUrl, pairing: pairingBefore };
+    }
     return { ok: true, status: "unauthorized", detail: bootstrap.error === "native_messaging_unavailable" ? "receiver_auth_missing" : (bootstrap.error || "receiver_auth_missing"), endpoint: settings.baseUrl, pairing: pairingBefore };
   }
 
-  async function classifyProbe(endpoint, probe, recoveredFrom = null) {
+  // A 401 may mean the stored credential is stale, so the native host is asked
+  // once for the current one. A second 401 is a real mismatch (e.g. a receiver
+  // run with an explicit token other than the persisted one): report it rather
+  // than re-bootstrapping forever, one native-host launch per round.
+  async function classifyProbe(endpoint, probe, recoveredFrom = null, allowCredentialRefresh = true) {
     const body = probe.body;
     if (!body || typeof body !== "object") {
       return {
@@ -1153,8 +1163,12 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true } = {}) {
       };
     }
     if (body.error === "unauthorized" || probe.response?.status === 401) {
-      const refreshed = await bootstrapReceiverCredential(settings, pairingBefore?.receiver_id || null);
-      if (refreshed.ok) return classifyProbe(settings.baseUrl, await probeReceiverStatus(settings.baseUrl, refreshed.auth_token));
+      if (allowCredentialRefresh) {
+        const refreshed = await bootstrapReceiverCredential(settings, pairingBefore?.receiver_id || null);
+        if (refreshed.ok) {
+          return classifyProbe(settings.baseUrl, await probeReceiverStatus(settings.baseUrl, refreshed.auth_token), null, false);
+        }
+      }
       const pairing = pairingBefore
         ? await persistReceiverPairing({
           ...pairingBefore,
@@ -1220,7 +1234,7 @@ async function checkReceiverHealth({ allowCanonicalRecovery = true } = {}) {
   let primaryFailure = null;
   try {
     const primary = await probeReceiverStatus(settings.baseUrl, settings.authToken);
-    const classified = await classifyProbe(settings.baseUrl, primary);
+    const classified = await classifyProbe(settings.baseUrl, primary, null, allowCredentialRefresh);
     if (classified.status !== "unreachable") return classified;
     primaryFailure = classified.detail || "receiver_unavailable";
   } catch (error) {

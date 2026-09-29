@@ -427,6 +427,7 @@ _EXCLUSION_CATEGORIES: Final[tuple[_ExclusionCategory, ...]] = (
             "list_tags",
             "list_views",
             "list_workspaces",
+            "prepare_delete_session",
             "record_correction",
             "remove_mark",
             "remove_tag",

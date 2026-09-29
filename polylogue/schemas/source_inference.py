@@ -37,6 +37,7 @@ from polylogue.core.schema_subjects import inference_exclusion_reason, subject_a
 from polylogue.core.timestamps import parse_timestamp
 from polylogue.schemas.generation.evidence import SchemaEvidence
 from polylogue.schemas.observation import (
+    declared_observation_non_applicable,
     declared_structured_observation_config,
     extract_schema_units_from_payload,
     resolve_provider_config,
@@ -63,8 +64,8 @@ from polylogue.sources.origin_specs import (
 from polylogue.sources.source_walk import _iter_source_entries
 from polylogue.sources.sqlite_export import (
     looks_like_logical_export_path,
-    open_logical_source,
     read_export_header,
+    write_logical_export,
 )
 from polylogue.sources.sqlite_snapshot import declared_database_member
 
@@ -732,6 +733,65 @@ def _stable_file_digest(path: Path) -> tuple[str, int]:
     return digest.hexdigest(), before.st_size
 
 
+#: One ``sqlite_master`` row -- ``(type, name, tbl_name, sql)`` -- as the
+#: canonical logical export's header records it.
+_SchemaRow = tuple[str | None, ...]
+
+
+class _LogicalExportRevisionSink:
+    """Digest a canonical logical export and keep only its header line."""
+
+    def __init__(self) -> None:
+        self._digest = hashlib.sha256()
+        self._header = bytearray()
+        self._header_complete = False
+        self.byte_count = 0
+
+    def write(self, payload: bytes) -> int:
+        self._digest.update(payload)
+        self.byte_count += len(payload)
+        if not self._header_complete:
+            end = payload.find(b"\n")
+            self._header.extend(payload if end < 0 else payload[:end])
+            self._header_complete = end >= 0
+        return len(payload)
+
+    def hexdigest(self) -> str:
+        return self._digest.hexdigest()
+
+    def schema_rows(self) -> tuple[_SchemaRow, ...]:
+        header = json.loads(bytes(self._header))
+        return tuple(tuple(row) for row in header["schema"])
+
+
+def _is_live_sqlite_path(path: Path) -> bool:
+    return path.suffix.lower() in {".db", ".sqlite", ".sqlite3"} and not looks_like_logical_export_path(path)
+
+
+def _live_sqlite_revision(path: Path) -> tuple[str, int, tuple[_SchemaRow, ...]]:
+    """Revision and schema of a live SQLite source from one read transaction.
+
+    The main file alone misses every commit still in the WAL, so the revision
+    is the digest of the whole-database canonical logical export, and the
+    schema observed under it is that same export's header: both come from one
+    snapshot, never from two reads that a commit could separate.
+    """
+    sink = _LogicalExportRevisionSink()
+    try:
+        write_logical_export(path, sink)
+    except sqlite3.Error as exc:
+        raise OSError(f"SQLite logical export failed: {type(exc).__name__}") from exc
+    return sink.hexdigest(), sink.byte_count, sink.schema_rows()
+
+
+def _candidate_revision_digest(path: Path) -> tuple[str, int]:
+    """The revision a candidate's evidence is cached and revalidated under."""
+    if _is_live_sqlite_path(path):
+        digest, byte_count, _schema = _live_sqlite_revision(path)
+        return digest, byte_count
+    return _stable_file_digest(path)
+
+
 def _is_strict_file_prefix(shorter: Path, longer: Path) -> bool:
     """Compare revisions by bytes without retaining either source in memory."""
     try:
@@ -1232,6 +1292,25 @@ def _collect_candidate(
     preflight = _preflight_terminal(candidate)
     if preflight is not None:
         return _CollectedCandidate(candidate, None, preflight)
+    if _is_live_sqlite_path(candidate.path):
+        try:
+            digest, byte_count, schema_rows = _live_sqlite_revision(candidate.path)
+        except OSError:
+            return _CollectedCandidate(candidate, None, SourceTerminal("decode_failed", reason="unreadable_source"))
+        return _collect_database_schema_candidate(
+            candidate,
+            SourceRevision(
+                provider=candidate.provider,
+                path=candidate.path,
+                logical_source_id=candidate.logical_source_id,
+                revision_sha256=digest,
+                byte_count=byte_count,
+            ),
+            schema_rows=schema_rows,
+            dynamic_paths_by_element=dynamic_paths_by_element,
+            include_statistics=include_statistics,
+            metadata_only=metadata_only,
+        )
     try:
         digest, byte_count = _stable_file_digest(candidate.path)
     except SourceInferenceError:
@@ -1245,12 +1324,11 @@ def _collect_candidate(
         revision_sha256=digest,
         byte_count=byte_count,
     )
-    if candidate.path.suffix.lower() in {".db", ".sqlite", ".sqlite3"} or looks_like_logical_export_path(
-        candidate.path
-    ):
+    if looks_like_logical_export_path(candidate.path):
         collected = _collect_database_schema_candidate(
             candidate,
             revision,
+            schema_rows=None,
             dynamic_paths_by_element=dynamic_paths_by_element,
             include_statistics=include_statistics,
             metadata_only=metadata_only,
@@ -1337,18 +1415,21 @@ def _collect_database_schema_candidate(
     candidate: _SourceCandidate,
     revision: SourceRevision,
     *,
+    schema_rows: tuple[_SchemaRow, ...] | None,
     dynamic_paths_by_element: dict[str, tuple[str, ...]],
     include_statistics: bool,
     metadata_only: bool,
 ) -> _CollectedCandidate:
     """Observe declared SQLite member structure without retaining row values.
 
-    Logical exports and live snapshots are both opened through the same
-    read-only adapter.  One bounded structural record captures table names,
-    declared column types, and the OriginSpec disposition/consumer; this makes table or
-    column drift visible while keeping private database rows out of schema
-    evidence.  Out-of-scope members are rejected by preflight and therefore
-    retain their explicit non-applicability outcome.
+    The structure is read from the ``sqlite_master`` rows of the snapshot the
+    revision digests: the live export's header for a live member
+    (``schema_rows``), or a retained logical export's own header. One bounded
+    structural record captures table names, declared column types, and the
+    OriginSpec disposition/consumer; this makes table or column drift visible
+    while keeping private database rows out of schema evidence. Out-of-scope
+    members are rejected by preflight and therefore retain their explicit
+    non-applicability outcome.
     """
     binding = _declared_database_binding(candidate.path)
     if binding is None or binding.member.disposition == "out-of-scope":
@@ -1359,69 +1440,54 @@ def _collect_database_schema_candidate(
     member = binding.member
     records: list[JSONDocument] = []
     try:
-        # A live SQLite member may have its newest schema in a WAL.  Immutable
-        # mode intentionally ignores that sidecar, so it would make schema
-        # observation lag the normal logical-export acquisition route.  The
-        # read-only connection still gives us a consistent transaction while
-        # including the current WAL state; retained logical exports are
-        # reconstructed through the same adapter and are safe on this path too.
-        with closing(open_logical_source(candidate.path, immutable=False)) as conn:
-            conn.row_factory = sqlite3.Row
-            table_rows = conn.execute(
-                "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
-            ).fetchall()
-            actual_tables = {str(row[0]) for row in table_rows}
-            table_names = sorted(
-                actual_tables | set(member.logical_tables) | {rule.table for rule in member.table_rules}
-            )
-            table_shapes: dict[str, JSONDocument] = {}
-            exported_columns: dict[str, list[sqlite3.Row]] = {}
-            if looks_like_logical_export_path(candidate.path):
-                header = read_export_header(candidate.path)
+        if schema_rows is None:
+            schema_rows = read_export_header(candidate.path).schema
+        table_sql = {
+            str(name): sql
+            for kind, name, _table_name, sql in schema_rows
+            if kind == "table" and isinstance(name, str) and not name.startswith("sqlite_")
+        }
+        actual_tables = set(table_sql)
+        table_names = sorted(actual_tables | set(member.logical_tables) | {rule.table for rule in member.table_rules})
+        table_shapes: dict[str, JSONDocument] = {}
+        for table in table_names:
+            columns: list[JSONDocument] = []
+            sql = table_sql.get(table)
+            if isinstance(sql, str):
+                # Each table is declared alone: an FTS5 table creates its
+                # shadow tables, which the schema also lists.
                 with closing(sqlite3.connect(":memory:")) as declared_schema:
-                    for kind, _name, _table_name, sql in header.schema:
-                        if kind == "table" and isinstance(sql, str):
-                            declared_schema.execute(sql)
-                    for table in actual_tables:
-                        quoted = '"' + table.replace('"', '""') + '"'
-                        exported_columns[table] = declared_schema.execute(f"PRAGMA table_info({quoted})").fetchall()
-            for table in table_names:
-                quoted = '"' + table.replace('"', '""') + '"'
-                columns: list[JSONDocument] = []
-                if table in actual_tables:
-                    column_rows = exported_columns.get(table)
-                    if column_rows is None:
-                        column_rows = conn.execute(f"PRAGMA table_info({quoted})").fetchall()
-                    for row in column_rows:
-                        columns.append(
-                            {
-                                "name": str(row[1]),
-                                "declared_type": str(row[2] or ""),
-                                "not_null": bool(row[3]),
-                                "primary_key_position": int(row[5] or 0),
-                            }
-                        )
-                column_map: dict[str, JSONValue] = {}
-                for column in columns:
-                    name = column.get("name")
-                    if isinstance(name, str):
-                        column_map[name] = {key: value for key, value in column.items() if key != "name"}
-                table_rule = member.table_rule(table)
-                disposition = table_rule.disposition if table_rule is not None else "unrecognized"
-                table_shapes[table] = {
-                    "declared": table in member.logical_tables,
-                    "present": table in actual_tables,
-                    "retention": disposition,
-                    # Schema evidence records structural shape rather than
-                    # sample values. Preserve this policy value as a bounded
-                    # field name too, so consumers can distinguish a declared
-                    # later-consumption table from a new unrecognized table.
-                    "disposition": {disposition: True},
-                    "retention_reason": table_rule.reason
-                    if table_rule is not None
-                    else "no declared table disposition",
-                    "columns": column_map,
-                }
+                    declared_schema.execute(sql)
+                    quoted = '"' + table.replace('"', '""') + '"'
+                    column_rows = declared_schema.execute(f"PRAGMA table_info({quoted})").fetchall()
+                for row in column_rows:
+                    columns.append(
+                        {
+                            "name": str(row[1]),
+                            "declared_type": str(row[2] or ""),
+                            "not_null": bool(row[3]),
+                            "primary_key_position": int(row[5] or 0),
+                        }
+                    )
+            column_map: dict[str, JSONValue] = {}
+            for column in columns:
+                name = column.get("name")
+                if isinstance(name, str):
+                    column_map[name] = {key: value for key, value in column.items() if key != "name"}
+            table_rule = member.table_rule(table)
+            disposition = table_rule.disposition if table_rule is not None else "unrecognized"
+            table_shapes[table] = {
+                "declared": table in member.logical_tables,
+                "present": table in actual_tables,
+                "retention": disposition,
+                # Schema evidence records structural shape rather than
+                # sample values. Preserve this policy value as a bounded
+                # field name too, so consumers can distinguish a declared
+                # later-consumption table from a new unrecognized table.
+                "disposition": {disposition: True},
+                "retention_reason": table_rule.reason if table_rule is not None else "no declared table disposition",
+                "columns": column_map,
+            }
             records.append(
                 {
                     "source_member": member.filename,
@@ -1495,6 +1561,8 @@ def _collect_zip_candidate(
     record_count = 0
     producer_versions: set[str] = set()
     producer_version_unrecognized = False
+    non_applicable_members = 0
+    observable: list[zipfile.ZipInfo] = []
     try:
         with zipfile.ZipFile(candidate.path) as archive:
             validator = ZipEntryValidator(candidate.provider, cursor_state=None, zip_path=candidate.path)
@@ -1504,7 +1572,13 @@ def _collect_zip_candidate(
             # this subject's material and must not consume its aggregate
             # decompression budget either.
             owned = [info for info in archive.infolist() if subject_admits_member(candidate.provider, info.filename)]
-            members = validator.filter_entries(owned, allowed_suffixes=(".json", ".jsonl", ".ndjson"))
+            # A member the origin declares schema-non-applicable (an export
+            # attachment) is never read as evidence, whatever its suffix.
+            provider = Provider.from_string(candidate.provider)
+            files = [info for info in owned if not info.is_dir()]
+            observable = [info for info in files if not declared_observation_non_applicable(provider, info.filename)]
+            non_applicable_members = len(files) - len(observable)
+            members = validator.filter_entries(observable, allowed_suffixes=(".json", ".jsonl", ".ndjson"))
             for member_index, member in enumerate(sorted(members, key=lambda item: item.filename)):
                 member_path = Path(member.filename)
                 with open_bounded_zip_entry(archive, member) as member_handle:
@@ -1564,6 +1638,10 @@ def _collect_zip_candidate(
     except (OSError, ZipBombError, zipfile.BadZipFile):
         return _CollectedCandidate(candidate, revision, SourceTerminal("decode_failed", reason="invalid_zip"))
     if not contributions and (spool_path is None or not _spool_has_contributions(spool_path)):
+        if non_applicable_members and not observable:
+            return _CollectedCandidate(
+                candidate, revision, SourceTerminal("intentionally_excluded", reason="source_class_non_session")
+            )
         return _CollectedCandidate(candidate, revision, SourceTerminal("unsupported", reason="no_schema_zip_members"))
     return _CollectedCandidate(
         candidate,
@@ -1953,7 +2031,7 @@ def _refreshed_codex_descriptor(
         ):
             raise SourceInferenceError("Codex ordering metadata changed after the final evidence pass")
         try:
-            refreshed_digest, _refreshed_byte_count = _stable_file_digest(descriptor.candidate.path)
+            refreshed_digest, _refreshed_byte_count = _candidate_revision_digest(descriptor.candidate.path)
         except (OSError, SourceInferenceError):
             refreshed_digest = None
         if refreshed_digest != descriptor.revision_sha256:
@@ -2219,7 +2297,7 @@ def infer_sources(
                 report("inventory", input_bytes=sum(input_bytes_by_candidate.values()))
                 continue
             try:
-                digest, byte_count = _stable_file_digest(candidate.path)
+                digest, byte_count = _candidate_revision_digest(candidate.path)
             except SourceInferenceError:
                 terminal = SourceTerminal("changed_during_read", _candidate_byte_count(candidate.path))
                 terminal_counts[terminal.outcome] += 1
@@ -2401,7 +2479,7 @@ def infer_sources(
                 )
                 candidate = descriptor.candidate
                 try:
-                    final_digest, final_byte_count = _stable_file_digest(candidate.path)
+                    final_digest, final_byte_count = _candidate_revision_digest(candidate.path)
                 except (OSError, SourceInferenceError):
                     final_digest = None
                     final_byte_count = _candidate_byte_count(candidate.path)

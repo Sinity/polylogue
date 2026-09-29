@@ -51,6 +51,7 @@ from typing import TypeVar, cast
 
 from polylogue.archive.artifact_taxonomy import ArtifactKind
 from polylogue.core.enums import Origin, Provider
+from polylogue.core.raw_coordinates import split_zip_member_text
 from polylogue.logging import get_logger
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
@@ -106,10 +107,15 @@ def _select_retained(
     where: str,
     parameters: list[object],
 ) -> dict[str, RetainedArtifact]:
-    """Return the newest retained observation per exact ``source_path``.
+    """Return the current retained observation per exact ``source_path``.
 
     One row per coordinate: an older observation of the same coordinate is
-    still archived and readable, it is simply not the current value.
+    still archived and readable, it is simply not the current value. The
+    newest durable receipt names the current acquisition. Within that
+    acquisition -- the observations its pass stamped with one acquisition
+    time -- a ZIP can hold several members at one path, and live assembly
+    binds the first in central-directory order, so the lowest member ordinal
+    wins there.
     """
     # The coordinate predicate is expressed on ``raw_artifacts`` so
     # ``idx_raw_artifacts_source_identity`` (origin, source_path, source_index)
@@ -122,28 +128,43 @@ def _select_retained(
             lower(hex(r.blob_hash)),
             r.blob_size,
             COALESCE(({_RECEIPT_ORDER.format(column="acquired_at_ms")}), r.acquired_at_ms),
-            COALESCE(({_RECEIPT_ORDER.format(column="rowid")}), r.rowid)
+            COALESCE(({_RECEIPT_ORDER.format(column="rowid")}), r.rowid),
+            c.entry_ordinal
         FROM raw_artifacts AS a
         JOIN raw_sessions AS r ON r.raw_id = a.raw_id
+        LEFT JOIN raw_container_coordinates AS c ON c.raw_id = r.raw_id
         WHERE a.origin = ?
           AND ({where})
           AND a.artifact_kind = ?
           AND r.blob_hash IS NOT NULL
           AND r.parse_error IS NULL
-        ORDER BY 6 DESC, r.raw_id DESC
     """
     # A read failure here is infrastructure state, not an answer: it
     # propagates so the ingesting pass records a retryable outcome instead of
     # resolving to "no evidence" and writing a session that silently lost its
     # provider metadata.
     rows = source_conn.execute(sql, [origin.value, *parameters, artifact_kind.value]).fetchall()
-    newest: dict[str, RetainedArtifact] = {}
-    for raw_id, source_path, blob_hash, blob_size, _observed, _order in rows:
+    by_path: dict[str, list[tuple[int, int, int, str, RetainedArtifact]]] = {}
+    for raw_id, source_path, blob_hash, blob_size, observed, order, entry_ordinal in rows:
         path = str(source_path)
-        if path in newest:
-            continue
-        newest[path] = RetainedArtifact(str(raw_id), path, str(blob_hash), int(blob_size))
-    return newest
+        by_path.setdefault(path, []).append(
+            (
+                int(order),
+                int(observed),
+                int(entry_ordinal or 0),
+                str(raw_id),
+                RetainedArtifact(str(raw_id), path, str(blob_hash), int(blob_size)),
+            )
+        )
+    current: dict[str, RetainedArtifact] = {}
+    for path, observations in by_path.items():
+        # The newest durable receipt names the current acquisition; the clock
+        # only groups the observations that one pass stamped together, and
+        # among those the first member in central-directory order wins.
+        newest = max(observations, key=lambda item: (item[0], item[3]))
+        same_pass = [item for item in observations if item[1] == newest[1]]
+        current[path] = min(same_pass, key=lambda item: (item[2], -item[0]))[4]
+    return current
 
 
 def _read(blob_store: BlobStore, artifact: RetainedArtifact) -> bytes | None:
@@ -376,6 +397,13 @@ def chatgpt_export_scope(session_source_path: str) -> str | None:
     return f"{parent}/"
 
 
+def _member_basename(source_path: str) -> str:
+    """The file name live discovery sees: a ZIP member's own name, not ``<zip>:<member>``."""
+    split = split_zip_member_text(source_path)
+    member = split[1] if split is not None else source_path
+    return PurePosixPath(member.replace("\\", "/")).name
+
+
 def retained_chatgpt_sidecars(
     source_conn: sqlite3.Connection,
     blob_store: BlobStore,
@@ -410,7 +438,7 @@ def retained_chatgpt_sidecars(
         except (JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
             logger.debug("retained chatgpt asset index is not JSON (%s): %s", path, exc)
             continue
-        name = PurePosixPath(path.replace("\\", "/")).name
+        name = _member_basename(path)
         if name == "library_files.json" and library_payload is None:
             library_payload = document
         elif name == "conversation_asset_file_names.json" and asset_names_payload is None:
@@ -429,10 +457,10 @@ def retained_chatgpt_sidecars(
     # member, with the member named relative to its export scope.
     member_by_asset: dict[str, str] = {}
     for path, artifact in sorted(assets.items()):
-        asset_id = _member_asset_id(PurePosixPath(path.replace("\\", "/")).name)
+        asset_id = _member_asset_id(_member_basename(path))
         if asset_id is None:
             continue
-        member = path[len(scope) :] if path.startswith(scope) else PurePosixPath(path.replace("\\", "/")).name
+        member = path[len(scope) :] if path.startswith(scope) else _member_basename(path)
         _record_asset_blob(asset_blobs, member_by_asset, asset_id, member, (artifact.blob_hash, artifact.blob_size))
 
     if library_payload is None and asset_names_payload is None and not asset_blobs:

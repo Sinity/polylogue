@@ -32,7 +32,10 @@ def seed_thread_state(
     observed_at_ms: int = 1_000,
     observation_order: int = 0,
 ) -> None:
-    """Project one scope's thread state: ``(thread_id, title)`` and spawn triples."""
+    """Project one scope's thread state: ``(thread_id, title)`` and spawn triples.
+
+    Seeds carry no source tier, so no retained export is ranked.
+    """
     write_thread_state_graph(
         conn,
         source_scope=source_scope,
@@ -42,6 +45,7 @@ def seed_thread_state(
         blob_hash=blob_hash,
         observed_at_ms=observed_at_ms,
         observation_order=observation_order,
+        export_order=lambda _raw_id: None,
     )
     conn.commit()
 

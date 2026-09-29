@@ -8,11 +8,34 @@ from pathlib import Path
 
 from polylogue.core.enums import Provider
 from polylogue.schemas.generation.evidence import SchemaEvidence
-from polylogue.schemas.observation import ProviderConfig, extract_schema_units_from_payload
+from polylogue.schemas.observation import ProviderConfig, extract_schema_units_from_payload, resolve_provider_config
 from polylogue.schemas.source_inference import SchemaSourceInput, _collect_candidate, _SourceCandidate, infer_sources
 
 
 class TestExtractSchemaUnitsFromPayload:
+    def test_declared_opaque_artifact_yields_no_schema_units(self) -> None:
+        """An ``opaque-non-applicable`` path is never observed, whatever its bytes look like.
+
+        Anti-vacuity: without the declaration gate the conversation-shaped
+        attachment below is observed as a ChatGPT document.
+        """
+        payload = {
+            "id": "attachment",
+            "title": "looks like a conversation",
+            "mapping": {"node-1": {"id": "node-1", "parent": None, "children": []}},
+        }
+        config = resolve_provider_config(Provider.CHATGPT)
+
+        def units(source_path: str) -> list[object]:
+            return list(
+                extract_schema_units_from_payload(
+                    payload, source_name=Provider.CHATGPT, source_path=source_path, raw_id="raw-1", config=config
+                )
+            )
+
+        assert units("export/conversations.json"), "sanity: the same payload is observable at a session path"
+        assert units("export/file-abc.json") == []
+
     def test_record_granularity_compacts_and_profiles_samples(self) -> None:
         config = ProviderConfig(
             name=Provider.CLAUDE_CODE,

@@ -5364,19 +5364,32 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         if not conv_id or not isinstance(conv_id, str):
             self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request", "session_id is required")
             return
+        # The caller's own ``mutation.session.delete.preview`` reference. The
+        # route never prepares a preview for the caller: deleting on a bare
+        # session id would record a bound-token authorization for a plan the
+        # caller never saw.
+        preview_ref = body.get("preview_ref")
+        if not preview_ref or not isinstance(preview_ref, str):
+            self._send_error(HTTPStatus.BAD_REQUEST, "invalid_request", "preview_ref is required")
+            return
 
         op_id = f"reset-{scope}-{conv_id[:16]}"
 
         async def _do_reset(poly: Polylogue) -> dict[str, object]:
+            from polylogue.operations.daemon_errors import DaemonOperationRejectedError
+
             # Route through the typed delete contract so resolution and
-            # idempotency live in ArchiveMutationsMixin (#862). The prior
-            # implementation invoked the async ``delete_session`` from
-            # a sync callback, sending the resulting coroutine into the
-            # JSON encoder unchanged.
-            result = await poly.delete_session_safe(conv_id)
+            # idempotency live in ArchiveMutationsMixin (#862).
+            try:
+                result = await poly.delete_session_safe(conv_id, preview_ref=preview_ref)
+            except DaemonOperationRejectedError as exc:
+                return {"refused": exc.outcome, "detail": exc.detail, "session_id": conv_id}
             return {"deleted": result.outcome == "deleted", "session_id": conv_id}
 
         result = self._sync_run(_do_reset)
+        if isinstance(result, dict) and isinstance(result.get("refused"), str):
+            self._send_error(HTTPStatus.CONFLICT, str(result["refused"]), str(result.get("detail") or ""))
+            return
 
         emit_daemon_event("reset", operation_id=op_id, payload=result if isinstance(result, dict) else None)
 

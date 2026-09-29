@@ -10,7 +10,6 @@ from typing import Any
 
 from polylogue.config import Config
 from polylogue.operations import mutation_actuators as actuators
-from polylogue.operations.mutation_transaction import MutationReceipt
 
 
 class FacadeProductRefusalError(ValueError):
@@ -106,34 +105,6 @@ def _normalize_product_fields(product: str, fields: dict[str, Any]) -> dict[str,
 
         parse_correction_kind(fields["kind"])
     return fields
-
-
-def delete_session_product(config: Config, session_id: str, *, actor: str) -> tuple[str, MutationReceipt] | None:
-    """Delete a resolved session with a bound-token authorization."""
-    from polylogue.config import active_archive_root
-    from polylogue.operations.archive_mutation import MutationBlockedError, require_archive_write_authority
-    from polylogue.operations.bindings import runtime_operation_binding
-    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    require_archive_write_authority(config, "api.delete_session")
-    root = active_archive_root(config)
-    with ArchiveStore.open_existing(root, read_only=False) as archive:
-        try:
-            resolved = archive.resolve_session_id(session_id)
-        except KeyError:
-            return None
-        actuator = actuators.SessionDeleteActuator()
-        executor = OperationExecutor.for_archive_root(root)
-        args = actuators.SessionDeleteArgs(archive=archive, session_ids=(resolved,))
-        binding = runtime_operation_binding(actuator)
-        principal = MutationPrincipal(actor, frozenset({"archive.delete_session"}), "api", "write")
-        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=root)
-        authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
-        receipt = executor.execute_bound(binding, preview, authorization, args)
-    if receipt.status == "blocked":
-        raise MutationBlockedError(receipt.operation, receipt.detail, receipt.target_refs)
-    return resolved, receipt
 
 
 def record_work_event_product(
@@ -290,15 +261,39 @@ def facade_post_blackboard_note(request: Any, context: Any, audit: Any, snapshot
 
 
 def facade_delete_session(request: Any, context: Any, audit: Any, snapshot: Any) -> dict[str, object]:
-    """Resolve one session and consume an exact bound delete authorization."""
+    """Delete one session under the delete preview its caller presents.
+
+    The caller prepared the preview through ``mutation.session.delete.preview``
+    and presents its reference here, so the ``bound_token`` authorization this
+    issues is bound to a plan the same authenticated principal saw. A preview
+    the principal does not own, one for another session, a consumed, cancelled
+    or expired one, and one whose plan no longer matches live state are
+    refused before any effect.
+    """
     from polylogue.operations.bindings import runtime_operation_binding
-    from polylogue.operations.mutation_transaction import MutationPrincipal, OperationExecutor
+    from polylogue.operations.mutation_transaction import (
+        AuthorizationMismatchError,
+        OperationExecutor,
+        PlanStaleError,
+        TokenConsumedError,
+        TokenExpiredError,
+        make_target_ref,
+    )
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
     del snapshot
     assert context.runtime is not None
     token = str(request.payload["session_id"])
-    actor = str(request.payload.get("actor") or context.principal.actor_ref)
+    preview_ref = str(request.payload["preview_ref"])
+    principal = context.principal
+    actuator = actuators.SessionDeleteActuator()
+    binding = runtime_operation_binding(actuator)
+    try:
+        preview = audit.preview_for_principal(preview_ref, principal)
+    except AuthorizationMismatchError as exc:
+        raise FacadeProductRefusalError("preview_not_owned", str(exc)) from exc
+    if preview.plan.operation != binding.spec.name:
+        raise FacadeProductRefusalError("preview_operation_mismatch", "preview does not prepare a session delete")
     with ArchiveStore.open_existing(context.archive_root, read_only=False) as archive:
         try:
             resolved = archive.resolve_session_id(token)
@@ -312,14 +307,24 @@ def facade_delete_session(request: Any, context: Any, audit: Any, snapshot: Any)
                 "affected_count": 0,
                 "result": {"value": value},
             }
-        actuator = actuators.SessionDeleteActuator()
+        if preview.plan.target_refs != (make_target_ref("session", resolved),):
+            raise FacadeProductRefusalError("preview_target_mismatch", "preview does not target this session")
         args = actuators.SessionDeleteArgs(archive=archive, session_ids=(resolved,))
-        binding = runtime_operation_binding(actuator)
-        principal = MutationPrincipal(actor, context.principal.capabilities, "api", context.principal.role_label)
         executor = OperationExecutor(audit=audit, archive_root=context.archive_root)
-        preview = executor.prepare_bound_for_archive(binding, args, principal, archive_root=context.archive_root)
-        authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
-        receipt = executor.execute_bound(binding, preview, authorization, args)
+        try:
+            authorization = executor.authorize_bound(binding, preview, principal, confirmation_strength="bound_token")
+        except TokenExpiredError as exc:
+            raise FacadeProductRefusalError("preview_expired", str(exc)) from exc
+        except ValueError as exc:
+            # The audit tier refuses a preview that is no longer ``prepared``
+            # (already authorized, consumed, cancelled, or marked stale).
+            raise FacadeProductRefusalError("preview_not_active", str(exc)) from exc
+        try:
+            receipt = executor.execute_bound(binding, preview, authorization, args)
+        except PlanStaleError as exc:
+            raise FacadeProductRefusalError("selection_changed_after_preview", str(exc)) from exc
+        except (TokenConsumedError, TokenExpiredError) as exc:
+            raise FacadeProductRefusalError("preview_not_active", str(exc)) from exc
     if receipt.status == "blocked":
         raise FacadeProductRefusalError("mutation_blocked", receipt.detail or receipt.operation)
     deleted = receipt.affected_count > 0

@@ -12,6 +12,7 @@ from polylogue.schemas.observation_identity import (
 )
 from polylogue.schemas.observation_models import PROVIDERS, ProviderConfig, SchemaUnit
 from polylogue.schemas.observation_runtime import (
+    declared_observation_non_applicable,
     declared_structured_observation_config,
     extract_schema_units_from_payload,
 )
@@ -20,6 +21,7 @@ __all__ = [
     "PROVIDERS",
     "ProviderConfig",
     "SchemaUnit",
+    "declared_observation_non_applicable",
     "declared_structured_observation_config",
     "derive_bundle_scope",
     "extract_schema_units_from_payload",

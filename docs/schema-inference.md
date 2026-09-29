@@ -95,8 +95,13 @@ coverage. Every declared artifact family has an `OriginSpec` observation
 contract: session and structured sidecars contribute privacy-safe shape
 evidence even when they are not session-admitted, while opaque/binary families
 have an explicit non-applicability outcome and remain raw acquisition
+evidence. That declaration holds inside ZIP exports too: a declared opaque
+member, such as a ChatGPT `file-<id>.json` attachment, is never read as
 evidence. SQLite members use the logical table/column route and preserve
-member/table retention dispositions without row values. Unsupported sources,
+member/table retention dispositions without row values. A live SQLite member's
+revision is the digest of its whole-database logical export, so a commit still
+in the WAL moves it, and its structure is read from that export's header in the
+same read transaction. Unsupported sources,
 malformed documents, changing files, and incomplete trailing records are
 reported separately. Browser envelopes require a native-payload adapter;
 opaque protobuf files retain their typed non-applicability outcome.

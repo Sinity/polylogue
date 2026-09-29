@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import io
 import time
 import zipfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, TypeAlias, cast
@@ -14,7 +15,7 @@ from typing import IO, TypeAlias, cast
 import ijson
 
 from polylogue.archive.artifact_taxonomy import classify_artifact
-from polylogue.archive.zip_admission import ZipBombError
+from polylogue.archive.zip_admission import ZipAdmission, ZipBombError
 from polylogue.config import Source
 from polylogue.core.content_identity import (
     ContentIdentityRefusal,
@@ -26,14 +27,6 @@ from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normaliz
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
 from polylogue.core.raw_coordinates import MemberAddressingMode, split_zip_member_text
-from polylogue.sources.live.admission import (
-    AdmissionAttempt,
-    AdmissionReceipt,
-    AdmissionState,
-    ArtifactIdentity,
-    ResourceEnvelope,
-    SourceCoordinates,
-)
 from polylogue.storage.blob_store import BlobStore
 from polylogue.storage.cursor_state import CursorStatePayload
 
@@ -48,6 +41,12 @@ from .acquisition_boundary import (
     release_captures_on_refusal,
     release_refused_capture,
 )
+from .decoder_zip import (
+    ZIP_JSON_SUFFIXES,
+    declared_artifact_provider,
+    is_declared_artifact_path,
+    provider_detection_path,
+)
 from .decoders import _zip_entry_provider_hint
 from .dispatch import GROUP_PROVIDERS, detect_provider, detect_provider_from_raw_bytes_evidence
 from .parsers.base import RawSessionData
@@ -61,6 +60,14 @@ AcquisitionObservation: TypeAlias = JSONDocument
 ObservationCallback: TypeAlias = Callable[[AcquisitionObservation], None]
 StatusCallback: TypeAlias = Callable[[str], None]
 CursorState: TypeAlias = CursorStatePayload
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactIdentity:
+    """Exact identity of an input already retained in the blob store."""
+
+    sha256: str
+    size_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -431,42 +438,10 @@ def read_plain_source_file(context: SourceReadContext) -> RawSessionData:
         from polylogue.storage.blob_publication import publication_receipt_id
 
         publication_id = publication_receipt_id(context.blob_store, blob_hash)
-    # The blob is now an exact artifact. Publish the source-owned receipt at
-    # this boundary, before parsing or indexing can run. The callback is the
-    # existing observation sink, so ordinary and bounded files share one
-    # lifecycle and no disposable offset can certify admission.
-    artifact = ArtifactIdentity(blob_hash, blob_size)
-    attempt = AdmissionAttempt(
-        attempt_id=f"{context.source.name}:{context.path}:{artifact.sha256}",
-        coordinates=SourceCoordinates(context.source.name, str(original_source_path or context.path)),
-        artifact=artifact,
-        source_law=f"{context.source.name}:stream-v1",
-        parser_identity="detector-before-parser-v1",
-        start_frontier=None,
-        envelope=ResourceEnvelope(max_bytes=blob_size, max_duration_ms=0),
-    )
-
-    def publish_receipt(receipt: AdmissionReceipt) -> None:
-        if context.observation_callback is None:
-            return
-        context.observation_callback(
-            {
-                "phase": "source-admission",
-                "source_path": str(context.path),
-                "attempt_id": attempt.attempt_id,
-                "disposition": receipt.disposition.value,
-                "artifact_sha256": artifact.sha256,
-                "artifact_size": artifact.size_bytes,
-                "source_law": attempt.source_law,
-                "parser_identity": attempt.parser_identity,
-            }
-        )
-
-    # Keep the state at OBSERVED here: the raw/source transaction is the
-    # production commit authority and completes the terminal transition in
-    # its owning layer. Marking this ACCEPTED would authorize progress before
-    # that commit exists.
-    AdmissionState(attempt, publish_receipt)
+    # The returned record is not an admission: the raw row and its
+    # ``raw_payload`` receipt, committed by the caller's source-tier write,
+    # are the durable accepted outcome, and a restart re-acquires exactly
+    # what that commit does not hold.
     observe_acquisition(
         context.observation_callback,
         phase="source-file-streamed",
@@ -687,68 +662,47 @@ def _whole_member_provider(context: ZipEntryReadContext) -> Provider | None:
     return None
 
 
-def replay_zip_entry_acquisition_payloads(
+@contextlib.contextmanager
+def open_replayed_zip_unit(
     zf: zipfile.ZipFile,
     context: ZipEntryReadContext,
-) -> Iterable[SerializedSplitPayload]:
-    """Replay the exact payload units produced by ZIP acquisition.
+    *,
+    source_index: int | None,
+) -> Iterator[IO[bytes]]:
+    """Reopen the exact bytes of one unit ZIP acquisition retains.
 
-    A bundle member is acquired as one preserved artifact unless the
-    production splitter recognizes at least two session payloads. In that
-    case each emitted payload uses the splitter's source index and serialized
-    bytes. Backup verification uses this read-only replay instead of inventing
-    a JSON-array indexing rule.
+    A whole member (``source_index`` ``None``) streams from the archive; a
+    split element is re-split and yields only that element's serialized
+    bytes, which the splitter already bounds. The caller verifies the bytes
+    against the recorded blob identity.
     """
-    entry_provider_hint = _whole_member_provider(context)
-    if entry_provider_hint is not None:
+    if source_index is None:
         with open_bound_member(zf, context.entry, context.bound_provider) as handle:
-            payload_bytes = handle.read()
-            identity = payload_content_identity(payload_bytes)
-            yield SerializedSplitPayload(
-                provider=entry_provider_hint,
-                payload_bytes=payload_bytes,
-                source_index=None,
-                addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
-                content_identity=identity,
-            )
+            yield handle
         return
-
     state = _ZipEntrySplitState()
-    split_payloads = _iter_zip_entry_split_payloads(zf, context, state)
-    try:
-        for payload in split_payloads:
-            state.did_split = True
-            yield payload
-    except ContentIdentityRefusal:
-        # A refused element is the member's recorded gap; every element that
-        # was acquired beside it stays a replay candidate.
-        if not state.did_split:
-            raise
-        return
-    if state.did_split:
-        return
-
-    # Preserve original ZIP entry bytes when it is metadata or a single
-    # session document, matching the ordinary acquisition fallback.
-    with open_bound_member(zf, context.entry, context.bound_provider) as handle:
-        payload_bytes = handle.read()
-        identity = payload_content_identity(payload_bytes)
-        yield SerializedSplitPayload(
-            provider=state.detected_provider,
-            payload_bytes=payload_bytes,
-            source_index=None,
-            addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
-            content_identity=identity,
-        )
+    for payload in _iter_zip_entry_split_payloads(zf, context, state):
+        if payload.source_index == source_index:
+            yield io.BytesIO(payload.payload_bytes)
+            return
+    raise LookupError(f"ZIP member {context.entry.filename!r} no longer yields element {source_index}")
 
 
 @dataclass(frozen=True, slots=True)
 class ReplayedZipRevision:
-    """The revision and size of one payload unit ZIP acquisition retains."""
+    """The identities of one payload unit ZIP acquisition retains.
+
+    ``revision`` is the SHA-256 of the unit's bytes and ``content_identity``
+    the value identity acquisition records for it. A replayed unit carries
+    only these digests, never its bytes: a preserved member can be several
+    gigabytes, and a verification pass keeps every unit it replayed.
+    """
 
     source_index: int | None
     revision: str
     size_bytes: int
+    addressing_mode: MemberAddressingMode
+    content_identity: str
 
 
 class _HashingZipEntry:
@@ -832,11 +786,13 @@ def _stream_member_revision(
     # which is hashed for the revision as it is read.
     reader = _HashingZipEntry(zf, entry, location, checkpoint)
     try:
-        stream_payload_content_identity(cast(IO[bytes], reader), checkpoint=checkpoint)
+        identity = stream_payload_content_identity(cast(IO[bytes], reader), checkpoint=checkpoint)
         reader.drain()
     finally:
         reader.close()
-    return ReplayedZipRevision(None, reader.digest.hexdigest(), reader.hashed)
+    return ReplayedZipRevision(
+        None, reader.digest.hexdigest(), reader.hashed, MemberAddressingMode.WHOLE_MEMBER, identity
+    )
 
 
 def replay_zip_entry_acquisition_revisions(
@@ -845,11 +801,13 @@ def replay_zip_entry_acquisition_revisions(
     *,
     checkpoint: Callable[[], None] | None = None,
 ) -> Iterable[ReplayedZipRevision]:
-    """Replay the revisions of the units ZIP acquisition would retain.
+    """Replay the identities of the units ZIP acquisition would retain.
 
-    Same unit decisions as :func:`replay_zip_entry_acquisition_payloads`, but a
-    whole member is hashed in chunks, as acquisition streams it, instead of
-    being read into memory: an admitted member can be several gigabytes.
+    A member is one preserved unit unless the production splitter recognizes
+    at least two session payloads; then each split carries the splitter's
+    source index. A whole member is hashed in chunks, as acquisition streams
+    it, instead of being read into memory. A refused split element is raised
+    after its validated siblings were yielded, as acquisition records it.
     """
     if _whole_member_provider(context) is not None:
         yield _stream_member_revision(zf, context.entry, context.bound_provider, checkpoint)
@@ -857,8 +815,15 @@ def replay_zip_entry_acquisition_revisions(
     state = _ZipEntrySplitState()
     for payload in _iter_zip_entry_split_payloads(zf, context, state):
         state.did_split = True
+        identity = payload.content_identity
+        if identity is None:
+            identity = payload_content_identity(payload.payload_bytes)
         yield ReplayedZipRevision(
-            payload.source_index, hashlib.sha256(payload.payload_bytes).hexdigest(), len(payload.payload_bytes)
+            payload.source_index,
+            hashlib.sha256(payload.payload_bytes).hexdigest(),
+            len(payload.payload_bytes),
+            payload.addressing_mode,
+            identity,
         )
     if not state.did_split:
         yield _stream_member_revision(zf, context.entry, context.bound_provider, checkpoint)
@@ -916,6 +881,47 @@ def sniff_zip_provider(
     return ranked[0][0]
 
 
+@dataclass(frozen=True, slots=True)
+class ZipMemberAdmission:
+    """The provider a ZIP's members are admitted under, fixed before any is read."""
+
+    provider_hint: Provider
+    #: Member relevance when no provider is known: declared artifact paths.
+    allowed_path: Callable[[str], bool] | None
+
+    def entry_provider_hint(self, filename: str) -> Provider:
+        """A member's hint: the ZIP's provider, or its path declaration's."""
+        if self.provider_hint is Provider.UNKNOWN:
+            return declared_artifact_provider(filename) or self.provider_hint
+        return self.provider_hint
+
+
+def zip_member_admission(
+    zf: zipfile.ZipFile,
+    zip_path: Path,
+    central_directory: list[zipfile.ZipInfo],
+    fallback_provider: Provider,
+) -> ZipMemberAdmission:
+    """Resolve an export ZIP's provider before its members are admitted.
+
+    A provider-agnostic location (an import inbox) names no provider, and a
+    member validator without one relates no member to an artifact rule, so a
+    raw-only export member (a ChatGPT ``file-*`` asset) would be filtered out
+    before acquisition. The dominant provider is sniffed from the safe JSON
+    members first; a ZIP with no strict winner is admitted by declared
+    artifact paths, each member hinted by its own declaration.
+    """
+    provider = fallback_provider
+    if fallback_provider is Provider.UNKNOWN:
+        safe_json_entries = ZipAdmission(zip_path=zip_path).filter_entries(
+            central_directory,
+            allowed_suffixes=ZIP_JSON_SUFFIXES,
+        )
+        detection_entries = [info for info in safe_json_entries if provider_detection_path(info.filename)]
+        provider = sniff_zip_provider(zf, detection_entries) or fallback_provider
+    return ZipMemberAdmission(provider, is_declared_artifact_path if provider is Provider.UNKNOWN else None)
+
+
 def iter_zip_entry_raw_data(
     zf: zipfile.ZipFile,
     context: ZipEntryReadContext,
@@ -969,6 +975,7 @@ def iter_zip_entry_raw_data(
 
 __all__ = [
     "AcquisitionObservation",
+    "ArtifactIdentity",
     "CursorState",
     "DetectedEntryPayload",
     "ObservationCallback",
@@ -977,8 +984,9 @@ __all__ = [
     "SplitPayloadBuffer",
     "StatusCallback",
     "ZipEntryReadContext",
+    "ZipMemberAdmission",
     "iter_entry_payloads",
-    "replay_zip_entry_acquisition_payloads",
+    "open_replayed_zip_unit",
     "replay_zip_entry_acquisition_revisions",
     "ReplayedZipRevision",
     "iter_zip_entry_raw_data",
@@ -988,4 +996,5 @@ __all__ = [
     "raw_data_record",
     "read_plain_source_file",
     "stream_preserved_zip_entry_raw_data",
+    "zip_member_admission",
 ]

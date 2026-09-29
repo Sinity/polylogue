@@ -248,7 +248,7 @@ def test_baseline_replay_agrees_with_live_zip_refusal(tmp_path: Path) -> None:
     from polylogue.config import Source
     from polylogue.sources.source_acquisition_components import (
         ZipEntryReadContext,
-        replay_zip_entry_acquisition_payloads,
+        replay_zip_entry_acquisition_revisions,
     )
 
     archive = tmp_path / "bundle.zip"
@@ -266,7 +266,7 @@ def test_baseline_replay_agrees_with_live_zip_refusal(tmp_path: Path) -> None:
             bound_provider=Provider.CLAUDE_CODE,
         )
         with pytest.raises(ForeignOriginContentError):
-            list(replay_zip_entry_acquisition_payloads(zf, context))
+            list(replay_zip_entry_acquisition_revisions(zf, context))
 
 
 def test_one_shot_fact_path_refuses_foreign_document(tmp_path: Path) -> None:

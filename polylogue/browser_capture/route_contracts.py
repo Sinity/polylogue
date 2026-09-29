@@ -20,6 +20,11 @@ BrowserCaptureAuthPolicy = Literal[
     # enforced (extension-only); the short-lived single-use code carried in
     # the request body is this route's credential (polylogue-gnie).
     "unauthenticated_pairing_exchange",
+    # No bearer token accepted or required -- a client must authenticate the
+    # receiver before it sends the bearer anywhere. The answer is an HMAC,
+    # keyed by the bearer, over the client's fresh challenge; it proves
+    # possession without revealing the bearer.
+    "unauthenticated_receiver_attestation",
 ]
 BrowserCaptureRouteKind = Literal[
     "capabilities",
@@ -49,6 +54,7 @@ BrowserCaptureRouteKind = Literal[
     "backfill_checkpoint_store",
     "backfill_checkpoint_read",
     "pairing_redeem",
+    "receiver_attestation",
     "capture_health_report",
     "capture_health_list",
 ]
@@ -320,6 +326,21 @@ BROWSER_CAPTURE_ROUTE_CONTRACTS: tuple[BrowserCaptureRouteContract, ...] = (
             "token, so a fresh install never requires the operator to view/copy/paste the "
             "token itself (polylogue-gnie). Wrong codes and reuse are rejected; 5 wrong "
             "guesses or expiry invalidate the pending code."
+        ),
+    ),
+    BrowserCaptureRouteContract(
+        "POST",
+        "/v1/receiver/attest",
+        "receiver_attestation",
+        "unauthenticated_receiver_attestation",
+        "BrowserCaptureReceiverAttestationRequest",
+        "BrowserCaptureReceiverAttestationPayload | BrowserCaptureErrorPayload",
+        (
+            "Answers a client's fresh 32-byte challenge with HMAC-SHA256 keyed by the receiver "
+            "bearer over the receiver identity and the challenge, so the native pairing host "
+            "releases the bearer only to the receiver that holds it, never to another process "
+            "listening on the loopback port. Refused with receiver_auth_disabled when the "
+            "receiver runs without a bearer."
         ),
     ),
     BrowserCaptureRouteContract(

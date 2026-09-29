@@ -88,3 +88,31 @@ def test_http_query_params_accept_a_declared_origin() -> None:
     )
     built = _build_query_spec_params({"origin": [valid]}, handler)
     assert built["origin"] == (valid,)
+
+
+def test_unknown_export_origin_is_accepted_by_every_query_validation_route() -> None:
+    """Sessions are stored under ``unknown-export``, so every filter route must select them.
+
+    Anti-vacuity: declaring the unknown-export OriginSpec with
+    ``public_filter=False`` makes each of these routes refuse the token.
+    """
+    from polylogue.archive.query.expression import compile_expression
+    from polylogue.archive.query.spec import SessionQuerySpec
+    from polylogue.daemon.http import DaemonAPIHandler, _build_query_spec_params
+    from polylogue.mcp.query_contracts import _validate_origin_filters
+
+    token = "unknown-export"
+    assert unknown_origin_filter_tokens([token]) == ()
+    assert SessionQuerySpec.from_params({"origin": token}).origins == (token,)
+    assert SessionQuerySpec.from_params({"exclude_origin": token}).excluded_origins == (token,)
+    _validate_origin_filters({"origin": token, "exclude_origin": token})
+    assert isinstance(compile_expression(f"origin:{token}"), SessionQuerySpec)
+    handler = cast(
+        "DaemonAPIHandler",
+        SimpleNamespace(
+            _get_param=lambda params, key: None,
+            _get_bool=lambda params, key: False,
+            _get_int=lambda params, key, default=0: default,
+        ),
+    )
+    assert _build_query_spec_params({"origin": [token]}, handler)["origin"] == (token,)

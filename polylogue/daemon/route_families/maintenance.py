@@ -94,7 +94,9 @@ ROUTES: tuple[RouteSpec, ...] = (
         response_contract="MutationResultPayload",
         discovery_text="Reset one selected session through the daemon write owner.",
         example=ExampleSpec(
-            "one-session", "Reset one selected session", (("scope", "session"), ("session_id", "session-a"))
+            "one-session",
+            "Reset one selected session under its delete preview",
+            (("scope", "session"), ("session_id", "session-a"), ("preview_ref", "preview-a")),
         ),
         migration_reason="This compatibility route still calls the safe session-delete API directly; maintenance.reset owns archive-file reset.",
         write_gate=True,

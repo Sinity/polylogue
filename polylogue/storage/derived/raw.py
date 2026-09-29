@@ -8,11 +8,11 @@ per-logical-key transactions. This is not an observation-wide atomic publisher.
 from __future__ import annotations
 
 import hashlib
-import io
 import json
 import sqlite3
 import tempfile
 import weakref
+import zipfile
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
@@ -29,6 +29,7 @@ from polylogue.archive.revision_authority import (
     parser_census_is_complete,
 )
 from polylogue.core.compute_cancel import compute_cancel, compute_cancel_requested
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.raw_failure_evidence import (
     RAW_FAILURE_DEFERRED_SUPPORT_STATUS,
@@ -666,6 +667,7 @@ class RawObservationDerivation:
                     prepare_session_write,
                     prepared_lineage_bindings,
                     prepared_session_rows_from_shard,
+                    raw_source_path,
                 )
 
                 census_rows = archive.source_connection.execute(
@@ -952,6 +954,7 @@ class RawObservationDerivation:
                                 archive.index_connection,
                                 session,
                                 source_conn=archive.source_connection,
+                                child_source_path=raw_source_path(archive.source_connection, tip_raw_id),
                             )
                             has_parent_claim = (
                                 session.parent_session_provider_id is not None
@@ -1073,7 +1076,7 @@ class RawObservationDerivation:
 
         The candidate windows come from ``retained_blob_source_candidates``,
         the owner backup recoverability reads too. A ZIP member is replayed
-        through acquisition's ZIP admission (``zip_reacquisition_payload``)
+        through acquisition's ZIP admission (``zip_reacquired_unit``)
         and staged only when the replayed value is byte-identical to the
         blob; a structural-only match is ``inexact_payload``. Returns the
         staged blob, or ``None`` with the last candidate's refusal reason.
@@ -1111,19 +1114,26 @@ class RawObservationDerivation:
                     stop=compute_cancel_requested,
                 )
             else:
-                from polylogue.operations.zip_acquisition_replay import zip_reacquisition_payload
+                from polylogue.operations.zip_acquisition_replay import zip_reacquired_unit
 
-                payload, reason = zip_reacquisition_payload(row, source_path=source_path, zip_payload_cache={})
+                # The resolved unit streams from its member again: a preserved
+                # member can be gigabytes, so its bytes are never held whole.
+                unit, reason = zip_reacquired_unit(row, source_path=source_path, zip_payload_cache={})
                 prepared = None
-                if payload is not None:
-                    prepared = stage_exact_blob(
-                        blob_store,
-                        io.BytesIO(payload),
-                        blob_hash=blob_hash,
-                        size_bytes=len(payload),
-                        stop=compute_cancel_requested,
-                    )
-                    reason = None if prepared is not None else "inexact_payload"
+                if unit is not None and unit.open_payload is not None:
+                    try:
+                        with unit.open_payload() as unit_stream:
+                            prepared = stage_exact_blob(
+                                blob_store,
+                                unit_stream,
+                                blob_hash=blob_hash,
+                                size_bytes=unit.size_bytes,
+                                stop=compute_cancel_requested,
+                            )
+                    except (OSError, zipfile.BadZipFile, LookupError, ContentIdentityRefusal) as exc:
+                        reason = f"error:{type(exc).__name__}"
+                    else:
+                        reason = None if prepared is not None else "inexact_payload"
             if prepared is not None:
                 return prepared, None
         return None, reason
@@ -1247,6 +1257,11 @@ class RawObservationDerivation:
                     pipeline_decode=False,
                     use_session_shards=replacement.prepared_inputs is not None,
                     bulk_fts=True,
+                    # One publication is one component of a pass: each
+                    # replayed session proves its own FTS rows, and the
+                    # archive-wide audit belongs to the daemon's
+                    # fts_readiness_binding stage after the burst.
+                    exact_fts_audit=False,
                 )
             except RetainedPreparationRetryableError:
                 return False

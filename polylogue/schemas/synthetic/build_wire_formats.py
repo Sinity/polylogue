@@ -271,6 +271,36 @@ def _normalize_claude_code_content(
                 block["text"] = _text_for_role(rng, role, turn_index=index, theme=theme)
         if flatten_nested and isinstance(block, dict) and isinstance(block.get("content"), list):
             block["content"] = _text_for_role(rng, role, turn_index=index, theme=theme)
+        if isinstance(block, dict):
+            _alias_claude_code_block_content(block)
+
+
+def _alias_claude_code_block_content(block: SyntheticRecord) -> None:
+    """Make a text, thinking or tool-use block's ``content`` repeat its own body.
+
+    The inferred block schema merges every form, so it offers the tool-result
+    ``content`` body to the other forms too. Those forms carry no such field
+    on the wire and their parser reads only the typed body, so a witness that
+    keeps the field for construct coverage must not give it an independent
+    value no parser of that form can conserve.
+    """
+    content = block.get("content")
+    block_type = block.get("type")
+    if not isinstance(content, str) or block_type not in {"text", "thinking", "tool_use"}:
+        return
+    owner: SyntheticRecord = block
+    field = str(block_type)
+    if block_type == "tool_use":
+        tool_input = block.get("input")
+        if not isinstance(tool_input, dict):
+            tool_input = {}
+            block["input"] = tool_input
+        owner, field = tool_input, "content"
+    body = owner.get(field)
+    if isinstance(body, str) and body:
+        block["content"] = body
+    else:
+        owner[field] = content
 
 
 def _claude_code_content_fallback(rng: random.Random, role: str, index: int, theme: SessionTheme | None) -> object:

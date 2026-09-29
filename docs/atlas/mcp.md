@@ -61,9 +61,21 @@ compares every profile identity against its fixture oracle.
 
 ## Insight projections
 
-MCP insight projections still bypass `analysis/registry.py`, so a descriptor
-added to the insight registry does not automatically reach MCP. Check the MCP
-projection explicitly when adding or renaming an insight.
+Registry-backed projections use the insight descriptor's fetch/payload contract.
+`postmortem` and `pathologies` call their analysis facades and attach the shared
+terminal `outcome` at the MCP operation boundary. An empty, complete scope is
+`empty`; a truncated scope or missing profiles/digests is `degraded` even when
+it produced no findings. A nonempty postmortem also names its unavailable
+`longest_tool_gap` measurement rather than implying complete coverage.
+
+## Indeterminate mutations
+
+A mutation whose receipt was lost returns `code="indeterminate"`,
+`retryable=false`, and the original `request_id`. Both privileged daemon calls
+and facade-backed writes use the same typed exception serializer. Recover the
+existing daemon operation by that identity before considering a new mutation;
+`daemon_required` is reserved for a call that found no resident writer. MCP
+cancellation continues to cancel the originally submitted request, not a replay.
 
 ## DISCREPANCIES
 

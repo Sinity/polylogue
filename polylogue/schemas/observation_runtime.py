@@ -48,6 +48,17 @@ def declared_structured_observation_config(
     return config
 
 
+def declared_observation_non_applicable(provider: Provider, source_path: str | Path) -> bool:
+    """Whether the path's artifact rule declares its bytes schema-non-applicable.
+
+    The declaration is terminal: an ``opaque-non-applicable`` member (a
+    ChatGPT export attachment) is never schema evidence, however much its
+    bytes look like a structured document.
+    """
+    rule = artifact_rule_for_path(provider, str(source_path))
+    return rule is not None and rule.observation_strategy == "opaque-non-applicable"
+
+
 @dataclass(frozen=True)
 class _ObservationContext:
     source_name: Provider
@@ -241,6 +252,8 @@ def extract_schema_units_from_payload(
     stream classifier's admission contract.
     """
     if not isinstance(payload, ReplayableRecordSamples) and not is_json_value(payload):
+        return []
+    if source_path is not None and declared_observation_non_applicable(Provider.from_string(source_name), source_path):
         return []
     normalized_payload = cast(JSONValue, payload)
     context = _build_observation_context(

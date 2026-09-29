@@ -79,7 +79,10 @@ logger = get_logger(__name__)
 # ChatGPT commands and ID-less Antigravity tool steps become paired tool
 # calls, OTel session ids escape their components, and a complete JSONL
 # record that does not decode is terminal for every provider.
-_PARSER_FINGERPRINT = "live-batched-v4"
+# v5: Hermes ``.jsonl.txt`` traces are recognized as JSONL (rs02d 10.F010),
+# so a cursor excluded as an unsupported source class under v4 must get a
+# fresh attempt.
+_PARSER_FINGERPRINT = "live-batched-v5"
 # polylogue-11cg9: the dispatcher's byte budget bounds an admitted page's
 # *size* but not the *time* a single full-ingest pass can hold the sole
 # archive writer -- a handful of files, or one slow-to-parse file, can still

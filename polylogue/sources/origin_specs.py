@@ -801,7 +801,9 @@ def recognize_source_class(
     if payload is None:
         import ijson
 
-        is_jsonl = path.suffix.lower() in {".jsonl", ".ndjson"}
+        from polylogue.sources.dispatch import is_jsonl_source_path
+
+        is_jsonl = is_jsonl_source_path(str(path))
         # Only the root fields a signature reads are kept, so a document of any
         # width costs the same memory.
         fields = (
@@ -3185,7 +3187,8 @@ def _unknown_spec() -> OriginSpec:
         ),
         semantic_reparse="no direct parser; retain unknown evidence until a concrete source adapter is admitted",
         display_description="Unrecognized fallback exports",
-        public_filter=False,
+        # Sessions are stored and reported under this origin, so a public
+        # filter must be able to select them.
         topology_capabilities=_no_topology_capabilities(Origin.UNKNOWN_EXPORT),
     )
 

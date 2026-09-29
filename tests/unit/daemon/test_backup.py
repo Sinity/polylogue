@@ -882,6 +882,65 @@ def test_full_evidence_backup_reacquires_legacy_zip_row_without_coordinates(
     assert result.verification["recovered_source_blob_count"] == 1
 
 
+def test_full_evidence_backup_streams_a_recovered_whole_zip_member(
+    workspace_env: dict[str, Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """10.F039: a missing whole-member blob is proven and recovered as a stream.
+
+    Anti-vacuity: replay or recover the member with ``handle.read()`` and the
+    guarded unbounded read below fails the backup.
+    """
+    archive_root = workspace_env["archive_root"]
+    source_path = tmp_path / "whole.zip"
+    member = json.dumps(
+        {"id": "whole", "mapping": {"node": {"message": {"author": {"role": "user"}}}}}, separators=(",", ":")
+    ).encode()
+    with zipfile.ZipFile(source_path, "w") as archive:
+        archive.writestr("conversations.json", member)
+    blob_hash = hashlib.sha256(member).digest()
+    recorded_path = f"{source_path}:conversations.json"
+    with seed_durable_tier(archive_root / "source.db") as conn:
+        conn.execute(
+            """
+            INSERT INTO raw_sessions (
+                raw_id, origin, native_id, source_path, source_index, blob_hash,
+                blob_size, acquired_at_ms, validation_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                hashlib.sha256(member).hexdigest(),
+                "chatgpt-export",
+                "whole",
+                recorded_path,
+                0,
+                blob_hash,
+                len(member),
+                1,
+                "passed",
+            ),
+        )
+        conn.execute(
+            "INSERT INTO blob_refs VALUES (?, ?, ?, ?, ?, ?)",
+            (blob_hash, hashlib.sha256(member).hexdigest(), "raw_payload", recorded_path, len(member), 1),
+        )
+
+    original_read = zipfile.ZipExtFile.read
+
+    def bounded_read(self: zipfile.ZipExtFile, n: int | None = -1) -> bytes:
+        if n is None or n < 0:
+            raise AssertionError("a preserved ZIP member must stream, never be read whole")
+        return original_read(self, n)
+
+    monkeypatch.setattr(zipfile.ZipExtFile, "read", bounded_read)
+    result = backup_archive(output_dir=tmp_path / "backups", profile="full_evidence", verify=True)
+
+    assert result.ok, result.error
+    assert result.verified
+    assert result.verification["recovered_source_blob_count"] == 1
+
+
 @pytest.mark.parametrize(
     ("origin", "revision_kind"),
     [

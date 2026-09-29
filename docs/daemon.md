@@ -288,10 +288,17 @@ Fetch raw (pre-parsed) artifact data by raw ID.
 ### POST /api/reset
 
 Delete one session from the archive. The body must carry
-`{"scope": "session", "session_id": "<id>"}`: `session` is the only scope this
-route implements, and any other scope (including the historical `all` default)
-is refused with `400 unsupported_scope` rather than answered with a success
-envelope for a mutation that never ran.
+`{"scope": "session", "session_id": "<id>", "preview_ref": "<ref>"}`:
+`session` is the only scope this route implements, and any other scope
+(including the historical `all` default) is refused with
+`400 unsupported_scope` rather than answered with a success envelope for a
+mutation that never ran. `preview_ref` is the reference returned by the
+`mutation.session.delete.preview` operation for exactly this session, prepared
+under the same bearer; a request without one is refused with
+`400 invalid_request`. A preview that belongs to another principal, targets
+another session, was already used or cancelled, has expired, or no longer
+matches live state is refused with `409` and the typed refusal code, and nothing is
+deleted.
 
 ### GET /
 

@@ -867,6 +867,17 @@ class _RevisionCensusState:
     membership_candidates: dict[str, set[str]]
     provisional_full_raw_ids: dict[str, set[str]]
     transient_non_session_raw_ids: set[str]
+    #: Reverse of ``provisional_full_raw_ids``: a chain head or probe is looked
+    #: up once per deferred member, so a scan of every key would be quadratic
+    #: in the number of independently growing sources.
+    provisional_key_by_raw_id: dict[str, str] = field(default_factory=dict)
+
+    def bind_provisional_full_raw(self, logical_key: str, raw_id: str) -> None:
+        self.provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
+        self.provisional_key_by_raw_id[raw_id] = logical_key
+
+    def provisional_logical_key(self, raw_id: str) -> str | None:
+        return self.provisional_key_by_raw_id.get(raw_id)
 
 
 @dataclass(slots=True)
@@ -1627,8 +1638,16 @@ def _prepared_retained_outcome(
             sessions = list(artifact.iter_sessions())
         except Exception as exc:
             raise RetainedPreparationRetryableError(f"prepared retained artifact unavailable for raw {raw_id}") from exc
+        # The worker enriched and sealed the dependency under the provider it
+        # resolved from these verified bytes; an UNKNOWN descriptor never
+        # names the evidence that was read.
         stale = prepared_enrichment_dependency_state(
-            archive, artifact, provider=provider, source_path=source_path, sessions=sessions, parser_sidecars=True
+            archive,
+            artifact,
+            provider=artifact.resolved_provider or provider,
+            source_path=source_path,
+            sessions=sessions,
+            parser_sidecars=True,
         )
         if stale is not None:
             raise RetainedPreparationRetryableError(f"prepared retained {stale} for raw {raw_id}")
@@ -2326,7 +2345,7 @@ def _census_historical_revision_evidence(
                 manage_transaction=not batched,
             )
             record_current_parser_source_census(archive._ensure_source_conn(), raw_id, parser_sessions=sessions)
-            state.provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
+            state.bind_provisional_full_raw(logical_key, raw_id)
             commit_unit()
         elif revision_kind is RawRevisionKind.UNKNOWN or (
             _raw_has_pending_envelope(archive, raw_id)
@@ -2381,7 +2400,7 @@ def _census_historical_revision_evidence(
         state.scanned += 1
         state.censused.add(raw_id)
         state.classified += 1
-        state.provisional_full_raw_ids.setdefault(logical_key, set()).add(raw_id)
+        state.bind_provisional_full_raw(logical_key, raw_id)
         commit_unit()
 
     census_selections: tuple[tuple[str, ...] | None, ...]
@@ -2493,12 +2512,7 @@ def _census_historical_revision_evidence(
                         apply_outcome(raw_id, source_index, parsed_outcomes)
                 if head_by_older:
                     source_index_by_raw_id = dict(pending_rows)
-
-                    def bound_logical_key(raw_id: str) -> str | None:
-                        for key, bound_raw_ids in state.provisional_full_raw_ids.items():
-                            if raw_id in bound_raw_ids:
-                                return key
-                        return None
+                    bound_logical_key = state.provisional_logical_key
 
                     unresolved = [
                         older_raw_id
@@ -3727,6 +3741,7 @@ def backfill_historical_revision_evidence(
     deadline_check: Callable[[], None] | None = None,
     use_session_shards: bool = False,
     defer_secondary_indexes: bool | None = None,
+    exact_fts_audit: bool = True,
 ) -> RevisionBackfillResult:
     """Census every retained raw, then replay byte and bundle authority cohorts.
 
@@ -3768,6 +3783,14 @@ def backfill_historical_revision_evidence(
     ``apply_raw_revision_replay`` and ``apply_raw_membership_classification``
     to enable the guard-gated bulk FTS mode for whale prefix-sharing lineage
     cascades. Ordinary convergence callers leave it off.
+
+    ``exact_fts_audit`` (default ``True``) runs the archive-wide exact
+    ``messages_fts`` audit before a non-fresh replay commits. Its cost is the
+    archive's block count, not the replayed component's, so a caller that
+    replays one component per call inside a larger pass passes ``False``:
+    every replayed session still carries its own exact FTS proof, and the
+    daemon's ``fts_readiness_binding`` stage runs the one archive-wide
+    inspection after the burst of block writes that retired its binding.
 
     ``bulk_build`` (polylogue-v6i3, default ``False``) mirrors ``bulk_fts``'s
     threading to the same two apply calls, enabling the broader
@@ -4569,13 +4592,14 @@ def backfill_historical_revision_evidence(
             stamp_derived_schema_identity(archive._conn, "index")
             archive.commit()
         elif replayed and not adoption_deferred:
-            # A complete retained replay verifies the output relation before
-            # commit. This is a direct invariant check, not a ledger publish.
-            from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
+            if exact_fts_audit:
+                # A complete retained replay verifies the output relation before
+                # commit. This is a direct invariant check, not a ledger publish.
+                from polylogue.storage.fts.fts_lifecycle import fts_invariant_snapshot_sync
 
-            fts_snapshot = fts_invariant_snapshot_sync(archive._conn)
-            if not fts_snapshot.messages.ready:
-                raise RuntimeError("retained replay found messages_fts out of sync")
+                fts_snapshot = fts_invariant_snapshot_sync(archive._conn)
+                if not fts_snapshot.messages.ready:
+                    raise RuntimeError("retained replay found messages_fts out of sync")
             archive.commit()
         if stage_timings:
             stage_timings["total"] = time.perf_counter() - census_started

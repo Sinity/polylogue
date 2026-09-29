@@ -85,6 +85,13 @@ DAEMON_OPERATION_OUTCOMES = frozenset(
 )
 
 
+#: Outcomes after which the daemon may have applied the request's effects
+#: although the caller holds no receipt. Every surface raises
+#: ``DaemonMutationIndeterminateError``-shaped recovery for these instead of
+#: reporting a failure a caller could safely retry.
+DAEMON_INDETERMINATE_OUTCOMES = frozenset({"indeterminate", "disconnected-after-acceptance", "restarted"})
+
+
 class _OperationPayload(BaseModel):
     """Base for a concrete machine-operation payload type."""
 
@@ -384,7 +391,9 @@ class FacadeBlackboardPostRequest(_OperationPayload):
 
 class FacadeDeleteSessionRequest(_OperationPayload):
     session_id: str = Field(min_length=1)
-    actor: str = Field(default="user:api", min_length=1)
+    # The caller's own ``mutation.session.delete.preview`` reference; the
+    # handler never prepares a preview on the caller's behalf.
+    preview_ref: str = Field(min_length=1)
 
 
 class FacadeWorkEventRequest(_OperationPayload):

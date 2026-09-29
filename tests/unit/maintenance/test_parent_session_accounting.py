@@ -306,6 +306,7 @@ def test_contradicted_ref_is_not_blocking(tmp_path: Path) -> None:
     Reverting the ``excluded_count`` split makes this test red on
     ``blocking_count``.
     """
+    from polylogue.sources.codex_state_projection import codex_state_source_scope
     from tests.infra.thread_state import seed_spawn_edges
 
     root = tmp_path / "archive"
@@ -316,7 +317,13 @@ def test_contradicted_ref_is_not_blocking(tmp_path: Path) -> None:
 
     graph = sqlite3.connect(root / "index.db")
     try:
-        seed_spawn_edges(graph, [("hook-parent", "conflicted-child", "spawned")])
+        # The spawn graph belongs to the child's own Codex install root: a
+        # thread id names a thread only within its root (rs02d 10.F001).
+        seed_spawn_edges(
+            graph,
+            [("hook-parent", "conflicted-child", "spawned")],
+            source_scope=codex_state_source_scope(str(tmp_path / "exports" / "conflicted-child.jsonl")),
+        )
     finally:
         graph.close()
 
