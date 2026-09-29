@@ -14,7 +14,7 @@ from polylogue.core.enums import Origin, Provider, ToolOutcome, ToolResultUnknow
 from polylogue.core.provider_identity import canonical_acquisition_provider
 from polylogue.core.sources import origin_from_provider
 from polylogue.sources.dispatch import detect_provider, parse_payload
-from polylogue.sources.origin_specs import origin_specs
+from polylogue.sources.origin_specs import SEMCONV_SCHEMA_URL, origin_specs
 from polylogue.sources.parsers import otel_genai
 
 FIXTURE = Path(__file__).parents[3] / "fixtures" / "otel-genai" / "trace.json"
@@ -189,7 +189,7 @@ def test_trace_fallback_and_empty_message_state_are_explicit() -> None:
         if e.event_type == "otel_span_evidence" and e.payload["span_id"] == "b7ad6b7169203331"
     )
     assert event.payload["message_fidelity"] == {"gen_ai.input.messages": "empty", "gen_ai.output.messages": "present"}
-    assert event.payload["schema_url"] == otel_genai.SEMCONV_SCHEMA_URL
+    assert event.payload["schema_url"] == SEMCONV_SCHEMA_URL
     assert event.payload["schema_url_status"] == "supported"
     spec = next(spec for spec in origin_specs() if spec.origin is Origin.OTEL_GENAI)
     assert spec.acquisition_modes == ("otlp-json-file",)

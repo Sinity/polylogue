@@ -267,11 +267,6 @@ def _read_latest_judgment_scheduler_receipt(
 ) -> ArchiveJudgmentSchedulerReceipt | None:
     """Read the newest typed scheduler receipt, optionally for one operation."""
 
-    table = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'judgment_scheduler_receipts'"
-    ).fetchone()
-    if table is None:
-        return None
     query = """
         SELECT operation_id, observed_at_ms, status, reason, retryable, retry_route,
                batch_limit, considered, accepted, rejected, escalated, idempotent,

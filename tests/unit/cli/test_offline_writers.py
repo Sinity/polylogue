@@ -191,11 +191,20 @@ def _prepare_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, needs: str) -
 
 
 def _tier_digest(root: Path) -> str:
-    """Digest every tier file and journal under ``root``."""
+    """Digest tier bytes and nonempty journals, excluding reader bookkeeping.
+
+    SQLite WAL readers may create shared-memory files and empty WAL files;
+    neither is an archive write. A nonempty WAL remains mutation evidence.
+    """
     digest = hashlib.sha256()
     for path in sorted(root.glob("*.db*")):
+        if path.name.endswith("-shm"):
+            continue
+        payload = path.read_bytes()
+        if path.name.endswith("-wal") and not payload:
+            continue
         digest.update(path.name.encode())
-        digest.update(path.read_bytes())
+        digest.update(payload)
     return digest.hexdigest()
 
 

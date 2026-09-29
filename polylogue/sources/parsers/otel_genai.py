@@ -19,7 +19,7 @@ from polylogue.core.enums import BlockType, MaterialOrigin, Provider, ToolOutcom
 from polylogue.core.json import JSONDocument
 from polylogue.core.payload_coercion import optional_string
 from polylogue.core.timestamps import iso_from_epoch_ms, to_epoch_ms
-from polylogue.sources.origin_specs import OTLP_JSON_DIALECT, SEMCONV_SCHEMA_URL
+from polylogue.sources import origin_specs
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 
 
@@ -199,7 +199,7 @@ def _span_coordinate(resource_id: str, span: dict[str, object]) -> tuple[str, st
 
 def _span_variant_key(item: tuple[dict[str, object], str | None]) -> tuple[int, int, str, str]:
     span, schema_url = item
-    schema_rank = 0 if schema_url == SEMCONV_SCHEMA_URL else 1 if schema_url is None else 2
+    schema_rank = 0 if schema_url == origin_specs.SEMCONV_SCHEMA_URL else 1 if schema_url is None else 2
     return (
         schema_rank,
         _span_key(span)[0],
@@ -301,7 +301,7 @@ def looks_like(payload: object) -> bool:
     """Recognize an OTLP JSON document with a normalizable GenAI span."""
     record = _mapping(payload)
     for _resource, span, schema_url in _iter_spans(record):
-        if schema_url not in (None, SEMCONV_SCHEMA_URL):
+        if schema_url not in (None, origin_specs.SEMCONV_SCHEMA_URL):
             continue
         if any(key.startswith("gen_ai.") for key in _attributes(span.get("attributes"))):
             return True
@@ -621,9 +621,9 @@ def _span_evidence_event(
             "schema_url_status": "missing"
             if schema_url is None
             else "supported"
-            if schema_url == SEMCONV_SCHEMA_URL
+            if schema_url == origin_specs.SEMCONV_SCHEMA_URL
             else "unsupported",
-            "dialect": OTLP_JSON_DIALECT,
+            "dialect": origin_specs.OTLP_JSON_DIALECT,
             "message_fidelity": {
                 field: _message_fidelity(attrs, field) for field in ("gen_ai.input.messages", "gen_ai.output.messages")
             },
@@ -674,7 +674,7 @@ def _append_span(
                 },
             )
         )
-    if schema_url not in (None, SEMCONV_SCHEMA_URL):
+    if schema_url not in (None, origin_specs.SEMCONV_SCHEMA_URL):
         return
     span_messages = _messages_for_span(span, attrs, trace_id, transcript)
     messages.extend(span_messages)
@@ -754,7 +754,7 @@ class OtelSpanIndex:
         schema_rank, start, canonical, schema_sort = _span_variant_key((span, schema_url))
         attrs = _attributes(span.get("attributes"))
         genai = any(key.startswith("gen_ai.") for key in attrs)
-        if genai and schema_url in (None, SEMCONV_SCHEMA_URL):
+        if genai and schema_url in (None, origin_specs.SEMCONV_SCHEMA_URL):
             self.normalizable = True
         conversation_id = optional_string(attrs.get("gen_ai.conversation.id"))
         self._conn.execute(
@@ -830,7 +830,7 @@ class OtelSpanIndex:
                 attrs = _attributes(span.get("attributes"))
                 schema_url = json.loads(schema_url_json)
                 parent_id = optional_string(span.get("parentSpanId")) or optional_string(span.get("parent_span_id"))
-                model = _span_model(attrs) if schema_url in (None, SEMCONV_SCHEMA_URL) else None
+                model = _span_model(attrs) if schema_url in (None, origin_specs.SEMCONV_SCHEMA_URL) else None
                 start, span_key = _span_key(span)
                 conn.execute(
                     "INSERT INTO otel_selected (resource_id, trace_id, span_id, span_seq, parent_id, model, "
@@ -1128,8 +1128,6 @@ def parse(payload: JSONDocument, fallback_id: str) -> list[ParsedSession]:
 
 
 __all__ = [
-    "OTLP_JSON_DIALECT",
-    "SEMCONV_SCHEMA_URL",
     "OtelSpanIndex",
     "has_span_identity",
     "looks_like",

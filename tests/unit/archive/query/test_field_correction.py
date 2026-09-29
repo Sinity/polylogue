@@ -31,8 +31,8 @@ def _unknown_field(expression: str) -> UnknownQueryFieldError:
         ("messages where rol:user", "messages where role:user"),
         ("orign:codex-session", "origin:codex-session"),
         ("messages where rol:user and text:rol:x", "messages where role:user and text:rol:x"),
-        ("rol:user text:(rol:x)", "role:user text:(rol:x)"),
-        ("-rol:user", "-role:user"),
+        ("messages where rol:user and text:(rol:x)", "messages where role:user and text:(rol:x)"),
+        ("messages where -rol:user", "messages where -role:user"),
         # Quoted literals are values, not clause keys: only the key is renamed.
         ('messages where rol:user and text:"rol:x"', 'messages where role:user and text:"rol:x"'),
     ],

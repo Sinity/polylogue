@@ -21,12 +21,13 @@ Dropped observations are counted, not merely logged (polylogue-jtwu.2). A
 percentile over a sample that silently lost an unknown number of members is
 not a measurement of the route, so :func:`compute_latency_percentiles` cannot
 be called without stating the drop disposition and returns a
-:class:`RouteLatencyReport` that carries it beside the p50/p95. Every drop
-is recorded in the ops tier's ``route_observation_drops`` -- at once when the
-observation's own write can carry it, otherwise by the process's next
-successful write to that tier or its exit flush -- so a reader in any process
-counts them. A drop that no write can record before the process exits is
-reported as a typed ``route_observation.drops_unflushed`` event instead.
+:class:`RouteLatencyReport` that carries it beside the p50/p95. The writer's
+drops are recorded in the ops tier's ``route_observation_drops`` -- at once
+when its observation write can carry them, otherwise by its next successful
+write or exit flush. A writer drop that remains unrecorded at exit emits a
+typed ``route_observation.drops_unflushed`` event. Client routes emit
+``route_observation.unobserved`` with reason ``client_not_owner`` and keep
+explicitly incomplete process-local counters; they never persist to a tier.
 """
 
 from __future__ import annotations
@@ -144,9 +145,8 @@ class RouteObservationDrops:
 
     ``accounting_complete`` is the honesty bit: zero drops and unknown drops
     are different answers and a percentile must not present the second as the
-    first. The ops-tier reader counts ``route_observation_drops``, where every
-    process records its drops, so its answer is complete; a process-local
-    snapshot of unrecorded drops is not.
+    first. The ops-tier reader counts the writer's ``route_observation_drops``;
+    a process-local snapshot of unrecorded or client-only drops is incomplete.
     """
 
     accounting_complete: bool
@@ -1112,9 +1112,9 @@ def read_latency_report(
     and its row cap for observations, ``MCP_CALL_LOG_RETENTION_MS`` for MCP
     calls), not by this reader.
 
-    Drops come from ``route_observation_drops``, where every emitting process
-    records what it lost (polylogue-jtwu.2), so a reader in another process
-    reports them beside the percentiles and an answer with nothing lost is
+    Writer drops come from ``route_observation_drops`` (polylogue-jtwu.2), so
+    a reader in another process reports them beside the writer's percentiles
+    and an answer with nothing lost is
     ``ok``. A window that starts before the retention horizon is ``degraded``:
     that part of it was retired, observations and drop records alike.
     """

@@ -71,28 +71,20 @@ def test_fresh_ops_schema_declares_daemon_event_lifecycle_indexes(tmp_path: Path
     with sqlite3.connect(ops_db) as conn:
         indexes = {row[1] for row in conn.execute("PRAGMA index_list('daemon_events')")}
 
-    assert {"idx_daemon_events_kind_id", "idx_daemon_events_lifecycle"} <= indexes
+    assert {"idx_daemon_events_kind_id", "idx_daemon_events_lifecycle", "idx_daemon_events_idempotency"} <= indexes
 
 
 def test_existing_ops_db_reapply_creates_daemon_event_indexes(tmp_path: Path) -> None:
     ops_db = tmp_path / "ops.db"
     with sqlite3.connect(ops_db) as conn:
-        conn.executescript(
-            """
-            CREATE TABLE daemon_events (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts_ms INTEGER NOT NULL,
-                kind TEXT NOT NULL,
-                operation_id TEXT,
-                payload_json TEXT NOT NULL DEFAULT '{}'
-            ) STRICT;
-            PRAGMA user_version = 1;
-            """
-        )
+        initialize_archive_tier(conn, ArchiveTier.OPS)
+        conn.execute("DROP INDEX idx_daemon_events_kind_id")
+        conn.execute("DROP INDEX idx_daemon_events_lifecycle")
+        conn.execute("DROP INDEX idx_daemon_events_idempotency")
         initialize_archive_tier(conn, ArchiveTier.OPS)
         indexes = {row[1] for row in conn.execute("PRAGMA index_list('daemon_events')")}
 
-    assert {"idx_daemon_events_kind_id", "idx_daemon_events_lifecycle"} <= indexes
+    assert {"idx_daemon_events_kind_id", "idx_daemon_events_lifecycle", "idx_daemon_events_idempotency"} <= indexes
 
 
 def test_ops_upsert_ingest_cursor_updates_single_row(tmp_path: Path) -> None:

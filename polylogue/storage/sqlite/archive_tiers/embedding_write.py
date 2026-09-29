@@ -794,7 +794,7 @@ def record_embedding_failure(
     lifecycle: EmbeddingFailureState = "retryable" if retryable else "terminal"
     applied = False
     stale_attempt = False
-    legacy_projection = False
+    unscoped_projection = False
     with conn:
         if attempt is not None:
             updated = conn.execute(
@@ -811,8 +811,8 @@ def record_embedding_failure(
             applied = updated.rowcount == 1
             stale_attempt = not applied
         else:
-            legacy_projection = not _session_has_embedding_derivation_state(conn, session_id)
-            if not legacy_projection:
+            unscoped_projection = not _session_has_embedding_derivation_state(conn, session_id)
+            if not unscoped_projection:
                 # An unscoped receipt cannot be authoritative once this
                 # session has an exact key/generation. Preserve it only as
                 # superseded evidence; never project it onto current state.
@@ -842,7 +842,7 @@ def record_embedding_failure(
             )
         elif stale_attempt:
             lifecycle = "superseded"
-        elif legacy_projection:
+        elif unscoped_projection:
             # Databases/callers predating the derivation ledger keep their
             # established failure lifecycle. This branch cannot clobber a
             # newer generation because no generation exists for the session.
@@ -978,9 +978,8 @@ def resolve_embedding_failure(
                     (session_id,),
                 )
         elif generation == 0:
-            # A v2 receipt may outlive a rebuild/first keyed attempt. It may
-            # update the audit ledger, but it can project status only while no
-            # exact derivation generation exists for the session.
+            # An unscoped receipt can project status only while no exact
+            # derivation generation exists for the session.
             has_derivation_state = _session_has_embedding_derivation_state(conn, session_id)
             if not has_derivation_state and action == "requeue":
                 conn.execute(
@@ -1031,13 +1030,7 @@ def read_embedding_failure(conn: sqlite3.Connection, failure_id: str) -> Archive
 
 
 def _session_has_embedding_derivation_state(conn: sqlite3.Connection, session_id: str) -> bool:
-    """Return whether a keyed generation exists, tolerating pre-v3 fixtures."""
-
-    table = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'embedding_derivation_state'"
-    ).fetchone()
-    if table is None:
-        return False
+    """Return whether the canonical derivation table holds a keyed generation."""
     return (
         conn.execute(
             "SELECT 1 FROM embedding_derivation_state WHERE session_id = ?",
