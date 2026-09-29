@@ -52,7 +52,7 @@ def test_snapshot_query_refuses_no_current_vectors_before_embedding(
             provider.query("needle")
         assert failure.value.readiness_status == "empty"
         # The archive owns this handle, including its lifetime.
-        assert connection.execute("SELECT 1").fetchone() == (1,)
+        assert tuple(connection.execute("SELECT 1").fetchone()) == (1,)
     finally:
         connection.close()
 
