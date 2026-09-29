@@ -10,8 +10,7 @@ Operational offsets are intentionally not part of the receipt.
 from __future__ import annotations
 
 import hashlib
-from collections import deque
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -168,75 +167,13 @@ class AdmissionState:
         return receipt
 
 
-@dataclass(frozen=True, slots=True)
-class AdmissionUnit:
-    source_id: str
-    work: Callable[[], object]
-
-
-@dataclass(frozen=True, slots=True)
-class AdmissionFailure:
-    """A bounded unit failure that must not stop sibling admission."""
-
-    error: str
-    retryable: bool = True
-
-
-class FairAdmissionScheduler:
-    """Bounded round-robin scheduler; a yielding source cannot starve siblings."""
-
-    def __init__(self, *, max_units: int = 1) -> None:
-        if max_units < 1:
-            raise ValueError("max_units must be positive")
-        self.max_units = max_units
-        self._queue: deque[AdmissionUnit] = deque()
-
-    def add(self, unit: AdmissionUnit) -> None:
-        self._queue.append(unit)
-
-    def run(self) -> Iterable[tuple[str, object]]:
-        buckets: dict[str, deque[AdmissionUnit]] = {}
-        order: deque[str] = deque()
-
-        def drain_queue() -> None:
-            while self._queue:
-                unit = self._queue.popleft()
-                if unit.source_id not in buckets:
-                    buckets[unit.source_id] = deque()
-                    order.append(unit.source_id)
-                buckets[unit.source_id].append(unit)
-
-        drain_queue()
-
-        while order:
-            drain_queue()
-            source_id = order.popleft()
-            unit = buckets[source_id].popleft()
-            try:
-                result = unit.work()
-            except Exception as exc:  # one poison item cannot preempt siblings
-                result = AdmissionFailure(
-                    str(exc) or type(exc).__name__,
-                    retryable=bool(getattr(exc, "retryable", getattr(exc, "is_transient", False))),
-                )
-            yield source_id, result
-            drain_queue()
-            if buckets[source_id]:
-                order.append(source_id)
-            else:
-                del buckets[source_id]
-
-
 __all__ = [
     "AdmissionAttempt",
     "AdmissionDisposition",
-    "AdmissionFailure",
     "AdmissionReceipt",
     "AdmissionState",
-    "AdmissionUnit",
     "ArtifactIdentity",
     "ContinuationDecision",
-    "FairAdmissionScheduler",
     "ResourceEnvelope",
     "SemanticFrontier",
     "SourceCoordinates",

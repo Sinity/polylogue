@@ -71,6 +71,10 @@ _VOLATILE_COLUMNS: dict[str, frozenset[str]] = {
     "repos": frozenset(),
     "session_agent_policies": frozenset(),
     "session_commits": frozenset(),
+    # (session_id, evidence_key): the digest of the retained evidence the
+    # session's enrichment read. Two builds of the same sealed input converge
+    # to the same evidence, so the binding must reproduce exactly.
+    "session_enrichment_bindings": frozenset(),
     "session_events": frozenset(),
     "session_identity_claims": frozenset(),
     "session_latency_profiles": frozenset({"materialized_at"}),

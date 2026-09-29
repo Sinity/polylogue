@@ -16,7 +16,7 @@ from polylogue.api import Polylogue
 from polylogue.browser_capture.models import BrowserCaptureEnvelope
 from polylogue.browser_capture.receiver import (
     BrowserCaptureWriteResult,
-    capture_dedup_content_hash,
+    summarize_capture_envelope,
     write_capture_envelope,
 )
 from polylogue.sources.live import WatchSource
@@ -104,7 +104,7 @@ async def test_concurrent_extension_instances_deduplicate_without_corrupting_spo
     """Concurrent receiver writes converge to one artifact and archived session."""
     first = _envelope("extension-instance-a", backfill_job_id="job-a")
     second = _envelope("extension-instance-b", backfill_job_id="job-b")
-    assert capture_dedup_content_hash(first) == capture_dedup_content_hash(second)
+    assert summarize_capture_envelope(first).dedup_content_hash == summarize_capture_envelope(second).dedup_content_hash
 
     barrier = Barrier(2)
 
