@@ -173,8 +173,8 @@ def archive_provider_title(title: str | None, title_source: str | None) -> str |
 
     Only ``TitleSource.ORIGIN`` is provider title evidence; the detail route
     suppresses anything else and lets the display-label projection speak
-    instead. ``TitleSource.HEURISTIC`` is suppressed (polylogue-4p1.6): it marks a title the parser already
-    recognized as an echo of the user's own opening prompt, so presenting it
+    instead. ``TitleSource.HEURISTIC`` is suppressed (polylogue-4p1.6): it
+    marks a title the parser already recognized as an echo of the user's own opening prompt, so presenting it
     as the session's title republishes the prompt as if the provider had named
     the session. Summaries deliberately keep the stored title as stored
     (``ArchiveSessionSummary.title`` is the row value and ``display_label``

@@ -344,8 +344,8 @@ def _profile_demand_sql(session_id: str) -> str:
 # v61 (polylogue-resk): drops session_model_usage.priced_with/priced_at_ms
 # and narrows the CHECK that referenced priced_with -- both were write-only
 # outside tests (zero production SELECTs), and the FK target price_catalogs
-# is dropped in the same change. CONSTRAINT_ONLY/dead-column-removal, same shape as
-# v33/v36/v38/v41/v44: no raw reparse, existing session_model_usage rows
+# is dropped in the same change. CONSTRAINT_ONLY/dead-column-removal, same
+# shape as v33/v36/v38/v41/v44: no raw reparse, existing session_model_usage rows
 # copy-forward on every other column via the fast-forward executor's
 # REPLACE_TABLE path. Does NOT touch session_profiles.priced_with/
 # priced_at_ms, a different pair of columns with a real production reader
@@ -1414,8 +1414,9 @@ ON paste_spans(session_id);
 
 -- model_prices and session_reported_costs were dropped (polylogue-v2mg):
 -- zero-consumer tables removed from canonical DDL. price_catalogs was
--- dropped the same way (polylogue-resk, v61): v2mg's stated justification for keeping it ("session_model_usage.
--- priced_with FK, active_price_catalog_id" are genuine reads) measured false
+-- dropped the same way (polylogue-resk, v61): v2mg's stated justification
+-- for keeping it ("session_model_usage.priced_with FK,
+-- active_price_catalog_id" are genuine reads) measured false
 -- in all three particulars -- priced_with/priced_at_ms had zero production
 -- SELECTs (write-only outside tests), and active_price_catalog_id's only
 -- caller was a test. Cost computation resolves per-model rates from the
