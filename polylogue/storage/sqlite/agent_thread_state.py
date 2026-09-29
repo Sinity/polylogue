@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Sequence
 from dataclasses import dataclass
 
 from polylogue.logging import DEBUG, emit
@@ -140,6 +140,201 @@ def read_provenance(conn: sqlite3.Connection, *, source_scope: str | None = None
     return ThreadStateProvenance(raw_id, blob_hash, int(row[2]), int(row[3]))
 
 
+#: The durable receipt order of a retained export, by raw id; ``None`` when
+#: the source tier holds no such export.
+ExportOrder = Callable[[str], int | None]
+
+_NODE_SQL = """
+    INSERT INTO work_evidence_nodes(
+        graph_id, node_ref, node_kind, label, evidence_refs_json, corpus_snapshot_ref,
+        authority, confidence, occurred_at_ms, actor_ref, execution_context_id,
+        execution_context_known_json, execution_context_unknown_json, role,
+        execution_context_addressed, association_state, claim_text
+    ) VALUES (?, ?, ?, ?, ?, ?, 'provider', 1.0, ?, NULL, ?, '[]', '[]', 'unknown', 0, ?, ?)
+    ON CONFLICT(graph_id, node_ref) DO UPDATE SET
+        node_kind = excluded.node_kind,
+        label = excluded.label,
+        evidence_refs_json = excluded.evidence_refs_json,
+        corpus_snapshot_ref = excluded.corpus_snapshot_ref,
+        authority = excluded.authority,
+        confidence = excluded.confidence,
+        occurred_at_ms = excluded.occurred_at_ms,
+        execution_context_id = excluded.execution_context_id,
+        execution_context_addressed = excluded.execution_context_addressed,
+        association_state = excluded.association_state,
+        claim_text = excluded.claim_text
+"""
+
+_EDGE_SQL = """
+    INSERT INTO work_evidence_edges(
+        graph_id, edge_ref, edge_kind, source_ref, target_ref, evidence_refs_json,
+        corpus_snapshot_ref, authority, confidence, occurred_at_ms, association_state,
+        source_state_label
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'provider', 1.0, ?, ?, ?)
+    ON CONFLICT(graph_id, edge_ref) DO UPDATE SET
+        edge_kind = excluded.edge_kind,
+        source_ref = excluded.source_ref,
+        target_ref = excluded.target_ref,
+        evidence_refs_json = excluded.evidence_refs_json,
+        corpus_snapshot_ref = excluded.corpus_snapshot_ref,
+        authority = excluded.authority,
+        confidence = excluded.confidence,
+        occurred_at_ms = excluded.occurred_at_ms,
+        association_state = excluded.association_state,
+        source_state_label = excluded.source_state_label
+"""
+
+#: One graph row an export names: its ref, then the SQL parameters that
+#: follow ``graph_id`` up to ``association_state``, then the ones after it.
+_GraphRow = tuple[str, tuple[object, ...], tuple[object, ...]]
+
+
+def _export_rows(
+    source_scope: str,
+    threads: Sequence[ThreadRecord],
+    spawn_edges: Sequence[SpawnRecord],
+    *,
+    raw_id: str,
+    blob_hash: str,
+    observed_at_ms: int,
+) -> tuple[list[_GraphRow], list[_GraphRow]]:
+    """The node and edge rows one export names, in foreign-key order."""
+    snapshot_ref = f"artifact:{blob_hash}"
+    evidence_json = json.dumps([f"artifact:{raw_id}"])
+    context_rows: dict[str, tuple[str, int | None]] = {}
+    for thread in threads:
+        if not thread.thread_id:
+            continue
+        label = (thread.title or "").strip() or thread.thread_id
+        context_rows[thread.thread_id] = (label, thread.occurred_at_ms)
+    for edge in spawn_edges:
+        # An edge endpoint the export's thread list is silent about is still
+        # a context this runtime named; the graph's foreign keys require both
+        # endpoints to exist.
+        for endpoint in (edge.parent_thread_id, edge.child_thread_id):
+            if endpoint and endpoint not in context_rows:
+                context_rows[endpoint] = (endpoint, None)
+    titled = [
+        (thread.thread_id, (thread.title or "").strip(), thread.occurred_at_ms)
+        for thread in threads
+        if thread.thread_id and (thread.title or "").strip()
+    ]
+    nodes: list[_GraphRow] = []
+    for thread_id, (label, occurred_at_ms) in sorted(context_rows.items()):
+        ref = thread_context_ref(source_scope, thread_id)
+        nodes.append(
+            (
+                ref,
+                (
+                    ref,
+                    "execution-context",
+                    label,
+                    evidence_json,
+                    snapshot_ref,
+                    occurred_at_ms,
+                    thread_context_id(source_scope, thread_id),
+                ),
+                (None,),
+            )
+        )
+    for thread_id, title, occurred_at_ms in titled:
+        ref = _title_claim_ref(source_scope, thread_id)
+        nodes.append((ref, (ref, "claim", title, evidence_json, snapshot_ref, occurred_at_ms, None), (title,)))
+    edges: list[_GraphRow] = []
+    for thread_id, _title, occurred_at_ms in titled:
+        ref = _title_edge_ref(source_scope, thread_id)
+        edges.append(
+            (
+                ref,
+                (
+                    ref,
+                    "claimed",
+                    thread_context_ref(source_scope, thread_id),
+                    _title_claim_ref(source_scope, thread_id),
+                    evidence_json,
+                    snapshot_ref,
+                    occurred_at_ms,
+                ),
+                (None,),
+            )
+        )
+    for edge in spawn_edges:
+        if not (edge.parent_thread_id and edge.child_thread_id):
+            continue
+        ref = _spawn_edge_ref(source_scope, edge.parent_thread_id, edge.child_thread_id)
+        edges.append(
+            (
+                ref,
+                (
+                    ref,
+                    "invoked",
+                    thread_context_ref(source_scope, edge.parent_thread_id),
+                    thread_context_ref(source_scope, edge.child_thread_id),
+                    evidence_json,
+                    snapshot_ref,
+                    observed_at_ms,
+                ),
+                (edge.status or "unknown",),
+            )
+        )
+    return nodes, edges
+
+
+def _write_rows(conn: sqlite3.Connection, graph_id: str, rows: Sequence[_GraphRow], sql: str, state: str) -> None:
+    conn.executemany(sql, [(graph_id, *head, state, *tail) for _ref, head, tail in rows])
+
+
+def _retain_older_export_rows(
+    conn: sqlite3.Connection,
+    graph_id: str,
+    nodes: Sequence[_GraphRow],
+    edges: Sequence[_GraphRow],
+    *,
+    incoming_key: tuple[int, str, str],
+    export_order: ExportOrder,
+) -> bool:
+    """Fold an export older than the current one into the retained rows.
+
+    The current export's rows stay as they are. Every other row the older
+    export names is superseded evidence: it is added when absent and
+    rewritten when the export that last wrote it is older still, so the
+    retained rows are those of the newest export naming each object whatever
+    order the exports arrive in.
+    """
+    orders: dict[str, int] = {}
+
+    def writer_key(evidence_refs_json: str, snapshot_ref: str) -> tuple[int, str, str]:
+        refs = json.loads(evidence_refs_json)
+        writer = str(refs[0]).removeprefix("artifact:") if refs else ""
+        if writer not in orders:
+            # An export the source tier no longer holds ranks below any it holds.
+            ranked = export_order(writer)
+            orders[writer] = -1 if ranked is None else ranked
+        return (orders[writer], writer, snapshot_ref.removeprefix("artifact:"))
+
+    def retainable(table: str, ref_column: str, rows: Sequence[_GraphRow]) -> list[_GraphRow]:
+        existing = {
+            str(ref): (str(state), str(evidence), str(snapshot))
+            for ref, state, evidence, snapshot in conn.execute(
+                f"SELECT {ref_column}, association_state, evidence_refs_json, corpus_snapshot_ref "
+                f"FROM {table} WHERE graph_id = ?",
+                (graph_id,),
+            )
+        }
+        kept: list[_GraphRow] = []
+        for row in rows:
+            held = existing.get(row[0])
+            if held is None or (held[0] == "superseded" and writer_key(held[1], held[2]) < incoming_key):
+                kept.append(row)
+        return kept
+
+    retained_nodes = retainable("work_evidence_nodes", "node_ref", nodes)
+    retained_edges = retainable("work_evidence_edges", "edge_ref", edges)
+    _write_rows(conn, graph_id, retained_nodes, _NODE_SQL, "superseded")
+    _write_rows(conn, graph_id, retained_edges, _EDGE_SQL, "superseded")
+    return bool(retained_nodes or retained_edges)
+
+
 def write_thread_state_graph(
     conn: sqlite3.Connection,
     *,
@@ -150,14 +345,16 @@ def write_thread_state_graph(
     blob_hash: str,
     observed_at_ms: int,
     observation_order: int = 0,
+    export_order: ExportOrder,
 ) -> bool:
     """Reconcile one scope's graph from the content of one retained export.
 
-    Returns whether the graph was written. An export older than the one
-    already projected is skipped and reported as ``False``: replay applies
-    raws in no particular order, and a live database that went A -> B -> A
-    reuses A's content-derived raw id, so the durable receipt order is what
-    says which observation is current.
+    Returns whether any row was written. The newest export by durable receipt
+    order is current: replay applies raws in no particular order, and a live
+    database that went A -> B -> A reuses A's content-derived raw id. An
+    older export still contributes the objects it names as superseded rows,
+    so the retained rows do not depend on arrival order; ``export_order``
+    ranks the export that wrote each such row.
     """
     current = read_provenance(conn, source_scope=source_scope)
     # The durable receipt order decides; the wall-clock stamp is reported
@@ -166,12 +363,15 @@ def write_thread_state_graph(
     # replay synthetic receipts with equal orders, so the content identity is
     # a final tie-break that keeps equal-key replay deterministic.
     incoming_key = (observation_order, raw_id, blob_hash)
-    if current is not None and (current.observation_order, current.raw_id, current.blob_hash) > incoming_key:
-        return False
-
     graph_id = thread_state_graph_id(source_scope)
-    snapshot_ref = f"artifact:{blob_hash}"
-    evidence_json = json.dumps([f"artifact:{raw_id}"])
+    nodes, edges = _export_rows(
+        source_scope, threads, spawn_edges, raw_id=raw_id, blob_hash=blob_hash, observed_at_ms=observed_at_ms
+    )
+    if current is not None and (current.observation_order, current.raw_id, current.blob_hash) > incoming_key:
+        return _retain_older_export_rows(
+            conn, graph_id, nodes, edges, incoming_key=incoming_key, export_order=export_order
+        )
+
     conn.execute(
         """
         INSERT INTO work_evidence_graphs(
@@ -183,7 +383,7 @@ def write_thread_state_graph(
             observed_at_ms = excluded.observed_at_ms,
             observation_order = excluded.observation_order
         """,
-        (graph_id, snapshot_ref, f"artifact:{raw_id}", observed_at_ms, observation_order),
+        (graph_id, f"artifact:{blob_hash}", f"artifact:{raw_id}", observed_at_ms, observation_order),
     )
     conn.execute(
         "UPDATE work_evidence_nodes SET association_state = 'superseded' WHERE graph_id = ?",
@@ -193,134 +393,8 @@ def write_thread_state_graph(
         "UPDATE work_evidence_edges SET association_state = 'superseded' WHERE graph_id = ?",
         (graph_id,),
     )
-
-    context_rows: dict[str, tuple[str, int | None]] = {}
-    for thread in threads:
-        if not thread.thread_id:
-            continue
-        label = (thread.title or "").strip() or thread.thread_id
-        context_rows[thread.thread_id] = (label, thread.occurred_at_ms)
-    for edge in spawn_edges:
-        # An edge endpoint the newest export's thread list is silent about is
-        # still a context this runtime named; the graph's foreign keys require
-        # both endpoints to exist.
-        for endpoint in (edge.parent_thread_id, edge.child_thread_id):
-            if endpoint and endpoint not in context_rows:
-                context_rows[endpoint] = (endpoint, None)
-
-    node_sql = """
-        INSERT INTO work_evidence_nodes(
-            graph_id, node_ref, node_kind, label, evidence_refs_json, corpus_snapshot_ref,
-            authority, confidence, occurred_at_ms, actor_ref, execution_context_id,
-            execution_context_known_json, execution_context_unknown_json, role,
-            execution_context_addressed, association_state, claim_text
-        ) VALUES (?, ?, ?, ?, ?, ?, 'provider', 1.0, ?, NULL, ?, '[]', '[]', 'unknown', 0, 'resolved', ?)
-        ON CONFLICT(graph_id, node_ref) DO UPDATE SET
-            node_kind = excluded.node_kind,
-            label = excluded.label,
-            evidence_refs_json = excluded.evidence_refs_json,
-            corpus_snapshot_ref = excluded.corpus_snapshot_ref,
-            authority = excluded.authority,
-            confidence = excluded.confidence,
-            occurred_at_ms = excluded.occurred_at_ms,
-            execution_context_id = excluded.execution_context_id,
-            execution_context_addressed = excluded.execution_context_addressed,
-            association_state = excluded.association_state,
-            claim_text = excluded.claim_text
-    """
-    conn.executemany(
-        node_sql,
-        [
-            (
-                graph_id,
-                thread_context_ref(source_scope, thread_id),
-                "execution-context",
-                label,
-                evidence_json,
-                snapshot_ref,
-                occurred_at_ms,
-                thread_context_id(source_scope, thread_id),
-                None,
-            )
-            for thread_id, (label, occurred_at_ms) in sorted(context_rows.items())
-        ],
-    )
-    titled = [
-        (thread.thread_id, (thread.title or "").strip(), thread.occurred_at_ms)
-        for thread in threads
-        if thread.thread_id and (thread.title or "").strip()
-    ]
-    conn.executemany(
-        node_sql,
-        [
-            (
-                graph_id,
-                _title_claim_ref(source_scope, thread_id),
-                "claim",
-                title,
-                evidence_json,
-                snapshot_ref,
-                occurred_at_ms,
-                None,
-                title,
-            )
-            for thread_id, title, occurred_at_ms in titled
-        ],
-    )
-
-    edge_sql = """
-        INSERT INTO work_evidence_edges(
-            graph_id, edge_ref, edge_kind, source_ref, target_ref, evidence_refs_json,
-            corpus_snapshot_ref, authority, confidence, occurred_at_ms, association_state,
-            source_state_label
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'provider', 1.0, ?, 'resolved', ?)
-        ON CONFLICT(graph_id, edge_ref) DO UPDATE SET
-            edge_kind = excluded.edge_kind,
-            source_ref = excluded.source_ref,
-            target_ref = excluded.target_ref,
-            evidence_refs_json = excluded.evidence_refs_json,
-            corpus_snapshot_ref = excluded.corpus_snapshot_ref,
-            authority = excluded.authority,
-            confidence = excluded.confidence,
-            occurred_at_ms = excluded.occurred_at_ms,
-            association_state = excluded.association_state,
-            source_state_label = excluded.source_state_label
-    """
-    conn.executemany(
-        edge_sql,
-        [
-            (
-                graph_id,
-                _title_edge_ref(source_scope, thread_id),
-                "claimed",
-                thread_context_ref(source_scope, thread_id),
-                _title_claim_ref(source_scope, thread_id),
-                evidence_json,
-                snapshot_ref,
-                occurred_at_ms,
-                None,
-            )
-            for thread_id, _title, occurred_at_ms in titled
-        ],
-    )
-    conn.executemany(
-        edge_sql,
-        [
-            (
-                graph_id,
-                _spawn_edge_ref(source_scope, edge.parent_thread_id, edge.child_thread_id),
-                "invoked",
-                thread_context_ref(source_scope, edge.parent_thread_id),
-                thread_context_ref(source_scope, edge.child_thread_id),
-                evidence_json,
-                snapshot_ref,
-                observed_at_ms,
-                edge.status or "unknown",
-            )
-            for edge in spawn_edges
-            if edge.parent_thread_id and edge.child_thread_id
-        ],
-    )
+    _write_rows(conn, graph_id, nodes, _NODE_SQL, "resolved")
+    _write_rows(conn, graph_id, edges, _EDGE_SQL, "resolved")
     return True
 
 
@@ -444,40 +518,64 @@ def read_spawn_edges(conn: sqlite3.Connection, *, source_scope: str | None = Non
     return edges
 
 
-def read_spawn_parents(conn: sqlite3.Connection, child_thread_ids: Iterable[str]) -> dict[str, str]:
+def _spawn_parent_rows(
+    conn: sqlite3.Connection, source_scope: str | None, child_predicate: str = "", child_parameters: Sequence[str] = ()
+) -> list[tuple[str, str, str]]:
+    """``(graph_id, parent ref, child ref)`` rows, each graph's current parent first."""
+    predicate, parameters = _scope_predicate(source_scope)
+    rows = conn.execute(
+        f"""
+        SELECT e.graph_id, e.source_ref, e.target_ref
+        FROM work_evidence_edges AS e
+        JOIN work_evidence_graphs AS g ON g.graph_id = e.graph_id
+        WHERE {predicate} AND e.edge_kind = 'invoked' {child_predicate}
+        {_RECENCY.format(alias="e")}, e.source_ref
+        """,
+        [*parameters, *child_parameters],
+    ).fetchall()
+    return [(str(graph_id), str(source_ref), str(target_ref)) for graph_id, source_ref, target_ref in rows]
+
+
+def _agreed_parents(rows: Iterable[tuple[str, str, str]], wanted: Collection[str] | None) -> dict[str, str]:
+    """Each child's parent when every scope that names the child agrees on it.
+
+    A thread id is a scope's own name: one id under two install roots can be
+    spawned by different parents, and receipt recency across roots says
+    nothing about which root a caller's rollout came from. Disagreeing
+    scopes therefore leave the child without a projected parent.
+    """
+    per_scope: dict[str, dict[str, str]] = {}
+    for graph_id, source_ref, target_ref in rows:
+        child = thread_id_from_context_ref(target_ref)
+        if (wanted is not None and child not in wanted) or graph_id in per_scope.get(child, {}):
+            continue
+        parent = thread_id_from_context_ref(source_ref).strip()
+        if parent:
+            per_scope.setdefault(child, {})[graph_id] = parent
+    return {
+        child: next(iter(set(parents.values())))
+        for child, parents in per_scope.items()
+        if len(set(parents.values())) == 1
+    }
+
+
+def read_spawn_parents(
+    conn: sqlite3.Connection, child_thread_ids: Iterable[str], *, source_scope: str | None = None
+) -> dict[str, str]:
     """Return ``{child_thread_id: parent_thread_id}`` for the children the graph is not silent about.
 
-    Each child gets the parent :func:`read_parent_thread_id` would report, by
-    the same recency order across every scope. Comparing this per child before
-    and after a snapshot revision is what says whose projected parent moved;
-    the set of edges ever seen cannot, because superseded edges are retained
-    and a parent that returns (A, then B, then A) adds no new edge. A read
-    failure propagates: the caller is mid-write and must not re-derive from a
-    graph it could not read.
+    Each child gets the parent :func:`read_parent_thread_id` would report for
+    the same scope. Comparing this per child before and after a snapshot
+    revision is what says whose projected parent moved; the set of edges ever
+    seen cannot, because superseded edges are retained and a parent that
+    returns (A, then B, then A) adds no new edge. A read failure propagates:
+    the caller is mid-write and must not re-derive from a graph it could not
+    read.
     """
     wanted = {child for child in child_thread_ids if child}
     if not wanted:
         return {}
-    predicate, parameters = _scope_predicate(None)
-    rows = conn.execute(
-        f"""
-        SELECT e.source_ref, e.target_ref
-        FROM work_evidence_edges AS e
-        JOIN work_evidence_graphs AS g ON g.graph_id = e.graph_id
-        WHERE {predicate} AND e.edge_kind = 'invoked'
-        {_RECENCY.format(alias="e")}, e.source_ref
-        """,
-        parameters,
-    ).fetchall()
-    parents: dict[str, str] = {}
-    for row in rows:
-        child = thread_id_from_context_ref(str(row[1]))
-        if child not in wanted or child in parents:
-            continue
-        parent = thread_id_from_context_ref(str(row[0])).strip()
-        if parent:
-            parents[child] = parent
-    return parents
+    return _agreed_parents(_spawn_parent_rows(conn, source_scope), wanted)
 
 
 def read_spawn_edge_children(conn: sqlite3.Connection) -> set[str]:
@@ -491,29 +589,20 @@ def read_parent_thread_id(
     """Return the projected parent of ``child_thread_id``, or ``None`` when silent.
 
     ``None`` means the graph is silent about this child, which is not the same
-    as it naming a different parent; only the latter is a conflict.
+    as it naming a different parent; only the latter is a conflict. Without a
+    scope, the child's parent is known only where every scope naming it
+    agrees (see :func:`_agreed_parents`).
     """
     if not child_thread_id:
         return None
-    predicate, parameters = _scope_predicate(source_scope)
     if source_scope is None:
-        child_predicate = "e.target_ref LIKE ?"
+        child_predicate = "AND e.target_ref LIKE ?"
         child_parameter = f"%{_SCOPE_SEPARATOR}{child_thread_id}"
     else:
-        child_predicate = "e.target_ref = ?"
+        child_predicate = "AND e.target_ref = ?"
         child_parameter = thread_context_ref(source_scope, child_thread_id)
     try:
-        row = conn.execute(
-            f"""
-            SELECT e.source_ref
-            FROM work_evidence_edges AS e
-            JOIN work_evidence_graphs AS g ON g.graph_id = e.graph_id
-            WHERE {predicate} AND e.edge_kind = 'invoked' AND {child_predicate}
-            {_RECENCY.format(alias="e")}, e.source_ref
-            LIMIT 1
-            """,
-            [*parameters, child_parameter],
-        ).fetchone()
+        rows = _spawn_parent_rows(conn, source_scope, child_predicate, (child_parameter,))
     except sqlite3.Error as exc:
         emit(
             "storage.agent_thread_state.spawn_parent_unreadable",
@@ -524,15 +613,13 @@ def read_parent_thread_id(
             error_detail=str(exc),
         )
         return None
-    if row is None or row[0] is None:
-        return None
-    parent = thread_id_from_context_ref(str(row[0])).strip()
-    return parent or None
+    return _agreed_parents(rows, {child_thread_id}).get(child_thread_id)
 
 
 __all__ = [
     "CONTEXT_PREFIX",
     "GRAPH_PREFIX",
+    "ExportOrder",
     "SpawnRecord",
     "ThreadRecord",
     "ThreadStateProvenance",

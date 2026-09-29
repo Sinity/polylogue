@@ -666,6 +666,7 @@ class RawObservationDerivation:
                     prepare_session_write,
                     prepared_lineage_bindings,
                     prepared_session_rows_from_shard,
+                    raw_source_path,
                 )
 
                 census_rows = archive.source_connection.execute(
@@ -952,6 +953,7 @@ class RawObservationDerivation:
                                 archive.index_connection,
                                 session,
                                 source_conn=archive.source_connection,
+                                child_source_path=raw_source_path(archive.source_connection, tip_raw_id),
                             )
                             has_parent_claim = (
                                 session.parent_session_provider_id is not None

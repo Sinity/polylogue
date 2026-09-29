@@ -937,6 +937,10 @@ class PreparedMessageContext:
     lineage_inheritance: str | None
     lineage_prefix_digest: bytes | None
     inherited_source_message_ids: Mapping[str, str]
+    #: The retained source path of the raw this write publishes, which places
+    #: a Codex child in its install root. A raw's source path never changes,
+    #: so the write that consumes this context reads the same root.
+    child_source_path: str | None
     #: The parent rows the inherited prefix resolves to, by prefix ordinal:
     #: ``messages`` is a ``_MessageTail`` whose ``start`` is this length.
     #: Evidence an inherited message owns (attachments) resolves through it.
@@ -1647,6 +1651,7 @@ def _prepared_message_context(
     merge_append: bool,
     signature_cache: _SignatureCacheLike | None,
     source_conn: sqlite3.Connection | None,
+    child_source_path: str | None,
 ) -> PreparedMessageContext:
     """Canonical normalization-before-lineage-slicing context for one write."""
     if isinstance(session.messages, SqliteMessageSink) and session.messages._writer is None:
@@ -1668,6 +1673,7 @@ def _prepared_message_context(
         child_native_id=native_id,
         child_provider_values=_child_provider_values(session),
         parent_candidate=session.parent_session_provider_id,
+        child_source_path=child_source_path,
     )
     hook_parent_provider_id = hook_parent_claim.parent_native_id if hook_parent_claim is not None else None
     effective_session_kind = session.session_kind
@@ -1769,6 +1775,7 @@ def _prepared_message_context(
         lineage_prefix_digest=lineage_prefix_digest,
         inherited_source_message_ids=inherited_source_message_ids,
         inherited_prefix_message_ids=inherited_prefix_message_ids,
+        child_source_path=child_source_path,
     )
 
 
@@ -1777,8 +1784,13 @@ def prepared_lineage_bindings(
     session: ParsedSession,
     *,
     source_conn: sqlite3.Connection | None = None,
+    child_source_path: str | None = None,
 ) -> tuple[str | None, str | None]:
-    """Return the hook and resolved-parent claims a prepared write depends on."""
+    """Return the hook and resolved-parent claims a prepared write depends on.
+
+    ``child_source_path`` is the retained source path of the raw the write
+    publishes (:func:`raw_source_path`).
+    """
     origin = origin_from_provider(session.source_name)
     native_id = _stored_session_native_id(session.provider_session_id)
     session_id = archive_session_id(origin.value, native_id)
@@ -1790,6 +1802,7 @@ def prepared_lineage_bindings(
         child_native_id=native_id,
         child_provider_values=_child_provider_values(session),
         parent_candidate=session.parent_session_provider_id,
+        child_source_path=child_source_path,
     )
     hook_parent_native_id = claim.parent_native_id if claim is not None else None
     lineage_session = (
@@ -1828,6 +1841,7 @@ def prepare_session_write(
         merge_append=merge_append,
         signature_cache=signature_cache,
         source_conn=source_conn,
+        child_source_path=raw_source_path(source_conn, raw_id),
     )
     position_offset = _next_message_position(conn, session_id) if merge_append else 0
     content_occurrence_offsets = _stored_content_occurrences(conn, session_id) if merge_append else {}
@@ -2127,15 +2141,20 @@ def write_parsed_session_to_archive(
     prepared_required: bool = False,
     prepared_write: PreparedSessionWrite | None = None,
     source_conn: sqlite3.Connection | None = None,
+    child_source_path: str | None = None,
     write_outcome: list[ArchiveWriteOutcome] | None = None,
     unit_accounting: ParseAccounting | None = None,
 ) -> str:
     """Write one parsed session into an initialized archive index DB.
 
     ``source_conn`` (optional) is the durable ``source.db`` handle. It is used
-    only to consult acquired ``codex_thread_spawn_edge`` hook evidence when
-    writing this session's topology edge; passing ``None`` leaves every edge
-    exactly as parser inference alone would write it.
+    only to consult acquired hook evidence when writing this session's
+    topology edge; passing ``None`` leaves that evidence unconsulted.
+
+    ``child_source_path`` is the retained source path of ``raw_id``
+    (:func:`raw_source_path`), which places a Codex child in the install root
+    whose projected spawn parent it reads; ``None`` leaves the root unknown.
+    A ``prepared_write`` carries the path it was prepared with instead.
 
     ``prepared`` (polylogue-623q, default ``None``) is an optional row set
     computed off this thread (typically by the daemon parse-prefetch worker):
@@ -2351,6 +2370,7 @@ def write_parsed_session_to_archive(
             merge_append=merge_append,
             signature_cache=signature_cache,
             source_conn=source_conn,
+            child_source_path=child_source_path,
         )
     input_session = session
     session = context.effective_session
@@ -2497,7 +2517,9 @@ def write_parsed_session_to_archive(
                     )
                     if current_parent_guard != prepared_union.prefix_sharing_parent:
                         raise PreparedSessionWriteRefusedError("prepared field union branch membership changed")
-                hook_parent, parent = prepared_lineage_bindings(conn, input_session, source_conn=source_conn)
+                hook_parent, parent = prepared_lineage_bindings(
+                    conn, input_session, source_conn=source_conn, child_source_path=context.child_source_path
+                )
                 if hook_parent != context.hook_parent_native_id or (
                     not merge_append and parent != context.parent_session_id
                 ):
@@ -2939,6 +2961,7 @@ def write_parsed_session_to_archive(
                 inheritance=lineage_inheritance,
                 source_conn=source_conn,
                 prior_links=prior_session_rows,
+                child_source_path=context.child_source_path,
             )
             add_timing("index.session_link", t0)
             t0 = time.perf_counter()
@@ -7481,24 +7504,37 @@ def _hook_spool_present(source_conn: sqlite3.Connection) -> bool:
     )
 
 
+def raw_source_path(source_conn: sqlite3.Connection | None, raw_id: str | None) -> str | None:
+    """The retained source path of one raw, or ``None`` when the source tier cannot say."""
+    if source_conn is None or not raw_id:
+        return None
+    row = source_conn.execute("SELECT source_path FROM raw_sessions WHERE raw_id = ?", (raw_id,)).fetchone()
+    return str(row[0]) if row is not None and row[0] else None
+
+
 def _codex_spawn_edge_parent_claim(
     conn: sqlite3.Connection,
     source_conn: sqlite3.Connection | None,
     *,
     child_native_id: str,
+    child_source_path: str | None,
 ) -> _HookParentClaim | None:
     """Return projected or spooled Codex parent evidence for a child.
 
     The retained state export is projected into the index tier and is the
-    primary source. Older source tiers may carry the same evidence in the
-    durable hook spool, which remains a compatible fallback.
+    primary source. A thread id is one install root's own name, so the
+    projection is read in the root of the rollout that produced the child
+    (``child_source_path``); a child whose rollout path the source tier
+    cannot supply reads the parent every root agrees on. Older source tiers
+    may carry the same evidence in the durable hook spool, which remains a
+    compatible fallback.
     """
     if not child_native_id:
         return None
     try:
         from polylogue.sources.codex_state_projection import read_parent_thread_id
 
-        projected_parent = read_parent_thread_id(conn, child_native_id)
+        projected_parent = read_parent_thread_id(conn, child_native_id, source_path=child_source_path)
     except (ImportError, sqlite3.Error) as exc:
         # Silence here archives a child as a root with no parent edge and no
         # trace that the projection was ever consulted (polylogue-3r36h). The
@@ -7684,6 +7720,7 @@ def _authoritative_parent_claim(
     child_native_id: str,
     child_provider_values: Iterable[str],
     parent_candidate: str | None,
+    child_source_path: str | None,
 ) -> _HookParentClaim | None:
     """Return the hook-asserted parent for this child, or ``None`` for silence.
 
@@ -7697,11 +7734,16 @@ def _authoritative_parent_claim(
     attributes the agent's calls, A's durable claim still decides the edge;
     asking the candidate alone would read B's silence as no evidence and leave
     two composing parents.
+
+    ``child_source_path`` is the retained source path of the raw this write
+    publishes, which places a Codex child in its install root.
     """
     if not child_native_id:
         return None
     if origin == Origin.CODEX_SESSION.value:
-        return _codex_spawn_edge_parent_claim(conn, source_conn, child_native_id=child_native_id)
+        return _codex_spawn_edge_parent_claim(
+            conn, source_conn, child_native_id=child_native_id, child_source_path=child_source_path
+        )
     if origin != Origin.CLAUDE_CODE_SESSION.value:
         return None
     provider_values = tuple(child_provider_values)
@@ -7951,6 +7993,7 @@ def _write_session_link(
     inheritance: str | None = None,
     source_conn: sqlite3.Connection | None = None,
     prior_links: bool = True,
+    child_source_path: str | None = None,
 ) -> None:
     """Write this child's outbound parent edge, honouring hook authority.
 
@@ -7995,6 +8038,7 @@ def _write_session_link(
         child_native_id=(session.provider_session_id or "").strip(),
         child_provider_values=_child_provider_values(session),
         parent_candidate=parent_native_id,
+        child_source_path=child_source_path,
     )
     hook_parent = hook_claim.parent_native_id if hook_claim is not None else None
     hook_evidence: Mapping[str, object] = hook_claim.evidence if hook_claim is not None else {}
@@ -8197,7 +8241,12 @@ def _link_evidence(raw: object) -> dict[str, object]:
 _HOOK_DECISION_EVIDENCE_KEYS = ("codex_thread_spawn_edge_parent", "contradiction")
 
 
-def rederive_codex_spawn_parent_links(conn: sqlite3.Connection, child_native_ids: Iterable[str]) -> list[str]:
+def rederive_codex_spawn_parent_links(
+    conn: sqlite3.Connection,
+    child_native_ids: Iterable[str],
+    *,
+    source_conn: sqlite3.Connection | None,
+) -> list[str]:
     """Re-decide archived Codex children's parent edges from the current projection.
 
     ``_write_session_link`` consults the spawn-edge projection only when the
@@ -8212,7 +8261,9 @@ def rederive_codex_spawn_parent_links(conn: sqlite3.Connection, child_native_ids
     ``parent_session_provider_id`` evidence); the hook decision is then the
     same one ``_write_session_link`` makes. A child the projection is silent
     about is left as its save wrote it, exactly as a save would. Returns the
-    session ids whose edges were rewritten.
+    session ids whose edges were rewritten. ``source_conn`` supplies each
+    child's retained rollout path, so its parent is read in its own install
+    root exactly as its save read it.
 
     Each rewritten child's parent pointer is set as soon as its edges resolve,
     because the next child's cycle check reads it; each rewritten child's
@@ -8225,7 +8276,13 @@ def rederive_codex_spawn_parent_links(conn: sqlite3.Connection, child_native_ids
         child_session_id = _existing_session_id_for_native(conn, origin, child_native_id)
         if child_session_id is None:
             continue
-        hook_claim = _codex_spawn_edge_parent_claim(conn, None, child_native_id=child_native_id)
+        stored_raw = conn.execute("SELECT raw_id FROM sessions WHERE session_id = ?", (child_session_id,)).fetchone()
+        hook_claim = _codex_spawn_edge_parent_claim(
+            conn,
+            None,
+            child_native_id=child_native_id,
+            child_source_path=raw_source_path(source_conn, stored_raw[0] if stored_raw is not None else None),
+        )
         if hook_claim is None or hook_claim.parent_native_id is None:
             continue
         hook_parent = hook_claim.parent_native_id
@@ -14707,6 +14764,7 @@ __all__ = [
     "upsert_session_profile_costs",
     "upsert_parser_ingest_flag_tags",
     "upsert_session_tag",
+    "raw_source_path",
     "read_archive_session_envelope",
     "rederive_codex_spawn_parent_links",
     "search_archive_blocks",

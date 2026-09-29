@@ -81,6 +81,40 @@ def codex_state_source_scope(source_path: str) -> str:
     return str(path.parent)
 
 
+#: The newest ``raw_payload`` receipt of raw ``r``: the durable order of one
+#: observation of a retained export.
+_RECEIPT = """
+    SELECT b.{column}
+    FROM blob_refs AS b
+    WHERE b.ref_id = r.raw_id AND b.ref_type = 'raw_payload'
+    ORDER BY b.rowid DESC
+    LIMIT 1
+"""
+
+
+def retained_export_order(source_conn: sqlite3.Connection | None) -> agent_thread_state.ExportOrder:
+    """Rank retained exports by raw id in durable receipt order, as :func:`latest_retained_state_exports` does.
+
+    Without a source tier no export is ranked, so an older export arriving
+    after a newer one only adds the rows the graph does not yet hold.
+    """
+
+    def order(raw_id: str) -> int | None:
+        if source_conn is None:
+            return None
+        row = source_conn.execute(
+            f"""
+            SELECT COALESCE(({_RECEIPT.format(column="rowid")}), 0)
+            FROM raw_sessions AS r
+            WHERE r.raw_id = ?
+            """,
+            (raw_id,),
+        ).fetchone()
+        return None if row is None else int(row[0])
+
+    return order
+
+
 def latest_retained_state_exports(source_conn: sqlite3.Connection) -> tuple[RetainedStateExport, ...]:
     """Return the newest retained state export per Codex-install scope.
 
@@ -101,13 +135,6 @@ def latest_retained_state_exports(source_conn: sqlite3.Connection) -> tuple[Reta
     parameters: list[str] = [Origin.CODEX_SESSION.value]
     for filename in filenames:
         parameters.extend((filename, f"%/{filename}"))
-    receipt = """
-        SELECT b.{column}
-        FROM blob_refs AS b
-        WHERE b.ref_id = r.raw_id AND b.ref_type = 'raw_payload'
-        ORDER BY b.rowid DESC
-        LIMIT 1
-    """
     try:
         rows = source_conn.execute(
             f"""
@@ -115,8 +142,8 @@ def latest_retained_state_exports(source_conn: sqlite3.Connection) -> tuple[Reta
                 r.raw_id,
                 lower(hex(r.blob_hash)),
                 r.source_path,
-                COALESCE(({receipt.format(column="acquired_at_ms")}), r.acquired_at_ms),
-                COALESCE(({receipt.format(column="rowid")}), 0)
+                COALESCE(({_RECEIPT.format(column="acquired_at_ms")}), r.acquired_at_ms),
+                COALESCE(({_RECEIPT.format(column="rowid")}), 0)
             FROM raw_sessions AS r
             WHERE r.origin = ? AND r.parse_error IS NULL AND ({clauses})
             ORDER BY 5 DESC, r.raw_id DESC
@@ -157,12 +184,15 @@ def write_thread_state_projection(
     observed_at_ms: int,
     observation_order: int = 0,
     source_scope: str = "",
+    source_conn: sqlite3.Connection | None,
 ) -> bool:
     """Reconcile one scope's work-evidence graph from one retained export.
 
     The graph is the only index-tier home for this evidence; see
     :mod:`polylogue.storage.sqlite.agent_thread_state` for the node and edge
-    shapes and for the supersession and receipt-order rules.
+    shapes and for the supersession and receipt-order rules. ``source_conn``
+    is the durable tier that ranks retained exports and places each archived
+    child in its own install root.
 
     A child session can already be archived when its spawn edge lands, so
     every child whose projected parent changed has its parent edge re-decided
@@ -171,10 +201,18 @@ def write_thread_state_projection(
     from polylogue.storage.sqlite.archive_tiers.write import rederive_codex_spawn_parent_links
 
     # Only children this scope names, now or in a retained revision, can have
-    # their projected parent moved by rewriting this scope's graph.
+    # their projected parent moved by rewriting this scope's graph: in this
+    # scope, and in the cross-scope agreement a scope-less child reads.
     children = {child for _parent, child in agent_thread_state.read_spawn_edges(index_conn, source_scope=source_scope)}
     children.update(edge.child_thread_id for edge in snapshot.spawn_edges if edge.child_thread_id)
-    before = agent_thread_state.read_spawn_parents(index_conn, children)
+
+    def projected_parents() -> tuple[dict[str, str], dict[str, str]]:
+        return (
+            agent_thread_state.read_spawn_parents(index_conn, children, source_scope=source_scope),
+            agent_thread_state.read_spawn_parents(index_conn, children),
+        )
+
+    before = projected_parents()
     written = agent_thread_state.write_thread_state_graph(
         index_conn,
         source_scope=source_scope,
@@ -198,12 +236,16 @@ def write_thread_state_projection(
         blob_hash=blob_hash,
         observed_at_ms=observed_at_ms,
         observation_order=observation_order,
+        export_order=retained_export_order(source_conn),
     )
     if written:
-        after = agent_thread_state.read_spawn_parents(index_conn, children)
-        rederive_codex_spawn_parent_links(
-            index_conn, {child for child in children if before.get(child) != after.get(child)}
-        )
+        after = projected_parents()
+        moved = {
+            child
+            for child in children
+            if any(prior.get(child) != current.get(child) for prior, current in zip(before, after, strict=True))
+        }
+        rederive_codex_spawn_parent_links(index_conn, moved, source_conn=source_conn)
     return written
 
 
@@ -243,6 +285,7 @@ def apply_retained_state_export(
         observed_at_ms=receipt_at_ms,
         observation_order=receipt_order,
         source_scope=codex_state_source_scope(source_path),
+        source_conn=archive.source_connection,
     )
 
 
@@ -289,6 +332,7 @@ def ensure_thread_state_projection(
                 observed_at_ms=latest.observed_at_ms,
                 observation_order=latest.observation_order,
                 source_scope=latest.source_scope,
+                source_conn=source_conn,
             )
             or changed
         )
@@ -344,6 +388,7 @@ __all__ = [
     "read_parent_thread_id",
     "read_spawn_edges",
     "read_thread_titles",
+    "retained_export_order",
     "thread_state_member_filenames",
     "write_thread_state_projection",
 ]
