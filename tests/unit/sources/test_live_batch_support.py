@@ -4842,6 +4842,9 @@ def test_full_ingest_cursor_hands_off_captured_prefix_after_growth_during_proof(
         return result
 
     monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", grow_during_prefix_proof)
+    # This drives the re-hash proof racing growth; a slow host must not let the
+    # capture observation settle and skip that proof.
+    monkeypatch.setattr(live_batch, "_SETTLED_OBSERVATION_MARGIN_NS", 1 << 62)
 
     first = asyncio.run(processor.ingest_files([path]))
 
@@ -4950,6 +4953,9 @@ def test_busy_full_prefix_proof_defers_to_archived_cursor_reconciliation(
         return result
 
     monkeypatch.setattr("polylogue.sources.live.batch.sha256_range_from_path", grow_on_every_prefix_proof)
+    # This drives the re-hash proof racing growth; a slow host must not let the
+    # capture observation settle and skip that proof.
+    monkeypatch.setattr(live_batch, "_SETTLED_OBSERVATION_MARGIN_NS", 1 << 62)
     first = asyncio.run(processor.ingest_files([path]))
 
     assert first.full_file_count == 1
