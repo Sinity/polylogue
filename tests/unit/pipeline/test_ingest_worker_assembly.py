@@ -683,3 +683,52 @@ async def test_a_late_asset_map_resolves_on_the_next_convergence(blob_store: Blo
     after = _chatgpt_replay(archive_root, blob_store, conversations)
     assert after.attachments[0].name == "diagram.png"  # type: ignore[attr-defined]
     assert after.attachments[0].precomputed_blob is not None  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_retained_replay_archives_every_duplicate_asset_rendition(blob_store: BlobStore, tmp_path: Path) -> None:
+    """Replay from retained evidence keys renditions as live discovery does.
+
+    Anti-vacuity: keep only the first retained member per asset id and replay
+    yields one attachment carrying the ``p0`` bytes while ``p1`` is never
+    referenced.
+    """
+    from polylogue.sources.assembly_chatgpt import ChatGPTAssemblySpec
+
+    archive_root = tmp_path / "archive"
+    root = tmp_path / "live" / "chatgpt-export"
+    single_asset, library, names, conversations = _write_chatgpt_export(root)
+    single_asset.unlink()
+    renditions = {
+        root / f"{_CHATGPT_ASSET_ID}-p0.png": b"\x89PNG page zero",
+        root / f"{_CHATGPT_ASSET_ID}-p1.png": b"\x89PNG page one",
+    }
+    for path, payload in renditions.items():
+        path.write_bytes(payload)
+    from polylogue.sources.live import WatchSource
+
+    await _acquire_evidence(
+        archive_root,
+        WatchSource(name="chatgpt", root=root, suffixes=(".json",)),
+        [*renditions, library, names],
+    )
+    live_keys = set(
+        ChatGPTAssemblySpec()
+        .discover_sidecars([conversations], blob_store=BlobStore(tmp_path / "live-blobs"))
+        .get("chatgpt_asset_blobs", {})
+    )
+    for path in (*renditions, library, names, conversations):
+        path.unlink()
+
+    replayed = _chatgpt_replay(archive_root, blob_store, conversations)
+    attachments = list(replayed.attachments)  # type: ignore[attr-defined]
+    assert len(live_keys) == 2
+    assert len(attachments) == 2
+    blobs = [attachment.precomputed_blob for attachment in attachments]
+    assert all(blob is not None for blob in blobs)
+    stored = BlobStore(archive_root / "blob")
+    assert sorted(stored.read_all(blob[0]) for blob in blobs if blob is not None) == sorted(renditions.values())
+    # The retained route names each rendition by the same member coordinate.
+    assert {attachment.provider_attachment_id.rsplit("#", 1)[-1] for attachment in attachments} == {
+        key.rsplit("#", 1)[-1] for key in live_keys
+    }
