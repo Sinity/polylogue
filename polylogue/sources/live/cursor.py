@@ -2115,6 +2115,39 @@ class CursorStore:
             stages=preserved_stages,
         )
 
+    def clear_convergence_debt_under_prefix(
+        self,
+        *,
+        stage: str,
+        subject_type: str,
+        prefix: str,
+        keep: frozenset[str] = frozenset(),
+    ) -> None:
+        """Clear one stage's debt for every subject under ``prefix`` except ``keep``.
+
+        A container (a ZIP archive) owns the debt of its members; after a pass
+        over the container, members it no longer refuses -- including members a
+        later revision removed -- keep no gap.
+        """
+
+        def write() -> None:
+            with self._connect_ops() as conn:
+                # ``substr`` compares exactly; ``LIKE`` folds ASCII case and
+                # would reach a sibling archive differing only in case.
+                rows = conn.execute(
+                    "SELECT target_id FROM convergence_debt WHERE stage = ? AND target_type = ? "
+                    "AND substr(target_id, 1, ?) = ?",
+                    (stage, subject_type, len(prefix), prefix),
+                ).fetchall()
+                stale = [(stage, subject_type, row[0]) for row in rows if row[0] not in keep]
+                conn.executemany(
+                    "DELETE FROM convergence_debt WHERE stage = ? AND target_type = ? AND target_id = ?",
+                    stale,
+                )
+                conn.commit()
+
+        best_effort_cursor_write("archive ops convergence debt prefix clear", write)
+
     def clear_convergence_debt(
         self,
         *,

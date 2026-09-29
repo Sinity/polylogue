@@ -218,7 +218,7 @@ def test_baseline_records_intake_exclusions_instead_of_requiring_retention(tmp_p
     """Each pre-acquisition exclusion intake applies is the baseline's disposition too.
 
     Anti-vacuity: without the shared ``classify_pre_acquisition`` decision
-    every one of these files is ``accepted`` and ``verify`` raises for three
+    every one of these files is ``accepted`` and ``verify`` raises for the
     unretained revisions that intake never writes.
     """
     codex = tmp_path / "codex"
@@ -251,10 +251,15 @@ def test_baseline_records_intake_exclusions_instead_of_requiring_retention(tmp_p
         "excluded",
         "intake_excluded:unsupported source class",
     )
-    assert decisions[str(logs)] == ("excluded", "intake_excluded:path rule classifies this as non-session evidence")
-    assert [row.path for row in baseline.accepted] == [str(rollout)]
+    # Gemini CLI's ``logs.json`` prompt log is declared raw-only evidence:
+    # intake retains its bytes, so the baseline demands them too.
+    assert decisions[str(logs)][0] == "accepted"
+    assert {row.path for row in baseline.accepted} == {str(rollout), str(logs)}
     baseline.verify(
-        _source_db(tmp_path / "source.db", ((str(rollout), hashlib.sha256(rollout.read_bytes()).hexdigest()),))
+        _source_db(
+            tmp_path / "source.db",
+            tuple((str(path), hashlib.sha256(path.read_bytes()).hexdigest()) for path in (rollout, logs)),
+        )
     )
 
 
@@ -525,6 +530,99 @@ def test_intake_exclusion_retires_an_earlier_accepted_observation(tmp_path: Path
         "op",
         current.source_signature,
         (SourceDecision("codex", str(sidecar), "accepted", "file", revision, material_bytes=size),),
+    )
+    merged = merge_pending_production_baseline(current, earlier)
+    assert merged.accepted == ()
+    merged.verify(_source_db(tmp_path / "source.db", ()))
+
+
+def test_a_foreign_origin_file_intake_refuses_is_never_demanded(tmp_path: Path) -> None:
+    """Intake refuses a Codex rollout under Claude Code's root; the baseline agrees.
+
+    The refusal comes from the acquisition boundary (the Codex record follows
+    a Claude Code record, so no pre-copy sniff sees it) and is recorded with
+    intake's own ``intake_excluded:`` reason, so a resumed build also retires
+    an earlier observation that accepted the same bytes.
+
+    Anti-vacuity: hashing outside the boundary records the file ``accepted``
+    and ``verify`` raises for an unretained revision intake never writes;
+    recording the refusal without the ``intake_excluded:`` prefix keeps the
+    earlier accepted row after the merge.
+    """
+    root = tmp_path / "projects"
+    project = root / "proj"
+    project.mkdir(parents=True)
+    path = project / "bad69218-73bd-490a-869a-2b3a30bf421b.jsonl"
+    path.write_bytes(
+        b'{"type":"user","uuid":"u1","sessionId":"bad69218-73bd-490a-869a-2b3a30bf421b",'
+        b'"timestamp":"2025-06-13T17:40:00.000Z","cwd":"/p","message":{"role":"user","content":"hi"}}\n'
+        b'{"type":"session_meta","payload":{"id":"s","timestamp":"2026-06-02T00:00:00Z"}}\n'
+    )
+    current = capture_production_source_baseline(
+        (WatchSource("claude-code", root, suffixes=(".jsonl",)),), operation_id="op"
+    )
+    [row] = [row for row in current.decisions if row.path == str(path)]
+    assert row.disposition == "excluded"
+    assert row.reason.startswith("intake_excluded:foreign_origin_content")
+
+    revision, size = _revision(path)
+    earlier = _seal(
+        "op",
+        current.source_signature,
+        (SourceDecision("claude-code", str(path), "accepted", "file", revision, material_bytes=size),),
+    )
+    merged = merge_pending_production_baseline(current, earlier)
+    assert merged.accepted == ()
+    merged.verify(_source_db(tmp_path / "source.db", ()))
+
+
+def test_a_refused_zip_member_retires_its_earlier_acceptance(tmp_path: Path) -> None:
+    """A resumed build drops the demand for a member intake now refuses.
+
+    An earlier baseline, from before location binding, accepted a Codex
+    rollout inside an archive under Claude Code's root. The member's bytes
+    are unchanged and intake now refuses them.
+
+    Anti-vacuity: recording the member refusal without the
+    ``intake_excluded:`` prefix, or comparing the member coordinate as a
+    file path, keeps the earlier accepted row and ``verify`` raises.
+    """
+    import zipfile
+
+    from polylogue.core.raw_coordinates import zip_member_source_index
+
+    root = tmp_path / "projects"
+    root.mkdir()
+    member = (
+        b'{"type":"session_meta","payload":{"id":"s","timestamp":"2026-06-02T00:00:00Z"}}\n'
+        b'{"type":"response_item","payload":{"type":"message","id":"m","role":"user",'
+        b'"content":[{"type":"input_text","text":"hi"}]}}\n'
+    )
+    archive = root / "bundle.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        zf.writestr("rollout.jsonl", member)
+    current = capture_production_source_baseline(
+        (WatchSource("claude-code", root, suffixes=(".zip",)),), operation_id="op"
+    )
+    coordinate = f"{archive}:rollout.jsonl"
+    [row] = [row for row in current.decisions if row.path == coordinate]
+    assert row.disposition == "excluded"
+    assert row.reason.startswith("intake_excluded:foreign_origin_content")
+
+    earlier = _seal(
+        "op",
+        current.source_signature,
+        (
+            SourceDecision(
+                "claude-code",
+                coordinate,
+                "accepted",
+                "archive_member",
+                hashlib.sha256(member).hexdigest(),
+                zip_member_source_index(entry_ordinal=0, split_index=0),
+                len(member),
+            ),
+        ),
     )
     merged = merge_pending_production_baseline(current, earlier)
     assert merged.accepted == ()

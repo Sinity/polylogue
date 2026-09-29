@@ -986,10 +986,10 @@ def test_fresh_capacity_uses_sealed_material_without_a_second_source_read(
     real_revision = production_baseline._revision
     reads = 0
 
-    def measured_revision(path: Path, *, cancelled: Any = None) -> tuple[str, int]:
+    def measured_revision(path: Path, *, cancelled: Any = None, location: Any = None) -> tuple[str, int]:
         nonlocal reads
         reads += 1
-        digest, _size = real_revision(path, cancelled=cancelled)
+        digest, _size = real_revision(path, cancelled=cancelled, location=location)
         return digest, 2 * 1024**3
 
     monkeypatch.setattr(production_baseline, "_revision", measured_revision)
@@ -1045,17 +1045,16 @@ def test_a_failed_capacity_observation_does_not_block_promotion(
 
 
 def _declare_sources(monkeypatch: pytest.MonkeyPatch, *roots: Path) -> tuple[SourceDeclaration, ...]:
-    """Pin what ``config.source_declarations`` returns for one test.
+    """Build the historical wanted-source declarations for one test.
 
-    The declarations are the shape ``config.source_declarations`` builds from
-    ``source_paths.explicit`` -- the only thing the campaign policy admits into
-    the denominator.
+    Manual wanted-source receipts are historical evidence the cold build still
+    validates when one is published; these tests write one directly.
     """
     declarations = tuple(
         SourceDeclaration(f"configured-{position}", SourceRole.DIRECTORY, root, True)
         for position, root in enumerate(roots)
     )
-    monkeypatch.setattr("polylogue.config.configured_source_declarations", lambda _runtime: declarations)
+    del monkeypatch
     return declarations
 
 

@@ -15,7 +15,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Final
+from typing import Final
 
 import tomllib
 
@@ -24,9 +24,6 @@ from .core.loopback import bind_hosts_overlap, is_loopback_host
 from .logging import WARNING, emit
 from .paths import GEMINI_DRIVE_FOLDER
 from .storage.archive_identity import archive_file_set_root, resolve_active_index_path
-
-if TYPE_CHECKING:
-    from .maintenance.source_manifest_continuity import SourceDeclaration, SourceFrontier
 
 
 class ConfigError(PolylogueError):
@@ -209,39 +206,6 @@ def active_archive_root(config: Config) -> Path:
 def get_sources(runtime: ResolvedRuntimeConfig) -> list[Source]:
     """Return a defensive source list from an already-resolved runtime."""
     return list(runtime.sources)
-
-
-def source_declarations(runtime: ResolvedRuntimeConfig) -> tuple[SourceDeclaration, ...]:
-    """Return canonical declarations for every configured local source.
-
-    The returned declarations intentionally include explicit roots even when
-    they do not exist yet.  Discovery-only defaults remain presence-gated,
-    while configured roots are part of the conservation denominator.
-    """
-    from polylogue.maintenance.source_manifest_continuity import SourceDeclaration, SourceRole
-
-    declarations: list[SourceDeclaration] = []
-    # Runtime discovery roots are ambient provider state and can be very
-    # large; only roots explicitly configured by the operator are a proof
-    # denominator.  They are retained even when missing.
-    declarations.extend(
-        SourceDeclaration(f"configured-{n}", SourceRole.DIRECTORY, path, True)
-        for n, path in enumerate(runtime.source_paths.explicit)
-    )
-    return tuple(declarations)
-
-
-def configured_source_frontier(runtime: ResolvedRuntimeConfig | None = None) -> SourceFrontier:
-    """Build the complete configured-source denominator for a runtime."""
-    from polylogue.maintenance.source_manifest_continuity import build_source_frontier
-
-    resolved = runtime if runtime is not None else resolve_runtime_config()
-    return build_source_frontier(source_declarations(resolved))
-
-
-# Descriptive alias used by maintenance callers that need declarations but do
-# not yet need to enumerate their members.
-configured_source_declarations = source_declarations
 
 
 def get_drive_config(runtime: ResolvedRuntimeConfig) -> DriveConfig:
@@ -581,15 +545,6 @@ class PolylogueConfig:
     @property
     def browser_capture_allow_no_auth(self) -> bool:
         return _require_bool_config_value(self._data, "browser_capture_allow_no_auth", allow_blank=True)
-
-    @property
-    def source_roots(self) -> tuple[str, ...]:
-        v = self._data.get("source_roots")
-        if isinstance(v, (list, tuple)):
-            return tuple(str(item) for item in v)
-        if isinstance(v, str) and v.strip():
-            return tuple(s.strip() for s in v.split(",") if s.strip())
-        return ()
 
     @property
     def hermes_root(self) -> str:
@@ -1005,14 +960,6 @@ _CONFIG_INVENTORY: tuple[ConfigInventoryEntry, ...] = (
         owner_class="path-layout",
         reload_behavior="startup-bound",
         description="Spool directory for browser-capture JSONL before archive ingestion.",
-    ),
-    ConfigInventoryEntry(
-        "source_roots",
-        toml_path="sources.roots",
-        cli_override="polylogued run --root",
-        owner_class="path-layout",
-        reload_behavior="startup-bound",
-        description="Additional source roots watched by the daemon.",
     ),
     ConfigInventoryEntry(
         "hermes_root",
@@ -1763,7 +1710,6 @@ def _default_config_values(bootstrap: _BootstrapPaths | None = None) -> dict[str
         "browser_capture_auth_token": None,
         "browser_capture_allow_remote": False,
         "browser_capture_allow_no_auth": False,
-        "source_roots": (),
         "hermes_root": "",
         "drive_credentials_path": str(captured.config_home / "polylogue-credentials.json"),
         "drive_token_path": str(captured.state_home / "token.json"),
@@ -1816,6 +1762,12 @@ def _apply_toml_layer(
             raise ConfigError(f"cannot load explicitly selected {layer_name} config {path}: {exc}") from exc
         return
 
+    if undeclared := _undeclared_toml_keys(toml_data):
+        raise ConfigError(
+            f"{layer_name} config {path} sets keys Polylogue does not read: {', '.join(undeclared)}; "
+            f"delete those keys from {path}, or move the file aside and run `polylogue init` to write a new one "
+            "(every command loads this file, so none runs until it is fixed)"
+        )
     before = deepcopy(cfg)
     _merge_toml(cfg, toml_data)
     if reject_capability_keys:
@@ -1961,6 +1913,38 @@ def _deep_merge_table(existing: Mapping[str, object], incoming: Mapping[str, obj
     return merged
 
 
+def _undeclared_toml_keys(toml_data: Mapping[str, object]) -> list[str]:
+    """Dotted TOML leaves that no inventory entry declares.
+
+    A key Polylogue does not read is refused rather than ignored: a stale or
+    misspelled setting that silently does nothing looks configured while the
+    daemon runs with the default.
+    """
+    declared: set[str] = set()
+    table_prefixes: set[str] = set()
+    for entry in _CONFIG_INVENTORY:
+        if not entry.toml_path:
+            continue
+        declared.add(entry.toml_path)
+        if entry.toml_kind in {"table", "array-table"}:
+            table_prefixes.add(entry.toml_path)
+
+    undeclared: list[str] = []
+
+    def walk(node: Mapping[str, object], prefix: str) -> None:
+        for key, value in node.items():
+            path = f"{prefix}.{key}" if prefix else str(key)
+            if path in table_prefixes or path in declared:
+                continue
+            if isinstance(value, Mapping) and any(item.startswith(path + ".") for item in declared):
+                walk(value, path)
+                continue
+            undeclared.append(path)
+
+    walk(toml_data, "")
+    return sorted(undeclared)
+
+
 def _merge_toml(cfg: dict[str, object], toml_data: dict[str, object]) -> None:
     """Merge TOML into the flat inventory using kind-aware semantics.
 
@@ -2076,7 +2060,6 @@ class ResolvedSourcePaths:
     browser_capture: Path
     inbox: Path
     hooks_pending: Path
-    explicit: tuple[Path, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -2227,9 +2210,6 @@ def resolve_runtime_config(
         hook_sidecar_root=hook_sidecar,
         drive_cache_root=drive_cache,
     )
-    explicit_roots = tuple(
-        _resolved_runtime_path(value, bootstrap=bootstrap, fallback=bootstrap.cwd) for value in settings.source_roots
-    )
     source_paths = ResolvedSourcePaths(
         claude_code=bootstrap.home / ".claude" / "projects",
         claude_code_todos=bootstrap.home / ".claude" / "todos",
@@ -2245,7 +2225,6 @@ def resolve_runtime_config(
         browser_capture=browser_spool,
         inbox=paths.inbox_root,
         hooks_pending=hook_sidecar / "pending",
-        explicit=explicit_roots,
     )
     local_candidates = (
         ("claude-code", source_paths.claude_code),
@@ -2259,11 +2238,7 @@ def resolve_runtime_config(
         ("inbox", source_paths.inbox),
         ("hooks", source_paths.hooks_pending),
     )
-    # Explicit roots are declarations, not discovery hints: retaining a
-    # missing root in the runtime source set lets conservation report a typed
-    # unavailable input instead of silently shrinking its denominator.
     sources = [Source(name=name, path=path) for name, path in local_candidates if path.exists()]
-    sources.extend(Source(name=f"configured-{n}", path=path) for n, path in enumerate(explicit_roots))
     gemini_cache = drive_cache / "gemini"
     if gemini_cache.exists() or drive_credentials.exists() or drive_token.exists():
         sources.append(Source(name="aistudio", folder=GEMINI_DRIVE_FOLDER, path=gemini_cache))
@@ -2449,7 +2424,7 @@ def _config_diagnostic(
     return payload
 
 
-_MULTI_PATH_CONFIG_KEYS = frozenset({"source_roots"})
+_MULTI_PATH_CONFIG_KEYS: frozenset[str] = frozenset()
 
 
 def _iter_path_config_values(key: str, value: object) -> list[str]:
@@ -2515,17 +2490,6 @@ def _config_path_diagnostics(resolved: PolylogueConfig) -> list[dict[str, object
                     )
                 )
                 continue
-            if entry.key == "source_roots" and not path.exists():
-                diagnostics.append(
-                    _config_diagnostic(
-                        code="configured_source_root_missing",
-                        severity="warning",
-                        key=entry.key,
-                        message=f"Configured source root does not exist: {raw_path}.",
-                        next_action="Remove the stale source root or create/mount it before running the daemon.",
-                        cfg=resolved,
-                    )
-                )
     return diagnostics
 
 

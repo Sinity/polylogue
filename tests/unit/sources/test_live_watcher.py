@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import IO, Any, cast
 from unittest.mock import MagicMock
 
 import pytest
@@ -1121,18 +1121,19 @@ async def test_live_full_ingest_streams_large_paths_before_processing(
     )
 
     calls: list[str] = []
-    original_prepare_from_path = BlobStore.prepare_from_path
+    original_prepare_from_fileobj = BlobStore.prepare_from_fileobj
 
-    def spy_prepare_from_path(
-        store: BlobStore, path: Path, *, heartbeat: Callable[[], None] | None = None
+    def spy_prepare_from_fileobj(
+        store: BlobStore, source: IO[bytes], *, heartbeat: Callable[[], None] | None = None
     ) -> PreparedBlob:
-        calls.append(f"path:{path.name}")
-        return original_prepare_from_path(store, path, heartbeat=heartbeat)
+        # The capture streams the file through the acquisition boundary.
+        calls.append(f"path:{Path(source.raw.name).name}")  # type: ignore[attr-defined]
+        return original_prepare_from_fileobj(store, source, heartbeat=heartbeat)
 
     def fail_prepare_from_bytes(_store: object, _payload: bytes) -> PreparedBlob:
         raise AssertionError("large live full ingest should stream from path")
 
-    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_path", spy_prepare_from_path)
+    monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_fileobj", spy_prepare_from_fileobj)
     monkeypatch.setattr("polylogue.sources.live.batch.BlobStore.prepare_from_bytes", fail_prepare_from_bytes)
 
     result = await processor._ingest_full_paths([source_path], source_name="projects")
