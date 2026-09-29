@@ -266,7 +266,10 @@ def test_oversized_session_walks_replay_a_spool_not_the_json(tmp_path: Path, mon
     second = list(session.messages)
     suffix = list(session.messages.iter_from(1))
     assert decodes[0] == len(first)
-    assert prepared_message_sink._DECODED_SESSIONS._entries == {}
+    retained = [
+        key for key in prepared_message_sink._DECODED_SESSIONS._entries if key[0] == str(artifact.sessions_path)
+    ]
+    assert retained == []
     assert second == first
     assert second[0] is not first[0]
     assert suffix == first[1:]

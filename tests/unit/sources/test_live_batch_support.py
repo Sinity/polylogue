@@ -10138,11 +10138,11 @@ def test_file_frontier_reads_only_the_tail(tmp_path: Path, monkeypatch: pytest.M
             read += len(data)
             return data
 
-    def counting_open(self: Path, *args: Any, **kwargs: Any) -> Any:
-        return CountingHandle(real_open(self, *args, **kwargs))
+    class CountingPath(type(path)):  # type: ignore[misc]
+        def open(self, *args: Any, **kwargs: Any) -> Any:
+            return CountingHandle(real_open(self, *args, **kwargs))
 
-    monkeypatch.setattr(Path, "open", counting_open)
-    frontier = jsonl_complete_prefix_path(path)
+    frontier = jsonl_complete_prefix_path(CountingPath(path))
 
     assert frontier.prefix_size == len(record) * 4000
     assert frontier.incomplete_tail and not frontier.malformed_record
