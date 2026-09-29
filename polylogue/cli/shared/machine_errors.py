@@ -59,6 +59,10 @@ ARCHIVE_WRITER_OWNERSHIP_UNAVAILABLE = "archive_writer_ownership_unavailable"
 #: applied. Never a retryable failure: ``details.recovery`` carries the
 #: operation's declared way to settle it.
 OPERATION_INDETERMINATE = "operation_indeterminate"
+#: A batched write committed some parts before a later part stopped it.
+#: ``details`` carries the committed part and row counts, the parts never
+#: attempted, and the stop reason; the selection must not be retried as is.
+MUTATION_PARTIALLY_APPLIED = "mutation_partially_applied"
 
 
 @dataclass(frozen=True, slots=True)
@@ -226,6 +230,33 @@ def error_operation_indeterminate(
         details["request_id"] = request_id
     return MachineError(
         code=OPERATION_INDETERMINATE,
+        message=message,
+        command=tuple(command or ()),
+        details=details,
+    )
+
+
+def error_mutation_partially_applied(
+    message: str,
+    *,
+    command: list[str] | None = None,
+    operation: str,
+    completed_chunks: int,
+    affected_count: int,
+    not_attempted: tuple[int, ...],
+    stop_reason: str | None,
+) -> MachineError:
+    """Build the machine envelope for a batched write that applied in part."""
+    details: JSONDocument = {
+        "operation": operation,
+        "completed_chunks": completed_chunks,
+        "affected_count": affected_count,
+        "not_attempted": list(not_attempted),
+    }
+    if stop_reason is not None:
+        details["stop_reason"] = stop_reason
+    return MachineError(
+        code=MUTATION_PARTIALLY_APPLIED,
         message=message,
         command=tuple(command or ()),
         details=details,

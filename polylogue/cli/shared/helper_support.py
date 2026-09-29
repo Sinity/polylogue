@@ -64,6 +64,71 @@ class OperationIndeterminateRefusal(click.ClickException):
         super().__init__(detail)
 
 
+class MutationPartiallyAppliedRefusal(click.ClickException):
+    """A batched write that committed some parts before a later part stopped it.
+
+    Never an ordinary refusal: part of the effect is durable, so a client that
+    retried the selection would act on a changed archive. The applied counts
+    travel to machine callers as typed ``details`` beside the stop reason.
+    """
+
+    #: Matched against ``machine_errors.MUTATION_PARTIALLY_APPLIED``.
+    code = "mutation_partially_applied"
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        operation: str,
+        completed_chunks: int,
+        affected_count: int,
+        not_attempted: tuple[int, ...],
+        stop_reason: str | None,
+    ) -> None:
+        self.operation = operation
+        self.completed_chunks = completed_chunks
+        self.affected_count = affected_count
+        self.not_attempted = not_attempted
+        self.stop_reason = stop_reason
+        super().__init__(detail)
+
+
+def partially_applied_refusal(exc: Exception, operation: str) -> MutationPartiallyAppliedRefusal | None:
+    """Return the typed partial-application refusal a failed batch result carries, if any.
+
+    The daemon's batch state reports ``effect`` and the committed part and
+    row counts; a failed or cancelled batch with a committed effect applied
+    part of its selection.
+    """
+    from polylogue.cli.operation_kernel import OperationFailedError
+
+    if not isinstance(exc, OperationFailedError):
+        return None
+    data = exc.data
+    completed = data.get("completed_chunks")
+    affected = data.get("affected_count")
+    completed_chunks = completed if isinstance(completed, int) and not isinstance(completed, bool) else 0
+    affected_count = affected if isinstance(affected, int) and not isinstance(affected, bool) else 0
+    if data.get("effect") != "committed" and not completed_chunks and not affected_count:
+        return None
+    raw_not_attempted = data.get("not_attempted")
+    not_attempted = (
+        tuple(item for item in raw_not_attempted if isinstance(item, int))
+        if isinstance(raw_not_attempted, list)
+        else ()
+    )
+    stop_reason = data.get("stop_reason")
+    return MutationPartiallyAppliedRefusal(
+        f"{operation} partially applied ({exc.code}): {completed_chunks} part(s) committed, "
+        f"{affected_count} row(s) affected; {len(not_attempted)} part(s) not attempted",
+        operation=operation,
+        completed_chunks=completed_chunks,
+        affected_count=affected_count,
+        not_attempted=not_attempted,
+        stop_reason=str(stop_reason) if stop_reason is not None else None,
+    )
+
+
 def mutation_refusal(exc: Exception, operation: str) -> click.ClickException:
     """Translate one typed operation failure into the CLI's refusal voice.
 
@@ -96,6 +161,9 @@ def mutation_refusal(exc: Exception, operation: str) -> click.ClickException:
             "(and drop --no-daemon / POLYLOGUE_NO_DAEMON if either is set).",
             operation=operation,
         )
+    partial = partially_applied_refusal(exc, operation)
+    if partial is not None:
+        return partial
     if isinstance(exc, OperationFailedError):
         return click.ClickException(f"daemon refused {operation} ({exc.code}): {exc.detail}")
     return click.ClickException(f"{operation} failed: {exc}")
@@ -141,8 +209,10 @@ def load_effective_config(env: AppEnv) -> Config:
 
 __all__ = [
     "DaemonRequiredError",
+    "MutationPartiallyAppliedRefusal",
     "OperationIndeterminateRefusal",
     "fail",
+    "partially_applied_refusal",
     "indeterminate_refusal",
     "load_effective_config",
     "mutation_refusal",
