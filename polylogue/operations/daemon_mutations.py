@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import replace
@@ -594,14 +595,16 @@ def _page_bounds(
 ) -> Iterator[tuple[int, int, bool]]:
     """``(offset, end, final)`` for each page of ``total`` parts from ``start``.
 
-    Between pages, a cancellation or an expired deadline fences the staged
-    request with that reason, so it reads terminal instead of every remaining
-    page being accepted regardless.
+    Between pages, a cancellation fences the staged request, so it reads
+    cancelled instead of every remaining page being accepted regardless. The
+    request deadline does not: a durably accepted batch that is still
+    progressing is finished, not failed and restarted, and its authority is
+    judged by its progress (``AuditRepository.handshake_as_of_ms``).
     """
     for offset in range(start, total, MACHINE_PAGE_PARTS):
         if offset > 0 and context.runtime is not None:
             stop = context.runtime.stop_reason(request)
-            if stop is not None:
+            if stop == "cancelled":
                 audit.stop_machine_batch(binding, stop)
                 from polylogue.archive.query.execution_control import QueryCancelledError
 
@@ -655,7 +658,6 @@ def mutation_session_delete_authorize(
     if accepted is not None:
         preview_refs = _refs(request.payload, "preview_ref")
         operation = runtime_operation_binding(SessionDeleteActuator())
-        executor = OperationExecutor()
         with _fenced_on_failure(audit, binding):
             for offset, end, final in _page_bounds(
                 len(preview_refs), accepted, request=request, context=context, audit=audit, binding=binding
@@ -663,6 +665,11 @@ def mutation_session_delete_authorize(
                 previews = tuple(
                     audit.preview_for_principal(ref, context.principal) for ref in preview_refs[offset:end]
                 )
+                # Judged as of the handshake's progress, as the audit tier
+                # judges the same page, so a long paged preview does not
+                # expire its own authorization.
+                as_of_ms = audit.handshake_as_of_ms(binding, preview_refs=preview_refs[offset:end])
+                executor = OperationExecutor(now_ms=functools.partial(int, as_of_ms))
                 authorizations = tuple(
                     executor.authorize_bound(operation, preview, context.principal, confirmation_strength="bound_token")
                     for preview in previews

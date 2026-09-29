@@ -107,6 +107,13 @@ def machine_pages_kind(kind: str) -> str:
 #: Parts one page of a paged machine batch carries.
 MACHINE_PAGE_PARTS = _MAX_MACHINE_AUTHORITY_PARTS
 
+#: How long a delete handshake may sit idle between one phase finishing and
+#: the next being accepted before its authority clock resumes. While the
+#: preview, authorization and execution phases follow one another within it,
+#: expiry is judged as of the preview's acceptance, however long each phase
+#: takes to page (``AuditRepository.handshake_as_of_ms``).
+HANDSHAKE_IDLE_MS = 60_000
+
 #: Staged kinds of paged machine batches.
 MACHINE_PAGE_KINDS = frozenset(machine_pages_kind(kind) for kind in _PAGED_MACHINE_KINDS.values())
 _MAX_INSIGHT_ACCEPTED_PARTS = 4096
@@ -642,6 +649,80 @@ class AuditRepository:
             self._machine_part = None
             self._machine_deadline_unix_ms = None
             self._machine_page = None
+
+    def handshake_as_of_ms(
+        self,
+        binding: MachineRequestBinding,
+        *,
+        preview_refs: tuple[str, ...] = (),
+        authorization_refs: tuple[str, ...] = (),
+    ) -> int:
+        """The time a phase of a paged delete handshake is judged as of.
+
+        A phase is judged as of its own durable acceptance, so a phase that
+        began in time finishes however many pages it takes. When it consumes
+        the artifacts of a completed earlier phase and was accepted within
+        :data:`HANDSHAKE_IDLE_MS` of that phase's last page, it inherits the
+        earlier phase's time instead: authority expires only while the
+        handshake sits idle, not while it progresses.
+        """
+        record = self.machine_request(binding)
+        accepted = int(cast(int, record["accepted_at_ms"])) if record is not None else int(time.time() * 1000)
+        with self._connection() as conn:
+            return self._phase_as_of(conn, accepted, preview_refs, authorization_refs)
+
+    def _phase_as_of(
+        self,
+        conn: sqlite3.Connection,
+        accepted_at_ms: int,
+        preview_refs: tuple[str, ...],
+        authorization_refs: tuple[str, ...],
+    ) -> int:
+        refs, kind, completion_sql = (
+            (
+                authorization_refs,
+                "authorization-batch",
+                """SELECT MAX(a.issued_at_ms) FROM machine_request_parts AS p
+                   JOIN operation_authorizations AS a ON a.authorization_id = p.artifact_ref
+                   WHERE p.archive_identity = ? AND p.request_id = ?""",
+            )
+            if authorization_refs
+            else (
+                preview_refs,
+                "preview-batch",
+                """SELECT MAX(v.created_at_ms) FROM machine_request_parts AS p
+                   JOIN operation_previews AS v ON v.preview_id = p.artifact_ref
+                   WHERE p.archive_identity = ? AND p.request_id = ?""",
+            )
+        )
+        if not refs:
+            return accepted_at_ms
+        placeholders = ",".join("?" for _ in refs)
+        rows = conn.execute(
+            f"""SELECT DISTINCT r.archive_identity, r.request_id, r.accepted_at_ms
+                FROM machine_request_parts AS p JOIN machine_requests AS r
+                  ON r.archive_identity = p.archive_identity AND r.request_id = p.request_id
+                WHERE p.artifact_ref IN ({placeholders}) AND r.artifact_kind = ?""",
+            (*refs, kind),
+        ).fetchall()
+        if len(rows) != 1:
+            # Not the artifacts of exactly one completed phase: wall time.
+            return accepted_at_ms
+        earlier_identity, earlier_request, earlier_accepted = rows[0]
+        completed = conn.execute(completion_sql, (earlier_identity, earlier_request)).fetchone()[0]
+        if completed is None or accepted_at_ms - int(completed) > HANDSHAKE_IDLE_MS:
+            return accepted_at_ms
+        earlier_previews: tuple[str, ...] = ()
+        if authorization_refs:
+            earlier_previews = tuple(
+                str(row[0])
+                for row in conn.execute(
+                    """SELECT preview_ref FROM machine_request_parts
+                       WHERE archive_identity = ? AND request_id = ? ORDER BY ordinal LIMIT ?""",
+                    (earlier_identity, earlier_request, _MAX_MACHINE_AUTHORITY_PARTS),
+                )
+            )
+        return min(accepted_at_ms, self._phase_as_of(conn, int(earlier_accepted), earlier_previews, ()))
 
     def machine_request(self, binding: MachineRequestBinding) -> dict[str, object] | None:
         """Recover the immutable domain reference and reject conflicting reuse.
@@ -1284,6 +1365,14 @@ class AuditRepository:
             }[kind]
             commands: list[dict[str, object]] = []
             authorizations = cast(tuple[MutationAuthorization, ...], args[2]) if len(args) > 2 else ()
+            as_of_ms = (
+                self.handshake_as_of_ms(
+                    self._machine_binding[0],
+                    preview_refs=tuple(cast(MutationPreview, item).preview_ref for item in items),
+                )
+                if kind == "issue_authorization_batch" and self._machine_binding is not None
+                else None
+            )
             if authorizations and len(authorizations) != len(items):
                 raise ValueError("authorization batch differs from preview batch")
             for ordinal, item in enumerate(items):
@@ -1294,12 +1383,15 @@ class AuditRepository:
                     child_args = (item, principal)
                 else:
                     child_args = (item, principal, authorizations[ordinal])
+                child_payload = self._continuity_payload(child_kind, child_args, {})
+                if child_kind == "issue_authorization" and as_of_ms is not None:
+                    child_payload["authority_as_of_ms"] = as_of_ms
                 commands.append(
                     AuditMutation(
                         kind=child_kind,
                         mutation_id=f"audit-part:{secrets.token_urlsafe(18)}",
                         created_at_ms=int(time.time() * 1000),
-                        payload=self._continuity_payload(child_kind, child_args, {}),
+                        payload=child_payload,
                     ).command()
                 )
             return {"commands": commands}
@@ -1307,10 +1399,16 @@ class AuditRepository:
             refs, principal = cast(tuple[str, ...], args[0]), cast(MutationPrincipal, args[1])
             if not 1 <= len(refs) <= _MAX_MACHINE_AUTHORITY_PARTS or len(set(refs)) != len(refs):
                 raise ValueError("execution batch must contain between 1 and 40 distinct authorizations")
+            now_ms = int(time.time() * 1000)
             return {
                 "authorization_refs": list(refs),
                 "principal": _principal_payload(principal),
-                "now_ms": int(time.time() * 1000),
+                "now_ms": now_ms,
+                "authority_as_of_ms": (
+                    self.handshake_as_of_ms(self._machine_binding[0], authorization_refs=refs)
+                    if self._machine_binding is not None
+                    else now_ms
+                ),
             }
         if kind == "seal_insight_execution":
             head_preview_ref, page_count, manifest_digest, raw_principal = args
@@ -1414,14 +1512,23 @@ class AuditRepository:
                 preview, authorization = cast(MutationPreview, args[1]), cast(MutationAuthorization, args[2])
             else:
                 preview, authorization = cast(MutationPreview, args[0]), cast(MutationAuthorization, args[1])
+            consume_now_ms = int(time.time() * 1000)
             return {
+                "authority_as_of_ms": (
+                    self.handshake_as_of_ms(
+                        self._machine_binding[0],
+                        authorization_refs=(authorization.authorization_id,),
+                    )
+                    if self._machine_binding is not None and authorization.authorization_id is not None
+                    else consume_now_ms
+                ),
                 "operation_id": f"operation:{secrets.token_urlsafe(18)}",
                 "attempt_id": f"attempt:{secrets.token_urlsafe(18)}",
                 # The command can be replayed by a fresh repository process.
                 # Keep the original actuator owner, rather than accidentally
                 # assigning its pre-effect attempt to the recovery process.
                 "attempt_owner_id": self._attempt_owner_id,
-                "now_ms": int(time.time() * 1000),
+                "now_ms": consume_now_ms,
                 "preview": _preview_payload(preview),
                 "authorization": {
                     **_authorization_payload(authorization),
@@ -1741,6 +1848,7 @@ class AuditRepository:
         """Check exact one-shot authority without allocating a domain attempt."""
 
         now_ms = int(cast(int, self._command_value("now_ms", int(time.time() * 1000))))
+        now_ms = int(cast(int, self._command_value("authority_as_of_ms", now_ms)))
         with self._connection() as conn:
             for ref in refs:
                 row = conn.execute(
@@ -2163,7 +2271,10 @@ class AuditRepository:
                 or (not durable_capabilities and authorization.capability != "")
             ):
                 raise ValueError("authorization evidence differs from its durable preview")
-            if effective_issued_at_ms >= durable_expires_at_ms:
+            # A paged handshake judges expiry as of its progress, not its wall
+            # time (``handshake_as_of_ms``); issuance time stays real.
+            as_of_ms = cast(int, self._command_value("authority_as_of_ms", effective_issued_at_ms))
+            if as_of_ms >= durable_expires_at_ms:
                 conn.execute(
                     "UPDATE operation_previews SET state = 'expired' WHERE preview_id = ? AND state = 'prepared'",
                     (preview.preview_ref,),
@@ -2339,7 +2450,7 @@ class AuditRepository:
                     raise TokenConsumedError("authorization is reserved to an accepted machine request")
             if str(row[6]) != "active":
                 raise TokenConsumedError("authorization token is already consumed or revoked")
-            if int(row[7]) <= now_ms:
+            if int(row[7]) <= cast(int, self._command_value("authority_as_of_ms", now_ms)):
                 conn.execute(
                     "UPDATE operation_authorizations SET state = 'expired' WHERE authorization_id = ?",
                     (str(row[0]),),

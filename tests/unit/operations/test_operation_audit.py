@@ -2881,3 +2881,86 @@ def test_cancelling_a_staged_authorization_batch_between_pages_revokes_it(tmp_pa
             )
         }
     assert refs and states == {"revoked"}
+
+
+class _AuditClock:
+    """``time`` for the audit module, with a settable wall clock."""
+
+    def __init__(self, ms: int) -> None:
+        self.ms = ms
+
+    def time(self) -> float:
+        return self.ms / 1000
+
+    def __getattr__(self, name: str) -> object:
+        import time as real_time
+
+        return getattr(real_time, name)
+
+
+@pytest.mark.parametrize("idle_ms", [10_000, 61_000])
+def test_a_progressing_paged_handshake_keeps_its_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idle_ms: int
+) -> None:
+    """Authority expires while a delete handshake sits idle, not while it pages.
+
+    The previews expire 60 s after the preview request is accepted, and its
+    second page lands 50 s later. Anti-vacuity: judge authorization by wall
+    time and a handshake that moves on 10 s after its last preview page is
+    refused as expired; judge it by the preview's acceptance regardless of
+    idle time and one left idle 61 s is still authorized.
+    """
+    from polylogue.operations import audit as audit_module
+    from polylogue.operations.audit import MachineRequestBinding as Binding
+
+    audit = _audit(tmp_path)
+    clock = _AuditClock(1_000_000_000)
+    monkeypatch.setattr(audit_module, "time", clock)
+    actuator = _Actuator()
+    start = clock.ms
+    preparer = OperationExecutor(now_ms=lambda: clock.ms)
+    plans = [
+        preparer.prepare_bound(
+            _binding(actuator),
+            object(),
+            _principal(),
+            archive_instance_id="archive:fixture",
+            archive_identity_digest="identity:fixture",
+            parameter_digest=f"params:handshake-{index}",
+            expires_at_ms=start + 60_000,
+        ).plan
+        for index in range(2)
+    ]
+    previewing = Binding("identity:fixture", "request:preview", "actor:test", "a" * 64, "mutation.fixture")
+    for offset, plan in enumerate(plans):
+        with audit.bind_machine_request(
+            previewing, transition="create_preview_batch", page=(offset, offset == len(plans) - 1)
+        ):
+            audit.create_preview_batch((plan,), _principal())
+        clock.ms += 50_000
+    refs = [str(part["artifact_ref"]) for part in audit.machine_parts(previewing)]
+    previews = tuple(audit.preview_for_principal(ref, _principal()) for ref in refs)
+
+    clock.ms = start + 50_000 + idle_ms
+    authorizing = Binding("identity:fixture", "request:authorize", "actor:test", "b" * 64, "mutation.fixture")
+    as_of_ms = audit.handshake_as_of_ms(authorizing, preview_refs=tuple(refs))
+    if idle_ms > audit_module.HANDSHAKE_IDLE_MS:
+        assert as_of_ms == clock.ms
+        with pytest.raises(TokenExpiredError):
+            OperationExecutor(now_ms=lambda: as_of_ms).authorize_bound(_binding(actuator), previews[0], _principal())
+        return
+    assert as_of_ms == start
+    authorizations = tuple(
+        OperationExecutor(now_ms=lambda: as_of_ms).authorize_bound(_binding(actuator), preview, _principal())
+        for preview in previews
+    )
+    with audit.bind_machine_request(authorizing, transition="issue_authorization_batch", page=(0, True)):
+        audit.issue_authorization_batch(previews, _principal(), authorizations)
+    authorization_refs = tuple(str(part["artifact_ref"]) for part in audit.machine_parts(authorizing))
+
+    clock.ms += 30_000
+    executing = Binding("identity:fixture", "request:execute", "actor:test", "c" * 64, "mutation.fixture")
+    with audit.bind_machine_request(executing, transition="accept_execution_batch", page=(0, True)):
+        audit.accept_execution_batch(authorization_refs, _principal())
+    record = audit.machine_request(executing)
+    assert record is not None and record["artifact_kind"] == "execution-batch"
