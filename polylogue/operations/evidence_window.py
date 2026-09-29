@@ -25,6 +25,10 @@ about messages: an off-by-one or a missing epoch revalidation stays a single
 defect across both families rather than two independent ones.  The separation
 that matters is the *vocabulary*, and :func:`frame_evidence_window` is where
 it is enforced.
+
+The one binding added here is for relations the archive frame cannot see:
+``bind_snapshot`` stamps the index/user frame, so a family that pages a
+``source.db`` relation also binds that relation's own epoch into its token.
 """
 
 from __future__ import annotations
@@ -101,7 +105,9 @@ WEB_CONTENT_WINDOW = EvidenceWindowFamily(
 
 #: ``material_observations`` whose referrer is the session -- source-tier
 #: materials such as Codex goals and memories.  Ordered by admission.
-#: Windowed because one material carries its retained bytes.
+#: Windowed because one material carries its retained bytes.  The relation is
+#: in ``source.db``, so its tokens also bind
+#: ``session_evidence.session_materials_source_epoch``.
 SESSION_MATERIALS_WINDOW = EvidenceWindowFamily(
     kind="materials",
     projection="session-materials-v1",

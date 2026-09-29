@@ -262,7 +262,7 @@ def declared_test_files(root: Path) -> frozenset[str]:
     return frozenset(found)
 
 
-def unrecorded_test_files(root: Path, *, datafile: Path | None = None) -> tuple[str, ...] | None:
+def unrecorded_test_files(root: Path) -> tuple[str, ...] | None:
     """Declared test files the graph has no execution for, in path order.
 
     Testmon deselects only what it has recorded; an unrecorded test is
@@ -273,7 +273,7 @@ def unrecorded_test_files(root: Path, *, datafile: Path | None = None) -> tuple[
     ``None`` when the graph cannot be read at all, which is a different answer
     from "none are missing" and must not be folded into it.
     """
-    path = datafile or testmon_datafile(root)
+    path = testmon_datafile(root)
     if not path.is_file():
         return None
     try:
@@ -338,6 +338,11 @@ def should_seed(root: Path, seed: Path) -> bool:
     if local.full_rerun_cause is None:
         local_tests = recorded_test_names(testmon_datafile(root))
         if local_tests is None:
+            return False
+        # A read of the live seed rules out the common case without copying
+        # it; the snapshot below is still what decides.
+        live_seed_tests = recorded_test_names(seed)
+        if live_seed_tests is None or not live_seed_tests > local_tests:
             return False
     with tempfile.TemporaryDirectory(prefix="testmon-seed-") as scratch:
         probe_root = Path(scratch)

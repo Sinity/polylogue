@@ -395,10 +395,9 @@ def test_an_interrupted_local_graph_takes_the_complete_primary(tmp_path: Path) -
     _record_tests(_two_file_worktree(local_root), ("tests/test_a.py::test_a",))
 
     assert testmon_provision.sync_testmon_graph(local_root, source=primary) is True
-    assert testmon_provision.recorded_test_names(testmon_provision.testmon_datafile(local_root)) == {
-        "tests/test_a.py::test_a",
-        "tests/test_b.py::test_a",
-    }
+    assert testmon_provision.recorded_test_names(testmon_provision.testmon_datafile(local_root)) == frozenset(
+        {"tests/test_a.py::test_a", "tests/test_b.py::test_a"}
+    )
 
 
 def test_a_local_graph_as_complete_as_the_primary_is_kept(tmp_path: Path) -> None:
