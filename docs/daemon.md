@@ -749,10 +749,9 @@ its captured bytes (the file changed after preparation, or preparation was
 deferred), the writer does not decode the capture to classify it: it releases
 that capture, reports `live.ingest.json_capture_deferred`, and defers the path
 to a later pass whose preparation matches what it captures. A complete JSONL
-record that does not decode is
-refused for every provider: the raw is retained with `terminal_corrupt_input`
-evidence (`terminal_unknown_json_decode` for an unknown provider) instead of
-being skipped on the way to the cursor frontier.
+record that does not decode is refused for every provider: the raw is retained
+with `terminal_corrupt_input` evidence (`terminal_unknown_json_decode` for an
+unknown provider) instead of being skipped on the way to the cursor frontier.
 
 An archive storage fault -- a full disk or quota, an I/O error, a corrupt
 database page, a read-only mount, or attachment bytes a parse worker published
