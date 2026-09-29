@@ -344,21 +344,23 @@ _CARRIER_DRAIN_LOCK = ".carrier-drain.lock"
 
 
 def _carrier_scope_summary(root: Path) -> dict[str, object]:
-    """Count carrier files in a bounded walk without retaining path strings."""
+    """Count carriers with one live directory iterator per depth, not per file."""
     carrier_root = root / CARRIERS_DIRNAME
     count = 0
     if carrier_root.exists():
-        stack = [carrier_root]
-        while stack:
-            directory = stack.pop()
-            with os.scandir(directory) as entries:
-                ordered = sorted(entries, key=lambda entry: entry.name)
-            for entry in ordered:
-                path = Path(entry.path)
-                if entry.is_dir(follow_symlinks=False):
-                    stack.append(path)
-                elif entry.is_file(follow_symlinks=False) and path.suffix == ".ndjson":
+        stack = [os.scandir(carrier_root)]
+        try:
+            while stack:
+                entry = next(stack[-1], None)
+                if entry is None:
+                    stack.pop().close()
+                elif entry.is_dir(follow_symlinks=False):
+                    stack.append(os.scandir(entry.path))
+                elif entry.is_file(follow_symlinks=False) and Path(entry.name).suffix == ".ndjson":
                     count += 1
+        finally:
+            for entries in stack:
+                entries.close()
     return {"file_count": count}
 
 
