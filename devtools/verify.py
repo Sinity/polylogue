@@ -1230,6 +1230,13 @@ def _aggregate_pytest_results(
     }
 
 
+#: Set by the devshell hook on every entry (flake.nix): ``complete`` when
+#: ``.venv`` matches this checkout's pyproject.toml and uv.lock, ``incomplete``
+#: when that sync failed and the previous environment was kept.
+DEPENDENCY_SYNC_ENV = "POLYLOGUE_DEVSHELL_DEPENDENCY_SYNC"
+DEPENDENCY_SYNC_INCOMPLETE = "incomplete"
+
+
 def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = None) -> int:
     arguments = list(argv or [])
     refusal = refuse_verify_tier(arguments, os.environ)
@@ -1276,6 +1283,25 @@ def _main(argv: list[str] | None = None, *, agentctl_operation: str | None = Non
         if args.json:
             print(
                 json.dumps({"status": "refused", "diagnosis": "optimized_python", "message": message, "exit_code": 125})
+            )
+        else:
+            sys.stderr.write(message + "\n")
+        return 125
+    if os.environ.get(DEPENDENCY_SYNC_ENV) == DEPENDENCY_SYNC_INCOMPLETE:
+        message = (
+            "devtools verify refuses an unsynced environment: the devshell's `uv sync --frozen` failed, so .venv "
+            "still holds the dependencies of an earlier pyproject.toml/uv.lock; fix the sync and re-enter the shell"
+        )
+        if args.json:
+            print(
+                json.dumps(
+                    {
+                        "status": "refused",
+                        "diagnosis": "dependency_sync_incomplete",
+                        "message": message,
+                        "exit_code": 125,
+                    }
+                )
             )
         else:
             sys.stderr.write(message + "\n")

@@ -357,6 +357,24 @@ def test_a_nested_acquisition_returns_the_outer_lease(db_path: Path) -> None:
             assert inner.actor == "outer"
 
 
+def test_a_nested_acquisition_inherits_the_outer_archive_identity(tmp_path: Path) -> None:
+    """Re-entry under an archive-bound lease names no new archive.
+
+    A derivation publish takes ``write_lease(actor)`` without a root while the
+    daemon's archive-bound lease is held. Anti-vacuity: check re-entry with
+    ``require_write_lease`` and no archive root, as #5727 left it, and the
+    first nested acquisition raises "omitted archive identity".
+    """
+    with arm_write_lease_enforcement(), write_lease("outer", archive_root=tmp_path) as outer:
+        with write_lease("derivation.publish") as inner:
+            assert inner is outer
+        with write_lease("same-root", archive_root=tmp_path) as same:
+            assert same is outer
+        with pytest.raises(UnleasedWriteError, match="outside the archive bound"):
+            with write_lease("other-root", archive_root=tmp_path / "other"):
+                pass
+
+
 def test_a_hold_past_its_declared_budget_is_a_typed_failure() -> None:
     """An over-long hold fails rather than being absorbed as a longer wait.
 
@@ -462,6 +480,46 @@ def test_every_write_mode_factory_in_storage_routes_through_the_lease() -> None:
             if "require_write_lease" not in calls:
                 unguarded.append(f"{relative}:{name}")
     assert unguarded == [], f"write-mode factories that do not take the lease: {unguarded}"
+
+
+def test_an_unleased_backend_admits_an_established_archive_read_only(tmp_path: Path) -> None:
+    """A daemon-armed reader may construct a backend over an established archive.
+
+    The live batch probes ``Polylogue.backend`` outside the writer lease. The
+    backend must admit an established root read-only -- no filesystem
+    mutation -- and still refuse an index whose derived identity this runtime
+    cannot serve, and a root whose format marker is gone. Anti-vacuity: route
+    that construction through ``initialize_active_archive_root`` again and it
+    raises ``UnleasedWriteError`` ("active archive bootstrap requires the
+    daemon write lease"); chmod the index on this path and the mode check
+    fails; drop the validating index open and the stale identity is served.
+    """
+    import os
+    import stat
+
+    from polylogue.core.errors import SchemaSkew
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import archive_format_marker_path
+    from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
+
+    root = tmp_path / "archive"
+    index_db = root / "index.db"
+    initialize_active_archive_root(root)
+    os.chmod(index_db, 0o644)
+    with arm_write_lease_enforcement():
+        assert current_write_lease() is None
+        backend = SQLiteBackend(db_path=index_db)
+        assert backend.db_path == index_db
+        assert stat.S_IMODE(index_db.stat().st_mode) == 0o644
+
+        with closing(sqlite3.connect(index_db)) as conn:
+            conn.execute("UPDATE schema_identity SET identity = 'stale' WHERE tier = 'index'")
+            conn.commit()
+        with pytest.raises(SchemaSkew):
+            SQLiteBackend(db_path=index_db)
+
+        archive_format_marker_path(root).unlink()
+        with pytest.raises(RuntimeError, match="archive format marker is missing"):
+            SQLiteBackend(db_path=index_db)
 
 
 def test_the_cached_write_connection_is_refused_without_a_lease(tmp_path: Path) -> None:
@@ -784,8 +842,11 @@ def test_archive_bound_lease_can_delegate_without_dropping_identity(tmp_path: Pa
 
     with arm_write_lease_enforcement(process_wide=True), write_lease("archive-writer", archive_root=tmp_path) as lease:
         delegation = delegate_write_lease()
-        with adopt_write_lease(delegation):
-            assert current_write_lease() is lease
+        with adopt_write_lease(delegation) as adopted:
+            # Adoption binds a per-thread view of the minting lease, not the
+            # lease object itself; the identity it carries is the contract.
+            assert adopted.archive_root == lease.archive_root
+            assert require_write_lease("adopted archive writer", archive_root=tmp_path) is adopted
 
 
 def test_a_reused_thread_ident_does_not_inherit_a_retired_workers_authority() -> None:

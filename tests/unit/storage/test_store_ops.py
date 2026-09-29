@@ -611,7 +611,7 @@ async def test_backend_action_terms_filter_contract(workspace_env: dict[str, Pat
     with ArchiveStore.open_existing(archive_root) as archive:
 
         def ids(**kwargs: object) -> list[str]:
-            return [summary.session_id for summary in archive.list_summaries(limit=10, **kwargs)]  # type: ignore[arg-type]
+            return [summary.session_id for summary in archive.list_summaries(limit=10, **kwargs)]
 
         assert ids(action_terms=("search",)) == [nid("conv-search")]
         assert archive.count_sessions(action_terms=("search",)) == 1

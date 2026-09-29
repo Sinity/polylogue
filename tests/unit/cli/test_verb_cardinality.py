@@ -836,7 +836,12 @@ class TestDeleteCardinalityLargeNonMocked:
         def _route(_config: Any, operation: str, payload: dict[str, object]) -> dict[str, object]:
             if operation.endswith(".preview"):
                 prepared["ids"] = [str(item) for item in cast(list[Any], payload["session_ids"])]
-                return {"status": "prepared", "preview_ref": "preview:delete", "session_ids": prepared["ids"]}
+                return {
+                    "status": "prepared",
+                    "preview_ref": "preview:delete",
+                    "session_count": len(prepared["ids"]),
+                    "session_ids_sample": list(prepared["ids"])[:20],
+                }
             if operation.endswith(".authorize"):
                 return {"status": "authorized", "authorization_refs": ["test-authorization"]}
             with ArchiveStore.open_existing(archive_root, read_only=False) as archive:

@@ -42,6 +42,7 @@ from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandi
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, ZipAdmission
 from polylogue.config import Source
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
@@ -80,7 +81,7 @@ from polylogue.core.storage_faults import (
 )
 from polylogue.core.timestamp_authority import timestamp_millis
 from polylogue.core.write_hold import WriteHoldBudgetError, check_write_hold_budget
-from polylogue.logging import ERROR, WARNING, bind, emit, get_logger
+from polylogue.logging import ERROR, INFO, WARNING, bind, emit, get_logger
 from polylogue.pipeline.batch_policy import WriteDestination, select_cold_build_shape
 from polylogue.pipeline.ids import session_revision_projection
 from polylogue.pipeline.ingest_outcomes import (
@@ -187,6 +188,7 @@ from polylogue.sources.live.metrics import (
     split_offered_bytes,
 )
 from polylogue.sources.live.parse_prefetch import LiveParseCandidate, LiveParseStage, ReadSnapshot
+from polylogue.sources.live.retained_prefetch import PreparedLiveRetainedRaw
 from polylogue.sources.live.source_selection import deepest_source_for_path
 from polylogue.sources.live.sqlite_locking import is_transient_sqlite_lock
 from polylogue.sources.origin_specs import (
@@ -201,8 +203,10 @@ from polylogue.sources.prepared_jsonl import PreparedJsonl, PreparedSessionSeque
 from polylogue.sources.prepared_message_sink import SqliteMessageSink
 from polylogue.sources.revision_backfill import (
     _declared_non_session_artifact_classification,
+    enrich_sessions_from_archive,
     parse_retained_raw_sessions,
     prepare_retained_jsonl_artifact,
+    prepared_enrichment_dependency_state,
 )
 from polylogue.sources.source_acquisition_components import (
     ZipEntryReadContext,
@@ -240,6 +244,7 @@ from polylogue.storage.sqlite.archive_tiers.write import (
     prepared_row_dispositions,
 )
 from polylogue.storage.sqlite.archive_tiers.write_shard import discard_session_shard
+from polylogue.storage.sqlite.connection_profile import attach_readonly_database, open_readonly_connection
 
 if TYPE_CHECKING:
     from polylogue.storage.raw_retention import RawFrontierBlockedPaths
@@ -570,6 +575,47 @@ def _shard_prepared_by_raw_id(
     key = archive_session_id(origin_from_provider(session.source_name).value, session.provider_session_id)
     binding = bindings.get(key)
     return None if binding is None else {raw_id: binding}
+
+
+#: Artifact kinds whose retained bytes other sessions are enriched from
+#: (``retained_assembly``): session indexes, prompt history, export asset maps.
+_ENRICHMENT_EVIDENCE_KINDS = frozenset({"session_index", "prompt_history_log", "export_asset_index", "export_asset"})
+
+
+def _enrichment_evidence_first(paths: list[Path], provider: Provider) -> list[Path]:
+    """Admit enrichment evidence ahead of the sessions it describes.
+
+    A pass admits records in order, and each session is enriched (or its
+    prepared carrier revalidated) against the evidence admitted before it.
+    Discovery order puts ``sessions-index.json`` after the UUID-named
+    transcripts beside it, so without this a transcript in the same pass as
+    its index was published with the heuristic title while retained replay
+    of the same bytes used the index. The sort is stable otherwise.
+    """
+
+    def evidence_rank(path: Path) -> int:
+        rule = artifact_rule_for_path(provider, str(path))
+        return 0 if rule is not None and rule.kind in _ENRICHMENT_EVIDENCE_KINDS else 1
+
+    return sorted(paths, key=evidence_rank)
+
+
+def _retained_chain_prepared(
+    archive: Any,
+    accepted_raw_ids: Sequence[str],
+    *,
+    current_raw_id: str,
+    retained: Mapping[str, PreparedLiveRetainedRaw] | None,
+) -> bool:
+    """Whether every older chain member has a current off-writer carrier."""
+    members = retained or {}
+    for raw_id in accepted_raw_ids:
+        if raw_id == current_raw_id:
+            continue
+        member = members.get(raw_id)
+        if member is None or not member.current(archive):
+            return False
+    return True
 
 
 def _live_parse_stage_candidates(paths: list[Path], *, fallback_provider: Provider) -> list[LiveParseCandidate]:
@@ -1475,7 +1521,14 @@ class LiveBatchProcessor:
                 # Remaining sources stay ordinary backlog for the next tick;
                 # nothing here was attempted, so nothing to mark failed.
                 break
-            progress_groups = list(_full_parse_progress_groups(grouped_paths))
+            # Evidence goes first across the whole source, before the list is
+            # split into progress groups; a later group cannot revisit an
+            # earlier one (see ``_enrichment_evidence_first``).
+            ordered_paths = _enrichment_evidence_first(
+                list(grouped_paths),
+                Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name)),
+            )
+            progress_groups = list(_full_parse_progress_groups(ordered_paths))
             held_pending: list[Path] = []
             while progress_groups:
                 source_paths = progress_groups.pop(0)
@@ -2696,7 +2749,7 @@ class LiveBatchProcessor:
         if not sidecars or not source_db.exists():
             yield
             return
-        with closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)) as conn:
+        with closing(open_readonly_connection(source_db)) as conn:
             self._pinned_raw_fingerprints = self._pinned_latest_raw_fingerprints(
                 conn, sidecars, archive_root=source_db.parent
             )
@@ -2810,7 +2863,7 @@ class LiveBatchProcessor:
         pinned = self._pinned_history_sidecars
         if pinned is not None and str(path) in pinned:
             return pinned[str(path)]
-        conn = sqlite3.connect(f"file:{self._archive_source_db_path()}?mode=ro", uri=True)
+        conn = open_readonly_connection(self._archive_source_db_path())
         try:
             declared = conn.execute(
                 "SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'history_sidecars'"
@@ -2833,7 +2886,7 @@ class LiveBatchProcessor:
         if not source_db.exists():
             return None
         try:
-            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(source_db)
             try:
                 row = conn.execute(
                     """
@@ -2903,7 +2956,10 @@ class LiveBatchProcessor:
             # Only a file with no cursor row is certain to be ingested in full.
             records = self._cursor.get_records(paths)
             cursorless = [str(path) for path in paths if records.get(path) is None]
-            return stage.prefetch_paths(cursorless, fallback_provider=fallback_provider) if cursorless else 0
+            if not cursorless:
+                return 0
+            archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+            return stage.prefetch_paths(cursorless, fallback_provider=fallback_provider, archive_root=archive_root)
 
         submission = asyncio.ensure_future(asyncio.to_thread(submit))
         try:
@@ -2933,6 +2989,9 @@ class LiveBatchProcessor:
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
     ) -> _FullIngestResult:
+        paths = _enrichment_evidence_first(
+            paths, Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+        )
         prepared_json_paths: frozenset[str] = frozenset()
         held_paths: frozenset[str] = frozenset()
         if self._parse_stage is not None and not _source_tier_acquisition_required():
@@ -3095,6 +3154,7 @@ class LiveBatchProcessor:
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] = {}
         shard_paths_by_raw_id: dict[str, Path] = {}
         path_preparations_by_source_path: dict[str, PreparedJsonl] = {}
+        retained_preparations_by_raw_id: dict[str, PreparedLiveRetainedRaw] = {}
         raw_source_names: dict[Path, str] = {}
         raw_source_revisions: dict[Path, str] = {}
         raw_source_fingerprints: dict[Path, str] = {}
@@ -3660,6 +3720,11 @@ class LiveBatchProcessor:
                     preparation = self._parse_stage.pop_path(str(path), blob_hash=raw_id)
                     if preparation is not None:
                         path_preparations_by_source_path[str(path)] = preparation
+                        for retained_id, member in self._parse_stage.take_retained_path(str(path)).items():
+                            if retained_id in retained_preparations_by_raw_id:
+                                member.discard()
+                            else:
+                                retained_preparations_by_raw_id[retained_id] = member
                 if heartbeat is not None:
                     heartbeat(
                         "full_blob_copy",
@@ -3701,6 +3766,11 @@ class LiveBatchProcessor:
                     preparation = self._parse_stage.pop_path(str(path), blob_hash=raw_id)
                     if preparation is not None:
                         path_preparations_by_source_path[str(path)] = preparation
+                        for retained_id, member in self._parse_stage.take_retained_path(str(path)).items():
+                            if retained_id in retained_preparations_by_raw_id:
+                                member.discard()
+                            else:
+                                retained_preparations_by_raw_id[retained_id] = member
                 if json_document:
                     # The captured blob, rather than the pre-copy path, owns
                     # provider identity when the source changes after prewarm.
@@ -3835,6 +3905,7 @@ class LiveBatchProcessor:
                     parsed_sessions_by_raw_id,
                     shard_paths_by_raw_id,
                     path_preparations_by_source_path,
+                    retained_preparations_by_raw_id,
                     max_pass_seconds=max_pass_seconds,
                     pass_started=pass_clock_started,
                 )
@@ -3855,6 +3926,9 @@ class LiveBatchProcessor:
                 for preparation in path_preparations_by_source_path.values():
                     preparation.discard()
                 path_preparations_by_source_path.clear()
+                for member in retained_preparations_by_raw_id.values():
+                    member.discard()
+                retained_preparations_by_raw_id.clear()
             # skipped_raw_ids (polylogue-11cg9) are records the time budget
             # never let the archive-write loop reach at all -- neither a
             # failure nor a conveyor hand-off, so they must be excluded from
@@ -4017,7 +4091,8 @@ class LiveBatchProcessor:
                 user_versions[tier] = None
                 continue
             try:
-                conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+                # Reports the stamped version, so it must not refuse on skew.
+                conn = open_readonly_connection(path, validate_schema=False)
                 try:
                     user_versions[tier] = int(conn.execute("PRAGMA user_version").fetchone()[0])
                 finally:
@@ -4043,6 +4118,7 @@ class LiveBatchProcessor:
         parsed_sessions_by_raw_id: dict[str, list[ParsedSession]] | None = None,
         shard_paths_by_raw_id: dict[str, Path] | None = None,
         path_preparations_by_source_path: dict[str, PreparedJsonl] | None = None,
+        retained_preparations_by_raw_id: Mapping[str, PreparedLiveRetainedRaw] | None = None,
         *,
         max_pass_seconds: float | None = None,
         pass_started: float | None = None,
@@ -4449,9 +4525,32 @@ class LiveBatchProcessor:
                             raise RuntimeError(f"off-writer preparation failed: {path_preparation.error}")
                         if not path_preparation.positive_evidence_filtered:
                             raise RuntimeError("off-writer preparation did not filter conversational evidence")
-                        cached_sessions = path_preparation.session_sequence()
-                        if path_preparation.shard_path is not None and shard_paths_by_raw_id is not None:
-                            shard_paths_by_raw_id[source_raw_id] = path_preparation.shard_path
+                        prepared_sessions = path_preparation.session_sequence()
+                        stale_enrichment = prepared_enrichment_dependency_state(
+                            archive,
+                            path_preparation,
+                            provider=path_preparation.resolved_provider or provider,
+                            source_path=record.source_path,
+                            sessions=prepared_sessions,
+                            parser_sidecars=False,
+                        )
+                        if stale_enrichment is not None:
+                            # The worker enriched against evidence this pass
+                            # has since changed (a sidecar admitted ahead of
+                            # this record). Parse and enrich here instead.
+                            emit(
+                                "live.ingest.prepared_carrier_stale",
+                                level=INFO,
+                                outcome="degraded",
+                                source_path=record.source_path,
+                                reason=f"{stale_enrichment}; parsing in the writer",
+                            )
+                            path_preparation = None
+                            cached_sessions = None
+                        else:
+                            cached_sessions = prepared_sessions
+                            if path_preparation.shard_path is not None and shard_paths_by_raw_id is not None:
+                                shard_paths_by_raw_id[source_raw_id] = path_preparation.shard_path
                     prepared_writes = (
                         {prepared.session_id: prepared for prepared in path_preparation.prepared_writes}
                         if path_preparation is not None
@@ -4575,6 +4674,10 @@ class LiveBatchProcessor:
                             provider=provider,
                             source_path=record.source_path,
                         )
+                        # A sealed path preparation was enriched in its
+                        # worker; this writer-side parse must publish the
+                        # same interpretation retained replay would.
+                        sessions = enrich_sessions_from_archive(archive, provider, record.source_path, sessions)
                     record_timings["full.provider_parse"] = record_timings.get("full.provider_parse", 0.0) + (
                         time.perf_counter() - t0
                     )
@@ -4664,6 +4767,7 @@ class LiveBatchProcessor:
                                 shard_paths_by_raw_id=shard_paths_by_raw_id,
                                 fresh_build_batch=fresh_build_batch,
                                 prepared_writes=prepared_writes,
+                                retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                             )
                         else:
                             archive.bind_raw_revision(
@@ -4678,12 +4782,24 @@ class LiveBatchProcessor:
                             )
                             plan = archive.classify_raw_revision_cohort_for_live_watch(logical_source_key)
                             if plan.accepted_raw_ids:
-                                if path_preparation is not None and len(plan.accepted_raw_ids) > 1:
+                                if (
+                                    path_preparation is not None
+                                    and len(plan.accepted_raw_ids) > 1
+                                    and not _retained_chain_prepared(
+                                        archive,
+                                        plan.accepted_raw_ids,
+                                        current_raw_id=source_raw_id,
+                                        retained=retained_preparations_by_raw_id,
+                                    )
+                                ):
                                     # This source-tier decision is durable. The
                                     # raw owner composes the exact accepted
                                     # chain from sealed worker artifacts on its
                                     # next pass; rebuilding old full sessions
                                     # here would defeat bounded preparation.
+                                    # When prewarm already sealed every older
+                                    # member, compose here so the current
+                                    # path's prepared write is consumed.
                                     result.deferred_raw_ids[_full_record_key(record)] = source_raw_id
                                     _accumulate_stage_timings(result.stage_timings_s, record_timings)
                                     continue
@@ -4692,6 +4808,7 @@ class LiveBatchProcessor:
                                     plan,
                                     current_raw_id=source_raw_id,
                                     current_session=session,
+                                    retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                                 )
                                 replay_fresh = _fresh_build_admits(parsed_by_raw_id.values(), fresh_build_batch)
                                 index_conn = archive.index_connection
@@ -4841,6 +4958,7 @@ class LiveBatchProcessor:
                                     shard_paths_by_raw_id=shard_paths_by_raw_id,
                                     fresh_build_batch=fresh_build_batch,
                                     prepared_writes=prepared_writes,
+                                    retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                                 )
                     else:
                         archive.replace_raw_membership_census(
@@ -4866,6 +4984,7 @@ class LiveBatchProcessor:
                             shard_paths_by_raw_id=shard_paths_by_raw_id,
                             fresh_build_batch=fresh_build_batch,
                             prepared_writes=prepared_writes,
+                            retained_preparations_by_raw_id=retained_preparations_by_raw_id,
                         )
                     if raw_authority_complete:
                         result.raw_ids[_full_record_key(record)] = record_raw_id
@@ -5066,14 +5185,20 @@ class LiveBatchProcessor:
         *,
         current_raw_id: str | None = None,
         current_session: ParsedSession | None = None,
+        retained_preparations_by_raw_id: Mapping[str, PreparedLiveRetainedRaw] | None = None,
     ) -> dict[str, Any]:
         parsed_by_raw_id: dict[str, Any] = {}
         for raw_id in plan.accepted_raw_ids:
-            sessions = (
-                [current_session]
-                if raw_id == current_raw_id and current_session is not None
-                else self._parse_retained_raw_sessions(archive, raw_id)
-            )
+            member = (retained_preparations_by_raw_id or {}).get(raw_id)
+            sessions: Sequence[ParsedSession]
+            if raw_id == current_raw_id and current_session is not None:
+                sessions = [current_session]
+            elif member is not None and member.current(archive):
+                sessions = member.artifact.session_sequence()
+            else:
+                # No carrier, or one this writer cannot publish (its evidence
+                # or index moved): the writer owns the member's replay.
+                sessions = self._parse_retained_raw_sessions(archive, raw_id)
             if len(sessions) != 1:
                 raise RuntimeError(f"raw revision {raw_id} did not replay to exactly one session")
             parsed_by_raw_id[raw_id] = sessions[0]
@@ -5121,6 +5246,7 @@ class LiveBatchProcessor:
         shard_paths_by_raw_id: Mapping[str, Path] | None = None,
         fresh_build_batch: set[str] | None = None,
         prepared_writes: Mapping[str, PreparedSessionWrite] | None = None,
+        retained_preparations_by_raw_id: Mapping[str, PreparedLiveRetainedRaw] | None = None,
     ) -> tuple[list[str], int, int, bool]:
         """Apply membership-governed classification for one logical identity.
 
@@ -5157,6 +5283,14 @@ class LiveBatchProcessor:
                 return sessions
             cached = retained_sessions_cache.get(raw_id)
             if cached is None:
+                member = (retained_preparations_by_raw_id or {}).get(raw_id)
+                # A carrier this writer cannot publish is a prewarm miss.
+                if member is not None and member.current(archive):
+                    if member.artifact.error is not None:
+                        raise RuntimeError(member.artifact.error)
+                    sequence = member.artifact.session_sequence()
+                    retained_sessions_cache[raw_id] = sequence
+                    return sequence
                 descriptor_reader = getattr(archive, "raw_revision_descriptor", None)
                 if descriptor_reader is None:
                     legacy = cast(Sequence[ParsedSession], self._parse_retained_raw_sessions(archive, raw_id))
@@ -5357,12 +5491,16 @@ class LiveBatchProcessor:
             )
         finally:
             for cached in retained_sessions_cache.values():
-                if isinstance(cached, PreparedSessionSequence):
+                if isinstance(cached, PreparedSessionSequence) and not any(
+                    member.artifact is cached.artifact for member in (retained_preparations_by_raw_id or {}).values()
+                ):
                     cached.artifact.discard()
 
     @staticmethod
     def _parse_retained_raw_sessions(archive: Any, raw_id: str) -> list[Any]:
-        return parse_retained_raw_sessions(archive, raw_id)
+        sessions = parse_retained_raw_sessions(archive, raw_id)
+        provider, _blob_hash, source_path, _kind, _size = archive.raw_revision_descriptor(raw_id)
+        return enrich_sessions_from_archive(archive, provider, source_path, sessions)
 
     def _extract_zip_member_records(
         self,
@@ -5389,6 +5527,7 @@ class LiveBatchProcessor:
         source = Source(name=fallback_provider.value, path=path.parent)
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
+        refusals: list[str] = []
         total_bytes = 0
         try:
             with zipfile.ZipFile(path) as zf:
@@ -5486,6 +5625,8 @@ class LiveBatchProcessor:
                             )
                     except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                    except ContentIdentityRefusal as exc:
+                        refusals.append(f"{info.filename}: {exc}")
         except (zipfile.BadZipFile, OSError) as exc:
             # Members stream into the archive's blob staging: a full or
             # read-only archive is not a property of this ZIP, and reporting
@@ -5493,6 +5634,7 @@ class LiveBatchProcessor:
             raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             return [], 0
+        self._settle_zip_member_refusals(path, refusals)
         return records, total_bytes
 
     def _extract_source_only_zip_member_records(
@@ -5513,6 +5655,7 @@ class LiveBatchProcessor:
         source = Source(name=fallback_provider.value, path=path.parent)
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
+        refusals: list[str] = []
         total_bytes = 0
         validator = _ZipEntryValidator(fallback_provider, cursor_state=None, zip_path=path)
         try:
@@ -5545,6 +5688,9 @@ class LiveBatchProcessor:
                         )
                     except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                        continue
+                    except ContentIdentityRefusal as exc:
+                        refusals.append(f"{info.filename}: {exc}")
                         continue
                     if raw_data.blob_hash is None:
                         continue
@@ -5583,7 +5729,40 @@ class LiveBatchProcessor:
             # extraction so the caller records retryable failure state instead
             # of permanently acknowledging this source coordinate as excluded.
             return None
+        self._settle_zip_member_refusals(path, refusals)
         return records, total_bytes
+
+    def _settle_zip_member_refusals(self, path: Path, refusals: list[str]) -> None:
+        """Name every member of ``path`` refused a content identity, or clear the gap.
+
+        A refused member holds a token no archive value can store, so it is a
+        permanent property of these bytes: the ZIP's other members are still
+        ingested and its cursor still advances, and the refusal is recorded as
+        durable ``live_ingest_admission`` debt on the ZIP so the missing member
+        is a typed, visible gap rather than a log line. A later expansion of
+        the same path with no refusal clears it.
+        """
+        if not refusals:
+            self._cursor.clear_convergence_debt(
+                stage="live_ingest_admission",
+                subject_type="source_path",
+                subject_id=str(path),
+            )
+            return
+        reason = "content_identity_refused: " + "; ".join(refusals)
+        emit(
+            "live.ingest.zip_member_refused",
+            level=WARNING,
+            outcome="refused",
+            source_path=str(path),
+            reason=reason,
+        )
+        self._cursor.record_convergence_debt(
+            stage="live_ingest_admission",
+            subject_type="source_path",
+            subject_id=str(path),
+            error=reason,
+        )
 
     def _mark_excluded_cursor(
         self,
@@ -5682,7 +5861,7 @@ class LiveBatchProcessor:
         if not source_db.exists():
             return None
         try:
-            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(source_db)
         except sqlite3.Error:
             return None
         try:
@@ -6159,7 +6338,7 @@ class LiveBatchProcessor:
             for _ in RAW_FAILURE_LIFECYCLE_EVIDENCE_SUPPORT_STATUS_PAIRS
         )
         try:
-            conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(source_db)
             try:
                 return (
                     conn.execute(
@@ -6542,9 +6721,9 @@ class LiveBatchProcessor:
         if not source_db.exists() or not index_db.exists():
             return False
         try:
-            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(index_db)
             try:
-                conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+                attach_readonly_database(conn, source_db, alias="source_tier")
                 row = conn.execute(
                     """
                     SELECT 1
@@ -6556,7 +6735,6 @@ class LiveBatchProcessor:
                     """,
                     (str(path), expected_origin, expected_origin),
                 ).fetchone()
-                conn.execute("DETACH DATABASE source_tier")
             finally:
                 conn.close()
         except sqlite3.Error as exc:
@@ -6597,7 +6775,7 @@ class LiveBatchProcessor:
         if not index_db.exists():
             return False
         try:
-            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(index_db)
             try:
                 row = conn.execute(
                     """
@@ -6621,9 +6799,9 @@ class LiveBatchProcessor:
         if not index_db.exists() or not source_db.exists():
             return None
         try:
-            conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)
+            conn = open_readonly_connection(index_db)
             try:
-                conn.execute("ATTACH DATABASE ? AS source_tier", (f"file:{source_db}?mode=ro",))
+                attach_readonly_database(conn, source_db, alias="source_tier")
                 row = conn.execute(
                     """
                     SELECT s.native_id
@@ -6635,7 +6813,6 @@ class LiveBatchProcessor:
                     """,
                     (expected_origin, expected_origin, str(path)),
                 ).fetchone()
-                conn.execute("DETACH DATABASE source_tier")
             finally:
                 conn.close()
         except sqlite3.Error:
@@ -6781,7 +6958,7 @@ class LiveBatchProcessor:
             index_db = ArchiveLocation.resolve(archive_root).active_index_path
             with (
                 closing(sqlite3.connect(source_db)) as conn,
-                closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True)) as index_conn,
+                closing(open_readonly_connection(index_db)) as index_conn,
                 conn,
             ):
                 conn.row_factory = sqlite3.Row

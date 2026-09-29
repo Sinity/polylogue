@@ -66,6 +66,7 @@ from polylogue.sources.sqlite_snapshot import (
     sqlite_source_revision,
 )
 from polylogue.storage.archive_identity import ArchiveLocationError, resolve_active_index_path
+from polylogue.storage.sqlite.connection_profile import open_readonly_connection
 
 logger = get_logger(__name__)
 # Bump whenever parser semantics change the values derived from already-
@@ -955,9 +956,9 @@ class LiveWatcher:
         conns: tuple[sqlite3.Connection, sqlite3.Connection] | None = None
         if source_db.exists() and index_db.exists():
             try:
-                source_conn = sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0)
+                source_conn = open_readonly_connection(source_db, timeout=1.0)
                 try:
-                    index_conn = sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)
+                    index_conn = open_readonly_connection(index_db, timeout=1.0)
                 except sqlite3.Error:
                     source_conn.close()
                     raise
@@ -1085,8 +1086,8 @@ class LiveWatcher:
             if not source_db.exists() or not index_db.exists():
                 return True
             with (
-                closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0)) as source_conn,
-                closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as index_conn,
+                closing(open_readonly_connection(source_db, timeout=1.0)) as source_conn,
+                closing(open_readonly_connection(index_db, timeout=1.0)) as index_conn,
             ):
                 return self._path_corroborated_by_index(path, source_conn=source_conn, index_conn=index_conn)
         except (ArchiveLocationError, OSError, UnicodeError, sqlite3.Error):
@@ -1128,8 +1129,8 @@ class LiveWatcher:
                 if not source_db.exists() or not index_db.exists():
                     return _ArchivedCursorReconciliation.UNAVAILABLE
                 with (
-                    closing(sqlite3.connect(f"file:{source_db}?mode=ro", uri=True, timeout=1.0)) as source_conn,
-                    closing(sqlite3.connect(f"file:{index_db}?mode=ro", uri=True, timeout=1.0)) as index_conn,
+                    closing(open_readonly_connection(source_db, timeout=1.0)) as source_conn,
+                    closing(open_readonly_connection(index_db, timeout=1.0)) as index_conn,
                 ):
                     row = self._archived_cursor_row(
                         path, source_conn=source_conn, index_conn=index_conn
