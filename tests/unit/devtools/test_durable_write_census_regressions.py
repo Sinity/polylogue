@@ -9,7 +9,8 @@ import yaml
 
 from devtools.durable_write_census import census_package, collect_violations
 
-MODULE = "polylogue/writer.py"
+# The archive persistence layer, where runtime DDL is archive state.
+MODULE = "polylogue/storage/writer.py"
 
 
 def _source(root: Path, source: str, path: str = MODULE) -> Path:

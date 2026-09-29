@@ -1036,17 +1036,22 @@ class DurableWriteCensus:
                     )
                     helpers.setdefault(helper.key, helper)
                 continue
-            resolved = [
-                item
-                for statement in statements
+            # Texts are alternatives of one call (a conditional, a loop over
+            # tables); statements inside one text (a script) are sequential.
+            # Each write counts as often as the text naming it most often.
+            counts: dict[tuple[str, str, str], int] = {}
+            for statement in statements:
+                per_text: dict[tuple[str, str, str], int] = {}
                 for item in _classify_statement(
                     statement,
                     table_tiers,
                     runtime_persistent_tables=runtime_persistent_tables,
-                )
-            ]
-            # One call is one statement, however many texts it can take.
-            for table, kind, tier in dict.fromkeys(resolved):
+                ):
+                    per_text[item] = per_text.get(item, 0) + 1
+                for item, count in per_text.items():
+                    counts[item] = max(counts.get(item, 0), count)
+            resolved = [item for item, count in counts.items() for _ in range(count)]
+            for table, kind, tier in resolved:
                 group = (relative, qualified, table, kind)
                 occurrence = self._occurrences.get(group, 0) + 1
                 self._occurrences[group] = occurrence
