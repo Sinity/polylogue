@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from http.client import HTTPConnection
@@ -1277,6 +1277,33 @@ def test_explicit_default_retention_is_durable_declaration(tmp_path: Path) -> No
         status, terminal = request(host, port, "POST", f"/v1/capture-jobs/{job['job_id']}/update", body)
         assert status == 200
         assert terminal["job"]["retention"]["state"] == "active"
+
+
+def _declared_after_upgrade(tmp_path: Path, job_id: str, retention: Mapping[str, object]) -> int:
+    """Rewind the registry to its pre-``retention_declared`` shape and reopen it."""
+    path = capture_job_database_path(tmp_path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "UPDATE capture_jobs SET retention_json=? WHERE job_id=?", (canonical_json(retention), job_id)
+        )
+        connection.execute("ALTER TABLE capture_jobs DROP COLUMN retention_declared")
+    registry = CaptureJobRegistry(spool_path=tmp_path, receiver_id="upgrade-test")
+    with registry._connection() as connection:
+        row = connection.execute("SELECT retention_declared FROM capture_jobs WHERE job_id=?", (job_id,)).fetchone()
+    return int(row[0])
+
+
+def test_upgrade_marks_only_non_default_retention_as_declared(tmp_path: Path) -> None:
+    """Anti-vacuity: comparing retention_json by spelling marks the sorted-key
+    default declared, so the first assertion fails and terminal jobs never
+    become eligible for collection.
+    """
+    with receiver(tmp_path) as (host, port):
+        job = create(host, port)
+    default = {"state": "active", "hold_reason": None, "timeline_authoritative": True}
+    assert _declared_after_upgrade(tmp_path, job["job_id"], default) == 0
+    held = {"state": "held", "hold_reason": "operator", "timeline_authoritative": True}
+    assert _declared_after_upgrade(tmp_path, job["job_id"], held) == 1
 
 
 def _retired_job(host: str, port: int) -> str:

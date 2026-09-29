@@ -389,3 +389,27 @@ def test_fully_measured_archive_still_reaches_healthy(workspace_env: dict[str, P
     assert health.verdict == "healthy"
     assert health.measurement_coverage.complete is True
     assert health.measurement_coverage.unmeasured_reasons == ()
+
+
+def test_missing_ops_debt_is_unmeasured_not_zero(workspace_env: dict[str, Path]) -> None:
+    """Unavailable disposable-tier debt must not be presented as measured zero.
+
+    Anti-vacuity: remove the availability argument at the API adapter or its
+    coverage handling here and this measured-empty Hermes root looks healthy.
+    """
+    hermes_root = workspace_env["data_root"] / "hermes-missing-ops"
+    hermes_root.mkdir(parents=True)
+
+    health = build_hermes_integration_health(
+        workspace_env["archive_root"],
+        hermes_root=hermes_root,
+        convergence_debt_available=False,
+        convergence_debt_error="ops database is missing",
+    )
+
+    assert health.measurement_coverage.complete is False
+    assert health.verdict == "unavailable"
+    assert any(
+        "convergence-debt measurement unavailable" in reason
+        for reason in health.measurement_coverage.unmeasured_reasons
+    )

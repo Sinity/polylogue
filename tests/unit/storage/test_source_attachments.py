@@ -87,6 +87,21 @@ def test_attachment_writes_are_refused_after_generation_is_sealed() -> None:
     assert conn.execute("SELECT COUNT(*) FROM source_attachments").fetchone()[0] == 0
 
 
+def test_identical_attachment_replay_is_allowed_after_sealing() -> None:
+    conn = _conn()
+    payload = b"payload"
+    attachment = SourceAttachment(
+        "a", "aistudio-drive", "drive", 1, "p", payload, hashlib.sha256(payload).digest(), len(payload), "acquired"
+    )
+    record_source_attachments(conn, source_generation_id="g", observed_at_ms=2, attachments=(attachment,))
+    conn.execute("UPDATE source_generations SET sealed_at_ms=3 WHERE source_generation_id='g'")
+    conn.commit()
+
+    record_source_attachments(conn, source_generation_id="g", observed_at_ms=9, attachments=(attachment,))
+
+    assert conn.execute("SELECT updated_at_ms FROM source_attachments").fetchone()[0] == 2
+
+
 def test_attachment_writer_validates_domain_origin_and_storage_disposition_before_batch_writes() -> None:
     conn = _conn()
     with pytest.raises(ValueError, match="origin"):
