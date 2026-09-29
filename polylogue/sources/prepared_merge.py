@@ -11,8 +11,9 @@ from pathlib import Path
 
 from polylogue.core.enums import Provider
 from polylogue.pipeline.ids import session_content_hash
+from polylogue.sources.chunk_positions import ChunkPositions
 from polylogue.sources.dispatch import merge_parsed_session_chunks
-from polylogue.sources.parsers.base import ParsedSession, ParsedSessionEvent
+from polylogue.sources.parsers.base import ParsedAttachment, ParsedSession, ParsedSessionEvent
 from polylogue.sources.prepared_jsonl import PreparedJsonl, _write_artifact
 from polylogue.sources.prepared_message_sink import SqliteMessageStore, SqliteSessionEventSink
 from polylogue.storage.sqlite.archive_tiers.write import prepare_session_shard
@@ -113,11 +114,15 @@ def _merge_into_store(
             "event_type TEXT NOT NULL, payload_key TEXT NOT NULL, name BLOB NOT NULL, total TEXT NOT NULL, "
             "PRIMARY KEY (event_type, payload_key, name)) WITHOUT ROWID"
         )
+    attachments: list[ParsedAttachment] = []
     for _, artifact in ordered:
         session = _single_prepared_session(artifact)
-        for message in session.messages:
-            messages.append(message.model_copy(update={"position": len(messages), "is_active_leaf": False}))
+        positions = ChunkPositions(session.messages, len(messages), conn=store.conn)
+        for ordinal, message in enumerate(session.messages):
+            messages.append(positions.message(message, ordinal))
+        attachments.extend(positions.attachment(attachment) for attachment in session.attachments)
         for event in session.session_events:
+            event = positions.event(event)
             if merged.source_name is Provider.CLAUDE_CODE and event.event_type in claude_summaries:
                 seen.add(event.event_type)
                 _count_claude_summary(store, event, claude_summaries[event.event_type])
@@ -132,6 +137,7 @@ def _merge_into_store(
     return merged.model_copy(
         update={
             "messages": messages,
+            "attachments": attachments,
             "session_events": events,
             "active_leaf_message_provider_id": active_leaf_id,
         }
@@ -144,7 +150,6 @@ def prepare_retained_cohort_artifact(ordered: Sequence[tuple[str, PreparedJsonl]
         raise ValueError("retained cohort needs at least two revisions")
     source_hash = prepared_cohort_source_hash(ordered)
     merged_metadata: ParsedSession | None = None
-    attachments = []
     identity: tuple[Provider, str] | None = None
     for _, artifact in ordered:
         session = _single_prepared_session(artifact)
@@ -152,7 +157,6 @@ def prepare_retained_cohort_artifact(ordered: Sequence[tuple[str, PreparedJsonl]
         if identity is not None and candidate != identity:
             raise ValueError("retained revisions disagree on provider-native session identity")
         identity = candidate
-        attachments.extend(session.attachments)
         metadata_only = session.model_copy(update={"messages": [], "session_events": [], "attachments": []})
         merged_metadata = (
             metadata_only
@@ -160,7 +164,6 @@ def prepare_retained_cohort_artifact(ordered: Sequence[tuple[str, PreparedJsonl]
             else merge_parsed_session_chunks([merged_metadata, metadata_only])[0]
         )
     assert merged_metadata is not None
-    merged_metadata = merged_metadata.model_copy(update={"attachments": attachments})
 
     directory.mkdir(parents=True, exist_ok=True)
     store_path = directory / f"prepared-cohort-{uuid.uuid4().hex}.db"

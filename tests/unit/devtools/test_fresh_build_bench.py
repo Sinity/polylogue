@@ -1967,7 +1967,7 @@ def test_the_import_closure_follows_relative_and_submodule_imports(tmp_path: Pat
     rule in ``polylogue/a/c.py`` or ``polylogue/a/d.py`` changes without
     moving the digest.
     """
-    from devtools.fresh_build_bench.report import _polylogue_import_closure
+    from devtools.fresh_build_bench.report import polylogue_import_closure
 
     package = tmp_path / "polylogue" / "a"
     package.mkdir(parents=True)
@@ -1979,7 +1979,7 @@ def test_the_import_closure_follows_relative_and_submodule_imports(tmp_path: Pat
     root = tmp_path / "bench.py"
     root.write_text("import polylogue.a.b\n", encoding="utf-8")
 
-    closure = {path.relative_to(tmp_path).as_posix() for path in _polylogue_import_closure([root], tmp_path)}
+    closure = {path.relative_to(tmp_path).as_posix() for path in polylogue_import_closure([root], tmp_path)}
 
     assert {"polylogue/a/b.py", "polylogue/a/c.py", "polylogue/a/d.py"} <= closure
 

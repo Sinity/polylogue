@@ -3077,7 +3077,6 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # executor, so it distinguishes "the page filled" from "this is the
         # end" without a second scan.
         page_truncated = getattr(envelope, "next_offset", None) is not None
-        matched_so_far = offset + len(rows)
         entries: list[PasteBrowserEntry] = []
         # One archive read for the page's sessions, not one per session.
         summaries = await poly.get_session_summaries([str(row.session_id) for row in rows])
@@ -3112,12 +3111,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     has_diff=any(span.get("kind") == "diff" for span in spans),
                 )
             )
-        return build_paste_browser_payload(
-            entries,
-            total=None if page_truncated or (offset > 0 and not rows) else matched_so_far,
-            total_is_exact=not page_truncated and not (offset > 0 and not rows),
-            matched_so_far=matched_so_far,
-        )
+        return build_paste_browser_payload(entries, offset=offset, page_truncated=page_truncated)
 
     # ------------------------------------------------------------------
     # Handlers: attachment library + per-session attachments (#1199)
@@ -3180,13 +3174,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         page_truncated = len(entries) > limit
         if page_truncated:
             entries = entries[:limit]
-        matched_so_far = offset + len(entries)
-        return build_library_payload(
-            entries,
-            total=None if page_truncated or (offset > 0 and not entries) else matched_so_far,
-            total_is_exact=not page_truncated and not (offset > 0 and not entries),
-            matched_so_far=matched_so_far,
-        )
+        return build_library_payload(entries, offset=offset, page_truncated=page_truncated)
 
     @daemon_safe_handler
     def _handle_get_session_attachments(self, conv_id: str) -> None:
@@ -4885,10 +4873,9 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # through ``get_session`` composed the whole transcript to serve one
         # window, and composed it twice when the window was deep-linked.
         summary = await poly.get_session_summary(conv_id)
-        if summary is not None:
-            session_id = str(getattr(summary, "session_id", None) or getattr(summary, "id", None) or conv_id)
-        if around and summary is None:
-            raise MessageNotInSessionError(session_id, around)
+        if summary is None:
+            return None
+        session_id = str(getattr(summary, "session_id", None) or getattr(summary, "id", None) or conv_id)
         # polylogue-i5vqc: a deep link names a message, so the shared read
         # route resolves it to the offset of the window that holds it instead
         # of letting the caller walk pages looking for it. The locate is
@@ -4915,13 +4902,11 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         # this JSON response -- and the semantic card placement built from it
         # -- can flag a truncated composed transcript instead of serving a
         # partial one with no indication.
-        lineage = lineage_descriptor_from_session(summary) if summary is not None else None
-        if lineage is not None:
-            lineage = dataclasses_replace(
-                lineage,
-                lineage_complete=completeness.complete,
-                lineage_truncation_reason=completeness.truncation_reason,
-            )
+        lineage = dataclasses_replace(
+            lineage_descriptor_from_session(summary),
+            lineage_complete=completeness.complete,
+            lineage_truncation_reason=completeness.truncation_reason,
+        )
         # Placed over the served window, exactly as the archive-backed twin
         # ``_do_archive_get_messages`` and the CLI's paginated messages view
         # already place theirs: a projection of the page cannot be built from
@@ -4929,7 +4914,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         placement = semantic_card_placement_for_messages(
             messages,
             session_id=session_id,
-            provider_family=summary.origin if summary is not None else None,
+            provider_family=summary.origin,
             lineage=lineage,
         )
         return {
@@ -4964,7 +4949,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             "lineage_complete": completeness.complete,
             "lineage_truncation_reason": completeness.truncation_reason,
             "outcome": lineage_page_outcome(
-                matched=total,
+                matched=len(messages),
                 complete=completeness.complete,
                 truncation_reason=completeness.truncation_reason,
             ).to_dict(),
@@ -4981,7 +4966,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         offset: int,
         continuation: str | None = None,
         around: str | None = None,
-    ) -> object:
+    ) -> object | None:
         with archive_read_context(
             archive_root,
             operation="http.archive.read",
@@ -5154,6 +5139,8 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if "interrupted" in str(exc).lower():
                 if self._client_disconnected():
                     raise _ClientDisconnectedDuringComputeError(_FACET_CANCELLED_REASON) from exc
+                if cancellation is not None and cancellation.cancelled:
+                    raise DaemonOperationCancelled("archive read cancelled") from exc
                 if _deadline_expired():
                     raise TimeoutError("archive query deadline exceeded") from exc
             raise

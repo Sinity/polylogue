@@ -64,14 +64,22 @@ class RouteContract:
     handler_bound: bool = False
 
     @property
-    def metadata_only_reason(self) -> str | None:
-        """Name legacy route metadata that has no executable binding."""
+    def is_metadata_only(self) -> bool:
+        """True when neither a domain operation nor a handler binding executes this route."""
 
-        if self.domain_operation is not None or self.handler_bound:
+        return self.domain_operation is None and not self.handler_bound
+
+    @property
+    def metadata_only_reason(self) -> str | None:
+        """The declared reason a metadata-only route has no executable binding.
+
+        Only the route's own ``notes`` count. A reason synthesized here would
+        classify every undeclared route and make the startup gate vacuous.
+        """
+
+        if not self.is_metadata_only:
             return None
-        if self.notes:
-            return self.notes
-        return f"legacy {self.kind} adapter retained until its declaration migration"
+        return self.notes or None
 
 
 @dataclass(frozen=True, slots=True)

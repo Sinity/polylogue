@@ -23,16 +23,23 @@ import json
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
-from polylogue.archive.topology.edge import HOOK_AUTHORITATIVE_LINK_METHOD
+from polylogue.archive.topology.edge import (
+    HOOK_AUTHORITATIVE_LINK_METHOD,
+    HOOK_CONTRADICTED_LINK_METHOD,
+    TopologyEdgeStatus,
+)
 from polylogue.core.enums import BlockType, Origin, Provider
-from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
+from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession, ParsedSessionEvent
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
 
 _PARENT = "8f6c4d02-1f4a-4f2f-9a1e-1b2c3d4e5f60"
+_OTHER_PARENT = "3b7e9a15-6c2d-4e8f-8a0b-7d6c5b4a3f21"
 _AGENT_ID = "alog-consolidator-d4b9429a916062bb"
 _AGENT_TYPE = "log-consolidator"
 _CHILD_STEM = f"agent-{_AGENT_ID}"
@@ -57,14 +64,14 @@ def _source_conn(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def _parent_session() -> ParsedSession:
+def _parent_session(native_id: str = _PARENT) -> ParsedSession:
     return ParsedSession(
         source_name=Provider.CLAUDE_CODE,
-        provider_session_id=_PARENT,
-        title=_PARENT,
+        provider_session_id=native_id,
+        title=native_id,
         messages=[
             ParsedMessage(
-                provider_message_id=f"{_PARENT}-0",
+                provider_message_id=f"{native_id}-0",
                 role=Role.USER,
                 text="dispatch a log consolidator",
                 position=0,
@@ -77,13 +84,13 @@ def _parent_session() -> ParsedSession:
     )
 
 
-def _child_session(*, tool_use_id: str = _TOOL_USE_ID) -> ParsedSession:
+def _child_session(*, tool_use_id: str = _TOOL_USE_ID, parent: str = _PARENT) -> ParsedSession:
     """The dispatched child, carrying the tool call the hook attributes to it."""
     return ParsedSession(
         source_name=Provider.CLAUDE_CODE,
         provider_session_id=_CHILD,
         title=_CHILD_STEM,
-        parent_session_provider_id=_PARENT,
+        parent_session_provider_id=parent,
         provider_session_aliases=[_CHILD_STEM],
         branch_type=BranchType.SUBAGENT,
         messages=[
@@ -273,3 +280,210 @@ def test_reparse_without_the_source_tier_cannot_downgrade_the_edge(tmp_path: Pat
     edge = _edge(index, child_id)
     assert edge["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
     assert json.loads(edge["evidence_json"])["claude_hook_agent_type"] == _AGENT_TYPE
+
+
+def test_parser_parent_move_keeps_the_preserved_hook_parent(tmp_path: Path) -> None:
+    """A durable hook claim under A still decides the edge after the parser names B.
+
+    The spool is keyed by the dispatching session, so a claim is confirmed
+    only under a parent someone names. Red twin: consult only the parser's
+    current candidate. B's journal is silent, B's edge lands as an ordinary
+    status-NULL parser edge beside the preserved authoritative A edge, and the
+    child has two composing parents.
+    """
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    _write_tool_hook_event(source, payload=_snake_payload())
+    dispatch_tool_id = "toolu_parent_dispatch"
+    parent = _parent_session()
+    dispatching_parent = parent.model_copy(
+        update={
+            "messages": [
+                *parent.messages,
+                ParsedMessage(
+                    provider_message_id=f"{_PARENT}-1",
+                    role=Role.ASSISTANT,
+                    text="dispatching",
+                    position=1,
+                    variant_index=0,
+                    is_active_path=True,
+                    is_active_leaf=False,
+                    blocks=[
+                        ParsedContentBlock(
+                            type=BlockType.TOOL_USE,
+                            tool_name="Agent",
+                            tool_id=dispatch_tool_id,
+                            tool_input={"prompt": "consolidate the logs"},
+                        )
+                    ],
+                ),
+            ],
+            "session_events": [
+                ParsedSessionEvent(
+                    event_type="claude_delegation_progress",
+                    source_message_provider_id=dispatch_tool_id,
+                    payload={"child_provider_id": _CHILD},
+                )
+            ],
+        }
+    )
+    write_parsed_session_to_archive(index, dispatching_parent, source_conn=source)
+    write_parsed_session_to_archive(index, _parent_session(_OTHER_PARENT), source_conn=source)
+    child_id = write_parsed_session_to_archive(index, _child_session(), source_conn=source)
+    assert _edge(index, child_id)["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
+    dispatch_block_id = index.execute(
+        "SELECT block_id FROM blocks WHERE tool_id = ? AND block_type = 'tool_use'", (dispatch_tool_id,)
+    ).fetchone()[0]
+    bound = index.execute(
+        "SELECT parent_tool_use_block_id FROM session_links WHERE src_session_id = ?", (child_id,)
+    ).fetchone()[0]
+    assert bound == dispatch_block_id
+
+    write_parsed_session_to_archive(index, _child_session(parent=_OTHER_PARENT), source_conn=source)
+
+    links = {
+        str(row["dst_native_id"]): row
+        for row in index.execute(
+            """
+            SELECT dst_native_id, status, method, resolved_dst_session_id, parent_tool_use_block_id, evidence_json
+            FROM session_links WHERE src_session_id = ?
+            """,
+            (child_id,),
+        ).fetchall()
+    }
+    assert set(links) == {_PARENT, _OTHER_PARENT}
+    hook_edge = links[_PARENT]
+    assert hook_edge["method"] == HOOK_AUTHORITATIVE_LINK_METHOD
+    assert hook_edge["status"] is None
+    # The block was resolved against A; B, the contradicted parser parent, has
+    # no dispatch evidence and must not unbind it.
+    assert hook_edge["parent_tool_use_block_id"] == dispatch_block_id
+    assert hook_edge["resolved_dst_session_id"] == f"{Origin.CLAUDE_CODE_SESSION.value}:{_PARENT}"
+    hook_evidence = json.loads(hook_edge["evidence_json"])
+    assert hook_evidence["claude_hook_agent_id"] == _AGENT_ID
+    assert hook_evidence["superseded_parser_parent"] == _OTHER_PARENT
+
+    parser_edge = links[_OTHER_PARENT]
+    assert parser_edge["method"] == HOOK_CONTRADICTED_LINK_METHOD
+    assert parser_edge["status"] == TopologyEdgeStatus.AUTHORITY_CONTRADICTED.value
+    assert parser_edge["resolved_dst_session_id"] is None
+
+    composed_parent = index.execute(
+        "SELECT parent_session_id FROM sessions WHERE session_id = ?", (child_id,)
+    ).fetchone()[0]
+    assert composed_parent == f"{Origin.CLAUDE_CODE_SESSION.value}:{_PARENT}"
+
+
+def test_parser_parent_with_its_own_hook_claim_supersedes_the_preserved_one(tmp_path: Path) -> None:
+    """The candidate is asked first: when B's journal claims the agent, B wins.
+
+    This pins the order the preserved-edge lookup must not invert. B's claim
+    agrees with the parser, so the A edge is superseded rather than kept as a
+    competing authority.
+    """
+    index = _index_conn(tmp_path / "index.db")
+    source = _source_conn(tmp_path / "source.db")
+    _write_tool_hook_event(source, payload=_snake_payload())
+    record = {
+        "event_type": "PostToolUse",
+        "session_id": _OTHER_PARENT,
+        "provider": "claude-code",
+        "timestamp": "2026-09-06T12:05:00Z",
+        "event_id": "e-other",
+        "payload": {**_snake_payload(), "session_id": _OTHER_PARENT},
+    }
+    source.execute(
+        """
+        INSERT INTO raw_hook_events (
+            hook_event_id, origin, source_path, event_type, payload_json,
+            observed_at_ms, native_id, session_native_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "hook:e-other",
+            Origin.CLAUDE_CODE_SESSION.value,
+            "/sanitized/hooks/carriers/claude-code/2026-09-06/e-other.ndjson",
+            "PostToolUse",
+            json.dumps(record, sort_keys=True, separators=(",", ":")),
+            _OBSERVED_AT_MS + 1,
+            f"{_OTHER_PARENT}:PostToolUse:e-other",
+            _OTHER_PARENT,
+        ),
+    )
+    source.commit()
+    write_parsed_session_to_archive(index, _parent_session(), source_conn=source)
+    write_parsed_session_to_archive(index, _parent_session(_OTHER_PARENT), source_conn=source)
+    child_id = write_parsed_session_to_archive(index, _child_session(), source_conn=source)
+    write_parsed_session_to_archive(index, _child_session(parent=_OTHER_PARENT), source_conn=source)
+
+    authoritative = [
+        str(row[0])
+        for row in index.execute(
+            "SELECT dst_native_id FROM session_links WHERE src_session_id = ? AND method = ? AND status IS NULL",
+            (child_id, HOOK_AUTHORITATIVE_LINK_METHOD),
+        ).fetchall()
+    ]
+    assert authoritative == [_OTHER_PARENT]
+    composed_parent = index.execute(
+        "SELECT parent_session_id FROM sessions WHERE session_id = ?", (child_id,)
+    ).fetchone()[0]
+    assert composed_parent == f"{Origin.CLAUDE_CODE_SESSION.value}:{_OTHER_PARENT}"
+
+
+@pytest.mark.parametrize("source_available", [False, True])
+@pytest.mark.parametrize("route", ["inline", "prepared"])
+def test_preserved_hook_parent_controls_prefix_slicing(tmp_path: Path, source_available: bool, route: str) -> None:
+    from contextlib import closing
+
+    from polylogue.storage.sqlite.archive_tiers.write import prepare_session_write, prepared_lineage_bindings
+
+    with closing(_index_conn(tmp_path / "index.db")) as index, closing(_source_conn(tmp_path / "source.db")) as source:
+        _write_tool_hook_event(source, payload=_snake_payload())
+        child = _child_session()
+        prefix = ParsedMessage(
+            provider_message_id="child-prefix",
+            role=Role.USER,
+            text="only child and B share this",
+            position=0,
+            blocks=[ParsedContentBlock(type=BlockType.TEXT, text="only child and B share this")],
+        )
+        child = child.model_copy(update={"messages": [prefix, child.messages[0].model_copy(update={"position": 1})]})
+        parent_b = _parent_session(_OTHER_PARENT).model_copy(update={"messages": [prefix]})
+        write_parsed_session_to_archive(index, _parent_session(), source_conn=source)
+        write_parsed_session_to_archive(index, parent_b, source_conn=source)
+        child_id = write_parsed_session_to_archive(index, child, source_conn=source)
+        assert (
+            index.execute("SELECT method FROM session_links WHERE src_session_id = ?", (child_id,)).fetchone()[0]
+            == HOOK_AUTHORITATIVE_LINK_METHOD
+        )
+        replay = child.model_copy(update={"parent_session_provider_id": _OTHER_PARENT})
+        replay_source = source if source_available else None
+        assert prepared_lineage_bindings(index, replay, source_conn=replay_source) == (
+            _PARENT,
+            f"{Origin.CLAUDE_CODE_SESSION.value}:{_PARENT}",
+        )
+        if route == "prepared":
+            prepared = prepare_session_write(index, replay, merge_append=False, source_conn=replay_source)
+            try:
+                write_parsed_session_to_archive(
+                    index,
+                    replay,
+                    source_conn=replay_source,
+                    prepared_write=prepared,
+                    content_hash=prepared.input_content_hash.hex(),
+                )
+            finally:
+                prepared.close()
+        else:
+            write_parsed_session_to_archive(index, replay, source_conn=replay_source)
+        rows = index.execute(
+            "SELECT dst_native_id, inheritance, branch_point_message_id FROM session_links "
+            "WHERE src_session_id = ? AND status IS NULL",
+            (child_id,),
+        ).fetchall()
+        assert [tuple(row) for row in rows] == [(_PARENT, "spawned-fresh", None)]
+        assert index.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 2
+        assert (
+            index.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (child_id,)).fetchone()[0]
+            == f"{Origin.CLAUDE_CODE_SESSION.value}:{_PARENT}"
+        )

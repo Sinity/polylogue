@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 
 _FACT_COLUMNS = (
     "delegation_id, parent_session_id, child_session_id, mapping_state, link_confidence, link_method, inheritance, "
@@ -49,7 +50,7 @@ def rebuild_all_delegation_facts_sync(conn: sqlite3.Connection) -> None:
     existing per-cohort insert into an archive-wide one, with no new SQL
     shape to keep in sync with ``delegation_facts_insert_sql``. The
     bulk-build readiness repopulate step calls this once after replay
-    instead of relying on ``refresh_delegation_facts_for_session`` per
+    instead of relying on ``refresh_delegation_facts_for_sessions`` per
     session (skipped during bulk-build writes, see
     ``write_parsed_session_to_archive``'s ``bulk_build`` mode).
     """
@@ -61,20 +62,29 @@ def rebuild_all_delegation_facts_sync(conn: sqlite3.Connection) -> None:
         conn.execute("DELETE FROM delegation_refresh_scope")
 
 
-def refresh_delegation_facts_for_session(conn: sqlite3.Connection, session_id: str) -> None:
-    """Refresh the session and every parent cohort affected by its links."""
-    parent_ids = {session_id}
-    row = conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
-    if row is not None and row[0] is not None:
-        parent_ids.add(str(row[0]))
-    parent_ids.update(
-        str(row[0])
-        for row in conn.execute(
-            "SELECT resolved_dst_session_id FROM session_links WHERE src_session_id = ? AND resolved_dst_session_id IS NOT NULL",
-            (session_id,),
-        ).fetchall()
-        if row[0] is not None
-    )
+def refresh_delegation_facts_for_sessions(conn: sqlite3.Connection, session_ids: Iterable[str]) -> None:
+    """Refresh each session's cohort and every parent cohort its links reach, once each.
+
+    A write that changes several sessions' rows or edges (a late parent
+    re-extracting its children, a replace materializing inherited prefixes)
+    names them all here, so a parent cohort they share is rebuilt once rather
+    than once per child.
+    """
+    parent_ids: set[str] = set()
+    for session_id in session_ids:
+        parent_ids.add(session_id)
+        row = conn.execute("SELECT parent_session_id FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+        if row is not None and row[0] is not None:
+            parent_ids.add(str(row[0]))
+        parent_ids.update(
+            str(row[0])
+            for row in conn.execute(
+                "SELECT resolved_dst_session_id FROM session_links "
+                "WHERE src_session_id = ? AND resolved_dst_session_id IS NOT NULL",
+                (session_id,),
+            ).fetchall()
+            if row[0] is not None
+        )
     for parent_id in sorted(parent_ids):
         refresh_delegation_facts(conn, parent_id)
 
@@ -83,5 +93,5 @@ __all__ = [
     "delegation_facts_insert_sql",
     "rebuild_all_delegation_facts_sync",
     "refresh_delegation_facts",
-    "refresh_delegation_facts_for_session",
+    "refresh_delegation_facts_for_sessions",
 ]

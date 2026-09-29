@@ -193,15 +193,19 @@ _CREATE_TABLE_AS_RE = re.compile(r"^CREATE\s+TABLE\b.*\bAS\b\s*(?:WITH|SELECT|VA
 
 def _iter_migration_statements(sql: str) -> Iterable[str]:
     """Yield each complete statement with leading comments and blanks removed."""
-    statement = ""
-    for line in sql.splitlines(keepends=True):
-        statement += line
-        if sqlite3.complete_statement(statement) and statement.strip():
-            yield re.sub(r"(?is)^(?:\s|--[^\n]*(?:\n|$)|/\*.*?\*/)*", "", statement).strip()
-            statement = ""
-        elif sqlite3.complete_statement(statement):
-            statement = ""
-    trailing = re.sub(r"(?is)^(?:\s|--[^\n]*(?:\n|$)|/\*.*?\*/)*", "", statement).strip()
+    # A physical line can contain several SQL statements. Ask SQLite at each
+    # possible terminator instead: its parser keeps quoted semicolons, comments,
+    # and trigger bodies inside the statement they belong to.
+    start = 0
+    for terminator in re.finditer(";", sql):
+        end = terminator.end()
+        statement = sql[start:end]
+        if sqlite3.complete_statement(statement):
+            statement = re.sub(r"(?is)^(?:\s|--[^\n]*(?:\n|$)|/\*.*?\*/)*", "", statement).strip()
+            if statement:
+                yield statement
+            start = end
+    trailing = re.sub(r"(?is)^(?:\s|--[^\n]*(?:\n|$)|/\*.*?\*/)*", "", sql[start:]).strip()
     if trailing:
         yield trailing
 

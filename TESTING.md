@@ -41,10 +41,12 @@ candidate. A job ID, principal, or operation name is not slot ownership.
 
 - A workstation focused run submits the declared `pytest_focused` operation,
   `agentctl job start <checkout> pytest_focused --workspace <checkout> --
-  <launch file>`, waits for the runtime's exit code, and prints the captured
-  log path under `.cache/verify/pytest-slot-<pid>.log`. Watch it with
-  `agentctl job list --active` or `agentctl job logs <id>`; a killed waiter
-  cancels its job with `agentctl job cancel <id>`.
+  <launch file>`, waits for the runtime's exit code, and names the captured
+  log, `.cache/verify/pytest-slot-<pid>-<stamp>.log`, when it submits. pytest
+  writes only to that file, so follow it (`tail -f <path>`) to watch a run;
+  `agentctl job list --active` shows the job's state, and `agentctl job logs
+  <id>` carries only the slot runner's own lines. A killed waiter cancels its
+  job with `agentctl job cancel <id>`.
 - The `agentctl` client inherits only what the runtime needs (`HOME`, `PATH`,
   the XDG and session variables); the managed pytest environment travels in
   the launch file the job consumes and deletes.

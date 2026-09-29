@@ -7,6 +7,7 @@ a branch point, and reads must compose the parent prefix back in.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import sqlite3
 from collections.abc import Callable
@@ -19,6 +20,7 @@ import pytest
 from polylogue.archive.message.roles import Role
 from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider, ToolOutcome
+from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import (
     ParsedAttachment,
     ParsedContentBlock,
@@ -1471,7 +1473,11 @@ def test_stale_non_materialized_msg_branch_point_repairs_to_predecessor(tmp_path
 
 def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_path: Path) -> None:
     """Bulk ingest suspends FKs while FTS triggers are dropped; re-extract must
-    still remove rows that would normally be deleted by message cascades."""
+    still remove rows that would normally be deleted by message cascades.
+
+    The parent references the same attachment on its copy of the shared
+    message, so the prefix is inherited whole and the child's own reference
+    goes with the deleted row."""
     db = tmp_path / "index.db"
     conn = _connect(db)
 
@@ -1518,6 +1524,14 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
             _msg("p1", Role.ASSISTANT, "hi there", 1),
             _msg("p2", Role.USER, "parent continues alone", 2),
         ],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="prefix-attachment",
+                message_provider_id="p1",
+                name="prefix.txt",
+                path="prefix.txt",
+            )
+        ],
     )
     parent_id = write_parsed_session_to_archive(conn, parent, manage_transaction=False)
 
@@ -1539,10 +1553,12 @@ def test_child_before_parent_reextracts_cleanly_when_foreign_keys_suspended(tmp_
         (child_id,),
     ).fetchall()
     assert [row[0] for row in stored_positions] == [2, 3]
-    assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 0
-    # The prefix-anchored attachment lost its only ref; the row must be swept,
-    # not left acquired-but-unreachable for archive verification.
-    assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
+    # The child's reference went with its deleted prefix row, native ids
+    # included; the shared attachment row survives on the parent's reference
+    # with a count that says so.
+    assert conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 1
+    assert [tuple(row) for row in conn.execute("SELECT ref_count FROM attachments")] == [(1,)]
     event_ref = conn.execute(
         """
         SELECT source_message_id, source_message_provider_id
@@ -1575,7 +1591,8 @@ def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) ->
 
     This covers the rebuild hot path where a large child replay is later found to
     have no divergent tail. The cleanup must remove message-owned projections
-    even while foreign keys are suspended.
+    even while foreign keys are suspended. The parent references the child's
+    attachment on its own copy, so nothing the child owns keeps a row.
     """
     db = tmp_path / "index.db"
     conn = _connect(db)
@@ -1632,14 +1649,24 @@ def test_child_before_parent_reextracts_empty_tail_by_session(tmp_path: Path) ->
             _msg("p0", Role.USER, "hello", 0),
             _msg("p1", Role.ASSISTANT, "hi there", 1),
         ],
+        attachments=[
+            ParsedAttachment(
+                provider_attachment_id="empty-tail-attachment",
+                message_provider_id="p1",
+                name="empty-tail.txt",
+                path="empty-tail.txt",
+            )
+        ],
     )
     write_parsed_session_to_archive(conn, parent, manage_transaction=False)
 
     assert conn.execute("SELECT COUNT(*) FROM messages WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
     assert conn.execute("SELECT COUNT(*) FROM blocks WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
-    assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 0
-    # Same sweep requirement as the partial-tail path: no ref-less rows survive.
-    assert conn.execute("SELECT COUNT(*) FROM attachments").fetchone()[0] == 0
+    # Same cleanup as the partial-tail path: the child's reference and its
+    # native ids are gone, and the shared row counts only the parent's.
+    assert conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM attachment_native_ids").fetchone()[0] == 1
+    assert [tuple(row) for row in conn.execute("SELECT ref_count FROM attachments")] == [(1,)]
     assert (
         conn.execute("SELECT COUNT(*) FROM web_content_constructs WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
     )
@@ -5246,3 +5273,244 @@ def test_settlement_streams_inherited_prefixes_through_the_guard_tables(
         assert _edge_state(conn, child_id)[1] == "spawned-fresh"
         assert _composed_texts(conn, child_id) == [*base, f"x{n}"]
     conn.close()
+
+
+# --- Attachments owned by an inherited prefix message -----------------------
+#
+# A message signature is its role and blocks; attachments ride beside it. A
+# prefix-sharing child's replay can therefore carry an attachment on a message
+# its parent physically owns. The parent row is that attachment's owner when it
+# references it; when it does not, the message is not shared and stays in the
+# child's tail with the child's own reference. Both write orders converge.
+
+
+def _prefix_attachment(message_provider_id: str, **extra: Any) -> ParsedAttachment:
+    return ParsedAttachment(
+        provider_attachment_id="shared-file",
+        message_provider_id=message_provider_id,
+        name="shared.txt",
+        mime_type="text/plain",
+        path="shared.txt",
+        direction="user_input",
+        **extra,
+    )
+
+
+def _composed_attachments(conn: sqlite3.Connection, session_id: str) -> list[tuple[str | None, str, str | None]]:
+    """``(owning session, message text, attachment name)`` across the composed transcript."""
+    return [
+        (message.source_session_id, str(message.blocks[0].text), attachment.display_name)
+        for message in read_archive_session_envelope(conn, session_id).messages
+        for attachment in message.attachments
+    ]
+
+
+def test_inherited_attachment_the_parent_references_is_owned_by_the_parent_row(tmp_path: Path) -> None:
+    """The child's replayed copy adds no reference, no orphan and no false diagnosis.
+
+    Its inline bytes still complete the shared attachment row the parent
+    recorded without them. Anti-vacuity: stop resolving tail-unowned
+    attachments against ``inherited_prefix_message_ids`` and the write reports
+    ``provider_never_linked`` and leaves the shared row unfetched.
+    """
+    conn = _connect(tmp_path / "index.db")
+    parent_id = write_parsed_session_to_archive(
+        conn,
+        _codex_session("parent", ["m0", "m1"]).model_copy(update={"attachments": [_prefix_attachment("m1")]}),
+    )
+    payload = b"bytes only the child's replay carried"
+    child_attachment = _prefix_attachment("m1", inline_bytes=payload, size_bytes=None)
+    child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
+        update={"attachments": [child_attachment]}
+    )
+    digest = hashlib.sha256(payload).digest()
+    outcomes: list[Any] = []
+    child_id = write_parsed_session_to_archive(
+        conn,
+        child,
+        preacquired_attachment_blobs={child_attachment.acquisition_key: (digest, len(payload), "acquired")},
+        write_outcome=outcomes,
+    )
+    conn.commit()
+
+    assert outcomes[-1].unresolved_attachment_owners == ()
+    assert _edge_state(conn, child_id) == (parent_id, "prefix-sharing", f"{parent_id}:n:m1")
+    assert _composed_attachments(conn, child_id) == [(parent_id, "m1", "shared.txt")]
+    assert conn.execute("SELECT COUNT(*) FROM attachment_refs WHERE session_id = ?", (child_id,)).fetchone()[0] == 0
+    [(ref_count, acquisition_status, blob_hash)] = [
+        tuple(row) for row in conn.execute("SELECT ref_count, acquisition_status, blob_hash FROM attachments")
+    ]
+    assert (ref_count, acquisition_status, bytes(blob_hash)) == (1, "acquired", digest)
+    conn.close()
+
+
+def test_inherited_message_whose_attachment_the_parent_lacks_stays_in_the_child_tail(tmp_path: Path) -> None:
+    """The recomposed child shows the attachment its own replay carried.
+
+    Anti-vacuity: drop ``_attachment_shared_prefix_limit`` from
+    ``_extract_prefix_tail`` and ``m1`` is inherited from the parent row, the
+    attachment has no owner and the composed child shows none.
+    """
+    conn = _connect(tmp_path / "index.db")
+    parent_id = write_parsed_session_to_archive(conn, _codex_session("parent", ["m0", "m1"]))
+    child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
+        update={"attachments": [_prefix_attachment("m1")]}
+    )
+    outcomes: list[Any] = []
+    child_id = write_parsed_session_to_archive(conn, child, write_outcome=outcomes)
+    conn.commit()
+
+    assert outcomes[-1].unresolved_attachment_owners == ()
+    assert _edge_state(conn, child_id) == (parent_id, "prefix-sharing", f"{parent_id}:n:m0")
+    assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
+    assert _composed_attachments(conn, child_id) == [(child_id, "m1", "shared.txt")]
+    assert conn.execute("SELECT COUNT(*) FROM attachments WHERE ref_count <= 0").fetchone()[0] == 0
+    conn.close()
+
+
+def test_late_parent_keeps_the_childs_attachment_bearing_message(tmp_path: Path) -> None:
+    """Child-first converges to the parent-first shape instead of deleting evidence.
+
+    The child owns its whole transcript until the parent arrives; extracting
+    the shared prefix then deletes the child's rows, and with them any
+    attachment reference the parent's copy does not carry. Anti-vacuity: drop
+    ``_stored_attachment_shared_prefix_limit`` from late-parent resolution and
+    ``m1``'s row -- and the attachment's only reference -- is deleted.
+    """
+    parent_first = _connect(tmp_path / "parent-first.db")
+    write_parsed_session_to_archive(parent_first, _codex_session("parent", ["m0", "m1"]))
+    child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
+        update={"attachments": [_prefix_attachment("m1")]}
+    )
+    expected_id = write_parsed_session_to_archive(parent_first, child)
+    parent_first.commit()
+
+    child_first = _connect(tmp_path / "child-first.db")
+    child_id = write_parsed_session_to_archive(child_first, child)
+    parent_id = write_parsed_session_to_archive(child_first, _codex_session("parent", ["m0", "m1"]))
+    child_first.commit()
+
+    assert child_id == expected_id
+    assert _edge_state(child_first, child_id) == (parent_id, "prefix-sharing", f"{parent_id}:n:m0")
+    assert _edge_state(child_first, child_id) == _edge_state(parent_first, expected_id)
+    assert _composed_texts(child_first, child_id) == ["m0", "m1", "x2"]
+    assert _composed_attachments(child_first, child_id) == _composed_attachments(parent_first, expected_id)
+    assert _composed_attachments(child_first, child_id) == [(child_id, "m1", "shared.txt")]
+    parent_first.close()
+    child_first.close()
+
+
+def test_prepared_child_write_refuses_once_the_parent_drops_an_inherited_attachment(tmp_path: Path) -> None:
+    """A prefix boundary chosen against parent references is revalidated at commit.
+
+    The child was prepared while the parent row referenced the attachment, so
+    ``m1`` was to be inherited. The parent is replaced without it before the
+    commit; inheriting ``m1`` now would leave the attachment unowned, so the
+    prepared write is refused as retryable and a re-preparation keeps ``m1``.
+    Anti-vacuity: drop the attachment revalidation from the prepared branch and
+    the commit succeeds with the attachment reported
+    ``inherited_owner_unreferenced`` and absent from the composed child.
+    """
+    conn = _connect(tmp_path / "index.db")
+    parent = _codex_session("parent", ["m0", "m1"])
+    write_parsed_session_to_archive(conn, parent.model_copy(update={"attachments": [_prefix_attachment("m1")]}))
+    child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
+        update={"attachments": [_prefix_attachment("m1")]}
+    )
+    prepared = _write_module.prepare_session_write(conn, child, merge_append=False)
+    write_parsed_session_to_archive(conn, parent)
+    conn.commit()
+
+    with pytest.raises(_write_module.PreparedSessionWriteRefusedError, match="attachments changed"):
+        write_parsed_session_to_archive(
+            conn, child, content_hash=str(session_content_hash(child)), prepared_write=prepared
+        )
+    conn.rollback()
+
+    child_id = write_parsed_session_to_archive(conn, child)
+    conn.commit()
+    assert _composed_attachments(conn, child_id) == [(child_id, "m1", "shared.txt")]
+    conn.close()
+
+
+def test_late_prefix_attachment_boundary_keeps_only_one_sql_batch(tmp_path: Path) -> None:
+    from collections.abc import Sequence
+    from contextlib import closing
+    from typing import overload
+
+    from polylogue.storage.sqlite.archive_tiers.write import _stored_attachment_shared_prefix_limit
+
+    class LazyPrefix(Sequence[tuple[str, str]]):
+        def __init__(self, prefix: str) -> None:
+            self.prefix = prefix
+            self.reads = 0
+
+        def __len__(self) -> int:
+            return 100_000
+
+        @overload
+        def __getitem__(self, index: int) -> tuple[str, str]: ...
+
+        @overload
+        def __getitem__(self, index: slice) -> list[tuple[str, str]]: ...
+
+        def __getitem__(self, index: int | slice) -> tuple[str, str] | list[tuple[str, str]]:
+            if isinstance(index, slice):
+                raise AssertionError("must not materialize a prefix slice")
+            if not 0 <= index < len(self):
+                raise IndexError(index)
+            self.reads += 1
+            return f"{self.prefix}-{index}", "signature"
+
+    child, parent = LazyPrefix("child"), LazyPrefix("parent")
+    with closing(sqlite3.connect(tmp_path / "prefix.db")) as conn:
+        conn.execute(
+            "CREATE TABLE attachment_refs (message_id TEXT, attachment_id TEXT, PRIMARY KEY(message_id, attachment_id))"
+        )
+        conn.execute("INSERT INTO attachment_refs VALUES ('child-0', 'unique-file')")
+        assert _stored_attachment_shared_prefix_limit(conn, child, parent, len(child)) == 0
+    assert child.reads <= 500
+    assert parent.reads == 1
+
+
+@pytest.mark.parametrize("prepared", [False, True], ids=["direct", "prepared"])
+@pytest.mark.parametrize("grandchild", [False, True], ids=["child", "nested"])
+def test_parent_replacement_preserves_already_inherited_attachments(
+    tmp_path: Path, prepared: bool, grandchild: bool
+) -> None:
+    from contextlib import closing
+
+    with closing(_connect(tmp_path / "index.db")) as conn:
+        parent = _codex_session("parent", ["m0", "m1"])
+        parent_id = write_parsed_session_to_archive(
+            conn, parent.model_copy(update={"attachments": [_prefix_attachment("m1")]})
+        )
+        child = _codex_session("child", ["m0", "m1", "x2"], parent="parent").model_copy(
+            update={"attachments": [_prefix_attachment("m1")]}
+        )
+        child_id = write_parsed_session_to_archive(conn, child)
+        ids = [child_id]
+        if grandchild:
+            grand = _codex_session("grand", ["m0", "m1", "y2"], parent="child").model_copy(
+                update={"attachments": [_prefix_attachment("m1")]}
+            )
+            ids.append(write_parsed_session_to_archive(conn, grand))
+        assert _composed_attachments(conn, child_id) == [(parent_id, "m1", "shared.txt")]
+        if prepared:
+            carrier = _write_module.prepare_session_write(conn, parent, merge_append=False)
+            try:
+                write_parsed_session_to_archive(
+                    conn, parent, content_hash=str(session_content_hash(parent)), prepared_write=carrier
+                )
+            finally:
+                carrier.close()
+        else:
+            write_parsed_session_to_archive(conn, parent)
+        assert _composed_attachments(conn, parent_id) == []
+        assert _composed_texts(conn, child_id) == ["m0", "m1", "x2"]
+        for session_id in ids:
+            attachments = _composed_attachments(conn, session_id)
+            assert [(message, name) for _, message, name in attachments] == [("m1", "shared.txt")]
+            assert all(owner != parent_id for owner, _, _ in attachments)
+        assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert conn.execute("SELECT COUNT(*) FROM attachments WHERE ref_count <= 0").fetchone()[0] == 0

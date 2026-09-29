@@ -137,6 +137,49 @@ def test_controller_receipt_covers_collection_and_worker_warmup(tmp_path: Path) 
     assert aggregate["worker_active_s"] == 8.0
 
 
+def test_controller_whole_tree_scratch_walk_sets_the_suite_peak(tmp_path: Path) -> None:
+    """Two workers holding 100 bytes each at once: the controller saw 200.
+
+    Anti-vacuity: taking the peak from worker receipts only reports 100,
+    although the controller's walk of the shared basetemp observed both.
+    """
+    (tmp_path / "master.json").write_text(
+        json.dumps(
+            {
+                "worker_id": "master",
+                "role": "controller",
+                "tests": 0,
+                "duration_s": 5.0,
+                "io": {},
+                "tier_init": {},
+                "peak_scratch_apparent_bytes": 200,
+                "peak_scratch_allocated_bytes": 400,
+            }
+        )
+    )
+    for index in range(2):
+        (tmp_path / f"gw{index}.json").write_text(
+            json.dumps(
+                {
+                    "worker_id": f"gw{index}",
+                    "role": "worker",
+                    "tests": 1,
+                    "duration_s": 4.0,
+                    "io": {},
+                    "tier_init": {},
+                    "peak_scratch_apparent_bytes": 100,
+                    "peak_scratch_allocated_bytes": 200,
+                }
+            )
+        )
+
+    aggregate = suite_cost.aggregate_suite_cost(tmp_path)
+
+    assert aggregate["workers"] == 2
+    assert aggregate["peak_scratch_apparent_bytes"] == 200
+    assert aggregate["peak_scratch_allocated_bytes"] == 400
+
+
 @pytest.mark.parametrize(
     ("configured", "expect_receipt"),
     [(True, True), (False, False)],

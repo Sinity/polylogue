@@ -38,7 +38,7 @@ def build_message_options(values: ReadViewOptionValues) -> ReadViewMessageOption
 def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadViewInvocation) -> None:
     """Route messages view to messages renderer with destination handling."""
 
-    from polylogue.cli.messages import run_messages
+    from polylogue.cli.messages import finish_message_read, run_messages
 
     assert invocation.session_id is not None
     options = cast(ReadViewMessageOptions, invocation.options or ReadViewMessageOptions())
@@ -73,7 +73,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         _orig_echo = click.echo
         click.echo = _captured_echo  # type: ignore[assignment]
         try:
-            run_messages(
+            outcome = run_messages(
                 env,
                 request,
                 session_id=invocation.session_id,
@@ -86,9 +86,10 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         finally:
             click.echo = _orig_echo
         deliver_content(env, buf.getvalue(), destination=invocation.destination, out_path=invocation.out_path)
+        finish_message_read(outcome, output_format=invocation.output_format)
         return
 
-    run_messages(
+    outcome = run_messages(
         env,
         request,
         session_id=invocation.session_id,
@@ -99,6 +100,7 @@ def run_read_messages(env: AppEnv, request: RootModeRequest, invocation: ReadVie
         continuation=options.continuation,
         around=options.around,
     )
+    finish_message_read(outcome, output_format=invocation.output_format)
 
 
 def _fsync_directory(directory: Path) -> None:
@@ -151,7 +153,7 @@ def _write_messages_file(
     import stat
     import tempfile
 
-    from polylogue.cli.messages import read_message_windows
+    from polylogue.cli.messages import finish_message_read, message_page_outcome, read_message_windows
     from polylogue.cli.operation_kernel import OperationKernelError
     from polylogue.cli.read_dispatch import daemon_route_disabled
     from polylogue.security.secret_scan import describe_path_scan_result, scan_path_for_secret_candidates
@@ -176,6 +178,8 @@ def _write_messages_file(
     emitted = 0
     total = 0
     first_offset = offset
+    lineage_complete = True
+    lineage_truncation_reason: str | None = None
     # A sibling of the destination, so the rename below is within one
     # filesystem and therefore atomic; a temporary directory elsewhere would
     # degrade the replacement into a copy that can fail half-written.
@@ -201,6 +205,8 @@ def _write_messages_file(
                 if emitted == 0:
                     first_offset = window.offset
                 total = window.total
+                lineage_complete = window.lineage_complete
+                lineage_truncation_reason = window.lineage_truncation_reason
                 for row in window.rows:
                     document = dict(row)
                     if output_format == "ndjson":
@@ -212,11 +218,15 @@ def _write_messages_file(
                         fh.write("\n    ")
                         fh.write(json.dumps(document, indent=2).replace("\n", "\n    "))
                     emitted += 1
+            outcome = message_page_outcome(
+                matched=emitted, complete=lineage_complete, truncation_reason=lineage_truncation_reason
+            )
             if output_format != "ndjson":
                 fh.write("\n  ],\n")
                 fh.write(f'  "total": {total},\n')
                 fh.write(f'  "limit": {emitted if full else limit},\n')
-                fh.write(f'  "offset": {first_offset}\n')
+                fh.write(f'  "offset": {first_offset},\n')
+                fh.write(f'  "outcome": {json.dumps(outcome.to_dict())}\n')
                 fh.write("}\n")
             fh.flush()
             os.fsync(fh.fileno())
@@ -239,6 +249,7 @@ def _write_messages_file(
     if notice is not None:
         click.echo(notice)
     click.echo(f"Wrote to {out_path}")
+    finish_message_read(outcome, output_format=output_format)
 
 
 __all__ = [

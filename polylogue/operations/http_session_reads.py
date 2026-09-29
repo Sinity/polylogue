@@ -23,7 +23,7 @@ from polylogue.rendering.semantic_card_placement import (
 )
 from polylogue.rendering.semantic_cards import lineage_descriptor_from_archive_envelope
 from polylogue.surfaces.authority import serialize_authority
-from polylogue.surfaces.outcome import decide_outcome, lineage_page_outcome
+from polylogue.surfaces.outcome import lineage_page_outcome
 from polylogue.surfaces.payloads import (
     TargetRefPayload,
     message_topology_from_domain,
@@ -247,8 +247,12 @@ def execute_http_session_messages(
     archive: ArchiveStore,
     adapters: HttpSessionProjectionAdapters,
     server_identity: Literal["daemon", "direct"] = "daemon",
-) -> dict[str, object]:
-    """Project one snapshot-bound composed message window for the web reader."""
+) -> dict[str, object] | None:
+    """Project one snapshot-bound composed message window for the web reader.
+
+    ``None`` means the session reference resolves to no session; the route
+    answers it as not found, exactly as it answers the detail projection.
+    """
 
     started_at = monotonic()
     session_ref = payload.get("session_id")
@@ -264,24 +268,10 @@ def execute_http_session_messages(
         raise ValueError("session messages offset must be a non-negative integer")
     if around and continuation:
         raise QueryContinuationInvalidError("around and continuation name two different windows")
-    authority = serialize_authority(
-        authority_for_reader(archive, server_identity=server_identity, started_at=started_at)
-    )
     try:
         session_id = archive.resolve_session_id(session_ref)
     except KeyError:
-        return {
-            "messages": [],
-            "total": 0,
-            "limit": limit,
-            "offset": offset,
-            "next_offset": None,
-            "continuation": None,
-            "lineage_complete": True,
-            "lineage_truncation_reason": None,
-            "outcome": decide_outcome(matched=0, error="session_not_found").to_dict(),
-            "authority": authority,
-        }
+        return None
     if isinstance(around, str) and around:
         offset = window_offset_for_index(locate_message_in_archive(archive, session_id, around).index, limit)
 
@@ -308,7 +298,7 @@ def execute_http_session_messages(
     )
     assert latest_envelope is not None
     placement = _semantic_placement(latest_envelope)
-    return {
+    response: dict[str, object] = {
         "session_id": latest_envelope.session_id,
         "messages": [
             _message_payload(
@@ -330,12 +320,17 @@ def execute_http_session_messages(
         "lineage_complete": latest_envelope.lineage_complete,
         "lineage_truncation_reason": latest_envelope.lineage_truncation_reason,
         "outcome": lineage_page_outcome(
-            matched=window.total,
+            matched=len(window.rows),
             complete=latest_envelope.lineage_complete,
             truncation_reason=latest_envelope.lineage_truncation_reason,
         ).to_dict(),
-        "authority": authority,
     }
+    # Attributed last, so its elapsed time covers the resolve, the window
+    # read, and the projection above rather than stopping before them.
+    response["authority"] = serialize_authority(
+        authority_for_reader(archive, server_identity=server_identity, started_at=started_at)
+    )
+    return response
 
 
 __all__ = ["HttpSessionProjectionAdapters", "execute_http_session_detail", "execute_http_session_messages"]

@@ -924,3 +924,90 @@ def test_read_hooks_names_the_daemon_refusal_without_a_traceback(
     assert "daemon is unavailable" in err
     assert "polylogued run" in err  # the remedy, not just the fault
     assert "Usage:" not in err
+
+
+@pytest.mark.parametrize("output_format", ["json", "ndjson", "markdown"])
+def test_read_messages_page_past_the_end_is_empty_in_every_format(
+    tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str], output_format: str
+) -> None:
+    """A valid session read past its last message exits on the ``empty`` outcome.
+
+    Anti-vacuity: deciding the page outcome from the session total (2) calls
+    this empty page ``ok``, and deciding it only in the JSON branch leaves the
+    NDJSON and markdown reads exiting 0 with no outcome at all.
+    """
+    from polylogue.cli.read_views.base import ReadViewMessageOptions
+    from polylogue.cli.read_views.messages import run_read_messages
+    from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
+
+    session_id = _seed_messages(
+        tmp_path,
+        {"id": "m1", "role": "user", "text": "first"},
+        {"id": "m2", "role": "assistant", "text": "second"},
+    )
+    invocation = ReadViewInvocation(
+        view="messages",
+        session_id=session_id,
+        output_format=output_format,
+        destination="terminal",
+        out_path=None,
+        options=ReadViewMessageOptions(limit=5, offset=5),
+    )
+
+    with pytest.raises(SystemExit) as exited:
+        run_read_messages(_env(), _seeded_request(tmp_path), invocation)
+
+    assert exited.value.code == OUTCOME_EXIT_CODES["empty"]
+    captured = capsys.readouterr()
+    if output_format == "json":
+        assert json.loads(captured.out)["outcome"]["state"] == "empty"
+    else:
+        # Rows stay on stdout; the outcome is named on stderr.
+        if output_format == "ndjson":
+            assert captured.out.strip() == ""
+        assert captured.err.strip() != ""
+
+
+def test_read_messages_filled_page_exits_ok(
+    tmp_path: Path, daemon_archive: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A page that delivered rows returns normally, so the process exits 0."""
+    from polylogue.cli.read_views.base import ReadViewMessageOptions
+    from polylogue.cli.read_views.messages import run_read_messages
+
+    session_id = _seed_messages(tmp_path, {"id": "m1", "role": "user", "text": "first"})
+    invocation = ReadViewInvocation(
+        view="messages",
+        session_id=session_id,
+        output_format="ndjson",
+        destination="terminal",
+        out_path=None,
+        options=ReadViewMessageOptions(limit=5, offset=0),
+    )
+
+    run_read_messages(_env(), _seeded_request(tmp_path), invocation)
+
+    assert len(capsys.readouterr().out.splitlines()) == 1
+
+
+def test_write_messages_file_records_and_exits_on_an_empty_page(tmp_path: Path, daemon_archive: Path) -> None:
+    """The JSON file carries the page outcome and the write exits on it."""
+    from polylogue.surfaces.outcome import OUTCOME_EXIT_CODES
+
+    out = tmp_path / "messages.json"
+    session_id = _seed_messages(tmp_path, {"id": "m1", "role": "user", "text": "first"})
+
+    with pytest.raises(SystemExit) as exited:
+        _write_messages_file(
+            _env(),
+            _seeded_request(tmp_path),
+            session_id=session_id,
+            limit=5,
+            offset=5,
+            full=False,
+            output_format="json",
+            out_path=out,
+        )
+
+    assert exited.value.code == OUTCOME_EXIT_CODES["empty"]
+    assert json.loads(out.read_text(encoding="utf-8"))["outcome"]["state"] == "empty"

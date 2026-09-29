@@ -49,8 +49,9 @@ _NOT_ADDITIVE = {
 
 class TestAdditiveClaimIsProven:
     @pytest.mark.parametrize("case", sorted(_NOT_ADDITIVE))
-    def test_a_false_additive_claim_is_refused(self, case: str) -> None:
-        sql = f"{_MARKER}\nCREATE TABLE IF NOT EXISTS t (a TEXT) STRICT;\n{_NOT_ADDITIVE[case]}\n"
+    @pytest.mark.parametrize("separator", ["\n", " ", " /* comment; */ "])
+    def test_a_false_additive_claim_is_refused(self, case: str, separator: str) -> None:
+        sql = f"{_MARKER}\nCREATE TABLE IF NOT EXISTS t (a TEXT) STRICT;{separator}{_NOT_ADDITIVE[case]}\n"
         with pytest.raises(MigrationError, match="not additive-only"):
             _requires_migration_backup(Path("099_claimed.sql"), sql)
 
@@ -61,3 +62,33 @@ class TestAdditiveClaimIsProven:
     def test_an_unmarked_migration_still_requires_a_backup(self) -> None:
         """Opposite direction: the guard must not waive anything on its own."""
         assert _requires_migration_backup(Path("099_plain.sql"), "ALTER TABLE t ADD COLUMN b TEXT;\n") is True
+
+
+@pytest.mark.parametrize("terminator", [";", ""])
+def test_claim_discovery_rejects_same_line_destructive_suffix(terminator: str) -> None:
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.migration_runner import durable_migration_claim_for_sql
+
+    sql = f"{_MARKER}\nCREATE TABLE harmless (id INTEGER); DELETE FROM raw_sessions{terminator}"
+    with pytest.raises(MigrationError, match="not additive-only"):
+        durable_migration_claim_for_sql(ArchiveTier.SOURCE, "099_claimed.sql", sql)
+
+
+def test_sqlite_statement_boundaries_preserve_quoted_semicolons_and_comments() -> None:
+    sql = (
+        f"{_MARKER}\n"
+        "CREATE TABLE [semi;colon] (value TEXT DEFAULT 'it''s; safe'); "
+        "/* a comment; not a statement */ CREATE VIEW v AS SELECT ';' AS value; "
+        "-- trailing comment;\n"
+    )
+    assert _requires_migration_backup(Path("099_honest.sql"), sql) is False
+
+
+def test_trigger_body_is_one_statement_not_several() -> None:
+    from polylogue.storage.sqlite.migration_runner import _iter_migration_statements
+
+    trigger = "CREATE TRIGGER t AFTER INSERT ON items BEGIN UPDATE items SET x = ';'; DELETE FROM other; END;"
+    assert list(_iter_migration_statements(trigger + " CREATE TABLE harmless (id INTEGER);")) == [
+        trigger,
+        "CREATE TABLE harmless (id INTEGER);",
+    ]

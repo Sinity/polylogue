@@ -98,12 +98,30 @@ class LibraryEntry:
         }
 
 
+def _page_total_fields(*, offset: int, returned: int, page_truncated: bool) -> dict[str, object]:
+    """Report what one offset page proves about the match count, and no more.
+
+    A full page (``page_truncated``) proves ``offset + returned`` matches and
+    leaves the total unknown. A short page that returned rows ends the
+    relation, so ``offset + returned`` is exact. An empty page past offset 0
+    proves only that fewer than ``offset + 1`` rows match: publishing
+    ``offset`` as the total, or as a lower bound, would count rows that were
+    never observed.
+    """
+
+    if offset > 0 and returned == 0:
+        return {"total": None, "total_is_exact": False}
+    seen = offset + returned
+    if page_truncated:
+        return {"total": None, "total_is_exact": False, "total_lower_bound": seen}
+    return {"total": seen, "total_is_exact": True, "total_lower_bound": seen}
+
+
 def build_library_payload(
     entries: Iterable[LibraryEntry],
     *,
-    total: int | None,
-    total_is_exact: bool = True,
-    matched_so_far: int | None = None,
+    offset: int,
+    page_truncated: bool,
 ) -> dict[str, object]:
     """Shape the attachment-library page with an honest total.
 
@@ -111,18 +129,12 @@ def build_library_payload(
     its running counter is the page size, not the archive's match count.
     Publishing that counter as ``total`` told a reader with 10,000 matches
     that it had seen all 200 of them. An unknown total is published as
-    ``null`` with ``total_is_exact=false`` and the lower bound the walk did
+    ``null`` with ``total_is_exact=false`` and the lower bound the page did
     establish, never as a plausible-looking figure.
     """
 
-    payload: dict[str, object] = {
-        "items": [entry.to_dict() for entry in entries],
-        "total": total,
-        "total_is_exact": total_is_exact,
-    }
-    if matched_so_far is not None:
-        payload["total_lower_bound"] = matched_so_far
-    return payload
+    items = [entry.to_dict() for entry in entries]
+    return {"items": items, **_page_total_fields(offset=offset, returned=len(items), page_truncated=page_truncated)}
 
 
 @dataclass(frozen=True)
@@ -158,20 +170,13 @@ class PasteBrowserEntry:
 def build_paste_browser_payload(
     entries: Iterable[PasteBrowserEntry],
     *,
-    total: int | None,
-    total_is_exact: bool = True,
-    matched_so_far: int | None = None,
+    offset: int,
+    page_truncated: bool,
 ) -> dict[str, object]:
     """Shape the paste-browser page with an honest total (polylogue-q54dt)."""
 
-    payload: dict[str, object] = {
-        "items": [entry.to_dict() for entry in entries],
-        "total": total,
-        "total_is_exact": total_is_exact,
-    }
-    if matched_so_far is not None:
-        payload["total_lower_bound"] = matched_so_far
-    return payload
+    items = [entry.to_dict() for entry in entries]
+    return {"items": items, **_page_total_fields(offset=offset, returned=len(items), page_truncated=page_truncated)}
 
 
 def detect_paste_spans(text: str) -> list[dict[str, object]]:

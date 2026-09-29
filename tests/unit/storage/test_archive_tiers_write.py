@@ -169,6 +169,96 @@ def test_merge_append_reconciles_tool_use_from_prior_batch(
         conn.close()
 
 
+def _tool_use_hash(conn: sqlite3.Connection, session_id: str) -> bytes:
+    row = conn.execute(
+        "SELECT content_hash FROM blocks WHERE session_id = ? AND block_type = 'tool_use'", (session_id,)
+    ).fetchone()
+    assert row is not None
+    return bytes(row["content_hash"])
+
+
+@pytest.mark.parametrize("metadata", [None, {"caller": {"type": "direct"}}], ids=["no-extras", "metadata"])
+def test_appended_tool_result_leaves_the_use_hash_a_full_replay_computes(
+    tmp_path: Path, metadata: dict[str, object] | None
+) -> None:
+    """A block anchor taken after an append still resolves after a rebuild.
+
+    The use's evidence hash digests its semantic extras (metadata, file edit,
+    web constructs). Re-pairing it with a result from a later acquisition
+    recomputes that hash from the stored row, so the extras must be recoverable
+    there. Anti-vacuity: recompute in ``_reconcile_tool_use_outcomes`` without
+    ``semantic_extra_json`` and both cases differ from the replay -- even a
+    block with no extras digests their empty default.
+    """
+    use = ParsedMessage(
+        provider_message_id="use",
+        role=Role.ASSISTANT,
+        blocks=[
+            ParsedContentBlock(
+                type=BlockType.TOOL_USE, tool_id="tool-1", tool_name="run", tool_input={"cmd": "ls"}, metadata=metadata
+            )
+        ],
+    )
+    result = ParsedMessage(
+        provider_message_id="result",
+        role=Role.TOOL,
+        blocks=[ParsedContentBlock(type=BlockType.TOOL_RESULT, tool_id="tool-1", text="output", is_error=False)],
+    )
+    first = ParsedSession(source_name=Provider.CLAUDE_CODE, provider_session_id="append-extras", messages=[use])
+    appended = _connect(tmp_path / "appended.db")
+    replayed = _connect(tmp_path / "replayed.db")
+    try:
+        session_id = write_parsed_session_to_archive(appended, first)
+        write_parsed_session_to_archive(appended, first.model_copy(update={"messages": [result]}), merge_append=True)
+        replayed_id = write_parsed_session_to_archive(replayed, first.model_copy(update={"messages": [use, result]}))
+
+        assert replayed_id == session_id
+        assert _tool_use_hash(appended, session_id) == _tool_use_hash(replayed, session_id)
+    finally:
+        appended.close()
+        replayed.close()
+
+
+def test_cross_acquisition_union_keeps_an_unchanged_blocks_evidence_hash(tmp_path: Path) -> None:
+    """A second acquisition of identical evidence leaves every block hash alone.
+
+    The union coalesces each matched block pair and recomputes its hash from
+    the merged row. Anti-vacuity: recompute in ``_coalesce_block_row`` without
+    the merged ``semantic_extra_json`` and the block carrying metadata changes
+    hash although no evidence changed.
+    """
+    session = ParsedSession(
+        source_name=Provider.CLAUDE_CODE,
+        provider_session_id="union-extras",
+        messages=[
+            ParsedMessage(
+                provider_message_id="use",
+                role=Role.ASSISTANT,
+                blocks=[
+                    ParsedContentBlock(
+                        type=BlockType.TOOL_USE,
+                        tool_id="tool-1",
+                        tool_name="run",
+                        tool_input={"cmd": "ls"},
+                        metadata={"caller": {"type": "direct"}},
+                    )
+                ],
+            )
+        ],
+    )
+    conn = _connect(tmp_path / "index.db")
+    try:
+        session_id = write_parsed_session_to_archive(conn, session, raw_id="raw-first")
+        first_hash = _tool_use_hash(conn, session_id)
+        # A different acquisition of an already-stored session takes the
+        # field-path union, which coalesces the matched block pair.
+        write_parsed_session_to_archive(conn, session, raw_id="raw-second")
+
+        assert _tool_use_hash(conn, session_id) == first_hash
+    finally:
+        conn.close()
+
+
 def test_writer_separates_native_and_content_message_identity(tmp_path: Path) -> None:
     conn = _connect(tmp_path / "index.db")
     try:

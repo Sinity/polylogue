@@ -146,3 +146,222 @@ def test_prepared_cohort_rejects_conflicting_session_identity(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match="provider-native session identity"):
         prepare_retained_cohort_artifact(ordered, tmp_path)
+
+
+@pytest.mark.parametrize("prepared", [False, True], ids=["memory", "prepared"])
+def test_chunk_references_survive_composition_and_archive_write(tmp_path: Path, prepared: bool) -> None:
+    """F016: the second chunk's compaction and attachment must not bind to the first."""
+    import hashlib
+    import sqlite3
+    from contextlib import closing
+
+    from polylogue.core.message_owner import MessageOwnerCoordinate
+    from polylogue.sources.parsers.base import ParsedAttachment
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_tier
+    from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+    from polylogue.storage.sqlite.archive_tiers.write import write_parsed_session_to_archive
+
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="coordinates",
+        messages=[
+            ParsedMessage(provider_message_id=f"first-{i}", role=Role.USER, text=f"first {i}", position=i)
+            for i in range(3)
+        ],
+    )
+    owner = MessageOwnerCoordinate(stable_key="second-owner", position=1)
+    second_messages = [
+        ParsedMessage(provider_message_id=f"second-{i}", role=Role.ASSISTANT, text=f"second {i}", position=i)
+        for i in range(4)
+    ]
+    second_messages[1] = second_messages[1].model_copy(update={"owner_coordinate": owner})
+    second_messages[2] = second_messages[2].model_copy(update={"parent_message_position": 0})
+    attachment = ParsedAttachment(
+        provider_attachment_id="second-file",
+        message_position=1,
+        owner_coordinate=owner,
+        name="synthetic.txt",
+        inline_bytes=b"synthetic",
+    )
+    second = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="coordinates",
+        messages=second_messages,
+        attachments=[attachment],
+        session_events=[
+            ParsedSessionEvent(
+                event_type="compaction",
+                payload={"source_index": 7},
+                boundary_start_position=0,
+                boundary_end_position=2,
+                boundary_message_position=3,
+            )
+        ],
+    )
+    original_key = attachment.acquisition_key
+    expected = merge_parsed_session_chunks([first, second])[0]
+    artifacts = []
+    try:
+        if prepared:
+            artifacts = [
+                _chunk_artifact(tmp_path / f"chunk-{i}", chunk, str(i + 1) * 64)
+                for i, chunk in enumerate((first, second))
+            ]
+            aggregate = prepare_retained_cohort_artifact(
+                [(f"raw-{i}", artifact) for i, artifact in enumerate(artifacts)], tmp_path / "merged"
+            )
+            artifacts.append(aggregate)
+            with closing(aggregate.iter_sessions()) as sessions:
+                merged = next(sessions)
+            assert session_content_hash(merged) == session_content_hash(expected)
+        else:
+            merged = expected
+            assert merged.attachments[0].acquisition_key == original_key
+        assert attachment.message_position == 1
+        assert attachment.owner_coordinate == owner
+        assert second.messages[2].parent_message_position == 0
+        event = merged.session_events[0]
+        assert (event.boundary_start_position, event.boundary_end_position, event.boundary_message_position) == (
+            3,
+            5,
+            6,
+        )
+        assert event.payload == {"source_index": 7}
+        assert merged.attachments[0].message_position == 4
+        assert merged.attachments[0].owner_coordinate == MessageOwnerCoordinate(stable_key="second-owner", position=4)
+        assert merged.messages[5].parent_message_position == 3
+        blob = hashlib.sha256(b"synthetic").digest()
+        key = merged.attachments[0].acquisition_key if prepared else original_key
+        with closing(sqlite3.connect(tmp_path / "index.db")) as conn:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            initialize_archive_tier(conn, ArchiveTier.INDEX)
+            sid = write_parsed_session_to_archive(
+                conn, merged, preacquired_attachment_blobs={key: (blob, len(b"synthetic"), "acquired")}
+            )
+            stored = conn.execute(
+                "SELECT boundary_start_position, boundary_end_position, boundary_message_id "
+                "FROM session_events WHERE session_id = ? AND event_type = 'compaction'",
+                (sid,),
+            ).fetchone()
+            assert tuple(stored) == (3, 5, f"{sid}:n:second-3")
+            assert conn.execute("SELECT message_id FROM attachment_refs").fetchall()[0][0] == f"{sid}:n:second-1"
+            assert conn.execute("SELECT blob_hash FROM attachments").fetchone()[0] == blob
+            assert (
+                conn.execute("SELECT parent_message_id FROM messages WHERE native_id = 'second-2'").fetchone()[0]
+                == f"{sid}:n:second-0"
+            )
+    finally:
+        for artifact in reversed(artifacts):
+            artifact.discard()
+
+
+@pytest.mark.parametrize("prepared", [False, True], ids=["memory", "prepared"])
+def test_empty_compaction_ranges_survive_three_chunk_merge(tmp_path: Path, prepared: bool) -> None:
+    from contextlib import closing
+
+    first = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="empty",
+        messages=[ParsedMessage(provider_message_id="a", role=Role.USER, position=9, text="a")],
+    )
+    empty = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="empty",
+        messages=[],
+        session_events=[
+            ParsedSessionEvent(event_type="compaction", boundary_start_position=0, boundary_end_position=-1)
+        ],
+    )
+    last = ParsedSession(
+        source_name=Provider.CODEX,
+        provider_session_id="empty",
+        messages=[ParsedMessage(provider_message_id="b", role=Role.USER, position=0, text="b")],
+    )
+    artifacts = []
+    try:
+        if prepared:
+            artifacts = [
+                _chunk_artifact(tmp_path / str(i), chunk, str(i + 1) * 64)
+                for i, chunk in enumerate((first, empty, last))
+            ]
+            aggregate = prepare_retained_cohort_artifact(
+                [(str(i), artifact) for i, artifact in enumerate(artifacts)], tmp_path / "merged"
+            )
+            artifacts.append(aggregate)
+            with closing(aggregate.iter_sessions()) as sessions:
+                merged = next(sessions)
+        else:
+            merged = merge_parsed_session_chunks([first, empty, last])[0]
+        event = merged.session_events[0]
+        assert (event.boundary_start_position, event.boundary_end_position) == (1, 0)
+        assert [message.position for message in merged.messages] == [0, 1]
+    finally:
+        for artifact in reversed(artifacts):
+            artifact.discard()
+
+
+@pytest.mark.parametrize("disk", [False, True], ids=["memory", "disk"])
+def test_chunk_position_uses_the_full_variant_coordinate(tmp_path: Path, disk: bool) -> None:
+    import sqlite3
+    from contextlib import closing
+
+    from polylogue.core.message_owner import MessageOwnerAmbiguityError, MessageOwnerCoordinate
+    from polylogue.sources.chunk_positions import ChunkPositions
+    from polylogue.sources.parsers.base import ParsedAttachment
+
+    with closing(sqlite3.connect(tmp_path / "scratch.db")) as conn:
+        messages = [
+            ParsedMessage(
+                provider_message_id="",
+                role=Role.USER,
+                position=9,
+                variant_index=v,
+                text=str(v),
+                owner_coordinate=MessageOwnerCoordinate(position=9, variant_index=v),
+            )
+            for v in (0, 1)
+        ]
+        positions = ChunkPositions(messages, 3, conn=conn if disk else None)
+        attachment = ParsedAttachment(
+            provider_attachment_id="variant",
+            message_position=9,
+            message_variant_index=1,
+            owner_coordinate=MessageOwnerCoordinate(position=9, variant_index=1),
+        )
+        moved = positions.attachment(attachment)
+        assert moved.message_position == 4
+        assert moved.owner_coordinate == MessageOwnerCoordinate(position=4, variant_index=1)
+        assert moved.acquisition_key == attachment.acquisition_key
+        assert positions.message(messages[1], 1).owner_coordinate == moved.owner_coordinate
+        with pytest.raises(MessageOwnerAmbiguityError):
+            positions.attachment(attachment.model_copy(update={"message_position": 123}))
+        ambiguous = ChunkPositions([messages[0], messages[0]], 3, conn=conn if disk else None)
+        with pytest.raises(MessageOwnerAmbiguityError):
+            ambiguous.position(9)
+
+
+def test_rebased_attachment_keeps_acquisition_identity_alive() -> None:
+    import gc
+    import weakref
+
+    from polylogue.sources.chunk_positions import ChunkPositions
+    from polylogue.sources.parsers.base import ParsedAttachment
+
+    original = ParsedAttachment(provider_attachment_id="alive", message_position=0)
+    original_ref = weakref.ref(original)
+    key = original.acquisition_key
+    messages = [ParsedMessage(provider_message_id="a", role=Role.USER, text="a", position=0)]
+    moved = ChunkPositions(messages, 3).attachment(original)
+    del original
+    gc.collect()
+    assert original_ref() is not None
+    assert moved.acquisition_key == key
+    again = ChunkPositions([messages[0].model_copy(update={"position": 3})], 7).attachment(moved)
+    del moved
+    gc.collect()
+    assert original_ref() is not None
+    assert again.acquisition_key == key
+    del again
+    gc.collect()
+    assert original_ref() is None

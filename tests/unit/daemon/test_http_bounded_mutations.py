@@ -150,12 +150,12 @@ def test_truncated_paste_browser_page_does_not_publish_the_page_size_as_total() 
         for index in range(2)
     ]
 
-    truncated = build_paste_browser_payload(entries, total=None, total_is_exact=False, matched_so_far=2)
+    truncated = build_paste_browser_payload(entries, offset=0, page_truncated=True)
     assert truncated["total"] is None
     assert truncated["total_is_exact"] is False
     assert truncated["total_lower_bound"] == 2
 
-    complete = build_paste_browser_payload(entries, total=2, total_is_exact=True, matched_so_far=2)
+    complete = build_paste_browser_payload(entries, offset=0, page_truncated=False)
     assert complete["total"] == 2
     assert complete["total_is_exact"] is True
 

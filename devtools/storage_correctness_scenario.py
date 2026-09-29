@@ -16,6 +16,7 @@ from polylogue.archive.session.branch_type import BranchType
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.errors import DatabaseError
 from polylogue.core.outcomes import OutcomeStatus
+from polylogue.core.timestamp_authority import normalize_session_timestamps
 from polylogue.pipeline.ids import session_content_hash
 from polylogue.sources.parsers.base import ParsedContentBlock, ParsedMessage, ParsedSession
 from polylogue.storage.blob_gc import MIN_AGE_S, read_gc_history, run_blob_gc_report
@@ -200,8 +201,14 @@ def _storage_idempotent_reingest_check() -> dict[str, object]:
         raise AssertionError(f"repeat ingest changed derived row counts: {derived_counts}")
     if raw_count != 2:
         raise AssertionError(f"raw source rows should retain both ArchiveStore writes, got {raw_count}")
-    if not stored_hash_hex:
-        raise AssertionError("idempotent ingest did not retain a content hash")
+    # The table's length CHECK already guarantees a non-empty 32-byte value,
+    # so presence proves nothing: the stored hash must be the canonical hash
+    # of the session the writer normalized, computed independently here.
+    expected_hash_hex = str(session_content_hash(normalize_session_timestamps(session)))
+    if stored_hash_hex != expected_hash_hex:
+        raise AssertionError(
+            f"stored content hash {stored_hash_hex} is not the canonical session hash {expected_hash_hex}"
+        )
     return {
         "first_counts": first.counts,
         "repeat_counts": second.counts,

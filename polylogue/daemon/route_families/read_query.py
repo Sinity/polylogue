@@ -229,13 +229,7 @@ def _handle_attachment_library(self: Any, params: dict[str, list[str]]) -> None:
         page_truncated = len(entries) > limit
         if page_truncated:
             entries = entries[:limit]
-        matched_so_far = offset + len(entries)
-        result = build_library_payload(
-            entries,
-            total=None if page_truncated else matched_so_far,
-            total_is_exact=not page_truncated,
-            matched_so_far=matched_so_far,
-        )
+        result = build_library_payload(entries, offset=offset, page_truncated=page_truncated)
     else:
 
         async def _run(poly: Polylogue) -> object:

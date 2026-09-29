@@ -217,12 +217,26 @@ def load_or_mint_receiver_identity(path: Path | None = None) -> str:
     protect.
     """
     target = path if path is not None else browser_capture_receiver_identity_path()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    # Concurrent first-run native hosts (parallel health checks) each saw the
+    # file absent and minted their own identity; the loser returned a value
+    # the file no longer held. A lock beside the file, as the token minting
+    # takes, makes the check and the publish one step, so every caller
+    # returns what the file holds.
+    lock_fd = os.open(target.with_name(target.name + ".lock"), os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
+        return _load_or_mint_receiver_identity_locked(target)
+    finally:
+        os.close(lock_fd)
+
+
+def _load_or_mint_receiver_identity_locked(target: Path) -> str:
     if target.exists():
         existing = target.read_text(encoding="utf-8").strip()
         if existing:
             return existing
     identity = f"rx-{secrets.token_hex(RECEIVER_IDENTITY_HEX_CHARS // 2)}"
-    target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.", suffix=".tmp")
     tmp_path = Path(tmp_name)
     try:
