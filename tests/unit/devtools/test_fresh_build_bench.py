@@ -1908,6 +1908,30 @@ def test_the_benchmark_identity_covers_production_reducers() -> None:
     assert any(name.endswith("polylogue/storage/archive_readiness.py") for name in names)
 
 
+def test_the_import_closure_follows_relative_and_submodule_imports(tmp_path: Path) -> None:
+    """A production module reached by ``from . import`` or ``from pkg import module`` is in the identity.
+
+    Anti-vacuity: follow only absolute ``import``/``from module`` names and a
+    rule in ``polylogue/a/c.py`` or ``polylogue/a/d.py`` changes without
+    moving the digest.
+    """
+    from devtools.fresh_build_bench.report import _polylogue_import_closure
+
+    package = tmp_path / "polylogue" / "a"
+    package.mkdir(parents=True)
+    (tmp_path / "polylogue" / "__init__.py").write_text("", encoding="utf-8")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (package / "b.py").write_text("from .c import rule\nfrom polylogue.a import d\n", encoding="utf-8")
+    (package / "c.py").write_text("rule = 1\n", encoding="utf-8")
+    (package / "d.py").write_text("", encoding="utf-8")
+    root = tmp_path / "bench.py"
+    root.write_text("import polylogue.a.b\n", encoding="utf-8")
+
+    closure = {path.relative_to(tmp_path).as_posix() for path in _polylogue_import_closure([root], tmp_path)}
+
+    assert {"polylogue/a/b.py", "polylogue/a/c.py", "polylogue/a/d.py"} <= closure
+
+
 def test_source_timing_coverage_is_required(tmp_path: Path) -> None:
     """A sampled origin without a measured source timing does not qualify.
 
@@ -1944,3 +1968,39 @@ def test_the_python_probe_runs_from_the_candidate(tmp_path: Path, monkeypatch: p
         run.environment(config)
 
     assert seen == [tmp_path / "cand"]
+
+
+def test_an_interrupted_receipt_skips_the_archive_census(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fails if an interrupted run enters the census, whose full-table counts cannot be cancelled."""
+    from devtools.fresh_build_bench import report
+
+    entered: list[object] = []
+    monkeypatch.setattr(report, "archive_census", lambda *args: entered.append(args) or {})
+    arguments: dict[str, Any] = {
+        "config": RunConfig(
+            corpus=tmp_path, work=tmp_path, candidate=tmp_path, python="python", label="l", fingerprint=False
+        ),
+        "manifest": {"total_bytes": 0, "kind": "sample", "digest": "d", "file_count": 0, "by_origin": {}},
+        "paths": {
+            "events": tmp_path / "events.jsonl",
+            "archive": tmp_path,
+            "stacks": tmp_path / "stacks.json",
+            "work": tmp_path,
+        },
+        "identity": {"unchanged_during_run": True},
+        "environment": {},
+        "command": [],
+        "started_wall": 0.0,
+        "wall_s": 1.0,
+        "terminal_at": None,
+        "exit_code": None,
+        "shutdown_s": 0.0,
+        "observations": [],
+        "final": Observation(1.0, cursor_rows=1),
+        "tree_samples": [],
+    }
+    receipt = report.build_receipt(outcome="interrupted", **arguments)
+    assert entered == []
+    assert receipt["qualified"] is False
+    report.build_receipt(outcome="terminal", **arguments)
+    assert len(entered) == 1

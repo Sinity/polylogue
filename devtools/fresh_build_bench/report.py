@@ -16,7 +16,7 @@ import json
 import re
 import sqlite3
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -681,10 +681,14 @@ def _reducer_dependencies() -> tuple[Path, ...]:
     Readiness, FTS and census rules live in production modules; a change
     there changes what a receipt means even when this package does not.
     """
+    return _polylogue_import_closure(Path(__file__).resolve().parent.glob("*.py"), _CHECKOUT_ROOT)
+
+
+def _polylogue_import_closure(roots: Iterable[Path], checkout: Path) -> tuple[Path, ...]:
+    """The ``polylogue`` modules under ``checkout`` that ``roots`` import, transitively."""
     import ast
 
-    package = Path(__file__).resolve().parent
-    pending = list(package.glob("*.py"))
+    pending = list(roots)
     seen: set[Path] = set()
     found: set[Path] = set()
     while pending:
@@ -697,17 +701,30 @@ def _reducer_dependencies() -> tuple[Path, ...]:
         except (OSError, SyntaxError, UnicodeDecodeError):
             continue
         for node in ast.walk(tree):
-            names = (
-                [alias.name for alias in node.names]
-                if isinstance(node, ast.Import)
-                else [node.module]
-                if isinstance(node, ast.ImportFrom) and node.module and node.level == 0
-                else []
-            )
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    # A relative import names a module of the importing
+                    # file's own package (``from .x import y``).
+                    base = path.parent
+                    for _ in range(node.level - 1):
+                        base = base.parent
+                    try:
+                        anchor = ".".join(base.relative_to(checkout).parts)
+                    except ValueError:
+                        continue
+                    module_name = ".".join(part for part in (anchor, node.module) if part)
+                else:
+                    module_name = node.module or ""
+                # ``from package import module`` names a submodule, not only
+                # an attribute of the package's ``__init__``.
+                names = [module_name, *(f"{module_name}.{alias.name}" for alias in node.names)]
             for name in names:
                 if name.split(".")[0] != "polylogue":
                     continue
-                module = _CHECKOUT_ROOT / Path(*name.split("."))
+                module = checkout / Path(*name.split("."))
                 for candidate in (module.with_suffix(".py"), module / "__init__.py"):
                     if candidate.is_file() and candidate not in found:
                         found.add(candidate)
@@ -723,7 +740,7 @@ _FINGERPRINT_DEPENDENCIES: Final = (
 
 
 def _source_timing_recorded(manifest: dict[str, Any], by_source: dict[str, Any]) -> bool:
-    measured = projection(manifest, by_source, None)["origins"]
+    measured = projection(manifest, by_source, None)["by_origin"]
     sampled = manifest.get("by_origin") or {}
     return all(origin in measured for origin, stats in sampled.items() if stats.get("bytes"))
 
