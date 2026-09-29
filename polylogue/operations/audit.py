@@ -36,6 +36,7 @@ from polylogue.operations.machine_receipts import (
     ingest_session_ids_digest,
 )
 from polylogue.operations.mutation_transaction import (
+    DELETE_PREVIEW_SAMPLE_IDS,
     AuthorizationMismatchError,
     MutationAuthorization,
     MutationPlan,
@@ -85,6 +86,36 @@ AuditTargetState = Literal[
 _F = TypeVar("_F", bound=Callable[..., object])
 _CONFIRMATION_STRENGTH_ORDER = {"role_only": 0, "confirm_flag": 1, "bound_token": 2}
 _MAX_MACHINE_AUTHORITY_PARTS = 40
+
+#: Machine batch transitions a request can accept in pages. One transition
+#: carries at most :data:`_MAX_MACHINE_AUTHORITY_PARTS` parts (the bound on a
+#: continuity payload); a request of any size appends pages under one staged
+#: record, ``<kind>-pages``, and its final page turns it into ``<kind>``.
+_PAGED_MACHINE_KINDS: dict[str, str] = {
+    "create_preview_batch": "preview-batch",
+    "issue_authorization_batch": "authorization-batch",
+    "accept_execution_batch": "execution-batch",
+    "cancel_preview_batch": "cancelled-preview-batch",
+}
+
+
+def machine_pages_kind(kind: str) -> str:
+    """The staged artifact kind of a paged machine batch still accepting pages."""
+    return f"{kind}-pages"
+
+
+#: Parts one page of a paged machine batch carries.
+MACHINE_PAGE_PARTS = _MAX_MACHINE_AUTHORITY_PARTS
+
+#: How long a delete handshake may sit idle between one phase finishing and
+#: the next being accepted before its authority clock resumes. While the
+#: preview, authorization and execution phases follow one another within it,
+#: expiry is judged as of the preview's acceptance, however long each phase
+#: takes to page (``AuditRepository.handshake_as_of_ms``).
+HANDSHAKE_IDLE_MS = 60_000
+
+#: Staged kinds of paged machine batches.
+MACHINE_PAGE_KINDS = frozenset(machine_pages_kind(kind) for kind in _PAGED_MACHINE_KINDS.values())
 _MAX_INSIGHT_ACCEPTED_PARTS = 4096
 _INSIGHT_MACHINE_OPERATION = "maintenance.insights.rebuild"
 
@@ -245,13 +276,25 @@ def _continuity_mutation(kind: str) -> Callable[[_F], _F]:
                     and prior is not None
                     and prior.get("artifact_kind") == "insight-preview-pages"
                 )
+                page = self._machine_page
+                continuing_page = (
+                    page is not None
+                    and page[0] > 0
+                    and prior is not None
+                    and prior.get("artifact_kind") == machine_pages_kind(_PAGED_MACHINE_KINDS[kind])
+                    and prior.get("part_count") == page[0]
+                )
+                if page is not None and page[0] > 0 and prior is None:
+                    raise MachineRequestConflictError("a later machine page has no staged request")
                 if (
                     prior is not None
                     and self._machine_part is None
-                    and not (continuing_insight_staging or continuing_insight_seal)
+                    and not (continuing_insight_staging or continuing_insight_seal or continuing_page)
                 ):
                     raise MachineRequestRecoveredError(prior)
                 payload["machine_request"] = binding.to_dict()
+                if page is not None:
+                    payload["machine_page"] = {"offset": page[0], "final": page[1]}
                 if self._machine_part is not None:
                     payload["machine_part"] = self._machine_part
                 if self._machine_deadline_unix_ms is not None:
@@ -552,6 +595,7 @@ class AuditRepository:
         self._machine_binding: tuple[MachineRequestBinding, str] | None = None
         self._machine_part: int | None = None
         self._machine_deadline_unix_ms: int | None = None
+        self._machine_page: tuple[int, bool] | None = None
         self._before_machine_prepare = before_machine_prepare
         self._on_commit = on_commit
         self._settled_reader = threading.local()
@@ -564,8 +608,13 @@ class AuditRepository:
         transition: str,
         part: int | None = None,
         deadline_unix_ms: int | None = None,
+        page: tuple[int, bool] | None = None,
     ) -> Iterator[None]:
-        """Bind exactly one domain transition in its existing continuity transaction."""
+        """Bind exactly one domain transition in its existing continuity transaction.
+
+        ``page`` = (offset, final) appends one page of a paged batch
+        transition at part ``offset``; the final page completes the request.
+        """
 
         if transition not in {
             "create_preview",
@@ -583,22 +632,97 @@ class AuditRepository:
             raise ValueError("machine request must bind a declared audit authority transition")
         if self._machine_binding is not None:
             raise RuntimeError("machine request binding scopes cannot overlap")
-        part_limit = (
-            _MAX_INSIGHT_ACCEPTED_PARTS
-            if binding.operation_name == _INSIGHT_MACHINE_OPERATION
-            else _MAX_MACHINE_AUTHORITY_PARTS
-        )
-        if part is not None and (transition != "consume_authorization_and_start" or not 0 <= part < part_limit):
-            raise ValueError("machine part must name a bounded execution ordinal")
+        # Parts are rows of the request; a paged batch has as many as it
+        # accepted, so an ordinal is bounded only by what the request holds.
+        if part is not None and (transition != "consume_authorization_and_start" or part < 0):
+            raise ValueError("machine part must name an execution ordinal")
+        if page is not None and (transition not in _PAGED_MACHINE_KINDS or page[0] < 0):
+            raise ValueError("only a paged batch transition takes a page")
         self._machine_binding = (binding, transition)
         self._machine_part = part
         self._machine_deadline_unix_ms = deadline_unix_ms
+        self._machine_page = page
         try:
             yield
         finally:
             self._machine_binding = None
             self._machine_part = None
             self._machine_deadline_unix_ms = None
+            self._machine_page = None
+
+    def handshake_as_of_ms(
+        self,
+        binding: MachineRequestBinding,
+        *,
+        preview_refs: tuple[str, ...] = (),
+        authorization_refs: tuple[str, ...] = (),
+    ) -> int:
+        """The time a phase of a paged delete handshake is judged as of.
+
+        A phase is judged as of its own durable acceptance, so a phase that
+        began in time finishes however many pages it takes. When it consumes
+        the artifacts of a completed earlier phase and was accepted within
+        :data:`HANDSHAKE_IDLE_MS` of that phase's last page, it inherits the
+        earlier phase's time instead: authority expires only while the
+        handshake sits idle, not while it progresses.
+        """
+        record = self.machine_request(binding)
+        accepted = int(cast(int, record["accepted_at_ms"])) if record is not None else int(time.time() * 1000)
+        with self._connection() as conn:
+            return self._phase_as_of(conn, accepted, preview_refs, authorization_refs)
+
+    def _phase_as_of(
+        self,
+        conn: sqlite3.Connection,
+        accepted_at_ms: int,
+        preview_refs: tuple[str, ...],
+        authorization_refs: tuple[str, ...],
+    ) -> int:
+        refs, kind, completion_sql = (
+            (
+                authorization_refs,
+                "authorization-batch",
+                """SELECT MAX(a.issued_at_ms) FROM machine_request_parts AS p
+                   JOIN operation_authorizations AS a ON a.authorization_id = p.artifact_ref
+                   WHERE p.archive_identity = ? AND p.request_id = ?""",
+            )
+            if authorization_refs
+            else (
+                preview_refs,
+                "preview-batch",
+                """SELECT MAX(v.created_at_ms) FROM machine_request_parts AS p
+                   JOIN operation_previews AS v ON v.preview_id = p.artifact_ref
+                   WHERE p.archive_identity = ? AND p.request_id = ?""",
+            )
+        )
+        if not refs:
+            return accepted_at_ms
+        placeholders = ",".join("?" for _ in refs)
+        rows = conn.execute(
+            f"""SELECT DISTINCT r.archive_identity, r.request_id, r.accepted_at_ms
+                FROM machine_request_parts AS p JOIN machine_requests AS r
+                  ON r.archive_identity = p.archive_identity AND r.request_id = p.request_id
+                WHERE p.artifact_ref IN ({placeholders}) AND r.artifact_kind = ?""",
+            (*refs, kind),
+        ).fetchall()
+        if len(rows) != 1:
+            # Not the artifacts of exactly one completed phase: wall time.
+            return accepted_at_ms
+        earlier_identity, earlier_request, earlier_accepted = rows[0]
+        completed = conn.execute(completion_sql, (earlier_identity, earlier_request)).fetchone()[0]
+        if completed is None or accepted_at_ms - int(completed) > HANDSHAKE_IDLE_MS:
+            return accepted_at_ms
+        earlier_previews: tuple[str, ...] = ()
+        if authorization_refs:
+            earlier_previews = tuple(
+                str(row[0])
+                for row in conn.execute(
+                    """SELECT preview_ref FROM machine_request_parts
+                       WHERE archive_identity = ? AND request_id = ? ORDER BY ordinal LIMIT ?""",
+                    (earlier_identity, earlier_request, _MAX_MACHINE_AUTHORITY_PARTS),
+                )
+            )
+        return min(accepted_at_ms, self._phase_as_of(conn, int(earlier_accepted), earlier_previews, ()))
 
     def machine_request(self, binding: MachineRequestBinding) -> dict[str, object] | None:
         """Recover the immutable domain reference and reject conflicting reuse.
@@ -887,7 +1011,42 @@ class AuditRepository:
             "accept_execution_batch": "execution-batch",
             "seal_insight_execution": "execution-batch",
         }[mutation.kind]
-        if insight:
+        raw_page = mutation.payload.get("machine_page")
+        offset = 0
+        if isinstance(raw_page, dict):
+            offset, final = int(raw_page["offset"]), bool(raw_page["final"])
+            staged = machine_pages_kind(kind)
+            if offset == 0:
+                conn.execute(
+                    """INSERT INTO machine_requests(
+                        archive_identity, request_id, principal_ref, fingerprint, operation_name,
+                        artifact_kind, artifact_ref, accepted_at_ms, part_count, accepted_deadline_unix_ms
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        *binding.to_dict().values(),
+                        kind if final else staged,
+                        refs[0],
+                        mutation.created_at_ms,
+                        len(refs),
+                        mutation.payload.get("accepted_deadline_unix_ms"),
+                    ),
+                )
+            else:
+                changed = conn.execute(
+                    """UPDATE machine_requests SET part_count = part_count + ?, artifact_kind = ?
+                    WHERE archive_identity = ? AND request_id = ? AND artifact_kind = ? AND part_count = ?""",
+                    (
+                        len(refs),
+                        kind if final else staged,
+                        binding.archive_identity,
+                        binding.request_id,
+                        staged,
+                        offset,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise MachineRequestConflictError("machine page does not continue its staged request")
+        elif insight:
             changed = conn.execute(
                 """UPDATE machine_requests SET artifact_kind = ?, artifact_ref = ?, accepted_at_ms = ?,
                     accepted_deadline_unix_ms = ?
@@ -953,7 +1112,14 @@ class AuditRepository:
                     """INSERT INTO machine_request_parts(
                         archive_identity, request_id, ordinal, artifact_ref, preview_ref, authorization_ref
                     ) VALUES (?, ?, ?, ?, ?, ?)""",
-                    (binding.archive_identity, binding.request_id, ordinal, ref, preview_ref, authorization_ref),
+                    (
+                        binding.archive_identity,
+                        binding.request_id,
+                        offset + ordinal,
+                        ref,
+                        preview_ref,
+                        authorization_ref,
+                    ),
                 )
 
     def machine_parts(self, binding: MachineRequestBinding) -> list[dict[str, object]]:
@@ -1027,7 +1193,8 @@ class AuditRepository:
     def machine_preview_summary(self, binding: MachineRequestBinding) -> dict[str, object]:
         """Reconstruct a preview response from ordered normalized authority rows."""
         parts = self.machine_parts(binding)
-        ids: list[str] = []
+        sample: list[str] = []
+        count = 0
         expiries: list[int] = []
         refs = [str(part["preview_ref"]) for part in parts]
         with self._connection() as conn:
@@ -1038,20 +1205,27 @@ class AuditRepository:
                 if row is None:
                     raise ValueError("machine preview authority is missing")
                 expiries.append(int(row[0]))
-                ids.extend(
-                    str(row[0]).removeprefix("session:")
-                    for row in conn.execute(
-                        "SELECT target_ref FROM operation_preview_targets WHERE preview_id = ? ORDER BY ordinal",
-                        (ref,),
-                    )
+                count += int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM operation_preview_targets WHERE preview_id = ?", (ref,)
+                    ).fetchone()[0]
                 )
+                if len(sample) < DELETE_PREVIEW_SAMPLE_IDS:
+                    sample.extend(
+                        str(row[0]).removeprefix("session:")
+                        for row in conn.execute(
+                            "SELECT target_ref FROM operation_preview_targets WHERE preview_id = ? "
+                            "ORDER BY ordinal LIMIT ?",
+                            (ref, DELETE_PREVIEW_SAMPLE_IDS - len(sample)),
+                        )
+                    )
         return {
             "status": "prepared",
             "operation": "delete",
             "preview_ref": refs[0],
             "preview_refs": refs,
-            "session_ids": ids,
-            "session_count": len(ids),
+            "session_ids_sample": sample,
+            "session_count": count,
             "expires_at_ms": min(expiries),
         }
 
@@ -1191,6 +1365,14 @@ class AuditRepository:
             }[kind]
             commands: list[dict[str, object]] = []
             authorizations = cast(tuple[MutationAuthorization, ...], args[2]) if len(args) > 2 else ()
+            as_of_ms = (
+                self.handshake_as_of_ms(
+                    self._machine_binding[0],
+                    preview_refs=tuple(cast(MutationPreview, item).preview_ref for item in items),
+                )
+                if kind == "issue_authorization_batch" and self._machine_binding is not None
+                else None
+            )
             if authorizations and len(authorizations) != len(items):
                 raise ValueError("authorization batch differs from preview batch")
             for ordinal, item in enumerate(items):
@@ -1201,12 +1383,15 @@ class AuditRepository:
                     child_args = (item, principal)
                 else:
                     child_args = (item, principal, authorizations[ordinal])
+                child_payload = self._continuity_payload(child_kind, child_args, {})
+                if child_kind == "issue_authorization" and as_of_ms is not None:
+                    child_payload["authority_as_of_ms"] = as_of_ms
                 commands.append(
                     AuditMutation(
                         kind=child_kind,
                         mutation_id=f"audit-part:{secrets.token_urlsafe(18)}",
                         created_at_ms=int(time.time() * 1000),
-                        payload=self._continuity_payload(child_kind, child_args, {}),
+                        payload=child_payload,
                     ).command()
                 )
             return {"commands": commands}
@@ -1214,10 +1399,16 @@ class AuditRepository:
             refs, principal = cast(tuple[str, ...], args[0]), cast(MutationPrincipal, args[1])
             if not 1 <= len(refs) <= _MAX_MACHINE_AUTHORITY_PARTS or len(set(refs)) != len(refs):
                 raise ValueError("execution batch must contain between 1 and 40 distinct authorizations")
+            now_ms = int(time.time() * 1000)
             return {
                 "authorization_refs": list(refs),
                 "principal": _principal_payload(principal),
-                "now_ms": int(time.time() * 1000),
+                "now_ms": now_ms,
+                "authority_as_of_ms": (
+                    self.handshake_as_of_ms(self._machine_binding[0], authorization_refs=refs)
+                    if self._machine_binding is not None
+                    else now_ms
+                ),
             }
         if kind == "seal_insight_execution":
             head_preview_ref, page_count, manifest_digest, raw_principal = args
@@ -1265,7 +1456,7 @@ class AuditRepository:
             }
         if kind == "stop_machine_batch":
             reason = str(args[1])
-            if reason not in {"cancelled", "deadline", "refused", "indeterminate"}:
+            if reason not in {"cancelled", "deadline", "refused", "indeterminate", "interrupted"}:
                 raise ValueError("unknown machine stop reason")
             return {
                 "binding": cast(MachineRequestBinding, args[0]).to_dict(),
@@ -1321,14 +1512,23 @@ class AuditRepository:
                 preview, authorization = cast(MutationPreview, args[1]), cast(MutationAuthorization, args[2])
             else:
                 preview, authorization = cast(MutationPreview, args[0]), cast(MutationAuthorization, args[1])
+            consume_now_ms = int(time.time() * 1000)
             return {
+                "authority_as_of_ms": (
+                    self.handshake_as_of_ms(
+                        self._machine_binding[0],
+                        authorization_refs=(authorization.authorization_id,),
+                    )
+                    if self._machine_binding is not None and authorization.authorization_id is not None
+                    else consume_now_ms
+                ),
                 "operation_id": f"operation:{secrets.token_urlsafe(18)}",
                 "attempt_id": f"attempt:{secrets.token_urlsafe(18)}",
                 # The command can be replayed by a fresh repository process.
                 # Keep the original actuator owner, rather than accidentally
                 # assigning its pre-effect attempt to the recovery process.
                 "attempt_owner_id": self._attempt_owner_id,
-                "now_ms": int(time.time() * 1000),
+                "now_ms": consume_now_ms,
                 "preview": _preview_payload(preview),
                 "authorization": {
                     **_authorization_payload(authorization),
@@ -1648,6 +1848,7 @@ class AuditRepository:
         """Check exact one-shot authority without allocating a domain attempt."""
 
         now_ms = int(cast(int, self._command_value("now_ms", int(time.time() * 1000))))
+        now_ms = int(cast(int, self._command_value("authority_as_of_ms", now_ms)))
         with self._connection() as conn:
             for ref in refs:
                 row = conn.execute(
@@ -1781,9 +1982,31 @@ class AuditRepository:
         """Cancel an exact ordered preview set without consuming its authority."""
         return self._apply_authority_batch()
 
+    def fence_staged_machine_pages(self) -> int:
+        """Stop every paged batch a dead daemon left half-accepted.
+
+        Runs at the single-writer startup seam, where no handler can still be
+        appending pages. The request reads as interrupted, so a caller
+        following it reaches a terminal outcome and submits it again.
+        """
+        placeholders = ",".join("?" for _ in MACHINE_PAGE_KINDS)
+        with self._connection() as conn:
+            rows = conn.execute(
+                f"""SELECT archive_identity, request_id, principal_ref, fingerprint, operation_name
+                    FROM machine_requests WHERE stop_reason IS NULL AND artifact_kind IN ({placeholders})""",
+                tuple(sorted(MACHINE_PAGE_KINDS)),
+            ).fetchall()
+        for row in rows:
+            self.stop_machine_batch(MachineRequestBinding(*(str(value) for value in row)), "interrupted")
+        return len(rows)
+
     @_continuity_mutation("stop_machine_batch")
     def stop_machine_batch(self, binding: MachineRequestBinding, reason: str) -> None:
-        """Fence unstarted parts without hiding or revoking an attempted effect."""
+        """Fence unstarted parts without hiding or revoking an attempted effect.
+
+        A staged authorization batch has attempted nothing, so its issued
+        authorizations are revoked with it.
+        """
         if self.machine_request(binding) is None:
             raise ValueError("machine request is unknown")
         with self._connection() as conn:
@@ -1806,6 +2029,21 @@ class AuditRepository:
                     WHERE archive_identity = ? AND request_id = ? AND operation_id IS NULL
                 )""",
                 (binding.archive_identity, binding.request_id),
+            )
+            # A staged authorization batch keeps its issued authorizations as
+            # its parts' artifacts. Fencing it must not leave the pages it
+            # already accepted usable by an execution nobody can follow.
+            conn.execute(
+                """UPDATE operation_authorizations SET state = 'revoked'
+                WHERE state = 'active' AND authorization_id IN (
+                    SELECT parts.artifact_ref FROM machine_request_parts AS parts
+                    JOIN machine_requests AS requests
+                      ON requests.archive_identity = parts.archive_identity
+                     AND requests.request_id = parts.request_id
+                    WHERE parts.archive_identity = ? AND parts.request_id = ?
+                      AND requests.artifact_kind = ?
+                )""",
+                (binding.archive_identity, binding.request_id, machine_pages_kind("authorization-batch")),
             )
 
     @_continuity_mutation("ensure_archive_authority")
@@ -2033,7 +2271,10 @@ class AuditRepository:
                 or (not durable_capabilities and authorization.capability != "")
             ):
                 raise ValueError("authorization evidence differs from its durable preview")
-            if effective_issued_at_ms >= durable_expires_at_ms:
+            # A paged handshake judges expiry as of its progress, not its wall
+            # time (``handshake_as_of_ms``); issuance time stays real.
+            as_of_ms = cast(int, self._command_value("authority_as_of_ms", effective_issued_at_ms))
+            if as_of_ms >= durable_expires_at_ms:
                 conn.execute(
                     "UPDATE operation_previews SET state = 'expired' WHERE preview_id = ? AND state = 'prepared'",
                     (preview.preview_ref,),
@@ -2209,7 +2450,7 @@ class AuditRepository:
                     raise TokenConsumedError("authorization is reserved to an accepted machine request")
             if str(row[6]) != "active":
                 raise TokenConsumedError("authorization token is already consumed or revoked")
-            if int(row[7]) <= now_ms:
+            if int(row[7]) <= cast(int, self._command_value("authority_as_of_ms", now_ms)):
                 conn.execute(
                     "UPDATE operation_authorizations SET state = 'expired' WHERE authorization_id = ?",
                     (str(row[0]),),

@@ -77,10 +77,12 @@ Before a storage, daemon, MCP, source, or query change, read its
   source files may be ingested into the empty archive.
 - Later durable-tier changes (`source`, `user`, `audit`) are additive numbered
   migrations under `storage/sqlite/migrations/`, one step at a time. Derived
-  tiers have no migration chain: `archive_tiers/schema_identity.py` stamps an
-  identity over their DDL plus the lowering, materializer, and replay-routing
-  fingerprints, every open compares it, and a mismatch is a typed
-  `SchemaSkew` resolved by reconvergence through the daemon. Classify a schema
+  tiers have no migration chain. For `index` and `ops`,
+  `archive_tiers/schema_identity.py` stamps an identity over their DDL plus
+  the lowering, materializer, and replay-routing fingerprints, every open
+  compares it, and a mismatch is a typed `SchemaSkew` resolved by
+  reconvergence through the daemon. `embeddings` carries no schema identity;
+  its DDL is versioned by `EMBEDDINGS_SCHEMA_VERSION`. Classify a schema
   change before editing: metadata-only, index-only, additive-derived,
   additive-durable, or semantic-reparse.
 - Those fingerprints are AST closures over imported source, so an ordinary

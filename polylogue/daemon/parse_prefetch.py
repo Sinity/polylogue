@@ -17,7 +17,7 @@ from polylogue.sources.census_parse_stage import (
 from polylogue.sources.census_parse_stage import (
     daemon_parse_stage_max_cached_tree_bytes,
     daemon_parse_stage_max_inflight_bytes,
-    daemon_parse_stage_warm_timeout_seconds,
+    daemon_parse_stage_stall_report_seconds,
     daemon_parse_stage_worker_count,
     estimate_parsed_tree_bytes,
 )
@@ -26,7 +26,7 @@ __all__ = [
     "DaemonParseStage",
     "daemon_parse_stage_max_cached_tree_bytes",
     "daemon_parse_stage_max_inflight_bytes",
-    "daemon_parse_stage_warm_timeout_seconds",
+    "daemon_parse_stage_stall_report_seconds",
     "daemon_parse_stage_worker_count",
     "estimate_parsed_tree_bytes",
 ]

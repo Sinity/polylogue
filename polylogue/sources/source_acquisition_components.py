@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
-import io
 import time
 import zipfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO, TypeAlias
+from typing import IO, TypeAlias, cast
 
 import ijson
 
@@ -17,15 +17,15 @@ from polylogue.archive.artifact_taxonomy import classify_artifact
 from polylogue.archive.zip_admission import ZipBombError
 from polylogue.config import Source
 from polylogue.core.content_identity import (
-    STRUCTURAL_IDENTITY_MAX_BYTES,
-    bounded_payload_content_identity,
+    ContentIdentityRefusal,
+    payload_content_identity,
+    stream_payload_content_identity,
 )
 from polylogue.core.enums import Provider
 from polylogue.core.json import JSONDocument, JSONValue, is_json_value, normalize_json_decimal
 from polylogue.core.json import dumps_bytes as json_dumps_bytes
 from polylogue.core.metrics import read_current_rss_mb, read_peak_rss_self_mb
 from polylogue.core.raw_coordinates import MemberAddressingMode
-from polylogue.logging import WARNING, emit
 from polylogue.sources.live.admission import (
     AdmissionAttempt,
     AdmissionReceipt,
@@ -46,25 +46,11 @@ from .sqlite_snapshot import is_sqlite_path, original_sqlite_source_path, snapsh
 _ZIP_SNIFF_MEMBER_LIMIT = 64
 _DETECTION_PREFIX_SIZE = 8192  # 8 KB — enough for provider detection
 _HEARTBEAT_INTERVAL_S = 5.0
+_REVISION_CHUNK_BYTES = 1024 * 1024
 AcquisitionObservation: TypeAlias = JSONDocument
 ObservationCallback: TypeAlias = Callable[[AcquisitionObservation], None]
 StatusCallback: TypeAlias = Callable[[str], None]
 CursorState: TypeAlias = CursorStatePayload
-
-
-def _bounded_payload_identity_info(payload_bytes: bytes) -> tuple[str, str | None]:
-    """Return the split payload identity and any declared fallback reason.
-
-    ZIP splitting has already bounded the payload in memory, but the identity
-    contract is still the decoded structural value (with the declared byte
-    digest fallback above the ceiling). Keeping the reason alongside the
-    digest prevents a byte fallback from masquerading as structural identity.
-    """
-    return bounded_payload_content_identity(
-        io.BytesIO(payload_bytes),
-        size=len(payload_bytes),
-        byte_digest=hashlib.sha256(payload_bytes).hexdigest(),
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,58 +108,66 @@ class SerializedSplitPayload:
     source_index: int | None
     addressing_mode: MemberAddressingMode = MemberAddressingMode.ELEMENT_OF_CONTAINER
     content_identity: str | None = None
-    content_identity_skipped_reason: str | None = None
 
 
 @dataclass(slots=True)
 class SplitPayloadBuffer:
-    """Buffer ZIP payloads until an entry proves it contains multiple sessions."""
+    """Buffer ZIP payloads until an entry proves it contains multiple sessions.
+
+    An element whose content identity is refused keeps its source index and
+    is recorded in ``refusals``; the elements after it are still emitted.
+    """
 
     _pending: list[tuple[Provider, bytes]] = field(default_factory=list)
     _next_source_index: int = 0
     did_split: bool = False
+    refusals: list[ContentIdentityRefusal] = field(default_factory=list)
 
     @property
     def pending_index(self) -> int:
         return self._next_source_index + len(self._pending)
 
+    def element(self, provider: Provider, payload_bytes: bytes, index: int) -> SerializedSplitPayload | None:
+        """One split element with its identity, or ``None`` when that identity is refused."""
+        try:
+            identity = payload_content_identity(payload_bytes)
+        except ContentIdentityRefusal as refusal:
+            self.refusals.append(refusal)
+            return None
+        return SerializedSplitPayload(
+            provider=provider,
+            payload_bytes=payload_bytes,
+            source_index=index,
+            addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
+            content_identity=identity,
+        )
+
+    def add_grouped(self, provider: Provider, payload_bytes: bytes) -> SerializedSplitPayload | None:
+        """A grouped-provider element observed after the split; it takes the next index, emitted or refused."""
+        index = self._next_source_index
+        self._next_source_index += 1
+        return self.element(provider, payload_bytes, index)
+
     def add(self, provider: Provider, payload_bytes: bytes) -> tuple[SerializedSplitPayload, ...]:
         if self.did_split:
-            identity, skipped_reason = _bounded_payload_identity_info(payload_bytes)
-            payload = SerializedSplitPayload(
-                provider=provider,
-                payload_bytes=payload_bytes,
-                source_index=self._next_source_index,
-                addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
-                content_identity=identity,
-                content_identity_skipped_reason=skipped_reason,
-            )
+            payload = self.element(provider, payload_bytes, self._next_source_index)
             self._next_source_index += 1
-            return (payload,)
+            return () if payload is None else (payload,)
 
         self._pending.append((provider, payload_bytes))
         if len(self._pending) < 2:
             return ()
 
         self.did_split = True
-        emitted_items: list[SerializedSplitPayload] = []
-        for index, (pending_provider, pending_payload_bytes) in enumerate(
-            self._pending,
-            start=self._next_source_index,
-        ):
-            identity, skipped_reason = _bounded_payload_identity_info(pending_payload_bytes)
-            emitted_items.append(
-                SerializedSplitPayload(
-                    provider=pending_provider,
-                    payload_bytes=pending_payload_bytes,
-                    source_index=index,
-                    addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
-                    content_identity=identity,
-                    content_identity_skipped_reason=skipped_reason,
-                )
+        emitted = tuple(
+            payload
+            for index, (pending_provider, pending_payload_bytes) in enumerate(
+                self._pending,
+                start=self._next_source_index,
             )
-        emitted = tuple(emitted_items)
-        self._next_source_index += len(emitted)
+            if (payload := self.element(pending_provider, pending_payload_bytes, index)) is not None
+        )
+        self._next_source_index += len(self._pending)
         self._pending.clear()
         return emitted
 
@@ -296,7 +290,6 @@ def raw_data_record(
     blob_publication_receipt_id: str | None = None,
     addressing_mode: MemberAddressingMode | None = None,
     content_identity: str | None = None,
-    content_identity_skipped_reason: str | None = None,
 ) -> RawSessionData:
     return RawSessionData(
         raw_bytes=b"",
@@ -309,7 +302,6 @@ def raw_data_record(
         blob_publication_receipt_id=blob_publication_receipt_id,
         addressing_mode=addressing_mode,
         content_identity=content_identity,
-        content_identity_skipped_reason=content_identity_skipped_reason,
     )
 
 
@@ -354,9 +346,8 @@ def make_split_entry_raw_data(
     from polylogue.storage.blob_publication import publication_receipt_id
 
     identity = split_payload.content_identity
-    skipped_reason = split_payload.content_identity_skipped_reason
     if identity is None:
-        identity, skipped_reason = _bounded_payload_identity_info(split_payload.payload_bytes)
+        identity = payload_content_identity(split_payload.payload_bytes)
     return raw_data_record(
         source_path=source_path,
         file_mtime=file_mtime,
@@ -367,7 +358,6 @@ def make_split_entry_raw_data(
         blob_publication_receipt_id=publication_receipt_id(blob_store, blob_hash),
         addressing_mode=split_payload.addressing_mode,
         content_identity=identity,
-        content_identity_skipped_reason=skipped_reason,
     )
 
 
@@ -570,25 +560,18 @@ def stream_preserved_zip_entry_raw_data(
             source_name=context.source.name,
             source_path=context.source_path,
         )
-    # Read the already-published bytes to derive structural identity without
-    # weakening the bounded streaming publication route. The re-read is
-    # ceiling-bounded: an unbounded ``stored_handle.read()`` here threw away
-    # the bound the streaming publication had just honoured
-    # (polylogue-dhkuu Finding C).
-    with context.blob_store.open(blob_hash) as stored_handle:
-        content_identity, identity_skipped = bounded_payload_content_identity(
-            stored_handle, size=blob_size, byte_digest=blob_hash
-        )
-    if identity_skipped is not None:
-        emit(
-            "sources.acquisition.structural_identity_skipped",
-            level=WARNING,
-            outcome="degraded",
-            reason=identity_skipped,
-            source_path=context.source_path,
-            blob_bytes=blob_size,
-            identity_ceiling_bytes=STRUCTURAL_IDENTITY_MAX_BYTES,
-        )
+    # Derive structural identity from the published bytes. The identity
+    # streams, so this re-read holds one window, never the whole member.
+    try:
+        with context.blob_store.open(blob_hash) as stored_handle:
+            content_identity = stream_payload_content_identity(stored_handle)
+    except ContentIdentityRefusal:
+        # The refused member has no raw record, so a queued publication of
+        # its bytes would be reserved with nothing to reference it.
+        discard_queued = getattr(context.blob_store, "discard_queued", None)
+        if discard_queued is not None:
+            discard_queued(blob_hash)
+        raise
     from polylogue.storage.blob_publication import publication_receipt_id
 
     publication_id = publication_receipt_id(context.blob_store, blob_hash)
@@ -599,7 +582,6 @@ def stream_preserved_zip_entry_raw_data(
         provider_hint=provider_hint,
         blob_size=blob_size,
         blob_publication_receipt_id=publication_id,
-        content_identity_skipped_reason=identity_skipped,
     )
     return raw_data_record(
         source_path=context.source_path,
@@ -615,7 +597,6 @@ def stream_preserved_zip_entry_raw_data(
         blob_publication_receipt_id=publication_id,
         addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
         content_identity=content_identity,
-        content_identity_skipped_reason=identity_skipped,
     )
 
 
@@ -651,12 +632,9 @@ def _iter_zip_entry_split_payloads(
                 # emitted split siblings remain valid and must not be rolled
                 # back.
                 if split_buffer.did_split:
-                    yield SerializedSplitPayload(
-                        provider=detected.provider,
-                        payload_bytes=json_dumps_bytes(detected.payload),
-                        source_index=split_buffer.pending_index,
-                        addressing_mode=MemberAddressingMode.ELEMENT_OF_CONTAINER,
-                    )
+                    grouped = split_buffer.add_grouped(detected.provider, json_dumps_bytes(detected.payload))
+                    if grouped is not None:
+                        yield grouped
                     continue
                 break
             classify_start = time.perf_counter()
@@ -685,6 +663,22 @@ def _iter_zip_entry_split_payloads(
                 serialize_ms=round(serialize_ms, 3),
             )
             yield from split_buffer.add(detected.provider, payload_bytes)
+    if split_buffer.refusals:
+        # Every other element is already emitted; the refused ones are the
+        # member's recorded gap.
+        raise split_buffer.refusals[0]
+
+
+def _whole_member_provider(context: ZipEntryReadContext) -> Provider | None:
+    """The member's provider when acquisition preserves it whole without splitting."""
+    from polylogue.sources.origin_specs import path_declaration_refuses_session
+
+    entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
+    if entry_provider_hint in GROUP_PROVIDERS or path_declaration_refuses_session(
+        entry_provider_hint, context.entry.filename
+    ):
+        return entry_provider_hint
+    return None
 
 
 def replay_zip_entry_acquisition_payloads(
@@ -699,30 +693,32 @@ def replay_zip_entry_acquisition_payloads(
     bytes. Backup verification uses this read-only replay instead of inventing
     a JSON-array indexing rule.
     """
-    from polylogue.sources.origin_specs import path_declaration_refuses_session
-
-    entry_provider_hint = _zip_entry_provider_hint(context.entry.filename, context.provider_hint)
-    if entry_provider_hint in GROUP_PROVIDERS or path_declaration_refuses_session(
-        entry_provider_hint, context.entry.filename
-    ):
+    entry_provider_hint = _whole_member_provider(context)
+    if entry_provider_hint is not None:
         with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
             payload_bytes = handle.read()
-            identity, skipped_reason = _bounded_payload_identity_info(payload_bytes)
+            identity = payload_content_identity(payload_bytes)
             yield SerializedSplitPayload(
                 provider=entry_provider_hint,
                 payload_bytes=payload_bytes,
                 source_index=None,
                 addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
                 content_identity=identity,
-                content_identity_skipped_reason=skipped_reason,
             )
         return
 
     state = _ZipEntrySplitState()
     split_payloads = _iter_zip_entry_split_payloads(zf, context, state)
-    for payload in split_payloads:
-        state.did_split = True
-        yield payload
+    try:
+        for payload in split_payloads:
+            state.did_split = True
+            yield payload
+    except ContentIdentityRefusal:
+        # A refused element is the member's recorded gap; every element that
+        # was acquired beside it stays a replay candidate.
+        if not state.did_split:
+            raise
+        return
     if state.did_split:
         return
 
@@ -730,15 +726,126 @@ def replay_zip_entry_acquisition_payloads(
     # session document, matching the ordinary acquisition fallback.
     with _decoders.open_bounded_zip_entry(zf, context.entry) as handle:
         payload_bytes = handle.read()
-        identity, skipped_reason = _bounded_payload_identity_info(payload_bytes)
+        identity = payload_content_identity(payload_bytes)
         yield SerializedSplitPayload(
             provider=state.detected_provider,
             payload_bytes=payload_bytes,
             source_index=None,
             addressing_mode=MemberAddressingMode.WHOLE_MEMBER,
             content_identity=identity,
-            content_identity_skipped_reason=skipped_reason,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayedZipRevision:
+    """The revision and size of one payload unit ZIP acquisition retains."""
+
+    source_index: int | None
+    revision: str
+    size_bytes: int
+
+
+class _HashingZipEntry:
+    """A ZIP entry the identity pass can seek, hashed as its frontier advances.
+
+    The identity pass reads the member through this, so the revision is the
+    SHA-256 of the same one decompression, and no member-sized scratch copy
+    is made. Seeking back reopens the entry (re-decompression, not storage);
+    bytes before the hashed frontier are never hashed twice.
+    """
+
+    def __init__(self, zf: zipfile.ZipFile, entry: zipfile.ZipInfo, checkpoint: Callable[[], None] | None) -> None:
+        self._zf = zf
+        self._entry = entry
+        self._checkpoint = checkpoint
+        self._stack = contextlib.ExitStack()
+        self._handle = self._stack.enter_context(_decoders.open_bounded_zip_entry(zf, entry))
+        self._position = 0
+        self.digest = hashlib.sha256()
+        #: Bytes hashed so far: the member's size once drained.
+        self.hashed = 0
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._handle.read(size if size >= 0 else _REVISION_CHUNK_BYTES)
+        start = self._position
+        self._position += len(data)
+        if self._position > self.hashed:
+            self.digest.update(data[self.hashed - start :])
+            self.hashed = self._position
+        return data
+
+    def tell(self) -> int:
+        return self._position
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        target = offset if whence == 0 else self._position + offset
+        if whence not in (0, 1) or target < 0:
+            raise ValueError("a ZIP entry reader seeks only to a known position")
+        if target < self._position:
+            self._stack.close()
+            self._stack = contextlib.ExitStack()
+            self._handle = self._stack.enter_context(_decoders.open_bounded_zip_entry(self._zf, self._entry))
+            self._position = 0
+        while self._position < target:
+            if self._checkpoint is not None:
+                self._checkpoint()
+            if not self.read(min(_REVISION_CHUNK_BYTES, target - self._position)):
+                break
+        return self._position
+
+    def drain(self) -> None:
+        """Hash whatever the identity pass did not read."""
+        self.seek(self.hashed)
+        while True:
+            if self._checkpoint is not None:
+                self._checkpoint()
+            if not self.read(_REVISION_CHUNK_BYTES):
+                return
+
+    def close(self) -> None:
+        self._stack.close()
+
+
+def _stream_member_revision(
+    zf: zipfile.ZipFile,
+    entry: zipfile.ZipInfo,
+    checkpoint: Callable[[], None] | None,
+) -> ReplayedZipRevision:
+    # Acquisition refuses a member whose content identity cannot be stored,
+    # so the replay does too: the identity streams from the entry itself,
+    # which is hashed for the revision as it is read.
+    reader = _HashingZipEntry(zf, entry, checkpoint)
+    try:
+        stream_payload_content_identity(cast(IO[bytes], reader), checkpoint=checkpoint)
+        reader.drain()
+    finally:
+        reader.close()
+    return ReplayedZipRevision(None, reader.digest.hexdigest(), reader.hashed)
+
+
+def replay_zip_entry_acquisition_revisions(
+    zf: zipfile.ZipFile,
+    context: ZipEntryReadContext,
+    *,
+    checkpoint: Callable[[], None] | None = None,
+) -> Iterable[ReplayedZipRevision]:
+    """Replay the revisions of the units ZIP acquisition would retain.
+
+    Same unit decisions as :func:`replay_zip_entry_acquisition_payloads`, but a
+    whole member is hashed in chunks, as acquisition streams it, instead of
+    being read into memory: an admitted member can be several gigabytes.
+    """
+    if _whole_member_provider(context) is not None:
+        yield _stream_member_revision(zf, context.entry, checkpoint)
+        return
+    state = _ZipEntrySplitState()
+    for payload in _iter_zip_entry_split_payloads(zf, context, state):
+        state.did_split = True
+        yield ReplayedZipRevision(
+            payload.source_index, hashlib.sha256(payload.payload_bytes).hexdigest(), len(payload.payload_bytes)
+        )
+    if not state.did_split:
+        yield _stream_member_revision(zf, context.entry, checkpoint)
 
 
 def sniff_zip_provider(
@@ -841,6 +948,8 @@ __all__ = [
     "ZipEntryReadContext",
     "iter_entry_payloads",
     "replay_zip_entry_acquisition_payloads",
+    "replay_zip_entry_acquisition_revisions",
+    "ReplayedZipRevision",
     "iter_zip_entry_raw_data",
     "sniff_zip_provider",
     "make_status_heartbeat",

@@ -118,6 +118,7 @@ from polylogue.storage.sqlite.archive_tiers.source_write import (
 )
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
 from polylogue.storage.sqlite.archive_tiers.write import (
+    WORK_EVENT_RAW_ID_PREFIX,
     PreparedRows,
     PreparedSessionWrite,
     PreparedSessionWriteRefusedError,
@@ -1115,6 +1116,19 @@ def prepare_retained_jsonl_artifact(
                 witness: JSONValue = {**envelope, "messages": list(messages)}
                 return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
 
+            def classify_claude_ai_object(envelope: dict[str, JSONValue], messages: Sequence[JSONValue]) -> bool:
+                witness: JSONValue = {
+                    **{key: value for key, value in envelope.items() if not key.startswith("__")},
+                    "chat_messages": list(messages),
+                }
+                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
+
+            def classify_drive_chunked_object(witness: dict[str, JSONValue]) -> bool:
+                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
+
+            def classify_hermes_atif_object(witness: dict[str, JSONValue]) -> bool:
+                return _declared_non_session_artifact_classification(provider, source_path, sample=(witness,)) is None
+
             def classify_chatgpt_object(envelope: dict[str, object]) -> bool:
                 mapping = envelope["mapping"]
                 assert isinstance(mapping, Mapping)
@@ -1145,6 +1159,9 @@ def prepare_retained_jsonl_artifact(
                 classify_generic_object=classify_generic_object,
                 classify_hermes_object=classify_hermes_object,
                 classify_claude_design_object=classify_claude_design_object,
+                classify_claude_ai_object=classify_claude_ai_object,
+                classify_drive_chunked_object=classify_drive_chunked_object,
+                classify_hermes_atif_object=classify_hermes_atif_object,
                 classify_chatgpt_object=classify_chatgpt_object,
                 classify_gemini_object=classify_gemini_object,
                 # The publisher recomputes this digest from the retained
@@ -1330,7 +1347,11 @@ def prepare_retained_jsonl_carrier(
 
 
 def _prepared_retained_outcome(
-    archive: ArchiveStore, raw_id: str, prepared_inputs: Mapping[str, PreparedRetainedInput]
+    archive: ArchiveStore,
+    raw_id: str,
+    prepared_inputs: Mapping[str, PreparedRetainedInput],
+    *,
+    stop: Callable[[], bool] | None = None,
 ) -> tuple[list[ParsedSession], int, RawRevisionKind] | Exception:
     prepared = prepared_inputs.get(raw_id)
     if prepared is None:
@@ -1364,7 +1385,9 @@ def _prepared_retained_outcome(
         )
     from polylogue.storage.blob_store import BlobStore
 
-    if not BlobStore(Path(archive.archive_root) / "blob").verify(blob_hash):
+    # ``stop`` is the caller's cancellation: it ends this re-hash between
+    # chunks with BlobVerificationCancelledError.
+    if not BlobStore(Path(archive.archive_root) / "blob").verify(blob_hash, stop=stop):
         raise RetainedPreparationRetryableError(f"prepared retained blob changed for raw {raw_id}")
     if prepared.parser_error is not None:
         return RuntimeError(prepared.parser_error)
@@ -3471,6 +3494,8 @@ def selected_prepared_membership_head(
     archive: ArchiveStore,
     logical_key: str,
     prepared_inputs: Mapping[str, PreparedRetainedInput],
+    *,
+    stop: Callable[[], bool] | None = None,
 ) -> tuple[str, ParsedSession] | None:
     """Classify a censused membership cohort on a read-only preparation snapshot.
 
@@ -3501,7 +3526,7 @@ def selected_prepared_membership_head(
             raise RetainedPreparationRetryableError(
                 f"prepared membership candidate is absent for {logical_key}: {raw_id}"
             )
-        outcome = _prepared_retained_outcome(archive, raw_id, prepared_inputs)
+        outcome = _prepared_retained_outcome(archive, raw_id, prepared_inputs, stop=stop)
         if isinstance(outcome, Exception):
             raise RetainedPreparationRetryableError(
                 f"prepared membership candidate has parser failure for {logical_key}: {raw_id}"
@@ -5344,7 +5369,10 @@ def parse_retained_raw_sessions(archive: ArchiveStore, raw_id: str) -> list[Pars
 
     # Work events have their own durable envelope.  They are not provider
     # transcript records, so replay them before dispatching to provider parsers.
-    if source_path.startswith("agent-work-event:"):
+    # Replay returns the event alone; ``write_parsed_session_to_archive``
+    # recognizes the work-event raw and writes it event-only, keeping the
+    # stored session header.
+    if source_path.startswith(WORK_EVENT_RAW_ID_PREFIX):
         _provider, payload, _path, _kind = archive.raw_revision_material(raw_id)
         try:
             envelope = json.loads(payload)
