@@ -243,7 +243,6 @@ def test_session_messages_authority_elapsed_covers_the_window_read() -> None:
 
     assert result is not None
     assert cast(dict[str, object], result["authority"])["elapsed_ms"] == 1000
-||||||| parent of 78530251af (fix(cli): decide message page outcomes per page and every format)
 
 
 def test_session_messages_page_past_the_end_is_empty() -> None:
