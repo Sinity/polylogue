@@ -517,12 +517,12 @@ def repair_message_fts_index_sync(
     try:
         for session_id in unique_session_ids:
             replace_fts_partition_sync(conn, session_id)
+        if owns_transaction:
+            conn.execute("COMMIT")
     except Exception:
         if owns_transaction and conn.in_transaction:
             conn.execute("ROLLBACK")
         raise
-    if owns_transaction:
-        conn.execute("COMMIT")
     del record_exact_snapshot
 
 

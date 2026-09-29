@@ -87,3 +87,52 @@ def test_dynamic_map_values_are_still_walked() -> None:
     assert detect_drift({"mapping": {"k1": {"id": "a", "new_provider_field": 1}}}, _DYNAMIC_SCHEMA, "") == [
         "Unexpected field: mapping.k1.new_provider_field"
     ]
+
+
+def test_validation_selects_a_sibling_union_before_allof_observation() -> None:
+    """Appending an unselected union base reports kind and known as drift."""
+    from polylogue.schemas.validator import SchemaValidator
+
+    schema = {
+        "anyOf": [
+            {"type": "object", "properties": {"kind": {"const": "a"}, "known": {"type": "string"}}},
+            {"type": "object", "properties": {"kind": {"const": "b"}, "other": {"type": "integer"}}},
+        ],
+        "allOf": [{"type": "object"}],
+    }
+    result = SchemaValidator(schema, strict=True).validate({"kind": "a", "known": "ok", "new": "drift"})
+    assert result.is_valid
+    assert result.drift_warnings == ["Unexpected field: new"]
+
+
+def test_validation_preserves_dynamic_annotation_across_unannotated_conjuncts() -> None:
+    """The generic all(markers) merge loses the map annotation and flags ordinary map keys."""
+    from polylogue.schemas.validator import SchemaValidator
+
+    schema = {
+        "type": "object",
+        "x-polylogue-dynamic-keys": True,
+        "additionalProperties": {"type": "object", "properties": {"id": {"type": "string"}}},
+        "allOf": [{"minProperties": 1}],
+    }
+    validator = SchemaValidator(schema, strict=True)
+    result = validator.validate({"ordinary-key": {"id": "node"}})
+    assert result.is_valid
+    assert result.drift_warnings == []
+    # An explicitly dynamic KEY never suppresses a new named field in its VALUE.
+    changed = validator.validate({"ordinary-key": {"id": "node", "added": True}})
+    assert changed.drift_warnings == ["Unexpected field: ordinary-key.added"]
+
+
+def test_validation_keeps_local_ref_sibling_declarations() -> None:
+    """Replacing a ref node with only its target discards the extension declaration."""
+    from polylogue.schemas.validator import SchemaValidator
+
+    schema = {
+        "$defs": {"Base": {"type": "object", "properties": {"known": {"type": "string"}}}},
+        "type": "object",
+        "properties": {"payload": {"$ref": "#/$defs/Base", "properties": {"extension": {"type": "integer"}}}},
+    }
+    result = SchemaValidator(schema, strict=True).validate({"payload": {"known": "ok", "extension": 1, "new": True}})
+    assert result.is_valid
+    assert result.drift_warnings == ["Unexpected field: payload.new"]

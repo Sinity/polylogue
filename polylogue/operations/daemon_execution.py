@@ -59,7 +59,6 @@ class OperationRuntime(Protocol):
 
     async def converge_ingest_sessions(
         self,
-        request: DaemonOperationRequest,
         session_ids: tuple[str, ...],
         *,
         expected_recipe: str,

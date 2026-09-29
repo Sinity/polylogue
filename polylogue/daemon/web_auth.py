@@ -46,6 +46,8 @@ WEB_CREDENTIAL_SCOPES: tuple[WebCredentialScope, ...] = ("events", "read", "user
 DEFAULT_WEB_CREDENTIAL_TTL_S = 300
 DEFAULT_WEB_CREDENTIAL_MAX_RECORDS = 1024
 DEFAULT_WEB_CREDENTIAL_MAX_RECORDS_PER_ORIGIN = 256
+#: A sign-in ticket only has to survive one browser navigation.
+DEFAULT_WEB_SIGN_IN_TICKET_TTL_S = 60
 
 
 class _WebCredentialPayloadModel(BaseModel):
@@ -81,6 +83,77 @@ class WebCredentialFailurePayload(_WebCredentialPayloadModel):
     error: WebCredentialFailureState
     detail: str | None = None
     field: str | None = None
+
+
+class WebSignInTicketPayload(_WebCredentialPayloadModel):
+    """One-time browser sign-in ticket returned to a bearer-authenticated caller."""
+
+    ok: Literal[True] = True
+    ticket: str
+    expires_at: datetime
+
+
+#: Sign-in page served in place of shell HTML to an uncredentialed browser. It
+#: embeds no archive data. The script (same-origin, so the restrictive CSP
+#: holds) exchanges a ``#polylogue-ticket=`` fragment, or a pasted daemon API
+#: token, for the first-party cookie, then reloads the requested page.
+WEB_SIGN_IN_HTML = """<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Polylogue sign-in</title>
+<script src="/web-auth/sign-in.js" defer></script></head>
+<body>
+<main>
+<h1>Sign in to this Polylogue archive</h1>
+<p id="sign-in-status">This archive requires the owner's credential.</p>
+<p>Open it from the CLI (for example <code>polylogue ... open</code>), which signs this browser in,
+or paste the daemon API token shown by <code>polylogued api token show</code>.</p>
+<p><label>Daemon API token <input id="sign-in-token" type="password" autocomplete="off"></label>
+<button id="sign-in-submit" type="button">Sign in</button></p>
+</main>
+</body>
+</html>
+"""
+
+WEB_SIGN_IN_SCRIPT = """(() => {
+  const status = () => document.getElementById('sign-in-status');
+  const exchange = async (secret) => {
+    const response = await fetch('/api/web-auth/session', {
+      method: 'POST',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { 'X-Polylogue-Web-Client': '1', Authorization: 'Bearer ' + secret },
+    });
+    if (response.status === 201) {
+      if (window.location.pathname === '/web-auth/sign-in') {
+        // Continue only to this origin: an open redirect would let a crafted
+        // link bounce a freshly signed-in browser anywhere.
+        const next = new URL(new URLSearchParams(window.location.search).get('next') || '/', window.location.origin);
+        window.location.replace(next.origin === window.location.origin ? next.pathname + next.search : '/');
+      } else {
+        window.location.reload();
+      }
+      return;
+    }
+    status().textContent = 'Sign-in was refused (' + response.status + '). Open the archive from the CLI again.';
+  };
+  const match = /(?:^#|&)polylogue-ticket=([^&]+)/.exec(window.location.hash);
+  if (match) {
+    history.replaceState(null, '', window.location.pathname + window.location.search);
+    void exchange(decodeURIComponent(match[1]));
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    const button = document.getElementById('sign-in-submit');
+    const input = document.getElementById('sign-in-token');
+    if (button && input) {
+      button.addEventListener('click', () => {
+        const value = input.value.trim();
+        input.value = '';
+        if (value) void exchange(value);
+      });
+    }
+  });
+})();
+"""
 
 
 @dataclass(frozen=True)
@@ -253,6 +326,7 @@ class WebCredentialRegistry:
         self.max_records_per_origin = min(max_records_per_origin, max_records)
         self._clock = clock
         self._records: dict[bytes, _CredentialRecord] = {}
+        self._tickets: dict[bytes, float] = {}
         self._lock = threading.Lock()
 
     @property
@@ -374,7 +448,47 @@ class WebCredentialRegistry:
                 scopes=record.scopes,
             )
 
+    def issue_sign_in_ticket(self, *, ttl_s: int = DEFAULT_WEB_SIGN_IN_TICKET_TTL_S) -> tuple[str, float]:
+        """Mint a one-time sign-in ticket for a machine-authenticated caller.
+
+        Loopback is not identity: any local uid can reach the daemon, so a
+        browser credential is issued only against proof the caller holds the
+        daemon's bearer token. The CLI (which can read the owner-only token
+        file) exchanges its bearer for this ticket and hands the ticket to the
+        browser in a URL fragment, which never reaches a server log or the
+        ``Referer`` header. Only the ticket's digest is retained.
+        """
+
+        if ttl_s <= 0:
+            raise ValueError("sign-in ticket TTL must be positive")
+        now = self._clock()
+        ticket = secrets.token_urlsafe(32)
+        digest = _token_digest(ticket)
+        if digest is None:  # pragma: no cover - token_urlsafe is ASCII by contract
+            raise RuntimeError("generated sign-in ticket was not ASCII")
+        with self._lock:
+            self._prune(now)
+            self._tickets[digest] = now + ttl_s
+        return ticket, now + ttl_s
+
+    def redeem_sign_in_ticket(self, ticket: str | None) -> bool:
+        """Consume *ticket* once; an unknown, reused or expired ticket is refused."""
+
+        if not ticket:
+            return False
+        digest = _token_digest(ticket)
+        if digest is None:
+            return False
+        now = self._clock()
+        with self._lock:
+            self._prune(now)
+            expires_at = self._tickets.pop(digest, None)
+        return expires_at is not None and now < expires_at
+
     def _prune(self, now: float) -> None:
+        expired_tickets = [digest for digest, expires_at in self._tickets.items() if now >= expires_at]
+        for digest in expired_tickets:
+            del self._tickets[digest]
         retention_s = max(self.ttl_s, 60)
         stale = [digest for digest, record in self._records.items() if now >= record.expires_at + retention_s]
         for digest in stale:
@@ -425,6 +539,7 @@ __all__ = [
     "DEFAULT_WEB_CREDENTIAL_MAX_RECORDS",
     "DEFAULT_WEB_CREDENTIAL_MAX_RECORDS_PER_ORIGIN",
     "DEFAULT_WEB_CREDENTIAL_TTL_S",
+    "DEFAULT_WEB_SIGN_IN_TICKET_TTL_S",
     "WEB_CREDENTIAL_COOKIE",
     "WEB_CREDENTIAL_SCOPES",
     "IssuedWebCredential",
@@ -438,6 +553,9 @@ __all__ = [
     "WebCredentialRevokedPayload",
     "WebCredentialScope",
     "WebCredentialState",
+    "WEB_SIGN_IN_HTML",
+    "WEB_SIGN_IN_SCRIPT",
+    "WebSignInTicketPayload",
     "credential_cookie",
     "exact_origin_allowed",
     "expired_credential_cookie",

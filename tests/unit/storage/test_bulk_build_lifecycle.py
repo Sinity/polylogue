@@ -26,12 +26,14 @@ import hashlib
 import json
 import sqlite3
 from collections.abc import Callable
+from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
 from typing import TypeVar
 
 import pytest
 
+from devtools.measurement_receipts import emit_receipt
 from polylogue.archive.message.roles import Role
 from polylogue.core.enums import BlockType, Provider
 from polylogue.core.identity_law import session_id as archive_session_id
@@ -548,27 +550,47 @@ def test_fresh_shard_finished_output_comparison_rejects_missing_finalization_or_
     assert _finished_output_snapshot(fresh_path) != expected
 
 
+@pytest.mark.uses_real_clock("completed writer routes emit measured phase durations")
 def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path: Path) -> None:
-    """Record the synthetic retained, deferred, and shard comparison shape.
+    """Retain completed-route measurements with caller-owned transactions.
 
-    Timing is descriptive evidence only. This compact test proves that each
-    route records the same finished output after its own checkpoint. It does
-    not claim a protected-scale 1/4/12 CPU comparison or full-corpus result.
+    Timing is descriptive, not a speed threshold. Removing a writer's
+    manage_transaction=False creates extra COMMIT boundaries and fails the
+    trace assertion; discarding the receipt fails its readback assertion.
     """
+
+    def record_boundaries(conn: sqlite3.Connection) -> list[str]:
+        boundaries: list[str] = []
+
+        def record(statement: str) -> None:
+            normalized = statement.strip().upper()
+            if normalized in {"BEGIN", "COMMIT"}:
+                boundaries.append(normalized)
+
+        conn.set_trace_callback(record)
+        return boundaries
 
     def complete_retained() -> FinishedBuildMeasurement:
         (sessions, conn), construction_seconds = _measure(
             lambda: (build_large_parent_shared_prefix_sessions(), _connect(tmp_path / "retained.db"))
         )
-        _, import_seconds = _measure(
-            lambda: [
-                write_parsed_session_to_archive(conn, session, content_hash=str(session_content_hash(session)))
-                for session in sessions
-            ]
-        )
-        _, derived_fts_finalization_seconds = _measure(lambda: _finish_bulk_build(conn, checkpoint=False))
-        _, checkpoint_seconds = _measure(conn.commit)
-        conn.close()
+        boundaries = record_boundaries(conn)
+        try:
+            conn.execute("BEGIN")
+            with conn:
+                _, import_seconds = _measure(
+                    lambda: [
+                        write_parsed_session_to_archive(
+                            conn, session, content_hash=str(session_content_hash(session)), manage_transaction=False
+                        )
+                        for session in sessions
+                    ]
+                )
+                _, derived_fts_finalization_seconds = _measure(lambda: _finish_bulk_build(conn, checkpoint=False))
+                _, checkpoint_seconds = _measure(conn.commit)
+            assert boundaries == ["BEGIN", "COMMIT"]
+        finally:
+            conn.close()
         path = tmp_path / "retained.db"
         offered, ingested, refused, deferred, output = _finished_build_counts(
             path, offered_count=len(sessions), deferred_count=0
@@ -593,26 +615,33 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
             lambda: (build_large_parent_shared_prefix_sessions(), _connect(tmp_path / "deferred.db"))
         )
         seen: set[str] = set()
-        _, import_seconds = _measure(
-            lambda: (
-                defer_secondary_indexes_sync(conn),
-                [
-                    write_parsed_session_to_archive(
-                        conn,
-                        session,
-                        content_hash=str(session_content_hash(session)),
-                        fresh_build=True,
-                        fresh_build_batch=seen,
-                        bulk_build=True,
+        boundaries = record_boundaries(conn)
+        try:
+            conn.execute("BEGIN")
+            with conn:
+                _, import_seconds = _measure(
+                    lambda: (
+                        defer_secondary_indexes_sync(conn),
+                        [
+                            write_parsed_session_to_archive(
+                                conn,
+                                session,
+                                content_hash=str(session_content_hash(session)),
+                                fresh_build=True,
+                                fresh_build_batch=seen,
+                                bulk_build=True,
+                                manage_transaction=False,
+                            )
+                            for session in sessions
+                        ],
                     )
-                    for session in sessions
-                ],
-            )
-        )
-        _, index_restoration_seconds = _measure(lambda: restore_deferred_secondary_indexes_sync(conn))
-        _, derived_fts_finalization_seconds = _measure(lambda: _finish_bulk_build(conn, checkpoint=False))
-        _, checkpoint_seconds = _measure(conn.commit)
-        conn.close()
+                )
+                _, index_restoration_seconds = _measure(lambda: restore_deferred_secondary_indexes_sync(conn))
+                _, derived_fts_finalization_seconds = _measure(lambda: _finish_bulk_build(conn, checkpoint=False))
+                _, checkpoint_seconds = _measure(conn.commit)
+            assert boundaries == ["BEGIN", "COMMIT"]
+        finally:
+            conn.close()
         path = tmp_path / "deferred.db"
         offered, ingested, refused, deferred, output = _finished_build_counts(
             path, offered_count=len(sessions), deferred_count=len(sessions)
@@ -640,28 +669,37 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
 
         (sessions, conn, shard), construction_seconds = _measure(construct_shard)
         seen: set[str] = set()
-
-        def import_shard() -> None:
-            dropped = defer_secondary_indexes_sync(conn)
-            assert set(dropped) == set(DEFERRED_SECONDARY_INDEX_NAMES)
+        boundaries = record_boundaries(conn)
+        try:
+            # Attach outside the transaction and commit before detach. A
+            # caller-owned batch cannot leave an attachment with live reads.
             with attached_session_shard(conn, open_session_shard(shard.path)) as schema:
                 bindings = bind_session_shard(schema, shard)
-                for session in sessions:
-                    write_parsed_session_to_archive(
-                        conn,
-                        session,
-                        content_hash=str(session_content_hash(session)),
-                        prepared=bindings[_archive_session_id(session)],
-                        fresh_build=True,
-                        fresh_build_batch=seen,
-                        bulk_build=True,
-                    )
 
-        _, import_seconds = _measure(import_shard)
-        _, index_restoration_seconds = _measure(lambda: restore_deferred_secondary_indexes_sync(conn))
-        _, derived_fts_finalization_seconds = _measure(lambda: _finish_bulk_build(conn, checkpoint=False))
-        _, checkpoint_seconds = _measure(conn.commit)
-        conn.close()
+                def import_shard() -> None:
+                    dropped = defer_secondary_indexes_sync(conn)
+                    assert set(dropped) == set(DEFERRED_SECONDARY_INDEX_NAMES)
+                    for session in sessions:
+                        write_parsed_session_to_archive(
+                            conn,
+                            session,
+                            content_hash=str(session_content_hash(session)),
+                            prepared=bindings[_archive_session_id(session)],
+                            fresh_build=True,
+                            fresh_build_batch=seen,
+                            bulk_build=True,
+                            manage_transaction=False,
+                        )
+
+                conn.execute("BEGIN")
+                with conn:
+                    _, import_seconds = _measure(import_shard)
+                    _, index_restoration_seconds = _measure(lambda: restore_deferred_secondary_indexes_sync(conn))
+                    _, derived_fts_finalization_seconds = _measure(lambda: _finish_bulk_build(conn, checkpoint=False))
+                    _, checkpoint_seconds = _measure(conn.commit)
+            assert boundaries == ["BEGIN", "COMMIT"]
+        finally:
+            conn.close()
         path = tmp_path / "shard.db"
         offered, ingested, refused, deferred, output = _finished_build_counts(
             path, offered_count=len(sessions), deferred_count=len(sessions)
@@ -691,6 +729,9 @@ def test_finished_build_measurement_protocol_compares_completed_routes(tmp_path:
     )
     assert all(measurement.refused_count == 0 for measurement in measurements)
     assert [measurement.deferred_count for measurement in measurements] == [0, 9, 9]
+    receipt = {"routes": [asdict(measurement) for measurement in measurements]}
+    emitted = emit_receipt("finished-build-protocol-synthetic", receipt)
+    assert json.loads(emitted.read_text(encoding="utf-8"))["measurement"] == receipt
 
 
 def test_bulk_build_anti_vacuity_repopulate_is_load_bearing(tmp_path: Path) -> None:

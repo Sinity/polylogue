@@ -29,6 +29,22 @@ from devtools.verify_runs import (
     git_worktree_content_sha256,
     pytest_command_worker_request,
 )
+from devtools.worker_memory import CHARGE_PROFILE_ENV, FOCUSED_MAX_WORKERS
+
+_HOLD_SELECTION_LOCK = run_tests._hold_selection_lock
+
+
+@pytest.fixture(autouse=True)
+def _no_receipt_reuse(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``main`` tests exercise the run path, never a reused receipt from this checkout.
+
+    The outer ``devtools test`` running this file holds the real checkout's
+    selection lock, so ``main`` here never takes it; the lock has its own law.
+    """
+    monkeypatch.setenv(run_tests.REUSE_ENV, "0")
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", lambda _selection: None)
+    # History resolves relative to the root under test, never the host's.
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HISTORY_PATH", ".cache/verify/history.jsonl")
 
 
 def _write_passing_evidence(root: Path, run: VerifyRun) -> None:
@@ -46,7 +62,7 @@ def _write_passing_evidence(root: Path, run: VerifyRun) -> None:
 
 
 def test_build_pytest_cmd_defaults_to_single_process() -> None:
-    cmd = run_tests.build_pytest_cmd(["tests/unit/pipeline"])
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools/test_run_tests.py"])
     assert cmd[:5] == [
         str(run_tests.ROOT / ".venv/bin/python"),
         "-m",
@@ -54,7 +70,7 @@ def test_build_pytest_cmd_defaults_to_single_process() -> None:
         "-p",
         "devtools.pytest_progress_plugin",
     ]
-    assert "tests/unit/pipeline" in cmd
+    assert "tests/unit/devtools/test_run_tests.py" in cmd
     assert "-n" not in cmd
 
 
@@ -65,7 +81,7 @@ def test_build_pytest_cmd_uses_the_managed_plugin_contract() -> None:
     command and the first slice comparison fails; reorder the two blocks and
     the second does.
     """
-    cmd = run_tests.build_pytest_cmd(["tests/unit/pipeline"])
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools/test_run_tests.py"])
 
     focused_plugins = devtools_plugin_args(testmon=False)
     devtools_start = cmd.index(focused_plugins[0])
@@ -112,8 +128,6 @@ def test_build_pytest_cmd_forwards_exactly_one_xdist_worker_request(
 ) -> None:
     command = run_tests.build_pytest_cmd(selection)
 
-    for arg in selection:
-        assert arg in command
     worker_flags = [
         arg for arg in command if arg in {"-n", "--numprocesses"} or arg.startswith(("-n", "--numprocesses="))
     ]
@@ -123,8 +137,36 @@ def test_build_pytest_cmd_forwards_exactly_one_xdist_worker_request(
 
 def test_build_pytest_cmd_ignores_workers_env_for_focused_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("POLYLOGUE_PYTEST_WORKERS", "8")
-    cmd = run_tests.build_pytest_cmd(["tests/unit"])
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools/test_run_tests.py"])
     assert "-n" not in cmd
+    large = run_tests.build_pytest_cmd(["tests/unit"])
+    assert large[large.index("-n") + 1] == str(FOCUSED_MAX_WORKERS)
+
+
+def test_a_large_selection_runs_under_xdist_and_a_small_one_does_not() -> None:
+    """Width follows the selection's module count, never an ambient setting.
+
+    Anti-vacuity: return ``[]`` unconditionally from ``_worker_args`` and the
+    large selection runs in one process; drop the module threshold and the
+    single file is spread over workers.
+    """
+    small = run_tests.build_pytest_cmd(["tests/unit/devtools/test_run_tests.py", "tests/unit/devtools/test_verify.py"])
+    assert "-n" not in small
+    assert "xdist" not in small
+
+    large = run_tests.build_pytest_cmd(["tests/unit/devtools"])
+    assert large[large.index("-n") + 1] == str(FOCUSED_MAX_WORKERS)
+    assert "xdist" in large
+    assert "--dist=loadgroup" in large
+
+
+def test_focused_environment_declares_the_focused_charge_profile(tmp_path: Path) -> None:
+    run = VerifyRun(tier="focused-test", argv=["tests"], git_head="head", root=tmp_path)
+    artifacts = run.start_step(label="pytest focused", cmd=["pytest"])
+
+    environment = run_tests.focused_pytest_env(run=run, artifacts=artifacts)
+
+    assert environment[CHARGE_PROFILE_ENV] == "focused"
 
 
 def test_build_pytest_cmd_preserves_explicit_xdist_distribution() -> None:
@@ -132,6 +174,25 @@ def test_build_pytest_cmd_preserves_explicit_xdist_distribution() -> None:
 
     assert cmd.count("--dist=worksteal") == 1
     assert "--dist=loadgroup" not in cmd
+
+
+@pytest.mark.parametrize(("cluster", "expected"), [("-vn2", "2"), ("-qn2", "2"), ("-xvn3", "3")])
+def test_a_worker_count_inside_a_short_option_cluster_is_the_callers(cluster: str, expected: str) -> None:
+    """Anti-vacuity (Codex P2, #5708): detect ``-n`` only as a whole-argument
+    prefix and ``-vn2`` gets a managed ``-n`` appended after it, which argparse
+    lets override the caller's own worker request. The cluster reaches pytest
+    as separate options, so the slot's resizer sees its worker count."""
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", cluster])
+
+    assert cmd.count("-n") == 1
+    assert pytest_command_worker_request(cmd) == expected
+
+
+def test_an_n_inside_an_attached_value_is_not_a_worker_count() -> None:
+    """``-kn`` is ``-k`` with the attached expression ``n``, not a worker request."""
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", "-kn"])
+
+    assert cmd[cmd.index("-n") + 1] == str(FOCUSED_MAX_WORKERS)
 
 
 def test_build_pytest_cmd_does_not_add_distribution_for_serial_run() -> None:
@@ -1076,6 +1137,705 @@ def test_an_unfinishable_focused_run_is_never_adjudicated(monkeypatch: pytest.Mo
     assert "rerun" not in metadata
 
 
+def _green_receipt(runs: Path, name: str, *, argv: list[str], digest: str, **overrides: Any) -> Path:
+    import platform
+    import sys
+
+    # Reuse consults Git for ignored paths, so the checkout is a repository,
+    # and only named files that exist are reusable.
+    checkout = runs.parents[2]
+    if not (checkout / ".git").exists():
+        subprocess.run(["git", "init", "-q", str(checkout)], check=True)
+    for argument in argv:
+        if not argument.startswith("-"):
+            module = checkout / argument.split("::", 1)[0]
+            module.parent.mkdir(parents=True, exist_ok=True)
+            module.touch()
+
+    run_dir = runs / name
+    run_dir.mkdir(parents=True)
+    payload: dict[str, Any] = {
+        "status": "success",
+        "exit_code": 0,
+        "argv": argv,
+        "git_worktree_content_sha256": digest,
+        "pytest_aggregate": {"terminal_green": True},
+        "environment_fingerprint": {"python_executable": sys.executable, "python_version": platform.python_version()},
+    }
+    payload.update(overrides)
+    (run_dir / "run.json").write_text(json.dumps(payload), encoding="utf-8")
+    return run_dir / "run.json"
+
+
+def test_a_green_run_of_the_same_selection_and_tree_is_reused(tmp_path: Path) -> None:
+    """Only an exact match on selection, tree digest and interpreter is reused.
+
+    Anti-vacuity: drop any one comparison in ``reusable_green_receipt`` and one
+    of the near-miss receipts below is returned instead of ``None``.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
+    expected = _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") == expected
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d2") is None
+    assert run_tests.reusable_green_receipt(["tests/unit/test_b.py"], root=tmp_path, content_sha256="d1") is None
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256=None) is None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"status": "failed", "exit_code": 1},
+        {"pytest_aggregate": {"terminal_green": False}},
+        {"environment_fingerprint": {"python_executable": "/other/python", "python_version": "3.0.0"}},
+    ],
+)
+def test_a_red_or_foreign_run_is_never_reused(tmp_path: Path, overrides: dict[str, Any]) -> None:
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
+    _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1", **overrides)
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_a_green_older_than_a_pruned_red_is_not_reused(tmp_path: Path) -> None:
+    """Anti-vacuity: skip the history check and the surviving older green is
+    returned although a later red of unknown inputs was pruned."""
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
+    expected = _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+    history = tmp_path / ".cache" / "verify" / "history.jsonl"
+    history.write_text(
+        json.dumps({"run_id": "20260101T000000Z-focused-test-1-a", "status": "success"}) + "\n",
+        encoding="utf-8",
+    )
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") == expected
+
+    with history.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"run_id": "20260102T000000Z-focused-test-2-b", "status": "failed"}) + "\n")
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_a_pruned_red_later_in_the_same_second_blocks_reuse(tmp_path: Path) -> None:
+    """Anti-vacuity: compare history run ids lexically and the pruned red,
+    whose suffix sorts below the green's, is taken for an earlier run."""
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
+    _green_receipt(
+        runs,
+        "20260101T000000Z-focused-test-1-ff",
+        argv=selection,
+        digest="d1",
+        started_at="2026-01-01T00:00:00.1+00:00",
+    )
+    (tmp_path / ".cache" / "verify" / "history.jsonl").write_text(
+        json.dumps(
+            {
+                "run_id": "20260101T000000Z-focused-test-1-00",
+                "status": "failed",
+                "started_at": "2026-01-01T00:00:00.9+00:00",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_a_later_red_in_the_same_second_outranks_a_green(tmp_path: Path) -> None:
+    """Anti-vacuity: order by directory name alone and the green, whose random
+    suffix sorts higher, is returned although the red started after it."""
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
+    _green_receipt(
+        runs,
+        "20260101T000000Z-focused-test-1-ff",
+        argv=selection,
+        digest="d1",
+        started_at="2026-01-01T00:00:00.1+00:00",
+    )
+    _green_receipt(
+        runs,
+        "20260101T000000Z-focused-test-1-00",
+        argv=selection,
+        digest="d1",
+        started_at="2026-01-01T00:00:00.9+00:00",
+        status="failed",
+        exit_code=1,
+    )
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_main_reuses_a_green_receipt_without_queueing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Anti-vacuity: without the reuse branch ``main`` reaches the fake slot and fails."""
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    receipt = tmp_path / "run.json"
+    receipt.write_text(json.dumps({"status": "success"}), encoding="utf-8")
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: receipt)
+    monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "d1")
+
+    def must_not_queue(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("a reusable green run was queued again")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest", must_not_queue)
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly"]) == 0
+    assert f"receipt={receipt}" in capsys.readouterr().err
+
+
+def test_identical_selections_in_one_checkout_share_one_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A second caller with the same selection waits until the first releases.
+
+    Anti-vacuity: remove the blocking acquisition in ``_hold_selection_lock``
+    and the second caller returns while the first still holds the lock, so
+    the first ``wait`` below sees it done.
+    """
+    import fcntl
+    import hashlib
+    import os
+    import threading
+
+    monkeypatch.setattr(run_tests, "ROOT", tmp_path)
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
+    lock_dir = tmp_path / ".cache" / "verify" / "inflight"
+    lock_dir.mkdir(parents=True)
+    digest = hashlib.sha256(json.dumps(selection).encode("utf-8")).hexdigest()[:24]
+    held = os.open(lock_dir / f"{digest}.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(held, fcntl.LOCK_EX)
+    done = threading.Event()
+
+    def second_caller() -> None:
+        _HOLD_SELECTION_LOCK(selection)
+        done.set()
+
+    thread = threading.Thread(target=second_caller, daemon=True)
+    thread.start()
+    try:
+        assert not done.wait(timeout=0.5), "the second caller did not wait for the first"
+        fcntl.flock(held, fcntl.LOCK_UN)
+        assert done.wait(timeout=10), "the second caller never acquired after release"
+    finally:
+        os.close(held)
+        thread.join(timeout=10)
+        for handle in run_tests._SELECTION_LOCKS.values():
+            os.close(handle)
+        run_tests._SELECTION_LOCKS.clear()
+
+
+def test_reuse_is_keyed_on_the_execution_environment(tmp_path: Path) -> None:
+    """A run under a different Hypothesis profile never answers from another's receipt.
+
+    Anti-vacuity: drop the ``execution_environment_key`` comparison and the
+    ``default``-profile lookup returns the ``verify``-profile receipt.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/property/test_a.py", "--randomly-seed=1"]
+    verify_key = run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "verify", "SHELL": "/bin/zsh"})
+    default_key = run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "default", "SHELL": "/bin/zsh"})
+    receipt = _green_receipt(
+        runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1", execution_environment_key=verify_key
+    )
+
+    assert verify_key != default_key
+    # A variable outside the declared inputs does not split the key.
+    assert run_tests.execution_environment_key({"HYPOTHESIS_PROFILE": "verify", "SHELL": "/bin/bash"}) == verify_key
+    assert (
+        run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1", environment_key=verify_key)
+        == receipt
+    )
+    assert (
+        run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1", environment_key=default_key)
+        is None
+    )
+
+
+def test_a_reused_receipt_is_emitted_as_json_when_asked(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    """Anti-vacuity: drop the ``use_json`` branch on reuse and stdout is empty."""
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    receipt = tmp_path / "run.json"
+    receipt.write_text(json.dumps({"status": "success", "run_id": "r1"}), encoding="utf-8")
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: receipt)
+    monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "d1")
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["run_id"] == "r1"
+
+
+@pytest.mark.parametrize("flag", ["--lf", "--last-failed", "--ff", "--sw", "--lfnf=all"])
+def test_stateful_selectors_are_never_answered_from_a_receipt(tmp_path: Path, flag: str) -> None:
+    """``--lf`` selects from pytest's mutable cache, so identical argv is not identical work.
+
+    Anti-vacuity: drop the stateful-selector refusal and the matching receipt
+    below is returned.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", flag]
+    _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+@pytest.mark.parametrize(
+    ("selection", "eligible"),
+    [
+        (["tests/unit/test_a.py", "-k", "fast", "-x", "--tb=short", "-p", "no:randomly"], True),
+        (["tests/unit/test_a.py", "--randomly-seed=7"], True),
+        # pytest-randomly draws a new order each run unless one is fixed.
+        (["tests/unit/test_a.py"], False),
+        (["tests/unit/test_a.py", "--randomly-seed=last"], False),
+        (["tests/unit/test_a.py", "-v"], False),
+        (["tests/unit/test_a.py", "--junitxml=/tmp/report.xml"], False),
+        (["tests/unit/test_a.py", "--cache-clear"], False),
+        (["/tmp/test_external.py"], False),
+        (["tests/unit/test_a.py", "-c", "/tmp/pytest.ini"], False),
+        # A directory may hold ignored, collectable modules the digest omits.
+        (["tests/unit"], False),
+        # -s is asked for to see live output, which a receipt cannot replay.
+        (["tests/unit/test_a.py", "-s"], False),
+    ],
+)
+def test_only_checkout_local_selections_with_inert_options_are_reused(
+    tmp_path: Path, selection: list[str], eligible: bool
+) -> None:
+    """A receipt answers only for what its tree digest covers and what a rerun would redo.
+
+    Anti-vacuity: accept any option, or any path, in ``_reuse_eligible`` and
+    one of the refused selections is answered from a receipt without running.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "tests" / "unit").mkdir(parents=True)
+    (tmp_path / "tests" / "unit" / "test_a.py").touch()
+    assert run_tests._reuse_eligible(selection, root=tmp_path) is eligible
+
+
+def test_the_database_revision_is_read_from_its_marker_without_a_walk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Anti-vacuity (Codex P1, #5708): enumerate the example database for the
+    key and every focused run pays a walk that grows with the database."""
+    examples = tmp_path / ".cache" / "hypothesis" / "examples"
+    (examples / "abc").mkdir(parents=True)
+    (examples / "abc" / "def").write_bytes(b"counterexample")
+
+    def refuse_walk(self: Path, pattern: str) -> object:
+        raise AssertionError("the example database was walked")
+
+    monkeypatch.setattr(Path, "rglob", refuse_walk)
+    assert run_tests.hypothesis_database_revision(tmp_path) == "absent"
+
+
+def test_a_new_hypothesis_counterexample_or_golden_switch_changes_the_key(tmp_path: Path) -> None:
+    """Inputs outside the tree digest still decide whether a receipt answers.
+
+    Anti-vacuity: drop the database revision or ``UPDATE_GOLDEN`` from the key
+    and the corresponding pair below compares equal.
+    """
+    from devtools.hypothesis_database import RevisionedExampleDatabase
+
+    before = run_tests.hypothesis_database_revision(tmp_path)
+    RevisionedExampleDatabase(tmp_path / ".cache" / "hypothesis" / "examples").save(b"key", b"counterexample")
+    assert run_tests.hypothesis_database_revision(tmp_path) != before
+
+    assert run_tests.execution_environment_key({}) != run_tests.execution_environment_key({"UPDATE_GOLDEN": "1"})
+
+
+def test_a_git_ignored_selection_is_never_reused(tmp_path: Path) -> None:
+    """The tree digest omits ignored files, so an ignored test is always run.
+
+    Anti-vacuity: drop the ``_git_ignored`` check and ``.cache/test_x.py`` is
+    eligible for reuse.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / ".gitignore").write_text(".cache/\n", encoding="utf-8")
+    (tmp_path / ".cache").mkdir()
+    (tmp_path / ".cache" / "test_x.py").write_text("", encoding="utf-8")
+    (tmp_path / "test_y.py").write_text("", encoding="utf-8")
+
+    assert run_tests._reuse_eligible([".cache/test_x.py"], root=tmp_path) is False
+    assert run_tests._reuse_eligible(["test_y.py", "-p", "no:randomly"], root=tmp_path) is True
+
+
+def test_reuse_is_refused_when_the_tree_changes_during_lookup(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """A save between digest and return means the receipt describes another tree.
+
+    Anti-vacuity: drop the second digest comparison and ``main`` returns the
+    reused receipt instead of reaching the (fake) slot.
+    """
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    digests = iter(["before", "after", "after", "after", "after"])
+    monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: next(digests, "after"))
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: tmp_path / "run.json")
+
+    queued: list[bool] = []
+
+    def reached_the_slot(*_args: Any, **_kwargs: Any) -> Any:
+        queued.append(True)
+        raise RuntimeError("stop after admission")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest", reached_the_slot)
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly"]) != 0
+    assert queued == [True]
+
+
+def test_a_branch_switch_during_lookup_refuses_reuse(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: drop the admission check at the point of reuse and the
+    feature branch's receipt is returned on the default branch."""
+    from devtools.checkout_identity import CheckoutIdentity
+
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "same")
+    feature = CheckoutIdentity(root=tmp_path, branch="feature", head="h1", default_branch="master")
+    default = CheckoutIdentity(root=tmp_path, branch="master", head="h1", default_branch="master")
+    identities = iter([feature, feature, default])
+    monkeypatch.setattr(run_tests, "checkout_identity", lambda _root: next(identities, default))
+
+    def lookup(*_a: Any, **_k: Any) -> Path:
+        return tmp_path / "run.json"
+
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lookup)
+
+    from devtools.checkout_identity import REFUSAL_EXIT
+
+    assert run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly"]) == REFUSAL_EXIT
+
+
+def test_a_standalone_flag_before_a_large_directory_keeps_xdist() -> None:
+    """Anti-vacuity: treat ``-x`` as taking an operand and ``tests/unit/devtools`` counts nothing."""
+    cmd = run_tests.build_pytest_cmd(["-x", "tests/unit/devtools"])
+    assert cmd[cmd.index("-n") + 1] == str(FOCUSED_MAX_WORKERS)
+
+
+def test_benchmark_selections_never_get_automatic_workers() -> None:
+    """Anti-vacuity: drop the benchmark exclusion and ``-n`` is appended beside ``-p no:xdist``."""
+    cmd = run_tests.build_pytest_cmd(["tests/benchmarks", "--benchmark-enable", "-p", "no:xdist"])
+    assert "-n" not in cmd
+
+
+def test_explicit_xdist_disablement_is_honored_for_any_selection() -> None:
+    """Anti-vacuity: guard only benchmarks and ``-p no:xdist`` gets ``-n 4`` beside it."""
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", "-p", "no:xdist"])
+    assert "-n" not in cmd
+
+
+@pytest.mark.parametrize("capture", [["-s"], ["--capture=no"], ["--capture", "no"]])
+def test_uncaptured_output_keeps_a_large_selection_serial(capture: list[str]) -> None:
+    """Anti-vacuity: drop the capture override and ``-n 4`` swallows the live output ``-s`` asked for."""
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", *capture])
+    assert "-n" not in cmd
+
+
+@pytest.mark.parametrize("value_option", [["-r", "f"], ["--color", "yes"], ["--show-capture", "no"]])
+def test_an_option_value_is_not_a_path(value_option: list[str]) -> None:
+    """Anti-vacuity: classify arity from a hand-kept list that omits the option
+    and its value is the only (missing) path, so a pathless run counts zero
+    modules and the whole suite runs serially."""
+    assert run_tests._selected_test_modules(value_option) == run_tests._selected_test_modules([])
+
+
+@pytest.mark.parametrize("debugger", ["--pdb", "--trace"])
+def test_an_interactive_debugger_keeps_a_large_selection_serial(debugger: str) -> None:
+    """Anti-vacuity: drop the debugger override and ``-n 4`` gives the
+    debugger a worker with no standard input."""
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", debugger])
+    assert "-n" not in cmd
+
+
+def test_a_forced_rerun_takes_the_selection_lock(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A ``--rerun`` holds the same lock as a reusing caller, while skipping reuse.
+
+    Anti-vacuity: take the lock only on the reuse branch and ``--rerun`` never
+    reaches ``_hold_selection_lock``, so its red receipt can land while another
+    caller is still answering from an older green one.
+    """
+
+    class LockedError(Exception):
+        pass
+
+    held: list[list[str]] = []
+
+    def record(selection: list[str]) -> None:
+        held.append(list(selection))
+        raise LockedError
+
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "_hold_selection_lock", record)
+
+    with pytest.raises(LockedError):
+        run_tests.main(["tests/unit/devtools/test_run_tests.py", "--rerun"])
+    assert held == [["tests/unit/devtools/test_run_tests.py"]]
+
+
+def test_an_isolated_run_is_never_answered_from_a_receipt(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: allow reuse for ``--runner isolated`` and the managed receipt returns without running."""
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: tmp_path / "run.json")
+    ran: list[bool] = []
+
+    def isolated(*_args: Any, **_kwargs: Any) -> Any:
+        ran.append(True)
+        raise RuntimeError("stop after admission")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest_isolated", isolated)
+
+    run_tests.main(["tests/unit/devtools/test_run_tests.py", "--runner", "isolated"])
+    assert ran == [True]
+
+
+def test_reuse_is_refused_when_the_example_database_moves_during_lookup(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: recheck only the tree digest and a counterexample saved by
+    a concurrent selection mid-lookup is never replayed."""
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "git_worktree_content_sha256", lambda _root: "same")
+    keys = iter(["d0", "d1"])
+    monkeypatch.setattr(run_tests, "_reuse_environment_key", lambda: next(keys, "d1"))
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: tmp_path / "run.json")
+    queued: list[bool] = []
+
+    def reached_the_slot(*_args: Any, **_kwargs: Any) -> Any:
+        queued.append(True)
+        raise RuntimeError("stop after admission")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest", reached_the_slot)
+
+    run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly"])
+    assert queued == [True]
+
+
+def test_home_is_part_of_the_reuse_key() -> None:
+    """Anti-vacuity: drop HOME from the key and these two environments compare equal."""
+    assert run_tests.execution_environment_key({"HOME": "/tmp/home-a"}) != run_tests.execution_environment_key(
+        {"HOME": "/tmp/home-b"}
+    )
+
+
+def test_a_receipt_pruned_during_lookup_sends_the_selection_to_run(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Anti-vacuity: suppress the read error and ``--json`` exits 0 with empty stdout."""
+    monkeypatch.setenv(run_tests.REUSE_ENV, "1")
+    monkeypatch.setattr(run_tests, "reusable_green_receipt", lambda *_a, **_k: tmp_path / "pruned" / "run.json")
+    queued: list[bool] = []
+
+    def reached_the_slot(*_args: Any, **_kwargs: Any) -> Any:
+        queued.append(True)
+        raise RuntimeError("stop after admission")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest", reached_the_slot)
+
+    run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly", "--json"])
+    assert queued == [True]
+
+
+def test_a_broad_selection_is_sized_by_the_corpus_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Anti-vacuity: keep the focused profile for any selection and ``tests``
+    is admitted at four focused workers the corpus model says cannot fit."""
+    seen: dict[str, str | None] = {}
+
+    def capture(_cmd: list[str], **kwargs: Any) -> Any:
+        seen["profile"] = kwargs["env"].get(CHARGE_PROFILE_ENV)
+        raise RuntimeError("stop after admission")
+
+    monkeypatch.setattr("devtools.run_tests.run_pytest", capture)
+    monkeypatch.setattr(run_tests, "_selected_test_modules", lambda _selection: run_tests.BROAD_SELECTION_MODULES)
+    run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly"])
+    assert seen["profile"] is None
+
+    monkeypatch.setattr(run_tests, "_selected_test_modules", lambda _selection: 1)
+    run_tests.main(["tests/unit/devtools/test_run_tests.py", "-p", "no:randomly"])
+    assert seen["profile"] == "focused"
+
+
+def test_an_ignored_conftest_disables_reuse(tmp_path: Path) -> None:
+    """A named test still loads its ancestors' conftest, which the digest omits when ignored.
+
+    Anti-vacuity: drop the ignored-source guard and the receipt below is reused.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/foo/test_a.py", "--randomly-seed=1"]
+    receipt = _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") == receipt
+
+    (tmp_path / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("tests/unit/foo/conftest.py\n", encoding="utf-8")
+    (tmp_path / "tests" / "unit" / "foo" / "conftest.py").write_text("", encoding="utf-8")
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_a_standalone_long_flag_before_a_directory_keeps_xdist() -> None:
+    """Anti-vacuity: treat every option as taking a value and ``--strict-markers``
+    swallows the directory, so no workers are requested."""
+    cmd = run_tests.build_pytest_cmd(["--strict-markers", "tests/unit/devtools"])
+    assert cmd[cmd.index("-n") + 1] == str(FOCUSED_MAX_WORKERS)
+
+
+def test_a_pathless_selection_counts_as_the_whole_test_tree() -> None:
+    """``-k expr`` alone collects ``testpaths``, so it is broad work.
+
+    Anti-vacuity: count only explicit operands and ``-k`` counts zero modules,
+    running the whole tree serially on the focused sizing.
+    """
+    assert run_tests._selected_test_modules(["-k", "never_matches"]) >= run_tests.BROAD_SELECTION_MODULES
+
+
+def test_generated_worker_options_go_before_the_path_separator() -> None:
+    """Anti-vacuity: append after ``--`` and pytest looks for a file named ``-n``."""
+    cmd = run_tests.build_pytest_cmd(["--", "tests/unit/devtools"])
+    separator = cmd.index("--")
+    assert cmd.index("-n") < separator
+    assert cmd[separator + 1 :] == ["tests/unit/devtools"]
+
+
+def test_node_ids_of_one_file_count_as_one_module() -> None:
+    """Anti-vacuity: count selectors instead of files and eight node ids of one
+    file trigger xdist."""
+    selection = [f"tests/unit/devtools/test_run_tests.py::test_{index}" for index in range(8)]
+    assert run_tests._selected_test_modules(selection) == 1
+
+
+def test_an_ignored_fixture_disables_reuse(tmp_path: Path) -> None:
+    """Anti-vacuity: look only at ignored ``*.py`` and an ignored JSON fixture a
+    parametrization globs leaves the receipt reusable."""
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
+    receipt = _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") == receipt
+    (tmp_path / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("*.local.json\n", encoding="utf-8")
+    (tmp_path / "tests" / "fixtures").mkdir(parents=True)
+    (tmp_path / "tests" / "fixtures" / "extra.local.json").write_text("{}", encoding="utf-8")
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_an_ignored_root_pytest_config_disables_reuse(tmp_path: Path) -> None:
+    """Anti-vacuity: omit root config files from the guard and an ignored
+    ``pytest.ini`` that changes collection leaves the receipt reusable."""
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
+    _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+    (tmp_path / ".git" / "info").mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".git" / "info" / "exclude").write_text("pytest.ini\n", encoding="utf-8")
+    (tmp_path / "pytest.ini").write_text("[pytest]\npython_functions = nope_*\n", encoding="utf-8")
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_a_newer_red_run_outranks_an_older_green(tmp_path: Path) -> None:
+    """Anti-vacuity: skip non-green receipts while scanning and the older green is returned."""
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
+    _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+    _green_receipt(runs, "20260102T000000Z-focused-test-2-b", argv=selection, digest="d1", status="failed", exit_code=1)
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_a_clustered_capture_flag_keeps_xdist_off() -> None:
+    """Anti-vacuity (Codex P2, #5708): match ``-s`` only as a whole argument and
+    ``-sv`` gets an automatic worker count, losing the live output it asked for."""
+    cmd = run_tests.build_pytest_cmd(["tests/unit/devtools", "-sv"])
+
+    assert "-n" not in cmd
+
+
+def test_pruned_red_history_is_read_from_the_configured_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pruned-red check reads the history the writer appends to.
+
+    Anti-vacuity (Codex P1, #5708): hard-code the checkout-local
+    ``.cache/verify/history.jsonl`` and a red recorded at the configured
+    (XDG) history path is missed, so the older green is reused.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
+    _green_receipt(runs, "20260101T000000Z-focused-test-1-a", argv=selection, digest="d1")
+    history = tmp_path / "state" / "history.jsonl"
+    history.parent.mkdir()
+    history.write_text(
+        json.dumps({"run_id": "20260101T000000Z-focused-test-1-a", "status": "success"})
+        + "\n"
+        + json.dumps({"run_id": "20260102T000000Z-focused-test-2-b", "status": "failed"})
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("POLYLOGUE_VERIFY_HISTORY_PATH", str(history))
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+@pytest.mark.parametrize(
+    ("cluster", "expanded"),
+    [(["-vn8"], ["-v", "-n", "8"]), (["-vpno:xdist"], ["-v", "-p", "no:xdist"]), (["-k", "-vx"], ["-k", "-vx"])],
+)
+def test_short_clusters_are_expanded_as_argparse_reads_them(cluster: list[str], expanded: list[str]) -> None:
+    """Anti-vacuity (Codex P1/P2, #5708): leave ``-vn8`` whole and the slot's
+    worker resizer, which reads only ``-n``/``--numprocesses``, keeps eight
+    workers; leave ``-vpno:xdist`` whole and ``-n 4`` is added to a run that
+    disabled xdist. An option's value is never split."""
+    from devtools.pytest_options import expand_short_clusters
+
+    assert expand_short_clusters(cluster) == expanded
+
+
+def test_a_clustered_xdist_disable_gets_no_workers(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity (Codex P2, #5708): check only the cluster's flags and
+    ``-vpno:xdist`` still gets ``-n 4`` appended."""
+    monkeypatch.setattr(run_tests, "_selected_test_modules", lambda _selection: run_tests.LARGE_SELECTION_MODULES)
+    command = run_tests.build_pytest_cmd(["-vpno:xdist", "tests/unit"], report_path=tmp_path / "report.json")
+
+    assert "-n" not in command
+
+
+def test_an_interrupted_example_write_still_moves_the_revision(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A save that fails midway leaves a revision no earlier receipt carries.
+
+    Anti-vacuity (Codex P2, #5708): bump the marker only after the write and
+    a failed or killed save keeps the old token, so a stale green is reused.
+    """
+    from hypothesis.database import DirectoryBasedExampleDatabase
+
+    from devtools.hypothesis_database import RevisionedExampleDatabase, read_revision
+
+    examples = tmp_path / "examples"
+    database = RevisionedExampleDatabase(examples)
+    database.save(b"k", b"v1")
+    before = read_revision(examples)
+
+    def interrupted(self: DirectoryBasedExampleDatabase, key: bytes, value: bytes) -> None:
+        raise OSError("killed mid-write")
+
+    monkeypatch.setattr(DirectoryBasedExampleDatabase, "save", interrupted)
+    with pytest.raises(OSError):
+        database.save(b"k", b"v2")
+
+    assert read_revision(examples) != before
+
+
+def test_rerun_after_the_separator_is_a_path() -> None:
+    """Anti-vacuity (Codex P1, #5708): strip ``--rerun`` everywhere and a file
+    literally named ``--rerun`` after ``--`` vanishes, running the corpus."""
+    assert run_tests._parse_rerun(["--rerun", "tests/unit"]) == (True, ["tests/unit"])
+    assert run_tests._parse_rerun(["--", "--rerun"]) == (False, ["--", "--rerun"])
+
+
+def test_benchmark_selections_are_never_reused(tmp_path: Path) -> None:
+    """Anti-vacuity (Codex P2, #5708): judge reuse by path alone and a green
+    wall-clock benchmark answers later runs without timing anything."""
+    benchmark = tmp_path / "tests" / "benchmarks" / "test_budget.py"
+    benchmark.parent.mkdir(parents=True)
+    benchmark.write_text("def test_x():\n    pass\n", encoding="utf-8")
+
+    assert run_tests._reuse_eligible(["tests/benchmarks/test_budget.py"], root=tmp_path) is False
+
+
 def test_an_oomd_killed_queued_run_is_typed_oom_killed(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """A unit systemd-oomd killed reads as ``oom_killed``, not a missing receipt.
 
@@ -1199,6 +1959,165 @@ def test_a_queued_run_keeps_its_slot_receipt_and_any_recorded_killer(
     assert timed_out["diagnosis"] == "pytest_failed"
     assert timed_out["termination_killer"] == "timeout"
     assert timed_out["termination_unit"] == "u"
+
+
+def test_a_selection_measuring_the_real_clock_is_never_reused(tmp_path: Path) -> None:
+    """A module that declares ``uses_real_clock`` measures current timing.
+
+    Anti-vacuity (Codex P2, #5708): exclude only ``tests/benchmarks`` and a
+    green latency bound is answered from a receipt without measuring.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "test_latency.py").write_text(
+        "import pytest\n\npytestmark = pytest.mark.uses_real_clock('asserts current CLI latency')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "test_plain.py").write_text("def test_x() -> None: ...\n", encoding="utf-8")
+
+    assert run_tests._reuse_eligible(["test_latency.py", "-p", "no:randomly"], root=tmp_path) is False
+    assert run_tests._reuse_eligible(["test_plain.py", "-p", "no:randomly"], root=tmp_path) is True
+
+
+def test_a_revision_read_waits_for_an_unfinished_write(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A reader never records a token taken while a write is still mutating.
+
+    Anti-vacuity (Codex P2, #5708): bump without a shared lock and the reader
+    returns the writer's first token at once; a writer killed after its
+    mutation then leaves that token standing for changed examples.
+    """
+    import threading
+
+    from hypothesis.database import DirectoryBasedExampleDatabase
+
+    from devtools.hypothesis_database import RevisionedExampleDatabase, read_revision
+
+    examples = tmp_path / "examples"
+    database = RevisionedExampleDatabase(examples)
+    database.save(b"k", b"v0")
+    entered, release, read_done = threading.Event(), threading.Event(), threading.Event()
+    original = DirectoryBasedExampleDatabase.save
+
+    def paused(self: DirectoryBasedExampleDatabase, key: bytes, value: bytes) -> None:
+        entered.set()
+        assert release.wait(10)
+        original(self, key, value)
+
+    monkeypatch.setattr(DirectoryBasedExampleDatabase, "save", paused)
+    writer = threading.Thread(target=database.save, args=(b"k", b"v1"))
+    writer.start()
+    assert entered.wait(10)
+    seen: list[str] = []
+
+    def read() -> None:
+        seen.append(read_revision(examples))
+        read_done.set()
+
+    reader = threading.Thread(target=read)
+    reader.start()
+    assert not read_done.wait(0.3)
+    release.set()
+    writer.join(10)
+    reader.join(10)
+
+    assert seen == [read_revision(examples)]
+
+
+def test_the_option_probe_ignores_ambient_pytest_plugins(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The probe loads the plugins the admitted run loads, not ``PYTEST_PLUGINS``.
+
+    Anti-vacuity (Codex P2, #5708): inherit ``PYTEST_PLUGINS`` and a missing
+    ambient plugin fails sizing before a valid selection reaches the pool.
+    """
+    from devtools import pytest_options
+
+    seen: dict[str, str] = {}
+
+    def fake_run(*_args: object, env: dict[str, str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        seen.update(env)
+        return subprocess.CompletedProcess([], 0, stdout='{"-x": 0}\n', stderr="")
+
+    monkeypatch.setenv("PYTEST_PLUGINS", "missing_plugin")
+    monkeypatch.setenv("PYTEST_XDIST_WORKER", "gw3")
+    monkeypatch.setattr("devtools.pytest_options.subprocess.run", fake_run)
+    pytest_options.pytest_option_nargs.cache_clear()
+    try:
+        assert pytest_options.pytest_option_nargs(("probe-only",)) == {"-x": 0}
+    finally:
+        pytest_options.pytest_option_nargs.cache_clear()
+
+    assert "PYTEST_PLUGINS" not in seen
+    assert "PYTEST_XDIST_WORKER" not in seen
+
+
+def test_the_newest_matching_run_decides_however_many_share_its_second(tmp_path: Path) -> None:
+    """A later red in a crowded second is never skipped for an earlier green.
+
+    Anti-vacuity (Codex P1, #5708): cut the candidates at 50 by name before
+    ordering by recorded start and the red, whose name sorts low, is dropped.
+    """
+    runs = tmp_path / ".cache" / "verify" / "runs"
+    selection = ["tests/unit/test_a.py", "--randomly-seed=1"]
+    _green_receipt(
+        runs, "20260101T000000Z-focused-test-9-zzzz", argv=selection, digest="d1", started_at="2026-01-01T00:00:00.100"
+    )
+    for index in range(60):
+        _green_receipt(
+            runs,
+            f"20260101T000000Z-focused-test-5-m{index:03d}",
+            argv=["tests/unit/test_other.py"],
+            digest="d1",
+            started_at="2026-01-01T00:00:00.200",
+        )
+    _green_receipt(
+        runs,
+        "20260101T000000Z-focused-test-1-aaaa",
+        argv=selection,
+        digest="d1",
+        started_at="2026-01-01T00:00:00.900",
+        status="failed",
+        exit_code=1,
+    )
+
+    assert run_tests.reusable_green_receipt(selection, root=tmp_path, content_sha256="d1") is None
+
+
+def test_a_pathless_selection_is_never_reused(tmp_path: Path) -> None:
+    """A ``-m``/``-k`` selection without files names modules this check cannot read.
+
+    Anti-vacuity (Codex P2, #5708): accept a fixed-order selection with no path
+    and ``-m uses_real_clock`` is answered from a receipt.
+    """
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+
+    assert run_tests._reuse_eligible(["-m", "uses_real_clock", "-p", "no:randomly"], root=tmp_path) is False
+
+
+def test_python_runtime_settings_are_part_of_the_reuse_key() -> None:
+    """A different hash seed or locale never answers from another's receipt.
+
+    Anti-vacuity (Codex P2, #5708): key only ``HYPOTHESIS_``/``PYTEST_``/
+    ``POLYLOGUE_`` settings and ``PYTHONHASHSEED=2`` reuses the seed-1 green.
+    """
+    assert run_tests.execution_environment_key({"PYTHONHASHSEED": "1"}) != run_tests.execution_environment_key(
+        {"PYTHONHASHSEED": "2"}
+    )
+    assert run_tests.execution_environment_key({"LC_ALL": "C"}) != run_tests.execution_environment_key(
+        {"LC_ALL": "pl_PL.UTF-8"}
+    )
+
+
+def test_arguments_after_the_separator_are_counted_as_paths(tmp_path: Path) -> None:
+    """``-- -test_x.py`` names one file, not the whole tree.
+
+    Anti-vacuity (Codex P2, #5708): apply the leading-dash test after ``--`` and
+    the selection counts as the configured ``tests`` tree, crossing the xdist
+    threshold.
+    """
+    assert run_tests._split_separator(["-x", "--", "-test_x.py"]) == (["-x"], ["-test_x.py"])
+    assert run_tests._selected_test_modules(["--", "-no-such-test.py"]) == 0
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "-test_x.py").write_text("def test_x() -> None: ...\n", encoding="utf-8")
+    assert run_tests._reuse_eligible(["-p", "no:randomly", "--", "-test_x.py"], root=tmp_path) is True
 
 
 @pytest.mark.parametrize("selection", ["all", "affected", "descriptor"])

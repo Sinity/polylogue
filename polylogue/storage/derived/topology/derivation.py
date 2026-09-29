@@ -226,6 +226,7 @@ def compose_session_topology(
                 depths[child] = depths[current] + 1
                 queue.append(child)
     included = set(node_ids)
+    included_edges = tuple(edge for edge in edges if str(edge.child_id) in included)
     return SessionTopology(
         target_id=SessionId(target_id),
         root_id=SessionId(root),
@@ -239,9 +240,9 @@ def compose_session_topology(
             )
             for node_id in node_ids
         ),
-        edges=tuple(edge for edge in edges if str(edge.child_id) in included),
-        cycle_detected=bool(cycles),
-        conflicting_parent_detected=bool(conflicts),
+        edges=included_edges,
+        cycle_detected=any(edge.composability_reason == "cycle" for edge in included_edges),
+        conflicting_parent_detected=any(edge.composability_reason == "conflicting-parent" for edge in included_edges),
     )
 
 

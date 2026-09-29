@@ -20,9 +20,7 @@ what the operator was shown.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
-
-import click
+from typing import TYPE_CHECKING, ClassVar
 
 from polylogue.cli.contextual_errors import (
     AmbiguousSelectionError,
@@ -103,19 +101,72 @@ def check_cardinality(
     )
 
 
-def _reject_sample_for_mutating_verb(request: RootModeRequest) -> None:
-    # ``--sample`` is a display-window operation (random subset applied during
-    # result windowing); verb guard/resolution paths deliberately inspect the
-    # COMPLETE matched set so cardinality checks and mutations act on the same
-    # rows. Honoring ``--sample`` here would mean a destructive verb silently
-    # operated on the full match while the operator believed the blast radius was
-    # capped at N, so reject the combination instead of ignoring it.
-    if request.query_spec().sample is not None:
-        raise click.UsageError(
-            "Root query does not combine --sample with a mutating verb "
-            "(delete/mark): these operate on the complete matched set, so "
-            "--sample would be silently ignored. Narrow the query (e.g. an "
-            "id:/since: filter) to scope the blast radius explicitly."
+class WideningSelectorError(ContextualCliError):
+    """A mutating verb was given a selector it could not honour exactly.
+
+    A destructive verb acts on the complete matched set, resolved once to full
+    session ids. A display-window selector (``--limit``, ``--offset``,
+    ``--cursor``, ``--sample``) or a contradictory pair (``--latest`` with
+    ``--all``) names a different set than that, so the verb refuses instead of
+    silently acting on more sessions than the operator chose.
+    """
+
+    default_next_actions: ClassVar[tuple[NextAction, ...]] = (
+        NextAction("See the complete set the verb acts on", "polylogue find <QUERY>"),
+        NextAction("Narrow the query instead of windowing it", "polylogue find 'id:<REF>' then <VERB>"),
+    )
+
+
+def _reject_window_selectors(request: RootModeRequest) -> None:
+    """Refuse display-window selectors on a mutating verb's selection.
+
+    Verb resolution inspects the COMPLETE matched set so the cardinality
+    guard, the preview and the mutation act on the same rows. A window
+    selector would otherwise be ignored by that walk, and the verb would act
+    on the whole match while the operator believed the blast radius was the
+    window: ``--sample``/``--limit``/``limit N`` bound a page, and
+    ``--offset``/``--cursor`` skip into it.
+    """
+
+    spec = request.query_spec()
+    windows = [
+        name
+        for name, present in (
+            ("--sample", spec.sample is not None),
+            ("--limit", spec.limit is not None),
+            ("--offset", spec.offset > 0),
+            ("--cursor", spec.cursor is not None),
+        )
+        if present
+    ]
+    if windows:
+        raise WideningSelectorError(
+            f"Root query does not combine {', '.join(windows)} with a mutating verb "
+            "(delete/mark): these operate on the complete matched set, so the window "
+            "would be silently ignored. Narrow the query (e.g. an id:/since: filter) "
+            "to scope the blast radius explicitly."
+        )
+
+
+def require_exact_mutation_selection(request: RootModeRequest, *, allow_all: bool, operation: str) -> None:
+    """Refuse selector combinations whose target set is not one exact set.
+
+    ``--latest`` selects one session; ``--all`` asks for every match. Combined
+    they are contradictory, and resolving either reading silently is how
+    ``--latest --all`` came to delete the whole filtered archive. The verb owns
+    the ``--all`` flag, so it states the combination here before any read.
+    """
+
+    _reject_window_selectors(request)
+    if allow_all and request.query_spec().latest:
+        raise WideningSelectorError(
+            f"'{operation}' does not combine --latest with --all: --latest selects one "
+            "session and --all every match. Drop --all to act on the latest session, "
+            "or drop --latest to act on every match.",
+            next_actions=(
+                NextAction("Act on the latest session only", f"polylogue --latest find <QUERY> then {operation}"),
+                NextAction("Preview every match", "polylogue find <QUERY> then delete --dry-run --all"),
+            ),
         )
 
 
@@ -123,7 +174,7 @@ def probe_session_ids_for_verb(env: AppEnv, request: RootModeRequest, *, limit: 
     """Resolve a bounded ID prefix for cheap zero/one/many verb guards."""
     from polylogue.cli.session_rows import query_session_ids
 
-    _reject_sample_for_mutating_verb(request)
+    _reject_window_selectors(request)
     return query_session_ids(env.config, request, limit=limit)[:limit]
 
 
@@ -133,13 +184,16 @@ def resolve_session_ids_for_verb(env: AppEnv, request: RootModeRequest) -> list[
     The shared resolution path used by ``mark`` and ``delete`` for their
     cardinality pre-check. It is the declared ``cli.query`` operation, the same
     one ``find QUERY`` runs, so a guard can never disagree with what the
-    operator was shown.
+    operator was shown. The result is the one exact full-id set the preview
+    shows and the mutation receives; nothing downstream re-runs the query.
+    ``--latest`` bounds that set to one session in the operation itself, so
+    the walk ends after its single row.
 
     Returns IDs in the query's natural order (most-recent first by default).
     """
     from polylogue.cli.session_rows import query_complete_session_ids
 
-    _reject_sample_for_mutating_verb(request)
+    _reject_window_selectors(request)
     return query_complete_session_ids(env.config, request)
 
 
@@ -147,7 +201,9 @@ __all__ = [
     "AmbiguousCardinalityError",
     "CardinalityError",
     "EmptyCardinalityError",
+    "WideningSelectorError",
     "check_cardinality",
     "probe_session_ids_for_verb",
+    "require_exact_mutation_selection",
     "resolve_session_ids_for_verb",
 ]

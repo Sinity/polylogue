@@ -3454,7 +3454,15 @@ def test_page_admission_acquires_source_without_reading_unavailable_index(
     )
     parse_stage = watcher._parse_stage
     assert parse_stage is not None
-    monkeypatch.setattr(parse_stage, "warm", lambda *_args: (_ for _ in ()).throw(AssertionError("must not prewarm")))
+    # ``warm_paths`` is the batch's prewarm (``_ingest_full_paths``). The batch
+    # swallows a prewarm exception, so the guard records the call instead.
+    prewarmed: list[object] = []
+
+    def recording_warm_paths(*args: object, **_kwargs: object) -> frozenset[str]:
+        prewarmed.append(args)
+        return frozenset()
+
+    monkeypatch.setattr(parse_stage, "warm_paths", recording_warm_paths)
     set_degraded(
         DegradedReason(
             code="schema_version_mismatch",
@@ -3468,6 +3476,7 @@ def test_page_admission_acquires_source_without_reading_unavailable_index(
         clear_degraded()
         parse_stage.shutdown()
 
+    assert prewarmed == []
     assert pointer.read_bytes() == b"\xff"
     with sqlite3.connect(tmp_path / "source.db") as conn:
         row = conn.execute(

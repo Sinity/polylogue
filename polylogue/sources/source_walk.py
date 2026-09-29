@@ -33,7 +33,7 @@ class SourceRootCensus:
     candidate_count: int
     disposition_counts: dict[SourceClass, int]
     unexplained_candidates: tuple[Path, ...]
-    inspection_bytes: int
+    candidate_bytes: int
     inspection_seconds: float
 
     @property
@@ -51,6 +51,8 @@ def census_source_root(root: Path, *, provider: Provider) -> SourceRootCensus:
     The walk and recognizer are the production discovery and admission
     authorities.  This function only records their result, so a candidate
     cannot disappear from the denominator merely because admission refuses it.
+    ``candidate_bytes`` sums candidate entry sizes; it is not read-I/O
+    telemetry, since recognition reads only a bounded prefix of each file.
     """
     started = time.perf_counter()
     if provider is Provider.ANTIGRAVITY:
@@ -70,16 +72,36 @@ def census_source_root(root: Path, *, provider: Provider) -> SourceRootCensus:
             candidate_count=len(source_census.items),
             disposition_counts=disposition_counts,
             unexplained_candidates=source_census.unexplained_items,
-            inspection_bytes=sum(item.size_bytes for item in source_census.items),
+            candidate_bytes=sum(item.size_bytes for item in source_census.items),
             inspection_seconds=time.perf_counter() - started,
         )
-    candidates = _walk_source_paths(root, provider=provider)
-    counts: dict[SourceClass, int] = {"session": 0, "non_session": 0, "unsupported": 0}
     unexplained: list[Path] = []
-    inspection_bytes = 0
+
+    def record_walk_error(error: OSError) -> None:
+        unexplained.append(Path(error.filename) if error.filename is not None else root)
+
+    # The same file-or-directory resolution as ``_resolve_source_paths``: a
+    # directly configured file is the one candidate. Under a directory the
+    # census takes every supported-name entry before the regular-file
+    # admission filter, so a refused link or FIFO stays in the denominator.
+    walked = root.is_dir()
+    if walked:
+        candidates = [
+            path
+            for path in _iter_source_entries(root, onerror=record_walk_error)
+            if _is_supported_source_path(path, provider=provider)
+        ]
+    else:
+        candidates = [root] if root.is_file() else []
+    counts: dict[SourceClass, int] = {"session": 0, "non_session": 0, "unsupported": 0}
+    candidate_bytes = 0
     for path in candidates:
         try:
-            inspection_bytes += path.stat().st_size
+            observed = os.stat(path, follow_symlinks=not walked)
+            candidate_bytes += observed.st_size
+            if not stat.S_ISREG(observed.st_mode):
+                counts["unsupported"] += 1
+                continue
             recognition = recognize_source_class(provider, path)
         except (OSError, ValueError):
             recognition = None
@@ -93,7 +115,7 @@ def census_source_root(root: Path, *, provider: Provider) -> SourceRootCensus:
         candidate_count=len(candidates),
         disposition_counts=counts,
         unexplained_candidates=tuple(unexplained),
-        inspection_bytes=inspection_bytes,
+        candidate_bytes=candidate_bytes,
         inspection_seconds=time.perf_counter() - started,
     )
 
@@ -145,16 +167,20 @@ def _is_supported_source_path(path: Path, *, provider: Provider) -> bool:
 def _walk_source_paths(base: Path, *, provider: Provider = Provider.UNKNOWN) -> list[Path]:
     paths: list[Path] = []
     for file_path in _iter_source_entries(base):
-        # Admission and census both treat symlinks, FIFOs, sockets, and other
-        # non-regular entries as unsupported evidence.  lstat is deliberate:
-        # following a symlink here would make production admission disagree
-        # with the census denominator.
-        try:
-            if not stat.S_ISREG(os.stat(file_path, follow_symlinks=False).st_mode):
-                continue
-        except OSError:
+        if not _is_supported_source_path(file_path, provider=provider):
             continue
-        if _is_supported_source_path(file_path, provider=provider):
+        # Admission refuses symlinks, FIFOs, sockets, and other non-regular
+        # entries; the census counts them as unsupported.  lstat is
+        # deliberate: following a symlink here would make production admission
+        # disagree with the census denominator.  A candidate that cannot be
+        # inspected stays in the walk, so its per-file read records the
+        # failure on the cursor instead of the scan reporting it as absent.
+        try:
+            mode = os.stat(file_path, follow_symlinks=False).st_mode
+        except OSError:
+            paths.append(file_path)
+            continue
+        if stat.S_ISREG(mode):
             paths.append(file_path)
     return sorted(paths)
 

@@ -120,6 +120,8 @@ READ_BY_ID_NONE_METHODS: frozenset[str] = frozenset(
         "get_file_edits",
         "get_agent_policies",
         "get_web_content_constructs",
+        "get_session_materials",
+        "read_session_evidence_window",  # the bounded window over those relations; same None
         "compact_lineage",
     }
 )
@@ -134,6 +136,7 @@ READ_BY_ID_EMPTY_METHODS: frozenset[str] = frozenset(
         "get_session_tree",
         "get_raw_artifacts_for_session",
         "bulk_get_messages",
+        "get_session_summaries",  # keyed by requested id; unresolved ids omitted
     }
 )
 
@@ -227,6 +230,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "explain_query_expression",
         "query_completions",
         "get_sessions",
+        "get_session_summaries",
         "get_actions_batch",
         "query_sessions",
         "list_sessions_for_spec",
@@ -282,6 +286,8 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "get_context_delivery",
         "list_context_deliveries",
         "record_context_delivery",
+        # Writer-route submission covered in tests/unit/api/test_writer_boundary.py.
+        "record_context_ledger",
         "compile_and_record_context",
         "correlate_hermes_context_deliveries",
         "reconcile_hermes_session_lifecycle",
@@ -996,6 +1002,7 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
     from types import SimpleNamespace
 
     from polylogue.api.archive import _archive_facet_buckets
+    from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary
 
     summary = ArchiveSessionSummary(
@@ -1010,12 +1017,16 @@ def test_archive_facet_buckets_count_unique_sessions_for_duplicate_hits() -> Non
         word_count=4,
         tags=("work",),
     )
+    # A search scope yields one hit per matching block (#5703 moved the
+    # deduplication into the scope walk), so two hits name the same session.
+    hit = SimpleNamespace(session_id=summary.session_id)
     archive = SimpleNamespace(
-        iter_summaries=lambda limit=None, offset=0: iter([summary, summary]),
+        iter_search_summaries=lambda _query, **_kwargs: iter([hit, hit]),
+        read_summary=lambda _session_id: summary,
         _conn=None,
     )
 
-    result = _archive_facet_buckets(archive, None, include_deferred=False)
+    result = _archive_facet_buckets(archive, SessionQuerySpec(query_terms=("alpha",)), include_deferred=False)
 
     assert result.total_sessions == 1
     assert result.total_messages == 2
@@ -4880,6 +4891,7 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
             offset=0,
         )
         bulk_messages = await archive.bulk_get_messages(("codex-session:api-v1", "missing-session"))
+        summaries = await archive.get_session_summaries(("codex-session:api-v1", "missing-session"))
 
         assert count == 1
         assert isinstance(envelope, ArchiveSessionEnvelope)
@@ -4935,6 +4947,9 @@ async def test_archive_tiers_api_reads_native_sessions(tmp_path: Path) -> None:
         assert [message.id for message in paged_messages] == [expected_message_id]
         assert list(bulk_messages) == [session_id]
         assert [message.id for message in bulk_messages[session_id]] == [expected_message_id]
+        # Requested ids key the result; an id that does not resolve is omitted.
+        assert list(summaries) == ["codex-session:api-v1"]
+        assert str(summaries["codex-session:api-v1"].id) == session_id
 
     finally:
         await archive.close()
@@ -6596,6 +6611,29 @@ async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path, fac
             ("summary_override", "deleted", None, "replacement"),
             ("tag_accept", "deleted", "archive-updated", None),
         ]
+    finally:
+        await archive.close()
+
+
+async def test_get_session_summaries_keys_requested_ids_and_omits_unknown(tmp_path: Path) -> None:
+    """``get_session_summaries`` answers each resolvable requested id once.
+
+    Anti-vacuity: key the result by resolved id instead of the requested one,
+    keep an unresolved id as a placeholder, or stop de-duplicating the request
+    and the returned mapping here changes.
+    """
+    db_path = tmp_path / "index.db"
+    await _seed_two_sessions(db_path)
+    with ArchiveStore(tmp_path) as archive_db:
+        alpha, beta = (
+            str(row[0]) for row in archive_db._conn.execute("SELECT session_id FROM sessions ORDER BY title")
+        )
+    archive = Polylogue(archive_root=tmp_path, db_path=db_path)
+    try:
+        summaries = await archive.get_session_summaries([beta, "missing-session", alpha, beta])
+        assert list(summaries) == [beta, alpha]
+        assert {key: str(summary.id) for key, summary in summaries.items()} == {alpha: alpha, beta: beta}
+        assert await archive.get_session_summaries([]) == {}
     finally:
         await archive.close()
 

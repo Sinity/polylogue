@@ -226,7 +226,11 @@ def _archive_summaries(
 
     filter_kwargs = plan_filter_kwargs(plan)
     limit = _fetch_limit(plan, default=default_limit)
-    post_filter_fetch = (plan.has_post_filters() and plan.limit is not None) or complete
+    # A post-filtered plan pages its candidates from offset zero and applies
+    # the offset once, over survivors, in the caller. An unlimited plan takes
+    # the same route: a SQL offset here would skip unfiltered candidates and
+    # the caller would then skip survivors again.
+    post_filter_fetch = plan.has_post_filters() or complete
     wanted = None if plan.limit is None or plan.sample is not None else plan.offset + plan.limit
     sort = plan.sort
     reverse = plan.reverse
@@ -350,12 +354,6 @@ def _summaries_from_hits(archive: ArchiveStore, hits: list[ArchiveSessionSearchH
         except KeyError:
             continue
     return summaries
-
-
-def _open_archive_for_write(archive_root: Path) -> ArchiveStore:
-    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
-
-    return ArchiveStore.open_existing(archive_root, read_only=False)
 
 
 def _attach_units_to_domain(
@@ -669,7 +667,9 @@ async def count_archive(
                 return int(archive.count_search_sessions(query_text, **filter_kwargs))
             return int(archive.count_sessions(**filter_kwargs))
 
-    unbounded = plan.with_limit(None)
+    # A count is the size of the whole result, not of one page: the SQL
+    # count above ignores the window, so this route drops the offset too.
+    unbounded = replace(plan, limit=None, offset=0)
     if unbounded.can_use_summaries():
         rows = await list_summaries_archive(
             unbounded,
@@ -900,33 +900,8 @@ def _pair_hits(
     return paired
 
 
-async def delete_archive(
-    plan: SessionQueryPlan,
-    *,
-    archive_root: Path,
-    config: Config | None,
-) -> int:
-    # A composed count order ranks recomposed sessions, which the tail-only
-    # summaries cannot: the targets are chosen exactly as ``list`` chooses them.
-    if plan.can_use_summaries() and plan.sort not in _COMPOSED_COUNT_SORTS:
-        summaries = await list_summaries_archive(
-            plan,
-            archive_root=archive_root,
-            config=config,
-        )
-        session_ids = tuple(str(summary.id) for summary in summaries)
-    else:
-        sessions = await list_archive(plan, archive_root=archive_root, config=config)
-        session_ids = tuple(str(session.id) for session in sessions)
-    if not session_ids:
-        return 0
-    with _open_archive_for_write(archive_root) as archive:
-        return archive.delete_sessions(session_ids)
-
-
 __all__ = [
     "count_archive",
-    "delete_archive",
     "first_archive",
     "list_archive",
     "list_summaries_archive",

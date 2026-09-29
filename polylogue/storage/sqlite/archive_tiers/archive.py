@@ -1633,7 +1633,7 @@ class ArchiveStore:
             raise KeyError(f"session not found: {resolved}")
         native_id, origin = str(existing[0]), str(existing[1])
         provider = provider_from_origin(Origin.from_string(origin))
-        event_payload = {"event_id": event_id, "summary": summary, **payload}
+        event_payload = {**payload, "event_id": event_id, "summary": summary}
         event = ParsedSessionEvent(event_type=event_type, timestamp=timestamp, payload=event_payload)
         # The event carries no header. The writer recognizes the work-event
         # raw and appends only the event, keeping every session-owned field;
@@ -4277,6 +4277,31 @@ class ArchiveStore:
             resolved.update({str(row["session_id"]): str(row["session_id"]) for row in rows})
         return resolved
 
+    def stored_session_ids(self, session_ids: Sequence[str]) -> tuple[str, ...]:
+        """The given full session ids that are stored exactly, deduplicated, in order.
+
+        Mutations act on ids their caller already resolved once, at preview.
+        They must never resolve again through ``resolve_session_id``: its
+        prefix and suffix fallbacks re-point an id that has since gone at
+        whichever session shares its prefix, and the write lands on that
+        session instead. Existence of a recorded id is an exact-key question.
+        """
+        requested = tuple(dict.fromkeys(session_ids))
+        stored = self.resolve_exact_session_ids(requested)
+        return tuple(session_id for session_id in requested if session_id in stored)
+
+    def require_stored_session_ids(self, session_ids: Sequence[str]) -> tuple[str, ...]:
+        """Return ``session_ids`` deduplicated, or raise ``KeyError`` for one not stored exactly.
+
+        The durable writers' guard: see :meth:`stored_session_ids`.
+        """
+        requested = tuple(dict.fromkeys(session_ids))
+        stored = set(self.stored_session_ids(requested))
+        for session_id in requested:
+            if session_id not in stored:
+                raise KeyError(session_id)
+        return requested
+
     def search_blocks(self, query: str) -> list[str]:
         """Search indexed block text and return block ids."""
         return search_archive_blocks(self._conn, query)
@@ -4307,9 +4332,7 @@ class ArchiveStore:
         try:
             user_conn.execute("BEGIN IMMEDIATE")
             try:
-                for session_id in tuple(
-                    dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids)
-                ):
+                for session_id in self.require_stored_session_ids(session_ids):
                     for tag in tags:
                         normalized_tag = tag.strip().lower()
                         if not normalized_tag:
@@ -4350,7 +4373,7 @@ class ArchiveStore:
     def remove_user_tags(self, session_ids: tuple[str, ...], tags: tuple[str, ...]) -> int:
         """Mark user tag assertions deleted and return deleted row count."""
         self._require_writable("delete user.db tags")
-        resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
+        resolved_session_ids = self.require_stored_session_ids(session_ids)
         if not resolved_session_ids or not self.user_db_path.exists():
             return 0
         removed = 0
@@ -4599,15 +4622,7 @@ class ArchiveStore:
             "ELSE COALESCE(NULLIF(u.semantic_type, ''), 'tool_use') "
             "END"
         )
-        status_expr = (
-            "CASE "
-            "WHEN r.tool_result_exit_code IS NOT NULL "
-            "THEN CASE WHEN r.tool_result_exit_code = 0 THEN 'ok' ELSE 'failed' END "
-            "WHEN r.tool_result_is_error IS NOT NULL "
-            "THEN CASE WHEN r.tool_result_is_error = 1 THEN 'failed' ELSE 'ok' END "
-            "ELSE 'unknown' "
-            "END"
-        )
+        status_expr = "CASE r.tool_outcome WHEN 'ok' THEN 'ok' WHEN 'error' THEN 'failed' ELSE 'unknown' END"
         where.append("r.rowid IS NOT NULL")
         if request.tool:
             where.append(f"{tool_expr} = LOWER(?)")
@@ -4926,13 +4941,14 @@ class ArchiveStore:
             changed = 0
             user_conn.execute("BEGIN IMMEDIATE")
             try:
-                for session_id in tuple(
-                    dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids)
-                ):
+                for session_id in self.require_stored_session_ids(session_ids):
                     for key, value in pairs:
                         normalized_key = key.strip()
                         if not normalized_key:
                             raise ValueError("metadata key cannot be empty")
+                        # Validate first writes too; comparison with an existing
+                        # assertion is not the admission boundary for JSON values.
+                        canonical_value = _canonical_json_text(value)
                         existing = read_assertion_envelope(
                             user_conn,
                             assertion_id_for_session_metadata(session_id, normalized_key),
@@ -4940,7 +4956,7 @@ class ArchiveStore:
                         if (
                             existing is not None
                             and existing.status != "deleted"
-                            and _canonical_json_text(existing.value) == _canonical_json_text(value)
+                            and _canonical_json_text(existing.value) == canonical_value
                         ):
                             continue
                         upsert_session_metadata_assertion(
@@ -4981,7 +4997,7 @@ class ArchiveStore:
 
     def delete_user_metadata(self, session_id: str, key: str) -> int:
         """Mark one user metadata assertion deleted."""
-        resolved_session_id = self.resolve_session_id(session_id)
+        (resolved_session_id,) = self.require_stored_session_ids((session_id,))
         normalized_key = key.strip()
         if not normalized_key:
             raise ValueError("metadata key cannot be empty")
@@ -5322,14 +5338,20 @@ class ArchiveStore:
             # name without retiring the old one and the view is left watched
             # twice -- under a name it no longer has, carrying the definition
             # this save replaced. Retire the prior binding in this same
-            # transaction (PR #5375).
+            # transaction (PR #5375), after the new name is bound: a rename
+            # that keeps the definition must not leave its hash momentarily
+            # unwatched, which would retire the baseline it still owns.
             previous_name = str(assertion.key) if assertion is not None and assertion.key else None
             with user_conn:
+                previous_owner = (
+                    _active_assertion_by_kind_key(user_conn, AssertionKind.SAVED_QUERY, previous_name)
+                    if previous_name is not None
+                    else None
+                )
+                owns_previous_name = previous_owner is not None and previous_owner.assertion_id == assertion_id
                 if name_assertion is not None and name_assertion.assertion_id != assertion_id:
                     mark_assertion_status(user_conn, name_assertion.assertion_id, "deleted")
                 envelope = upsert_saved_view(user_conn, normalized_name, query, view_id=view_id)
-                if previous_name is not None and previous_name != normalized_name:
-                    clear_query_watch(user_conn, name=previous_name, now_ms=envelope.updated_at_ms)
                 register_query_watch(
                     user_conn,
                     name=normalized_name,
@@ -5337,6 +5359,8 @@ class ArchiveStore:
                     watch=watch,
                     now_ms=envelope.updated_at_ms,
                 )
+                if owns_previous_name and previous_name is not None and previous_name != normalized_name:
+                    clear_query_watch(user_conn, name=previous_name, now_ms=envelope.updated_at_ms)
             return not exists
         finally:
             user_conn.close()
@@ -5396,8 +5420,14 @@ class ArchiveStore:
             # retires are the same lifecycle event.
             deleted_at_ms = int(datetime.now(UTC).timestamp() * 1000)
             with user_conn:
+                name_owner = (
+                    _active_assertion_by_kind_key(user_conn, AssertionKind.SAVED_QUERY, watched_name)
+                    if watched_name is not None
+                    else None
+                )
+                owns_name = name_owner is not None and name_owner.assertion_id == assertion_id
                 deleted = mark_assertion_status(user_conn, assertion_id, "deleted", now_ms=deleted_at_ms)
-                if watched_name is not None:
+                if deleted and owns_name and watched_name is not None:
                     clear_query_watch(user_conn, name=watched_name, now_ms=deleted_at_ms)
             return deleted
         finally:
@@ -5564,7 +5594,7 @@ class ArchiveStore:
         author_kind: str | None = None,
     ) -> LearningCorrection:
         """Record one learning correction in archive user.db."""
-        resolved_session_id = self.resolve_session_id(session_id)
+        (resolved_session_id,) = self.require_stored_session_ids((session_id,))
         correction_kind = parse_correction_kind(kind)
         stored_payload: dict[str, object] = {"payload": dict(payload), "note": note}
         user_conn = self._open_user_write_connection(initialize=True)
@@ -5616,7 +5646,7 @@ class ArchiveStore:
 
     def delete_correction(self, session_id: str, kind: str) -> bool:
         """Delete one learning correction from archive user.db."""
-        resolved_session_id = self.resolve_session_id(session_id)
+        (resolved_session_id,) = self.require_stored_session_ids((session_id,))
         correction_kind = parse_correction_kind(kind)
         if not self.user_db_path.exists():
             return False
@@ -5630,7 +5660,7 @@ class ArchiveStore:
 
     def clear_corrections(self, session_id: str) -> int:
         """Delete all learning corrections for one archive session."""
-        resolved_session_id = self.resolve_session_id(session_id)
+        (resolved_session_id,) = self.require_stored_session_ids((session_id,))
         if not self.user_db_path.exists():
             return 0
         user_conn = self._open_user_write_connection()
@@ -5703,7 +5733,11 @@ class ArchiveStore:
         *,
         write_operation: WriteOperation = WriteOperation.DELETE,
     ) -> int:
-        """Delete rebuildable archive sessions by id.
+        """Delete rebuildable archive sessions by exact stored id.
+
+        Every id must be stored exactly; an absent one raises ``KeyError``
+        before anything is deleted. The caller resolved its selection once, at
+        preview, and a re-resolution here could only widen it.
 
         User-tier overlays are intentionally left in ``user.db``; the user
         overlay orphan checker owns follow-up visibility for those durable rows.
@@ -5757,7 +5791,7 @@ class ArchiveStore:
             f"ArchiveStore.delete_sessions(index={self.index_db_path})",
             archive_root=self._write_lease_archive_root,
         )
-        resolved_session_ids = tuple(dict.fromkeys(self.resolve_session_id(session_id) for session_id in session_ids))
+        resolved_session_ids = self.require_stored_session_ids(session_ids)
         if not resolved_session_ids:
             return 0
         conn = connect_measured(self.index_db_path)

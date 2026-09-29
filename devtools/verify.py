@@ -90,7 +90,7 @@ from devtools.verify_runs import (
     verify_history_path,
 )
 from devtools.verify_test_collection import count_collected
-from devtools.worker_memory import CORPUS_MAX_WORKERS
+from devtools.worker_memory import CHARGE_PROFILE_ENV, CORPUS_MAX_WORKERS
 from polylogue.scenarios import (
     MeasurementScope,
     WorkloadEnvelopeSpec,
@@ -566,6 +566,10 @@ def _affected_admission(*, root: Path, graph: Any, forced_tests: Sequence[str] =
 def _normalize_managed_pytest_environment(env: dict[str, str], command: Sequence[str] = ()) -> None:
     env.pop("PYTEST_ADDOPTS", None)
     env.pop("PYTEST_PLUGINS", None)
+    # Broad verification is sized by the corpus charge model: an ambient
+    # focused marker (``devtools test``'s) would admit corpus workers at the
+    # focused per-worker budget and ceiling.
+    env.pop(CHARGE_PROFILE_ENV, None)
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     # Broad verification defaults to the complete profile. An explicit
     # environment value remains an intentional local policy and the CLI option

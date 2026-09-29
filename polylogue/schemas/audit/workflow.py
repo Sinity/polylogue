@@ -7,6 +7,7 @@ from pathlib import Path
 
 from polylogue.core.outcomes import OutcomeCheck as CheckResult
 from polylogue.core.outcomes import OutcomeStatus
+from polylogue.core.provider_identity import canonical_schema_provider
 from polylogue.core.schema_subjects import SCHEMA_SUBJECT_BY_TOKEN
 from polylogue.schemas.audit.checks import (
     check_annotation_coverage,
@@ -58,7 +59,7 @@ def _package_not_required_reason(provider: str) -> str | None:
     undeclared, or declared as requiring a package, gets no reason here and a
     missing package stays an error.
     """
-    subject = SCHEMA_SUBJECT_BY_TOKEN.get(provider)
+    subject = SCHEMA_SUBJECT_BY_TOKEN.get(canonical_schema_provider(provider, default=provider))
     if subject is None or subject.requires_package:
         return None
     return subject.package_not_required_reason or "declared as not requiring a committed package"

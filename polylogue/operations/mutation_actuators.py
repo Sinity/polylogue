@@ -56,14 +56,6 @@ if TYPE_CHECKING:
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 
-def _session_exists(archive: ArchiveStore, session_id: str) -> bool:
-    try:
-        archive.resolve_session_id(session_id)
-    except KeyError:
-        return False
-    return True
-
-
 # ---------------------------------------------------------------------------
 # Session delete (mutate-delete-session)
 # ---------------------------------------------------------------------------
@@ -97,8 +89,10 @@ class SessionDeleteActuator(ConvergentReplay):
         # Re-resolve existence against live state: a session id the caller
         # already matched via a query result set may have been deleted (by
         # a concurrent actor) between query and delete -- prepare only
-        # plans the subset that still exists right now.
-        existing = tuple(sid for sid in dict.fromkeys(args.session_ids) if _session_exists(args.archive, sid))
+        # plans the subset that still exists right now. Every caller hands
+        # full ids it resolved once, so existence is exact: a vanished id
+        # never widens to another session sharing its prefix.
+        existing = args.archive.stored_session_ids(args.session_ids)
         return build_plan(
             operation=self.operation,
             destructive_class="delete",
@@ -113,8 +107,11 @@ class SessionDeleteActuator(ConvergentReplay):
             raise ValueError("session delete plan contains a non-session target")
         planned = tuple(target_ref.removeprefix("session:") for target_ref in plan.target_refs)
         # A re-applied plan converges: a target an interrupted apply already
-        # removed is satisfied, and ``delete_sessions`` refuses an unknown id.
-        session_ids = tuple(sid for sid in planned if _session_exists(args.archive, sid))
+        # removed is satisfied. Only ids still stored exactly reach
+        # ``delete_sessions``, whose own resolver would widen a missing id to a
+        # prefix match and delete a different session (crash-recovery replay
+        # runs exactly this after the first apply removed the target).
+        session_ids = args.archive.stored_session_ids(planned)
         deleted = args.archive.delete_sessions(session_ids) if session_ids else 0
         status: MutationTargetStatus = "applied" if deleted else "already_satisfied"
         return MutationReceipt(
@@ -195,7 +192,11 @@ class SessionExcisionActuator(ConvergentReplay):
         )
 
     def apply(self, plan: MutationPlan, args: SessionExcisionArgs) -> MutationReceipt:
-        from polylogue.security.excision import LineageDependentsError, apply_session_excision
+        from polylogue.security.excision import (
+            ExcisionBlobReferenceUnknownError,
+            LineageDependentsError,
+            apply_session_excision,
+        )
 
         if not plan.context.get("found"):
             return MutationReceipt(
@@ -216,7 +217,8 @@ class SessionExcisionActuator(ConvergentReplay):
                 actor=args.actor,
                 cascade_lineage=args.cascade_lineage,
             )
-        except LineageDependentsError as exc:
+        except (LineageDependentsError, ExcisionBlobReferenceUnknownError) as exc:
+            # Both refusals roll the excision back before any write.
             return MutationReceipt(
                 operation=self.operation,
                 plan_hash=plan.plan_hash,
@@ -273,7 +275,11 @@ class SessionExcisionActuator(ConvergentReplay):
         own, dependents before the sessions they depend on; one that no
         longer resolves must carry its excision record.
         """
-        from polylogue.security.excision import LineageDependentsError, apply_session_excision
+        from polylogue.security.excision import (
+            ExcisionBlobReferenceUnknownError,
+            LineageDependentsError,
+            apply_session_excision,
+        )
 
         args = self.replay_args(handles, plan)
         remaining = [*cast("list[str]", plan.context["lineage_dependent_session_ids"]), args.session_id]
@@ -287,6 +293,8 @@ class SessionExcisionActuator(ConvergentReplay):
                     )
                 except LineageDependentsError:
                     continue
+                except ExcisionBlobReferenceUnknownError as exc:
+                    return RecoveryResolution("replay-failed", f"{session_id}: {exc}")
                 if not receipt.found and not _excision_recorded(args.archive_root, session_id):
                     return RecoveryResolution(
                         "replay-failed",
@@ -693,6 +701,17 @@ def _view_watched(handles: ReplayHandles, name: str) -> bool:
     return row is not None and bool(row[0])
 
 
+def _view_watch_baselined(handles: ReplayHandles, name: str) -> bool:
+    """Whether the definition this name watches has a measured baseline."""
+    with closing(open_readonly_connection(handles.archive_root / "user.db", timeout_class="background-read")) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM query_names AS n JOIN watched_query_baselines AS b ON b.query_hash = n.query_hash "
+            "WHERE n.name = ? AND n.watch = 1",
+            (name,),
+        ).fetchone()
+    return row is not None
+
+
 def _path_identity(path: Path) -> list[int] | None:
     try:
         stat = path.lstat()
@@ -1016,6 +1035,9 @@ class BulkTagActuator(ConvergentReplay):
         session_ids: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("session_ids") or ()))
         tags: tuple[str, ...] = tuple(cast("list[str]", plan.context.get("tags") or ()))
         requested_count = int(cast("int", plan.context.get("requested_session_count") or len(session_ids)))
+        # Every planned id is stored exactly or the apply stops before its
+        # first write; none is re-resolved to a prefix sibling.
+        args.archive.require_stored_session_ids(session_ids)
         affected = 0
         assertions = 0
         for session_id in session_ids:
@@ -1175,6 +1197,7 @@ class BulkMetadataSetActuator(ConvergentReplay):
         planned_pairs = cast("list[list[object]]", plan.context.get("pairs") or [])
         pairs: tuple[tuple[str, object], ...] = tuple((str(pair[0]), pair[1]) for pair in planned_pairs)
         requested_count = int(cast("int", plan.context.get("requested_session_count") or len(session_ids)))
+        args.archive.require_stored_session_ids(session_ids)
         affected = 0
         assertions = 0
         for session_id in session_ids:
@@ -2139,6 +2162,10 @@ class SavedViewSaveActuator(ConvergentReplay):
         collision_view_id = plan.context["collision_view_id"]
         watch = bool(plan.context.get("watch"))
         created = args.archive.save_view(view_id, name, query_json, watch=watch)
+        if watch:
+            from polylogue.daemon.convergence_standing_queries import establish_watch_baselines
+
+            establish_watch_baselines(args.archive.index_db_path, archive_root=args.archive.archive_root)
         return MutationReceipt(
             operation=self.operation,
             plan_hash=plan.plan_hash,
@@ -2161,12 +2188,19 @@ class SavedViewSaveActuator(ConvergentReplay):
         )
 
     def already_applied(self, handles: ReplayHandles, plan: MutationPlan) -> bool:
+        # The baseline is part of a watched save's effect: apply commits the
+        # view first and measures after, so a crash between the two leaves a
+        # durable watch with no baseline, and the next evaluation would absorb
+        # the first changed session into it instead of reporting the delta.
         stored = handles.archive.get_view(str(plan.context["view_id"]))
+        name = str(plan.context["name"])
+        watch = bool(plan.context.get("watch"))
         return (
             stored is not None
-            and stored["name"] == plan.context["name"]
+            and stored["name"] == name
             and json.loads(stored["query_json"]) == json.loads(str(plan.context["query_json"]))
-            and _view_watched(handles, str(plan.context["name"])) == bool(plan.context.get("watch"))
+            and _view_watched(handles, name) == watch
+            and (not watch or _view_watch_baselined(handles, name))
         )
 
     def replay_refusal(self, handles: ReplayHandles, plan: MutationPlan) -> str | None:
@@ -3020,16 +3054,17 @@ def _partition_requested_session_ids(
     asked for. The declared plan context is a closed model
     (``machine_plan_context``), so the gap is carried on the receipt, which is
     where the terminal outcome is decided anyway.
+
+    A multi-target selection is a set of full session ids its caller already
+    resolved once (the CLI from its query, a facade caller from its own
+    reads), so membership is exact. An abbreviated or vanished id is named in
+    the gap; it is never widened to whichever session shares its prefix.
     """
 
-    resolved: list[str] = []
-    unresolved: list[str] = []
-    for session_id in dict.fromkeys(session_ids):
-        try:
-            resolved.append(archive.resolve_session_id(session_id))
-        except KeyError:
-            unresolved.append(session_id)
-    return tuple(resolved), tuple(unresolved)
+    requested = tuple(dict.fromkeys(session_ids))
+    resolved = archive.stored_session_ids(requested)
+    present = set(resolved)
+    return resolved, tuple(sid for sid in requested if sid not in present)
 
 
 def _narrowed_plan_outcome(*, matched: int, unresolved: Sequence[str]) -> OutcomeEnvelope:

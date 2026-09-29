@@ -116,6 +116,12 @@ class ArchiveMessageQueryRow:
     #: Full character length of ``text`` when the read returned only its
     #: leading prefix (``text_prefix_chars``); ``None`` when ``text`` is whole.
     text_chars: int | None = None
+    #: Per-message usage as stored; ``None`` is an unreported counter, not zero.
+    model_name: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cache_read_tokens: int | None = None
+    cache_write_tokens: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -3025,6 +3031,11 @@ def query_messages(
             m.is_active_path,
             m.is_active_leaf,
             m.word_count,
+            m.model_name,
+            m.input_tokens,
+            m.output_tokens,
+            m.cache_read_tokens,
+            m.cache_write_tokens,
             COALESCE((
                 SELECT group_concat(ordered.search_text, char(10))
                 FROM (
@@ -3065,6 +3076,11 @@ def query_messages(
             word_count=int(row["word_count"]),
             text=str(row["text"] or ""),
             blocks=tuple(blocks_by_message[str(row["message_id"])]),
+            model_name=row["model_name"],
+            input_tokens=row["input_tokens"],
+            output_tokens=row["output_tokens"],
+            cache_read_tokens=row["cache_read_tokens"],
+            cache_write_tokens=row["cache_write_tokens"],
         )
         for row in rows
     ]
@@ -3315,6 +3331,11 @@ def query_session_messages(
             m.is_active_path,
             m.is_active_leaf,
             m.word_count,
+            m.model_name,
+            m.input_tokens,
+            m.output_tokens,
+            m.cache_read_tokens,
+            m.cache_write_tokens,
             {text_sql}
         FROM {source_sql}
         JOIN sessions s ON s.session_id = m.session_id
@@ -3349,6 +3370,11 @@ def query_session_messages(
             word_count=int(row["word_count"]),
             text=str(row["text"] or ""),
             blocks=tuple(blocks_by_message[str(row["message_id"])]),
+            model_name=row["model_name"],
+            input_tokens=row["input_tokens"],
+            output_tokens=row["output_tokens"],
+            cache_read_tokens=row["cache_read_tokens"],
+            cache_write_tokens=row["cache_write_tokens"],
             text_chars=(
                 int(row["text_chars"]) if text_prefix_chars is not None and row["text_chars"] is not None else None
             ),
@@ -3917,7 +3943,6 @@ def query_unit_agg_metrics(
         ranked AS (
             SELECT
                 {ranked_selection},
-                COUNT(*) OVER () AS total_groups,
                 ROW_NUMBER() OVER ({f"ORDER BY {order_clause}" if order_clause else ""}) AS ordinal
             FROM grouped
             {" ".join(percentile_joins)}
@@ -3927,10 +3952,12 @@ def query_unit_agg_metrics(
     rows = self._conn.execute(
         f"""
         {cte_sql}
-        SELECT *
-        FROM ranked
-        WHERE ordinal > ? AND ordinal <= ?
-        ORDER BY ordinal
+        SELECT stats.total_groups, page.*
+        FROM (SELECT COUNT(*) AS total_groups FROM grouped) AS stats
+        LEFT JOIN (
+            SELECT * FROM ranked WHERE ordinal > ? AND ordinal <= ?
+        ) AS page ON 1 = 1
+        ORDER BY page.ordinal
         """,
         [
             *relation_params,
@@ -3941,8 +3968,8 @@ def query_unit_agg_metrics(
             normalized_offset + normalized_limit,
         ],
     ).fetchall()
-    if not rows:
-        return ArchiveQueryUnitAggMetricPage(rows=(), total_groups=0)
+    # The count row is always present: an empty page (offset past the last
+    # group, or limit zero) still reports the exact size of the full result.
     return ArchiveQueryUnitAggMetricPage(
         rows=tuple(
             ArchiveQueryUnitAggMetricRow(
@@ -3954,6 +3981,7 @@ def query_unit_agg_metrics(
                 },
             )
             for row in rows
+            if row["ordinal"] is not None
         ),
         total_groups=int(rows[0]["total_groups"]),
     )

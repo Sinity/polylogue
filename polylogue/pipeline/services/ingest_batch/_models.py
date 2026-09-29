@@ -133,9 +133,12 @@ class _IngestBatchSummary:
             # sidecar text (see _preacquire_sidecar_blobs). "new" is bytes
             # whose hash didn't already exist in the store; "dedup" is bytes
             # whose hash was already present (the write was a free no-op).
+            # "refused_excised" counts sidecars whose bytes were durably
+            # excised and so were not published again.
             "sidecar_blob_bytes_new": 0,
             "sidecar_blob_bytes_dedup": 0,
             "sidecar_blobs_written": 0,
+            "sidecar_blobs_refused_excised": 0,
         }
     )
     changed_counts: dict[str, int] = field(

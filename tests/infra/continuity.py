@@ -102,7 +102,10 @@ def _validate_continuity_catalog(catalog: Mapping[str, JSONValue]) -> None:
     # The checked-in manifest keeps JSON-friendly snake_case keys for corpus
     # sections, while declarations retain their public scenario IDs.  This is
     # a name translation, not a second membership list.
-    expected_inputs = {key.replace("-", "_") for key in fixture_keys}
+    normalized_keys = tuple(key.replace("-", "_") for key in fixture_keys)
+    if len(normalized_keys) != len(set(normalized_keys)):
+        raise ValueError("continuity fixture keys collide after snake_case normalization")
+    expected_inputs = set(normalized_keys)
     expected_oracles = set(fixture_keys)
     if actual_inputs != expected_inputs:
         missing = sorted(expected_inputs - actual_inputs)
@@ -291,6 +294,24 @@ def validate_continuity_population(
     if usage is None:
         raise AssertionError("planted provider usage row is missing")
 
+    member_tokens = tuple(str(row["text"]).split() for row in member_rows)
+    call_keys = {
+        token.removeprefix("call_key:") for tokens in member_tokens for token in tokens if token.startswith("call_key:")
+    }
+    completed_keys = {
+        token.removeprefix("completed_key:")
+        for tokens in member_tokens
+        for token in tokens
+        if token.startswith("completed_key:")
+    }
+    unresolved_keys = {
+        token.removeprefix("unresolved_key:")
+        for tokens in member_tokens
+        for token in tokens
+        if token.startswith("unresolved_key:")
+    }
+    result_records = sum("result_record:yes" in tokens for tokens in member_tokens)
+
     input_tokens = int(usage["input_tokens"])
     output_tokens = int(usage["output_tokens"])
     cache_read_tokens = int(usage["cache_read_tokens"])
@@ -300,6 +321,10 @@ def validate_continuity_population(
         "coordinator_children": len(child_ids),
         "incident_members": len(member_rows),
         "other_children": len(other_rows),
+        "call_keys": len(call_keys),
+        "completed_call_keys": len(completed_keys),
+        "unresolved_call_keys": len(unresolved_keys),
+        "result_records": result_records,
         "workflow_invocations": invocation_count,
         "final_result_count": final_count,
         "incident_curriculum_cases": curriculum_count,

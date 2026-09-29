@@ -112,10 +112,10 @@ def ordering_revision_relations() -> PilotScenario:
         name="ordering-revision-relations",
         seed=53,
         representations=(
-            {"records": [{"id": "a", "revision": 2}, {"id": "b", "revision": 1}]},
-            {"revisions": {"a": [1, 2], "b": [1]}},
+            {"records": [{"id": "b", "revision": 3}, {"id": "a", "revision": 2}]},
+            {"revisions": {"b": [3, 1], "a": [2, 1]}},
         ),
-        expected=PilotExpectation(revision_order=(("a", 2), ("b", 1))),
+        expected=PilotExpectation(revision_order=(("b", 3), ("a", 2))),
     )
 
 

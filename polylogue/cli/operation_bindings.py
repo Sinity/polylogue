@@ -103,6 +103,10 @@ CLI_OPERATION_BINDINGS: Mapping[str, CliOperationBinding] = {
         lowering="polylogue.cli.read_views.effective_context:run_read_effective_context",
         renderers=("polylogue.cli.read_views.effective_context:run_read_effective_context",),
     ),
+    "read.orchestration": CliOperationBinding(
+        lowering="polylogue.cli.read_views.orchestration:run_read_orchestration",
+        renderers=("polylogue.cli.read_views.orchestration:run_read_orchestration",),
+    ),
     "read.lineage": CliOperationBinding(
         lowering="polylogue.cli.read_views.lineage:run_read_lineage",
         renderers=("polylogue.cli.read_views.lineage:run_read_lineage",),

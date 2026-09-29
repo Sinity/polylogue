@@ -15,16 +15,18 @@ import os
 import sqlite3
 import subprocess
 from pathlib import Path
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from polylogue.context.preamble import _git_project_state, build_context_preamble_payload
 from polylogue.core.refs import ExecutionContextRef
-from polylogue.markers import parse_markers
 from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.types import ArchiveTier
+
+if TYPE_CHECKING:
+    from polylogue.api import Polylogue
 
 
 def _init_git_repo(path: Path, *, branch: str = "main") -> None:
@@ -97,7 +99,6 @@ class TestGitProjectStateRealRepo:
         poly.compact_lineage = AsyncMock(return_value=None)
         poly.find_resume_candidates = AsyncMock(return_value=[])
         poly.list_assertion_claim_payloads = AsyncMock(return_value=[])
-        poly.record_context_ledger = AsyncMock()
         poly.record_context_ledger = AsyncMock()
 
         preamble = await build_context_preamble_payload(
@@ -212,6 +213,7 @@ class TestBuildContextPreambleGitEnrichment:
         poly.compact_lineage = AsyncMock(return_value=None)
         poly.find_resume_candidates = AsyncMock(return_value=[])
         poly.list_assertion_claim_payloads = AsyncMock(return_value=[])
+        poly.record_context_ledger = AsyncMock()
 
         preamble = await build_context_preamble_payload(
             poly,
@@ -237,48 +239,127 @@ class TestBuildContextPreambleGitEnrichment:
         assert execution_context.unknown_fields == ("runtime",)
 
 
-@pytest.mark.asyncio
-async def test_declared_claim_survives_judgment_preamble_and_reboot_ref(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    request: pytest.FixtureRequest,
-) -> None:
-    """Exercise the judged-memory loop through the real archive facade.
+def _judging_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest
+) -> tuple[Path, Polylogue]:
+    """Start the resident writer and open a facade over its archive.
 
-    The marker is the agent-facing authoring boundary; the candidate write
-    route preserves its body and scope, the operator judgment promotes it,
-    and a newly opened facade resolves the ref carried by the preamble.
-    Mutating any stage to skip promotion, scope filtering, or public ref
-    resolution makes one of the assertions below fail.
+    Judging a candidate is a durable user-tier mutation, which only the
+    resident daemon writes; the loop runs against the real operation stack.
     """
     from polylogue.api import Polylogue
-    from polylogue.core.enums import AssertionKind
     from polylogue.daemon.socket_path import daemon_socket_path
-    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
     from tests.infra.daemon_operations import running_daemon_operations
 
-    # Judging a candidate is a durable user-tier mutation, which only the
-    # resident daemon writes; the loop runs against the real operation stack.
     archive_root = (tmp_path / "archive").resolve()
     monkeypatch.setattr("polylogue.daemon.api_auth.resolve_api_auth_token", lambda *_args, **_kwargs: None)
     daemon = running_daemon_operations(archive_root, socket_path=daemon_socket_path(archive_root))
     daemon.__enter__()
     request.addfinalizer(lambda: daemon.__exit__(None, None, None))
-    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    return archive_root, Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+
+
+@pytest.mark.asyncio
+async def test_lowered_marker_survives_judgment_and_reboot_ref(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """A marker reaches a judged claim only through production lowering.
+
+    The candidate is written by ``candidates_for_block``/``lower_markers``, the
+    route the accepted-marker consumer publishes through, so its identity,
+    target, body, and evidence are derived rather than supplied by the test.
+    Anti-vacuity: writing the candidate any other way, or changing the
+    lowering's identity, target, or evidence derivation, fails the identity
+    and provenance assertions; skipping promotion or public ref resolution
+    fails the judgment and reboot assertions.
+    """
+    from polylogue.api import Polylogue
+    from polylogue.markers import candidates_for_block, lower_markers
+    from polylogue.markers.lowering import assertion_id_for_marker
+
+    archive_root, archive = _judging_archive(tmp_path, monkeypatch, request)
+    try:
+        lowered = candidates_for_block(
+            "judged-memory-loop-message",
+            "judged-memory-loop-block",
+            "::decision: Keep context as refs, not raw logs.\n",
+        )
+        assert len(lowered) == 1
+        marker = lowered[0]
+        with sqlite3.connect(archive_root / "user.db") as conn:
+            assert lower_markers(conn, lowered, now_ms=1_700_000_000_000) == (assertion_id_for_marker(marker),)
+
+        message_ref = "message:judged-memory-loop-message"
+        candidates = await archive.list_assertion_candidates(target_ref=message_ref, limit=2)
+        assert len(candidates) == 1
+        candidate = candidates[0]
+        assert candidate.assertion_id == assertion_id_for_marker(marker)
+        assert candidate.status is not None
+        assert candidate.status.value == "candidate"
+        assert candidate.author_kind == "agent"
+        assert candidate.body_text == marker.match.body
+        assert candidate.evidence_refs == (message_ref, "block:judged-memory-loop-block")
+
+        emitted_ref = f"assertion:{candidate.assertion_id}"
+        review = await archive.judge_assertion_candidate(
+            candidate_ref=emitted_ref,
+            decision="accept",
+            reason="The operator accepted this marker claim.",
+            actor_ref="user:local",
+            inject=True,
+        )
+        assert review.outcome == "applied"
+        assert review.resulting_assertion is not None
+        assert review.resulting_assertion.status is not None
+        assert review.resulting_assertion.status.value == "active"
+        assert review.resulting_assertion.body_text == marker.match.body
+    finally:
+        await archive.close()
+
+    rebooted = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    try:
+        resolved = await rebooted.resolve_ref(emitted_ref)
+        assert resolved.resolved is True
+        assert resolved.payload_kind == "assertion-claim"
+        assert resolved.payload is not None
+        assert resolved.payload["assertion_id"] == emitted_ref.removeprefix("assertion:")
+    finally:
+        await rebooted.close()
+
+
+@pytest.mark.asyncio
+async def test_judged_scoped_claim_reaches_the_session_preamble(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    request: pytest.FixtureRequest,
+) -> None:
+    """An accepted, injectable session claim is carried by the preamble.
+
+    The candidate is authored directly into the user tier with a session
+    target and repository scope; marker lowering targets the message ref and
+    carries no scope, so it is covered by the test above instead.
+    Anti-vacuity: skipping promotion, dropping the ``inject`` policy, or
+    losing the scope or evidence on the way to the preamble fails one of the
+    guidance assertions.
+    """
+    from polylogue.core.enums import AssertionKind
+    from polylogue.storage.sqlite.archive_tiers.user_write import upsert_assertion
+
+    archive_root, archive = _judging_archive(tmp_path, monkeypatch, request)
     session_ref = "session:codex:judged-memory-loop"
     repo_ref = "repo:polylogue"
+    body = "Keep context as refs, not raw logs."
     try:
-        marker = parse_markers("::decision: Keep context as refs, not raw logs.\n")[0]
-        assert marker.kind == "decision"
-
         with sqlite3.connect(archive_root / "user.db") as conn:
             upsert_assertion(
                 conn,
-                assertion_id="marker-judged-memory-loop",
+                assertion_id="operator-judged-memory-loop",
                 target_ref=session_ref,
                 scope_ref=repo_ref,
                 kind=AssertionKind.DECISION,
-                body_text=marker.body,
+                body_text=body,
                 author_ref="agent:codex",
                 author_kind="agent",
                 evidence_refs=(session_ref,),
@@ -291,24 +372,19 @@ async def test_declared_claim_survives_judgment_preamble_and_reboot_ref(
         candidates = await archive.list_assertion_candidates(target_ref=session_ref, limit=1)
         assert len(candidates) == 1
         candidate = candidates[0]
-        assert candidate.status is not None
-        assert candidate.status.value == "candidate"
         assert candidate.scope_ref == repo_ref
         assert candidate.staleness is not None
         assert candidate.staleness["expires_at_ms"] > candidate.created_at_ms
 
+        emitted_ref = f"assertion:{candidate.assertion_id}"
         review = await archive.judge_assertion_candidate(
-            candidate_ref=f"assertion:{candidate.assertion_id}",
+            candidate_ref=emitted_ref,
             decision="accept",
             reason="The operator accepted this scoped context rule.",
             actor_ref="user:local",
             inject=True,
         )
         assert review.outcome == "applied"
-        assert review.resulting_assertion is not None
-        emitted_ref = f"assertion:{candidate.assertion_id}"
-        assert review.resulting_assertion.status is not None
-        assert review.resulting_assertion.status.value == "active"
 
         archive.get_session = AsyncMock(return_value=None)  # type: ignore[method-assign]
         archive.find_resume_candidates = AsyncMock(return_value=[])  # type: ignore[method-assign]
@@ -326,17 +402,6 @@ async def test_declared_claim_survives_judgment_preamble_and_reboot_ref(
         assert guidance.assertions[0].quoted_evidence is not None
         assert guidance.assertions[0].evidence_refs == [session_ref, emitted_ref]
         assert guidance.assertions[0].scope_ref == repo_ref
-        assert guidance.assertions[0].quoted_evidence.text == marker.body
-
+        assert guidance.assertions[0].quoted_evidence.text == body
     finally:
         await archive.close()
-
-    rebooted = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
-    try:
-        resolved = await rebooted.resolve_ref(emitted_ref)
-        assert resolved.resolved is True
-        assert resolved.payload_kind == "assertion-claim"
-        assert resolved.payload is not None
-        assert resolved.payload["assertion_id"] == emitted_ref.removeprefix("assertion:")
-    finally:
-        await rebooted.close()

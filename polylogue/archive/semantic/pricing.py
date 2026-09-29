@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections import Counter
@@ -67,6 +68,16 @@ CostBasis = Literal[
 LITELLM_PRICE_MAP_URL = "https://github.com/BerriAI/litellm/blob/main/model_prices_and_context_window.json"
 CATALOG_PROVENANCE = "litellm-model-prices-vendored"
 CATALOG_EFFECTIVE_DATE = "2026-06-27"
+#: SHA-256 of the vendored catalog file. The derived-identity closure hashes
+#: this module's source, not the data file beside it, so a catalog refresh
+#: re-prices materialized session costs only by changing this module. The
+#: loader refuses a catalog whose bytes differ from this pin.
+CATALOG_SHA256 = "af1d46acd5137a7facc696c8f278b57615037316cd1ca2eac05da8a9a8bf7f13"
+_CATALOG_PATH = Path(__file__).parent / "data" / "litellm_model_prices.json"
+
+
+class PricingCatalogMismatchError(RuntimeError):
+    """The vendored price catalog does not match its declared digest."""
 
 
 class PricingModel(BaseModel):
@@ -245,7 +256,9 @@ class ModelPricing:
         )
 
 
-def _load_litellm_catalog() -> dict[str, ModelPricing]:
+def _load_litellm_catalog(
+    path: Path = _CATALOG_PATH, *, expected_sha256: str = CATALOG_SHA256
+) -> dict[str, ModelPricing]:
     """Build a ModelPricing catalog from the vendored LiteLLM price map.
 
     LiteLLM's ``model_prices_and_context_window.json`` covers ~all current
@@ -256,15 +269,23 @@ def _load_litellm_catalog() -> dict[str, ModelPricing]:
         curl -sL https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json \
           -o polylogue/archive/semantic/data/litellm_model_prices.json
 
+    then set :data:`CATALOG_SHA256` to the new file's digest and
+    :data:`CATALOG_EFFECTIVE_DATE` to the refresh date. A missing, unreadable
+    or unpinned catalog raises instead of loading as empty: an empty catalog
+    would silently report every session as unpriced.
+
     Keys are stored both fully-qualified (``openai/gpt-5.4``) and bare
     (``gpt-5.4``). A direct bare LiteLLM entry wins its final-segment lookup;
     a routed alias supplies a bare key only when the catalog has no direct row.
     """
-    path = Path(__file__).parent / "data" / "litellm_model_prices.json"
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    payload = path.read_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    if digest != expected_sha256:
+        raise PricingCatalogMismatchError(
+            f"{path} has SHA-256 {digest}, but CATALOG_SHA256 pins {expected_sha256}; "
+            "update the pin and CATALOG_EFFECTIVE_DATE together with the catalog"
+        )
+    raw = json.loads(payload)
     catalog: dict[str, ModelPricing] = {}
     for key, entry in raw.items():
         # Skip the meta spec row and any blank key. Resolution uses an exact
@@ -998,6 +1019,7 @@ def generated_at() -> str:
 __all__ = [
     "CATALOG_EFFECTIVE_DATE",
     "CATALOG_PROVENANCE",
+    "CATALOG_SHA256",
     "LITELLM_PRICE_MAP_URL",
     "CostBasis",
     "CostBasisPayload",
@@ -1010,6 +1032,7 @@ __all__ = [
     "CostUsagePayload",
     "ModelPricing",
     "PRICING",
+    "PricingCatalogMismatchError",
     "TOKEN_LANES",
     "TokenLane",
     "_normalize_model",

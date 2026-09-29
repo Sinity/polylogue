@@ -250,6 +250,74 @@ def test_schema_generate_cluster_preview_keeps_declared_source_manifest_in_memor
     assert not manifest_path.exists()
 
 
+def test_schema_generate_retained_clusters_are_promotable(
+    workspace_env: dict[str, Path],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``generate --cluster --retain-clusters`` is the producer ``promote`` reads.
+
+    Anti-vacuity: wiring ``--retain-clusters`` back to
+    ``persist_cluster_manifest=False`` leaves the registry without a manifest,
+    and the promotion below raises ``No cluster manifest found``.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.core.sources import origin_from_provider
+    from polylogue.schemas.operator.workflow import promote_schema_cluster
+    from polylogue.storage.blob_store import get_blob_store
+    from polylogue.storage.sqlite.archive_tiers.source_write import write_source_raw_session
+    from tests.infra.storage_records import db_setup
+
+    index_db = db_setup(workspace_env)
+    payload = json.dumps(
+        {
+            "id": "conversation-1",
+            "title": "Schema inference",
+            "create_time": 1_700_000_000.0,
+            "update_time": 1_700_000_060.0,
+            "mapping": {
+                "node-1": {
+                    "id": "node-1",
+                    "parent": None,
+                    "children": [],
+                    "message": {
+                        "id": "message-1",
+                        "author": {"role": "user"},
+                        "content": {"content_type": "text", "parts": ["infer this schema"]},
+                        "create_time": 1_700_000_000.0,
+                    },
+                }
+            },
+        }
+    ).encode()
+    get_blob_store().write_from_bytes(payload)
+    with sqlite3.connect(workspace_env["archive_root"] / "source.db") as conn:
+        write_source_raw_session(
+            conn,
+            origin=origin_from_provider(Provider.CHATGPT),
+            source_path="/fixtures/chatgpt-export.json",
+            source_index=0,
+            payload=payload,
+            acquired_at_ms=1_700_000_000_000,
+        )
+
+    assert schema_generate.main(["--provider", "chatgpt", "--cluster", "--retain-clusters", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)["result"]
+    assert result["manifest_path"] is not None
+    cluster_id = result["manifest"]["clusters"][0]["cluster_id"]
+
+    promoted = promote_schema_cluster(SchemaPromoteRequest(provider="chatgpt", cluster_id=cluster_id, db_path=index_db))
+
+    assert promoted.cluster_id == cluster_id
+    assert promoted.package_version
+
+
+def test_schema_generate_refuses_retain_clusters_without_cluster(workspace_env: dict[str, Path]) -> None:
+    """Retaining is meaningless without clustering; the flag is refused, not ignored."""
+    with pytest.raises(SystemExit) as exit_info:
+        schema_generate.main(["--provider", "codex", "--retain-clusters"])
+    assert exit_info.value.code == 2
+
+
 def test_schema_generate_writes_aggregate_progress_receipt(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -474,3 +542,56 @@ def test_promotion_audits_the_tree_promotion_writes(monkeypatch: pytest.MonkeyPa
 
     assert observed == tmp_path / "share" / "polylogue" / "schemas"
     assert observed == SchemaRegistry().storage_root
+
+
+def test_schema_generate_handles_missing_archive_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A RuntimeError escapes this production command instead of producing exit code 1."""
+    from polylogue.schemas.sampling_db import SchemaArchiveEvidenceError
+
+    monkeypatch.setattr(
+        schema_generate, "get_config", lambda: _ConfigStub(archive_root=tmp_path, db_path=tmp_path / "index.db")
+    )
+
+    def refuse(request: SchemaInferRequest) -> SchemaInferResult:
+        raise SchemaArchiveEvidenceError("synthetic missing source tier")
+
+    monkeypatch.setattr(schema_generate, "infer_schema", refuse)
+    assert schema_generate.main(["--provider", "chatgpt"]) == 1
+    assert "synthetic missing source tier" in capsys.readouterr().err
+
+
+def test_schema_module_cli_preserves_configured_archive_location(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The module CLI binds evidence to the configured root, not the generation directory.
+
+    Anti-vacuity: drop the ``archive_location`` argument and the real binder
+    resolves the generation directory as the archive root and refuses.
+    """
+    from polylogue.schemas.operator import schema_inference
+    from polylogue.schemas.sampling_db import _schema_archive_location
+    from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root
+
+    root = tmp_path / "archive"
+    initialize_active_archive_root(root)
+    external_index = root / ".index-generations" / "generation-1" / "index.db"
+    external_index.parent.mkdir(parents=True)
+    external_index.write_bytes((root / "index.db").read_bytes())
+    (root / ".index-active-pointer").write_text(str(external_index), encoding="utf-8")
+    selected = ArchiveLocation.resolve(root)
+    monkeypatch.setattr(
+        schema_inference, "get_config", lambda: _ConfigStub(archive_root=root, db_path=selected.active_index_path)
+    )
+    observed: list[ArchiveLocation] = []
+
+    def generate(
+        *, db_path: Path, archive_location: ArchiveLocation | None = None, **kwargs: object
+    ) -> list[GenerationResult]:
+        observed.append(_schema_archive_location(db_path=db_path, archive_location=archive_location))
+        return []
+
+    monkeypatch.setattr(schema_inference, "generate_all_schemas", generate)
+    assert schema_inference.cli_main(["--provider", "chatgpt", "--output-dir", str(tmp_path / "output")]) == 0
+    assert observed == [selected]

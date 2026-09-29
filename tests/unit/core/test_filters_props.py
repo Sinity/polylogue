@@ -63,7 +63,7 @@ class FilterSpec(TypedDict):
 
 
 FilterRepoFactory: TypeAlias = Callable[[list[SessionSeed]], Path]
-TerminalMethod: TypeAlias = Literal["list", "first", "count", "delete", "pick"]
+TerminalMethod: TypeAlias = Literal["list", "first", "count", "pick"]
 TerminalResult: TypeAlias = list[Session] | Session | None | int
 DateMethodName: TypeAlias = Literal["since", "until"]
 BranchPredicateName: TypeAlias = Literal["is_continuation", "is_sidechain", "has_branches"]
@@ -709,15 +709,6 @@ class TestSessionFilterTerminal:
         count = await SessionFilter(archive_root=filter_repo).origin("claude-ai-export").count()
         assert count == 2
 
-    @pytest.mark.asyncio
-    async def test_filter_delete_removes_sessions(self, filter_repo: Path) -> None:
-        initial_count = await SessionFilter(archive_root=filter_repo).count()
-        assert initial_count > 0
-        deleted = await SessionFilter(archive_root=filter_repo).limit(1).delete()
-        assert deleted == 1
-        final_count = await SessionFilter(archive_root=filter_repo).count()
-        assert final_count == initial_count - 1
-
 
 class TestFilterDateParsing:
     """Date parsing for since/until — key regressions."""
@@ -929,7 +920,6 @@ class TestSessionFilterEmptyRepository:
             ("list", []),
             ("first", None),
             ("count", 0),
-            ("delete", 0),
         ],
     )
     @pytest.mark.asyncio
@@ -947,8 +937,6 @@ class TestSessionFilterEmptyRepository:
             result = await filter_obj.first()
         elif terminal_method == "count":
             result = await filter_obj.count()
-        elif terminal_method == "delete":
-            result = await filter_obj.delete()
         assert result == expected_result
 
 
@@ -1079,7 +1067,10 @@ class TestDeleteCascade:
         assert before is not None
         assert len(before.messages) == 2
 
-        deleted = await SessionFilter(archive_root=root).id(session_id).delete()
+        from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
+
+        with ArchiveStore.open_existing(root, read_only=False) as archive:
+            deleted = archive.delete_sessions((session_id,))
         assert deleted == 1
 
         # After delete the session and its messages are gone directly.

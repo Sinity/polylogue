@@ -405,15 +405,15 @@ class ConvergenceWorkloadProfile:
 
     def corpus_specs(self, *, provider: str | None = None, seed: int | None = None) -> tuple[CorpusSpec, ...]:
         """Resolve the declared shape, optionally selecting one provider."""
-        shapes = self.provider_session_shapes
+        shapes = tuple(enumerate(self.provider_session_shapes))
         if provider is not None:
             validate_workload_provider(provider)
-            shapes = tuple(shape for shape in shapes if shape[0] == provider)
+            shapes = tuple((offset, shape) for offset, shape in shapes if shape[0] == provider)
             if not shapes:
                 raise ValueError(f"convergence workload {self.tier.value!r} has no provider {provider!r}")
         session_shapes = tuple(
-            WorkloadSessionShape(name, count, messages, messages, offset)
-            for offset, (name, count, messages) in enumerate(shapes)
+            WorkloadSessionShape(name, count, messages, messages, offset, style="default")
+            for offset, (name, count, messages) in shapes
         )
         return replace(self.workload, seed=self.workload.seed if seed is None else seed).corpus_specs(session_shapes)
 

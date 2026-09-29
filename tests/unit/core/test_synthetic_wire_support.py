@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -1431,10 +1431,10 @@ def test_wire_support_run_cache_rejects_corrupt_content(tmp_path: Path) -> None:
     assert wire_support_infra._read_cached_receipt(cache_path) is None
 
 
-def test_shared_wire_generation_parser_memo_returns_fresh_results(
+def test_shared_wire_generation_reparses_mutable_production_results(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An unchanged payload parses once, while callers receive independent models."""
+    """Every parse reaches production; mutating one result cannot affect the next."""
     original_parse_payload = dispatch_module.parse_payload
     calls = 0
 
@@ -1460,12 +1460,7 @@ def test_shared_wire_generation_parser_memo_returns_fresh_results(
             sidecar_resolver=sidecar_resolver,
         )
 
-    # Make the memo recognize this wrapper as the unmodified route.  This
-    # keeps the test on the production cache path without weakening the
-    # separate parser-mutation tests, which intentionally remain uncached.
     monkeypatch.setattr(dispatch_module, "parse_payload", counted_parse_payload)
-    monkeypatch.setattr(wire_support_infra, "_ORIGINAL_PARSE_PAYLOAD", counted_parse_payload)
-    wire_support_infra._PARSED_PAYLOADS.clear()
     payload: JSONValue = {
         "mapping": {
             "root": {
@@ -1480,16 +1475,13 @@ def test_shared_wire_generation_parser_memo_returns_fresh_results(
         "title": "memo fixture",
     }
 
-    try:
-        with shared_wire_generation():
-            first = dispatch_module.parse_payload("chatgpt", payload, "memo")
-            assert first and first[0].messages
-            first[0].messages.clear()
-            second = dispatch_module.parse_payload("chatgpt", payload, "memo")
-    finally:
-        wire_support_infra._PARSED_PAYLOADS.clear()
+    with shared_wire_generation():
+        first = dispatch_module.parse_payload("chatgpt", payload, "memo")
+        assert first and first[0].messages
+        first[0].messages.clear()
+        second = dispatch_module.parse_payload("chatgpt", payload, "memo")
 
-    assert calls == 1
+    assert calls == 2
     assert second and second[0].messages
 
 
@@ -1553,3 +1545,82 @@ def test_codex_native_id_pinning_preserves_one_wire_shape() -> None:
     assert all(record.get("type") != "message" for record in records)
     assert any(record.get("type") == "session_meta" for record in records)
     assert all(record.get("type") in {"session_meta", "response_item"} for record in records)
+
+
+def test_shared_wire_generation_observes_provider_parser_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rebuilding identical input must execute a changed provider parser."""
+    from polylogue.sources.parsers import codex
+
+    payload: JSONValue = [
+        {"type": "session_meta", "payload": {"id": "w1-codex", "cwd": "/synthetic"}},
+        {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "id": "w1-message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "synthetic parser witness"}],
+            },
+        },
+    ]
+    original_parse = codex.parse
+    calls = 0
+
+    def drop_messages(records: Sequence[object], fallback_id: str) -> ParsedSession:
+        nonlocal calls
+        calls += 1
+        session = original_parse(records, fallback_id)
+        session.messages.clear()
+        return session
+
+    with shared_wire_generation():
+        first = dispatch_module.parse_payload("codex", payload, "w1-codex")
+        assert first and first[0].messages
+        monkeypatch.setattr(codex, "parse", drop_messages)
+        second = dispatch_module.parse_payload("codex", payload, "w1-codex")
+        assert calls == 1
+        assert second and not second[0].messages
+
+
+def test_shared_wire_generation_observes_implicit_filesystem_sidecars(tmp_path: Path) -> None:
+    """New sidecar bytes at the same source path must change the actual parse."""
+    source_path = tmp_path / "w1-sidecars.jsonl"
+    sidecar = tmp_path / "w1-sidecars" / "tool-results" / "toolu_W1.txt"
+    sentinel = "w1-complete-sidecar-witness"
+    payload: JSONValue = [
+        {
+            "type": "user",
+            "uuid": "message-w1",
+            "sessionId": "w1-sidecars",
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_W1",
+                        "content": (
+                            "<persisted-output>\nOutput too large (5.0KB). Full output saved to: "
+                            f"{sidecar}\n\nPreview (first 2KB):\nshort preview\n</persisted-output>"
+                        ),
+                    }
+                ],
+            },
+        }
+    ]
+    assert isinstance(payload, list)
+    source_path.write_text("\n".join(json.dumps(item) for item in payload) + "\n", encoding="utf-8")
+    with shared_wire_generation():
+        first = dispatch_module.parse_payload("claude-code", payload, "w1-sidecars", source_path=str(source_path))
+        first_blocks = [block for session in first for message in session.messages for block in message.blocks]
+        assert any(block.type is BlockType.TOOL_RESULT for block in first_blocks)
+        assert all(sentinel not in (block.text or "") for block in first_blocks)
+        sidecar.parent.mkdir(parents=True)
+        sidecar.write_text("synthetic output line\n" * 512 + sentinel, encoding="utf-8")
+        second = dispatch_module.parse_payload("claude-code", payload, "w1-sidecars", source_path=str(source_path))
+        assert any(
+            block.type is BlockType.TOOL_RESULT and sentinel in (block.text or "")
+            for session in second
+            for message in session.messages
+            for block in message.blocks
+        )

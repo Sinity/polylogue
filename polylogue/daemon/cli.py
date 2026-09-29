@@ -123,7 +123,8 @@ if TYPE_CHECKING:
     from polylogue.daemon.http import DaemonAPIHTTPServer
     from polylogue.daemon.intake_adapters import ColdBuildGeneration
     from polylogue.daemon.lifecycle import DaemonLifecycle
-    from polylogue.daemon.session_profile_composition import SessionProfileCallback
+    from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+    from polylogue.daemon.session_profile_composition import ComposedSessionProfiles, SessionProfileCallback
     from polylogue.maintenance.raw_authority import ArchiveWriterRebuildExclusion
     from polylogue.sources.live.cursor import CursorStore
     from polylogue.sources.live.watcher import EmbeddingConvergenceOwner
@@ -1911,6 +1912,35 @@ async def _shutdown_writer_coordinator_with_rebuild_exclusion(
     return writer_drained
 
 
+def compose_ingest_owner(
+    archive_root: Path, write_bridge: DaemonWriteThreadBridge
+) -> tuple[DaemonOperationRuntime, ComposedSessionProfiles]:
+    """The ingest owner of a daemon that serves no API: its operation runtime.
+
+    It shares the daemon's compute capacity and session-profile maintenance
+    and re-drives accepted ingests exactly as the API server's runtime does;
+    the caller starts the re-drive and shuts the runtime down.
+    """
+    from polylogue.daemon.execution import daemon_compute_adapter
+    from polylogue.daemon.operation_runtime import DaemonOperationRuntime
+    from polylogue.daemon.session_profile_composition import compose_session_profile_callback
+
+    profiles = compose_session_profile_callback(
+        archive_root,
+        compute_adapter=daemon_compute_adapter(),
+        write_bridge=write_bridge,
+        now=time.time,
+    )
+    runtime = DaemonOperationRuntime(
+        archive_root,
+        write_bridge=write_bridge,
+        execution_kernel=daemon_compute_adapter(),
+        owner_loop=write_bridge.owner_loop,
+        session_maintenance=profiles.maintenance,
+    )
+    return runtime, profiles
+
+
 async def run_daemon_services(
     *,
     sources: tuple[WatchSource, ...],
@@ -2515,6 +2545,9 @@ async def _run_daemon_services_under_active_writer_lease(
 
     api_server: DaemonAPIHTTPServer | None = None
     api_server_task: asyncio.Task[None] | None = None
+    # The ingest owner when no API server carries one (``--no-api``).
+    ingest_owner_runtime: DaemonOperationRuntime | None = None
+    owner_session_profiles: ComposedSessionProfiles | None = None
     uds_server: Any | None = None
     uds_server_task: asyncio.Task[None] | None = None
     server: BrowserCaptureHTTPServer | None = None
@@ -2608,6 +2641,9 @@ async def _run_daemon_services_under_active_writer_lease(
             # server already owns rather than standing up a second pool
             # (polylogue-c0l7n).
             publish_daemon_compute_adapter(api_server.execution_kernel)
+            # The re-drive's claim phase runs on this loop; the listeners
+            # serve only after it claimed every interrupted accepted ingest.
+            await api_server.operation_runtime.accepted_ingest_redrive_claimed()
             api_server_task = supervisor.start(
                 "api_server",
                 lambda: _serve_until_complete(api_server, label="api"),
@@ -2654,6 +2690,16 @@ async def _run_daemon_services_under_active_writer_lease(
                     },
                 )
 
+        if api_server is None and not schema_blocked:
+            # The ingest owner does not depend on the HTTP surface: accepted
+            # ingests that startup recovery left for it are re-driven by a
+            # watcher-only daemon too.
+            ingest_owner_runtime, owner_session_profiles = compose_ingest_owner(
+                archive_root_path, DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop())
+            )
+            ingest_owner_runtime.start_accepted_ingest_redrive()
+            await ingest_owner_runtime.accepted_ingest_redrive_claimed()
+
         # Ensure FTS structure after HTTP surfaces are bound and before live
         # catch-up starts. Startup FTS maintenance and catch-up ingestion are
         # both write-heavy; running them concurrently makes SQLite maintenance
@@ -2683,7 +2729,7 @@ async def _run_daemon_services_under_active_writer_lease(
                 from polylogue.daemon.execution import daemon_compute_adapter
 
                 daemon_compute = daemon_compute_adapter()
-                session_profile_callback = compose_session_profile_callback(
+                session_profile_callback = owner_session_profiles or compose_session_profile_callback(
                     archive_root_path,
                     compute_adapter=daemon_compute,
                     write_bridge=DaemonWriteThreadBridge(write_coordinator, asyncio.get_running_loop()),
@@ -2703,8 +2749,14 @@ async def _run_daemon_services_under_active_writer_lease(
                     config=embedding_config,
                 )
             )
-            if api_server is not None:
-                api_server.operation_runtime.embedding_convergence = embedding_convergence
+            # Every operation runtime this daemon composes shares its one
+            # embedding owner: the API's, or the ingest owner under --no-api.
+            for operation_runtime in (
+                api_server.operation_runtime if api_server is not None else None,
+                ingest_owner_runtime,
+            ):
+                if operation_runtime is not None:
+                    operation_runtime.embedding_convergence = embedding_convergence
 
             async def converge_ingest_embeddings(index_db: Path, paths: Sequence[Path]) -> bool:
                 ids = embedding_session_ids_for_paths(index_db, archive_root=archive_root_path, paths=paths)
@@ -3342,6 +3394,8 @@ async def _run_daemon_services_under_active_writer_lease(
                 await _shutdown_server_if_serving(uds_server, uds_server_task, label="uds")
             if api_server is not None:
                 await api_server.operation_runtime.shutdown()
+            if ingest_owner_runtime is not None:
+                await ingest_owner_runtime.shutdown()
 
             # One owner cancels and awaits every child inside its declared
             # deadline. Anything still running afterwards is named here

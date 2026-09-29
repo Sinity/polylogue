@@ -236,7 +236,6 @@ async with Polylogue.open() as archive:
 | `.list_summaries()` | Execute and return `list[SessionSummary]` (lightweight, no messages) |
 | `.first()` | Execute and return first match or `None` |
 | `.count()` | Execute and return count (uses SQL fast path when possible) |
-| `.delete()` | Delete matching sessions (returns count deleted) |
 | `.can_use_summaries()` | Check if `list_summaries()` is valid for current filters |
 
 ## Ingestion

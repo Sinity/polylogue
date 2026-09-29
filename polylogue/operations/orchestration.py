@@ -1,4 +1,4 @@
-"""Paged reads of one session's own records for the orchestration evidence operation.
+"""The orchestration evidence read shared by every public surface.
 
 Each reader is a keyset stream over the session's own rows, so the evidence
 builder holds one page per relation at a time instead of the whole session.
@@ -6,8 +6,10 @@ builder holds one page per relation at a time instead of the whole session.
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
+from typing import TYPE_CHECKING
 
 from polylogue.archive.message.models import Message
 from polylogue.archive.session.events import SessionEvent
@@ -18,6 +20,10 @@ from polylogue.storage.sqlite.archive_tiers.archive_tiers_specs import MESSAGES_
 from polylogue.storage.sqlite.queries.mappers import _row_to_content_block
 from polylogue.storage.sqlite.queries.mappers_archive import bind_message_row_mapper
 from polylogue.storage.sqlite.queries.session_events import _row_to_session_event
+
+if TYPE_CHECKING:
+    from polylogue.analysis.orchestration_evidence import SessionOrchestrationEvidence
+    from polylogue.storage.sqlite.archive_tiers.archive import ArchiveStore
 
 _PAGE_SIZE = 200
 _MESSAGE_SELECT = MESSAGES_SPEC.record_select_column_names("m")
@@ -145,3 +151,58 @@ def iter_orchestration_usage(conn: sqlite3.Connection, session_id: str) -> Itera
         if len(rows) < _PAGE_SIZE:
             return
         after = (int(rows[-1]["position"]),)
+
+
+def _not_aborted() -> None:
+    return None
+
+
+def read_session_orchestration(
+    archive: ArchiveStore,
+    session_ref: str,
+    *,
+    raise_if_aborted: Callable[[], None] = _not_aborted,
+) -> SessionOrchestrationEvidence | None:
+    """Project one session's orchestration evidence from a pinned archive.
+
+    The Python API, MCP ``get(projection="orchestration")`` and the CLI
+    ``read --view orchestration`` operation all read through here, so the
+    surfaces cannot disagree about one stored session. ``None`` means the
+    reference names no session.
+    """
+
+    from polylogue.analysis.orchestration_evidence import build_session_orchestration
+    from polylogue.archive.query.predicate import QueryFieldPredicate, QueryFieldRef
+    from polylogue.operations.read_view_lineage import _TopologySnapshot
+    from polylogue.storage.derived.topology import derive_session_topology_async
+
+    try:
+        session_id = archive.resolve_session_id(session_ref)
+    except KeyError:
+        return None
+    topology = asyncio.run(derive_session_topology_async(_TopologySnapshot(archive, raise_if_aborted), session_id))
+    artifacts, _ = archive.raw_artifacts_for_session(session_id, limit=1, offset=0)
+    predicate = QueryFieldPredicate(field="session.id", values=(session_id,), op="=").with_field_ref(
+        QueryFieldRef(scope="session", name="id", source_name="session.id")
+    )
+    return build_session_orchestration(
+        session_id,
+        topology,
+        messages=iter_orchestration_messages(archive._conn, session_id),
+        events=iter_orchestration_events(archive._conn, session_id),
+        acquisition=artifacts[0] if artifacts else None,
+        delegations=archive.query_delegations(predicate, limit=1001),
+        usage_rows=iter_orchestration_usage(archive._conn, session_id),
+    )
+
+
+def execute_orchestration_read(
+    payload: Mapping[str, object], *, archive: ArchiveStore, raise_if_aborted: Callable[[], None] = _not_aborted
+) -> dict[str, object]:
+    """Serve ``read.orchestration`` from the operation's pinned archive."""
+
+    session_ref = str(payload["session_id"])
+    evidence = read_session_orchestration(archive, session_ref, raise_if_aborted=raise_if_aborted)
+    if evidence is None:
+        raise KeyError(f"Session not found: {session_ref}")
+    return {"view": "orchestration", "payload": evidence.model_dump(mode="json")}

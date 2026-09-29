@@ -121,6 +121,10 @@ def reflink_archive_snapshot(source: Path, destination: Path) -> ArchiveSnapshot
     )
     if completed.returncode != 0:
         reflinked = False
+        # cp may create the destination before discovering that reflinks are
+        # unavailable. Never overlay a byte copy onto a partial snapshot.
+        if destination.exists():
+            shutil.rmtree(destination)
         shutil.copytree(source, destination)
 
     for name in REQUIRED_TIERS:
@@ -502,7 +506,8 @@ def _pushdown_detail(family: CensusFamily, statements: Sequence[str]) -> str:
 
 def _classify(statement: str, step: PlanStep, family: CensusFamily) -> ScanFinding:
     for allowance in family.scan_allowances:
-        if allowance.detail in step.detail:
+        allowance_tokens = allowance.detail.split()
+        if step.detail.split()[: len(allowance_tokens)] == allowance_tokens:
             return ScanFinding(
                 statement=statement,
                 detail=step.detail,

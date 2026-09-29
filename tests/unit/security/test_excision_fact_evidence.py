@@ -23,7 +23,7 @@ from polylogue.security.excision import (
     resolve_session_excision_target,
 )
 from polylogue.storage.blob_store import BlobStore
-from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_archive_database
+from polylogue.storage.sqlite.archive_tiers.bootstrap import initialize_active_archive_root, initialize_archive_database
 from polylogue.storage.sqlite.archive_tiers.source_write import (
     ContentExcisedError,
     write_source_raw_session,
@@ -40,6 +40,9 @@ def _seed(tmp_path: Path) -> str:
     """One Claude Code session plus its TODO snapshot, and an unrelated one."""
     source_db = tmp_path / "source.db"
     index_db = tmp_path / "index.db"
+    # Excision opens the archive to drop the index session; that needs the
+    # archive format marker a real root carries.
+    initialize_active_archive_root(tmp_path)
     initialize_archive_database(source_db, ArchiveTier.SOURCE)
     initialize_archive_database(index_db, ArchiveTier.INDEX)
 

@@ -366,6 +366,10 @@ class VerifyRun:
             if self.mirror_current:
                 _write_json(self.root / CURRENT_RUN_PATH, self._payload)
 
+    def record_execution_environment_key(self, key: str) -> None:
+        """Bind the run to the caller environment that shaped its execution."""
+        self._payload["execution_environment_key"] = key
+
     def record_execution_worktree(self, provenance: Mapping[str, Any]) -> None:
         for key in ("git_head", "git_branch", "git_dirty", "git_worktree_content_sha256"):
             self._payload[key] = provenance.get(key)

@@ -371,37 +371,6 @@ async def test_a_sampled_composed_sort_samples_every_candidate(tmp_path: Path, m
 
 
 @pytest.mark.asyncio
-async def test_a_composed_delete_targets_what_the_list_selects(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A composed count sort deletes the session its list page shows.
-
-    Anti-vacuity (Codex P1, #5695): select delete targets from the tail-only
-    summaries and the order differs from the composed list's.
-    """
-    from polylogue.archive.query import archive_execution
-
-    for index in range(3):
-        _seed(tmp_path, f"x{index}", updated_at="2026-01-01T00:00:00Z", messages=1 + index)
-    plan = SessionQueryPlan(sort="messages", limit=1)
-    listed = await list_archive(plan, archive_root=tmp_path, config=None)
-    chosen: list[str] = []
-
-    async def fake_list(plan_arg: SessionQueryPlan, **kwargs: object) -> list[Session]:
-        sessions = await list_archive(plan_arg, archive_root=tmp_path, config=None)
-        chosen.extend(str(session.id) for session in sessions)
-        return sessions
-
-    monkeypatch.setattr(archive_execution, "list_archive", fake_list)
-    monkeypatch.setattr(
-        archive_execution,
-        "list_summaries_archive",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("composed delete used summaries")),
-    )
-    await archive_execution.delete_archive(plan, archive_root=tmp_path, config=None)
-
-    assert chosen == [str(session.id) for session in listed]
-
-
-@pytest.mark.asyncio
 async def test_units_of_a_default_composed_page_get_the_default_page_allowance(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -544,3 +513,34 @@ async def test_units_of_an_unlimited_sampled_page_get_the_sample_width(
 
     assert len(sessions) == 50
     assert widths and set(widths) == {50}
+
+
+@pytest.mark.asyncio
+async def test_post_filtered_offset_applies_once_and_count_ignores_the_window(tmp_path: Path) -> None:
+    """An offset skips survivors exactly once; a count reports the whole result.
+
+    ``root`` is a residual post-filter. An unlimited post-filtered read used to
+    pass the offset to SQL, over unfiltered candidates, and then skip that many
+    survivors again, and ``count`` kept the page offset on its unbounded plan.
+    Anti-vacuity: restore ``plan.limit is not None`` in ``post_filter_fetch``
+    and the unlimited page loses four rows instead of two; keep the offset in
+    ``count_archive`` and the count drops below five.
+    """
+    from polylogue.archive.query.archive_execution import count_archive
+
+    for index in range(5):
+        _seed(tmp_path, f"root-{index}", updated_at=f"2026-01-0{index + 1}T00:00:00Z", messages=1)
+
+    everything = await list_summaries_archive(SessionQueryPlan(root=True), archive_root=tmp_path, config=None)
+    unlimited = await list_summaries_archive(SessionQueryPlan(root=True, offset=2), archive_root=tmp_path, config=None)
+    limited = await list_summaries_archive(
+        SessionQueryPlan(root=True, offset=2, limit=10), archive_root=tmp_path, config=None
+    )
+    sessions = await list_archive(SessionQueryPlan(root=True, offset=2), archive_root=tmp_path, config=None)
+
+    assert len(everything) == 5
+    assert [summary.id for summary in unlimited] == [summary.id for summary in everything[2:]]
+    assert [summary.id for summary in limited] == [summary.id for summary in everything[2:]]
+    assert [session.id for session in sessions] == [summary.id for summary in everything[2:]]
+    assert await count_archive(SessionQueryPlan(root=True, offset=2), archive_root=tmp_path, config=None) == 5
+    assert await count_archive(SessionQueryPlan(root=True, offset=2, limit=1), archive_root=tmp_path, config=None) == 5

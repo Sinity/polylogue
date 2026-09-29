@@ -70,3 +70,27 @@ def test_oversized_projected_item_envelope_returns_useful_advancing_page() -> No
     assert body["page"]["items"] == []
     assert body["page"]["projected_items"]
     assert len(result.encode("utf-8")) <= 25_000
+
+
+def test_trimmed_dict_rooted_page_does_not_claim_the_rows_it_omitted() -> None:
+    """A trimmed dict-rooted page carries its own shortened coordinates.
+
+    Anti-vacuity: copy the untrimmed root's ``next_offset``/``truncated`` into
+    the trimmed page and it says every member was returned (``truncated``
+    false, ``next_offset`` absent) although the budget cut the list short.
+    """
+    from polylogue.mcp.payloads import MCPRootPayload
+
+    members = [f"session:{index}-" + "x" * 4000 for index in range(20)]
+    payload = MCPRootPayload(
+        root={"members": members, "member_count": 20, "offset": 3, "next_offset": None, "truncated": False}
+    )
+
+    with _response_context("query", {"expression": "from query:abc", "limit": 20, "offset": 3}):
+        body = json.loads(_json_payload(payload))
+
+    consumed = body["returned_items"]
+    assert 0 < consumed < len(members)
+    assert body["page"]["members"] == members[:consumed]
+    assert body["page"]["next_offset"] == 3 + consumed
+    assert body["page"]["truncated"] is True

@@ -88,10 +88,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         use_when=(
             "Run a specific test file, directory, or -k/-m selection in the inner loop, or inspect the latest "
             "full-run timing receipts, without invoking raw pytest. Refuses in a checkout on the default branch "
-            "unless given --on-default-branch."
+            "unless given --on-default-branch. A selection naming eight or more test modules runs under xdist "
+            "(-n 4) unless it passes -n or -p no:xdist. A selection with a fixed test order (-p no:randomly or "
+            "--randomly-seed=N) that already passed on the identical tree is answered from its receipt; pass "
+            "--rerun to run it anyway."
         ),
         examples=(
             "devtools test tests/unit/pipeline",
+            "devtools test tests/unit/pipeline --rerun",
             "devtools test -k hybrid",
             "devtools test tests/unit/storage -x",
             "devtools test --outliers 20",
@@ -335,8 +339,14 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Generate provider schema packages and optional evidence clusters.",
         "devtools.schema_generate",
         json_flag=True,
-        use_when="Refresh provider schema package artifacts from archive observations outside the archive CLI.",
-        examples=("devtools schema generate --provider chatgpt --cluster",),
+        use_when=(
+            "Preview provider schema package artifacts from archive observations outside the archive CLI; "
+            "add `--cluster --retain-clusters` to save the cluster manifest that `schema promote` reads."
+        ),
+        examples=(
+            "devtools schema generate --provider chatgpt",
+            "devtools schema generate --provider chatgpt --cluster --retain-clusters",
+        ),
     ),
     CommandSpec(
         "schema commit",
@@ -394,7 +404,10 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
         "Promote a schema evidence cluster into a registered package version.",
         "devtools.schema_promote",
         json_flag=True,
-        use_when="Turn reviewed schema evidence clusters into committed provider schema packages.",
+        use_when=(
+            "Turn a reviewed schema evidence cluster into a committed provider schema package; the cluster "
+            "manifest comes from `schema generate --cluster --retain-clusters`."
+        ),
         examples=("devtools schema promote --provider chatgpt --cluster chatgpt-message-v2",),
     ),
     CommandSpec(

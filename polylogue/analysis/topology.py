@@ -279,14 +279,18 @@ class SessionTopology(BaseModel):
                 break
         if parent_of is None:
             return ()
+        # Parallel evidence edges (one child asserted under two link types)
+        # stay on ``edges``; a sibling is a node, named once.
         return tuple(
-            edge.child_id
-            for edge in self.edges
-            if edge.composable
-            and edge.resolved
-            and edge.parent_id is not None
-            and str(edge.parent_id) == str(parent_of)
-            and str(edge.child_id) != str(session_id)
+            dict.fromkeys(
+                edge.child_id
+                for edge in self.edges
+                if edge.composable
+                and edge.resolved
+                and edge.parent_id is not None
+                and str(edge.parent_id) == str(parent_of)
+                and str(edge.child_id) != str(session_id)
+            )
         )
 
     def unresolved_edges(self) -> tuple[TopologyEdge, ...]:

@@ -51,7 +51,11 @@ loopback ports.
 1. **Separate machine and browser credentials.** When `--api-auth-token`
    is configured, machine clients present `Authorization: Bearer <token>`.
    The first-party shell instead rotates a short-lived `read`/`user_state`/
-   `events` credential through `POST /api/web-auth/session`. It can update
+   `events` credential through `POST /api/web-auth/session`.
+   Shell HTML routes (`/`, `/sessions`, `/search` ...) require the same
+   bearer or web credential; a browser without one is shown the sign-in page
+   with `401`, and the CLI signs it in through a one-time fragment ticket
+   exchanged at `/web-auth/sign-in`. It can update
    marks, annotations, saved views, recall packs, and workspaces, but archive
    reset, ingest, and maintenance operations remain machine-bearer capabilities.
    The opaque value
@@ -249,6 +253,14 @@ preview, `--yes` to apply) removes a session across every local tier:
    across `ref_type IN ('raw_payload', 'attachment', 'sidecar')`, so a
    session's inline attachments (whose content hash can differ from the raw
    payload's) each get their own non-resurrection marker too.
+
+   Excision forgets the excised session, not every session that shares a
+   content-addressed blob with it. A hash that another session still
+   references (the same tool output, the same attachment) gets no marker and
+   stays readable for that session; the receipt names it in
+   `shared_blob_hashes`, and excising the last session that references it
+   marks it. Forgetting content wherever it appears is the secret-scanning
+   route's job.
 3. `user.db` — content-bearing assertions targeting the excised
    session/messages/blocks are removed, and one durable
    `AssertionKind.EXCISION_RECORD` audit receipt is written (reason, actor,

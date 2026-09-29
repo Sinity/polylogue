@@ -20,7 +20,7 @@ from polylogue.archive.query.watch_definition import (
     compile_watch_definition,
     validate_watch_definition,
 )
-from polylogue.storage.sqlite.query_objects import put_query, put_query_name
+from polylogue.storage.sqlite.query_objects import put_query, put_query_name, retire_unwatched_baselines
 
 
 def clear_query_watch(conn: sqlite3.Connection, *, name: str, now_ms: int) -> bool:
@@ -33,14 +33,17 @@ def clear_query_watch(conn: sqlite3.Connection, *, name: str, now_ms: int) -> bo
     ``list_watched_queries`` keeps handing the convergence stage a definition
     the product no longer holds (PR #5375/#5377). Both lifecycle routes clear
     the prior binding through here, inside the same transaction as the
-    assertion change.
+    assertion change. A hash left with no watcher loses its baseline here too
+    (``retire_unwatched_baselines``).
     """
 
     cursor = conn.execute(
-        "UPDATE query_names SET watch = 0, updated_at_ms = ? WHERE name = ? AND watch = 1",
+        "UPDATE query_names SET watch = 0, updated_at_ms = ? WHERE name = ? AND watch = 1 RETURNING query_hash",
         (now_ms, name),
     )
-    return int(cursor.rowcount) > 0
+    cleared = [str(row[0]) for row in cursor.fetchall()]
+    retire_unwatched_baselines(conn, cleared)
+    return bool(cleared)
 
 
 def register_query_watch(

@@ -291,7 +291,7 @@ class TestSessionReadEvidenceKinds:
 
         The kind has to be one ``session.read`` genuinely does not serve.
         ``events`` was used here until it graduated onto the windowed evidence
-        contract (``_WINDOWED_EVIDENCE_READERS``), after which a seeded session
+        contract (``SESSION_EVIDENCE_PAGE_READERS``), after which a seeded session
         answered it with a valid empty page and this assertion could never
         hold -- so the refusal it exists to pin went unchecked.
         """
@@ -306,7 +306,7 @@ class TestSessionReadEvidenceKinds:
         everything: each kind the contract declares answers for a real session.
 
         Mutation: drop a kind's reader from ``_SESSION_EVIDENCE_READERS`` or
-        ``_WINDOWED_EVIDENCE_READERS`` while leaving it in ``SessionReadKind``
+        ``SESSION_EVIDENCE_PAGE_READERS`` while leaving it in ``SessionReadKind``
         and this goes red naming that kind, which is the exact drift that left
         the refusal test above vacuous in the other direction.
         """

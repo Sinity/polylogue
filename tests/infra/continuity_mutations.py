@@ -17,7 +17,7 @@ def _is_incident_expression(expression: str | None) -> bool:
     return (
         isinstance(expression, str)
         and "text:parallel-child" in expression
-        and "workflow_run:" in expression
+        and 'AND text:"workflow_run:' in expression
         and " | count" not in expression
     )
 

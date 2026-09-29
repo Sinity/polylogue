@@ -80,6 +80,14 @@ class EmbeddingRecipe:
     request_options: tuple[tuple[str, str | int | float | bool], ...] = ()
     element_type: str = "float32"
 
+    def __post_init__(self) -> None:
+        if self.element_type != "float32":
+            raise ValueError("embedding storage supports only float32 output")
+        keys = [key for key, _ in self.request_options]
+        if len(keys) != len(set(keys)):
+            raise ValueError("embedding request options contain duplicate keys")
+        object.__setattr__(self, "request_options", tuple(sorted(self.request_options, key=lambda item: item[0])))
+
     @classmethod
     def current(
         cls,

@@ -451,7 +451,8 @@ def test_retained_replay_terminal_fts_verifies_nonempty_membership(tmp_path: Pat
     )
 
 
-def test_owned_nonempty_generation_refuses_cold_build_deferral(tmp_path: Path) -> None:
+@pytest.mark.parametrize("deferred_indexes", [False, True])
+def test_owned_nonempty_generation_refuses_cold_build_deferral(tmp_path: Path, deferred_indexes: bool) -> None:
     """A resumed candidate is never silently treated as a fresh writer target."""
     bootstrap_archive_root(tmp_path)
     generation = IndexGenerationStore.for_archive_root(tmp_path).create(source_snapshot="nonempty-cold-build-test")
@@ -460,6 +461,7 @@ def test_owned_nonempty_generation_refuses_cold_build_deferral(tmp_path: Path) -
         generation_root,
         generation_id=generation.generation_id,
         owner_id=generation.owner_id,
+        defer_secondary_indexes=deferred_indexes,
     ) as archive:
         archive._conn.execute(
             "INSERT INTO sessions (native_id, origin, content_hash) VALUES ('present', 'codex-session', zeroblob(32))"
@@ -473,8 +475,9 @@ def test_owned_nonempty_generation_refuses_cold_build_deferral(tmp_path: Path) -
         )
 
 
+@pytest.mark.parametrize("padded_native_id", [False, True])
 def test_frozen_inactive_generation_replays_through_sealed_session_shards(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, padded_native_id: bool
 ) -> None:
     """The frozen candidate copies the live shard transport, never source rows.
 
@@ -516,6 +519,21 @@ def test_frozen_inactive_generation_replays_through_sealed_session_shards(
         copies += 1
         return original_copy(*args, **kwargs)  # type: ignore[arg-type]
 
+    binding_calls: list[str] = []
+    if padded_native_id:
+        original_binding = revision_backfill._required_shard_prepared_rows
+
+        def bind_padded_native_id(raw_id: str, session: ParsedSession, bindings: Any) -> Any:
+            # The shard already holds the canonical identity. Exercise the
+            # real replay writer with an equivalent provider spelling.
+            binding_calls.append(raw_id)
+            return original_binding(
+                raw_id,
+                session.model_copy(update={"provider_session_id": f" {session.provider_session_id} "}),
+                bindings,
+            )
+
+        monkeypatch.setattr(revision_backfill, "_required_shard_prepared_rows", bind_padded_native_id)
     monkeypatch.setattr(archive_tier_write, "copy_shard_session_rows", counting_copy)
     result = backfill_historical_revision_evidence(
         Path(generation.index_path).parent,
@@ -526,6 +544,8 @@ def test_frozen_inactive_generation_replays_through_sealed_session_shards(
 
     assert result.replayed_logical_sources == 1
     assert copies == 1
+    if padded_native_id:
+        assert binding_calls
     assert (root / "source.db").read_bytes() == source_before
     with sqlite3.connect(generation.index_path) as conn:
         assert conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1

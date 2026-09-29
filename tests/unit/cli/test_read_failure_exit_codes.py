@@ -334,3 +334,64 @@ def test_missing_local_index_does_not_replace_a_typed_daemon_failure(
     assert "outcome: empty" not in result.output
     assert read_failure_message(failure) in result.output
     assert dispatch.call_count == 1
+
+
+@pytest.mark.parametrize(
+    ("label", "exc", "expected"),
+    [case for case in _FAILURE_CLASSES if case[0] != "unavailable"],
+    ids=[label for label, _exc, _expected in _FAILURE_CLASSES if label != "unavailable"],
+)
+def test_the_facets_route_leaves_through_the_read_failure_terminal(
+    label: str, exc: Exception, expected: int, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``facets`` renders a typed read failure instead of raising it.
+
+    Anti-vacuity: remove the ``OperationKernelError`` branch from
+    ``_fetch_daemon_facets`` and the failure escapes the command, so Click
+    reports exit 1 with the exception attached and no refusal line; the
+    exception and message assertions go red (and the cancelled case also
+    loses its 130).
+    """
+
+    from polylogue.cli.click_app import cli
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    (tmp_path / "index.db").write_bytes(b"")
+
+    with patch("polylogue.cli.operation_kernel.dispatch", side_effect=exc):
+        result = CliRunner().invoke(cli, ["facets"])
+
+    assert result.exit_code == expected, result.output
+    assert isinstance(result.exception, SystemExit), result.exception
+    assert read_failure_message(exc).splitlines()[0] in result.output
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        OperationFailedError("QueryTimeoutError", "query exceeded its deadline", {"deadline_ms": 5000}),
+        OperationFailedError("result_too_large", "facet page exceeds the transport bound"),
+    ],
+    ids=["deadline", "too-large"],
+)
+def test_the_facets_remedy_names_options_facets_takes(
+    exc: Exception, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A facets refusal never points at ``--limit``/``--since``/``--offset``.
+
+    Anti-vacuity: drop ``remedies=`` from the facets terminal call and the
+    shared query-verb remedy is printed, so both assertions go red.
+    """
+
+    from polylogue.cli.click_app import cli
+
+    monkeypatch.setenv("POLYLOGUE_ARCHIVE_ROOT", str(tmp_path))
+    monkeypatch.setenv("POLYLOGUE_FORCE_PLAIN", "1")
+    (tmp_path / "index.db").write_bytes(b"")
+
+    with patch("polylogue.cli.operation_kernel.dispatch", side_effect=exc):
+        result = CliRunner().invoke(cli, ["facets"])
+
+    assert "--query or --origin" in result.output
+    assert "--limit" not in result.output

@@ -8,6 +8,9 @@ import readline from 'node:readline';
 import { APIRequestContext, BrowserContext, Page, expect, request, test } from '@playwright/test';
 
 const COOKIE_NAME = 'polylogue_web_credential';
+// tests/browser/web_auth_server.py configures this daemon bearer. Loopback is
+// not identity: a browser signs in with a one-time ticket minted against it.
+const MACHINE_TOKEN = 'playwright-machine-token';
 const repoRoot = path.resolve(process.cwd(), '..');
 
 type ReadyReceipt = {
@@ -89,16 +92,26 @@ async function directBrowserFetch(page: Page, route: string): Promise<{ status: 
   }, route);
 }
 
+async function signedInUrl(route = '/'): Promise<string> {
+  const machine = await request.newContext({ baseURL: receipt.base_url });
+  const response = await machine.post('/api/web-auth/ticket', { headers: { Authorization: `Bearer ${MACHINE_TOKEN}` } });
+  expect(response.status()).toBe(201);
+  const { ticket } = await response.json() as { ticket: string };
+  await machine.dispose();
+  // The CLI opens the exchange page, which consumes the ticket and continues to the route.
+  return `${receipt.base_url}/web-auth/sign-in?next=${encodeURIComponent(route)}#polylogue-ticket=${encodeURIComponent(ticket)}`;
+}
+
 async function issueCredential(page: Page): Promise<void> {
-  const result = await page.evaluate(async () => {
+  const result = await page.evaluate(async (token) => {
     const response = await fetch('/api/web-auth/session', {
       method: 'POST',
       credentials: 'same-origin',
       cache: 'no-store',
-      headers: { 'X-Polylogue-Web-Client': '1' },
+      headers: { 'X-Polylogue-Web-Client': '1', Authorization: `Bearer ${token}` },
     });
     return { status: response.status, body: await response.json() as Record<string, unknown> };
-  });
+  }, MACHINE_TOKEN);
   expect(result).toMatchObject({ status: 201, body: { credential: { state: 'ready' } } });
 }
 
@@ -116,7 +129,7 @@ test.describe.serial('first-party daemon credentials', () => {
     const page = await context.newPage();
     const bootstrap = page.waitForResponse((response) => response.url().endsWith('/api/web-auth/session'));
 
-    await page.goto(receipt.base_url, { waitUntil: 'domcontentloaded' });
+    await page.goto(await signedInUrl(), { waitUntil: 'domcontentloaded' });
     await expect(page.locator('#archive-activity-list')).toContainText('Keep the receipts for AI work.');
     await page.locator('#archive-overview-island .load-more').click();
     expect((await bootstrap).status()).toBe(201);

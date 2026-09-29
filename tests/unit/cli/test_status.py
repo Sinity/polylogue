@@ -775,13 +775,15 @@ class TestCanonicalStatusOperation:
 
         configured_root = tmp_path / "configured"
         active_root = tmp_path / "active"
-        config = SimpleNamespace(
-            archive_root=configured_root,
-            db_path=active_root / "index.db",
-            sinex_mode="off",
-        )
+        # The publication mode comes from the loaded config and the archive
+        # file set from the resolved runtime config (#5722).
+        runtime_config = SimpleNamespace(archive_root=configured_root, db_path=active_root / "index.db")
         with (
-            patch("polylogue.config.load_polylogue_config", return_value=config),
+            patch("polylogue.config.load_polylogue_config", return_value=SimpleNamespace(sinex_mode="off")),
+            patch(
+                "polylogue.config.resolve_runtime_config",
+                return_value=SimpleNamespace(as_config=lambda: runtime_config),
+            ),
             patch("polylogue.sinex.service.publication_status") as publication_status,
         ):
             _sinex_publication_status_info()

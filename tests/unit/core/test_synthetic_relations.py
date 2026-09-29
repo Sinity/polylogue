@@ -16,7 +16,7 @@ import pytest
 
 from polylogue.schemas.synthetic import SyntheticCorpus
 from polylogue.schemas.synthetic.build_records import _coerce_schema
-from polylogue.schemas.synthetic.models import SchemaRecord
+from polylogue.schemas.synthetic.models import SchemaRecord, SchemaValue
 from polylogue.schemas.synthetic.relations import (
     ForeignKeyGraph,
     MutualExclusionGroup,
@@ -609,3 +609,23 @@ class TestRelationConstraintSolverIntegration:
         solver = _solver({})
         assert solver.path_matches("$.a.b", "$.a.b") is True
         assert solver.path_matches("$.a.b", "$.a.c") is False
+
+
+def test_relation_solver_honors_in_place_annotation_changes_between_generations() -> None:
+    """An object-ID cache returns the first parsed constraint after append or nested mutation."""
+    first: SchemaRecord = {"source": "$.parent", "target": "$.id"}
+    annotations: list[SchemaValue] = [first]
+    schema: SchemaRecord = {"x-polylogue-foreign-keys": annotations}
+    warm = _RelationConstraintSolver(schema)
+    warm.register_generated_id("$.id", "first")
+    assert warm.resolve_foreign_key("$.parent", random.Random(0)) == "first"
+
+    annotations.append({"source": "$.alternate", "target": "$.id"})
+    appended = _RelationConstraintSolver(schema)
+    appended.register_generated_id("$.id", "second")
+    assert appended.resolve_foreign_key("$.alternate", random.Random(0)) == "second"
+
+    first["target"] = "$.new_id"
+    mutated = _RelationConstraintSolver(schema)
+    mutated.register_generated_id("$.new_id", "third")
+    assert mutated.resolve_foreign_key("$.parent", random.Random(0)) == "third"

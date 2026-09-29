@@ -381,7 +381,7 @@ async def test_watcher_queues_behind_daemon_maintenance_writer(tmp_path: Path) -
     maintenance writer must run during that pause; the later archive write
     then queues behind it.  Reinstating ``coordinator.run('watcher.live_ingest',
     ...)`` around the whole page leaves maintenance blocked until parsing ends,
-    so the assertion below times out.
+    so ``maintenance_entered`` never sets and pytest-timeout fails the test.
     """
     archive_root = tmp_path / "archive"
     initialize_active_archive_root(archive_root)
@@ -405,17 +405,22 @@ async def test_watcher_queues_behind_daemon_maintenance_writer(tmp_path: Path) -
             )
         )
     )
-    parser_started = threading.Event()
+    loop = asyncio.get_running_loop()
+    parser_started = asyncio.Event()
     release_parser = threading.Event()
     stage = LiveParseStage(max_workers=1, max_inflight_bytes=1_000_000)
-    original_warm = stage.warm
+    original_warm_paths = stage.warm_paths
 
-    def paused_warm(candidates: object) -> int:
-        parser_started.set()
-        assert release_parser.wait(timeout=5.0), "test did not release parse prefetch"
-        return original_warm(candidates)  # type: ignore[arg-type]
+    # ``warm_paths`` is the batch's off-writer preparation of path-backed
+    # sources (``LiveBatchProcessor._ingest_full_paths``); pausing it holds
+    # the page between its ops evidence and its archive publication. Every
+    # wait below is on the event it means; pytest-timeout bounds a hang.
+    def paused_warm_paths(*args: Any, **kwargs: Any) -> frozenset[str]:
+        loop.call_soon_threadsafe(parser_started.set)
+        release_parser.wait()
+        return original_warm_paths(*args, **kwargs)
 
-    stage.warm = paused_warm  # type: ignore[method-assign]
+    stage.warm_paths = paused_warm_paths  # type: ignore[method-assign]
     events: list[DaemonWriteEvent] = []
     coordinator = DaemonWriteCoordinator(observer=events.append, archive_root=archive_root)
     polylogue = cast(
@@ -437,10 +442,13 @@ async def test_watcher_queues_behind_daemon_maintenance_writer(tmp_path: Path) -
         await release_maintenance.wait()
 
     ingest_task = asyncio.create_task(watcher._ingest_files([source]))
-    assert await asyncio.to_thread(parser_started.wait, 5.0)
-    maintenance_task = asyncio.create_task(coordinator.run("maintenance.raw_materialization", maintenance))
-    await asyncio.wait_for(maintenance_entered.wait(), timeout=1.0)
-    release_parser.set()
+    try:
+        await parser_started.wait()
+        maintenance_task = asyncio.create_task(coordinator.run("maintenance.raw_materialization", maintenance))
+        await maintenance_entered.wait()
+    finally:
+        # A failure above must not leave the parse thread parked forever.
+        release_parser.set()
     await asyncio.sleep(0)
     release_maintenance.set()
     metrics = await ingest_task

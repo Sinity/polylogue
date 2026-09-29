@@ -44,15 +44,21 @@ class _CoordinatorLoop:
         self._ready = threading.Event()
         self._thread = threading.Thread(target=self._run, name="test-daemon-coordinator", daemon=True)
         self._thread.start()
-        if not self._ready.wait(timeout=2):
-            raise TimeoutError("test daemon coordinator loop did not start")
+        # Wait for the loop itself, not a wall clock: a loaded host can take
+        # seconds to schedule this thread, and pytest-timeout bounds the test.
+        while not self._ready.wait(timeout=0.05):
+            if not self._thread.is_alive():
+                raise RuntimeError("test daemon coordinator loop exited before it started")
 
     def _run(self) -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self.loop = loop
         self.coordinator = DaemonWriteCoordinator(archive_root=self._archive_root)
-        self._ready.set()
+        # Signal from inside the running loop, as the production writer loop
+        # does: a bridge admitted before ``run_forever`` sees ``is_running()``
+        # false and refuses the write as DaemonWriterOwnerLoopStopped.
+        loop.call_soon(self._ready.set)
         try:
             loop.run_forever()
         finally:
@@ -61,9 +67,7 @@ class _CoordinatorLoop:
     def close(self) -> None:
         assert self.loop is not None
         self.loop.call_soon_threadsafe(self.loop.stop)
-        self._thread.join(timeout=2)
-        if self._thread.is_alive():
-            raise TimeoutError("test daemon coordinator loop did not stop")
+        self._thread.join()
 
 
 @dataclass(slots=True)
@@ -92,14 +96,12 @@ class DaemonOperationStack:
 
         self.server.shutdown()
         self.server.server_close()
-        self._server_thread.join(timeout=2)
-        if self._server_thread.is_alive():
-            raise TimeoutError("test machine operation listener did not stop")
+        self._server_thread.join()
 
         loop = self._loop.loop
         assert loop is not None
-        asyncio.run_coroutine_threadsafe(self.runtime.shutdown(), loop).result(timeout=5)
-        drained = asyncio.run_coroutine_threadsafe(self.write_coordinator.shutdown(timeout=2), loop).result(timeout=3)
+        asyncio.run_coroutine_threadsafe(self.runtime.shutdown(), loop).result()
+        drained = asyncio.run_coroutine_threadsafe(self.write_coordinator.shutdown(timeout=30), loop).result()
         if not drained:
             raise RuntimeError("test daemon writer did not drain before loop close")
         self.execution_kernel.shutdown(wait=True)
@@ -134,24 +136,27 @@ def running_daemon_operations(
     socket_path = socket_path or (Path("/tmp") / f"plg-op-{os.getpid()}-{uuid4().hex}.sock")
     if socket_path.parent != Path("/tmp"):
         ensure_private_socket_dir(socket_path.parent)
+    probe_path = Path("/tmp") / f"plg-probe-{uuid4().hex}.sock"
     probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     probe_bound = False
     try:
         try:
-            probe.bind(str(socket_path))
+            probe.bind(str(probe_path))
             probe_bound = True
         except PermissionError:
             pytest.skip("sandbox denies AF_UNIX listeners required for the production operation stack")
     finally:
         probe.close()
         if probe_bound:
-            socket_path.unlink(missing_ok=True)
+            probe_path.unlink(missing_ok=True)
 
     coordinator_loop = _CoordinatorLoop(archive_root)
     assert coordinator_loop.loop is not None
     assert coordinator_loop.coordinator is not None
     coordinator = coordinator_loop.coordinator
-    bridge = DaemonWriteThreadBridge(coordinator, coordinator_loop.loop, timeout=5)
+    # The production bridge bound (30 s), not a tighter test clock: a loaded
+    # host routinely takes longer than 5 s to admit the startup journal write.
+    bridge = DaemonWriteThreadBridge(coordinator, coordinator_loop.loop)
     bridge.run_sync("daemon.operation_journals.startup", prepare_operation_journals, archive_root)
     bridge.run_sync("daemon.operation_recovery.startup", recover_interrupted_operations, archive_root)
     kernel = BoundedComputeAdapter(

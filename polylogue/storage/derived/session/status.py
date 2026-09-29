@@ -44,9 +44,11 @@ _VIEW_DEPENDENCIES: dict[str, tuple[str, ...]] = {
     # else is missing, and their bodies select through the substrate relations
     # named here -- an ungated read of one raised ``no such table:
     # session_events`` from a status call on an archive that had not built them.
-    "session_runs": ("messages", "blocks", "session_events"),
-    "session_observed_events": ("messages", "blocks", "session_events"),
-    "session_context_snapshots": ("messages", "blocks", "session_events"),
+    # Each names exactly what its own body reads beyond the ``sessions`` spine:
+    # a shared superset zeroed a projection whose sources were all present.
+    "session_runs": (),
+    "session_observed_events": ("messages", "blocks"),
+    "session_context_snapshots": ("messages", "session_events"),
 }
 
 

@@ -16,11 +16,9 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from polylogue.operations.authority import authority_for_reader
 from polylogue.operations.query_lowering import cli_query_spec, cli_read_request, lower_cli_query_params
 from polylogue.operations.session_evidence import (
+    SESSION_EVIDENCE_PAGE_READERS,
     read_agent_policies_evidence,
-    read_file_edits_page,
-    read_raw_artifacts_page,
-    read_session_events_page,
-    read_web_content_constructs_page,
+    read_session_evidence_window,
 )
 
 if TYPE_CHECKING:
@@ -30,6 +28,7 @@ if TYPE_CHECKING:
     from polylogue.archive.query.spec import SessionQuerySpec
     from polylogue.config import Config, PolylogueConfig
     from polylogue.core.protocols import VectorProvider
+    from polylogue.operations.session_contracts import SessionRead
     from polylogue.storage.embeddings.identity import EmbeddingRecipe
     from polylogue.storage.search.cache import ReadViewIdentity
     from polylogue.storage.sqlite.archive_tiers.archive import ArchiveSessionSummary, ArchiveStore
@@ -228,6 +227,10 @@ def execute_read_operation(
         from polylogue.operations.read_view_extras import execute_effective_context_read
 
         result = execute_effective_context_read(payload, archive=archive)
+    elif name == "read.orchestration":
+        from polylogue.operations.orchestration import execute_orchestration_read
+
+        result = execute_orchestration_read(payload, archive=archive, raise_if_aborted=dependencies.raise_if_aborted)
     elif name == "read.lineage":
         from polylogue.operations.read_view_lineage import execute_lineage_read
 
@@ -458,6 +461,12 @@ def _query_payload(
         archive, spec, default_limit=DEFAULT_SESSION_LIST_LIMIT, limit=limit, offset=offset
     )
     total = _archive_count_sessions_for_spec(archive, spec)
+    if spec.latest:
+        # ``--latest`` selects one session, so the selection's cardinality is
+        # at most one whatever the filter counts. Reporting the filter's count
+        # made ``next_offset`` continue page after page, and a client walking
+        # the complete selection (``delete --all``) collected every match.
+        total = min(total, 1)
     session_ids = [summary.session_id for summary in summaries]
     attached, attached_gaps = _attached_units_payload(session_ids, spec=spec, params=params, archive=archive)
     # Decided after the projection runs: the attached-unit row ceiling is one
@@ -688,6 +697,11 @@ def _search_payload(
         from polylogue.api.archive import _archive_count_sessions_for_spec
 
         total = _archive_count_sessions_for_spec(archive, fetch_spec)
+        if spec.latest:
+            # The ranked plan bounds ``--latest`` to one session
+            # (``query_spec_to_plan``); its total is that selection's, as on
+            # the list path, not the filter's.
+            total = min(total, 1)
     # Same projection as the API builder: ``matched`` is the query's match
     # total, ``analyzed`` the hit window this route returns.
     authority = authority_for_reader(
@@ -1364,7 +1378,6 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
     arguments differ from the typed sessions.read owner contract.
     """
 
-    from polylogue.operations.session_contracts import SessionRead
     from polylogue.operations.transcript_window import read_transcript_window_sync
     from polylogue.surfaces.outcome import decide_outcome
     from polylogue.surfaces.projection_spec import ProjectionSpec
@@ -1375,7 +1388,7 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
     kind = str(payload.get("kind") or "transcript")
     if kind == "messages":
         return _session_messages_payload(payload, ref=ref, archive=archive)
-    if kind in _WINDOWED_EVIDENCE_READERS:
+    if kind in SESSION_EVIDENCE_PAGE_READERS:
         return _session_evidence_window_payload(payload, ref=ref, kind=kind, archive=archive)
     if kind != "transcript":
         return _session_evidence_payload(ref, kind=kind, archive=archive)
@@ -1389,12 +1402,7 @@ def _session_read_payload(payload: Mapping[str, object], *, archive: ArchiveStor
     if projection is not None:
         limit = projection.body_limit or limit
         offset = projection.body_offset if projection.body_offset is not None else offset
-    continuation = payload.get("continuation")
-    request = SessionRead.model_validate(
-        {"ref": ref, "continuation": str(continuation)}
-        if continuation
-        else {"ref": ref, "limit": limit, "offset": offset}
-    )
+    request = _session_window_request(ref, payload, limit=limit, offset=offset)
     try:
         session_id = archive.resolve_session_id(ref.removeprefix("session:"))
     except KeyError as exc:
@@ -1476,7 +1484,7 @@ def _session_messages_payload(
     from types import SimpleNamespace
 
     from polylogue.operations.message_locator import window_offset_around
-    from polylogue.operations.transcript_window import read_transcript_window_sync, window_request
+    from polylogue.operations.transcript_window import frame_request, read_transcript_window_sync
     from polylogue.surfaces.outcome import lineage_page_outcome
     from polylogue.surfaces.projection_spec import ProjectionSpec
 
@@ -1509,13 +1517,12 @@ def _session_messages_payload(
         # different message's window under the caller's reference.
         offset = window_offset_around(archive, session_id, str(around), limit)
 
-    request = window_request(
-        ref,
-        limit=limit,
-        offset=offset,
-        continuation=str(continuation_token) if continuation_token else None,
-    )
-    if request.message_role or request.message_type is not None or request.material_origin:
+    request = _session_window_request(ref, payload, limit=limit, offset=offset)
+    window_arguments = {"projection": dict(raw_projection)} if raw_projection else None
+    # A sessions.read token minted with message filters frames here too; its
+    # filters live in the token, not in this payload, so check the framed one.
+    selection, _transaction = frame_request(request, extra_arguments=window_arguments)
+    if selection.message_role or selection.message_type is not None or selection.material_origin:
         raise ValueError("session.read messages does not serve a filtered message window")
 
     header: dict[str, object] = {}
@@ -1536,12 +1543,7 @@ def _session_messages_payload(
     # A projection is part of the continuation identity only when one was
     # requested, so a default-projection token resumes across surfaces while
     # a token minted under a different projection is still refused.
-    window = read_transcript_window_sync(
-        archive,
-        request,
-        read=read,
-        extra_arguments={"projection": dict(raw_projection)} if raw_projection else None,
-    )
+    window = read_transcript_window_sync(archive, request, read=read, extra_arguments=window_arguments)
     result: dict[str, object] = {
         "outcome": lineage_page_outcome(
             matched=len(window.rows),
@@ -1642,30 +1644,6 @@ def _session_evidence_payload(ref: str, *, kind: str, archive: ArchiveStore) -> 
     return result
 
 
-#: Per-session evidence relations that are *paged* rather than answered whole,
-#: keyed by the ``session.read`` kind that names them.  Each answers
-#: ``(rows, total)`` where ``total`` is the relation's own row count; the page
-#: and its continuation are decided by ``operations/evidence_window.py``.
-#:
-#: Separate from ``_SESSION_EVIDENCE_READERS`` because the two answer different
-#: contracts, not because they read different tables: a whole-evidence kind may
-#: never report a partial body, and a windowed one must report its bound.
-_WINDOWED_EVIDENCE_READERS: dict[str, Callable[[ArchiveStore, str, int, int], tuple[list[dict[str, object]], int]]] = {
-    "events": lambda archive, session_id, limit, offset: read_session_events_page(
-        archive, session_id, limit=limit, offset=offset
-    ),
-    "raw": lambda archive, session_id, limit, offset: read_raw_artifacts_page(
-        archive, session_id, limit=limit, offset=offset
-    ),
-    "file-edits": lambda archive, session_id, limit, offset: read_file_edits_page(
-        archive, session_id, limit=limit, offset=offset
-    ),
-    "web-content": lambda archive, session_id, limit, offset: read_web_content_constructs_page(
-        archive, session_id, limit=limit, offset=offset
-    ),
-}
-
-
 def _session_evidence_window_payload(
     payload: Mapping[str, object],
     *,
@@ -1687,21 +1665,13 @@ def _session_evidence_window_payload(
     message window's, so the two families refuse each other's tokens by name.
     """
 
-    from polylogue.operations.evidence_window import EVIDENCE_WINDOW_FAMILIES, read_evidence_window
     from polylogue.surfaces.outcome import decide_outcome
-
-    family = EVIDENCE_WINDOW_FAMILIES[kind]
-    reader = _WINDOWED_EVIDENCE_READERS[kind]
-    try:
-        session_id = archive.resolve_session_id(ref.removeprefix("session:"))
-    except KeyError as exc:
-        raise ValueError(f"session not found: {ref}") from exc
 
     continuation_token = payload.get("continuation")
 
-    window = read_evidence_window(
+    window = read_session_evidence_window(
         archive,
-        family,
+        kind,
         ref=ref,
         # The declared request default (``SessionReadRequest.limit``) is the
         # bound when the caller names none, exactly as it is for a transcript
@@ -1709,8 +1679,10 @@ def _session_evidence_window_payload(
         limit=_non_negative_int(payload.get("limit"), default=_SESSION_READ_WINDOW) or _SESSION_READ_WINDOW,
         offset=_non_negative_int(payload.get("offset"), default=0),
         continuation=str(continuation_token) if continuation_token else None,
-        read=lambda page_limit, page_offset: reader(archive, session_id, page_limit, page_offset),
     )
+    if window is None:
+        raise ValueError(f"session not found: {ref}")
+    session_id = archive.resolve_session_id(ref.removeprefix("session:"))
 
     summary = archive.read_summary(session_id)
     result: dict[str, object] = {
@@ -1839,6 +1811,32 @@ def _cli_query_spec(params: Mapping[str, object]) -> SessionQuerySpec:
     """Compile the same CLI selection contract used by canonical execution."""
 
     return cli_query_spec(params)
+
+
+def _session_window_request(ref: str, payload: Mapping[str, object], *, limit: int, offset: int) -> SessionRead:
+    """Build the transcript window a ``session.read`` payload names.
+
+    A continuation carries its own window. An explicit ``limit`` beside it may
+    narrow the next page, and ``frame_request`` refuses a wider one; an
+    explicit nonzero ``offset`` is checked against the token's and refused on
+    conflict. Dropping either would serve a window the caller did not ask for:
+    the CLI narrows a resumed page to its remaining bound and to recover from
+    ``result_too_large``.
+    """
+
+    from polylogue.operations.session_contracts import SessionRead
+
+    continuation = payload.get("continuation")
+    if not continuation:
+        return SessionRead.model_validate({"ref": ref, "limit": limit, "offset": offset})
+    fields: dict[str, object] = {"ref": ref, "continuation": str(continuation)}
+    requested_limit = _non_negative_int(payload.get("limit"), default=0)
+    if requested_limit:
+        fields["limit"] = requested_limit
+    requested_offset = _non_negative_int(payload.get("offset"), default=0)
+    if requested_offset:
+        fields["offset"] = requested_offset
+    return SessionRead.model_validate(fields)
 
 
 def _non_negative_int(value: object, *, default: int) -> int:

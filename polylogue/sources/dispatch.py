@@ -1203,20 +1203,18 @@ def _claude_code_multiway_parse_inner(
         # not once per read of a field.
         observer = observers.get(group_id)
         if observer is None:
-            observer = observers[group_id] = AdmissionObserver(claude_code_unknown_wire_type)
-        # ``_fold_code_record`` silently drops a dict record whose ``type``
-        # is missing or not a string (logged, never folded into evidence);
-        # the admission ledger must not still count that as MATERIALIZED.
-        recognized = not (isinstance(item, dict) and not isinstance(item.get("type"), str))
-        observer.observe(item, source_index=index, recognized=recognized)
+            observer = observers[group_id] = AdmissionObserver(claude_code_unknown_wire_type, record_stream=True)
         if sidecar_accumulators is not None:
             sidecar_accumulators[group_id].observe(item)
         if record is not None and not is_agent_fallback and group_id == fallback_id:
             uuid = optional_string(record.get("uuid"))
             if uuid is not None:
                 primary_uuids.add(uuid)
-        if isinstance(item, dict):
-            claude_code_parser._fold_code_record(accumulators[group_id], index, item)
+        # The fold is the record's admission owner: it says whether the record
+        # was lowered (a dict without a string ``type`` leaves nothing), and a
+        # non-object record is refused.
+        lowered = isinstance(item, dict) and claude_code_parser._fold_code_record(accumulators[group_id], index, item)
+        observer.observe(item, source_index=index, lowered=lowered)
 
     record_index = 0
     for item in payloads:
@@ -1910,7 +1908,16 @@ def _parse_lowered_spec(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> 
     outer-record ledger the decorated leaf parsers attach.
     """
     sessions = _parse_lowered_spec_unadmitted(spec, resolver)
-    return admit_parsed_sessions(spec.provider.value.replace("-", "_"), spec.payload, sessions)
+    return admit_parsed_sessions(
+        spec.provider.value.replace("-", "_"),
+        spec.payload,
+        sessions,
+        # The one grouped record sequence whose sessions carry no parser
+        # ledger: the ATOF stream parser's own recognizer settles each record.
+        recognizes=hermes_spans.looks_like_atof_payload
+        if spec.provider is Provider.HERMES and spec.mode == "grouped_records"
+        else None,
+    )
 
 
 def _parse_lowered_spec_unadmitted(spec: LoweredPayloadSpec, resolver: SidecarResolver) -> list[ParsedSession]:
@@ -2170,67 +2177,87 @@ def parse_payload(
     return sessions
 
 
-def iter_bundle_record_sessions(
+class BundleCandidateDrift:
+    """ChatGPT bundle-candidate accounting across one container's members.
+
+    A member that looks like a conversation but fails the fragment shape is
+    a refused candidate; ``emit`` reports them once the container is done,
+    under the same threshold as the collecting bundle lowering.
+    """
+
+    def __init__(self) -> None:
+        self.candidates = 0
+        self.rejected = 0
+        self.matched = 0
+
+    def observe_streamed_conversation(self) -> None:
+        """Count a member proved a conversation fragment and parsed from scratch."""
+        self.candidates += 1
+        self.matched += 1
+
+    def emit(self, provider: Provider, fallback_id: str) -> None:
+        if (
+            provider is Provider.CHATGPT
+            and self.rejected
+            and (self.matched or self.candidates >= _CHATGPT_BUNDLE_DRIFT_MIN_CANDIDATES)
+        ):
+            emit(
+                "sources.chatgpt_bundle_candidate_rejected",
+                level=WARNING,
+                source_id=fallback_id,
+                provider=Provider.CHATGPT.value,
+                refused=self.rejected,
+                rows=self.candidates,
+                succeeded=self.matched,
+            )
+
+
+def bundle_member_sessions(
     provider: Provider,
-    records: Iterable[JSONValue],
+    record: JSONValue,
     fallback_id: str,
+    index: int,
     *,
     count: int,
     all_browser_captures: bool,
+    drift: BundleCandidateDrift,
     source_path: str | None = None,
     sidecar_resolver: SidecarResolver | None = None,
-) -> Iterator[ParsedSession]:
-    """Parse independent bundle members through the ordinary lowering rules."""
+) -> list[ParsedSession]:
+    """Parse one decoded bundle member through the ordinary lowering rules."""
     resolver = sidecar_resolver if sidecar_resolver is not None else _default_sidecar_resolver()
-    candidates = 0
-    rejected_candidates = 0
-    matched = 0
-    for index, record in enumerate(records):
-        if count == 1:
-            # Singleton arrays have special shared-page and browser lowering.
-            yield from parse_payload(
-                provider,
-                [record],
-                fallback_id,
-                source_path=source_path,
-                sidecar_resolver=resolver,
-            )
-        elif all_browser_captures:
-            yield from parse_payload(
-                provider,
-                record,
-                f"{fallback_id}-{index}",
-                source_path=source_path,
-                sidecar_resolver=resolver,
-            )
-        else:
-            # Reuse the same bundle normalization, including ChatGPT fragment
-            # rejection and Codex-task detection, before correcting the local
-            # one-item suffix to the original array position.
-            specs = _lower_bundle_payload(provider, [record], fallback_id)
-            if provider is Provider.CHATGPT:
-                shaped = _payload_record(record)
-                if shaped is not None and _looks_like_chatgpt_mapping_candidate(shaped):
-                    candidates += 1
-                    if not chatgpt.looks_like_fragment(shaped):
-                        rejected_candidates += 1
-                matched += len(specs)
-            for spec in specs:
-                yield from _parse_lowered_spec(replace(spec, fallback_id=f"{fallback_id}-{index}"), resolver)
-    if (
-        provider is Provider.CHATGPT
-        and rejected_candidates
-        and (matched or candidates >= _CHATGPT_BUNDLE_DRIFT_MIN_CANDIDATES)
-    ):
-        emit(
-            "sources.chatgpt_bundle_candidate_rejected",
-            level=WARNING,
-            source_id=fallback_id,
-            provider=Provider.CHATGPT.value,
-            refused=rejected_candidates,
-            rows=candidates,
-            succeeded=matched,
+    if count == 1:
+        # Singleton arrays have special shared-page and browser lowering.
+        return parse_payload(
+            provider,
+            [record],
+            fallback_id,
+            source_path=source_path,
+            sidecar_resolver=resolver,
         )
+    if all_browser_captures:
+        return parse_payload(
+            provider,
+            record,
+            f"{fallback_id}-{index}",
+            source_path=source_path,
+            sidecar_resolver=resolver,
+        )
+    # Reuse the same bundle normalization, including ChatGPT fragment
+    # rejection and Codex-task detection, before correcting the local
+    # one-item suffix to the original array position.
+    specs = _lower_bundle_payload(provider, [record], fallback_id)
+    if provider is Provider.CHATGPT:
+        shaped = _payload_record(record)
+        if shaped is not None and _looks_like_chatgpt_mapping_candidate(shaped):
+            drift.candidates += 1
+            if not chatgpt.looks_like_fragment(shaped):
+                drift.rejected += 1
+        drift.matched += len(specs)
+    sessions: list[ParsedSession] = []
+    for spec in specs:
+        sessions.extend(_parse_lowered_spec(replace(spec, fallback_id=f"{fallback_id}-{index}"), resolver))
+    return sessions
 
 
 def _lower_shared_chatgpt_document(record: PayloadRecord) -> ChatGPTLoweredDocument | None:
@@ -2437,34 +2464,44 @@ def parse_stream_payload(
         )
     if runtime_provider is Provider.CODEX:
         observer = AdmissionObserver(codex_unknown_wire_type)
+        stream = observer.observing(payloads)
         session = codex.parse_stream(
-            observer.observing(payloads),
+            stream,
             fallback_id,
             message_sink=message_sink_factory() if message_sink_factory is not None else None,
             event_sink=event_sink_factory() if event_sink_factory is not None else None,
         )
+        observer.drain(stream)
         return [observer.apply(session, "codex")]
     if runtime_provider is Provider.HERMES:
-        observer = AdmissionObserver(hermes_unknown_wire_type)
+        observer = AdmissionObserver(hermes_unknown_wire_type, record_stream=True)
+        parsed = False
 
         def admitted(records: Iterable[object]) -> Iterator[object]:
             # The parser's own recognition decides: a known-kind record it
             # skips (no uuid, say) is refused, not counted as materialized.
+            # A record the parser never pulled has no disposition at all.
             for item in records:
+                if parsed:
+                    observer.observe(item)
+                    continue
                 record = _payload_record(item)
+                recognized = record is not None and hermes_spans.looks_like_atof_payload(record)
                 observer.observe(
                     item,
-                    malformed=record is not None
-                    and hermes_unknown_wire_type(record) is None
-                    and not hermes_spans.looks_like_atof_payload(record),
+                    lowered=recognized,
+                    malformed=record is not None and not recognized and hermes_unknown_wire_type(record) is None,
                 )
                 yield item
 
+        stream = admitted(payloads)
         sessions = hermes_spans.parse_atof_stream(
-            admitted(payloads),
+            stream,
             fallback_id,
             profile_root=hermes_identity.profile_root_for_artifact(Path(source_path)) if source_path else None,
         )
+        parsed = True
+        AdmissionObserver.drain(stream)
         return observer.apply_each(sessions, "hermes")
     raise ValueError(f"provider {runtime_provider} does not support stream parsing")
 
@@ -2485,7 +2522,8 @@ __all__ = [
     "is_jsonl_source_path",
     "is_stream_record_provider",
     "parse_payload",
-    "iter_bundle_record_sessions",
+    "BundleCandidateDrift",
+    "bundle_member_sessions",
     "lower_chatgpt_documents",
     "parse_stream_payload",
 ]

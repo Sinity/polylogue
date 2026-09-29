@@ -43,7 +43,8 @@ def cli_interaction_case_strategy(draw: st.DrawFn) -> CliInteractionCase:
     """Generate valid and invalid-near command lines at arbitrary cursors."""
     field = draw(st.sampled_from(("title", "origin", "repo", "date")))
     value = draw(_UNICODE_WORD)
-    query = f'{field}:"{value}"'
+    quoted_value = value.replace("\\", "\\\\").replace('"', '\\"')
+    query = f'{field}:"{quoted_value}"'
     near_miss = draw(st.booleans())
     if near_miss:
         query = draw(
