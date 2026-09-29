@@ -808,7 +808,6 @@ _LOST_AUDIT_TIER_REFUSAL = (
 
 def _initialize_active_archive_root(root: Path) -> None:
     """Create or initialize every tier database in an archive root."""
-    from polylogue.operations.durable_change_train import audit_adoption_receipt_path, recover_pending_audit_adoption
     from polylogue.storage.archive_identity import (
         ArchiveLocation,
         OwnedArchiveLocation,
@@ -865,7 +864,6 @@ def _initialize_active_archive_root(root: Path) -> None:
             (root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS
         )
         manifest_root = root / ".maintenance-state" / "durable-change-trains"
-        pending_audit_adoption = audit_adoption_receipt_path(root).exists()
         has_durable_train_state = bool(_durable_train_manifest_paths(manifest_root))
         has_bootstrap_marker = (manifest_root / ".bootstrap").is_file()
         pending_bootstrap_path = manifest_root / ".bootstrap.pending"
@@ -891,15 +889,11 @@ def _initialize_active_archive_root(root: Path) -> None:
             (root / archive_tier_spec(tier).filename).exists() or (root / archive_tier_spec(tier).filename).is_symlink()
             for tier in DURABLE_MIGRATION_TIERS
         )
-        missing_audit_with_recovery_receipt = (
-            pending_audit_adoption and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
-        )
-        # A lineage member that has lost only ``audit.db`` has a named recovery
-        # route, and the generic marker text describes none of it. Prove the
-        # surviving durable pair belongs to this lineage -- which also reports
-        # a symlinked or multiply-linked source/user tier first, because that
-        # is the more severe finding -- and then raise the adoption refusal the
-        # operator can act on.
+        # A lineage member that has lost only ``audit.db`` gets the named
+        # lost-tier refusal, not the generic marker text. Prove the surviving
+        # durable pair belongs to this lineage -- which also reports a
+        # symlinked or multiply-linked source/user tier first, because that is
+        # the more severe finding -- and then refuse by name.
         established_pair_without_audit = (
             format_marker.is_file()
             and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).exists()
@@ -908,9 +902,7 @@ def _initialize_active_archive_root(root: Path) -> None:
                 (root / archive_tier_spec(tier).filename).is_file() for tier in (ArchiveTier.SOURCE, ArchiveTier.USER)
             )
         )
-        if any_durable_tier_exists and not (
-            (has_pending_bootstrap and not has_bootstrap_marker) or missing_audit_with_recovery_receipt
-        ):
+        if any_durable_tier_exists and not (has_pending_bootstrap and not has_bootstrap_marker):
             if established_pair_without_audit:
                 assert_archive_format_lineage(root, tiers=frozenset({ArchiveTier.SOURCE, ArchiveTier.USER}))
                 raise RuntimeError(_LOST_AUDIT_TIER_REFUSAL)
@@ -918,19 +910,6 @@ def _initialize_active_archive_root(root: Path) -> None:
         elif format_marker.exists() and not any_durable_tier_exists:
             raise RuntimeError(f"archive format marker exists without a six-tier archive: {format_marker}")
 
-        def classify_paths() -> tuple[bool, bool]:
-            durable_exists = any((root / archive_tier_spec(tier).filename).exists() for tier in DURABLE_MIGRATION_TIERS)
-            adoption = (
-                (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
-                and all((root / archive_tier_spec(tier).filename).is_file() for tier in DURABLE_MIGRATION_TIERS)
-                and manifest_root.is_dir()
-                and not has_durable_train_state
-                and not has_bootstrap_marker
-                and not has_pending_bootstrap
-            )
-            return durable_exists, adoption
-
-        durable_tier_exists, pre_marker_adoption = classify_paths()
         fresh_durable_bootstrap = (
             not durable_tier_exists
             and not has_durable_train_state
@@ -943,13 +922,6 @@ def _initialize_active_archive_root(root: Path) -> None:
         if fresh_durable_bootstrap:
             assert_owned_root()
             _record_fresh_durable_bootstrap_intent(root)
-        if pending_audit_adoption:
-            assert_owned_root()
-            recover_pending_audit_adoption(root)
-            # Receipt-backed recovery can add audit.db to a legacy archive.
-            # Recompute the path-sensitive classification before deciding
-            # whether startup must create the missing bootstrap marker.
-            durable_tier_exists, pre_marker_adoption = classify_paths()
         established_archive = has_bootstrap_marker or (
             (root / archive_tier_spec(ArchiveTier.SOURCE).filename).is_file()
             and (root / archive_tier_spec(ArchiveTier.USER).filename).is_file()
@@ -972,7 +944,7 @@ def _initialize_active_archive_root(root: Path) -> None:
             and not (root / archive_tier_spec(ArchiveTier.AUDIT).filename).is_file()
         ):
             raise RuntimeError(_LOST_AUDIT_TIER_REFUSAL)
-        if not recovering_fresh_durable_bootstrap and not pre_marker_adoption and not format_marker.exists():
+        if not recovering_fresh_durable_bootstrap and not format_marker.exists():
             assert_owned_root()
             reconcile_durable_change_trains_on_startup(root)
         location = ArchiveLocation.resolve(root)
@@ -987,13 +959,6 @@ def _initialize_active_archive_root(root: Path) -> None:
             assert_owned_root()
             _record_fresh_durable_bootstrap(root)
             record_fresh_archive_format(root)
-        elif pre_marker_adoption:
-            from polylogue.storage.sqlite.durable_change_train import _adopt_pre_marker_durable_bootstrap
-
-            assert_owned_root()
-            _adopt_pre_marker_durable_bootstrap(root)
-            assert_owned_root()
-            reconcile_durable_change_trains_on_startup(root)
         elif has_pending_bootstrap:
             # A crash after publishing the completed marker but before
             # removing the intent is harmless. Keep the intent until the
@@ -1033,7 +998,6 @@ def _archive_generation_token(root: Path) -> tuple[object, ...]:
     archive swapped underneath a running process. Anything this token cannot
     see belongs to another writer, which the single-writer contract excludes.
     """
-    from polylogue.operations.durable_change_train import audit_adoption_receipt_path
     from polylogue.storage.archive_identity import ArchiveLocation
     from polylogue.storage.sqlite.archive_tiers.archive_plan import archive_format_marker_path
 
@@ -1074,7 +1038,6 @@ def _archive_generation_token(root: Path) -> tuple[object, ...]:
         format_marker_digest(archive_format_marker_path(root)),
         (manifest_root / ".bootstrap").is_file(),
         (manifest_root / ".bootstrap.pending").is_file(),
-        audit_adoption_receipt_path(root).is_file(),
         manifest_entries,
     )
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import fcntl
 import sqlite3
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -198,6 +198,11 @@ class ArchiveBlobPublisher(BlobStore):
     def write_from_fileobj(self, source: IO[bytes], *, heartbeat: Heartbeat | None = None) -> tuple[str, int]:
         return self._queue(self._store.prepare_from_fileobj(source, heartbeat=heartbeat))
 
+    def write_from_writer(
+        self, write: Callable[[IO[bytes]], None], *, heartbeat: Heartbeat | None = None
+    ) -> tuple[str, int]:
+        return self._queue(self._store.prepare_from_writer(write, heartbeat=heartbeat))
+
     def write_from_bytes(self, data: bytes) -> tuple[str, int]:
         return self._queue(self._store.prepare_from_bytes(data))
 
@@ -228,6 +233,23 @@ class ArchiveBlobPublisher(BlobStore):
         self._pending.clear()
         self._pending_by_hash.clear()
         return receipts
+
+    def discard_queued(self, blob_hash: str) -> None:
+        """Drop the most recent queued write of ``blob_hash``; earlier writes stay queued."""
+        receipt_id = self._latest_receipt_by_hash.get(blob_hash)
+        for index in range(len(self._pending) - 1, -1, -1):
+            receipt, prepared = self._pending[index]
+            if receipt.publication_id == receipt_id:
+                del self._pending[index]
+                self._store.discard_prepared(prepared)
+                break
+        earlier = [(receipt, prepared) for receipt, prepared in self._pending if receipt.blob_hash == blob_hash]
+        if earlier:
+            self._latest_receipt_by_hash[blob_hash] = earlier[-1][0].publication_id
+            self._pending_by_hash[blob_hash] = earlier[-1][1]
+        else:
+            self._latest_receipt_by_hash.pop(blob_hash, None)
+            self._pending_by_hash.pop(blob_hash, None)
 
     def discard_pending(self) -> None:
         for _receipt, prepared in self._pending:

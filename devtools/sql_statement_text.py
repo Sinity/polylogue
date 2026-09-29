@@ -189,7 +189,12 @@ def _literal_string_sequence(expression: ast.AST, values: Mapping[str, tuple[str
 _BINDING_NODES = (ast.Assign, ast.AnnAssign, ast.For, ast.AsyncFor)
 
 
-def string_values(tree: ast.Module, *, scope: str | None = None) -> dict[str, tuple[str, ...]]:
+def string_values(
+    tree: ast.Module,
+    *,
+    scope: str | None = None,
+    scopes: Mapping[ast.AST, str] | None = None,
+) -> dict[str, tuple[str, ...]]:
     """Resolve string-valued names to the *union* of what they can hold.
 
     The union rather than the last assignment is the load-bearing choice. A
@@ -201,6 +206,9 @@ def string_values(tree: ast.Module, *, scope: str | None = None) -> dict[str, tu
     Two namespaces share the mapping: a bare name resolves to the texts it can
     hold, and ``[]<name>`` resolves to the members of a literal string sequence
     it is bound to, which is what lets a ``for table in (...)`` target expand.
+
+    *scopes* is ``function_scopes(tree)``; a caller resolving several scopes of
+    one tree passes it so the whole-module map is built once.
     """
     values: dict[str, tuple[str, ...]] = {}
 
@@ -212,7 +220,8 @@ def string_values(tree: ast.Module, *, scope: str | None = None) -> dict[str, tu
         ordinary = tuple(value for value in merged if value not in {"", HOLE})
         values[name] = tuple(dict.fromkeys((*sentinels, *ordinary[: max(0, _VALUE_LIMIT - len(sentinels))])))
 
-    scopes = function_scopes(tree)
+    if scopes is None:
+        scopes = function_scopes(tree)
     visible_scopes = {"<module>"}
     if scope is not None:
         parts = scope.split(".")

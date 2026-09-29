@@ -4242,3 +4242,24 @@ async def test_a_budgeted_pass_with_a_no_session_file_stays_a_retryable_attempt(
     with sqlite3.connect(cursor._ops_db_path) as ops:
         (outcome_code,) = ops.execute("SELECT outcome_code FROM ingest_attempts ORDER BY rowid DESC LIMIT 1").fetchone()
     assert outcome_code != IngestOutcome.UNSUPPORTED_SHAPE.value
+
+
+def test_cold_build_cursor_corroboration_reads_the_candidate_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """polylogue-slc55: a cold build corroborates cursors against its candidate.
+
+    The writer publishes into the inactive candidate generation; the active
+    index is empty until promotion. Anti-vacuity: resolving the active index
+    here demotes every cursor the build just wrote and re-ingests the file.
+    """
+    from polylogue.sources.live import cold_build
+
+    candidate = tmp_path / ".index-generations" / "gen-1" / "index.db"
+    registered = SimpleNamespace(generation=SimpleNamespace(index_path=str(candidate)))
+    monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root=None: registered)
+    assert live_watcher._published_index_path(tmp_path) == candidate
+
+    monkeypatch.setattr(cold_build, "active_cold_build_generation", lambda _root=None: None)
+    monkeypatch.setattr(live_watcher, "resolve_active_index_path", lambda root: root / "index.db")
+    assert live_watcher._published_index_path(tmp_path) == tmp_path / "index.db"

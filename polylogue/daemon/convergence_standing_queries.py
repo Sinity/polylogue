@@ -186,7 +186,7 @@ def make_standing_query_stage(
         if not user_db.exists():
             return True
         now_ms = int(time.time() * 1000)
-        conn = open_daemon_connection(user_db, timeout=30.0)
+        conn = open_daemon_connection(user_db, timeout=30.0, archive_root=user_db.parent)
         try:
             due = _clock_due_watches(conn, now_ms=now_ms)
             if not due:
@@ -270,7 +270,7 @@ def make_standing_query_stage(
         now_ms = int(time.time() * 1000)
         ids = tuple(dict.fromkeys(str(session_id) for session_id in session_ids if session_id))
         try:
-            conn = open_daemon_connection(user_db, timeout=30.0)
+            conn = open_daemon_connection(user_db, timeout=30.0, archive_root=user_db.parent)
             try:
                 for query in list_watched_queries(conn):
                     query_reference = query_ref(query.query_hash).format()

@@ -412,6 +412,93 @@ def test_rich_receipt_operation_without_terminal_receipt_stays_indeterminate(
     ]
 
 
+@pytest.mark.parametrize("final_summary", [True, False], ids=["summarized", "unsummarized"])
+def test_completed_insight_rebuild_state_carries_its_declared_result(tmp_path: Path, final_summary: bool) -> None:
+    """A completed rebuild answers with the summary its final page's receipt closed.
+
+    ``operation.await`` and the executing request both return
+    ``state.get("result", state)``; that value must satisfy the operation's
+    declared ``InsightRebuildResult``, or the client raises a protocol error
+    after the rebuild has already committed.
+
+    Anti-vacuity: remove the insight-rebuild branch from
+    ``machine_request_state`` and the summarized case returns the generic
+    lifecycle state, which ``validate_operation_result`` refuses; the
+    unsummarized case then reports ``completed`` with no result at all.
+    """
+    from polylogue.operations.daemon_protocol import validate_operation_result
+    from polylogue.operations.machine_receipts import InsightTerminalSummaryHistorical
+
+    operation_name = "maintenance.insights.rebuild"
+    audit = _audit(tmp_path)
+    actuator = _Actuator(operation=operation_name)
+    operation_binding = _binding(actuator, operation_name=operation_name)
+    executor = OperationExecutor(audit=audit)
+    preview = executor.prepare_bound(
+        operation_binding,
+        object(),
+        _principal(),
+        archive_instance_id="archive:insight-result",
+        archive_identity_digest="identity:insight-result",
+        parameter_digest="params:insight-result",
+    )
+    authorization = executor.authorize_bound(operation_binding, preview, _principal())
+    assert authorization.authorization_id is not None
+    binding = MachineRequestBinding(
+        "identity:insight-result", "request:insight-result", "actor:test", "f" * 64, operation_name
+    )
+    with audit.bind_machine_request(binding, transition="accept_execution_batch"):
+        audit.accept_execution_batch((str(authorization.authorization_id),), _principal())
+    with audit.bind_machine_request(binding, transition="consume_authorization_and_start", part=0):
+        started = executor.begin_bound(operation_binding, preview, authorization, object())
+    history = InsightPartHistoricalReceipt(
+        ordinal=0,
+        page_count=1,
+        manifest_digest="a" * 64,
+        index_generation="index-generation:fixture",
+        recipe_version="fixture-recipe",
+        targets=[
+            InsightTargetHistoricalReceipt(
+                target_ref="session:fixture",
+                disposition="published",
+                input_binding="input:fixture",
+                output_binding="output:fixture",
+                certified_counts=InsightCertifiedCountsHistorical(profiles=1),
+                publication_known_committed=True,
+            )
+        ],
+        terminal_summary=(
+            InsightTerminalSummaryHistorical(profiles=1, threads=2, tag_rollups=3) if final_summary else None
+        ),
+    )
+    executor.finalize_bound(
+        started,
+        receipt=MutationReceipt(
+            operation=started.plan.operation,
+            plan_hash=started.plan.plan_hash,
+            status="applied",
+            target_refs=started.plan.target_refs,
+            affected_count=1,
+            detail=None,
+            receipt_ref=None,
+            applied_at="now",
+            historical_receipt=history,
+        ),
+    )
+
+    record = audit.machine_request(binding)
+    assert record is not None
+    state = machine_request_state(audit, record)
+    validate_operation_result("operation.await", state)
+    if final_summary:
+        assert state["outcome"] == "completed"
+        assert state["result"] == {"profiles": 1, "threads": 2, "tag_rollups": 3}
+        validate_operation_result(operation_name, state.get("result", state))
+    else:
+        assert state["outcome"] == "indeterminate"
+        assert "result" not in state
+
+
 def test_compound_preview_and_authorization_recovery_retains_exact_refs(tmp_path: Path) -> None:
     """Losing any part reference or reserving at authorization creation breaks the next acceptance."""
     audit = _audit(tmp_path)
@@ -2722,3 +2809,245 @@ def test_a_request_overlapping_deferred_recovery_is_refused(tmp_path: Path, monk
     assert actuator.calls == 0
     # Left for a later attempt: not terminalized, still overlapping its targets.
     assert _run_state(tmp_path, operation_id)[0] in {"running", "interrupted"}
+
+
+def test_paged_machine_batch_stages_then_completes_and_survives_recovery(tmp_path: Path) -> None:
+    """A batch accepted in pages is one durable request: running while staged,
+    complete at its final page, and its pages cannot be skipped or repeated.
+
+    Anti-vacuity: insert a new machine request per page, or skip the staged
+    kind, and the second page raises ``MachineRequestRecoveredError`` or the
+    staged request reads as completed.
+    """
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit)
+    previews = tuple(
+        executor.prepare_bound(
+            _binding(actuator),
+            object(),
+            _principal(),
+            archive_instance_id="archive:fixture",
+            archive_identity_digest="identity:fixture",
+            parameter_digest=f"params:{i}",
+        )
+        for i in range(3)
+    )
+    authorizations = tuple(executor.authorize_bound(_binding(actuator), preview, _principal()) for preview in previews)
+    refs = tuple(str(auth.authorization_id) for auth in authorizations)
+    binding = MachineRequestBinding("identity:fixture", "request:paged", "actor:test", "d" * 64, "mutation.fixture")
+
+    with audit.bind_machine_request(binding, transition="accept_execution_batch", page=(0, False)):
+        audit.accept_execution_batch(refs[:2], _principal())
+    staged = audit.machine_request(binding)
+    assert staged is not None and staged["artifact_kind"] == "execution-batch-pages"
+    assert machine_request_state(audit, staged)["outcome"] == "running"
+    with audit.bind_machine_request(binding, transition="accept_execution_batch", page=(1, True)):
+        with pytest.raises(MachineRequestRecoveredError):
+            audit.accept_execution_batch(refs[2:], _principal())
+
+    recovered = AuditRepository.for_archive_root(tmp_path)
+    recovered.reconcile_continuity()
+    with recovered.bind_machine_request(binding, transition="accept_execution_batch", page=(2, True)):
+        recovered.accept_execution_batch(refs[2:], _principal())
+    complete = recovered.machine_request(binding)
+    assert complete is not None and complete["artifact_kind"] == "execution-batch"
+    assert complete["part_count"] == 3
+    assert [part["ordinal"] for part in recovered.machine_parts(binding)] == [0, 1, 2]
+    assert [part["authorization_ref"] for part in recovered.machine_parts(binding)] == list(refs)
+    with recovered.bind_machine_request(binding, transition="accept_execution_batch", page=(3, True)):
+        with pytest.raises(MachineRequestRecoveredError):
+            recovered.accept_execution_batch(refs[:1], _principal())
+
+
+def test_startup_fences_a_half_accepted_paged_batch(tmp_path: Path) -> None:
+    """Anti-vacuity: leave a staged request unfenced at startup and it reads as
+    running forever, so a follower never reaches a terminal outcome."""
+    from polylogue.operations.daemon_protocol import AcceptedOperationReference
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit)
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:fixture",
+        archive_identity_digest="identity:fixture",
+        parameter_digest="params:fence",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    binding = MachineRequestBinding("identity:fixture", "request:fence", "actor:test", "e" * 64, "mutation.fixture")
+    with audit.bind_machine_request(binding, transition="accept_execution_batch", page=(0, False)):
+        audit.accept_execution_batch((str(authorization.authorization_id),), _principal())
+
+    assert audit.fence_staged_machine_pages() == 1
+    record = audit.machine_request(binding)
+    assert record is not None
+    assert machine_request_state(audit, record)["outcome"] == "interrupted"
+    assert audit.fence_staged_machine_pages() == 0
+    reference = AcceptedOperationReference.from_record({**record, "part_count": 41})
+    assert reference.part_count == 41
+
+
+def test_a_failing_later_page_terminalizes_the_staged_request(tmp_path: Path) -> None:
+    """Anti-vacuity: leave a staged request unstopped when a later page raises
+    and it reads as running until the next restart."""
+    from polylogue.operations.daemon_mutations import _fenced_on_failure
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit)
+    preview = executor.prepare_bound(
+        _binding(actuator),
+        object(),
+        _principal(),
+        archive_instance_id="archive:fixture",
+        archive_identity_digest="identity:fixture",
+        parameter_digest="params:failing",
+    )
+    authorization = executor.authorize_bound(_binding(actuator), preview, _principal())
+    binding = MachineRequestBinding("identity:fixture", "request:failing", "actor:test", "f" * 64, "mutation.fixture")
+    with pytest.raises(RuntimeError, match="second page"), _fenced_on_failure(audit, binding):
+        with audit.bind_machine_request(binding, transition="accept_execution_batch", page=(0, False)):
+            audit.accept_execution_batch((str(authorization.authorization_id),), _principal())
+        raise RuntimeError("second page failed")
+    record = audit.machine_request(binding)
+    assert record is not None and record["stop_reason"] == "refused"
+    assert machine_request_state(audit, record)["outcome"] == "interrupted"
+
+
+def test_cancelling_a_staged_authorization_batch_between_pages_revokes_it(tmp_path: Path) -> None:
+    """Anti-vacuity: stop checking cancellation between pages and the second
+    page is accepted; leave staged authorizations active on a fence and the
+    first page's authorization stays usable."""
+    from types import SimpleNamespace
+
+    from polylogue.archive.query.execution_control import QueryCancelledError
+    from polylogue.operations.audit import MACHINE_PAGE_PARTS
+    from polylogue.operations.daemon_mutations import _fenced_on_failure, _page_bounds
+
+    audit = _audit(tmp_path)
+    actuator = _Actuator()
+    executor = OperationExecutor(audit=audit)
+    previews = [
+        executor.prepare_bound(
+            _binding(actuator),
+            object(),
+            _principal(),
+            archive_instance_id="archive:fixture",
+            archive_identity_digest="identity:fixture",
+            parameter_digest=f"params:paged-{index}",
+        )
+        for index in range(2)
+    ]
+    binding = MachineRequestBinding("identity:fixture", "request:paged", "actor:test", "c" * 64, "mutation.fixture")
+    context = cast(Any, SimpleNamespace(runtime=SimpleNamespace(stop_reason=lambda _request: "cancelled")))
+    accepted_pages = 0
+    with pytest.raises(QueryCancelledError, match="cancelled"), _fenced_on_failure(audit, binding):
+        for offset, _end, final in _page_bounds(
+            2 * MACHINE_PAGE_PARTS, 0, request=cast(Any, None), context=context, audit=audit, binding=binding
+        ):
+            preview = previews[accepted_pages]
+            # Issued unpersisted, as the daemon handler issues them; the batch publishes it.
+            authorization = OperationExecutor().authorize_bound(_binding(actuator), preview, _principal())
+            with audit.bind_machine_request(binding, transition="issue_authorization_batch", page=(offset, final)):
+                audit.issue_authorization_batch((preview,), _principal(), (authorization,))
+            accepted_pages += 1
+    assert accepted_pages == 1
+    record = audit.machine_request(binding)
+    assert record is not None and record["stop_reason"] == "cancelled"
+    assert machine_request_state(audit, record)["outcome"] == "cancelled"
+    refs = [str(part["artifact_ref"]) for part in audit.machine_parts(binding)]
+    with audit._connection() as conn:
+        states = {
+            str(row[0])
+            for row in conn.execute(
+                f"SELECT state FROM operation_authorizations WHERE authorization_id IN ({','.join('?' * len(refs))})",
+                refs,
+            )
+        }
+    assert refs and states == {"revoked"}
+
+
+class _AuditClock:
+    """``time`` for the audit module, with a settable wall clock."""
+
+    def __init__(self, ms: int) -> None:
+        self.ms = ms
+
+    def time(self) -> float:
+        return self.ms / 1000
+
+    def __getattr__(self, name: str) -> object:
+        import time as real_time
+
+        return getattr(real_time, name)
+
+
+@pytest.mark.parametrize("idle_ms", [10_000, 61_000])
+def test_a_progressing_paged_handshake_keeps_its_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, idle_ms: int
+) -> None:
+    """Authority expires while a delete handshake sits idle, not while it pages.
+
+    The previews expire 60 s after the preview request is accepted, and its
+    second page lands 50 s later. Anti-vacuity: judge authorization by wall
+    time and a handshake that moves on 10 s after its last preview page is
+    refused as expired; judge it by the preview's acceptance regardless of
+    idle time and one left idle 61 s is still authorized.
+    """
+    from polylogue.operations import audit as audit_module
+    from polylogue.operations.audit import MachineRequestBinding as Binding
+
+    audit = _audit(tmp_path)
+    clock = _AuditClock(1_000_000_000)
+    monkeypatch.setattr(audit_module, "time", clock)
+    actuator = _Actuator()
+    start = clock.ms
+    preparer = OperationExecutor(now_ms=lambda: clock.ms)
+    plans = [
+        preparer.prepare_bound(
+            _binding(actuator),
+            object(),
+            _principal(),
+            archive_instance_id="archive:fixture",
+            archive_identity_digest="identity:fixture",
+            parameter_digest=f"params:handshake-{index}",
+            expires_at_ms=start + 60_000,
+        ).plan
+        for index in range(2)
+    ]
+    previewing = Binding("identity:fixture", "request:preview", "actor:test", "a" * 64, "mutation.fixture")
+    for offset, plan in enumerate(plans):
+        with audit.bind_machine_request(
+            previewing, transition="create_preview_batch", page=(offset, offset == len(plans) - 1)
+        ):
+            audit.create_preview_batch((plan,), _principal())
+        clock.ms += 50_000
+    refs = [str(part["artifact_ref"]) for part in audit.machine_parts(previewing)]
+    previews = tuple(audit.preview_for_principal(ref, _principal()) for ref in refs)
+
+    clock.ms = start + 50_000 + idle_ms
+    authorizing = Binding("identity:fixture", "request:authorize", "actor:test", "b" * 64, "mutation.fixture")
+    as_of_ms = audit.handshake_as_of_ms(authorizing, preview_refs=tuple(refs))
+    if idle_ms > audit_module.HANDSHAKE_IDLE_MS:
+        assert as_of_ms == clock.ms
+        with pytest.raises(TokenExpiredError):
+            OperationExecutor(now_ms=lambda: as_of_ms).authorize_bound(_binding(actuator), previews[0], _principal())
+        return
+    assert as_of_ms == start
+    authorizations = tuple(
+        OperationExecutor(now_ms=lambda: as_of_ms).authorize_bound(_binding(actuator), preview, _principal())
+        for preview in previews
+    )
+    with audit.bind_machine_request(authorizing, transition="issue_authorization_batch", page=(0, True)):
+        audit.issue_authorization_batch(previews, _principal(), authorizations)
+    authorization_refs = tuple(str(part["artifact_ref"]) for part in audit.machine_parts(authorizing))
+
+    clock.ms += 30_000
+    executing = Binding("identity:fixture", "request:execute", "actor:test", "c" * 64, "mutation.fixture")
+    with audit.bind_machine_request(executing, transition="accept_execution_batch", page=(0, True)):
+        audit.accept_execution_batch(authorization_refs, _principal())
+    record = audit.machine_request(executing)
+    assert record is not None and record["artifact_kind"] == "execution-batch"

@@ -16,16 +16,19 @@ from pathlib import Path
 
 import pytest
 
+from polylogue.storage.sqlite import wal_checkpoint
 from polylogue.storage.sqlite.connection_profile import (
     READ_PROFILES,
     SEALED_READ_CONNECTION_PROFILE,
     TIMEOUT_CLASSES,
     WRITE_PROFILES,
+    LiveGenerationImmutableError,
     ReadContinuation,
     ReadFrame,
     ReadFrameCancelledError,
     ReadFrameExpiredError,
     StaleContinuationError,
+    attach_readonly_database,
     one_shot_diagnostic_read,
     open_profiled_connection,
     open_readonly_connection,
@@ -102,6 +105,78 @@ def test_asking_for_immutability_selects_the_sealed_profile(index_db: Path) -> N
         assert conn.execute("PRAGMA busy_timeout").fetchone() == (SEALED_READ_CONNECTION_PROFILE.busy_timeout_ms,)
     finally:
         conn.close()
+
+
+# -- live versus sealed generation -------------------------------------------
+
+
+@pytest.fixture
+def live_writer(index_db: Path) -> Iterator[sqlite3.Connection]:
+    """A writer that stays open with a committed row living only in the WAL."""
+    writer = sqlite3.connect(index_db)
+    writer.execute("PRAGMA wal_autocheckpoint = 0")
+    writer.execute("INSERT INTO rows_ VALUES (11, 'wal-only')")
+    writer.commit()
+    assert index_db.with_name("index.db-wal").stat().st_size > 0, "the row must live only in the WAL"
+    try:
+        yield writer
+    finally:
+        writer.close()
+
+
+def test_a_live_read_sees_a_committed_wal_only_row(index_db: Path, live_writer: sqlite3.Connection) -> None:
+    conn = open_readonly_connection(index_db, validate_schema=False)
+    try:
+        assert conn.execute("SELECT body FROM rows_ WHERE position = 11").fetchone() == ("wal-only",)
+    finally:
+        conn.close()
+
+
+def test_marking_a_changing_database_immutable_is_refused(
+    index_db: Path, tmp_path: Path, live_writer: sqlite3.Connection
+) -> None:
+    """``immutable=1`` would read the main file alone and skip the WAL-only row.
+
+    Anti-vacuity: without the owner's sidecar refusal each of these opens
+    succeeds and reports ten rows while the database holds eleven.
+    """
+    with pytest.raises(LiveGenerationImmutableError, match="-wal"):
+        open_readonly_connection(index_db, immutable=True, validate_schema=False)
+    with pytest.raises(LiveGenerationImmutableError):
+        ReadFrame(index_db, profile=SEALED_READ_CONNECTION_PROFILE)
+
+    host = tmp_path / "host.db"
+    sqlite3.connect(host).close()
+    reader = open_readonly_connection(host, validate_schema=False)
+    try:
+        with pytest.raises(LiveGenerationImmutableError):
+            attach_readonly_database(reader, index_db, alias="changing", immutable=True)
+        assert reader.execute("PRAGMA database_list").fetchall()[-1][1] != "changing"
+    finally:
+        reader.close()
+
+
+def test_a_frozen_snapshot_carries_the_wal_state_and_its_generation(
+    index_db: Path, live_writer: sqlite3.Connection
+) -> None:
+    """Freezing is an exclusive checkpoint into the main file, then a sealed read.
+
+    The writer stays open but idle, so its last-connection close cannot be what
+    folds the WAL back: the exclusive checkpoint has to.
+    """
+    observation = wal_checkpoint.checkpoint_wal(
+        index_db, reason="seal", escalation="exclusive", warn_bytes=1, escalation_bytes=1
+    )
+    assert observation.mode == "truncate"
+    assert observation.wal_bytes_after == 0
+
+    stat = index_db.stat()
+    frame = ReadFrame(index_db, profile=SEALED_READ_CONNECTION_PROFILE)
+    try:
+        assert (frame.generation.device, frame.generation.inode) == (stat.st_dev, stat.st_ino)
+        assert frame.connection.execute("SELECT body FROM rows_ WHERE position = 11").fetchone()[0] == "wal-only"
+    finally:
+        frame.close()
 
 
 # -- frame lifetime ----------------------------------------------------------

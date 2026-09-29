@@ -237,6 +237,31 @@ def test_high_cardinality_merge_retains_named_fields_after_later_merge() -> None
     assert retained <= set(schema_properties(after_third)), "a later merge collapsed previously retained properties"
 
 
+def test_collapsed_schema_folds_later_keys_and_keeps_retained_siblings() -> None:
+    """After promotion, a new key joins the value schema; retained names stay.
+
+    Anti-vacuity: skipping the collapse once an input already carries the
+    high-cardinality marker publishes ``late-key`` as a property (and the
+    512-sample law above then retains 256 source keys).
+    """
+    first = observed_structure_schema(
+        {
+            **{f"ordinary-key-{index}": {"value": index} for index in range(128)},
+            "abcdefabcdefabcdefabcdef": {"value": "dynamic"},
+        }
+    )
+    second = observed_structure_schema({f"ordinary-key-{index}": {"value": index} for index in range(128, 256)})
+    promoted = merge_observed_structure_schemas([first, second])
+    retained = set(schema_properties(promoted))
+    assert retained
+
+    later = merge_observed_structure_schemas([promoted, observed_structure_schema({"late-key": {"value": 1}})])
+
+    assert set(schema_properties(later)) == retained
+    assert later.get("x-polylogue-high-cardinality-keys") is True
+    assert "late-key" not in str(later)
+
+
 def _named_property_paths(schema: object, *, path: str = "$") -> set[str]:
     """Every property name reachable in a schema, including composite branches."""
     node = schema_node(schema)

@@ -478,6 +478,25 @@ def loads(obj: str | bytes | bytearray) -> JSONValue:
             raise exc from None
 
 
+def decode_provider_utf8(raw: bytes) -> str:
+    """Decode provider bytes while preserving UTF-8-encoded surrogate code units.
+
+    Some historical exports contain a lone UTF-16 surrogate encoded directly
+    as its three-byte UTF-8 sequence. This is invalid Unicode scalar UTF-8,
+    so the active JSON backend correctly rejects it, but Python can preserve
+    the original code unit with ``surrogatepass``. Arbitrary malformed byte
+    sequences still raise. Every reader of retained provider bytes decodes
+    through this, so one artifact is readable to all of them or to none.
+    """
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        try:
+            return raw.decode("utf-8", errors="surrogatepass")
+        except UnicodeDecodeError:
+            raise error from None
+
+
 __all__ = [
     "JSONDecodeError",
     "JSONDocument",
@@ -485,6 +504,7 @@ __all__ = [
     "JSONEncoder",
     "JSONScalar",
     "JSONValue",
+    "decode_provider_utf8",
     "dumps",
     "dumps_bytes",
     "is_json_document",

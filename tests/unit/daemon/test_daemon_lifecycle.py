@@ -44,7 +44,7 @@ def test_lifecycle_row_records_start_heartbeat_signal_and_clean_stop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ops_db = _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start(details={"component": "test"})
+    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path, details={"component": "test"})
     lifecycle.heartbeat()
     lifecycle.record_signal_best_effort(signal.SIGTERM)
     lifecycle.stop(exit_kind="signal")
@@ -66,12 +66,33 @@ def test_lifecycle_row_records_start_heartbeat_signal_and_clean_stop(
     assert '"component":"test"' in row[5]
 
 
+def test_lifecycle_writes_under_an_archive_bound_daemon_lease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``polylogued`` starts its lifecycle row inside an archive-bound lease.
+
+    Anti-vacuity: drop ``archive_root`` from ``_write_lifecycle``'s ops-tier
+    open and the armed lease refuses it with ``UnleasedWriteError``.
+    """
+    from polylogue.core.write_lease import arm_write_lease_enforcement, write_lease
+
+    ops_db = _bind_ops_db(monkeypatch, tmp_path)
+    with arm_write_lease_enforcement(), write_lease("daemon.lifecycle.start", archive_root=tmp_path):
+        lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path, details={"component": "test"})
+        lifecycle.stop(exit_kind="clean")
+
+    with sqlite3.connect(ops_db) as conn:
+        row = conn.execute("SELECT exit_kind FROM daemon_lifecycle WHERE run_id = ?", (lifecycle.run_id,)).fetchone()
+    assert row == ("clean",)
+
+
 def test_lifecycle_status_rejects_stale_unstopped_heartbeat(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start()
+    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
     current_ms = 2_000_000_000_000
     stale_ms = current_ms - int((DAEMON_HEARTBEAT_STALE_AFTER_SECONDS + 1) * 1000)
     with sqlite3.connect(tmp_path / "ops.db") as conn:
@@ -98,7 +119,7 @@ def test_lifecycle_status_reports_stale_between_warn_and_vanished_floors(
     1369.8s against a 900s interval. It must now read "stale", not "fresh".
     """
     _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start()
+    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
     current_ms = 2_000_000_000_000
     stale_ms = current_ms - int((DAEMON_HEARTBEAT_STALE_WARN_SECONDS + 1) * 1000)
     with sqlite3.connect(tmp_path / "ops.db") as conn:
@@ -146,7 +167,7 @@ def test_sigterm_dumps_threads_and_persists_signal_before_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start()
+    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
     previous = install_signal_handlers(lifecycle)
     try:
         with patch("polylogue.daemon.lifecycle.faulthandler.dump_traceback") as dump:
@@ -168,7 +189,7 @@ def test_sigterm_reports_forensic_dump_failure_to_raw_stderr(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start()
+    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
     previous = install_signal_handlers(lifecycle)
     try:
         with (
@@ -195,7 +216,7 @@ def test_signal_write_does_not_wait_for_the_normal_writer_timeout(
 ) -> None:
     """A held OPS write lock cannot make SIGTERM wait for the normal 30s timeout."""
     ops_db = _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start()
+    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
     lock = sqlite3.connect(ops_db)
     try:
         lock.execute("BEGIN EXCLUSIVE")
@@ -217,7 +238,7 @@ def test_sigint_is_recorded_as_signal_not_clean_stop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _bind_ops_db(monkeypatch, tmp_path)
-    lifecycle = DaemonLifecycle.start()
+    lifecycle = DaemonLifecycle.start(archive_root_path=tmp_path)
     previous = install_signal_handlers(lifecycle)
     try:
         with patch("polylogue.daemon.lifecycle.faulthandler.dump_traceback"):
@@ -238,7 +259,7 @@ def test_atexit_sentinel_marks_python_exit_without_claiming_a_clean_stop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _bind_ops_db(monkeypatch, tmp_path)
-    DaemonLifecycle.start()
+    DaemonLifecycle.start(archive_root_path=tmp_path)
     lifecycle_module._atexit_sentinel()
 
     status = lifecycle_status()

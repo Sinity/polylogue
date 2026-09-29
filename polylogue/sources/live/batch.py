@@ -7,13 +7,14 @@ import contextvars
 import os
 import re
 import sqlite3
+import threading
 import time
 import uuid
 import zipfile
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping, Sequence
 from concurrent.futures import Future
-from contextlib import ExitStack, closing, contextmanager
-from dataclasses import dataclass, field
+from contextlib import ExitStack, closing, contextmanager, suppress
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from io import BytesIO
@@ -41,6 +42,7 @@ from polylogue.archive.revision_replay import ApplicationDecision, RevisionCandi
 from polylogue.archive.session_revision_membership import MembershipRevision, classify_membership_revisions
 from polylogue.archive.zip_admission import ZIP_JSON_SUFFIXES, ZipAdmission
 from polylogue.config import Source
+from polylogue.core.content_identity import ContentIdentityRefusal
 from polylogue.core.degraded import degraded_reason, is_fully_degraded
 from polylogue.core.enums import Origin, Provider
 from polylogue.core.errors import DatabaseError, SchemaVersionMismatchError
@@ -838,6 +840,7 @@ class LiveBatchProcessor:
         # The watcher supplies a parse stage for JSON/JSONL preparation before
         # the writer hold. Direct callers may pass None for baseline parity.
         self._parse_stage = parse_stage
+        self._parse_lookahead: tuple[tuple[Path, ...], str] | None = None
         self._read_snapshot = read_snapshot
 
     def cursor_authority_block_reason(self) -> str | None:
@@ -1035,48 +1038,63 @@ class LiveBatchProcessor:
         synchronous archive-publication worker, where its thread-local scope
         cannot leak over page planning, parsing, or convergence.
         """
+        # A cold build's ops checkpoint holder spans the whole page: the
+        # archive pass closes before this page's cursor, convergence and
+        # attempt writes, and releasing it there made each of those
+        # publications checkpoint ``ops.db`` on close again.
+        from polylogue.sources.live.cold_build import active_cold_build_generation
+
+        cold_build = active_cold_build_generation(
+            Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
+        )
+        if cold_build is not None:
+            cold_build.begin_ops_page()
         attempt = _OpenIngestAttempt()
-        with attempt.scope:
-            try:
-                return await self._ingest_files(
-                    paths,
-                    queued_file_count=queued_file_count,
-                    skipped_file_count=skipped_file_count,
-                    emit_event=emit_event,
-                    max_pass_seconds=max_pass_seconds,
-                    whole_archive_convergence=whole_archive_convergence,
-                    defer_convergence=defer_convergence,
-                    open_attempt=attempt,
-                )
-            except asyncio.CancelledError:
-                # Cancellation is shutdown: no further ops write is admitted
-                # here (it could hold the writer past the shutdown deadline).
-                # The row stays ``running`` and the next start records it as
-                # ``interrupted``, which is what happened; this event says so
-                # now, with the attempt it names.
-                if attempt.attempt_id is not None and not attempt.finished:
-                    emit(
-                        "live.ingest.attempt_cancelled",
-                        level=WARNING,
-                        outcome="refused",
-                        # Cancelled before the start write returned: the row
-                        # exists only if that write was already admitted (the
-                        # coordinator then finishes it detached); a queued
-                        # start never commits. Say which case was observed.
-                        reason=(
-                            "cancelled_during_finish"
-                            if attempt.finishing
-                            else "cancelled"
-                            if attempt.started
-                            else "cancelled_before_start_confirmed"
-                        ),
-                        attempt_id=attempt.attempt_id,
+        try:
+            with attempt.scope:
+                try:
+                    return await self._ingest_files(
+                        paths,
+                        queued_file_count=queued_file_count,
+                        skipped_file_count=skipped_file_count,
+                        emit_event=emit_event,
+                        max_pass_seconds=max_pass_seconds,
+                        whole_archive_convergence=whole_archive_convergence,
+                        defer_convergence=defer_convergence,
+                        open_attempt=attempt,
                     )
-                raise
-            except Exception as exc:
-                await self._finish_escaped_attempt(attempt, exc)
-                raise_if_storage_fault(exc)
-                raise
+                except asyncio.CancelledError:
+                    # Cancellation is shutdown: no further ops write is admitted
+                    # here (it could hold the writer past the shutdown deadline).
+                    # The row stays ``running`` and the next start records it as
+                    # ``interrupted``, which is what happened; this event says so
+                    # now, with the attempt it names.
+                    if attempt.attempt_id is not None and not attempt.finished:
+                        emit(
+                            "live.ingest.attempt_cancelled",
+                            level=WARNING,
+                            outcome="refused",
+                            # Cancelled before the start write returned: the row
+                            # exists only if that write was already admitted (the
+                            # coordinator then finishes it detached); a queued
+                            # start never commits. Say which case was observed.
+                            reason=(
+                                "cancelled_during_finish"
+                                if attempt.finishing
+                                else "cancelled"
+                                if attempt.started
+                                else "cancelled_before_start_confirmed"
+                            ),
+                            attempt_id=attempt.attempt_id,
+                        )
+                    raise
+                except Exception as exc:
+                    await self._finish_escaped_attempt(attempt, exc)
+                    raise_if_storage_fault(exc)
+                    raise
+        finally:
+            if cold_build is not None:
+                cold_build.end_ops_page()
 
     async def _finish_escaped_attempt(self, attempt: _OpenIngestAttempt, exc: Exception) -> None:
         """Close the attempt row an escaping exception left ``running``.
@@ -1464,7 +1482,10 @@ class LiveBatchProcessor:
                 # Remaining sources stay ordinary backlog for the next tick;
                 # nothing here was attempted, so nothing to mark failed.
                 break
-            for source_paths in _full_parse_progress_groups(grouped_paths):
+            progress_groups = list(_full_parse_progress_groups(grouped_paths))
+            held_pending: list[Path] = []
+            while progress_groups:
+                source_paths = progress_groups.pop(0)
                 if self._stop_requested():
                     break
                 if is_fully_degraded():
@@ -1476,6 +1497,9 @@ class LiveBatchProcessor:
                 ):
                     full_ingest_time_budget_exceeded = True
                     break
+                if held_pending and source_paths is held_pending:
+                    # The held group is starting; its own result accounts for it.
+                    held_pending = []
                 t0 = time.perf_counter()
                 try:
                     await self._record_attempt_progress_admitted(
@@ -1509,6 +1533,11 @@ class LiveBatchProcessor:
                         ),
                     )
                     processed_any_full_group = True
+                    if full_result.ordering_held:
+                        # Later revisions of a session this group published
+                        # go next, warmed against that publication.
+                        held_pending = list(full_result.ordering_held)
+                        progress_groups.insert(0, held_pending)
                     if full_result.time_budget_exceeded:
                         full_ingest_time_budget_exceeded = True
                     ingest_worker_count_max = max(ingest_worker_count_max, full_result.worker_count)
@@ -1723,6 +1752,20 @@ class LiveBatchProcessor:
                         reason="writer hold spent after the archive commit; the batch ends with its cursors recorded",
                     )
                     break
+            # A held revision the loop ended before reaching was never
+            # attempted: it stays retryable instead of reading as settled.
+            failed_now = set(failed_paths)
+            for path in held_pending:
+                if str(path) in failed_now:
+                    continue
+                deferred_paths.append(path)
+                preparation_deferred_paths.add(path)
+                await self._run_ops_write(
+                    "cursor_deferred_preparation",
+                    self._defer_full_cursor_retry,
+                    path,
+                    source_name=source_name,
+                )
 
         summary_stage_payload = _single_route_stage_payload(
             append_file_count=append_file_count,
@@ -2856,6 +2899,60 @@ class LiveBatchProcessor:
         backend = getattr(self._polylogue, "backend", None)
         return isinstance(getattr(backend, "db_path", None), Path)
 
+    def offer_parse_lookahead(self, paths: Sequence[Path], *, source_name: str) -> None:
+        """Record the paths a later batch will ingest in full, touching nothing.
+
+        No source is read here or on any parent thread: the next full ingest
+        filters the offer by cursor and hands it to the parse stage, whose
+        workers do every source read where a stuck one can be reaped.
+        """
+        self._parse_lookahead = (tuple(paths), source_name) if paths else None
+
+    def drop_parse_lookahead(self) -> None:
+        """Forget an unconsumed lookahead offer."""
+        self._parse_lookahead = None
+
+    async def _submit_ready_lookahead(self) -> None:
+        """Submit the offered lookahead to the parse stage, never waiting on its parsing.
+
+        Called between a full ingest's warm and its publication, so the next
+        batch's parsing overlaps this one's writer-held publication. Only
+        the cursor lookup and a stat per path run here; the submission
+        mutates the stage's bookkeeping, so if the caller is cancelled it
+        settles before the ingest lock is released.
+        """
+        offer = self._parse_lookahead
+        self._parse_lookahead = None
+        if offer is None or self._parse_stage is None:
+            return
+        paths, source_name = offer
+        stage = self._parse_stage
+        fallback_provider = Provider.from_string(canonical_acquisition_provider(source_name, source_name=source_name))
+
+        def submit() -> int:
+            # Only a file with no cursor row is certain to be ingested in full.
+            records = self._cursor.get_records(paths)
+            cursorless = [str(path) for path in paths if records.get(path) is None]
+            return stage.prefetch_paths(cursorless, fallback_provider=fallback_provider) if cursorless else 0
+
+        submission = asyncio.ensure_future(asyncio.to_thread(submit))
+        try:
+            await asyncio.shield(submission)
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await submission
+            raise
+        except Exception as exc:
+            # Read-ahead costs only the overlap when it fails; the batch that
+            # needs these paths warms them itself.
+            emit(
+                "live.parse_prefetch.lookahead_failed",
+                level=WARNING,
+                outcome="degraded",
+                reason="lookahead_submission_failed",
+                error_type=type(exc).__name__,
+            )
+
     async def _ingest_full_paths(
         self,
         paths: list[Path],
@@ -2867,6 +2964,7 @@ class LiveBatchProcessor:
         pass_started: float | None = None,
     ) -> _FullIngestResult:
         prepared_json_paths: frozenset[str] = frozenset()
+        held_paths: frozenset[str] = frozenset()
         if self._parse_stage is not None and not _source_tier_acquisition_required():
             # Prepare JSON/JSONL before asking the coordinator for a writer
             # hold. A failed prewarm leaves the regular recorded parse outcome.
@@ -2884,24 +2982,47 @@ class LiveBatchProcessor:
                         if Path(source_path).suffix.lower() == ".json"
                     )
                     archive_root = Path(getattr(self._polylogue, "archive_root", self._cursor._db_path.parent))
-                    await asyncio.to_thread(
-                        self._parse_stage.warm_paths,
-                        path_candidates,
-                        archive_root=archive_root,
-                        read_snapshot=self._read_snapshot,
-                        capture_mode=fallback_provider,
-                        source_index=0,
+                    # The warm has no deadline and mutates the stage's
+                    # bookkeeping. If the caller is cancelled, stop it at its
+                    # next poll and settle the thread before the ingest lock
+                    # is released, so no retry, warm or shutdown runs beside it.
+                    cancelled = threading.Event()
+                    warm = asyncio.ensure_future(
+                        asyncio.to_thread(
+                            self._parse_stage.warm_paths,
+                            path_candidates,
+                            archive_root=archive_root,
+                            read_snapshot=self._read_snapshot,
+                            capture_mode=fallback_provider,
+                            source_index=0,
+                            cancelled=cancelled,
+                        )
                     )
+                    try:
+                        held_paths = await asyncio.shield(warm)
+                    except asyncio.CancelledError:
+                        cancelled.set()
+                        with suppress(Exception):
+                            await warm
+                        raise
             except Exception:
                 prepared_json_paths = frozenset()
+                held_paths = frozenset()
                 logger.warning(
                     "live.watcher: parse-stage prefetch failed; falling back to in-hold parse",
                     exc_info=True,
                 )
-        return await self._run_sync(
+            # This page's warm is settled; the next batch's parsing can now
+            # overlap this page's publication.
+            await self._submit_ready_lookahead()
+        # A held path shares a canonical session with an earlier path of this
+        # group. It publishes in the next group, after a warm that reconciles
+        # it against this group's publication.
+        held = [path for path in paths if str(path) in held_paths]
+        result = await self._run_sync(
             "watcher.live_ingest.full",
             self._ingest_full_paths_sync_in_ops_scope,
-            paths,
+            [path for path in paths if str(path) not in held_paths] if held else paths,
             source_name=source_name,
             heartbeat=heartbeat,
             attempt_id=attempt_id,
@@ -2909,6 +3030,7 @@ class LiveBatchProcessor:
             pass_started=pass_started,
             prepared_json_paths=prepared_json_paths,
         )
+        return replace(result, ordering_held=held) if held else result
 
     async def _run_sync(
         self,
@@ -5300,6 +5422,7 @@ class LiveBatchProcessor:
         source = Source(name=fallback_provider.value, path=path.parent)
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
+        refusals: list[str] = []
         total_bytes = 0
         try:
             with zipfile.ZipFile(path) as zf:
@@ -5397,6 +5520,8 @@ class LiveBatchProcessor:
                             )
                     except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                    except ContentIdentityRefusal as exc:
+                        refusals.append(f"{info.filename}: {exc}")
         except (zipfile.BadZipFile, OSError) as exc:
             # Members stream into the archive's blob staging: a full or
             # read-only archive is not a property of this ZIP, and reporting
@@ -5404,6 +5529,7 @@ class LiveBatchProcessor:
             raise_if_storage_fault(exc, kinds=ARCHIVE_SIDE_FAULTS)
             logger.warning("Failed to expand inbox ZIP %s: %s", path, exc)
             return [], 0
+        self._settle_zip_member_refusals(path, refusals)
         return records, total_bytes
 
     def _extract_source_only_zip_member_records(
@@ -5424,6 +5550,7 @@ class LiveBatchProcessor:
         source = Source(name=fallback_provider.value, path=path.parent)
         acquired_at = datetime.now(UTC).isoformat()
         records: list[tuple[str, RawSessionRecord]] = []
+        refusals: list[str] = []
         total_bytes = 0
         validator = _ZipEntryValidator(fallback_provider, cursor_state=None, zip_path=path)
         try:
@@ -5456,6 +5583,9 @@ class LiveBatchProcessor:
                         )
                     except ZipBombError as exc:
                         logger.warning("Skipping ZIP member %s in %s: %s", info.filename, path, exc)
+                        continue
+                    except ContentIdentityRefusal as exc:
+                        refusals.append(f"{info.filename}: {exc}")
                         continue
                     if raw_data.blob_hash is None:
                         continue
@@ -5494,7 +5624,40 @@ class LiveBatchProcessor:
             # extraction so the caller records retryable failure state instead
             # of permanently acknowledging this source coordinate as excluded.
             return None
+        self._settle_zip_member_refusals(path, refusals)
         return records, total_bytes
+
+    def _settle_zip_member_refusals(self, path: Path, refusals: list[str]) -> None:
+        """Name every member of ``path`` refused a content identity, or clear the gap.
+
+        A refused member holds a token no archive value can store, so it is a
+        permanent property of these bytes: the ZIP's other members are still
+        ingested and its cursor still advances, and the refusal is recorded as
+        durable ``live_ingest_admission`` debt on the ZIP so the missing member
+        is a typed, visible gap rather than a log line. A later expansion of
+        the same path with no refusal clears it.
+        """
+        if not refusals:
+            self._cursor.clear_convergence_debt(
+                stage="live_ingest_admission",
+                subject_type="source_path",
+                subject_id=str(path),
+            )
+            return
+        reason = "content_identity_refused: " + "; ".join(refusals)
+        emit(
+            "live.ingest.zip_member_refused",
+            level=WARNING,
+            outcome="refused",
+            source_path=str(path),
+            reason=reason,
+        )
+        self._cursor.record_convergence_debt(
+            stage="live_ingest_admission",
+            subject_type="source_path",
+            subject_id=str(path),
+            error=reason,
+        )
 
     def _mark_excluded_cursor(
         self,

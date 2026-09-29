@@ -21,12 +21,18 @@ from devtools import required_gate, verify_layering
 from devtools.sqlite_degradation import census_sqlite_degradation_anchors
 
 
+def _root_imports(repo_root: Path, target: str) -> tuple[dict[str, set[str]], tuple[str, ...]]:
+    """The imports the gate's package pass reads for one declared root."""
+    package_pass = verify_layering._package_pass(repo_root, import_roots=[target], writer_modules=None, manifest={})
+    return package_pass.imports_by_root[target]
+
+
 def test_layering_no_violations_passes(tmp_path: Path) -> None:
     storage = tmp_path / "polylogue" / "storage"
     storage.mkdir(parents=True, exist_ok=True)
     (storage / "module.py").write_text("import os\nfrom polylogue.core import json\n", encoding="utf-8")
 
-    imports, unreadable = verify_layering._collect_imports(storage, repo_root=tmp_path)
+    imports, unreadable = _root_imports(tmp_path, "polylogue/storage")
     assert unreadable == ()
     assert "polylogue.cli" not in imports.get("polylogue/storage/module.py", set())
 
@@ -40,7 +46,7 @@ def test_layering_disallow_violation_detected(tmp_path: Path) -> None:
     cli.mkdir(parents=True, exist_ok=True)
     (cli / "click_app.py").write_text("", encoding="utf-8")
 
-    imports, unreadable = verify_layering._collect_imports(storage, repo_root=tmp_path)
+    imports, unreadable = _root_imports(tmp_path, "polylogue/storage")
     assert unreadable == ()
     # from polylogue.cli import click_app -> module = "polylogue.cli"
     assert "polylogue.cli" in imports.get("polylogue/storage/bad_importer.py", set()), "storage imports cli module"
@@ -58,9 +64,8 @@ def test_layering_disallow_violation_detected(tmp_path: Path) -> None:
     violations: list[dict[str, object]] = []
     for rule in rules:
         target = str(rule["target"])
-        target_dir = tmp_path / target
         disallow_from = list(rule.get("disallow", {}).get("from", []))
-        file_imports, unreadable = verify_layering._collect_imports(target_dir, repo_root=tmp_path)
+        file_imports, unreadable = _root_imports(tmp_path, target)
         assert unreadable == ()
         for file_rel, file_imports_set in file_imports.items():
             for imp in file_imports_set:
@@ -372,13 +377,13 @@ def test_fixed_sqlite_degradation_anchor_is_not_exempt_when_reintroduced(
 def test_layering_cli_imports_storage_is_detected(tmp_path: Path) -> None:
     # polylogue-2ciy: cli->storage is no longer unconditionally "ok" -- the
     # production rule now disallows it too (behind a ratchet baseline). This
-    # test only pins that `_collect_imports` itself surfaces the import; see
+    # test only pins that the package pass itself surfaces the import; see
     # the baseline tests below for the ratchet's pass/fail behavior.
     cli_dir = tmp_path / "polylogue" / "cli"
     cli_dir.mkdir(parents=True, exist_ok=True)
     (cli_dir / "commands.py").write_text("from polylogue.storage import something\n", encoding="utf-8")
 
-    imports, unreadable = verify_layering._collect_imports(cli_dir, repo_root=tmp_path)
+    imports, unreadable = _root_imports(tmp_path, "polylogue/cli")
     assert unreadable == ()
     # from polylogue.storage import something -> module = "polylogue.storage"
     assert "polylogue.storage" in imports.get("polylogue/cli/commands.py", set())
@@ -926,3 +931,78 @@ def test_every_census_rule_shape_renders_without_a_keyerror(violation: dict[str,
     rendered = verify_layering._format_violation(violation)
     assert str(violation["rule"]) in rendered
     assert "<no renderer for rule family>" not in rendered
+
+
+def test_one_package_pass_feeds_every_whole_package_census(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Each census the gate takes from its single package pass still fails.
+
+    The gate parses each module once and hands it to the import, writer-module
+    census, durable-write, derived-sweep and SQLite-degradation censuses. One
+    planted defect per census must surface through ``main``.
+
+    Anti-vacuity: stop feeding any one census from the pass (or feed it no
+    modules) and its rule disappears from the reported set.
+    """
+    package = tmp_path / "polylogue"
+    for relative, body in {
+        "storage/bad_importer.py": "from polylogue.cli import click_app\n",
+        "storage/degraded.py": _DEGRADED_HANDLER_MODULE,
+        "ops/rogue_writer.py": (
+            'def lock(conn):\n    conn.execute("UPDATE assertions SET updated_at_ms = updated_at_ms WHERE 1")\n'
+        ),
+        "ops/sweeper.py": (
+            "def sweep(conn):\n"
+            '    conn.execute("UPDATE session_profiles SET is_continuation = 1 WHERE parent_id IS NOT NULL")\n'
+        ),
+        # The manifest requires one inventoried writer module.
+        "storage/sqlite/archive_tiers/facade.py": '"""Fixture facade.\n\nWriter module: index.\n"""\n',
+    }.items():
+        path = package / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8")
+    plans = tmp_path / "docs" / "plans"
+    plans.mkdir(parents=True)
+    (plans / "census.json").write_text("[]", encoding="utf-8")
+    (plans / "sqlite-degradation-baseline.json").write_text(
+        json.dumps({"rule": "fixture", "anchors": []}), encoding="utf-8"
+    )
+    (plans / "layering.yaml").write_text(
+        "rules:\n"
+        "  - target: polylogue/storage\n"
+        "    description: fixture\n"
+        "    disallow:\n"
+        "      from: [polylogue/cli]\n"
+        "sqlite_degradation:\n"
+        "  baseline: docs/plans/sqlite-degradation-baseline.json\n"
+        "  roots: [polylogue]\n"
+        "writer_modules:\n"
+        '  marker: "Writer module:"\n'
+        "  mutation_roots: [polylogue/storage/sqlite/archive_tiers]\n"
+        "  census_roots: [polylogue]\n"
+        "  census_baseline: docs/plans/census.json\n"
+        "  modules:\n"
+        "    - path: polylogue/storage/sqlite/archive_tiers/facade.py\n"
+        "      surfaces:\n"
+        "        - tier: index\n"
+        "          durability: rebuildable\n"
+        "          interruption: replayable\n"
+        "      entrypoints: [write]\n",
+        encoding="utf-8",
+    )
+    (plans / "durable-write-census.yaml").write_text("package: polylogue\nwrites: []\n", encoding="utf-8")
+    (plans / "derived-sweep-census.yaml").write_text("package: polylogue\nsites: []\n", encoding="utf-8")
+    monkeypatch.setattr(verify_layering, "_get_root", lambda: tmp_path)
+
+    assert verify_layering.main(["--json"]) == 1
+
+    violations = json.loads(capsys.readouterr().out)["violations"]
+    reported = {(violation["rule"], violation.get("file")) for violation in violations}
+    assert {
+        ("disallow", "polylogue/storage/bad_importer.py"),
+        ("writer_module_uncensused_mutation", "polylogue/ops/rogue_writer.py"),
+        ("durable_write_undeclared", "polylogue/ops/rogue_writer.py"),
+        ("derived_sweep_undeclared", "polylogue/ops/sweeper.py"),
+        ("sqlite_degradation_site_added", "polylogue/storage/degraded.py"),
+    } <= reported

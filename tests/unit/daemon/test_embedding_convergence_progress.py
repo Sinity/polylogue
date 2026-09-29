@@ -437,6 +437,75 @@ def test_partial_embedding_pass_keeps_catchup_receipt_retryable() -> None:
     assert embedding_owner._catchup_receipt_status(failures=0, pending=0, stopped=False) == "completed"
 
 
+@pytest.mark.parametrize("signal", ["quiet", "scope_limited"])
+def test_per_pass_stop_signal_keeps_the_catchup_receipt_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, signal: str
+) -> None:
+    """A stop signal passed to one pass classifies that pass's receipt.
+
+    The daemon composes the owner once, with no ``quiet`` or ``scope_limited``,
+    and hands each operator pass its own signals as call arguments.
+
+    Anti-vacuity: classifying the receipt from the composition-time signals
+    ignores a cancelled or session-limited pass and stamps its receipt
+    ``completed`` although the pass stopped early.
+    """
+    from polylogue.core.enums import OperationStatus
+    from polylogue.daemon import convergence
+
+    captured: dict[str, Any] = {}
+    statuses: list[object] = []
+
+    class _Adapter:
+        domain = "embedding"
+
+    def fake_derivation(*_args: object, **kwargs: object) -> _Adapter:
+        captured.update(kwargs)
+        return _Adapter()
+
+    class _Report:
+        pending = 0
+        work = type("Work", (), {"computed": 1})()
+
+        def count(self, _outcome: object) -> int:
+            return 0
+
+    class _Owner:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        async def converge(self, _frame: object, **_kwargs: object) -> _Report:
+            # The first provider reservation mints the RUNNING catch-up receipt.
+            await asyncio.to_thread(captured["reserve"], "embedding.reserve", lambda: None)
+            return _Report()
+
+    def upsert(_ops_db: Path, *, status: object, run_id: str | None = None, **_fields: object) -> str:
+        statuses.append(status)
+        return run_id or "run-1"
+
+    monkeypatch.setattr("polylogue.config.load_polylogue_config", lambda: _EmbeddingConfig())
+    monkeypatch.setattr("polylogue.operations.embedding_derivation.make_embedding_derivation", fake_derivation)
+    monkeypatch.setattr("polylogue.operations.embedding_derivation.make_embedding_frame", lambda *_a, **_k: None)
+    monkeypatch.setattr(convergence, "DaemonConverger", lambda **_kwargs: None)
+    monkeypatch.setattr(convergence, "DerivationConvergenceOwner", _Owner)
+    monkeypatch.setattr(embedding_backlog, "_archive_embedding_catchup_estimated_cost_this_month", lambda _db: 0.0)
+    monkeypatch.setattr(embedding_backlog, "_upsert_archive_embedding_catchup_run", upsert)
+
+    async def exercise() -> None:
+        coordinator = DaemonWriteCoordinator(archive_root=tmp_path)
+        bridge = DaemonWriteThreadBridge(coordinator, asyncio.get_running_loop())
+        composed = embedding_owner.compose_embedding_convergence(
+            tmp_path / "index.db",
+            compute_adapter=BoundedComputeAdapter(max_workers=1),
+            write_bridge=bridge,
+        )
+        limits: dict[str, object] = {"quiet": lambda: True} if signal == "quiet" else {"scope_limited": True}
+        await composed(["codex:synthetic"], **limits)
+
+    asyncio.run(exercise())
+    assert statuses == [OperationStatus.RUNNING, OperationStatus.INTERRUPTED]
+
+
 def test_embedding_session_window_reports_max_session_truncation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

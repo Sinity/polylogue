@@ -25,7 +25,10 @@ def test_daemon_required_envelope_preserves_resolved_archive_root(capsys: pytest
     with pytest.raises(SystemExit) as exc_info:
         run_machine_entry(unavailable, ["facets", "--format", "json"])
 
-    assert exc_info.value.code == 2
+    # #5700 made a daemon-absent refusal exit with the failed-read code.
+    from polylogue.cli.render.outcome import FAILED_READ_EXIT_CODE
+
+    assert exc_info.value.code == FAILED_READ_EXIT_CODE
     parsed = parse_json_object(capsys.readouterr().out, context="machine stdout")
     details = json_object(parsed["details"], context="details")
     assert details["archive_root"] == "/archives/old"

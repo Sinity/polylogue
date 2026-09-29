@@ -3571,7 +3571,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                             limit=limit,
                             offset=offset,
                             session_id=resolved_session_id,
-                            **_filter_kw,  # type: ignore[arg-type]
+                            **_filter_kw,
                         ),
                     )
                 except (DatabaseError, sqlite3.Error) as exc:
@@ -3675,7 +3675,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
                     limit=limit,
                     offset=offset,
                     session_id=resolved_session_id,
-                    **_filter_kw,  # type: ignore[arg-type]
+                    **_filter_kw,
                 ),
             )
             # count_sessions has no session_id param, so when the page is scoped to
@@ -5288,7 +5288,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
         with self._write_authorization():
             if not ops_db.exists():
                 initialize_archive_database(ops_db, ArchiveTier.OPS)
-            with open_daemon_connection(ops_db) as conn:
+            with open_daemon_connection(ops_db, archive_root=ops_db.parent) as conn:
                 table_count = int(
                     conn.execute(
                         """
@@ -5301,7 +5301,7 @@ class DaemonAPIHandler(BaseHTTPRequestHandler):
             if table_count != 2:
                 initialize_archive_database(ops_db, ArchiveTier.OPS)
             try:
-                with open_daemon_connection(ops_db) as conn:
+                with open_daemon_connection(ops_db, archive_root=ops_db.parent) as conn:
                     record_mcp_call(
                         conn,
                         call_id=call_id,

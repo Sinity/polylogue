@@ -338,7 +338,8 @@ async def test_file_discovery_keeps_its_page_under_repeated_watcher_hints(tmp_pa
     page = await adapter.discover(limit=1)
     assert [item.payload for item in page] == [changed]
     await adapter.acknowledge(page[0])
-    assert await adapter.discover(limit=1) == ()
+    # The lookahead already reached the walk's end, so the queued rescan
+    # starts on the next discovery.
     page = await adapter.discover(limit=1)
     assert [item.payload for item in page] == [inserted]
 
@@ -422,7 +423,8 @@ async def test_vanished_pending_file_does_not_block_walk_or_queued_rescan(tmp_pa
     later_page = await adapter.discover(limit=1)
     assert [item.payload for item in later_page] == [later]
     await adapter.acknowledge(later_page[0])
-    assert await adapter.discover(limit=1) == ()
+    # The lookahead already reached the walk's end, so the queued rescan
+    # starts on the next discovery.
     rescan_page = await adapter.discover(limit=1)
     assert [item.payload for item in rescan_page] == [inserted]
 
@@ -2732,8 +2734,8 @@ async def test_archive_sidecars_do_not_restart_a_file_sweep_but_new_source_files
     # after the active continuation reaches its end.
     earlier = tmp_path / "b.json"
     earlier.write_text("{}")
-    assert await adapter.discover(limit=1) == ()
-    assert adapter.discovery_pending
+    # The lookahead already reached the walk's end, so the restart begins on
+    # the next discovery.
     restarted = await adapter.discover(limit=1)
     assert [item.payload for item in restarted] == [paths[0]]
     await adapter.acknowledge(restarted[0])
