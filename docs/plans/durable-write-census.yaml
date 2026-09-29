@@ -718,13 +718,6 @@ writes:
     reason: "cleanup_superseded_raw_snapshots deletes only raws that superseded_raw_snapshot_candidates ranked outside the declared keep_full_snapshots/keep_append_snapshots window, minus the caller's protected_raw_ids and outside its eligible_raw_ids set; it is dry-run by default and reports skipped_referenced_count rather than deleting a protected row"
   - file: "polylogue/storage/raw_retention.py"
     function: "cleanup_superseded_raw_snapshots"
-    table: "blob_refs"
-    kind: "delete"
-    tier: "source"
-    classification: declared_retention
-    reason: "Separate statement 2 of this function on blob_refs (DELETE FROM blob_refs WHERE raw_id IN ({placeholders})). cleanup_superseded_raw_snapshots deletes only raws that superseded_raw_snapshot_candidates ranked outside the declared keep_full_snapshots/keep_append_snapshots window, minus the caller's protected_raw_ids and outside its eligible_raw_ids set; it is dry-run by default and reports skipped_referenced_count rather than deleting a protected row"
-  - file: "polylogue/storage/raw_retention.py"
-    function: "cleanup_superseded_raw_snapshots"
     table: "raw_sessions"
     kind: "delete"
     tier: "source"

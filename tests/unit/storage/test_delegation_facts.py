@@ -19,6 +19,7 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -143,7 +144,7 @@ def _insert_dispatch_action(
         )
 
 
-def _insert_session_profile(conn: sqlite3.Connection, *, session_id: str, **overrides: object) -> None:
+def _insert_session_profile(conn: sqlite3.Connection, *, session_id: str, **overrides: Any) -> None:
     cost_fields = {
         "total_cost_usd",
         "total_input_tokens",
