@@ -23,6 +23,7 @@ regression test for that constraint.
 
 from __future__ import annotations
 
+import functools
 import json
 import sqlite3
 from pathlib import Path
@@ -847,3 +848,137 @@ def test_codex_state_source_scope_is_lexical_not_process_dependent(
     link = tmp_path / "linked-install"
     link.symlink_to(real, target_is_directory=True)
     assert codex_state_source_scope(str(link / "sessions" / "rollout.jsonl")) == str(link)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state_first", [True, False], ids=["state-first", "rollout-first"])
+async def test_codex_state_title_does_not_depend_on_admission_order(tmp_path: Path, state_first: bool) -> None:
+    """A thread-state export admitted after its rollout still titles it.
+
+    A rollout written before ``state_5.sqlite`` is enriched without the
+    projected thread title. Its evidence binding then differs from the
+    evidence the archive holds once the state export is projected, so the
+    canonical raw-observation convergence re-derives it on the retained route
+    and both orders store the same row.
+
+    Anti-vacuity: make ``RawObservationDerivation._enrichment_evidence_moved``
+    return ``False`` and the rollout-first order keeps the first-prompt title.
+    """
+    from polylogue.operations.raw_observation_derivation import converge_raw_observations
+
+    install = tmp_path / "codex-home"
+    sessions = install / "sessions"
+    sessions.mkdir(parents=True)
+    rollout_path = sessions / f"rollout-2026-07-20T10-00-00-{_THREAD_ID}.jsonl"
+    _write_codex_rollout(rollout_path)
+    state_path = install / "state_5.sqlite"
+    _write_state_5_sqlite(state_path)
+
+    archive_root = tmp_path / "archive"
+    archive = Polylogue(archive_root=archive_root, db_path=archive_root / "index.db")
+    processor = LiveBatchProcessor(
+        archive,
+        (
+            WatchSource(name="codex", root=sessions),
+            WatchSource(name="codex-state", root=install, suffixes=(".sqlite", ".db")),
+        ),
+        cursor=CursorStore(archive_root / "index.db"),
+        parser_fingerprint=live_watcher._PARSER_FINGERPRINT,
+    )
+    try:
+        for path in (state_path, rollout_path) if state_first else (rollout_path, state_path):
+            metrics = await processor.ingest_files([path], emit_event=False)
+            assert metrics.failed_file_count == 0
+    finally:
+        await archive.close()
+    for _attempt in range(3):
+        converge_raw_observations(archive_root, source_roots=(install,), limit=64)
+
+    with sqlite3.connect(archive_root / "index.db") as conn:
+        rows = conn.execute("SELECT session_id, title FROM sessions").fetchall()
+        bound = conn.execute("SELECT session_id FROM session_enrichment_bindings").fetchall()
+    assert rows == [(_CODEX_SESSION_ID, "Synthetic curated title")]
+    assert bound == [(_CODEX_SESSION_ID,)]
+
+    # Anti-vacuity for inspection reading thread state: resolving it through
+    # the source-tier connection (index only attached as ``index_tier``)
+    # yields no state title, so the curated binding never matches and the
+    # rollout is re-derived on every sweep.
+    from polylogue.operations.raw_observation_derivation import (
+        make_raw_observation_derivation,
+        raw_observation_frame,
+    )
+
+    with sqlite3.connect(archive_root / "source.db") as conn:
+        rollout_raws = [
+            str(row[0])
+            for row in conn.execute("SELECT raw_id FROM raw_sessions WHERE source_path LIKE '%rollout-%.jsonl'")
+        ]
+    assert rollout_raws
+    statuses = make_raw_observation_derivation(archive_root).inspect(
+        raw_observation_frame(archive_root, source_roots=(install,)), rollout_raws
+    )
+    assert set(statuses.values()) == {"valid"}
+
+
+def test_enrichment_evidence_moved_reads_titles_through_a_real_index_connection(tmp_path: Path) -> None:
+    """``session_enrichment_evidence_key`` must resolve titles against index.db.
+
+    Anti-vacuity (Codex P1, #5643): ``_enrichment_evidence_moved`` passed the
+    source-tier connection (index.db only attached under the ``index_tier``
+    alias) as ``index_conn``. ``read_thread_titles`` queries unqualified
+    ``work_evidence_*`` tables, which resolve against that connection's own
+    ``main`` schema -- source.db, which has no such tables -- so the query
+    raised ``sqlite3.OperationalError``, caught and degraded to an empty
+    mapping every time. The recomputed evidence key then always looked like
+    "no title evidence", identical to the pre-state key, so a transcript
+    already carrying a curated title from state evidence could never be
+    detected as stale when that evidence later changed.
+    """
+    from polylogue.core.enums import Provider
+    from polylogue.sources.revision_backfill import session_enrichment_evidence_key
+    from polylogue.storage.sqlite.agent_thread_state import ThreadRecord, write_thread_state_graph
+    from polylogue.storage.sqlite.archive_tiers.index import INDEX_DDL
+
+    index_path = tmp_path / "index.db"
+    with sqlite3.connect(index_path) as conn:
+        conn.executescript(INDEX_DDL)
+        assert write_thread_state_graph(
+            conn,
+            source_scope="/codex-home",
+            threads=[ThreadRecord(_THREAD_ID, "Curated title", 2_000)],
+            spawn_edges=[],
+            raw_id="raw-state-1",
+            blob_hash="blob-state-1",
+            observed_at_ms=1_000,
+        )
+        conn.commit()
+
+    source_path = "/codex-home/sessions/rollout-2026-07-20T10-00-00-" + _THREAD_ID + ".jsonl"
+    key = functools.partial(
+        session_enrichment_evidence_key,
+        provider=Provider.CODEX,
+        source_path=source_path,
+        native_id=_THREAD_ID,
+        source_conn=None,
+        blob_root=None,
+    )
+
+    # No index evidence at all -- the "nothing has a title" baseline.
+    no_evidence = key(index_conn=None)
+
+    # The exact defect: passing a connection whose *own* main schema is not
+    # index.db (source.db here, standing in for the source-tier connection
+    # with the index only attached as an alias) must not silently resolve to
+    # the same "no title" identity as having no index evidence at all --
+    # that identity match is what made a curated-title session's binding
+    # look perpetually current even after the title moved.
+    with sqlite3.connect(":memory:") as wrong_conn:
+        degraded = key(index_conn=wrong_conn)
+    assert degraded == no_evidence
+
+    with sqlite3.connect(index_path) as real_conn:
+        current = key(index_conn=real_conn)
+    assert current is not None
+    assert current != no_evidence
+    assert current != degraded

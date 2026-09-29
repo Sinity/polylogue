@@ -318,14 +318,23 @@ def test_append_chain_resumes_after_lapse_and_recovery_snapshot(tmp_path: Path) 
     assert resumed_result.succeeded == [resumed_plan]
 
 
-def test_source_migration_adds_legacy_append_resynthesis_receipts(tmp_path: Path) -> None:
+def test_pre_fresh_source_tier_is_refused_not_migrated(tmp_path: Path) -> None:
+    """A source tier stamped by the pre-fresh-v1 numbering is inert salvage.
+
+    The fresh v1 archive retired the old durable chain, including the step
+    that added ``raw_legacy_append_resynthesis_receipts``. Such a tier must be
+    refused before any migration step runs, never partially upgraded.
+
+    Anti-vacuity: drop the ``precheck_version > target_version`` refusal in
+    ``migrate_archive_tier`` and the call no longer raises this error.
+    """
     bootstrap_archive_root(tmp_path)
     with sqlite3.connect(tmp_path / "source.db") as conn:
         conn.execute("DROP TABLE raw_legacy_append_resynthesis_receipts")
         conn.execute("PRAGMA user_version = 39")
         conn.commit()
 
-        with pytest.raises(MigrationError, match="verified backup manifest"):
+        with pytest.raises(MigrationError, match="newer than this runtime expects"):
             migrate_archive_tier(conn, ArchiveTier.SOURCE, backup_manifest=None)
 
         assert conn.execute("PRAGMA user_version").fetchone() == (39,)

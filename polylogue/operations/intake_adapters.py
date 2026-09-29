@@ -16,7 +16,9 @@ import sqlite3
 import stat
 import threading
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Iterator, Sequence
+from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
@@ -1427,7 +1429,21 @@ class RawMaterializationDiscovery:
         #: stalled head.
         self._held_page: tuple[str | None, tuple[str, ...]] | None = None
         self._frontier: int = 0
-        self._arrivals_first = False
+        #: Which lane leads the next discovery call. Arrivals, the sweep and
+        #: any queued project dependents rotate, so no lane -- not even a
+        #: project scan whose every page owes work -- starves the others.
+        self._lane_turn = 0
+        #: Sessions whose enrichment evidence just arrived: a project's
+        #: ``sessions-index.json`` names the transcripts beside it. Inspected
+        #: on later calls, after the evidence itself was admitted, so a
+        #: title curated after its transcript was written converges promptly.
+        #: A scheduling hint only: the sweep re-inspects every raw anyway, and
+        #: inspection compares each output's evidence binding with the
+        #: evidence the archive holds (install-wide history and thread state
+        #: converge through that sweep).
+        #: Pending project scans: (project directory, last served path,
+        #: last served rowid). Paged by ``_dependents_selected``.
+        self._evidence_projects: deque[tuple[str, str, int]] = deque()
 
     def _raw_frontier(self) -> int:
         """Return the durable high-water mark for admitted raw observations."""
@@ -1500,17 +1516,20 @@ class RawMaterializationDiscovery:
             self._cursor = None
             self._held_page = None
             self._frontier = self._raw_frontier()
-            self._arrivals_first = False
+            self._lane_turn = 0
 
         inspected_limit = min(limit, _RAW_DISCOVERY_INSPECTION_LIMIT)
         adapter = make_raw_observation_derivation(self._archive_root)
-        self._arrivals_first = not self._arrivals_first
-        lanes: tuple[Callable[[Any, Any, int], tuple[str, ...]], ...] = (
-            (self._arrival_selected, self._sweep_selected)
-            if self._arrivals_first
-            else (self._sweep_selected, self._arrival_selected)
+        # Queued project dependents join the rotation only while a scan is
+        # pending, so arrivals and the sweep otherwise keep alternating.
+        rotation: tuple[Callable[[Any, Any, int], tuple[str, ...]], ...] = (
+            self._arrival_selected,
+            self._sweep_selected,
+            *((self._dependents_selected,) if self._evidence_projects else ()),
         )
-        for lane in lanes:
+        turn = self._lane_turn % len(rotation)
+        self._lane_turn += 1
+        for lane in (*rotation[turn:], *rotation[:turn]):
             selected = lane(frame, adapter, inspected_limit)
             if selected:
                 return self._with_costs(selected)
@@ -1521,8 +1540,65 @@ class RawMaterializationDiscovery:
         self._frontier = frontier
         if not page:
             return ()
+        self._queue_evidence_dependents(page)
         statuses = adapter.inspect(frame, page)
         return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+
+    def _dependents_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
+        """Serve at most ``limit`` transcripts of the queued project scans.
+
+        Each queued scan is a continuation over one project's transcripts, so
+        a project with a long retained history is paged like the sweep rather
+        than listed whole when its index arrives.
+        """
+        if not self._evidence_projects:
+            return ()
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        page: list[str] = []
+        with closing(open_readonly_connection(self._archive_root / "source.db", timeout=5.0)) as conn:
+            while self._evidence_projects and len(page) < limit:
+                project, after_path, after_rowid = self._evidence_projects[0]
+                wanted = limit - len(page)
+                rows = conn.execute(
+                    "SELECT raw_id, source_path, rowid FROM raw_sessions "
+                    "WHERE source_path >= ? AND source_path < ? AND source_path LIKE '%.jsonl' "
+                    "AND (source_path > ? OR (source_path = ? AND rowid > ?)) "
+                    "ORDER BY source_path, rowid LIMIT ?",
+                    (project + "/", project + "0", after_path, after_path, after_rowid, wanted),
+                ).fetchall()
+                page.extend(str(row[0]) for row in rows)
+                if len(rows) < wanted:
+                    self._evidence_projects.popleft()
+                else:
+                    self._evidence_projects[0] = (project, str(rows[-1][1]), int(rows[-1][2]))
+        if not page:
+            return ()
+        statuses = adapter.inspect(frame, tuple(page))
+        return tuple(raw_id for raw_id in page if statuses.get(raw_id) != "valid")
+
+    def _queue_evidence_dependents(self, arrived: Sequence[str]) -> None:
+        """Queue a scan of the project each newly admitted session index describes."""
+        from polylogue.storage.sqlite.connection_profile import open_readonly_connection
+
+        source_db = self._archive_root / "source.db"
+        with closing(open_readonly_connection(source_db, timeout=5.0)) as conn:
+            placeholders = ",".join("?" for _ in arrived)
+            indexes = conn.execute(
+                f"SELECT source_path FROM raw_sessions WHERE raw_id IN ({placeholders}) "
+                "AND source_path LIKE '%/sessions-index.json'",
+                tuple(arrived),
+            ).fetchall()
+        arrived_projects = dict.fromkeys(str(index_path).rsplit("/", 1)[0] for (index_path,) in indexes)
+        if not arrived_projects:
+            return
+        # A project already queued restarts from its first transcript: the
+        # ones its scan already served were inspected against the older
+        # index. One scan per project keeps the queue bounded by projects.
+        pending = [entry for entry in self._evidence_projects if entry[0] not in arrived_projects]
+        self._evidence_projects.clear()
+        self._evidence_projects.extend(pending)
+        self._evidence_projects.extend((project, "", -1) for project in arrived_projects)
 
     def _sweep_selected(self, frame: Any, adapter: Any, limit: int) -> tuple[str, ...]:
         # At most one released page is skipped per call, so a stalled head

@@ -264,9 +264,18 @@ async def ingest_sources_archive(
             lambda offered: processor.ingest_files(offered, emit_event=False),
         )
     finally:
-        parse_stage.shutdown()
-        await _wait_for_coordinator_idle(coordinator)
-        await archive.close()
+        # An admitted writer may still be consuming its parse-stage carrier
+        # (``pop_path``) after the caller was cancelled. Let it settle before
+        # the stage terminates workers and discards prepared results.
+        # Each step runs even when the one before it raises or is cancelled
+        # again: a skipped shutdown would leak the worker pool and its scratch.
+        try:
+            await _wait_for_coordinator_idle(coordinator)
+        finally:
+            try:
+                parse_stage.shutdown()
+            finally:
+                await archive.close()
 
     for metrics in metrics_by_pass:
         result.counts["sessions"] = result.counts.get("sessions", 0) + metrics.ingested_session_count
