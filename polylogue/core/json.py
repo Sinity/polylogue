@@ -46,6 +46,7 @@ hash the same payload differently with nothing observable to say so
 
 from __future__ import annotations
 
+import codecs
 import json as _stdlib_json
 import re
 from collections.abc import Callable
@@ -537,23 +538,50 @@ def combine_surrogate_pairs(text: str) -> str:
     )
 
 
+_ENCODED_SURROGATE_PAIR = re.compile(rb"\xed([\xa0-\xaf])([\x80-\xbf])\xed([\xb0-\xbf])([\x80-\xbf])")
+_ENCODED_SURROGATE = re.compile(rb"\xed([\xa0-\xbf])([\x80-\xbf])")
+_PROVIDER_SURROGATES = "polylogue-provider-surrogates"
+
+
+def _provider_surrogates(error: UnicodeError) -> tuple[str, int]:
+    """Decode an encoded surrogate where strict UTF-8 stops, pairing CESU-8.
+
+    An error handler rather than a second pass: the decoder writes one output
+    string, never a surrogatepass copy followed by a combined one.
+    """
+    if not isinstance(error, UnicodeDecodeError):
+        raise error
+    data, start = error.object, error.start
+    pair = _ENCODED_SURROGATE_PAIR.match(data, start)
+    if pair is not None:
+        high = 0xD000 | ((pair[1][0] & 0x3F) << 6) | (pair[2][0] & 0x3F)
+        low = 0xD000 | ((pair[3][0] & 0x3F) << 6) | (pair[4][0] & 0x3F)
+        return chr(0x10000 + ((high - 0xD800) << 10) + (low - 0xDC00)), pair.end()
+    lone = _ENCODED_SURROGATE.match(data, start)
+    if lone is not None:
+        return chr(0xD000 | ((lone[1][0] & 0x3F) << 6) | (lone[2][0] & 0x3F)), lone.end()
+    raise error
+
+
+codecs.register_error(_PROVIDER_SURROGATES, _provider_surrogates)
+
+
 def decode_provider_utf8(raw: bytes) -> str:
     """Decode provider bytes, keeping directly encoded surrogates and pairing CESU-8.
 
     Strict UTF-8 first; bytes that only decode with ``surrogatepass`` keep
-    their lone code units, and any encoded pair becomes its character.
-    Arbitrary malformed bytes still raise. A leading UTF-8 byte-order mark
-    is consumed, as a JSON reader of bytes consumes it, on both paths. Every
-    reader of retained provider bytes decodes through this, so one artifact is
+    their lone code units, and any encoded pair becomes its character, in the
+    same single decode. Arbitrary malformed bytes still raise. A leading UTF-8
+    byte-order mark is consumed, as a JSON reader of bytes consumes it, on
+    both paths, through a view rather than a copy of the bytes. Every reader
+    of retained provider bytes decodes through this, so one artifact is
     readable to all of them or to none.
     """
-    if raw.startswith(b"\xef\xbb\xbf"):
-        raw = raw[3:]
+    view = memoryview(raw)[3:] if raw.startswith(b"\xef\xbb\xbf") else raw
     try:
-        return raw.decode("utf-8")
+        return str(view, "utf-8")
     except UnicodeDecodeError as error:
         try:
-            decoded = raw.decode("utf-8", errors="surrogatepass")
+            return str(view, "utf-8", _PROVIDER_SURROGATES)
         except UnicodeDecodeError:
             raise error from None
-        return combine_surrogate_pairs(decoded)

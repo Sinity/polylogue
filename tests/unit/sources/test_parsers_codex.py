@@ -3656,3 +3656,20 @@ def test_provider_decode_consumes_a_bom_before_a_surrogate() -> None:
     raw = b'\xef\xbb\xbf{"a":"\xed\xa0\x80"}'
     assert decode_provider_utf8(raw) == '{"a":"\ud800"}'
     assert loads(raw) == {"a": "\ud800"}
+
+
+def test_provider_decode_pairs_cesu8_in_one_decode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Encoded pairs are combined while decoding, so a whale record is never
+    held as a surrogatepass string and a second, combined copy.
+
+    Anti-vacuity: decode with ``surrogatepass`` and then combine the pairs over
+    the whole text, and the patched whole-text combiner fails the decode.
+    """
+    from polylogue.core import json as core_json
+
+    def no_second_pass(_text: str) -> str:
+        raise AssertionError("combined pairs over a second full-size string")
+
+    monkeypatch.setattr(core_json, "combine_surrogate_pairs", no_second_pass)
+    raw = b'{"a": "' + b"x" * 4096 + b'\xed\xa0\xbd\xed\xb8\x80 \xed\xa0\x80"}'
+    assert core_json.decode_provider_utf8(raw) == '{"a": "' + "x" * 4096 + '\U0001f600 \ud800"}'
