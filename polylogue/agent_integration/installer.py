@@ -237,6 +237,16 @@ def _ensure_parent(path: Path, created_directories: set[Path]) -> None:
         created_directories.add(directory)
 
 
+def _plan_parent(path: Path, planned_directories: set[Path]) -> None:
+    """Record the ancestors ``_ensure_parent`` would create, without creating them."""
+    current = path.parent
+    while not current.exists():
+        planned_directories.add(current)
+        if current.parent == current:
+            break
+        current = current.parent
+
+
 def _remove_empty_directories(paths: Sequence[Path]) -> None:
     for path in sorted(set(paths), key=lambda value: len(value.parts), reverse=True):
         with contextlib.suppress(OSError):
@@ -621,13 +631,17 @@ def _apply_structured_operation(
     *,
     transaction: _Transaction,
     created_directories: set[Path],
+    dry_run: bool = False,
 ) -> dict[str, object]:
     kind = cast(OperationKind, desired["kind"])
     path = Path(cast(str, desired["path"]))
     keys = tuple(cast(list[str], desired["keys"]))
     wanted = cast(JSONValue, desired["desired"])
     file_existed = path.exists()
-    _ensure_parent(path, created_directories)
+    if dry_run:
+        _plan_parent(path, created_directories)
+    else:
+        _ensure_parent(path, created_directories)
     data = _json_load(path) if kind == "json_value" else _yaml_load(path)
     present, current = _path_get(data, keys)
 
@@ -654,7 +668,7 @@ def _apply_structured_operation(
         else:
             raise NativeConfigConflict(f"operator-owned Claude SessionStart hook conflicts at {path}")
         _path_set(data, ("hooks", "SessionStart"), cast(JSONValue, hook_list))
-        if not path.exists() or current != hook_list:
+        if not dry_run and (not path.exists() or current != hook_list):
             _write_structured(path, data, kind, transaction)
         record = copy.deepcopy(desired)
         record.update(
@@ -688,7 +702,7 @@ def _apply_structured_operation(
         before_value = None
         owned = True
 
-    if current != wanted:
+    if current != wanted and not dry_run:
         _path_set(data, keys, wanted)
         _write_structured(path, data, kind, transaction)
     record = copy.deepcopy(desired)
@@ -711,11 +725,15 @@ def _apply_marked_block(
     *,
     transaction: _Transaction,
     created_directories: set[Path],
+    dry_run: bool = False,
 ) -> dict[str, object]:
     path = Path(cast(str, desired["path"]))
     marker = cast(str, desired["marker"])
     wanted = cast(str, desired["desired"])
-    _ensure_parent(path, created_directories)
+    if dry_run:
+        _plan_parent(path, created_directories)
+    else:
+        _ensure_parent(path, created_directories)
     text = _read_text(path) if path.exists() else ""
     existing = _extract_marked_block(text, marker)
     if marker == "codex-mcp":
@@ -747,7 +765,7 @@ def _apply_marked_block(
             tomllib.loads(updated)
         except tomllib.TOMLDecodeError as exc:
             raise NativeConfigConflict(f"generated Codex TOML is invalid at {path}: {exc}") from exc
-    if updated != text:
+    if updated != text and not dry_run:
         transaction.capture(path)
         mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
         _atomic_write(path, updated.encode(), mode=mode)
@@ -769,10 +787,14 @@ def _apply_owned_file(
     *,
     transaction: _Transaction,
     created_directories: set[Path],
+    dry_run: bool = False,
 ) -> dict[str, object]:
     path = Path(cast(str, desired["path"]))
     wanted = cast(str, desired["desired"])
-    _ensure_parent(path, created_directories)
+    if dry_run:
+        _plan_parent(path, created_directories)
+    else:
+        _ensure_parent(path, created_directories)
     current = _read_text(path) if path.exists() else None
     previous_owned = previous is not None and previous.get("owned") is True
     if previous is not None and previous_owned:
@@ -789,7 +811,7 @@ def _apply_owned_file(
     else:
         owned = True
         created_file = True
-    if current != wanted:
+    if current != wanted and not dry_run:
         transaction.capture(path)
         mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
         _atomic_write(path, wanted.encode(), mode=mode)
@@ -811,7 +833,13 @@ def _apply_operation(
     *,
     transaction: _Transaction,
     created_directories: set[Path],
+    dry_run: bool = False,
 ) -> dict[str, object]:
+    """Apply one desired native mutation, or with ``dry_run`` only plan its record.
+
+    The planned record carries the same ownership and pre-state an apply
+    would record, and a conflict raises before anything is written.
+    """
     kind = cast(OperationKind, desired["kind"])
     if kind in {"json_value", "yaml_value"}:
         return _apply_structured_operation(
@@ -819,6 +847,7 @@ def _apply_operation(
             previous,
             transaction=transaction,
             created_directories=created_directories,
+            dry_run=dry_run,
         )
     if kind == "marked_block":
         return _apply_marked_block(
@@ -826,13 +855,110 @@ def _apply_operation(
             previous,
             transaction=transaction,
             created_directories=created_directories,
+            dry_run=dry_run,
         )
     return _apply_owned_file(
         desired,
         previous,
         transaction=transaction,
         created_directories=created_directories,
+        dry_run=dry_run,
     )
+
+
+_EFFECT_PRESENT_STATES = frozenset({"ok", "satisfied-unowned"})
+
+
+def _prepared_operations(client_record: Mapping[str, object]) -> dict[str, dict[str, object]]:
+    return _as_operation_map(client_record.get("prepared_operations"))
+
+
+def _prepared_removals(client_record: Mapping[str, object]) -> frozenset[str]:
+    raw = client_record.get("prepared_removals")
+    return frozenset(item for item in raw if isinstance(item, str)) if isinstance(raw, list) else frozenset()
+
+
+def _interrupted(client_record: Mapping[str, object]) -> bool:
+    """Whether an install journaled work for this client and never committed it."""
+    return "prepared_operations" in client_record or "prepared_removals" in client_record
+
+
+def _reconciled_operations(client_record: Mapping[str, object]) -> list[tuple[dict[str, object], bool]]:
+    """Return each recorded operation once, as ``(record, unconfirmed)``.
+
+    An interrupted install leaves a prepared record beside (or instead of) the
+    committed one. When the prepared effect is present it is what is on disk --
+    including an upgrade that reuses the committed identity -- so it wins;
+    otherwise the committed record stands. A prepared record with no committed
+    counterpart and no present effect is reported ``unconfirmed`` so its
+    removal can treat absence as "never applied" rather than drift. So is a
+    committed record the install journaled for removal whose effect is no
+    longer present: the interrupted install may already have removed it.
+    """
+    committed = _as_operation_map(client_record.get("operations"))
+    prepared = _prepared_operations(client_record)
+    removals = _prepared_removals(client_record)
+    reconciled: list[tuple[dict[str, object], bool]] = []
+    for identity in dict.fromkeys([*committed, *prepared]):
+        candidate = prepared.get(identity)
+        if candidate is not None and _observe_operation(candidate).state in _EFFECT_PRESENT_STATES:
+            reconciled.append((candidate, False))
+        elif identity in committed:
+            record = committed[identity]
+            removal_unconfirmed = (
+                identity in removals and _observe_operation(record).state not in _EFFECT_PRESENT_STATES
+            )
+            reconciled.append((record, removal_unconfirmed))
+        elif candidate is not None:
+            reconciled.append((candidate, True))
+    return reconciled
+
+
+def _remove_recorded_operation(
+    operation: dict[str, object], unconfirmed: bool, *, transaction: _Transaction
+) -> tuple[bool, str]:
+    if unconfirmed:
+        return _remove_prepared_operation(operation, transaction=transaction)
+    return _remove_operation(operation, transaction=transaction)
+
+
+def _remove_prepared_operation(operation: dict[str, object], *, transaction: _Transaction) -> tuple[bool, str]:
+    """Undo one operation an interrupted install may or may not have carried out.
+
+    A prepared operation (or a journaled removal) is written to the state file
+    before its native effect, so after a crash its effect is either present
+    (remove it exactly as a committed operation) or absent (never applied, or
+    already removed; nothing to remove). Only content that is neither the
+    recorded value nor its pre-state is drift.
+    """
+    if operation.get("owned") is not True:
+        return True, "prepared operation did not own its value"
+    observed = _observe_operation(operation)
+    if observed.state in _EFFECT_PRESENT_STATES:
+        return _remove_operation(operation, transaction=transaction)
+    if observed.state == "missing":
+        return True, "prepared operation was never applied"
+    if operation.get("kind") in {"json_value", "yaml_value"} and operation.get("merge") != "claude_hook":
+        path = Path(cast(str, operation["path"]))
+        kind = cast(OperationKind, operation["kind"])
+        data = _json_load(path) if kind == "json_value" else _yaml_load(path)
+        present, current = _path_get(data, cast(list[str], operation["keys"]))
+        before_present = operation.get("before_present") is True
+        if not present and not before_present:
+            return True, "prepared operation was never applied"
+        if present and before_present and current == cast(JSONValue, operation.get("before_value")):
+            return True, "prepared operation was never applied"
+        return False, observed.detail
+    if operation.get("kind") == "marked_block":
+        path = Path(cast(str, operation["path"]))
+        if _extract_marked_block(_read_text(path), cast(str, operation["marker"])) is None:
+            return True, "prepared operation was never applied"
+    if operation.get("merge") == "claude_hook":
+        path = Path(cast(str, operation["path"]))
+        _, hooks_value = _path_get(_json_load(path), ("hooks", "SessionStart"))
+        if _find_claude_hook_index(hooks_value) is None:
+            return True, "prepared operation was never applied"
+    return False, observed.detail
 
 
 def _remove_structured_operation(
@@ -1054,6 +1180,25 @@ class AgentIntegrationManager:
             retained_drift: list[dict[str, str]] = []
             try:
                 if options.replace_clients:
+                    # Journal every unselected client's removals before any
+                    # native effect is removed, as the selected-client path
+                    # does: a kill mid-removal then leaves each removed
+                    # effect recorded as a journaled removal, not as drift.
+                    journaled = False
+                    for client in tuple(clients_state):
+                        raw_client = clients_state.get(client)
+                        if client in selected or not isinstance(raw_client, dict):
+                            continue
+                        removals = sorted(
+                            cast(str, operation["identity"])
+                            for operation, _unconfirmed in _reconciled_operations(raw_client)
+                        )
+                        if removals and raw_client.get("prepared_removals") != removals:
+                            raw_client["prepared_removals"] = removals
+                            journaled = True
+                    if journaled:
+                        state["clients"] = clients_state
+                        self._write_state(state, transaction)
                     for client in tuple(clients_state):
                         if client in selected:
                             continue
@@ -1061,36 +1206,108 @@ class AgentIntegrationManager:
                         if not isinstance(raw_client, dict):
                             continue
                         remaining: list[dict[str, object]] = []
-                        for operation in _as_operation_map(raw_client.get("operations")).values():
-                            removed, detail = _remove_operation(operation, transaction=transaction)
+                        for operation, unconfirmed in _reconciled_operations(raw_client):
+                            removed, detail = _remove_recorded_operation(
+                                operation, unconfirmed, transaction=transaction
+                            )
                             if not removed:
                                 remaining.append(operation)
                                 retained_drift.append(
                                     {"client": client, "identity": cast(str, operation["identity"]), "detail": detail}
                                 )
+                        raw_client.pop("prepared_operations", None)
+                        raw_client.pop("prepared_removals", None)
                         if remaining:
                             raw_client["operations"] = remaining
                         else:
                             clients_state.pop(client, None)
                             removed_clients.append(client)
 
-                receipts: list[dict[str, object]] = []
+                # Two-phase: record every intended operation in the state file
+                # BEFORE any native file is touched. A crash between a native
+                # write and the final record then still leaves uninstall a
+                # record of work install may have done (polylogue-dzk48).
+                plans: dict[
+                    str,
+                    tuple[dict[str, dict[str, object]], dict[str, dict[str, object]], list[dict[str, object]]],
+                ] = {}
+                planned_directories: set[Path] = set()
+                needs_prepared_record = False
                 for client in selected:
                     raw_previous = clients_state.get(client)
                     previous_client = cast(dict[str, object], raw_previous) if isinstance(raw_previous, dict) else {}
-                    previous_operations = _as_operation_map(previous_client.get("operations"))
+                    committed_identities = set(_as_operation_map(previous_client.get("operations")))
+                    previous_operations: dict[str, dict[str, object]] = {}
+                    # Records whose effect is unconfirmed: a committed record
+                    # whose journaled removal may already have happened, or a
+                    # prepared-only operation an interrupted install may have
+                    # written. Either is removed only if still present, and a
+                    # drifted value is retained rather than dropped untracked.
+                    unconfirmed_removals: dict[str, dict[str, object]] = {}
+                    for operation, unconfirmed in _reconciled_operations(previous_client):
+                        identity = cast(str, operation["identity"])
+                        if not unconfirmed:
+                            previous_operations[identity] = operation
+                        else:
+                            unconfirmed_removals[identity] = operation
                     desired_operations = _client_desired_operations(
                         client,
                         options,
                         home=self.home,
                         environment=self.environment,
                     )
+                    planned = [
+                        _apply_operation(
+                            desired,
+                            previous_operations.get(cast(str, desired["identity"])),
+                            transaction=transaction,
+                            created_directories=planned_directories,
+                            dry_run=True,
+                        )
+                        for desired in desired_operations
+                    ]
+                    plans[client] = (previous_operations, unconfirmed_removals, desired_operations)
+                    desired_identities = {cast(str, operation["identity"]) for operation in desired_operations}
+                    pending_removals = sorted(
+                        identity
+                        for identity in (*previous_operations, *unconfirmed_removals)
+                        if identity not in desired_identities
+                    )
+                    already_committed = (
+                        not pending_removals
+                        and not _interrupted(previous_client)
+                        and all(previous_operations.get(cast(str, item["identity"])) == item for item in planned)
+                        and len(planned) == len(committed_identities)
+                    )
+                    if already_committed:
+                        continue
+                    prepared_client = dict(previous_client)
+                    prepared_client.setdefault("client", client)
+                    prepared_client["prepared_operations"] = planned
+                    # Removals are journaled too: a kill after an obsolete
+                    # effect is deleted but before the final record must not
+                    # leave the committed record claiming it as drift.
+                    prepared_client["prepared_removals"] = pending_removals
+                    clients_state[client] = prepared_client
+                    needs_prepared_record = True
+                if needs_prepared_record:
+                    state["clients"] = clients_state
+                    state["created_directories"] = [
+                        str(path) for path in sorted(created_directories | planned_directories)
+                    ]
+                    self._write_state(state, transaction)
+
+                receipts: list[dict[str, object]] = []
+                for client in selected:
+                    previous_operations, unconfirmed_removals, desired_operations = plans[client]
                     desired_identities = {cast(str, operation["identity"]) for operation in desired_operations}
                     remaining_operations: list[dict[str, object]] = []
-                    for identity, old_operation in previous_operations.items():
+                    for identity, old_operation in (*previous_operations.items(), *unconfirmed_removals.items()):
                         if identity in desired_identities:
                             continue
-                        removed, detail = _remove_operation(old_operation, transaction=transaction)
+                        removed, detail = _remove_recorded_operation(
+                            old_operation, identity in unconfirmed_removals, transaction=transaction
+                        )
                         if not removed:
                             remaining_operations.append(old_operation)
                             retained_drift.append({"client": client, "identity": identity, "detail": detail})
@@ -1165,6 +1382,25 @@ class AgentIntegrationManager:
             selected = set(clients or cast(Sequence[AgentClient], tuple(clients_state)))
             receipts: list[dict[str, object]] = []
             try:
+                # Journal every selected client's removals before the first
+                # effect is touched, as install does: a kill mid-removal then
+                # leaves each removed effect recorded as a journaled removal,
+                # not as drift that keeps the client from converging.
+                journaled = False
+                for client in tuple(clients_state):
+                    raw_client = clients_state.get(client)
+                    if client not in selected or not isinstance(raw_client, dict):
+                        continue
+                    removals = sorted(
+                        cast(str, operation["identity"])
+                        for operation, _unconfirmed in _reconciled_operations(raw_client)
+                    )
+                    if removals and raw_client.get("prepared_removals") != removals:
+                        raw_client["prepared_removals"] = removals
+                        journaled = True
+                if journaled:
+                    state["clients"] = clients_state
+                    self._write_state(state, transaction)
                 for client in tuple(clients_state):
                     if client not in selected:
                         continue
@@ -1174,13 +1410,15 @@ class AgentIntegrationManager:
                     remaining: list[dict[str, object]] = []
                     removed_count = 0
                     drifted: list[dict[str, str]] = []
-                    for operation in _as_operation_map(raw_client.get("operations")).values():
-                        removed, detail = _remove_operation(operation, transaction=transaction)
+                    for operation, unconfirmed in _reconciled_operations(raw_client):
+                        removed, detail = _remove_recorded_operation(operation, unconfirmed, transaction=transaction)
                         if removed:
-                            removed_count += 1
+                            removed_count += 1 if detail != "prepared operation was never applied" else 0
                         else:
                             remaining.append(operation)
                             drifted.append({"identity": cast(str, operation["identity"]), "detail": detail})
+                    raw_client.pop("prepared_operations", None)
+                    raw_client.pop("prepared_removals", None)
                     if remaining:
                         raw_client["operations"] = remaining
                     else:
@@ -1241,6 +1479,9 @@ class AgentIntegrationManager:
             state.get("asset_digest") == current_asset_digest and state.get("content_version") == ASSET_VERSION
         )
         blocking = not asset_current
+        problems: list[str] = (
+            [] if asset_current else ["installed guidance assets are stale; reinstall to reconcile them"]
+        )
         for client, raw_client in sorted(clients_state.items()):
             if not isinstance(raw_client, dict):
                 continue
@@ -1248,7 +1489,16 @@ class AgentIntegrationManager:
                 _observe_operation(operation).to_dict()
                 for operation in _as_operation_map(raw_client.get("operations")).values()
             ]
-            operation_blocking = any(item["state"] in {"missing", "drifted", "invalid"} for item in operation_statuses)
+            # A kill mid-install leaves journaled work that status cannot
+            # attribute: its committed operations may look intact while the
+            # prepared ones are absent or half-applied, so it blocks until an
+            # install or uninstall resolves it.
+            interrupted = _interrupted(raw_client)
+            operation_blocking = interrupted or any(
+                item["state"] in {"missing", "drifted", "invalid"} for item in operation_statuses
+            )
+            if interrupted:
+                problems.append(f"{client}: an install was interrupted; rerun install or uninstall to resolve it")
             blocking = blocking or operation_blocking
             server_command = cast(str, raw_client.get("server_command", "polylogue-mcp"))
             polylogue_command = cast(str, raw_client.get("polylogue_command", "polylogue"))
@@ -1269,6 +1519,7 @@ class AgentIntegrationManager:
                     "asset_digest": raw_client.get("asset_digest"),
                     "operations": operation_statuses,
                     "executables": executables,
+                    "interrupted": interrupted,
                     "native_ok": not operation_blocking,
                 }
             )
@@ -1283,7 +1534,7 @@ class AgentIntegrationManager:
             "current_asset_digest": current_asset_digest,
             "asset_current": asset_current,
             "clients": clients_payload,
-            "problems": [] if asset_current else ["installed guidance assets are stale; reinstall to reconcile them"],
+            "problems": problems,
         }
 
     def doctor(self) -> dict[str, object]:
