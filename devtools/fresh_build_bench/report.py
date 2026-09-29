@@ -681,10 +681,10 @@ def _reducer_dependencies() -> tuple[Path, ...]:
     Readiness, FTS and census rules live in production modules; a change
     there changes what a receipt means even when this package does not.
     """
-    return _polylogue_import_closure(Path(__file__).resolve().parent.glob("*.py"), _CHECKOUT_ROOT)
+    return polylogue_import_closure(Path(__file__).resolve().parent.glob("*.py"), _CHECKOUT_ROOT)
 
 
-def _polylogue_import_closure(roots: Iterable[Path], checkout: Path) -> tuple[Path, ...]:
+def polylogue_import_closure(roots: Iterable[Path], checkout: Path) -> tuple[Path, ...]:
     """The ``polylogue`` modules under ``checkout`` that ``roots`` import, transitively."""
     import ast
 
