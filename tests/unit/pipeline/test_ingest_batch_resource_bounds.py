@@ -203,7 +203,7 @@ def test_drain_ready_session_entries_drops_written_payload(
 
     ingest_batch_core._drain_ready_session_entries(
         object(),  # type: ignore[arg-type]
-        [("raw-large", cdata)],
+        [("raw-large", cdata, 0)],
         summary=SimpleNamespace(),  # type: ignore[arg-type]
         materialized_ids=set(),
     )

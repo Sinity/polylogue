@@ -53,28 +53,20 @@ async def rebuild_index(
     phase_count: int | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> None:
-    """Rebuild the entire FTS5 index from persisted message rows."""
+    """Rebuild FTS; full rebuild progress measures its content and identity phases."""
+    del phase_count
     full_rebuild = session_ids is None
-    session_id_list = (
-        session_ids if session_ids is not None else [session_id async for session_id in backend.iter_session_ids()]
-    )
-    async with backend.connection() as conn:
-        del phase_count
-        phase_total = len(session_id_list)
-        if progress_callback is not None and session_id_list:
-            progress_callback(
-                0,
-                desc=f"Indexing: full-text search 0/{phase_total:,}",
-            )
+    phase_total = 2 if full_rebuild else len(session_ids or ())
+    describe = _fts_progress_desc_factory(phase_total=phase_total, phases=full_rebuild)
+    async with backend.write_connection() as conn:
+        if progress_callback is not None and phase_total:
+            progress_callback(0, desc=describe(0, phase_total))
         await rebuild_fts_index_async(
             conn,
-            session_ids=None if full_rebuild else session_id_list,
+            session_ids=session_ids,
             progress_callback=progress_callback,
-            progress_desc=(
-                _fts_progress_desc_factory(phase_total=phase_total) if progress_callback is not None else None
-            ),
+            progress_desc=describe if progress_callback is not None else None,
         )
-        await conn.commit()
     invalidate_search_cache()
 
 
@@ -88,7 +80,7 @@ async def update_index_for_sessions(
     """Repair FTS rows for the provided sessions from persisted message rows."""
     session_id_list = [session_id async for session_id in _iter_ids(session_ids)]
     changed = bool(session_id_list)
-    async with backend.connection() as conn:
+    async with backend.write_connection() as conn:
         del phase_count
         phase_total = len(session_id_list)
         if progress_callback is not None and session_id_list:
@@ -104,7 +96,6 @@ async def update_index_for_sessions(
                 _fts_progress_desc_factory(phase_total=phase_total) if progress_callback is not None else None
             ),
         )
-        await conn.commit()
     if changed:
         invalidate_search_cache()
 
@@ -119,10 +110,11 @@ async def _iter_ids(items: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[
         yield item
 
 
-def _fts_progress_desc_factory(*, phase_total: int) -> Callable[[int, int], str]:
+def _fts_progress_desc_factory(*, phase_total: int, phases: bool = False) -> Callable[[int, int], str]:
     def describe(processed: int, total: int) -> str:
         del total
-        return f"Indexing: full-text search {processed:,}/{phase_total:,}"
+        unit = "phases " if phases else ""
+        return f"Indexing: full-text search {unit}{processed:,}/{phase_total:,}"
 
     return describe
 

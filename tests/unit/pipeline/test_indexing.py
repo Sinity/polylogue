@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from collections.abc import AsyncIterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from polylogue.config import Config
-from polylogue.pipeline.services.indexing import IndexService
+from polylogue.pipeline.services.indexing import IndexService, rebuild_index, update_index_for_sessions
+from polylogue.pipeline.services.ingest_batch import repair_message_fts_bulk
 from polylogue.storage.fts.fts_lifecycle import ensure_fts_index_async
 from polylogue.storage.sqlite.async_sqlite import SQLiteBackend
 from tests.infra.storage_records import make_content_block, make_message, make_session, save_session_to_archive
@@ -98,8 +102,8 @@ class TestIndexService:
         result = await service.rebuild_index()
         assert result is True
 
-    async def test_rebuild_index_reports_chunk_progress(self, sqlite_backend: SQLiteBackend) -> None:
-        """Full rebuild skips the action phase when no action repair is needed."""
+    async def test_rebuild_index_reports_completed_phases(self, sqlite_backend: SQLiteBackend) -> None:
+        """Full rebuild reports its actual content and identity work, not imaginary chunks."""
 
         for index in range(3):
             session_id = f"conv-progress-{index}"
@@ -133,8 +137,9 @@ class TestIndexService:
         assert result is True
         assert progress_events
         descriptions = [desc for _, desc in progress_events if desc is not None]
-        assert descriptions[0] == "Indexing: full-text search 0/3"
-        assert descriptions[-1] == "Indexing: full-text search 3/3"
+        assert descriptions == [f"Indexing: full-text search phases {n}/2" for n in range(3)]
+        assert [amount for amount, _ in progress_events] == [0, 1, 2]
+        assert (await service.get_index_status())["count"] == 3
 
     async def test_rebuild_index_skips_action_phase_for_tool_use_blocks(
         self,
@@ -204,8 +209,8 @@ class TestIndexService:
         assert result is True
         descriptions = [desc for _, desc in progress_events if desc is not None]
         assert all(desc.startswith("Indexing: full-text search ") for desc in descriptions)
-        assert descriptions[0] == "Indexing: full-text search 0/2"
-        assert descriptions[-1] == "Indexing: full-text search 2/2"
+        assert descriptions[0] == "Indexing: full-text search phases 0/2"
+        assert descriptions[-1] == "Indexing: full-text search phases 2/2"
 
     async def test_get_index_status(self, sqlite_backend: SQLiteBackend) -> None:
         """Get index status."""
@@ -326,3 +331,98 @@ class TestIndexServiceErrors:
             result = await service.update_index([])
             assert result is True
             mock_update.assert_called_once_with([], mock_backend)
+
+
+@pytest.mark.parametrize("route", ["deferred", "full", "scoped"])
+async def test_fts_writers_do_not_lease_an_active_read_only_pool(sqlite_backend: SQLiteBackend, route: str) -> None:
+    """Every FTS writer used to receive a read-only connection inside read_pool."""
+    await save_session_to_archive(
+        sqlite_backend,
+        session=make_session(session_id="pool-session", source_name="chatgpt", content_hash="pool-hash"),
+        messages=[
+            make_message(
+                message_id="pool-message",
+                session_id="pool-session",
+                role="user",
+                text="pool sentinel",
+                content_hash="pool-message-hash",
+            )
+        ],
+    )
+    async with sqlite_backend.write_connection() as conn:
+        await conn.execute("INSERT INTO messages_fts(messages_fts) VALUES ('delete-all')")
+        await conn.execute("DELETE FROM messages_fts_identity")
+    async with sqlite_backend.read_pool(size=1):
+        if route == "deferred":
+            await repair_message_fts_bulk(sqlite_backend, ["pool-session"])
+        elif route == "full":
+            await rebuild_index(sqlite_backend)
+        else:
+            await update_index_for_sessions(["pool-session"], sqlite_backend)
+        async with sqlite_backend.read_connection() as conn:
+            cursor = await conn.execute("SELECT COUNT(*) FROM messages_fts WHERE messages_fts MATCH 'sentinel'")
+            row = await cursor.fetchone()
+            assert row is not None
+            assert tuple(row) == (1,)
+            cursor = await conn.execute("SELECT COUNT(*) FROM messages_fts_identity")
+            row = await cursor.fetchone()
+            assert row is not None
+            assert tuple(row) == (1,)
+
+
+async def test_full_rebuild_does_not_enumerate_sessions_for_its_progress_total(
+    sqlite_backend: SQLiteBackend, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The old progress-only list retained one Python ID per archive session."""
+
+    async def forbid_session_enumeration() -> AsyncIterator[str]:
+        raise AssertionError("full FTS rebuild must not enumerate session IDs")
+        yield "unreachable"
+
+    monkeypatch.setattr(sqlite_backend, "iter_session_ids", forbid_session_enumeration)
+    events: list[int] = []
+
+    def capture(amount: int, desc: str | None = None) -> None:
+        events.append(amount)
+
+    await rebuild_index(sqlite_backend, progress_callback=capture)
+    assert events == [0, 1, 2]
+    assert (await IndexService(_config(), backend=sqlite_backend).get_index_status())["count"] == 0
+
+
+async def test_cancelled_full_rebuild_preserves_the_callers_transaction(
+    sqlite_backend: SQLiteBackend,
+) -> None:
+    """Trigger executescript used to commit before a cancelled phase could roll back."""
+    async with sqlite_backend.write_connection() as conn:
+        await conn.execute("CREATE TABLE fixture_transaction_guard (value TEXT)")
+        await conn.execute("INSERT INTO fixture_transaction_guard VALUES ('before')")
+        cursor = await conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'blocks' ORDER BY name LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        trigger = str(row[0])
+        await conn.execute(f'DROP TRIGGER "{trigger}"')
+
+    def cancel_after_content(amount: int, desc: str | None = None) -> None:
+        if amount == 1:
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        async with sqlite_backend.transaction():
+            async with sqlite_backend.connection() as conn:
+                await conn.execute("UPDATE fixture_transaction_guard SET value = 'during'")
+            await rebuild_index(sqlite_backend, progress_callback=cancel_after_content)
+    assert sqlite_backend._txn_conn is None
+    async with sqlite_backend.read_connection() as conn:
+        cursor = await conn.execute("SELECT value FROM fixture_transaction_guard")
+        row = await cursor.fetchone()
+        assert row is not None
+        assert tuple(row) == ("before",)
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?", (trigger,)
+        )
+        row = await cursor.fetchone()
+        assert row is not None
+        assert tuple(row) == (0,)

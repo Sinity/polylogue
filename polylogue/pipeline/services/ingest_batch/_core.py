@@ -167,7 +167,6 @@ from polylogue.pipeline.services.ingest_batch._models import (
     _DEFAULT_INGEST_WORKER_LIMIT,
     _SINEX_STAGED_PAYLOAD_LIMIT_BYTES,
     _BulkConnectionBackendLike,
-    _ConnectionBackendLike,
     _IngestBatchSummary,
     _IngestWorkerRequest,
     _ParsingServiceRawStateLike,
@@ -175,6 +174,7 @@ from polylogue.pipeline.services.ingest_batch._models import (
     _RawIngestOutcome,
     _SessionEntry,
     _SourceSnapshot,
+    _WriteConnectionBackendLike,
 )
 from polylogue.pipeline.services.ingest_batch._observations import _build_parse_batch_observation
 from polylogue.pipeline.services.ingest_batch._summary import (
@@ -2099,6 +2099,7 @@ def _write_session_entry(
     cdata: SessionWritePayload,
     *,
     summary: _IngestBatchSummary,
+    request_ordinal: int,
     force_write: bool = False,
     signature_cache: LineageSignatureCache | dict[str, list[tuple[str, str]]] | None = None,
     blob_publisher: ArchiveBlobPublisher | None = None,
@@ -2147,7 +2148,7 @@ def _write_session_entry(
                 prepared_writes=prepared_writes,
             )
         if retired_assertions:
-            summary.marker_retired_assertions.setdefault((raw_id, cdata.session_id), set()).update(retired_assertions)
+            summary.marker_retired_assertions.setdefault((raw_id, request_ordinal), set()).update(retired_assertions)
         marker_write = prepared_writes[0] if prepared_writes else None
         for stage, elapsed_s in write_stage_timings.items():
             summary.stage_timings_s[stage] = summary.stage_timings_s.get(stage, 0.0) + elapsed_s
@@ -2163,6 +2164,7 @@ def _write_session_entry(
         )
         summary.marker_session_dispositions_by_raw_id.setdefault(raw_id, []).append(
             {
+                "request_ordinal": request_ordinal,
                 "session_id": cdata.session_id,
                 "disposition": (
                     "append"
@@ -2194,6 +2196,7 @@ def _write_session_entry(
             conn.execute(f"RELEASE {_SESSION_WRITE_SAVEPOINT}")
         if marker_write is not None:
             marker_session: dict[str, object] = {
+                "request_ordinal": request_ordinal,
                 "session_id": marker_write.session_id,
                 "input_content_hash": marker_write.input_content_hash.hex(),
                 "disposition": "append" if marker_write.merge_append else "replace",
@@ -2281,7 +2284,7 @@ def _delete_stale_sessions_for_raw_entries(conn: sqlite3.Connection, ready_entri
         return
 
     expected_by_raw_id: dict[str, set[str]] = {}
-    for raw_id, cdata in ready_entries:
+    for raw_id, cdata, _request_ordinal in ready_entries:
         if raw_id:
             expected_by_raw_id.setdefault(raw_id, set()).add(cdata.session_id)
 
@@ -2385,13 +2388,14 @@ def _drain_ready_session_entries(
         drive_cohort_cache = DriveRevisionCohortCache()
     if fresh_build and fresh_build_batch is None:
         fresh_build_batch = set()
-    for raw_id, cdata in _topo_sort_session_entries(ready_entries):
+    for raw_id, cdata, request_ordinal in _topo_sort_session_entries(ready_entries):
         try:
             wrote = _write_session_entry(
                 conn,
                 raw_id,
                 cdata,
                 summary=summary,
+                request_ordinal=request_ordinal,
                 force_write=force_write,
                 signature_cache=signature_cache,
                 blob_publisher=blob_publisher,
@@ -2824,13 +2828,6 @@ def _drain_ingest_result(
         summary.skipped_raw_ids.add(ir.raw_id)
         return
 
-    if marker_acceptance_enabled:
-        session_ids = [cdata.session_id for cdata in ir.sessions]
-        if len(session_ids) != len(set(session_ids)):
-            raise AcceptedMarkerInputRefusedError(
-                f"raw revision {ir.raw_id!r} contains duplicate normalized session IDs"
-            )
-
     try:
         publication_payloads = _prepare_publication_payloads(
             ir,
@@ -2882,7 +2879,7 @@ def _drain_ingest_result(
     else:
         written_count = _drain_ready_session_entries(
             conn,
-            [(ir.raw_id, cdata) for cdata in ir.sessions],
+            [(ir.raw_id, cdata, ordinal) for ordinal, cdata in enumerate(ir.sessions)],
             summary=summary,
             materialized_ids=materialized_ids,
             force_write=force_write,
@@ -3069,28 +3066,29 @@ def _publish_marker_witnesses_before_index_commit(
             requests[raw_id] = reused
             continue
         selected = summary.marker_sessions_by_raw_id.get(raw_id, [])
-        selected_by_id = {str(session.get("session_id", "")): session for session in selected}
+        selected_by_ordinal = {cast(int, session["request_ordinal"]): session for session in selected}
         dispositions = {
-            str(session.get("session_id", "")): str(session.get("disposition", "no-op"))
+            cast(int, session["request_ordinal"]): str(session["disposition"])
             for session in summary.marker_session_dispositions_by_raw_id.get(raw_id, [])
         }
         request_sessions = summary.marker_request_sessions_by_raw_id.get(raw_id, [])
+        if len(selected_by_ordinal) != len(selected) or any(
+            ordinal < 0 or ordinal >= len(request_sessions)
+            for ordinal in selected_by_ordinal.keys() | dispositions.keys()
+        ):
+            raise AcceptedMarkerInputRefusedError("marker write does not name one request occurrence")
         carrier_sessions: list[dict[str, object]] = []
-        for binding in request_sessions:
-            session_id = str(binding.get("session_id", ""))
-            session = dict(selected_by_id.get(session_id, binding))
-            session["disposition"] = dispositions.get(session_id, "no-op")
+        for ordinal, binding in enumerate(request_sessions):
+            session = dict(selected_by_ordinal.get(ordinal, binding))
+            if session.get("session_id") != binding.get("session_id"):
+                raise AcceptedMarkerInputRefusedError("marker write does not match its request occurrence")
+            session.pop("request_ordinal", None)
+            session["disposition"] = dispositions.get(ordinal, "no-op")
             session.setdefault("candidates", [])
-            retired = summary.marker_retired_assertions.get((raw_id, session_id))
+            retired = summary.marker_retired_assertions.get((raw_id, ordinal))
             if retired:
                 session["retired_assertions"] = sorted(retired)
             carrier_sessions.append(session)
-        # Defensive fallback for adapters that produced a write entry without
-        # its outcome frame. Preserve every prepared carrier in that case.
-        request_ids = {str(session.get("session_id", "")) for session in carrier_sessions}
-        carrier_sessions.extend(
-            session for session in selected if str(session.get("session_id", "")) not in request_ids
-        )
         requests[raw_id] = prepare_accepted_marker_input(
             raw_id,
             carrier_sessions,
@@ -4087,7 +4085,10 @@ async def _persist_batch_raw_state_updates(
         facts = (marker_request_facts_by_raw_id or {}).get(rid, {})
         batch = (marker_batches_by_raw_id or {}).get(rid)
         if batch is None:
-            batch = prepare_accepted_marker_input(rid, sessions, request_facts=facts, request_sessions=request_sessions)
+            bindings = [
+                {key: value for key, value in session.items() if key != "request_ordinal"} for session in sessions
+            ]
+            batch = prepare_accepted_marker_input(rid, bindings, request_facts=facts, request_sessions=request_sessions)
         assert isinstance(batch, PreparedAcceptedMarkerInput)
         await finalize_pending_accepted_marker_input(raw_state_conn, batch)
 
@@ -4189,7 +4190,7 @@ async def _persist_batch_raw_state_updates(
 
 
 async def repair_message_fts_bulk(
-    backend: _ConnectionBackendLike,
+    backend: _WriteConnectionBackendLike,
     changed_session_ids: Sequence[str],
 ) -> None:
     """Repair message FTS once after a multi-batch ingest pass."""
@@ -4199,9 +4200,8 @@ async def repair_message_fts_bulk(
 
     from polylogue.storage.fts.fts_lifecycle import repair_fts_index_async
 
-    async with backend.connection() as conn:
+    async with backend.write_connection() as conn:
         await repair_fts_index_async(conn, session_ids)
-        await conn.commit()
 
 
 __all__ = [

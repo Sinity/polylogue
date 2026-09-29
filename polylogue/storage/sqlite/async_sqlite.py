@@ -299,7 +299,7 @@ async def _backend_transaction(backend: SQLiteBackend) -> AsyncIterator[None]:
         try:
             yield
             await _backend_commit(backend)
-        except Exception:
+        except BaseException:
             await _backend_rollback(backend)
             raise
 
@@ -364,6 +364,20 @@ async def _close_backend(backend: SQLiteBackend) -> None:
 # ---------------------------------------------------------------------------
 # Connection lifecycle helpers (formerly async_sqlite_connections.py)
 # ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def _backend_write_connection(backend: SQLiteBackend) -> AsyncIterator[aiosqlite.Connection]:
+    """Lease the writer, preserving any transaction already owned by the caller."""
+    require_write_lease(f"async write connection({backend._db_path})", archive_root=backend._source_db_path.parent)
+    if backend._bulk_conn is not None:
+        yield backend._bulk_conn
+    elif backend._txn_conn is not None:
+        yield backend._txn_conn
+    else:
+        async with backend.transaction():
+            assert backend._txn_conn is not None
+            yield backend._txn_conn
 
 
 @asynccontextmanager
@@ -535,6 +549,10 @@ class SQLiteBackend(
     def connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]:
         """Public connection context for read/query helpers."""
         return _backend_connection(self)
+
+    def write_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]:
+        """Use the single writer, committing only a transaction owned here."""
+        return _backend_write_connection(self)
 
     def read_connection(self) -> AbstractAsyncContextManager[aiosqlite.Connection]:
         """Public read-oriented connection context for query/report helpers."""

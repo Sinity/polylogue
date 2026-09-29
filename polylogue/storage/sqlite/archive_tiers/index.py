@@ -1970,6 +1970,8 @@ CREATE TABLE IF NOT EXISTS session_identity_claims (
 ) STRICT;
 CREATE INDEX IF NOT EXISTS idx_session_identity_claims_lookup
 ON session_identity_claims(origin, identity_namespace, provider_value);
+CREATE INDEX IF NOT EXISTS idx_session_identity_claims_claimant
+ON session_identity_claims(claimant_session_id);
 
 -- Provider-neutral topology and claims. This remains a derived tier: adapters
 -- materialize admitted source facts here, while this slice deliberately does

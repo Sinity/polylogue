@@ -253,7 +253,9 @@ def test_batch_writer_carries_typed_attachment_owner_resolution(tmp_path: Path) 
         )
         summary = _IngestBatchSummary()
 
-        assert ingest_batch_core._write_session_entry(conn, "raw-batch-owner-receipt", payload, summary=summary)
+        assert ingest_batch_core._write_session_entry(
+            conn, "raw-batch-owner-receipt", payload, summary=summary, request_ordinal=0
+        )
         assert summary.attachment_owner_resolutions == [
             {
                 "raw_id": "raw-batch-owner-receipt",
@@ -300,10 +302,14 @@ def test_hash_unchanged_batch_write_still_reports_owner_resolutions(tmp_path: Pa
             raw_id="raw-batch-unchanged-owner",
         )
         first = _IngestBatchSummary()
-        assert ingest_batch_core._write_session_entry(conn, "raw-batch-unchanged-owner", payload, summary=first)
+        assert ingest_batch_core._write_session_entry(
+            conn, "raw-batch-unchanged-owner", payload, summary=first, request_ordinal=0
+        )
         conn.commit()
         replay = _IngestBatchSummary()
-        ingest_batch_core._write_session_entry(conn, "raw-batch-unchanged-owner", payload, summary=replay)
+        ingest_batch_core._write_session_entry(
+            conn, "raw-batch-unchanged-owner", payload, summary=replay, request_ordinal=0
+        )
 
         assert first.attachment_owner_resolutions
         assert replay.attachment_owner_resolutions == first.attachment_owner_resolutions
@@ -705,8 +711,8 @@ def test_topo_sort_session_entries_orders_parent_before_child() -> None:
 
     ordered = _topo_sort_session_entries(
         [
-            ("raw-child", child),
-            ("raw-parent", parent),
+            ("raw-child", child, 0),
+            ("raw-parent", parent, 0),
         ]
     )
 
@@ -4032,7 +4038,7 @@ def test_drain_ready_session_entries_writes_missing_parent_without_buffering(tmp
 
         _drain_ready_session_entries(
             conn,
-            [("raw-child", child)],
+            [("raw-child", child, 0)],
             summary=summary,
             materialized_ids=materialized_ids,
         )
@@ -4079,7 +4085,7 @@ def test_drain_ready_session_entries_preserves_same_result_parent_fk(tmp_path: P
 
         _drain_ready_session_entries(
             conn,
-            [("raw-child", child), ("raw-parent", parent)],
+            [("raw-child", child, 0), ("raw-parent", parent, 0)],
             summary=_IngestBatchSummary(),
             materialized_ids=set(),
         )

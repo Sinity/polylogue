@@ -396,7 +396,7 @@ def test_batch_append_retains_only_published_delta_with_canonical_occurrences(wo
             raw_id=raw_id,
             append_only=append_only,
         )
-        assert _write_session_entry(conn, raw_id, payload, summary=summary), summary.failed_raw_ids
+        assert _write_session_entry(conn, raw_id, payload, summary=summary, request_ordinal=0), summary.failed_raw_ids
         return summary
 
     try:
@@ -462,8 +462,10 @@ def test_index_witness_recovers_and_refreshes_exact_accepted_carrier(tmp_path: P
         summary = _IngestBatchSummary(
             marker_request_facts_by_raw_id={"raw": {"recipe": "r1"}},
             marker_request_sessions_by_raw_id={"raw": full},
-            marker_session_dispositions_by_raw_id={"raw": [{"session_id": "child", "disposition": "append"}]},
-            marker_sessions_by_raw_id={"raw": [original]},
+            marker_session_dispositions_by_raw_id={
+                "raw": [{"request_ordinal": 0, "session_id": "child", "disposition": "append"}]
+            },
+            marker_sessions_by_raw_id={"raw": [{**original, "request_ordinal": 0}]},
         )
         index.execute("BEGIN IMMEDIATE")
         _publish_marker_witnesses_before_index_commit(index, archive_root=root, summary=summary)
@@ -473,7 +475,9 @@ def test_index_witness_recovers_and_refreshes_exact_accepted_carrier(tmp_path: P
         retry = _IngestBatchSummary(
             marker_request_facts_by_raw_id={"raw": {"recipe": "r1"}},
             marker_request_sessions_by_raw_id={"raw": full},
-            marker_session_dispositions_by_raw_id={"raw": [{"session_id": "child", "disposition": "no-op"}]},
+            marker_session_dispositions_by_raw_id={
+                "raw": [{"request_ordinal": 0, "session_id": "child", "disposition": "no-op"}]
+            },
             # The public ingest route classifies this exact current-witness
             # retry before the session drain and reuses the retained carrier.
             marker_batches_by_raw_id={"raw": first_batch},
@@ -507,8 +511,10 @@ def test_index_witness_recovers_and_refreshes_exact_accepted_carrier(tmp_path: P
         same_accepted_input = _IngestBatchSummary(
             marker_request_facts_by_raw_id={"raw": {"recipe": "r1"}},
             marker_request_sessions_by_raw_id={"raw": full},
-            marker_session_dispositions_by_raw_id={"raw": [{"session_id": "child", "disposition": "append"}]},
-            marker_sessions_by_raw_id={"raw": [original]},
+            marker_session_dispositions_by_raw_id={
+                "raw": [{"request_ordinal": 0, "session_id": "child", "disposition": "append"}]
+            },
+            marker_sessions_by_raw_id={"raw": [{**original, "request_ordinal": 0}]},
         )
         rebuilt_index.execute("BEGIN IMMEDIATE")
         _publish_marker_witnesses_before_index_commit(rebuilt_index, archive_root=root, summary=same_accepted_input)
@@ -1569,39 +1575,41 @@ async def test_public_partial_multi_session_raw_rolls_back_before_marker_witness
 
 
 @pytest.mark.asyncio
-async def test_public_duplicate_normalized_session_ids_refuse_before_index_write(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("bodies", [("first", "second"), ("first", "second", "second")])
+async def test_public_duplicate_session_occurrences_retain_their_own_marker_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, bodies: tuple[str, ...]
 ) -> None:
-    """The carrier map cannot collapse two interpreted sessions onto one ID."""
+    """An ID-keyed carrier repeats the last occurrence, and refusing duplicates drops valid input."""
     bootstrap_archive_root(tmp_path)
-    payload_bytes = b"one acquired raw with duplicate normalized session IDs"
+    payload_bytes = b"synthetic acquired raw with repeated normalized session IDs"
     BlobStore(tmp_path / "blob").write_from_bytes(payload_bytes)
     with sqlite3.connect(tmp_path / "source.db") as source:
         raw_id = write_source_raw_session(
             source,
             origin=Origin.CODEX_SESSION,
-            source_path="duplicate-sessions.jsonl",
+            source_path="occurrences.jsonl",
             source_index=0,
             payload=payload_bytes,
             acquired_at_ms=1,
         )
-    parsed_sessions = [
-        _session("::note: first", native_id="duplicate"),
-        _session("::note: second", native_id="duplicate"),
-    ]
-    payloads = [
-        SessionWritePayload(
-            session_id=f"codex-session:{parsed.provider_session_id}",
-            content_hash=str(session_content_hash(parsed)),
-            parsed_session=parsed,
-            message_count=len(parsed.messages),
-            raw_id=raw_id,
-        )
-        for parsed in parsed_sessions
-    ]
+    parsed_sessions = [_session("::note: " + body, native_id="duplicate") for body in bodies]
+    expected_hashes = [str(session_content_hash(session)) for session in parsed_sessions]
 
     def fake_ingest(_record: RawSessionRecord, *_args: object, **_kwargs: object) -> IngestRecordResult:
-        return IngestRecordResult(raw_id=raw_id, outcome_code="success", sessions=payloads)
+        return IngestRecordResult(
+            raw_id=raw_id,
+            outcome_code="success",
+            sessions=[
+                SessionWritePayload(
+                    session_id="codex-session:duplicate",
+                    content_hash=str(session_content_hash(parsed)),
+                    parsed_session=parsed.model_copy(deep=True),
+                    message_count=len(parsed.messages),
+                    raw_id=raw_id,
+                )
+                for parsed in parsed_sessions
+            ],
+        )
 
     monkeypatch.setattr(ingest_batch_core, "ingest_record", fake_ingest)
     monkeypatch.setattr(
@@ -1612,19 +1620,37 @@ async def test_public_duplicate_normalized_session_ids_refuse_before_index_write
     repository = SessionRepository(backend=SQLiteBackend(db_path=tmp_path / "index.db"), archive_root=tmp_path)
     service = ParsingService(repository=repository, archive_root=tmp_path, config=config, ingest_workers=1)
     try:
-        with pytest.raises(AcceptedMarkerInputRefusedError, match="duplicate normalized session IDs"):
-            await ingest_batch_core.process_ingest_batch(
-                service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
-            )
+        result = ParseResult()
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], result, None, repair_message_fts=False
+        )
+        first = _accepted_marker_state(tmp_path / "source.db", raw_id)
+        assert first is not None
+        carrier = json.loads(cast(bytes, first[1]))
+        assert len(carrier["sessions"]) == len(bodies)
+        assert [session["input_content_hash"] for session in carrier["sessions"]] == expected_hashes
+        expected_candidates = [["first"], ["second"]] + ([[]] if len(bodies) == 3 else [])
+        assert [
+            [candidate["match"]["body"] for candidate in session["candidates"]] for session in carrier["sessions"]
+        ] == expected_candidates
+        assert [session["disposition"] for session in carrier["sessions"]] == ["replace", "replace"] + (
+            ["no-op"] if len(bodies) == 3 else []
+        )
+        assert all("request_ordinal" not in session for session in carrier["sessions"])
+        await ingest_batch_core.process_ingest_batch(
+            service, repository.backend, [raw_id], ParseResult(), None, repair_message_fts=False
+        )
+        assert _accepted_marker_state(tmp_path / "source.db", raw_id) == first
     finally:
         await repository.close()
 
     with sqlite3.connect(tmp_path / "index.db") as index:
-        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (0,)
-        assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (0,)
+        assert index.execute("SELECT COUNT(*) FROM sessions").fetchone() == (1,)
+        assert index.execute("SELECT COUNT(*) FROM ingest_marker_witnesses").fetchone() == (1,)
+        assert [row[0] for row in index.execute("SELECT search_text FROM blocks")] == ["::note: second"]
     with sqlite3.connect(tmp_path / "source.db") as source:
         assert source.execute("SELECT COUNT(*) FROM pending_accepted_marker_inputs").fetchone() == (0,)
-        assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (0,)
+        assert source.execute("SELECT COUNT(*) FROM accepted_marker_inputs").fetchone() == (1,)
 
 
 @pytest.mark.asyncio

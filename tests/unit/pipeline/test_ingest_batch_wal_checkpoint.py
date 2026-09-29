@@ -683,3 +683,20 @@ def test_checkpoint_wal_reports_blocking_processes_when_the_route_asks(
 
     assert observation.busy_pages == 1
     assert observation.blocking_processes == ("1234:polylogue-mcp",)
+
+
+def test_generated_claimant_scope_lookup_has_a_leading_index(tmp_path: Path) -> None:
+    """A compound provider-first identity key cannot seek by claimant_session_id."""
+    with open_connection(tmp_path / "claimant-scope.db") as conn:
+        checks, _ = ingest_batch_core._foreign_key_check_plan(conn)
+        check = next(check for check in checks if check.table == "session_identity_claims")
+        plan = [
+            str(row[3])
+            for row in conn.execute(
+                "EXPLAIN QUERY PLAN " + ingest_batch_core._scoped_foreign_key_sql(check, "?"),
+                ("codex-session:fixture",),
+            )
+        ]
+    assert plan
+    assert any("idx_session_identity_claims_claimant" in detail for detail in plan)
+    assert not any(detail.upper().startswith("SCAN ") for detail in plan)
