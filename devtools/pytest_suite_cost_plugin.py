@@ -394,7 +394,10 @@ def aggregate_suite_cost(directory: Path) -> dict[str, Any]:
         for name, value in dict(worker.get("tier_init", {})).items():
             tier_total[name] = tier_total.get(name, 0) + int(value)
     write_bytes = io_total.get("write_bytes", 0)
-    sampled = [worker for worker in workers if "peak_scratch_apparent_bytes" in worker]
+    # The controller's basetemp contains every worker's directory, so its walk
+    # observes the whole tree at one instant: it is the only simultaneous
+    # scratch measurement, and it takes part in the peak alongside workers.
+    sampled = [record for record in records if "peak_scratch_apparent_bytes" in record]
     rss_sampled = [worker for worker in workers if "peak_rss_kib" in worker]
     return {
         "workers": len(workers),
@@ -414,11 +417,12 @@ def aggregate_suite_cost(directory: Path) -> dict[str, Any]:
         "write_bytes_per_test": round(write_bytes / tests, 1) if tests else 0.0,
         "tier_init": dict(sorted(tier_total.items())),
         "archive_tier_initializations": sum(tier_total.values()),
-        # Per-process peaks have no shared sampling clock. A sum would claim a
+        # Per-worker peaks have no shared sampling clock. A sum would claim a
         # simultaneous suite peak we did not observe, so expose the largest
-        # worker peak and retain every individual measurement below. The keys
-        # are absent -- never zero -- when no worker was asked to walk its
-        # scratch tree, so an unsampled run cannot read as a measured zero.
+        # observed peak -- the controller's whole-tree walk included -- and
+        # retain every individual measurement below. The keys are absent --
+        # never zero -- when nothing was asked to walk its scratch tree, so
+        # an unsampled run cannot read as a measured zero.
         **(
             {
                 "peak_scratch_apparent_bytes": max(int(w.get("peak_scratch_apparent_bytes", 0)) for w in sampled),

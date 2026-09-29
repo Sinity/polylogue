@@ -874,11 +874,16 @@ def _append_jsonl_locked(entry: Mapping[str, Any], *, path: Path) -> None:
         _close_retention_lock(lock_fd)
 
 
+#: Diagnoses that record a run stopped before it finished, whatever its exit
+#: code: the whole-verify signal handlers and the focused pytest runner.
+_INTERRUPTED_DIAGNOSES = frozenset({"verification_interrupted", "pytest_interrupted"})
+
+
 def _terminal_status(entry: Mapping[str, Any]) -> str:
     aggregate = entry.get("pytest_aggregate")
     aggregate = aggregate if isinstance(aggregate, Mapping) else {}
     reason = str(entry.get("termination_reason") or aggregate.get("termination_reason") or "")
-    if entry.get("diagnosis") == "verification_interrupted" or reason in {
+    if entry.get("diagnosis") in _INTERRUPTED_DIAGNOSES or reason in {
         "cancelled",
         "canceled",
         "timeout",

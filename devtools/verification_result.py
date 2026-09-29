@@ -123,4 +123,5 @@ def _semantic_status(payload: Mapping[str, Any], verification_scope: str | None)
             "complete": "complete-passed",
             "non-test": "non-test-passed",
         }.get(verification_scope or "", "passed")
-    return "interrupted" if exit_code == 130 or payload.get("diagnosis") == "verification_interrupted" else "failed"
+    interrupted = exit_code == 130 or payload.get("diagnosis") in {"verification_interrupted", "pytest_interrupted"}
+    return "interrupted" if interrupted else "failed"

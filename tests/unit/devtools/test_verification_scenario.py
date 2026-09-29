@@ -243,6 +243,27 @@ def test_storage_correctness_json_runs_archive_backed_checks(
     assert checks["lineage-composition"]["details"]["lineage"]["inheritance"] == "prefix-sharing"
 
 
+def test_storage_correctness_rejects_a_non_canonical_stored_content_hash(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A writer that stores a fixed 32-byte digest fails the idempotency check.
+
+    Anti-vacuity: checking only that the stored hash is non-empty passes this
+    writer, because the repeat write still compares equal and skips.
+    """
+    from devtools import storage_correctness_scenario
+
+    monkeypatch.setattr(
+        "polylogue.storage.sqlite.archive_tiers.write._prepared_session_content_hash",
+        lambda _session: b"\x07" * 32,
+    )
+
+    result = storage_correctness_scenario.run_storage_correctness(report_dir=None)
+
+    [idempotent] = [check for check in result.check_results if check.name == "idempotent-reingest"]
+    assert idempotent.passed is False
+
+
 def test_storage_correctness_rejects_production_repair_without_trigger_recreation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
