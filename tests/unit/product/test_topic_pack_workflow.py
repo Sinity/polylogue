@@ -94,8 +94,8 @@ async def test_topic_pack_keeps_both_lanes_and_fetches_past_overlapping_vector_h
         async def search_similar(self, text: str, limit: int = 10, vector_provider: Any = None) -> list[Any]:
             self.vector_limit = limit
             return [
-                SimpleNamespace(id="claude-code-session:s1", title="Vector duplicate"),
-                SimpleNamespace(id="claude-code-session:s2", title="New result"),
+                SimpleNamespace(id="claude-code-session:s1", origin="claude-code-session", title="Vector duplicate"),
+                SimpleNamespace(id="claude-code-session:s2", origin="claude-code-session", title="New result"),
             ]
 
     store = OverlapStore()
@@ -117,7 +117,7 @@ async def test_seed_free_topic_uses_the_vector_lane_once_as_independent_retrieva
 
         async def search_similar(self, text: str, limit: int = 10, vector_provider: Any = None) -> list[Any]:
             self.vector_calls = getattr(self, "vector_calls", 0) + 1
-            return [SimpleNamespace(id="claude-code-session:s2", title="Semantic topic")]
+            return [SimpleNamespace(id="claude-code-session:s2", origin="claude-code-session", title="Semantic topic")]
 
     store = SeedFreeStore()
     result = await build_topic_pack(cast(Any, store), TopicPackRequest("topic", vector_provider=cast(Any, object())))
