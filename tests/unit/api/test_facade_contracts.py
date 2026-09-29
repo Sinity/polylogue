@@ -229,6 +229,7 @@ BESPOKE_METHODS: frozenset[str] = frozenset(
         "explain_query_expression",
         "query_completions",
         "get_sessions",
+        "get_session_summaries",
         "get_actions_batch",
         "query_sessions",
         "list_sessions_for_spec",
@@ -6599,6 +6600,29 @@ async def test_archive_tiers_api_corrections_write_user_tier(tmp_path: Path, fac
             ("summary_override", "deleted", None, "replacement"),
             ("tag_accept", "deleted", "archive-updated", None),
         ]
+    finally:
+        await archive.close()
+
+
+async def test_get_session_summaries_keys_requested_ids_and_omits_unknown(tmp_path: Path) -> None:
+    """``get_session_summaries`` answers each resolvable requested id once.
+
+    Anti-vacuity: key the result by resolved id instead of the requested one,
+    keep an unresolved id as a placeholder, or stop de-duplicating the request
+    and the returned mapping here changes.
+    """
+    db_path = tmp_path / "index.db"
+    await _seed_two_sessions(db_path)
+    with ArchiveStore(tmp_path) as archive_db:
+        alpha, beta = (
+            str(row[0]) for row in archive_db._conn.execute("SELECT session_id FROM sessions ORDER BY title")
+        )
+    archive = Polylogue(archive_root=tmp_path, db_path=db_path)
+    try:
+        summaries = await archive.get_session_summaries([beta, "missing-session", alpha, beta])
+        assert list(summaries) == [beta, alpha]
+        assert {key: summary.title for key, summary in summaries.items()} == {alpha: "Alpha", beta: "Beta"}
+        assert await archive.get_session_summaries([]) == {}
     finally:
         await archive.close()
 

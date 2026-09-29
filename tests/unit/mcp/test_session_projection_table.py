@@ -130,13 +130,15 @@ async def test_projection_table_drives_cli_and_mcp_name_vocabulary(
 async def test_session_list_projection_routes_through_read_and_get(mcp_server: MCPServerUnderTest) -> None:
     """Both MCP routes must look up an entry in the table.
 
-    Anti-vacuity: restore a hand-written ``if projection == \"events\"``
+    ``agent-policies`` is the one list projection answered whole; the windowed
+    ones are covered by the next test.
+    Anti-vacuity: restore a hand-written ``if projection == \"agent-policies\"``
     branch, or remove either table lookup, and this does not observe the same
     facade method and response key from both production tool handlers.
     """
-    projection = SESSION_LIST_PROJECTIONS["events"]
+    projection = SESSION_LIST_PROJECTIONS["agent-policies"]
     poly = make_polylogue_mock()
-    method = AsyncMock(return_value=[{"kind": "event"}])
+    method = AsyncMock(return_value=[{"kind": "policy"}])
     setattr(poly, projection.method, method)
 
     with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
@@ -155,8 +157,60 @@ async def test_session_list_projection_routes_through_read_and_get(mcp_server: M
             )
         )
 
-    assert read[projection.payload_key] == get[projection.payload_key] == [{"kind": "event"}]
+    assert read[projection.payload_key] == get[projection.payload_key] == [{"kind": "policy"}]
     assert method.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["events", "file-edits", "web-content", "materials"])
+async def test_windowed_session_list_projection_pages_through_the_evidence_window(
+    mcp_server: MCPServerUnderTest, name: str
+) -> None:
+    """A windowed list projection is one bounded page on both MCP routes.
+
+    Anti-vacuity: send a windowed projection back to its whole-list facade
+    method (``projection.method``), or drop the ``read`` route's ``limit``,
+    and the refused whole-list call or the forwarded limit goes red here.
+    """
+    projection = SESSION_LIST_PROJECTIONS[name]
+    poly = make_polylogue_mock()
+    setattr(poly, projection.method, AsyncMock(side_effect=AssertionError("answered the relation whole")))
+    window = AsyncMock(
+        return_value={
+            "rows": [{"kind": "row"}],
+            "total": 3,
+            "returned": 1,
+            "limit": 1,
+            "offset": 0,
+            "next_offset": 1,
+            "continuation": "token",
+            "complete": False,
+        }
+    )
+    poly.read_session_evidence_window = window
+
+    with patch("polylogue.mcp.server._get_polylogue", return_value=poly):
+        read = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["read"].fn,
+                ref="session:codex:projection-registry",
+                view=projection.name,
+                limit=1,
+            )
+        )
+        get = json.loads(
+            await invoke_surface_async(
+                mcp_server._tool_manager._tools["get"].fn,
+                ref="session:codex:projection-registry",
+                projection=projection.name,
+            )
+        )
+
+    assert read[projection.payload_key] == get[projection.payload_key] == [{"kind": "row"}]
+    assert read["continuation"] == get["continuation"] == "token"
+    assert read["complete"] is get["complete"] is False
+    assert window.await_args_list[0].args[1] == projection.name
+    assert window.await_args_list[0].kwargs["limit"] == 1
 
 
 @pytest.mark.asyncio
