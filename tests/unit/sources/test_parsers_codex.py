@@ -3593,3 +3593,23 @@ def test_core_loads_still_reads_a_utf8_bom_document() -> None:
 
     assert loads(b'\xef\xbb\xbf{"a": 1}') == {"a": 1}
     assert loads(b'{"a": "x\xed\xa0\xbd\xed\xb8\x80"}') == {"a": "x\U0001f600"}
+
+
+def test_a_starter_free_run_gives_up_its_nfc_key_instead_of_growing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: carry a starter-free tail without bound and this run is
+    normalized whole, window after window."""
+    from polylogue.sources.parsers import codex as codex_module
+
+    monkeypatch.setattr(codex_module, "_DIGEST_WINDOW_CHARS", 7)
+    monkeypatch.setattr(codex_module, "_NFC_UNSETTLED_LIMIT_CHARS", 28)
+    assert codex_module._nfc_text_digest("́" * 200) is None
+    assert codex_module._nfc_text_digest("é" * 200) is not None
+
+
+def test_core_loads_still_reads_bomless_utf16_and_utf32() -> None:
+    """Anti-vacuity: hand valid UTF-8-decodable wide bytes to the provider decode
+    and the NUL-bearing string is rejected by the stdlib parse."""
+    from polylogue.core.json import loads
+
+    for encoding in ("utf-16-le", "utf-16-be", "utf-32-le", "utf-32-be"):
+        assert loads('{"a": 1}'.encode(encoding)) == {"a": 1}

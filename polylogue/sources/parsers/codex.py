@@ -338,7 +338,11 @@ def _sql_key(value: object) -> bytes:
 _DIGEST_WINDOW_CHARS = 1 << 20
 
 
-def _nfc_text_digest(text: str) -> bytes:
+#: Characters a starter-free run may hold before its NFC key is given up.
+_NFC_UNSETTLED_LIMIT_CHARS = 4 * _DIGEST_WINDOW_CHARS
+
+
+def _nfc_text_digest(text: str) -> bytes | None:
     """``_text_digest`` of the NFC form of ``text``, without building that form.
 
     Normalization streams: output before the last starter of what is produced
@@ -357,6 +361,11 @@ def _nfc_text_digest(text: str) -> bytes:
             index -= 1
         digest.update(normalized[:index].encode("utf-8", "surrogatepass"))
         pending = normalized[index:]
+        if len(pending) > _NFC_UNSETTLED_LIMIT_CHARS:
+            # A run of combining marks with no starter reorders as a whole, so
+            # it cannot be normalized in windows. Such a value has no NFC key:
+            # it is matched as written, at worst stored once more.
+            return None
     digest.update(unicodedata.normalize("NFC", pending).encode("utf-8", "surrogatepass"))
     return digest.digest()
 
@@ -1530,7 +1539,9 @@ class _CodexTextConservation:
         row = connection.execute(query, (_text_digest(text),)).fetchone()
         # The NFC copy is built only when the exact probe misses.
         if row is None and normalize and not text.isascii():
-            row = connection.execute(query, (_nfc_text_digest(text),)).fetchone()
+            nfc_key = _nfc_text_digest(text)
+            if nfc_key is not None:
+                row = connection.execute(query, (nfc_key,)).fetchone()
         return bytes(row[0]) if row is not None else None
 
     def _candidate(self, text: str, *, normalize: bool = True) -> bytes | None:
@@ -1547,7 +1558,7 @@ class _CodexTextConservation:
             connection.execute("INSERT INTO codex_task_texts(key, text) VALUES (?, ?)", (key, _sql_key(text)))
             connection.execute("INSERT INTO codex_task_keys VALUES (?, ?)", (key, key))
             normalized_key = _nfc_text_digest(text)
-            if normalized_key != key:
+            if normalized_key is not None and normalized_key != key:
                 connection.execute("INSERT OR IGNORE INTO codex_task_keys VALUES (?, ?)", (normalized_key, key))
             self._task_unresolved += 1
         connection.execute("INSERT INTO codex_task_events VALUES (?, ?, ?)", (event_index, key, len(text)))
@@ -1610,7 +1621,7 @@ class _CodexTextConservation:
         # normalized; retained text is looked up as written, then normalized
         # only when it is not pure ASCII.
         normalized_key = _nfc_text_digest(text)
-        if normalized_key != key:
+        if normalized_key is not None and normalized_key != key:
             connection.execute("INSERT OR IGNORE INTO codex_replacement_keys VALUES (?, ?)", (normalized_key, key))
         self._unresolved += 1
         return key, True
