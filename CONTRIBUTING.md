@@ -247,8 +247,11 @@ relative hook path. External task state is independent of Git hooks and branches
   `cd`s into the main checkout from inside a worktree). Set
   `POLYLOGUE_ALLOW_WORKTREE_ESCAPE=1` for legitimate cross-worktree
   commit flows.
-- **pre-push**: none. The hosted quick gate on the pull request is the
-  publication static check. Broader suites remain explicitly selected work.
+- **pre-push**: `devtools verify --quick` on the pushed commit when it is the
+  checked-out HEAD with no tracked changes on top; tracked changes refuse
+  the push, and a pushed ref that is not HEAD is left to CI. The hosted
+  `ci/circleci: quick-gate` check stays the enforced record. Broader suites
+  remain explicitly selected work.
 
 ## Type Checking
 
