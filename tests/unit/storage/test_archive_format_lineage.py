@@ -46,3 +46,21 @@ def test_marker_refuses_a_foreign_lineage_tier(tmp_path: Path) -> None:
         initialize_active_archive_root(tmp_path)
 
     assert user_path.read_bytes() == user_before
+
+
+def test_exact_member_names_require_the_new_fresh_lineage(tmp_path: Path) -> None:
+    """Leaving the pre-correction marker token unchanged would admit the prior floor."""
+    from polylogue.storage.sqlite.archive_tiers.archive_plan import _format_digest
+
+    initialize_active_archive_root(tmp_path)
+    marker_path = tmp_path / ".polylogue-format.json"
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker.pop("digest")
+    marker["format"] = "polylogue.archive-format.v5"
+    marker["digest"] = _format_digest(marker)
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+    before = {path.name: path.read_bytes() for path in tmp_path.glob("*.db")}
+    assert len(before) == 6
+    with pytest.raises(RuntimeError):
+        initialize_active_archive_root(tmp_path)
+    assert {path.name: path.read_bytes() for path in tmp_path.glob("*.db")} == before

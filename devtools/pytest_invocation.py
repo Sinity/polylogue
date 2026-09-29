@@ -46,6 +46,7 @@ STREAM_REPORT_PLUGIN_NAME: Final = "devtools.pytest_stream_report"
 TESTMON_RETENTION_PLUGIN_NAME: Final = "devtools.pytest_testmon_retention"
 
 DEVTOOLS_PLUGIN_NAMES: Final[tuple[str, ...]] = (
+    "devtools.pytest_admission",
     PROGRESS_PLUGIN_NAME,
     STREAM_REPORT_PLUGIN_NAME,
     TESTMON_RETENTION_PLUGIN_NAME,

@@ -44,7 +44,7 @@ def _check(
     before: int | None,
     after: int | None,
     *,
-    limit: int,
+    limit: int | None,
     monkeypatch: pytest.MonkeyPatch,
     nodeid: str = "tests/unit/example.py::test_thing",
 ) -> None:
@@ -88,3 +88,23 @@ def test_the_guard_is_inert_where_proc_is_unavailable(monkeypatch: pytest.Monkey
     _check(100, None, limit=1024, monkeypatch=monkeypatch)
     _check(None, 900, limit=1024, monkeypatch=monkeypatch)
     assert harness_conftest.FD_RETAINED == {}
+
+
+@pytest.mark.parametrize("retained", [0, 3, 300])
+def test_unlimited_descriptor_limit_retains_only_the_leak_check(
+    monkeypatch: pytest.MonkeyPatch,
+    retained: int,
+) -> None:
+    """Treating RLIM_INFINITY as a numeric ceiling refuses even a zero-leak teardown."""
+    import resource
+
+    monkeypatch.setattr(resource, "getrlimit", lambda kind: (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+    assert harness_conftest._fd_soft_limit() is None
+    monkeypatch.setattr(harness_conftest, "_open_fd_count", lambda: 1_000_000 + retained)
+    item = _Item("synthetic::unlimited", 1_000_000)
+    if retained > harness_conftest.FD_LEAK_ALLOWANCE:
+        with pytest.raises(AssertionError):
+            harness_conftest.check_descriptor_balance(item)  # type: ignore[arg-type]
+    else:
+        harness_conftest.check_descriptor_balance(item)  # type: ignore[arg-type]
+    assert ({item.nodeid: retained} if retained else {}) == harness_conftest.FD_RETAINED

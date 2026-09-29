@@ -172,3 +172,50 @@ def test_the_heavy_corpus_pool_is_pytest_ownership() -> None:
     corpus run is refused or rerouted into the quick pool.
     """
     assert agent_env.inside_pytest_pool({"AGENTCTL_POOL": agent_env.PYTEST_HEAVY_POOL})
+
+
+@pytest.mark.parametrize("testmon", [False, True])
+def test_admission_plugin_is_declared_for_automatic_and_managed_loading(testmon: bool) -> None:
+    from devtools.pytest_invocation import devtools_plugin_args
+
+    project = Path(__file__).resolve().parents[3]
+    metadata = tomllib.loads((project / "pyproject.toml").read_text(encoding="utf-8"))
+    name = "devtools.pytest_admission"
+    assert metadata["project"]["entry-points"]["pytest11"][name] == name
+    args = devtools_plugin_args(testmon=testmon)
+    assert any(args[index : index + 2] == ("-p", name) for index in range(len(args) - 1))
+
+
+@pytest.mark.parametrize("loading", ["explicit", "autoload"])
+def test_bare_pytest_refuses_before_loading_conftest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    loading: str,
+) -> None:
+    """Removing the early plugin lets --noconftest execute this test despite the admission policy."""
+    import os
+
+    from devtools import pytest_admission
+
+    # Exercise pytest's initial-conftest dispatch while the outer managed run
+    # continues to own its real host slot. The logical test environment is synthetic.
+    monkeypatch.setattr(agent_env, "_inside_pytest_cgroup", lambda reader: False)
+    monkeypatch.setattr(agent_env, "_inside_agent_cgroup", lambda reader: True)
+    for variable in (*agent_env.runtime_env_names(agent_env.QUEUE_POOL_ENV), agent_env.HARNESS_RUN_ENV):
+        monkeypatch.delenv(variable, raising=False)
+    if loading == "explicit":
+        monkeypatch.setenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", "1")
+    else:
+        monkeypatch.delenv("PYTEST_DISABLE_PLUGIN_AUTOLOAD", raising=False)
+    marker = tmp_path / "executed"
+    specimen = tmp_path / "test_admission_specimen.py"
+    specimen.write_text(
+        f"def test_body():\n    from pathlib import Path\n    Path({str(marker)!r}).touch()\n", encoding="utf-8"
+    )
+    assert agent_env.refuse_bare_pytest(os.environ) is not None
+    code = pytest.main(
+        ["--noconftest", "-o", "addopts=", "--confcutdir", str(tmp_path), str(specimen)],
+        plugins=[pytest_admission] if loading == "explicit" else [],
+    )
+    assert code == pytest.ExitCode.USAGE_ERROR
+    assert not marker.exists()

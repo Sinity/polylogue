@@ -92,3 +92,50 @@ def test_recording_merges_rather_than_replaces(_map_path: Path) -> None:
 
     stored = json.loads(_map_path.read_text(encoding="utf-8"))
     assert set(stored) == {_SHORTENED, other}
+
+
+@pytest.mark.uses_real_clock("OS file locking serializes concurrent node-ID writers")
+def test_concurrent_merges_lock_before_reading_the_map(_map_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without the lock, writers never enter admission; locking after the read loses the prior row."""
+    import fcntl
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    _map_path.parent.mkdir(parents=True)
+    waiting = threading.Event()
+    counter_lock = threading.Lock()
+    entered = 0
+    native_flock = fcntl.flock
+    other = "tests/unit/example.py::test_other[param-8899aabbccddeeff]"
+    original_other = "tests/unit/example.py::test_other[another-long-parameter]"
+
+    def flock(fd: int, operation: int) -> None:
+        nonlocal entered
+        if operation == fcntl.LOCK_EX:
+            with counter_lock:
+                entered += 1
+                if entered == 2:
+                    waiting.set()
+        native_flock(fd, operation)
+
+    with _map_path.with_suffix(".lock").open("a") as held:
+        native_flock(held.fileno(), fcntl.LOCK_EX)
+        monkeypatch.setattr(fcntl, "flock", flock)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(harness_conftest._record_long_nodeids, {_SHORTENED: _ORIGINAL})
+            second = pool.submit(harness_conftest._record_long_nodeids, {other: original_other})
+            try:
+                assert waiting.wait(10), "both writers must acquire the map lock before reading"
+                assert not first.done() and not second.done()
+                # A third writer publishes before either waiting writer owns the lock.
+                _map_path.write_text(json.dumps({"prior": "prior-original"}), encoding="utf-8")
+            finally:
+                native_flock(held.fileno(), fcntl.LOCK_UN)
+            first.result(timeout=10)
+            second.result(timeout=10)
+    assert json.loads(_map_path.read_text(encoding="utf-8")) == {
+        "prior": "prior-original",
+        _SHORTENED: _ORIGINAL,
+        other: original_other,
+    }
+    assert harness_conftest._restore_long_nodeid_arguments([_SHORTENED, other]) == [_ORIGINAL, original_other]

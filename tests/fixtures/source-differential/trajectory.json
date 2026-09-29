@@ -1,0 +1,14 @@
+{
+  "schema_version": "ATIF-v1.7",
+  "session_id": "synthetic-session",
+  "agent": {
+    "model_name": "hermes"
+  },
+  "steps": [
+    {
+      "source": "agent",
+      "timestamp": "2026-08-21T12:34:56Z",
+      "message": "Reviewed the example."
+    }
+  ]
+}

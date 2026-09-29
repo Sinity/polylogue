@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import gc
 import hashlib
 import json
@@ -18,7 +19,6 @@ import pytest
 from hypothesis import HealthCheck, settings
 from hypothesis.configuration import set_hypothesis_home_dir
 
-from devtools.agent_env import refuse_bare_pytest
 from devtools.checkout_guard import (
     CheckoutImportMismatchError,
     assert_polylogue_matches_checkout,
@@ -70,7 +70,7 @@ RETENTION_TRIM_ENV = "POLYLOGUE_TEST_RETENTION_TRIM"
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Refuse a test run that imports the product from another checkout, or bypasses the harness in a lane."""
+    """Pin repository test state and reject product imports from another checkout."""
     destination = os.environ.get(RETENTION_PROBE_ENV, "").strip()
     if destination:
         from tests.infra.retention_probe import RetentionProbe
@@ -82,9 +82,6 @@ def pytest_configure(config: pytest.Config) -> None:
         config.pluginmanager.register(probe, "polylogue-retention-probe")
     if _CHECKOUT_GUARD_ERROR is not None:
         raise pytest.UsageError(f"pytest: {_CHECKOUT_GUARD_ERROR}") from _CHECKOUT_GUARD_ERROR
-    bare = refuse_bare_pytest(os.environ)
-    if bare is not None:
-        raise pytest.UsageError(bare)
     global _SESSION_ARCHIVE_ROOT
     _SESSION_ARCHIVE_ROOT = pin_session_archive_root(os.environ)
     sys.stderr.write(f"pytest: polylogue package → {resolved_polylogue_path()} (checkout: {_TESTS_REPO_ROOT})\n")
@@ -123,10 +120,11 @@ def _open_fd_count() -> int | None:
         return None
 
 
-def _fd_soft_limit() -> int:
+def _fd_soft_limit() -> int | None:
     import resource
 
-    return int(resource.getrlimit(resource.RLIMIT_NOFILE)[0])
+    soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    return None if soft == resource.RLIM_INFINITY else int(soft)
 
 
 _FD_BEFORE: pytest.StashKey[int] = pytest.StashKey()
@@ -184,7 +182,7 @@ def check_descriptor_balance(item: pytest.Item) -> None:
     if retained:
         FD_RETAINED[item.nodeid] = FD_RETAINED.get(item.nodeid, 0) + retained
     limit = _fd_soft_limit()
-    if after >= limit * FD_EXHAUSTION_FRACTION:
+    if limit is not None and after >= limit * FD_EXHAUSTION_FRACTION:
         raise AssertionError(
             f"file-descriptor table is {after}/{limit} full after {item.nodeid}; "
             "the next test would fail with EMFILE for reasons that are not its own.\n" + _retainer_report()
@@ -272,26 +270,26 @@ def _load_long_nodeid_map() -> dict[str, str]:
 
 
 def _record_long_nodeids(shortened: dict[str, str]) -> None:
-    """Merge failing ids into this session's map.
-
-    Merged rather than replaced because xdist workers report into one file
-    concurrently, and the digest is a pure function of the original id, so two
-    writers never disagree about an entry.
-    """
+    """Merge failing IDs under one cross-process read/modify/write lock."""
     if not shortened:
         return
-    merged = _load_long_nodeid_map()
-    if not set(shortened).difference(merged):
-        return
-    merged.update(shortened)
     try:
         LONG_NODEID_MAP_PATH.parent.mkdir(parents=True, exist_ok=True)
-        scratch = LONG_NODEID_MAP_PATH.with_suffix(f".{os.getpid()}.tmp")
-        scratch.write_text(json.dumps(merged, indent=2, sort_keys=True), encoding="utf-8")
-        os.replace(scratch, LONG_NODEID_MAP_PATH)
+        # Keep the lock inode stable across atomic map replacements and runs.
+        with LONG_NODEID_MAP_PATH.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            merged = _load_long_nodeid_map()
+            if not set(shortened).difference(merged):
+                return
+            merged.update(shortened)
+            scratch = LONG_NODEID_MAP_PATH.with_suffix(f".{os.getpid()}.tmp")
+            try:
+                scratch.write_text(json.dumps(merged, indent=2, sort_keys=True), encoding="utf-8")
+                os.replace(scratch, LONG_NODEID_MAP_PATH)
+            finally:
+                scratch.unlink(missing_ok=True)
     except OSError:
-        # A read-only or missing cache directory must not fail the run; the
-        # only cost is that the next rerun cannot name a shortened id.
+        # An unavailable disposable cache must not fail the test run.
         return
 
 

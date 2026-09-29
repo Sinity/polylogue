@@ -20,22 +20,10 @@ from polylogue.config import Source
 from polylogue.core.enums import Provider
 from polylogue.sources.assembly import get_assembly_spec
 from polylogue.sources.decoders import _iter_json_stream
-from polylogue.sources.dispatch import STREAM_RECORD_PROVIDERS, parse_payload, parse_stream_payload
+from polylogue.sources.dispatch import is_stream_record_provider, parse_payload, parse_stream_payload
 from polylogue.sources.origin_specs import OriginSpec, origin_specs
 from polylogue.sources.parsers.base import ParsedSession
 from polylogue.sources.source_parsing import iter_source_sessions
-
-# These are transport/runtime fields, not semantic values.  They are typed and
-# path-local so adding a new ignored field requires naming its exact location.
-# In particular, timestamps, outcomes, topology, events, titles and content are
-# intentionally absent and therefore remain part of the comparison.
-OPERATIONAL_PATHS: Mapping[str, frozenset[str]] = {
-    "session": frozenset(),
-    "message": frozenset({"parent_message_position", "owner_coordinate"}),
-    "attachment": frozenset(
-        {"message_position", "message_variant_index", "owner_coordinate", "inline_bytes", "precomputed_blob"}
-    ),
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +34,11 @@ class SourceSpecimen:
     raw_bytes: bytes
     filename: str = "specimen.jsonl"
     sidecars: Mapping[str, bytes] = field(default_factory=dict)
-    fallback_id: str = "differential-specimen"
+
+    @property
+    def fallback_id(self) -> str:
+        """Use the same file identity as the production source-walk route."""
+        return Path(self.filename).stem
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +61,7 @@ class RouteResult:
 
 @dataclass(frozen=True, slots=True)
 class DifferentialReport:
+    declarations: tuple[AdapterDeclaration, ...]
     routes: tuple[RouteResult, ...]
 
     @property
@@ -77,34 +70,45 @@ class DifferentialReport:
 
     @property
     def canonical_hash(self) -> str:
-        hashes = {result.semantic_hash for result in self.routes}
-        if len(hashes) != 1:
-            raise AssertionError(f"semantic route drift: {self._hashes()}")
-        return next(iter(hashes))
+        self.assert_complete()
+        return self.routes[0].semantic_hash
 
     def _hashes(self) -> dict[str, str]:
         return {result.adapter.identity: result.semantic_hash for result in self.routes}
 
     def assert_complete(self) -> None:
+        expected = {adapter.identity: adapter for adapter in self.declarations}
         identities = self.adapters
+        if not expected or len(expected) != len(self.declarations):
+            raise AssertionError("adapter declarations must be nonempty and unique")
         if len(identities) != len(set(identities)):
             raise AssertionError(f"duplicate adapter execution: {identities}")
-        if not identities:
-            raise AssertionError("no declared adapters executed")
+        if set(identities) != set(expected):
+            raise AssertionError(f"incomplete adapter execution: expected={tuple(expected)}, actual={identities}")
+        for result in self.routes:
+            if result.adapter != expected[result.adapter.identity]:
+                raise AssertionError(f"adapter does not match its declaration: {result.adapter.identity}")
+            if not result.sessions:
+                raise AssertionError(f"adapter produced no sessions: {result.adapter.identity}")
+        if len({(result.input_hash, result.sidecar_hash) for result in self.routes}) != 1:
+            raise AssertionError("adapters did not compare the same specimen and sidecars")
         if len(set(self._hashes().values())) != 1:
             raise AssertionError(f"semantic route drift: {self._hashes()}")
 
 
-def declared_adapters(specs: Sequence[OriginSpec] | None = None) -> tuple[AdapterDeclaration, ...]:
+def declared_adapters(
+    specimen: SourceSpecimen,
+    specs: Sequence[OriginSpec] | None = None,
+) -> tuple[AdapterDeclaration, ...]:
     """Derive retained normalization routes directly from current declarations."""
     result: list[AdapterDeclaration] = []
     for spec in origin_specs() if specs is None else specs:
-        if spec.lifecycle != "executable" or not spec.provider_wires:
+        if spec.lifecycle != "executable" or specimen.provider not in spec.provider_wires:
             continue
-        provider = spec.provider_wires[0]
+        provider = specimen.provider
         evidence = (*spec.parser_paths, *spec.assembly_paths)
         result.append(AdapterDeclaration(f"{spec.origin.value}:eager", spec.origin.value, provider, "eager", evidence))
-        if spec.stream_parser_path is not None and provider in STREAM_RECORD_PROVIDERS:
+        if spec.stream_parser_path is not None and is_stream_record_provider(specimen.filename, provider):
             result.append(
                 AdapterDeclaration(
                     f"{spec.origin.value}:streaming",
@@ -123,7 +127,7 @@ def declared_adapters(specs: Sequence[OriginSpec] | None = None) -> tuple[Adapte
                 ("polylogue.sources.source_parsing.iter_source_sessions",),
             )
         )
-        if spec.assembly_spec_path is not None:
+        if spec.assembly_spec_path is not None and get_assembly_spec(provider) is not None:
             result.append(
                 AdapterDeclaration(
                     f"{spec.origin.value}:assembly", spec.origin.value, provider, "assembly", (spec.assembly_spec_path,)
@@ -132,22 +136,11 @@ def declared_adapters(specs: Sequence[OriginSpec] | None = None) -> tuple[Adapte
     return tuple(result)
 
 
-def _without_operational(value: object, *, path: str) -> object:
-    if isinstance(value, dict):
-        ignored = OPERATIONAL_PATHS.get(path, frozenset())
-        return {key: _without_operational(item, path=path) for key, item in value.items() if key not in ignored}
-    if isinstance(value, list):
-        child = "message" if path == "session" else "attachment" if path == "attachments" else path
-        return [_without_operational(item, path=child) for item in value]
-    return value
-
-
 def project_sessions(sessions: Sequence[ParsedSession]) -> tuple[dict[str, object], ...]:
     """Project all semantic axes of parsed sessions into stable JSON values."""
-    values = [
-        cast(dict[str, object], _without_operational(session.model_dump(mode="json"), path="session"))
-        for session in sessions
-    ]
+    # Parser models own the field partition, including private attachment
+    # coordinates. A second recursive classifier can only disagree with it.
+    values = [cast(dict[str, object], session.model_dump(mode="json")) for session in sessions]
     return tuple(sorted(values, key=lambda item: (str(item.get("source_name")), str(item.get("provider_session_id")))))
 
 
@@ -166,7 +159,7 @@ def _decode(raw: bytes) -> object:
 def run_differential(specimen: SourceSpecimen, *, spec: OriginSpec | None = None) -> DifferentialReport:
     """Run every declared route for one specimen in isolated filesystem state."""
     current = spec or next(item for item in origin_specs() if specimen.provider in item.provider_wires)
-    declarations = tuple(item for item in declared_adapters((current,)))
+    declarations = declared_adapters(specimen, (current,))
     if not declarations:
         raise AssertionError(f"no executable declaration for {specimen.provider.value}")
     input_hash = hashlib.sha256(specimen.raw_bytes).hexdigest()
@@ -174,7 +167,8 @@ def run_differential(specimen: SourceSpecimen, *, spec: OriginSpec | None = None
     sidecar_hash = hashlib.sha256(sidecar_payload).hexdigest()
     results: list[RouteResult] = []
     with TemporaryDirectory(prefix="polylogue-source-differential-") as temporary:
-        root = Path(temporary)
+        # Parent-relative sidecar discovery must stay inside this specimen.
+        root = Path(temporary) / "inputs" / "source"
         source_path = root / specimen.filename
         source_path.parent.mkdir(parents=True, exist_ok=True)
         source_path.write_bytes(specimen.raw_bytes)
@@ -183,31 +177,36 @@ def run_differential(specimen: SourceSpecimen, *, spec: OriginSpec | None = None
             sidecar_path.parent.mkdir(parents=True, exist_ok=True)
             sidecar_path.write_bytes(data)
         for adapter in declarations:
-            if adapter.kind == "eager":
-                sessions = parse_payload(
-                    specimen.provider, _decode(specimen.raw_bytes), specimen.fallback_id, source_path=str(source_path)
-                )
-            elif adapter.kind == "streaming":
-                sessions = parse_stream_payload(
-                    specimen.provider,
-                    _iter_json_stream(io.BytesIO(specimen.raw_bytes), specimen.filename),
-                    specimen.fallback_id,
-                    source_path=str(source_path),
-                )
-            else:
+            if adapter.kind == "replay":
+                # Source walking already discovers sidecars and enriches once.
                 sessions = list(iter_source_sessions(Source(name=specimen.provider.value, path=source_path)))
-            if adapter.kind == "assembly":
+            else:
+                if adapter.kind == "streaming":
+                    sessions = parse_stream_payload(
+                        specimen.provider,
+                        _iter_json_stream(io.BytesIO(specimen.raw_bytes), specimen.filename),
+                        specimen.fallback_id,
+                        source_path=str(source_path),
+                    )
+                else:
+                    sessions = parse_payload(
+                        specimen.provider,
+                        _decode(specimen.raw_bytes),
+                        specimen.fallback_id,
+                        source_path=str(source_path),
+                    )
+                # These parser-entry routes stop before source-walk enrichment;
+                # supply the same production assembly boundary exactly once.
                 assembly = get_assembly_spec(specimen.provider)
-                if assembly is None:
-                    raise AssertionError(f"declared assembly has no production spec: {adapter.identity}")
-                sidecar_data = assembly.discover_sidecars([source_path])
-                sessions = [assembly.enrich_session(session, sidecar_data) for session in sessions]
+                if assembly is not None:
+                    sidecar_data = assembly.discover_sidecars([source_path])
+                    sessions = [assembly.enrich_session(session, sidecar_data) for session in sessions]
             projected = project_sessions(sessions)
             rendered = json.dumps(projected, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
             results.append(
                 RouteResult(adapter, input_hash, sidecar_hash, projected, hashlib.sha256(rendered).hexdigest())
             )
-    report = DifferentialReport(tuple(results))
+    report = DifferentialReport(declarations, tuple(results))
     report.assert_complete()
     return report
 
@@ -215,7 +214,6 @@ def run_differential(specimen: SourceSpecimen, *, spec: OriginSpec | None = None
 __all__ = [
     "AdapterDeclaration",
     "DifferentialReport",
-    "OPERATIONAL_PATHS",
     "RouteResult",
     "SourceSpecimen",
     "declared_adapters",
