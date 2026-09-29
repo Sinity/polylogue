@@ -30,6 +30,7 @@ import json
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 from click.testing import CliRunner
@@ -320,9 +321,8 @@ def test_exclude_text_post_filter_hydrates_in_bounded_chunks(monkeypatch: pytest
         def count_sessions(self, **kwargs: object) -> int:
             return total
 
-        def list_summaries(self, **kwargs: object) -> list[SimpleNamespace]:
-            limit = kwargs.get("limit")
-            return summaries[: int(limit)] if isinstance(limit, int) else list(summaries)
+        def iter_summaries(self, **kwargs: object) -> Iterator[SimpleNamespace]:
+            yield from summaries
 
         def read_session(self, session_id: str) -> SimpleNamespace:
             reads.append(session_id)
@@ -359,32 +359,257 @@ def test_exclude_text_post_filter_hydrates_in_bounded_chunks(monkeypatch: pytest
     assert len(reads) < total
 
 
-def test_exclude_text_post_filter_refuses_an_over_cap_scope() -> None:
-    """Over the declared cap the route refuses; it never returns a short page.
+def test_exclude_text_post_filter_pages_a_scope_of_any_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A large post-filter scope is paged, never refused.
 
-    Anti-vacuity: delete the ``POST_FILTER_HYDRATION_CAP`` check in
-    ``_post_filter_candidates`` and no refusal is raised, so ``pytest.raises``
-    fails.
+    Anti-vacuity: stop after the first candidate page, or refuse past a
+    candidate count, and the survivor on the last page is never returned.
     """
     from types import SimpleNamespace
 
     from polylogue.api import archive as archive_api
 
-    class _HugeArchive:
-        def count_sessions(self, **kwargs: object) -> int:
-            return archive_api.POST_FILTER_HYDRATION_CAP + 1
+    monkeypatch.setattr(archive_api, "POST_FILTER_HYDRATION_CHUNK", 2)
+    ids = [f"s{index}" for index in range(10)]
 
-        def list_summaries(self, **kwargs: object) -> list[SimpleNamespace]:
-            raise AssertionError("candidates must not be fetched above the cap")
+    class _PagedArchive:
+        def iter_summaries(self, *, limit: int | None, **kwargs: object) -> Iterator[SimpleNamespace]:
+            # One forward cursor: no page size, no offset to re-walk.
+            assert limit is None and "offset" not in kwargs, (limit, kwargs)
+            for session_id in ids:
+                yield SimpleNamespace(session_id=session_id, display_label=None, display_label_source=None)
 
-    spec = SimpleNamespace(to_plan=lambda: SimpleNamespace(_apply_full_filters=lambda sessions, sql_pushed: sessions))
-    with pytest.raises(archive_api.PostFilterScopeTooLargeError) as excinfo:
-        archive_api._archive_list_summaries_with_post_filters(
-            _HugeArchive(),
-            spec,  # type: ignore[arg-type]
-            query_text=None,
-            query_kwargs={},
-            limit=1,
-            offset=0,
+        def read_session(self, session_id: str) -> str:
+            return session_id
+
+    monkeypatch.setattr(
+        archive_api,
+        "archive_envelope_to_session",
+        lambda envelope, **kwargs: SimpleNamespace(id=envelope),
+    )
+    spec = SimpleNamespace(
+        to_plan=lambda: SimpleNamespace(
+            _apply_full_filters=lambda sessions, sql_pushed: [s for s in sessions if s.id == "s9"]
         )
-    assert excinfo.value.gap_reason.startswith("post_filter_scope_too_large:")
+    )
+    page = archive_api._archive_list_summaries_with_post_filters(
+        _PagedArchive(),
+        spec,  # type: ignore[arg-type]
+        query_text=None,
+        query_kwargs={},
+        limit=5,
+        offset=0,
+    )
+    assert [summary.session_id for summary in page] == ["s9"]
+
+
+@pytest.mark.parametrize("randomizer", [{"sample": True}, {"sort": "random"}])
+def test_exclude_text_post_filter_randomizes_survivors_not_candidate_pages(
+    monkeypatch: pytest.MonkeyPatch, randomizer: dict[str, object]
+) -> None:
+    """A sampled or randomly sorted post-filter scan terminates and keeps its size.
+
+    A sampled store read ignores ``offset``; paging candidates with it would
+    fetch a fresh random page forever.
+
+    Anti-vacuity: forward ``sample``/``sort=random`` to the candidate query and
+    the fake store raises; sample before filtering and the lone survivor on
+    the last candidate page is usually missing.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.api import archive as archive_api
+
+    ids = [f"s{index}" for index in range(10)]
+
+    class _PagedArchive:
+        def iter_summaries(self, *, limit: int | None, **kwargs: object) -> Iterator[SimpleNamespace]:
+            assert "sample" not in kwargs and kwargs.get("sort") != "random", kwargs
+            assert limit is None and "offset" not in kwargs, (limit, kwargs)
+            for session_id in ids:
+                yield SimpleNamespace(session_id=session_id, display_label=None, display_label_source=None)
+
+        def read_session(self, session_id: str) -> str:
+            return session_id
+
+    monkeypatch.setattr(
+        archive_api,
+        "archive_envelope_to_session",
+        lambda envelope, **kwargs: SimpleNamespace(id=envelope),
+    )
+    spec = SimpleNamespace(
+        to_plan=lambda: SimpleNamespace(
+            _apply_full_filters=lambda sessions, sql_pushed: [s for s in sessions if s.id in {"s8", "s9"}]
+        )
+    )
+    page = archive_api._archive_list_summaries_with_post_filters(
+        _PagedArchive(),
+        spec,  # type: ignore[arg-type]
+        query_text=None,
+        query_kwargs={"limit": 5, **randomizer},
+        limit=None,
+        offset=0,
+    )
+    assert sorted(summary.session_id for summary in page) == ["s8", "s9"]
+
+    one = archive_api._archive_list_summaries_with_post_filters(
+        _PagedArchive(),
+        spec,  # type: ignore[arg-type]
+        query_text=None,
+        query_kwargs={"limit": 1, **randomizer},
+        limit=None,
+        offset=0,
+    )
+    assert len(one) == 1 and one[0].session_id in {"s8", "s9"}
+
+
+def test_reservoir_sample_keeps_only_the_window() -> None:
+    """The random post-filter window is chosen in one pass over a generator.
+
+    Anti-vacuity: materialize the stream and the ``len`` check on the
+    generator-fed reservoir is the only guard; returning more than ``size``
+    items or duplicates fails the assertions.
+    """
+    from polylogue.api import archive as archive_api
+
+    chosen = archive_api._reservoir_sample((index for index in range(10_000)), 7)
+    assert len(chosen) == 7 and len(set(chosen)) == 7
+    assert archive_api._reservoir_sample(iter(range(3)), 7) == [0, 1, 2]
+    assert archive_api._reservoir_sample(iter(range(3)), 0) == []
+
+
+def test_facet_scope_post_filter_hydrates_each_candidate_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A post-filtered facet scope is one pass, not a restart per facet page.
+
+    Anti-vacuity: page the facet scope through
+    ``_archive_list_summaries_for_spec`` again and each later page restarts the
+    candidate scan, so candidates are hydrated more than once.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.api import archive as archive_api
+    from polylogue.archive.query.spec import SessionQuerySpec
+
+    ids = [f"s{index}" for index in range(10)]
+    reads: list[str] = []
+
+    class _PagedArchive:
+        def iter_summaries(self, *, limit: int | None, **kwargs: object) -> Iterator[SimpleNamespace]:
+            # One forward cursor: no page size, no offset to re-walk.
+            assert limit is None and "offset" not in kwargs, (limit, kwargs)
+            for session_id in ids:
+                yield SimpleNamespace(session_id=session_id, display_label=None, display_label_source=None)
+
+        def read_session(self, session_id: str) -> str:
+            reads.append(session_id)
+            return session_id
+
+    monkeypatch.setattr(
+        archive_api,
+        "archive_envelope_to_session",
+        lambda envelope, **kwargs: SimpleNamespace(id=envelope),
+    )
+    monkeypatch.setattr(
+        SessionQuerySpec,
+        "to_plan",
+        lambda self: SimpleNamespace(
+            _apply_full_filters=lambda sessions, sql_pushed: [s for s in sessions if s.id != "s0"]
+        ),
+    )
+    spec = SessionQuerySpec(exclude_text_terms=("absent",))
+    scope = [summary.session_id for summary in archive_api._iter_facet_scope(_PagedArchive(), spec)]
+
+    assert scope == ids[1:]
+    assert sorted(reads) == sorted(ids)
+
+
+def test_search_post_filter_candidates_are_distinct_sessions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A session with several matching blocks is one candidate, sampled once.
+
+    Anti-vacuity: yield one candidate per search hit and the session with
+    three matching blocks is hydrated three times and can fill a sample alone.
+    """
+    from types import SimpleNamespace
+
+    from polylogue.api import archive as archive_api
+
+    reads: list[str] = []
+
+    class _SearchArchive:
+        def iter_search_summaries(self, query: str, **kwargs: object) -> Iterator[SimpleNamespace]:
+            for session_id in ("s1", "s1", "s2", "s1", "s3"):
+                yield SimpleNamespace(session_id=session_id)
+
+        def read_summary(self, session_id: str) -> SimpleNamespace:
+            reads.append(session_id)
+            return SimpleNamespace(session_id=session_id)
+
+    candidates = archive_api._post_filter_candidates(_SearchArchive(), query_text="foo", query_kwargs={})
+    assert [candidate.session_id for candidate in candidates] == ["s1", "s2", "s3"]
+    assert reads == ["s1", "s2", "s3"]
+
+
+def test_post_filter_window_clamps_negative_offset_and_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Anti-vacuity: pass a negative offset to ``islice`` and it raises ``ValueError``."""
+    from types import SimpleNamespace
+
+    from polylogue.api import archive as archive_api
+
+    ids = [f"s{index}" for index in range(4)]
+
+    class _Archive:
+        def iter_summaries(self, **kwargs: object) -> Iterator[SimpleNamespace]:
+            for session_id in ids:
+                yield SimpleNamespace(session_id=session_id, display_label=None, display_label_source=None)
+
+        def read_session(self, session_id: str) -> str:
+            return session_id
+
+    monkeypatch.setattr(
+        archive_api, "archive_envelope_to_session", lambda envelope, **kwargs: SimpleNamespace(id=envelope)
+    )
+    spec: Any = SimpleNamespace(
+        to_plan=lambda: SimpleNamespace(_apply_full_filters=lambda sessions, sql_pushed: list(sessions))
+    )
+    page = archive_api._archive_list_summaries_with_post_filters(
+        _Archive(),
+        spec,
+        query_text=None,
+        query_kwargs={},
+        limit=2,
+        offset=-1,
+    )
+    assert [summary.session_id for summary in page] == ["s0", "s1"]
+    empty = archive_api._archive_list_summaries_with_post_filters(
+        _Archive(),
+        spec,
+        query_text=None,
+        query_kwargs={},
+        limit=-3,
+        offset=0,
+    )
+    assert empty == []
+
+
+def test_facet_search_scope_hydrates_each_session_once() -> None:
+    """Anti-vacuity: hydrate one summary per search hit and a session with three
+    matching blocks is read three times."""
+    from types import SimpleNamespace
+
+    from polylogue.api import archive as archive_api
+    from polylogue.archive.query.spec import SessionQuerySpec
+
+    reads: list[str] = []
+
+    class _SearchArchive:
+        def iter_search_summaries(self, query: str, **kwargs: object) -> Iterator[SimpleNamespace]:
+            for session_id in ("s1", "s1", "s2", "s1"):
+                yield SimpleNamespace(session_id=session_id)
+
+        def read_summary(self, session_id: str) -> SimpleNamespace:
+            reads.append(session_id)
+            return SimpleNamespace(session_id=session_id)
+
+    scope = list(archive_api._iter_facet_scope(_SearchArchive(), SessionQuerySpec(query_terms=("foo",))))
+    assert [summary.session_id for summary in scope] == ["s1", "s2"]
+    assert reads == ["s1", "s2"]

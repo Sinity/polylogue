@@ -2952,6 +2952,7 @@ class DelegationCardPayload(SurfacePayloadModel):
     parent_followup: tuple[DelegationContextRowPayload, ...] = ()
     parent_followup_truncated: bool = False
     annotation_refs: tuple[str, ...] = ()
+    annotation_refs_truncated: bool = False
     evidence_refs: tuple[str, ...] = ()
 
     @classmethod
@@ -2991,6 +2992,7 @@ class DelegationCardPayload(SurfacePayloadModel):
             ),
             parent_followup_truncated=card.parent_followup_truncated,
             annotation_refs=card.annotation_refs,
+            annotation_refs_truncated=card.annotation_refs_truncated,
             evidence_refs=card.evidence_refs,
         )
 

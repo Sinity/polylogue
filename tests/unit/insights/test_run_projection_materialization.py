@@ -12,6 +12,7 @@ replace_session_runs_sync family). See polylogue-itvd.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -413,3 +414,68 @@ async def test_run_projection_relations_expose_typed_columns_not_a_payload_bundl
     assert event.tool_id == "tool-1"
     assert event.status == "ok"
     assert event.handler_kind is not None
+
+
+@pytest.mark.parametrize(
+    ("status", "parent_prefix_is_evidence"),
+    [(None, True), ("repaired", True), ("quarantined", False), ("authority-contradicted", False)],
+)
+def test_compaction_snapshot_cites_only_a_composable_parent_prefix(
+    tmp_path: Path, status: str | None, parent_prefix_is_evidence: bool
+) -> None:
+    """A compaction snapshot's evidence matches what the child's transcript composes.
+
+    Anti-vacuity: drop the ``topology_status_composes_sql`` predicate and a
+    quarantined or authority-contradicted link with a populated branch point
+    still contributes the parent's prefix messages as evidence.
+    """
+    from polylogue.storage.sqlite.run_projection_relations import context_snapshot_relation_sql
+    from tests.infra.storage_records import SessionBuilder
+
+    db_path = tmp_path / "index.db"
+    parent = SessionBuilder(db_path, "compaction-parent").provider("claude-code")
+    for index in range(3):
+        parent = parent.add_message(f"p{index}", role="user", text=f"parent message {index}")
+    parent.save()
+    child = (
+        SessionBuilder(db_path, "compaction-child")
+        .provider("claude-code")
+        .add_message("c0", role="user", text="child tail")
+    )
+    child.save()
+    parent_id, child_id = parent.native_session_id(), child.native_session_id()
+
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute("PRAGMA foreign_keys = ON")
+        parent_messages = [
+            row[0]
+            for row in conn.execute(
+                "SELECT message_id FROM messages WHERE session_id = ? ORDER BY position", (parent_id,)
+            )
+        ]
+        assert len(parent_messages) == 3
+        conn.execute(
+            "INSERT INTO session_links (src_session_id, dst_origin, dst_native_id, link_type, "
+            "resolved_dst_session_id, branch_point_message_id, inheritance, status, observed_at_ms) "
+            "VALUES (?, 'claude-code-session', ?, 'fork', ?, ?, 'prefix-sharing', ?, 0)",
+            (child_id, parent_id.split(":", 1)[1], parent_id, parent_messages[1], status),
+        )
+        conn.execute(
+            "INSERT INTO session_events (session_id, position, event_type, boundary_start_position, "
+            "boundary_end_position) VALUES (?, 0, 'compaction', 0, 5)",
+            (child_id,),
+        )
+        conn.commit()
+        (evidence_json,) = conn.execute(
+            f"{context_snapshot_relation_sql()} SELECT evidence_refs_json FROM context_snapshots "
+            "WHERE boundary = 'compaction' AND session_id = ?",
+            (child_id,),
+        ).fetchone()
+    finally:
+        conn.close()
+
+    evidence = set(json.loads(evidence_json))
+    inherited = {f"{parent_id}::{message_id}" for message_id in parent_messages[:2]}
+    assert (evidence & inherited) == (inherited if parent_prefix_is_evidence else set())
+    assert f"{parent_id}::{parent_messages[2]}" not in evidence

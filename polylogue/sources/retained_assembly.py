@@ -336,7 +336,7 @@ def retained_chatgpt_sidecars(
     scope = chatgpt_export_scope(session_source_path)
     if scope is None:
         return cast(SidecarData, {})
-    from .assembly_chatgpt import _member_asset_id
+    from .assembly_chatgpt import _member_asset_id, _record_asset_blob
     from .parsers.chatgpt_sidecars import ChatGPTAssetIndex
 
     library_payload: object | None = None
@@ -374,11 +374,16 @@ def retained_chatgpt_sidecars(
         where="a.source_path LIKE ? ESCAPE '\\'",
         parameters=[_like_prefix(scope)],
     )
+    # Key members exactly as live discovery does: the bare asset id until a
+    # second member proves it ambiguous, then ``asset_id#member`` for every
+    # member, with the member named relative to its export scope.
+    member_by_asset: dict[str, str] = {}
     for path, artifact in sorted(assets.items()):
         asset_id = _member_asset_id(PurePosixPath(path.replace("\\", "/")).name)
-        if asset_id is None or asset_id in asset_blobs:
+        if asset_id is None:
             continue
-        asset_blobs[asset_id] = (artifact.blob_hash, artifact.blob_size)
+        member = path[len(scope) :] if path.startswith(scope) else PurePosixPath(path.replace("\\", "/")).name
+        _record_asset_blob(asset_blobs, member_by_asset, asset_id, member, (artifact.blob_hash, artifact.blob_size))
 
     if library_payload is None and asset_names_payload is None and not asset_blobs:
         return cast(SidecarData, {})
